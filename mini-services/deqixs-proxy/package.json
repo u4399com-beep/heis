@@ -1,0 +1,13 @@
+{
+  "name": "deqixs-proxy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "deqixs.cc 正文三参数动态签名外置转换代理: 章节URL→chapter.js.php(token+timestamp+nonce, referrer绑定签发)→ajax2.php(GBK-JSON)→UTF-8纯文本, 供 deqixs 采集规则 content 段对接",
+  "scripts": {
+    "dev": "bun --hot index.ts",
+    "start": "bun index.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.0"
+  }
+}

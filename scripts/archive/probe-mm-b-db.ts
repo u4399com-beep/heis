@@ -1,0 +1,10 @@
+import { PrismaClient } from '@prisma/client'
+const db = new PrismaClient()
+const rule = await db.rule.findUnique({ where: { id: 'cmtlefjho025hqjh4yzuenady' } })
+console.log('=== RULE ===')
+console.log(rule ? JSON.stringify({ id: rule.id, name: rule.name, siteId: rule.siteId }) : 'NOT FOUND')
+if (rule) console.log(rule.config)
+const tasks = await db.task.findMany({ where: { ruleId: 'cmtlefjho025hqjh4yzuenady' }, select: { id: true, name: true, status: true, bookUrl: true, mode: true } })
+console.log('=== TASKS ===', JSON.stringify(tasks, null, 1))
+await db.$disconnect()
+process.exit(0)

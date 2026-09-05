@@ -1,0 +1,13 @@
+{
+  "name": "bqg713-proxy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "bqg713(笔趣阁) AES-token 外置转换代理: /rewrite?url=<明文章节URL> → 解析 id/chapterid → AES-CBC 计算 token → 返回改写后 URL(供采集引擎 tokenUrl={url} 钩子对接)",
+  "scripts": {
+    "dev": "bun --hot index.ts",
+    "start": "bun index.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.0"
+  }
+}

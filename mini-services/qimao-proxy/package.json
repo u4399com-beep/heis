@@ -1,0 +1,13 @@
+{
+  "name": "qimao-proxy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "七猫官方API(wtzw.com) 签名+AES 外置转换代理: 逐请求 MD5 双签名(params.sign/headers.sign) + 正文 AES-128-CBC 解密, 供 Legado 7698 书源翻译规则的六段 JSON 采集对接",
+  "scripts": {
+    "dev": "bun --hot index.ts",
+    "start": "bun index.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.0"
+  }
+}

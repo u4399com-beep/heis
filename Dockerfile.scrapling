@@ -1,0 +1,59 @@
+# ============================================================
+# 小说管理系统 — 可选构建: scrapling 桥 (ss-a)
+# ============================================================
+# 定位: 仅服务霹雳书屋等 Cloudflare Managed Challenge 站的 stealthy 采集
+#       (fetchMode=scrapling-stealthy, patchright 自动求解挑战)。
+# 默认不构建、不启动; 显式启用:
+#   docker compose --profile stealthy up -d --build
+#
+# ⚠ 体积警告: pip 装 scrapling[fetchers] + scrapling install 下载浏览器内核,
+#    镜像可达 GB 级 —— 确需 CF 挑战站采集时才启用。
+# ⚠ 验证状态: 沙箱无 docker 未真构建(与主镜像 kk-b 同口径, 结构自查)。
+# 网络: 桥固定绑定 127.0.0.1:3012, compose 侧以 network_mode 共享主容器
+#       网络命名空间 → 主容器内 127.0.0.1:3012 语义与本地开发完全一致。
+# ============================================================
+
+# 基础镜像可经构建参数直指国内镜像站(vv 轮, install.sh 国内模式自动探测注入)
+ARG PYTHON_IMAGE=python:3.12-slim
+FROM ${PYTHON_IMAGE}
+
+WORKDIR /app
+
+# ── 国内镜像源接线(可选, uu-a): 全部空默认 = 海外行为不变(零回归) ──
+# 由 docker-compose.yml build.args 传入 —— install.sh 国内模式自动导出, 也可手动 export 覆盖:
+#   DEBIAN_MIRROR             apt 源镜像 host(如 mirrors.aliyun.com), 替换 deb.debian.org
+#   PIP_INDEX_URL             pip 走国内 PyPI 镜像(如 https://pypi.tuna.tsinghua.edu.cn/simple)
+#   PLAYWRIGHT_DOWNLOAD_HOST  浏览器内核下载镜像(scrapling install, 如
+#                             https://npmmirror.com/mirrors/playwright)
+ARG DEBIAN_MIRROR=""
+ARG PIP_INDEX_URL=""
+ARG PLAYWRIGHT_DOWNLOAD_HOST=""
+
+# apt 源替换: python:3.12-slim 为 bookworm, 源文件是 deb822 格式
+# (/etc/apt/sources.list.d/debian.sources)。仅替换 host 段 —— URIs 里的
+# /debian 与 /debian-security 路径在阿里/清华/中科大等镜像站目录结构一致;
+# 保持 http 明文(slim 基础镜像此刻尚未装 ca-certificates, https 源会失败)
+RUN if [ -n "$DEBIAN_MIRROR" ]; then \
+      sed -i "s|http://deb.debian.org|http://${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
+    fi
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# pip / 浏览器内核下载走国内源(非空时生效):
+# - pip 对空串环境变量按未设置处理(实测), 空默认=官方 PyPI;
+# - playwright(含 patchright)对空串按未设置处理, 空默认=官方 CDN
+ENV PIP_INDEX_URL=${PIP_INDEX_URL:-} \
+    PLAYWRIGHT_DOWNLOAD_HOST=${PLAYWRIGHT_DOWNLOAD_HOST:-}
+
+# scrapling 运行时(与 mini-services/scrapling-bridge/package.json 安装说明同源)
+RUN pip install --no-cache-dir 'scrapling[fetchers]' \
+ && scrapling install
+
+COPY mini-services/scrapling-bridge/server.py ./server.py
+
+ENV SCRAPLING_BRIDGE_PORT=3012
+
+# 桥仅绑 127.0.0.1:3012(源码钉死), 经 compose network_mode 与主服务共享回环
+CMD ["python3", "server.py"]

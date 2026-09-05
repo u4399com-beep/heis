@@ -1,0 +1,13 @@
+{
+  "name": "fetch-relay",
+  "version": "1.0.0",
+  "private": true,
+  "description": "bun fetch 中继桥: 采集引擎(node 运行时)+出口代理场景的 TLS 指纹出路 —— node/undici 不支持 RequestInit.proxy(静默忽略), 引擎被迫走 curl 链而 curl 的 OpenSSL TLS 指纹被部分 WAF 按 JA3 拦截(wanben GoEdge 实录: 同代理同 URL bun 200/curl 403)。本服务以 bun 运行时代为发起请求(RequestInit.proxy 原生支持), 引擎侧重组响应嵌入逐跳循环。仅绑定 127.0.0.1",
+  "scripts": {
+    "dev": "bun --hot index.ts",
+    "start": "bun index.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.0"
+  }
+}

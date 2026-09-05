@@ -1,0 +1,79 @@
+# ============================================================
+# 小说管理系统 — 单服务部署 (SQLite 内嵌, 采集代理同容器共置)
+#
+# 常用命令:
+#   启动/重建 : docker compose up -d --build
+#   看日志    : docker compose logs -f          (自动填充日志带 [自动填充] 前缀)
+#   停止      : docker compose down        (数据保留在 ./db ./data)
+#   查看健康  : docker compose ps
+# ============================================================
+
+services:
+  novel-system:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # ── 构建源/基础镜像接线(uu-a/vv, 可选): 由 install.sh 国内模式自动导出, 也可手动 export 后覆盖 ──
+      # 空值/官方默认 = 维持海外默认(官方源), 构建行为零回归;
+      # 基础镜像直指镜像站是 BuildKit 拉取的最稳路径(vv, 对 daemon.json 加速器兼容不稳)
+      args:
+        - NPM_REGISTRY=${NPM_REGISTRY:-}
+        - BUN_IMAGE=${BUN_IMAGE:-oven/bun:1}
+        - NODE_IMAGE=${NODE_IMAGE:-node:22-slim}
+    image: novel-system:latest
+    container_name: novel-system
+    ports:
+      # 左侧是宿主机端口, 被占用时改成别的即可(如 "8080:3000" → http://IP:8080)
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      # SQLite 库文件落在 /app/db —— 即宿主机 ./db 目录(见 volumes)
+      - DATABASE_URL=file:/app/db/custom.db
+      # standalone server 按 HOSTNAME 绑定, 容器内必须 0.0.0.0 才能被外部访问
+      - HOSTNAME=0.0.0.0
+      - PORT=3000
+      # ── 自动填充(ss-a): 装完即自动导入采集规则并启动「自动填充·」任务快速填满网站 ──
+      # 置 0 关闭: AUTO_FILL=0 bash install.sh 或 AUTO_FILL=0 docker compose up -d
+      # (取宿主机同名环境变量, 缺省开启; 裸 docker run 不设即不启用)
+      - AUTO_FILL=${AUTO_FILL:-1}
+      # 参与自动填充的站点 key 清单(逗号分隔; 默认不含 pili —— 霹雳书屋依赖
+      # scrapling 桥, 属可选增强, 需要 --profile stealthy 场景, 见 DEPLOY.md 第五节)
+      - AUTO_FILL_RULES=${AUTO_FILL_RULES:-fanqie,qimao,deqixs,80ge,jhssd,ttkan,bqg713}
+    volumes:
+      # SQLite 数据库 —— 备份 = 停服后整体拷贝 ./db 目录
+      - ./db:/app/db
+      # 采集产物: 封面 covers/ 正文 novels/ 导出下载 downloads/
+      - ./data:/app/data
+    # 开机自启 / 崩溃自动拉起(手动 stop 除外)
+    restart: unless-stopped
+    healthcheck:
+      # 运行镜像保持精简不带 curl/wget, 用镜像内自带的 node fetch 探活首页 /
+      # (等价于 curl -f http://127.0.0.1:3000/)
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      # 首启含 db push 初始化与 next 启动, 给足预热时间
+      start_period: 40s
+
+  # ── 可选: scrapling 桥(ss-a) — 霹雳书屋等 CF 挑战站的 stealthy 依赖 ──
+  # 默认不构建不启动; 确需时显式: docker compose --profile stealthy up -d --build
+  # 镜像含 Python+浏览器内核(GB 级), 详见 DEPLOY.md 第五节; 主镜像零 Python 保持精简。
+  # network_mode: 与主容器共享网络命名空间 —— 桥钉死绑定 127.0.0.1:3012,
+  # 主容器内 127.0.0.1:3012 语义与本地开发一致(引擎降级链按需使用)。
+  scrapling-bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile.scrapling
+      # ── 国内镜像源接线(uu-a, 可选): 同上, install.sh 国内模式自动导出/手动 export 可覆盖 ──
+      args:
+        - PYTHON_IMAGE=${PYTHON_IMAGE:-python:3.12-slim}
+        - DEBIAN_MIRROR=${DEBIAN_MIRROR:-}
+        - PIP_INDEX_URL=${PIP_INDEX_URL:-}
+        - PLAYWRIGHT_DOWNLOAD_HOST=${PLAYWRIGHT_DOWNLOAD_HOST:-}
+    image: novel-scrapling-bridge:latest
+    container_name: novel-scrapling-bridge
+    profiles: ["stealthy"]
+    network_mode: "service:novel-system"
+    depends_on: [novel-system]
+    restart: unless-stopped

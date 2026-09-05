@@ -1,0 +1,214 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ==================== 分类 ====================
+model Category {
+  id        String @id @default(cuid())
+  name      String @unique
+  sortOrder Int    @default(0)
+  books     Book[]
+  createdAt DateTime @default(now())
+}
+
+// ==================== 采集规则 ====================
+model Rule {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  // 完整规则配置 JSON (list/book/toc/content 四段 + fetch + clean)
+  config      String   @default("{}")
+  enabled     Boolean  @default(true)
+  tasks       Task[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// ==================== 书籍 ====================
+model Book {
+  id            String    @id @default(cuid())
+  name          String
+  author        String    @default("佚名")
+  categoryId    String?
+  category      Category? @relation(fields: [categoryId], references: [id])
+  intro         String    @default("")
+  cover         String    @default("") // 外链URL 或本地相对路径 covers/xxx.webp
+  // unknown | ongoing | completed (智能判断完结)
+  status        String    @default("unknown")
+  keywords      String    @default("") // 主关键词(站内SEO)
+  latestChapter String    @default("")
+  wordCount     Int       @default(0)
+  sourceUrl     String    @default("")
+  sourceRuleId  String?
+  // db | txt
+  storageMode   String    @default("db")
+  collectedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  chapters Chapter[]
+  tags     BookTag[]
+  downloads DownloadJob[]
+
+  @@index([categoryId])
+  @@index([updatedAt])
+  // wordCount 排序消费: /api/public/books?sort=words / /api/public/search / /api/public/categories 代表书
+  @@index([wordCount])
+}
+
+// ==================== 章节 ====================
+model Chapter {
+  id        String   @id @default(cuid())
+  bookId    String
+  book      Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  idx       Int // 排序序号(乱序重排后)
+  title     String
+  volume    String @default("") // 分卷名(kk-a): 规则 toc.fields.volume 提取; UI 按卷分组
+  url       String   @default("") // 源章节地址(去重用)
+  content   String?  // db模式正文(清洗后html)
+  // db | txt
+  storage   String   @default("db")
+  filePath  String?  // txt模式文件路径
+  wordCount Int      @default(0)
+  fetched   Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([bookId, idx])
+  @@index([bookId, url])
+  @@index([updatedAt])
+}
+
+// ==================== 书籍标签(搜索引擎下拉词) ====================
+model BookTag {
+  id     String @id @default(cuid())
+  bookId String
+  book   Book   @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  tag    String
+  // suggest | manual
+  source String @default("suggest")
+  hits   Int    @default(0)
+
+  @@unique([bookId, tag])
+  @@index([tag])
+}
+
+// ==================== 采集任务 ====================
+model Task {
+  id     String @id @default(cuid())
+  name   String
+  ruleId String
+  rule   Rule   @relation(fields: [ruleId], references: [id])
+  // single(单本) | range(范围)
+  mode      String @default("single")
+  bookUrl   String @default("") // 单本模式: 书籍页地址
+  // 范围模式: 列表页 {page} 起止
+  listUrl   String @default("")
+  listStart Int    @default(1)
+  listEnd   Int    @default(1)
+  // 范围模式: 列表内书籍序号起止(0=不限)
+  bookStart Int    @default(0)
+  bookEnd   Int    @default(0)
+  // full(完全覆盖重采集) | incremental(只增量更新)
+  recrawlMode String @default("incremental")
+  // db | txt
+  storageMode String @default("db")
+  // 反反爬覆盖配置(可选, 空则用规则默认)
+  fetchConfig String @default("{}")
+  // 线程数随机范围
+  threadMin   Int    @default(1)
+  threadMax   Int    @default(3)
+  // 间隔毫秒随机范围
+  intervalMin Int    @default(500)
+  intervalMax Int    @default(2000)
+  smartCategory Boolean @default(true)
+  smartComplete Boolean @default(true)
+  autoSuggest   Boolean @default(true)
+  // 采集完成后自动按间隔重启(实时更新模式)
+  autoRefresh        Boolean @default(false)
+  refreshIntervalMin Int     @default(30) // 完成后N分钟重新采集, 钳 5~1440
+  // pending | running | paused | stopped | done | error
+  status    String   @default("pending")
+  // 运行时进度快照 JSON
+  progress  String   @default("{}")
+  stats     String   @default("{}")
+  logs      TaskLog[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model TaskLog {
+  id        String   @id @default(cuid())
+  taskId    String
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  // info | success | warn | error
+  level     String   @default("info")
+  message   String
+  createdAt DateTime @default(now())
+
+  @@index([taskId, id])
+}
+
+// ==================== 站群站点 ====================
+model Site {
+  id      String @id @default(cuid())
+  name    String
+  domain  String @unique // 例: www.a.com (含端口亦可)
+  themeId String @default("aurora")
+  // TDK
+  title       String @default("")
+  description String @default("")
+  keywords    String @default("")
+  // SEO/GEO 扩展
+  icbm        String @default("35.86166,104.195397") // geo 坐标
+  geoRegion   String @default("CN")
+  geoPlacename String @default("中国")
+  // 书籍列表偏移量(站群差异化)
+  offset      Int    @default(0)
+  isDefault   Boolean @default(false)
+  status      Boolean @default(true)
+  // 站群链轮: 是否参与其他站点页脚的互链(缺省参与)
+  inLinkWheel Boolean @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// ==================== TXT下载任务 ====================
+model DownloadJob {
+  id      String @id @default(cuid())
+  bookId  String
+  book    Book   @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  // 注入选项 JSON: ads/obfuscate/siteInfo/header/footer 等
+  options String @default("{}")
+  // pending | running | done | error
+  status   String  @default("pending")
+  filePath String?
+  error    String?
+  size     Int     @default(0)
+  createdAt DateTime @default(now())
+}
+
+// ==================== 全局设置 ====================
+model Setting {
+  key   String @id
+  value String @default("{}")
+}
+
+// ==================== 友情链接 ====================
+model FriendLink {
+  id        String   @id @default(cuid())
+  name      String // 锚文本(站名)
+  url       String // 完整 http(s) 地址
+  logo      String   @default("") // 可选 logo: http(s) 外链或站内 / 开头路径
+  sortOrder Int      @default(0) // 升序展示
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([enabled, sortOrder])
+}
