@@ -31,9 +31,15 @@ export async function GET(req: Request) {
     // 排序白名单(防 orderBy 注入任意字段)
     const orderBy = sort === 'words' ? { wordCount: 'desc' as const } : { updatedAt: 'desc' as const }
 
+    // 站群偏移量仅在"无筛选"浏览时生效(首页书库翻页轮换);
+    // 带 cat(分类) / q(搜索) / status 筛选时忽略 offset —— 否则会跳过该分类/搜索结果内前 offset 条
+    // (bug 修复: 例 dewew 站点 offset=4 + 仙侠分类仅 1 本 → skip 4 跳过唯一那本 → 空结果)
+    const hasFilter = !!(q || cat || status)
+    const effectiveOffset = hasFilter ? 0 : offset
+
     // API-7: 公共路由 skip 上限 —— 修前 page 可达 1_000_000, 配合 size=60 形成 skip=60_000_000
     // 大跳过触发 SQLite OFFSET 全表扫描/内存膨胀(DoS); 上限 10000 即 50 万行表(size=50)的合理边界
-    const requestedSkip = offset + (page - 1) * size
+    const requestedSkip = effectiveOffset + (page - 1) * size
     const effectiveSkip = Math.min(requestedSkip, 10000)
     const skipCapped = requestedSkip > 10000
 
@@ -49,7 +55,7 @@ export async function GET(req: Request) {
     ])
 
     return ok({
-      total: Math.max(0, total - offset),
+      total: Math.max(0, total - effectiveOffset),
       page,
       size,
       // 超出 skip 上限时返回空数组而非报错(公共路由, 容错优先), 通过 note 字段提示上游
