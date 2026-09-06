@@ -1596,3 +1596,69 @@ Stage Summary:
 - Files created: 5 (manifest.json, icon.svg, sw.js, PwaRegister.tsx, InstallPrompt.tsx)
 - Files modified: 4 (FieldRuleEditor.tsx, RuleEditor.tsx, layout.tsx, PublicSite.tsx, globals.css)
 - All quality gates green; agent-browser verified field badges; curl verified all PWA resources 200
+
+---
+Task ID: feat-rules-batch
+Agent: Batch crawl rules for 25 sites
+Task: Write + run batch seed script for 25 novel site crawl rules
+
+Work Log:
+- Read existing seed scripts (seed-rule-biqugetw.ts, seed-rule-piaotia.ts), types.ts FieldRule/PageRule/FetchConfig/CleanConfig shape, and rule-templates.ts (8 templates) to internalize the biquge.tw real-world config (og:novel:* meta + lastest 拼写 + .booklist li + #chaptercontent + biquge ad patterns) and API auth shape (POST /api/auth/login → Set-Cookie heis_admin=<jwt>; rules CRUD at /api/admin/rules).
+- Authored scripts/seed-rules-batch-v2.ts (sole file modified/created):
+  - biqugeRule(domain, opts) factory — generates a complete RuleConfig from biquge.tw template, supports listPath/itemSelector/contentSelector/tocSelector/engine overrides + domain-escaped adPattern (escapeDomain helper).
+  - 12 笔趣阁系 sites use the factory with per-site customizations: gegedangbook /sort/1/{page}.html; biqu5200+biquge5200 /top/{page}/ + #content + #list dd; libahao2 engine=auto (403 probed).
+  - 12 dedicated configs for non-biquge sites: cn.ttkan.co (pure-g .novel_info + .novel_chapters_item + tocLink "查看全部章节" + #content,.article-content dual); 69shuba (engine=auto, .bookitem/.item + #content/#chaptercontent dual); 8kana (inferred biquge); 101kks (CF, auto); shucong (GBK+403, auto); hetushu (403, auto); guichuideng (/book/{page}.html, auto); dongliuxiaoshuo (403, auto); uukanshu (SSL000, auto); xiaoshuodaquan (inferred); laobiao (inferred); jhsssd (mobile UA + .book-item fallback).
+  - ptwxz.com explicitly SKIPPED (redirects to piaotia.com — already seeded); logged at startup.
+  - Credibility markers per rule description: [实测] / [实测403] / [实测CF] / [实测SSL000] / [实测200] / [实测403+GBK] / [推断]; all descriptions ≤500 chars.
+  - main(): login()→cookie, fetchAllRuleNames()→Map name→ids, per-rule try/catch (delete same-name first, then create), summary 入库 N/24 条 + final hint about admin 测试面板.
+- Ran script first time: ALL 24/24 rules inserted successfully, zero failures.
+- Re-ran script (idempotency check): 24/24 again, total DB count stayed at 27 (3 pre-existing + 24 new), zero duplicates.
+- Verified via curl + python: GET /api/admin/rules → total=27, all 24 batch domains matched in DB.
+- bun run lint: clean, no errors.
+
+Stage Summary:
+- Rules created: 24/24 (25 candidate sites, ptwxz.com skipped as piaotia.com redirect duplicate)
+- Sites list (24):
+  - 笔趣阁系(12): gegedangbook.com, biqu5200.com, biquge5200.com, biqugse.com, xbiqubao.com, ibiquges.com, ibiquwx.com, biquwx.com, duokanbiqu.com, zhongwenzw.com, 123duw.com, libahao2.com
+  - ttkan(1): cn.ttkan.co (pure-g dedicated config)
+  - CF/挑战(3): 69shuba.com, 8kana.com, 101kks.com
+  - GBK/403(1): shucong.com
+  - 403站点(3): hetushu.com, guichuideng.info, dongliuxiaoshuo.com
+  - 其他(4): uukanshu.com, xiaoshuodaquan.com, laobiao.cc, jhsssd.com (mobile UA)
+- DB total after: 27 (24 new + 3 pre-existing seed rules).
+- Idempotent: verified — re-run deletes same-named then recreates, no dups.
+- Live 4-stage tests deliberately skipped per task spec; CF/403/SSL sites will need browser engine / proxy on real采集; inferred biquge selectors may need fine-tuning via admin 采集规则 → 编辑 → 测试面板.
+
+---
+Task ID: feat-rules-batch
+Agent: Batch crawl rules for 25 user-provided sites
+Task: Probe + write + run batch seed script for 25 novel site crawl rules
+
+Work Log:
+- Probed all 25 sites via curl (reachability + charset + framework):
+  - 8 reachable 200: ptwxz, 101kks, 8kana, biqu5200, gegedangbook, ttkan, jhsssd, 69shuba
+  - 5 protected 403: hetushu, guichuideng, shucong(GBK), dongliuxiaoshuo, libahao2
+  - 12 SSL/unreachable 000: biqugse, uukanshu, xbiqubao, xiaoshuodaquan, zhongwenzw, ibiquges, ibiquwx, biquwx, laobiao, biquge5200, duokanbiqu, 123duw
+  - ptwxz.com → 301 redirect to www.piaotia.com (already has seed-rule-piaotia.ts, SKIPPED duplicate)
+- Deep-probed reachable sites' URL structures:
+  - gegedangbook: /sort/{cat}/{page}.html, item=.item (dl dt>a/dd)
+  - biqu5200: /top/, book=/{xxx}/{yyy}/, chapter=/{xxx}/{yyy}/{zzz}.html
+  - ttkan: /novel/class/{category}, item=.novel_info (pure-g), book=/novel/chapters/{slug}
+- Created `scripts/seed-rules-batch-v2.ts`:
+  - biqugeRule(domain, opts) factory generates full RuleConfig from biqugetw template (og:novel:* meta + lastest 拼写 + .booklist li + #chaptercontent + biquge ad patterns), supports per-site overrides for listPath/itemSelector/contentSelector/tocSelector/engine.
+  - 12 笔趣阁系 sites use factory (gegedangbook /sort/1/{page}.html; biqu5200+biquge5200 /top/{page}/ + #content + #list dd; libahao2 engine=auto for 403).
+  - 12 dedicated configs for non-biquge (ttkan pure-g .novel_info; 69shuba/101kks/shucong/hetushu/dongliuxiaoshuo/uukanshu engine=auto for CF/403/SSL; jhsssd uaMode=mobile).
+  - Credibility markers in every description: [实测]/[实测403]/[实测CF]/[实测SSL000]/[实测200]/[实测403+GBK]/[推断].
+  - Idempotent upsert: login → fetch all rule names → per-rule try/catch (delete same-name, POST create) → summary.
+  - No live 4-stage tests (per spec — too slow + many CF-protected); ends with hint to use admin 测试面板 for per-rule verification.
+- Ran the script: 24/24 rules inserted (ptwxz skipped as piaotia duplicate), zero failures.
+- Idempotency verified: re-run → 24/24 again, DB total 27 (3 pre-existing + 24 new), zero duplicates.
+- agent-browser verified: 采集规则 page lists all 27 rules with full names (江湖神算/老表/小说大全/UU看书/东流小说/鬼吹灯/和图书/书丛/101kks/8kana/69书吧/ttkan/丽芭号/123读/中文小说网/多看笔趣/笔趣wx/i笔趣wx/i笔趣阁/笔趣阁宝/笔趣阁gse/笔趣阁5200镜像/笔趣阁5200/格格党 + 3 原有示例).
+- Final quality gates: bun run lint 0/0; bunx tsc --noEmit 0 errors; dev server / 200.
+
+Stage Summary:
+- 24 new crawl rules created and inserted (covering 25 user-provided sites, minus ptwxz=piaotia duplicate)
+- Sites by framework: 12 笔趣阁系 (CSS dl/dt/dd + og:novel meta), 1 ttkan (pure-g custom), 1 jhsssd (mobile), 10 protected/CF (engine=auto with browserFallback)
+- Credibility: 8 sites probed [实测*], 16 inferred [推断] based on domain pattern + biquge template
+- Files created: scripts/seed-rules-batch-v2.ts (biqugeRule factory + 24 rule definitions + idempotent upsert)
+- All rules have browserFallbackStatus [403,412,429,503] so engine auto-upgrades to stealth chromium on CF/403; users can verify/tune via 采集规则 → 编辑 → 测试面板 + 可视化调试器
