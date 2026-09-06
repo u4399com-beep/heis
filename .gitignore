@@ -46,9 +46,29 @@ local-*
 *.log
 dev.log
 dev.out.log
-test
-prompt
+/test
+/prompt
 
 server.log
 # Skills directory
-/skills/
+/skills/tool-results/
+/tool-results/
+/tmp/
+
+# python venv (scrapling-bridge)
+mini-services/**/.venv/
+.venv/
+
+# runtime data (jj-f 生产就绪: 运行时数据库与封面不进版本库)
+db/*.db
+db/*.db.lost-*
+db/*.db-journal
+/data/
+backups/
+tmp/
+
+# rr 轮: 验证截图目录(42 PNG 7.3MB 曾误入库)
+tmp-shots/
+
+# tt 轮: .env.example 模板保留入库(.env* 规则的例外)
+!.env.example

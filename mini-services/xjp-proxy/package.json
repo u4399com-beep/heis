@@ -1,0 +1,13 @@
+{
+  "name": "xjp-proxy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "xinjianpan.com 正文双层合并+var c 解密外置转换代理: 章节URL→章节HTML(#chaptercontent SSR 前半 + var c 加密后半)→php_decrypt_js 算法离线解密→HTML→纯文本, 供 新键盘小说网 采集规则 content 段对接",
+  "scripts": {
+    "dev": "bun --hot index.ts",
+    "start": "bun index.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.0"
+  }
+}

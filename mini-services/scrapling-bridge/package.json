@@ -1,0 +1,10 @@
+{
+  "name": "scrapling-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "scrapling 桥 (hh-c): 采集引擎 × Scrapling(Python 自适应抓取框架) 接入 —— 引擎 FetchConfig.fetchMode='scrapling-static|stealthy|playwright' 时把整次抓取交本桥代发。static=curl_cffi TLS 指纹伪装 / stealthy=patchright 反检测浏览器+CF 挑战求解 / playwright=裸 Playwright chromium 渲染。仅绑定 127.0.0.1:3012, 响应重组为 {ok,status,html,finalUrl} 信封; 桥内异常 {ok:false,error} 200 返回, 引擎侧据此降级 native 链。安装: uv venv .venv && uv pip install --python .venv/bin/python 'scrapling[fetchers]' && .venv/bin/scrapling install",
+  "scripts": {
+    "dev": "sh -c 'if [ -x .venv/bin/python ]; then exec .venv/bin/python server.py; else exec python3 server.py; fi'",
+    "start": "sh -c 'if [ -x .venv/bin/python ]; then exec .venv/bin/python server.py; else exec python3 server.py; fi'"
+  }
+}

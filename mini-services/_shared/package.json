@@ -1,0 +1,6 @@
+{
+  "name": "heis-mini-shared",
+  "private": true,
+  "version": "1.0.0",
+  "description": "共享: Bun.serve 桥样板(127.0.0.1 绑定 + /health 自检 + X-Bridge-Key 共享密钥 + 头键安全名单 + 常量时间比较)"
+}
