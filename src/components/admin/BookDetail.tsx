@@ -112,8 +112,9 @@ export function BookDetail({ bookId, onClose, onChanged }: BookDetailProps) {
   const tocSeqRef = useRef(0)
   const chSeqRef = useRef(0)
 
-  // 卸载后停止异步 setState
+  // 挂载/重挂载时复位 aliveRef(StrictMode dev 下会 卸载→重挂载, 旧实现只设 false 不复位 → 卡 loading)
   useEffect(() => {
+    aliveRef.current = true
     return () => {
       aliveRef.current = false
     }

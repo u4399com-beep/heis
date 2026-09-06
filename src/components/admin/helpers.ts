@@ -241,6 +241,20 @@ export interface StatsData {
   taskStatusBreakdown: { status: string; count: number }[]
 }
 
+/** feat-c: 可视化调试单条匹配记录 — 描述某个字段被哪个选择器命中、命中第几个列表项、值与预览 */
+export interface DebugMatch {
+  /** 字段名(title/url/name/author/content/...) */
+  field: string
+  /** 命中字段所用的选择器/规则摘要, 如 "css:h1.title" / "xpath://div" / "regex:..." */
+  selector: string
+  /** 列表项序号(0基; book/content 段固定为 0) */
+  idx: number
+  /** 提取到的完整值(可能为空串) */
+  value: string
+  /** 值的短预览(≤80 字符) */
+  preview: string
+}
+
 export interface RuleTestResult {
   engine: string
   htmlSize: number
@@ -254,6 +268,14 @@ export interface RuleTestResult {
   cleanedLength?: number
   cleanedText?: string
   cleanedHtml?: string
+  // feat-c: 可视化调试附加字段(全部 ADDITIVE, 调用方不使用时不影响现有契约)
+  // 服务端在 try/catch 内构建, 任何构建异常都会把这三字段置 null, 调用方按 null 隐藏调试视图
+  /** 注入 <mark class="heis-debug-match"> 高亮标记的 HTML(cheerio 序列化) */
+  debugHtml?: string | null
+  /** 原始未修改的抓取 HTML(供"原始 HTML"视图切换) */
+  rawHtml?: string | null
+  /** 每条匹配的字段/选择器/索引/值/预览, 用于右侧"匹配详情"面板 */
+  debugMatches?: DebugMatch[] | null
 }
 
 // ---------------- feat-b: 健康监控 (与 /api/admin/health 响应一致) ----------------

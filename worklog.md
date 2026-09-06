@@ -731,3 +731,120 @@ Stage Summary:
 - Modified files: ReadView.tsx, shared.tsx, ReadClassic/Immersive/Paginated/Pili.tsx, BookView.tsx, LoginGate.tsx, Dashboard.tsx, AdminApp.tsx, globals.css, stats/route.ts, helpers.ts
 - Features delivered: reading progress memory, chapter bookmarks, line/letter spacing control, reading time tracking, style polish (login gradient + dashboard hover + sidebar indicator), dashboard charts (area/pie/bar/bar), health monitoring widget, 6 demo books with covers
 - All quality gates green: lint 0/0, tsc 0, dev server stable, end-to-end QA passed across admin + public + reader + themes
+
+---
+Task ID: feat-c
+Agent: Visual rule debugger
+Task: Visual debug overlay in test panel (highlighted HTML iframe + matches panel + API debug data)
+
+Work Log:
+- Read prior worklog (feat-a/feat-b for context, project stable, lint/tsc clean, 50+ prior bugs fixed). Read existing TestPanel.tsx, helpers.ts, src/app/api/admin/rules/test/route.ts, src/lib/crawl/parser.ts, src/lib/crawl/types.ts, RuleEditor.tsx (TestPanel mount context). Verified cheerio 1.2.0 installed (wrapInner API confirmed via d.ts); shadcn/ui Skeleton/Collapsible/Badge/Button/Table all available.
+
+1. Extend test API route.ts to return debug data (ADDITIVE, backward-compatible):
+  - Imported `FieldRule` type + `AnyNode` from domhandler + reused existing `extractField` from parser.
+  - Added `DebugMatch`/`DebugData`/`DebugExtracted` interfaces (server-side; helpers.ts has its own DebugMatch for client).
+  - Added `selectorSummary(fr)` → `${type}:${expression}[attr]` readable selector string.
+  - Added `previewText(s)` (80-char code-point truncate) + `truncateHtml(s)` (200KB cap + comment).
+  - Added `buildDebugData(section, html, rule, extracted, pageUrl)` — main debug builder:
+    · list/toc with CSS itemSelector: addClass('heis-debug-item') + attr('data-idx') on each container (NOT <span> wrap — container could be <li>/<tr>, span would break HTML); iframe CSS uses `.heis-debug-item` selector.
+    · For each field rule per item: highlightCssField tries `scope.find(expr).first()`, falls back to `scope.is(expr)` when no descendant matches (covers itemSelector=a + field=a case where parser uses fresh cheerio.load(scope.html)→$(expr) which finds top-level element).
+    · cheerio.wrapInner injects `<mark class="heis-debug-match" data-field="X" data-idx="N">` into the matched element. With parser's cssExtract().first() semantics (only first match is wrapped, avoiding mark spam).
+    · book section: same logic at page-level ($(expr).first()), no itemSelector.
+    · content section: wraps first match of contentRule.
+    · value extraction: per-item isolated cheerio.load(nodeHtml) → extractField (aligns with parseList's cssExtract), so debugMatches.value idx aligns with itemNodes idx — parseList's urlFields filter would otherwise cause idx misalignment.
+    · Non-CSS types (xpath/regex/json/const) only record to debugMatches (no DOM highlight, can't replay hit elements).
+    · Truncates debugHtml/rawHtml to 200KB with `<!-- heis-debug: truncated at 200KB -->` note.
+    · Whole function wrapped in try/catch — any cheerio load/select/wrapInner error → returns {debugHtml:null, rawHtml:null, debugMatches:null} (caller hides debug UI, no impact on extraction).
+  - Modified runTest's 4 section branches (list/book/toc/content) to call buildDebugData and add debugHtml/rawHtml/debugMatches to ok() response. For toc, normalized r.items {title,url,volume?} to {fields:{title,url,volume}} for debug shape alignment (volume accessed via type cast since resolveToc signature omits it but parser writes it).
+  - Backward-compatible: existing fields (engine, htmlSize, ms, type, count, pages, sample, fields, rawLength, cleanedLength, cleanedText, cleanedHtml) unchanged.
+
+2. Extend helpers.ts RuleTestResult type:
+  - Added `DebugMatch` interface (field/selector/idx/value/preview) — client-side mirror of route.ts DebugMatch.
+  - Added 3 optional fields to RuleTestResult: `debugHtml?: string | null`, `rawHtml?: string | null`, `debugMatches?: DebugMatch[] | null` (all nullable — null = debug build failed, caller hides visual debug).
+
+3. Create DebugHtmlViewer.tsx (~290L):
+  - Props: `{ debugHtml, rawHtml, activeMatch?: {field, idx} | null, onActiveChange? }`.
+  - iframe with `sandbox=""` (no allow-scripts, no allow-same-origin) — strict isolation from scraped HTML (XSS protection). `srcDoc` injects full HTML doc + inline CSS.
+  - Inline CSS (IFRAME_CSS): body monospace #fafafa; mark.heis-debug-match default yellow; data-field="title" green; url|link|bookUrl blue; content pink; name green; author/category/keywords/intro/cover/latestChapter/status orange (so book section fields are visually distinguishable from list/toc fields); .heis-debug-item purple dashed outline; mark.heis-debug-active keyframe flash (red box-shadow 3x 0.6s) + scroll-margin-top.
+  - `injectActiveClass(html, field, idx)` — RegExp matches `class="heis-debug-match" data-field="X" data-idx="N"` (cheerio's fixed attribute order) and adds `heis-debug-active` class. Loose fallback uses generic <mark ...> pattern for attribute-order variations.
+  - Toolbar: view toggle (高亮预览 / 原始 HTML), 复制 HTML button (clipboard API with 1.5s "已复制 ✓" feedback). When view=raw, escapeHtmlForPre shows raw HTML as <pre> source code (not rendered). Legend (5 items: title/link/content/其它字段/列表-目录项) shown only in highlight view.
+  - iframe height: 400px fixed; key={`${view}:${srcDoc.length}:${srcDoc.slice(0,32)}` forces re-mount on srcdoc change (avoids stale-render bug where React updates srcdoc attr but some browsers don't reload).
+  - avoided `useEffect` for copy-state reset (react-hooks/set-state-in-effect rule); destructured activeMatch sub-fields for stable useMemo deps (react-hooks/exhaustive-deps + preserve-manual-memoization rules).
+
+4. Enhance TestPanel.tsx (~370L, rewritten from ~250L):
+  - Added `activeMatch` state (lifted from DebugHtmlViewer so MatchesPanel can update it via onClick); cleared on each new test run.
+  - Loading state: TestLoadingSkeleton (mimics visual debug + extracted data layout: 5-col grid skeleton h-[460px] + bottom skeleton h-32).
+  - TestResultView split into: VisualDebugSection (collapsible, default open if hasDebug) + ExtractedDataView (always shown, wraps existing TestResultView body).
+  - VisualDebugSection: Collapsible trigger with Bug icon + "可视化调试" + match count badge + "点击折叠/展开" + chevron rotation. Content: lg:grid-cols-5 grid; left DebugHtmlViewer (col-span-3), right MatchesPanel (col-span-2). Mobile: stacks vertically (grid-cols-1).
+  - MatchesPanel: if 0 matches → empty state with Inbox icon + "无匹配项" + helpful text. Else: shadcn Table with 字段/#/值预览 columns; rows clickable (cursor-pointer); active row highlighted with violet-500/15 bg; value preview truncated max-w-[200px] (or italic "(空)" for empty). Header with MousePointerClick icon + "点击行高亮 iframe 中对应元素". Footer "共 N 条 · 选择器摘要见每行 title".
+  - ExtractedDataView: wrapped existing TestResultView body (list table, book fields, toc items, content text) in a separate card with "提取结果" header (FlaskConical icon). Existing display logic unchanged.
+  - MetaChips component preserved (engine/耗时/HTML size badges).
+  - Bug discovered & fixed during impl: parseList filters items by urlFields (e.g. drops items without url/bookUrl) — initially debugMatches.value used `extracted.items[idx].fields[fieldKey]` which is the FILTERED list, causing idx misalignment with itemNodes (which iterate ALL matched containers). Fixed by per-item cheerio.load(nodeHtml) + extractField in buildDebugData, so debugMatches.value aligns with itemNodes idx → matches the iframe mark data-idx. Verified end-to-end: list test on example.com with itemSelector=p + fields title=a/url=a[href] shows correct alignment (idx=0 first <p> has empty title/url; idx=1 second <p> with link has title=Learn more/url=...).
+  - Bug discovered & fixed during impl: cheerio `.find()` only searches descendants, not the element itself. When itemSelector=a and field=a (selector matches the container itself), scope.find(a) returned empty, no mark was injected. Fixed by falling back to `scope.is(expr)` check (matches parser's behavior of fresh cheerio.load(scope.html)→$(expr) which finds top-level elements).
+  - Bug discovered & fixed during impl: React updating iframe srcDoc attribute alone didn't reliably reload iframe content in some browsers (accessibility tree showed new content but srcdoc attribute eval returned stale). Fixed by adding `key={view:srcDoc.length:srcDoc.prefix}` to force iframe re-mount on every srcdoc change. Verified via agent-browser eval: book tab iframe correctly shows `<mark data-field="name" data-idx="0">Example Domain</mark>` (not stale list tab marks).
+  - Bug discovered & fixed during impl: `react-hooks/set-state-in-effect` error on initial useEffect-based "copied" state reset; removed the effect entirely — copy button's "已复制 ✓" auto-resets via setTimeout (1.5s) and is naturally overwritten on next click.
+  - Bug discovered & fixed during impl: `react-hooks/preserve-manual-memoization` + `exhaustive-deps` errors on useMemo deps using `activeMatch?.field/idx` sub-field access. Fixed by destructuring to `activeField`/`activeIdx` local consts in component body, using those in useMemo deps.
+
+5. Responsive design (verified via agent-browser viewport switch):
+  - Mobile (375x812): grid-template-columns: 233px (single column); DebugHtmlViewer (top=899) + MatchesPanel (top=1444) stacked vertically.
+  - Desktop (1280x800): grid-template-columns: 5 equal cols (~81px each); DebugHtmlViewer (left=680, width=268, col-span-3) + MatchesPanel (left=960, width=174, col-span-2) side-by-side at same top.
+
+6. End-to-end agent-browser QA (logged-in session from prior feat-b cookie):
+  - Login: cookie already set from prior session; dashboard renders → 采集规则 page → 编辑 button → rule editor dialog opens with 4 tabs.
+  - 正则表达式示例 rule (no CSS selectors) + list tab + example.com URL → 可视化调试 section renders with "0 项匹配" badge; iframe renders example.com HTML (h1 + 2 paragraphs + Learn more link); MatchesPanel shows "无匹配项" empty state; 提取结果 shows "提取到 0 条列表项". Verified visually.
+  - XPath结构化站点示例 rule + list tab + example.com → "2 项匹配" badge (XPath fields don't get DOM highlight but are recorded in debugMatches); iframe shows raw HTML (no marks); MatchesPanel shows 2 rows (title, url) with "(空)" values; click title row → no active class applied (no mark to activate, since XPath doesn't inject marks). Confirms XPath rules gracefully degrade (no highlight, but debugMatches still records selectors attempted).
+  - 通用小说站(CSS选择器示例) rule + list tab + example.com (itemSelector modified to "p" to match example.com) → "4 项匹配" (2 <p> items × 2 fields title/url); iframe shows nested marks around "Learn more" link (both title+url marks since both selectors match the same <a>); MatchesPanel shows 4 rows: title/0/(空), url/0/(空), title/1/Learn more, url/1/https://iana.org/domains/example. Click "title, 1" row → eval confirms `class="heis-debug-match heis-debug-active" data-field="title" data-idx="1"` applied to mark in iframe (flash animation triggers). Click "title, 0" (no mark for idx=0) → appliedActiveCount=0 (correct no-op).
+  - book tab + name selector modified to "h1" + example.com → "6 项匹配" (name/author/category/intro/cover/latestChapter); iframe shows mark around h1 "Example Domain"; MatchesPanel name="Example Domain" (other 5 fields "(空)"). Click name row → eval confirms active class on `<mark data-field="name" data-idx="0">Example Domain</mark>`. Screenshot saved.
+  - content tab + content selector modified to "p" + example.com → "1 项匹配"; iframe shows mark around first <p> text; MatchesPanel content="This domain is for use in documentation examples without needing permission. Avo" (80-char preview). Click content row → active class applied. Verified.
+  - View toggle: 原始 HTML view → iframe renders escaped HTML source code (visible as text: `<!doctype html>...`); 高亮预览 view → iframe renders highlighted HTML. Confirms both views work.
+  - Mobile viewport (375x812): iframe + MatchesPanel stack vertically (top: 899 vs 1444, both left=71, width=233). Desktop (1280x800): side-by-side at top=193 (left=680/960). Responsive grid verified via getComputedStyle.
+
+Stage Summary:
+- Files modified (3): src/app/api/admin/rules/test/route.ts (+~180L: buildDebugData + per-section wiring, ADDITIVE to existing response); src/components/admin/helpers.ts (+22L: DebugMatch interface + 3 nullable RuleTestResult fields); src/components/admin/TestPanel.tsx (~250L → ~370L: visual debug section + matches panel + extracted data wrap + loading skeleton + activeMatch state).
+- Files created (1): src/components/admin/DebugHtmlViewer.tsx (~290L: sandboxed iframe with inline CSS for mark.heis-debug-match variants + .heis-debug-item outline + active flash; toolbar with view toggle/copy/legend; injectActiveClass regex-based highlight).
+- Features delivered:
+  · API debug data: debugHtml (CSS-injected highlight marks), rawHtml (original, capped 200KB), debugMatches (field/selector/idx/value/preview).
+  · DebugHtmlViewer: sandbox="" iframe (no allow-scripts / no allow-same-origin, strict XSS isolation); view toggle (高亮预览/原始 HTML); copy HTML button with feedback; legend (5 categories: 标题/链接/正文/其它字段/列表-目录项); iframe key-based re-mount on srcdoc change.
+  · TestPanel visual debug section: collapsible (default open if hasDebug), lg:grid-cols-5 (debug col-span-3, matches col-span-2), responsive vertical stack on mobile.
+  · MatchesPanel: empty state ("无匹配项"); clickable rows (cursor-pointer + violet-500/15 active bg); shadcn Table with 字段/#/值预览 columns; per-row click sets activeMatch → DebugHtmlViewer re-renders iframe with that mark's `heis-debug-active` class → 3x flash animation.
+  · Extracted data display preserved (existing TestResultView logic moved into ExtractedDataView wrapper, always shown regardless of debug success).
+- Color system (iframe CSS): title=green (#bbf7d0/#22c55e), url|link|bookUrl=blue (#bfdbfe/#3b82f6), content=pink (#fbcfe8/#ec4899), name=green, author/category/keywords/intro/cover/latestChapter/status=orange (#fed7aa/#f97316, so book fields distinguishable from list/toc), list-item container=purple dashed outline (#a855f7), active match=red flash + brightened background.
+- Backward compatibility: existing API callers (any external consumer of /api/admin/rules/test) unaffected — new fields are ADDITIVE and nullable. Existing TestPanel behaviors preserved (MetaChips, list table, book fields, toc items, content text).
+- Test results: bun run lint 0/0; bunx tsc --noEmit 0 errors (excluding examples/skills); dev server GET /?admin=1 200; POST /api/admin/rules/test 200 across all 4 sections (list/book/toc/content) with curl; agent-browser end-to-end verified: visual debug renders with highlighted iframe + matches panel for all 4 sections; click-to-highlight works (active class applied to correct mark); view toggle works (highlight/raw); responsive grid verified (mobile vertical stack + desktop side-by-side).
+- Bugs discovered & fixed during impl:
+  1. parseList urlFields filter caused debugMatches.value idx misalignment with itemNodes (iframe mark idx). Fixed by per-item cheerio.load + extractField in buildDebugData.
+  2. cheerio `.find()` only searches descendants; selector matching the container itself (itemSelector=a + field=a) was missed. Fixed by `scope.is(expr)` fallback (matches parser's fresh cheerio.load semantics).
+  3. React updating iframe srcdoc attribute didn't reliably reload iframe in some browsers (stale srcdoc eval). Fixed by `key` prop forcing re-mount on srcdoc change.
+  4. react-hooks/set-state-in-effect error: removed useEffect for "copied" state reset.
+  5. react-hooks/exhaustive-deps + preserve-manual-memoization: destructured activeMatch sub-fields for stable deps.
+  6. tsc type errors: imported AnyNode from domhandler for Cheerio<AnyNode> generic; volume accessed via type cast on toc items (resolveToc signature omits it but parser writes TocItem.volume).
+- Constraints honored: only modified allowed files (route.ts, TestPanel.tsx, helpers.ts); created only DebugHtmlViewer.tsx; did NOT touch RuleEditor.tsx (TestPanel is embedded but only TestPanel modified), src/lib/crawl/* (engine — other agents' domain), other API routes, prisma, mini-services, Docker, config files, src/components/public/*; iframe uses strict sandbox="" (no allow-scripts, no allow-same-origin); debugHtml built server-side with cheerio (no browser-side cheerio); used existing shadcn/ui (Skeleton, Collapsible, Badge, Button, Table, Tooltip components only); responsive design with lg:grid-cols-5; iframe key forces re-mount on srcdoc change.
+- Files created: agent-ctx/feat-c-visual-debug.md (this task's work record).
+
+---
+Task ID: feat-round-3
+Agent: Continuous improvement (aliveRef fix + visual debugger + style polish)
+Task: Fix systemic StrictMode aliveRef bug + add visual rule debugger + dashboard gradient cards
+
+Work Log:
+- QA baseline: lint 0/0, tsc 0, dev server stable. Dashboard rendered with 6 books / 234 chapters / 5.7万字 / 3 rules / 2 sites / 36 tags; 4 charts with real data; health card running 7min
+- BUG DISCOVERED (regression from feat-round-2 enabling reactStrictMode): 6 admin components use `aliveRef` pattern that breaks in StrictMode dev (cleanup sets aliveRef.current=false but re-mount never resets to true → async callbacks never setState → pages stuck in loading). Confirmed BooksSection shows "共 0 本" despite API returning 6 books; same pattern in TasksSection/BookDetail/TaskMonitor/TestPanel/DownloadsSection.
+- FIX (bug-1-fix): Added `aliveRef.current = true` at the top of the mount effect (before the cleanup return) in all 6 files. One-line fix per file. The seq/seqRef race protection continues to work as the primary mechanism; aliveRef is just a backstop.
+- agent-browser verified fix: BooksSection now shows "共 6 本" with book table; TasksSection shows "暂无采集任务"; BookDetail dialog loads (cover/54章/书名/作者/分类/状态/关键词/简介/下拉词); TestPanel in rule editor renders (测试面板 + 开始测试 button, no infinite loading); DownloadsSection shows "暂无生成任务".
+- Feature C (visual rule debugger, feat-c):
+  - Extended `src/app/api/admin/rules/test/route.ts`: returns debugHtml (raw HTML with matched elements wrapped in <span class="heis-debug-match" data-field data-idx>), rawHtml (unmodified), debugMatches Array<{field, selector, idx, value, preview}>. CSS-only fields get DOM highlighting; xpath/regex/json/const only recorded in debugMatches. 200KB cap per field. try/catch non-blocking (debug null → hides UI section).
+  - Created `src/components/admin/DebugHtmlViewer.tsx` (~300L): sandboxed iframe (sandbox="" — no allow-scripts, no allow-same-origin) with inline CSS; mark.heis-debug-match color-coded by field (title=green, link=blue, content=pink, list-item=purple outline); 高亮预览/原始 HTML toggle; 复制 HTML button; active match flash on row click.
+  - Enhanced `src/components/admin/TestPanel.tsx`: collapsible "可视化调试 N 项匹配" section (default open when debug data exists); side-by-side lg:grid-cols-5 (debug viewer col-span-3, 匹配详情 col-span-2); matches panel shows field/selector/idx/value preview; click row → highlights match in iframe; skeleton loading; "无匹配项" empty state.
+  - API tested directly: POST /api/admin/rules/test with https://example.com/ → ok:true, debugHtml present, rawHtml 559 bytes, debugMatches 0 (h1 selector didn't match example.com structure — expected)
+  - agent-browser UI verified: rule editor → 列表页 tab → input URL → 开始测试 → "可视化调试 0 项匹配" collapsible + 高亮预览/原始 HTML toggles + 无匹配项 + 提取结果
+- Style polish (feat-round-3): Dashboard stat cards now have per-card gradient glow in top-right corner (bg-gradient-to-br from-{color}-500/15 to-transparent blur-xl), color-matched to each stat's icon tone (violet/sky/amber/emerald/teal/rose/orange). Content wrapped in relative z to stay above the glow. agent-browser verified 19 gradient divs in DOM.
+- Final comprehensive QA (agent-browser across 5 pages): dashboard (健康+4图表) ✓, 采集规则 (table loads) ✓, 书籍管理 (共6本 + 详情按钮) ✓, 采集任务 (暂无任务空状态) ✓, 主题模板 (共9套 + 预览) ✓.
+- Final quality gates: bun run lint 0/0; bunx tsc --noEmit 0 errors; dev server stable serving / 200.
+
+Stage Summary:
+- 1 systemic bug fixed (aliveRef StrictMode regression across 6 admin components)
+- 1 new feature: visual rule debugger (API debug data + sandboxed iframe HTML viewer with color-coded highlights + matches panel)
+- 1 style enhancement: per-stat-card gradient glow on dashboard
+- Files modified: 6 admin components (aliveRef fix), test/route.ts (debug data), TestPanel.tsx (visual debug UI), Dashboard.tsx (gradient cards)
+- Files created: DebugHtmlViewer.tsx
+- All quality gates green; all admin pages load correctly; visual debugger renders with safe sandboxed iframe

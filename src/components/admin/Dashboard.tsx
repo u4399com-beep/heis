@@ -237,8 +237,9 @@ export function Dashboard({ onNavigate }: DashboardProps) {
     }
   }, [])
 
+  // tone=图标色 + glow=渐变光晕色(卡片右上角微光, feat-round-3 样式细节)
   const cards = [
-    { key: 'books', label: '书籍', value: stats?.books ?? 0, icon: BookOpen, tone: 'text-violet-400', section: 'books' },
+    { key: 'books', label: '书籍', value: stats?.books ?? 0, icon: BookOpen, tone: 'text-violet-400', glow: 'from-violet-500/15', section: 'books' },
     {
       key: 'chapters',
       label: '章节',
@@ -246,9 +247,10 @@ export function Dashboard({ onNavigate }: DashboardProps) {
       sub: `总字数 ${fmtWords(stats?.totalWords)}`,
       icon: FileText,
       tone: 'text-sky-400',
+      glow: 'from-sky-500/15',
       section: 'books',
     },
-    { key: 'rules', label: '采集规则', value: stats?.rules ?? 0, icon: ScrollText, tone: 'text-amber-400', section: 'rules' },
+    { key: 'rules', label: '采集规则', value: stats?.rules ?? 0, icon: ScrollText, tone: 'text-amber-400', glow: 'from-amber-500/15', section: 'rules' },
     {
       key: 'tasks',
       label: '采集任务',
@@ -256,11 +258,12 @@ export function Dashboard({ onNavigate }: DashboardProps) {
       sub: `运行中 ${stats?.runningTasks ?? 0}`,
       icon: ListTodo,
       tone: 'text-emerald-400',
+      glow: 'from-emerald-500/15',
       section: 'tasks',
     },
-    { key: 'sites', label: '站点', value: stats?.sites ?? 0, icon: Globe, tone: 'text-teal-400', section: 'sites' },
-    { key: 'tags', label: '下拉词', value: stats?.tags ?? 0, icon: Tag, tone: 'text-rose-400', section: 'books' },
-    { key: 'downloads', label: '下载成品', value: stats?.downloads ?? 0, icon: Download, tone: 'text-orange-400', section: 'downloads' },
+    { key: 'sites', label: '站点', value: stats?.sites ?? 0, icon: Globe, tone: 'text-teal-400', glow: 'from-teal-500/15', section: 'sites' },
+    { key: 'tags', label: '下拉词', value: stats?.tags ?? 0, icon: Tag, tone: 'text-rose-400', glow: 'from-rose-500/15', section: 'books' },
+    { key: 'downloads', label: '下载成品', value: stats?.downloads ?? 0, icon: Download, tone: 'text-orange-400', glow: 'from-orange-500/15', section: 'downloads' },
   ]
 
   // ---- 可视化数据准备 ----
@@ -353,8 +356,13 @@ export function Dashboard({ onNavigate }: DashboardProps) {
               }
             }}
           >
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between">
+            <CardContent className="relative overflow-hidden p-4">
+              {/* feat-round-3: 右上角色调光晕(渐变 radial, 与卡片图标色呼应) */}
+              <div
+                className={`pointer-events-none absolute -right-6 -top-6 h-20 w-20 rounded-full bg-gradient-to-br ${c.glow} to-transparent blur-xl`}
+                aria-hidden
+              />
+              <div className="relative flex items-center justify-between">
                 <span className="text-xs text-zinc-500">{c.label}</span>
                 <span
                   className={`inline-flex h-7 w-7 items-center justify-center rounded-md bg-zinc-950/60 ring-1 ring-zinc-800 ${c.tone}`}
@@ -363,10 +371,10 @@ export function Dashboard({ onNavigate }: DashboardProps) {
                   <c.icon className="h-3.5 w-3.5" />
                 </span>
               </div>
-              <div className="mt-2 text-2xl font-semibold tabular-nums text-zinc-100">
+              <div className="relative mt-2 text-2xl font-semibold tabular-nums text-zinc-100">
                 {loading ? <Loader2 className="h-5 w-5 animate-spin text-zinc-600" /> : fmtNum(c.value)}
               </div>
-              {c.sub && <div className="mt-0.5 text-[11px] text-zinc-500">{c.sub}</div>}
+              {c.sub && <div className="relative mt-0.5 text-[11px] text-zinc-500">{c.sub}</div>}
             </CardContent>
           </Card>
         ))}

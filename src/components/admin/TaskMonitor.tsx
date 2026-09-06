@@ -67,8 +67,9 @@ export function TaskMonitor({ taskId, onBack }: TaskMonitorProps) {
   const onBackRef = useRef(onBack)
   onBackRef.current = onBack
 
-  // 卸载后所有异步回调停止 setState
+  // 挂载/重挂载时复位 aliveRef(StrictMode dev 下会 卸载→重挂载, 旧实现只设 false 不复位 → 卡 loading)
   useEffect(() => {
+    aliveRef.current = true
     return () => {
       aliveRef.current = false
       if (tuningTimer.current) clearTimeout(tuningTimer.current)
