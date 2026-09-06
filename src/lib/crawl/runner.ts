@@ -1078,7 +1078,14 @@ export class TaskRunner {
             // zz-b: 当批随机间隔既作批次间 sleepGap 又作同 host 准入最小间隔 —— 同批多章
             // 请求同一 host 时按 minGapMs 排队节奏出门(在线调参改 intervalMin/Max 立即生效:
             // 本批 interval 变量已被上方 live 读取覆盖), 不再背靠背轰出去
-            const pageRes = await this.gateFetch(taskId, q.url, fetchCfg, { minGapMs: interval })
+            //
+            // feat-round-8: B1 — 请求抖动随机化(per-chapter ±20% 抖动 + 可选 jitterMs)
+            // 每章独立计算 minGapMs: base * (0.8 + random*0.4) ∈ [80%, 120%] base;
+            // 若 cfg.fetch.jitterMs > 0, 额外叠加 0~jitterMs 随机抖动。同批多章并行时
+            // 每章节奏独立不规则, 击败简单 rate-pattern 检测(固定 interval 配置下也变化)。
+            // 该抖动 IN ADDITION TO hostGate 的 minGapMs 闸门(hostGate 实际执行 jitteredMinGap)
+            const jitteredMinGap = jitteredInterval(interval, fetchCfg.jitterMs)
+            const pageRes = await this.gateFetch(taskId, q.url, fetchCfg, { minGapMs: jitteredMinGap })
             // 疑似被拦不入库: 保持 fetched=false, 下次增量自动重试; 合法JSON体是API数据非挑战页, 放行
             if (pageRes.blocked && parseJsonBody(pageRes.html) === undefined) throw new Error('章节页疑似被拦截(验证码/JS挑战)')
             const parsedC = await parseContent(q.url, pageRes.html, rule.content, contentFetchCfg)
@@ -1166,7 +1173,9 @@ export class TaskRunner {
         ;(cbErr as any).isCircuitBreak = true
         throw cbErr
       }
-      await sleepGap(interval, rt, myEpoch)
+      // feat-round-8: B1 — 批次间 sleepGap 同款 ±20% 抖动(与 per-chapter 抖动同口径),
+      // 防止"批次间固定间隔 + 章节间固定间隔"双固定模式被识别。fetchCfg.jitterMs 额外叠加。
+      await sleepGap(jitteredInterval(interval, fetchCfg.jitterMs), rt, myEpoch)
     }
     // 收尾保存: 原先仅靠 done===contentTotal 触发, contentTotal 因队列追加/失败章偏低时进度会停在旧值
     // jj-d: epoch 漂移(被新一轮 start 取代)时跳过 —— 进度权归新循环, 旧循环的过期对象不得回滚其刚写进度
@@ -1264,6 +1273,20 @@ async function sleepGap(ms: number, rt: TaskRuntime, myEpoch: number): Promise<v
     if (rt.stopped || rt.paused || rt.epoch !== myEpoch) return
     await sleep(Math.min(600, deadline - Date.now()))
   }
+}
+
+/**
+ * feat-round-8: B1 — 抖动间隔计算
+ *  - 基础抖动: base * (0.8 + random*0.4) ∈ [80%, 120%] base (per-request ±20%)
+ *  - 额外抖动: jitterMs > 0 时叠加 random * jitterMs (0~jitterMs)
+ * 两者叠加后作为 hostGate 的 minGapMs(闸门实际执行等待), 让请求节奏不规则,
+ * 击败简单 rate-pattern 检测。即使任务配置固定 interval(intervalMin==intervalMax),
+ * 实际出门间隔仍会变化。jitterMs 缺省 undefined 时仅 ±20% 抖动(零回归, 老 task 行为微变)。
+ */
+function jitteredInterval(base: number, jitterMs?: number): number {
+  const pct80to120 = base * (0.8 + Math.random() * 0.4)
+  const extra = typeof jitterMs === 'number' && jitterMs > 0 ? Math.random() * jitterMs : 0
+  return Math.max(0, Math.round(pct80to120 + extra))
 }
 function safeJson<T>(s: string | null | undefined): Partial<T> {
   try { return s ? JSON.parse(s) : {} } catch { return {} }

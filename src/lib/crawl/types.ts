@@ -166,6 +166,20 @@ export interface FetchConfig {
    *  fetch 流程(代理池/回环豁免/UA/Cookie 逻辑照常), token 预取 {url} 占位符自动拿到
    *  重写后 URL → 逐章 token 天然按镜像域重签; 镜像重试在 transport 层不经 hostGate 闸门 */
   mirrorDomains?: string
+  /** 代理轮换策略(feat-round-8: Feature B3):
+   *  - 'round-robin' (缺省): 按池顺序轮换, 分布均匀, 与既有 fetchHttpWithCurlFallback 的
+   *    Fisher-Yates 洗牌相近(实际仍按 useCount 取池中未失败条目顺序选);
+   *  - 'random': 每次从可用池中随机选一条(原 pickProxyFor 行为);
+   *  - 'least-used': 跟踪每条代理 useCount, 选使用次数最少的(平摊负载, 适合长任务);
+   *  失败冷却: 任一代理超时/连接错误时打 failed 标记 + 30s 冷却, 轮换时跳过冷却中的代理;
+   *  冷却过期后自动恢复参与轮换(无需手动重置)。运行时状态(useCount/failedUntil)
+   *  在 fetcher.ts 进程级 Map 持久, 不进规则 JSON(sanitize 白名单不透传) */
+  proxyRotationStrategy?: 'round-robin' | 'random' | 'least-used'
+  /** 请求抖动(feat-round-8: Feature B1): 0~N ms 的随机抖动叠加在 runner 批次间隔上,
+   *  让请求节奏更不规则, 防简单 rate-pattern 检测。runner 在每批 gateFetch 前 sleep
+   *  jitterMs(随机 0~jitterMs); 缺省 0=关闭(零回归); 引擎层不直接消费此字段,
+   *  由 runner 读 cfg.fetch.jitterMs 在批次循环前 sleep */
+  jitterMs?: number
   /** 采集传输模式(hh-c, 第三方抓取工具接入): 'native'(缺省)=既有引擎链路(bun
    *  fetch/curl/Obscura 全家桶, 零回归); 'scrapling-static'=经 scrapling-bridge 静态
    *  传输(curl_cffi TLS 指纹伪装+浏览器头组); 'scrapling-stealthy'=经 scrapling-bridge
@@ -525,6 +539,16 @@ export function sanitizeFetchConfig(v: unknown): Partial<FetchConfig> {
     }
     if (valid.length) out.mirrorDomains = valid.join(',')
   }
+  // feat-round-8: Feature B3 — 代理轮换策略白名单
+  if (
+    r.proxyRotationStrategy === 'round-robin' ||
+    r.proxyRotationStrategy === 'random' ||
+    r.proxyRotationStrategy === 'least-used'
+  ) out.proxyRotationStrategy = r.proxyRotationStrategy
+  // feat-round-8: Feature B1 — 请求抖动 0~30000ms 钳制(超过 30s 抖动已是离谱配置,
+  // 上限防止误填 60000 当分钟值跑; 钳到 30s 仍允许极端慢站手工配)
+  const jitterMs = safeNum(r.jitterMs, 0, 30_000)
+  if (jitterMs !== undefined) out.jitterMs = jitterMs
   // 采集传输模式(hh-c): 枚举白名单校验 —— 非法值丢弃(undefined = 回退 native 链零回归);
   // 'native' 显式接受(语义等价缺省)。scraplingBridgeUrl: safeStr 钳长 + http(s) URL 形态
   // 校验 + 单行化(防 CR/LF 注入), 非法形态整字段丢弃

@@ -124,7 +124,15 @@ function secFetchSite(referer: string, targetUrl: string): string {
  *  sec-ch-ua-arch / sec-ch-ua-bitness / sec-ch-ua-model / sec-ch-ua-wow64; 并按 UA 平台段
  *  推导自洽的 Accept-Language(zh-CN / en-US / ja), 防"Android UA 配桌面 Accept-Language"
  *  的反向破绽。所有派生值与 UA 字符串严格配套(移动 UA → mobile=?1 + model=Pixel/iPhone,
- *  桌面 UA → mobile=?0 + model=""), 任一头缺失或错配都会被 WAF 指纹库判为爬虫。 */
+ *  桌面 UA → mobile=?0 + model=""), 任一头缺失或错配都会被 WAF 指纹库判为爬虫。
+ *
+ *  feat-round-8: B2 — Sec-Fetch-User 链路语义
+ *  真实 Chrome 导航行为: 用户首次输入 URL/点击外链进入时 Sec-Fetch-User: ?1
+ *  (用户激活的导航); 同站后续跳转/翻页/重定向 Sec-Fetch-User: ?0 (无用户激活)。
+ *  原实现恒送 ?1, 多页采集时全 ?1 与真实浏览器指纹相悖。改为按 Referer 是否存在
+ *  判定: 无 Referer(首跳, secFetchSite=none) → ?1; 有 Referer(后续) → ?0。
+ *  Referer 由 buildHeaders 按链(chainReferer > origin)注入, fingerprintHeadersFor
+ *  入参 referer 即"生效 Referer", 据此判定首跳/后续语义自洽。 */
 export function fingerprintHeadersFor(ua: string, referer: string, targetUrl: string): Record<string, string> {
   const family = uaFamilyOf(ua)
   const headers: Record<string, string> = {
@@ -135,7 +143,8 @@ export function fingerprintHeadersFor(ua: string, referer: string, targetUrl: st
     headers['Sec-Fetch-Dest'] = 'document'
     headers['Sec-Fetch-Mode'] = 'navigate'
     headers['Sec-Fetch-Site'] = secFetchSite(referer, targetUrl)
-    headers['Sec-Fetch-User'] = '?1'
+    // feat-round-8: B2 — 首跳(无 Referer, 用户激活导航) ?1; 后续(有 Referer) ?0
+    headers['Sec-Fetch-User'] = referer ? '?0' : '?1'
   }
   if (family === 'chromium') {
     const cv = ua.match(CHROME_VER_RE)?.[1] || ''
@@ -886,17 +895,96 @@ export function isLoopbackTarget(url: string): boolean {
   }
 }
 
+// ---------- 代理池状态跟踪(feat-round-8: Feature B3) ----------
+/**
+ * 进程级代理池运行时状态: useCount(累计使用次数, least-used 策略+round-robin 近似)/
+ * failedUntil(失败冷却到期 epoch ms, 0=未失败)。状态不进规则 JSON(sanitize 白名单不
+ * 透传运行时字段), 进程级 Map 持久, dev 热更新经 globalThis 复用避免丢状态。
+ *
+ * 失败语义: 仅"网络层失败"(无 HTTP status — 超时/连接拒绝/DNS/TLS)触发冷却;
+ * HTTP 4xx/5xx 是源站行为, 代理本身可能健康(只是被源站识别为爬虫), 不冷却。
+ * 冷却时长 30s(与既有 hostGate 限流兜底同口径), 过期自动恢复参与轮换。
+ */
+interface ProxyState {
+  useCount: number
+  failedUntil: number
+}
+const PROXY_FAIL_COOLDOWN_MS = 30_000
+const globalForProxyState = globalThis as unknown as { __novelProxyState_v1?: Map<string, ProxyState> }
+const proxyState: Map<string, ProxyState> = globalForProxyState.__novelProxyState_v1 ?? new Map()
+globalForProxyState.__novelProxyState_v1 = proxyState
+
+/** 获取(或初始化)某代理的运行时状态 */
+function getProxyState(proxy: string): ProxyState {
+  let s = proxyState.get(proxy)
+  if (!s) { s = { useCount: 0, failedUntil: 0 }; proxyState.set(proxy, s) }
+  return s
+}
+
+/** 代理当前可用(未在冷却期内) */
+function isProxyAvailable(proxy: string): boolean {
+  const s = proxyState.get(proxy)
+  if (!s) return true
+  return s.failedUntil <= Date.now()
+}
+
+/** 标记代理已被使用(useCount++, 供 least-used/round-robin 策略平摊负载) */
+function markProxyUsed(proxy: string): void {
+  getProxyState(proxy).useCount++
+}
+
+/** 标记代理失败+30s 冷却(仅网络层失败调用, HTTP 状态错误不冷却) */
+function markProxyFailed(proxy: string, cooldownMs = PROXY_FAIL_COOLDOWN_MS): void {
+  getProxyState(proxy).failedUntil = Date.now() + cooldownMs
+}
+
+/** 判定错误是否属代理网络层失败(应冷却): HTTP status 存在=源站响应, 不冷却;
+ *  无 status=网络层(超时/连接拒绝/DNS/TLS/AbortError), 冷却 */
+function isProxyNetworkError(e: any): boolean {
+  if (typeof e?.status === 'number' && e.status > 0) return false
+  return true
+}
+
 /**
  * 代理选路(三链路单一收敛点, 返回本次请求使用的代理, ''=直连):
  * - 未配置 / 目标回环 → 直连
- * - 配置多条 → 均匀随机轮换(与 UA 池同款 random 模式, 分布可测试验证)
+ * - 全部代理冷却中 → 直连(降级, 与 fetchHttpWithCurlFallback 末尾降级语义一致)
+ * - 否则按 proxyRotationStrategy 选:
+ *   • undefined / 'random' (缺省行为): 池中随机一条(与 UA 池同款 random 模式)
+ *   • 'round-robin': 池中 useCount 最低的一条(近似顺序轮换, ties 按池顺序首条)
+ *   • 'least-used': 池中 useCount 最低的一条(ties 随机打破)
+ * 选中的代理 useCount++ (供后续轮换决策); 失败由调用方 markProxyFailed 触发冷却。
  * fetchHttp(bun fetch)/fetchViaCurl(curl)/renderWithBrowserRaw(per-context)一律经
  * 本函数取代理, 避免三处重复实现漂移
  */
 export function pickProxyFor(url: string, cfg: FetchConfig): string {
   const pool = parseProxyPool(cfg.proxyUrl)
   if (!pool.length || isLoopbackTarget(url)) return ''
-  return pool[Math.floor(Math.random() * pool.length)]
+  // feat-round-8: B3 — 过滤冷却中的代理, 全部冷却→直连降级
+  const available = pool.filter(isProxyAvailable)
+  if (available.length === 0) {
+    console.warn(`[fetcher] 全部 ${pool.length} 条代理均在冷却中, 直连: ${url.slice(0, 200)}`)
+    return ''
+  }
+  const strategy = cfg.proxyRotationStrategy
+  let pick: string
+  if (strategy === 'round-robin' || strategy === 'least-used') {
+    // useCount 升序(round-robin/least-used 都选最低; ties 处理不同)
+    let minCount = Infinity
+    const ties: string[] = []
+    for (const p of available) {
+      const u = getProxyState(p).useCount
+      if (u < minCount) { minCount = u; ties.length = 0; ties.push(p) }
+      else if (u === minCount) ties.push(p)
+    }
+    // round-robin: ties 按池顺序首条(稳定); least-used: ties 随机打破
+    pick = strategy === 'round-robin' ? ties[0] : ties[Math.floor(Math.random() * ties.length)]
+  } else {
+    // undefined / 'random' = 随机(原行为, 零回归)
+    pick = available[Math.floor(Math.random() * available.length)]
+  }
+  markProxyUsed(pick)
+  return pick
 }
 
 /** 日志用代理脱敏: 隐藏内联凭证(u:p@ → ***@) */
@@ -1559,30 +1647,58 @@ export async function fetchHttpForTest(url: string, cfg: FetchConfig, ua: string
 
 /**
  * HTTP 双传输封装 + 出口代理轮换(dd-a, 失败降级契约):
- * 配置了代理且目标非回环时, Fisher-Yates 洗牌后逐条尝试(每条 = bun fetch→curl 兜底
+ * 配置了代理且目标非回环时, 按策略排序后逐条尝试(每条 = bun fetch→curl 兜底
  * 单次尝试); 任一条成功即返回; 全部失败 → 降级直连重试一次(与 token 预取
  * "静默降级不硬断"同口径)。轮换/降级全程仅 warn 级日志, 不因代理失败中断采集;
  * 降级直连成功与否如实返回/抛出(错误保留 status/bodyHtml 供上层挑战链判定)。
  * token 预取(prefetchToken)/token 挑战求解(trySolveTokenChallenge)亦经本函数,
  * 代理/回环豁免语义自动贯穿; 目标回环或未配置代理时行为与原实现完全一致(零回归)
+ *
+ * feat-round-8: B3 — 代理轮换策略 + 失败冷却
+ *   - 过滤冷却中的代理(failedUntil > now), 全部冷却→直接降级直连
+ *   - 排序按 cfg.proxyRotationStrategy:
+ *     • undefined / 'random': Fisher-Yates 洗牌(原行为)
+ *     • 'round-robin' / 'least-used': 按 useCount 升序(最低先用, 平摊负载)
+ *   - 网络层失败(无 HTTP status — 超时/连接拒绝/DNS/TLS) → markProxyFailed(30s 冷却);
+ *     HTTP 4xx/5xx(有 status)是源站响应, 代理本身健康, 不冷却
  */
 export async function fetchHttpWithCurlFallback(url: string, cfg: FetchConfig, ua: string): Promise<string> {
   const pool = parseProxyPool(cfg.proxyUrl)
   if (!pool.length || isLoopbackTarget(url)) {
     return fetchHttpWithCurlSingle(url, cfg, ua, '')
   }
-  const order = pool.slice()
-  for (let i = order.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1))
-    ;[order[i], order[j]] = [order[j], order[i]]
+  // feat-round-8: B3 — 过滤冷却中的代理
+  const available = pool.filter(isProxyAvailable)
+  if (available.length === 0) {
+    console.warn(`[fetcher] 全部 ${pool.length} 条代理均在冷却中, 降级直连: ${url.slice(0, 200)}`)
+    return fetchHttpWithCurlSingle(url, cfg, ua, '')
+  }
+  // 排序: round-robin/least-used 按 useCount 升序; undefined/random Fisher-Yates 洗牌(原行为)
+  const strategy = cfg.proxyRotationStrategy
+  let order: string[]
+  if (strategy === 'round-robin' || strategy === 'least-used') {
+    order = available.slice().sort((a, b) => getProxyState(a).useCount - getProxyState(b).useCount)
+  } else {
+    order = available.slice()
+    for (let i = order.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      ;[order[i], order[j]] = [order[j], order[i]]
+    }
   }
   let lastErr: any = null
   for (const proxy of order) {
+    markProxyUsed(proxy)
     try {
       return await fetchHttpWithCurlSingle(url, cfg, ua, proxy)
     } catch (e: any) {
       lastErr = e
-      console.warn(`[fetcher] 代理请求失败, 轮换下一条(${redactProxy(proxy)}): ${String(e?.message || e).slice(0, 140)}`)
+      // feat-round-8: B3 — 网络层失败(无 HTTP status)标记代理冷却 30s; HTTP 状态错误不冷却
+      if (isProxyNetworkError(e)) {
+        markProxyFailed(proxy)
+        console.warn(`[fetcher] 代理网络层失败+30s冷却(${redactProxy(proxy)}): ${String(e?.message || e).slice(0, 140)}`)
+      } else {
+        console.warn(`[fetcher] 代理请求失败(源站响应, 不冷却)(${redactProxy(proxy)}): ${String(e?.message || e).slice(0, 140)}`)
+      }
     }
   }
   console.warn(`[fetcher] 全部 ${order.length} 条代理失败(末次: ${String(lastErr?.message || lastErr).slice(0, 120)}), 降级直连重试: ${url.slice(0, 200)}`)
