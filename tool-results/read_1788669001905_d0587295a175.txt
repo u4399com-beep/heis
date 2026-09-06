@@ -1,0 +1,1205 @@
+     1→==== src/app/api/admin/books/[id]/keywords/route.ts ====
+     2→// 书籍下拉关键词(搜索引擎suggest聚合) — 刷新/查看
+     3→import { readBody, ok, fail } from '@/lib/api'
+     4→import { db } from '@/lib/db'
+     5→import { fetchSuggestKeywords, mergeSuggestWords } from '@/lib/crawl/suggest'
+     6→import { withGuard, str, clampInt } from '../../../../_lib/http'
+     7→
+     8→export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+     9→  return withGuard(async () => {
+    10→    const { id } = await params
+    11→    const book = await db.book.findUnique({ where: { id }, select: { id: true } })
+    12→    if (!book) return fail('书籍不存在', 404)
+    13→    const tags = await db.bookTag.findMany({ where: { bookId: id }, orderBy: { hits: 'desc' } })
+    14→    return ok(tags)
+    15→  })
+    16→}
+    17→
+    18→// POST: 重新抓取搜索引擎下拉词
+    19→export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+    20→  return withGuard(async () => {
+    21→    const { id } = await params
+    22→    const body = await readBody(req)
+    23→    const book = await db.book.findUnique({ where: { id } })
+    24→    if (!book) return fail('书籍不存在', 404)
+    25→
+    26→    // 关键词: 自定义词优先, 回退书名; 去LIKE通配符无必要(非DB模糊查询)但需截断
+    27→---END---
+    28→==== src/app/api/admin/books/[id]/recrawl/route.ts ====
+    29→// 重采集: full(完全覆盖) / incremental(增量更新) — 以书籍为粒度创建临时任务
+    30→import { readBody, ok, fail } from '@/lib/api'
+    31→import { db } from '@/lib/db'
+    32→import { TaskRunner } from '@/lib/crawl/runner'
+    33→import { withGuard } from '../../../../_lib/http'
+    34→
+    35→export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+    36→  return withGuard(async () => {
+    37→    const { id } = await params
+    38→    const body = await readBody(req)
+    39→    const book = await db.book.findUnique({ where: { id } })
+    40→    if (!book) return fail('书籍不存在', 404)
+    41→    if (!book.sourceUrl) return fail('该书无来源地址, 无法重采集')
+    42→
+    43→    const recrawlMode = body?.mode === 'full' ? 'full' : 'incremental'
+    44→    // 找一个可用规则(优先来源规则)
+    45→    let ruleId = book.sourceRuleId
+    46→    if (!ruleId || !(await db.rule.findUnique({ where: { id: ruleId } }))) {
+    47→      const anyRule = await db.rule.findFirst()
+    48→      if (!anyRule) return fail('系统中无采集规则, 请先创建')
+    49→      ruleId = anyRule.id
+    50→    }
+    51→
+    52→    // FK 竞态兜底(tt-b, 与 POST /api/admin/tasks 同型): ruleId 校验通过后规则被并发删除
+    53→    // → create 落 P2003 原会裸 500 → 转 409 引导刷新重试
+    54→---END---
+    55→==== src/app/api/admin/books/[id]/route.ts ====
+    56→// 书籍详情/编辑/删除
+    57→import { db } from '@/lib/db'
+    58→import { ok, fail, readBody } from '@/lib/api'
+    59→import { deleteBookTxt } from '@/lib/crawl/storage'
+    60→import { withGuard, str, httpUrl } from '../../../_lib/http'
+    61→import { removeCoverIfOrphan } from '../_cover'
+    62→
+    63→const BOOK_STATUSES = ['unknown', 'ongoing', 'completed'] as const
+    64→
+    65→export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+    66→  return withGuard(async () => {
+    67→    const { id } = await params
+    68→    const book = await db.book.findUnique({
+    69→      where: { id },
+    70→      include: {
+    71→        category: true,
+    72→        tags: { orderBy: { hits: 'desc' } },
+    73→        _count: { select: { chapters: true } },
+    74→      },
+    75→    })
+    76→    if (!book) return fail('书籍不存在', 404)
+    77→    return ok(book)
+    78→  })
+    79→}
+    80→
+    81→---END---
+    82→==== src/app/api/admin/books/[id]/toc/route.ts ====
+    83→// 书籍目录(管理端)
+    84→import { db } from '@/lib/db'
+    85→import { ok, fail } from '@/lib/api'
+    86→import { withGuard, clampInt } from '../../../../_lib/http'
+    87→
+    88→export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+    89→  return withGuard(async () => {
+    90→    const { id } = await params
+    91→    const url = new URL(req.url)
+    92→    // 分页边界: page≥1 / size 1~200, 防 skip/take 负数导致 Prisma 500
+    93→    const page = clampInt(url.searchParams.get('page'), 1, 1, 1_000_000)
+    94→    const size = clampInt(url.searchParams.get('size'), 50, 1, 200)
+    95→
+    96→    const book = await db.book.findUnique({ where: { id }, select: { id: true } })
+    97→    if (!book) return fail('书籍不存在', 404)
+    98→
+    99→    const [total, chapters] = await Promise.all([
+   100→      db.chapter.count({ where: { bookId: id } }),
+   101→      db.chapter.findMany({
+   102→        where: { bookId: id },
+   103→        orderBy: { idx: 'asc' },
+   104→        skip: (page - 1) * size,
+   105→        take: size,
+   106→        select: { id: true, idx: true, title: true, url: true, storage: true, filePath: true, wordCount: true, fetched: true, volume: true, updatedAt: true },
+   107→      }),
+   108→---END---
+   109→==== src/app/api/admin/books/batch/route.ts ====
+   110→// 书籍批量操作: delete / category / status / recrawl / t2s(存量繁转简)
+   111→// 语义与单条路由严格对齐: 单删 404 → 跳过不计 affected; 状态/分类白名单校验一致
+   112→import { db } from '@/lib/db'
+   113→import { ok, fail, readBody } from '@/lib/api'
+   114→import { deleteBookTxt, readChapterTxt, DATA_ROOT, NOVELS_DIR } from '@/lib/crawl/storage'
+   115→// 繁转简导出由 cleaner 提供(采集链路同源); 若导出未就绪属并行在途, 收编后自然可用
+   116→import { t2sText, t2sHtml } from '@/lib/crawl/cleaner'
+   117→import { TaskRunner } from '@/lib/crawl/runner'
+   118→import { withGuard, safeJoin, errText } from '../../../_lib/http'
+   119→import { parseBatchBody, payloadString, skipItem, type BatchSkippedItem } from '../../../_lib/batch'
+   120→import { removeCoverIfOrphan } from '../_cover'
+   121→import { promises as fs } from 'fs'
+   122→
+   123→const BOOK_STATUSES = ['unknown', 'ongoing', 'completed'] as const
+   124→/** 单批重采上限: 逐本建任务并立即启动, 过大易压垮调度 */
+   125→const RECRAWL_MAX = 20
+   126→/** 单批繁转简上限: 分钟级同步长请求, 必须分批 */
+   127→const T2S_MAX_BOOKS = 50
+   128→/** 繁转简章节分批大小 + 批间让出事件循环 */
+   129→const T2S_CHAPTER_BATCH = 100
+   130→
+   131→export async function POST(req: Request) {
+   132→  return withGuard(async () => {
+   133→    const parsed = parseBatchBody(await readBody(req), ['delete', 'category', 'status', 'recrawl', 't2s'])
+   134→    if (!parsed.ok) return fail(parsed.message)
+   135→---END---
+   136→==== src/app/api/admin/books/route.ts ====
+   137→// 书籍管理(列表/手动新增)
+   138→import { db } from '@/lib/db'
+   139→import { ok, fail, readBody } from '@/lib/api'
+   140→import { withGuard, str, likeSafe, httpUrl, clampInt } from '../../_lib/http'
+   141→
+   142→const BOOK_STATUSES = ['unknown', 'ongoing', 'completed'] as const
+   143→
+   144→export async function GET(req: Request) {
+   145→  return withGuard(async () => {
+   146→    const url = new URL(req.url)
+   147→    const q = likeSafe(url.searchParams.get('q'))
+   148→    const categoryId = str(url.searchParams.get('categoryId'), 64).trim()
+   149→    const status = str(url.searchParams.get('status'), 20).trim()
+   150→    // 分页边界: page≥1 / size 1~50, 防 skip/take 负数导致 Prisma 500
+   151→    const page = clampInt(url.searchParams.get('page'), 1, 1, 1_000_000)
+   152→    const size = clampInt(url.searchParams.get('size'), 20, 1, 50)
+   153→
+   154→    const where: Record<string, unknown> = {}
+   155→    if (q) where.OR = [{ name: { contains: q } }, { author: { contains: q } }]
+   156→    if (categoryId) where.categoryId = categoryId
+   157→    // 状态白名单: 非法值忽略(不报错, 保持列表可用), 防任意字符串进查询
+   158→    if (status && (BOOK_STATUSES as readonly string[]).includes(status)) where.status = status
+   159→
+   160→    const [total, books] = await Promise.all([
+   161→      db.book.count({ where }),
+   162→---END---
+   163→==== src/app/api/admin/categories/[id]/route.ts ====
+   164→// 分类更新/删除
+   165→import { db } from '@/lib/db'
+   166→import { ok, fail, readBody } from '@/lib/api'
+   167→import { withGuard, str, clampInt } from '../../../_lib/http'
+   168→
+   169→export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
+   170→  return withGuard(async () => {
+   171→    const { id } = await params
+   172→    const body = await readBody(req)
+   173→    const exist = await db.category.findUnique({ where: { id } })
+   174→    if (!exist) return fail('分类不存在', 404)
+   175→
+   176→    const data: Record<string, unknown> = {}
+   177→    if (body?.name !== undefined) {
+   178→      const name = str(body.name, 50).trim()
+   179→      if (!name) return fail('分类名不能为空')
+   180→      data.name = name
+   181→    }
+   182→    if (body?.sortOrder !== undefined) data.sortOrder = clampInt(body.sortOrder, 0, 0, 1_000_000)
+   183→    try {
+   184→      const cat = await db.category.update({ where: { id }, data })
+   185→      return ok(cat)
+   186→    } catch (e: any) {
+   187→      // name 有唯一约束: 改成已存在的分类名原会裸 500(withGuard 吞成"服务器内部错误"), 转友好 400
+   188→      if (e?.code === 'P2002') return fail('分类名已存在, 请换一个名称')
+   189→---END---
+   190→==== src/app/api/admin/categories/batch/route.ts ====
+   191→// 分类批量操作: delete(force 事务"先摘书再删类") / order(按勾选顺序重排)
+   192→import { db } from '@/lib/db'
+   193→import { ok, fail, readBody } from '@/lib/api'
+   194→import { withGuard } from '../../../_lib/http'
+   195→import { parseBatchBody, skipItem, type BatchSkippedItem } from '../../../_lib/batch'
+   196→
+   197→export async function POST(req: Request) {
+   198→  return withGuard(async () => {
+   199→    const parsed = parseBatchBody(await readBody(req), ['delete', 'order'])
+   200→    if (!parsed.ok) return fail(parsed.message)
+   201→    const { action, ids, payload } = parsed
+   202→    const skipped: BatchSkippedItem[] = []
+   203→
+   204→    switch (action) {
+   205→      // ---------------- 批量删除: force=false 有书 409 附各分类本书数; force=true 事务摘书+删类 ----------------
+   206→      case 'delete': {
+   207→        const rows = await db.category.findMany({ where: { id: { in: ids } }, select: { id: true, name: true } })
+   208→        const byId = new Map(rows.map((c) => [c.id, c]))
+   209→        for (const id of ids) {
+   210→          if (!byId.has(id)) skipped.push(skipItem('分类不存在(可能已删除)'))
+   211→        }
+   212→        if (rows.length === 0) return ok({ affected: 0, skipped })
+   213→
+   214→        // 预检各分类在册书籍数(与单删"请先移除"语义对齐, 批量提供 force 通道)
+   215→        const counts = await db.book.groupBy({
+   216→---END---
+   217→==== src/app/api/admin/categories/route.ts ====
+   218→// 分类管理
+   219→import { db } from '@/lib/db'
+   220→import { ok, fail, readBody } from '@/lib/api'
+   221→import { withGuard, str, clampInt } from '../../_lib/http'
+   222→
+   223→export async function GET() {
+   224→  return withGuard(async () => {
+   225→    const cats = await db.category.findMany({
+   226→      orderBy: { sortOrder: 'asc' },
+   227→      include: { _count: { select: { books: true } } },
+   228→    })
+   229→    return ok(cats)
+   230→  })
+   231→}
+   232→
+   233→export async function POST(req: Request) {
+   234→  return withGuard(async () => {
+   235→    const body = await readBody(req)
+   236→    const name = str(body?.name, 50).trim()
+   237→    if (!name) return fail('分类名必填')
+   238→    const max = await db.category.aggregate({ _max: { sortOrder: true } })
+   239→    const cat = await db.category.upsert({
+   240→      where: { name },
+   241→      create: { name, sortOrder: clampInt(body?.sortOrder, (max._max.sortOrder || 0) + 1, 0, 1_000_000) },
+   242→      update: {},
+   243→---END---
+   244→==== src/app/api/admin/chapters/[id]/route.ts ====
+   245→// 章节管理(查看/编辑正文/删除)
+   246→import { db } from '@/lib/db'
+   247→import { ok, fail, readBody } from '@/lib/api'
+   248→import { readChapterTxt, DATA_ROOT, NOVELS_DIR } from '@/lib/crawl/storage'
+   249→import { promises as fs } from 'fs'
+   250→import { withGuard, str, safeJoin } from '../../../_lib/http'
+   251→
+   252→export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+   253→  return withGuard(async () => {
+   254→    const { id } = await params
+   255→    const ch = await db.chapter.findUnique({ where: { id } })
+   256→    if (!ch) return fail('章节不存在', 404)
+   257→    let content = ch.content || ''
+   258→    if (ch.storage === 'txt' && ch.filePath) {
+   259→      content = (await readChapterTxt(ch.filePath)) || ''
+   260→      // 去掉首行标题
+   261→      content = content.split('\n').slice(1).join('\n')
+   262→    }
+   263→    return ok({ ...ch, content })
+   264→  })
+   265→}
+   266→
+   267→export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
+   268→  return withGuard(async () => {
+   269→    const { id } = await params
+   270→---END---
+   271→==== src/app/api/admin/chapters/batch/route.ts ====
+   272→// 章节批量操作: delete / markUnfetched
+   273→// 语义与单条 DELETE 对齐: txt 章节文件删除前必须 safeJoin(DATA_ROOT) 边界校验且位于 novels/ 内
+   274→import { db } from '@/lib/db'
+   275→import { ok, fail, readBody } from '@/lib/api'
+   276→import { DATA_ROOT, NOVELS_DIR } from '@/lib/crawl/storage'
+   277→import { withGuard, safeJoin, errText } from '../../../_lib/http'
+   278→import { parseBatchBody, skipItem, type BatchSkippedItem } from '../../../_lib/batch'
+   279→import { promises as fs } from 'fs'
+   280→
+   281→export async function POST(req: Request) {
+   282→  return withGuard(async () => {
+   283→    const parsed = parseBatchBody(await readBody(req), ['delete', 'markUnfetched'])
+   284→    if (!parsed.ok) return fail(parsed.message)
+   285→    const { action, ids } = parsed
+   286→    const skipped: BatchSkippedItem[] = []
+   287→
+   288→    const rows = await db.chapter.findMany({
+   289→      where: { id: { in: ids } },
+   290→      select: { id: true, storage: true, filePath: true },
+   291→    })
+   292→    const found = new Set(rows.map((r) => r.id))
+   293→    for (const id of ids) {
+   294→      if (!found.has(id)) skipped.push(skipItem('章节不存在(可能已删除)'))
+   295→    }
+   296→
+   297→---END---
+   298→==== src/app/api/admin/downloads/[id]/route.ts ====
+   299→// 下载任务: 详情/删除
+   300→import { db } from '@/lib/db'
+   301→import { ok, fail } from '@/lib/api'
+   302→import { promises as fs } from 'fs'
+   303→import { DOWNLOADS_DIR, DATA_ROOT } from '@/lib/crawl/storage'
+   304→import { withGuard, safeJoin } from '../../../_lib/http'
+   305→
+   306→export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+   307→  return withGuard(async () => {
+   308→    const { id } = await params
+   309→    const job = await db.downloadJob.findUnique({ where: { id }, include: { book: { select: { name: true } } } })
+   310→    if (!job) return fail('任务不存在', 404)
+   311→    return ok(job)
+   312→  })
+   313→}
+   314→
+   315→export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+   316→  return withGuard(async () => {
+   317→    const { id } = await params
+   318→    const job = await db.downloadJob.findUnique({ where: { id } })
+   319→    if (!job) return fail('任务不存在', 404)
+   320→    // filePath 为相对 data/ 的路径, 删除前必须做目录边界校验(防路径穿越)
+   321→    if (job.filePath) {
+   322→      const full = safeJoin(DATA_ROOT, job.filePath)
+   323→      // 成品文件必须位于 downloads/ 目录内
+   324→---END---
+   325→==== src/app/api/admin/downloads/batch/route.ts ====
+   326→// 下载任务批量操作: delete(逐条 safeJoin+DOWNLOADS_DIR 限定后删成品文件) / retry / regenerate
+   327→// retry/regenerate 委托既有 POST handler(../route.ts): 完整复用其入参消毒/书籍校验/任务创建/异步生成路径
+   328→import { db } from '@/lib/db'
+   329→import { ok, fail, readBody } from '@/lib/api'
+   330→import { DATA_ROOT, DOWNLOADS_DIR } from '@/lib/crawl/storage'
+   331→import { withGuard, safeJoin, errText } from '../../../_lib/http'
+   332→import { parseBatchBody, skipItem, type BatchSkippedItem } from '../../../_lib/batch'
+   333→import { promises as fs } from 'fs'
+   334→import { POST as createDownloadJob } from '../route'
+   335→
+   336→/** 成品文件清理(与单删完全同语义: 边界校验通过才删, 尽力而为) */
+   337→async function removeArtifact(filePath: string | null | undefined) {
+   338→  if (!filePath) return
+   339→  const full = safeJoin(DATA_ROOT, filePath)
+   340→  if (full && full.startsWith(DOWNLOADS_DIR)) {
+   341→    try {
+   342→      await fs.rm(full)
+   343→    } catch {
+   344→      /* ignore */
+   345→    }
+   346→  }
+   347→}
+   348→
+   349→export async function POST(req: Request) {
+   350→  return withGuard(async () => {
+   351→---END---
+   352→==== src/app/api/admin/downloads/route.ts ====
+   353→// TXT下载任务 — 创建/列表
+   354→import { db } from '@/lib/db'
+   355→import { ok, fail, readBody } from '@/lib/api'
+   356→import { generateBookTxt, type DownloadOptions } from '@/lib/crawl/downloader'
+   357→import { withGuard, str, httpUrl, isPlainObject, clampInt } from '../../_lib/http'
+   358→
+   359→const OBFUSCATE_MODES = ['zero-width', 'homoglyph', 'punctuation', 'mixed'] as const
+   360→
+   361→/** 并发生成上限(gg-a): 全量生成是分钟级重活(逐章读盘+混淆), 无上限时刷 POST 可同时
+   362→ *  起任意多个生成作业互相挤占 IO/内存。达到上限后新请求返回 429。
+   363→ *  batch 的 retry/regenerate 委托本 POST, 自动同享该上限 */
+   364→const MAX_CONCURRENT_DOWNLOAD_JOBS = 3
+   365→/** 本进程在途生成计数(gg-a): 与 DB count 取 max —— 检查后、建行前无 await(同步占位),
+   366→ *  关闭"并发请求同读 count=0 全部放行"的 TOCTOU 窗口; 进程重启归零由 DB count 兜底 */
+   367→let inFlightGenerations = 0
+   368→/** 陈旧在途任务判定: 生成循环与 POST 同进程, 服务重启会遗留永久 pending 的孤儿任务 ——
+   369→ *  不自愈会把并发额度永久占满。1h 未见终态(正常 41 章书生成秒级/万章书分钟级)视为孤儿,
+   370→ *  POST 入口顺带清扫置 error */
+   371→const STALE_DOWNLOAD_JOB_MS = 60 * 60 * 1000
+   372→
+   373→export async function GET() {
+   374→  return withGuard(async () => {
+   375→    const jobs = await db.downloadJob.findMany({
+   376→      orderBy: { createdAt: 'desc' },
+   377→      include: { book: { select: { name: true, author: true } } },
+   378→---END---
+   379→==== src/app/api/admin/links/batch/route.ts ====
+   380→// 友链批量操作 — delete / enable / disable
+   381→// body: { ids: string[], action: 'delete' | 'enable' | 'disable' }
+   382→import { db } from '@/lib/db'
+   383→import { ok, fail, readBody } from '@/lib/api'
+   384→import { withGuard, isPlainObject } from '../../../_lib/http'
+   385→import { invalidateLinksCache } from '@/lib/links'
+   386→
+   387→/** ids 消毒: 仅收字符串数组, 去重/去空/限长, 上限 500 */
+   388→function sanitizeIds(raw: unknown): string[] {
+   389→  if (!Array.isArray(raw)) return []
+   390→  const set = new Set<string>()
+   391→  for (const v of raw) {
+   392→    if (typeof v !== 'string') continue
+   393→    const id = v.trim().slice(0, 64)
+   394→    if (id) set.add(id)
+   395→    if (set.size >= 500) break
+   396→  }
+   397→  return [...set]
+   398→}
+   399→
+   400→const ACTIONS = ['delete', 'enable', 'disable'] as const
+   401→type Action = (typeof ACTIONS)[number]
+   402→
+   403→export async function POST(req: Request) {
+   404→  return withGuard(async () => {
+   405→---END---
+   406→==== src/app/api/admin/links/route.ts ====
+   407→// 友情链接 CRUD — name 1~60 / url http(s) 白名单 / logo http(s) 或站内路径 / sortOrder 钳制
+   408→// 变更后失效读侧缓存(links.ts), 页脚立即拿到新数据
+   409→import { db } from '@/lib/db'
+   410→import { ok, fail, readBody } from '@/lib/api'
+   411→import { withGuard, str, clampInt, httpUrl } from '../../_lib/http'
+   412→import { invalidateLinksCache } from '@/lib/links'
+   413→
+   414→const SORT_MAX = 99_999
+   415→
+   416→/**
+   417→ * 友链地址消毒: 仅接受 http/https。
+   418→ * - 无 scheme:// → 自动补 https:// (输入 "example.com" → "https://example.com")
+   419→ * - 已带 scheme:// → 原样校验, 白名单外(scheme: ///javascript: 等)一律拒
+   420→ *   ⚠️ scheme 检测必须先行: 否则 "ftp://bad.example.com" 会被拼成
+   421→ *   "https://ftp://bad.example.com" — URL 解析为合法 https 且 host=ftp, 绕过 ftp 拒绝。
+   422→ */
+   423→function normalizeLinkUrl(raw: unknown): string | null {
+   424→  const s = str(raw, 2000).trim()
+   425→  if (!s) return null
+   426→  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(s) ? s : `https://${s}`
+   427→  return httpUrl(candidate, 2000)
+   428→}
+   429→
+   430→/**
+   431→ * logo 消毒: 空串 | http(s) 外链 | 站内 / 开头路径。
+   432→---END---
+   433→==== src/app/api/admin/rules/[id]/calibrate/apply/route.ts ====
+   434→// ============================================================
+   435→// calibrate/apply — 校准推荐参数一键写回规则 (ab-c)
+   436→//
+   437→// 规格 : POST { recommended?: { hostGateLimit?: number } } (body 可空)
+   438→//        → hostGateLimit 解析顺序:
+   439→//          ① body.recommended.hostGateLimit (zz-a 契约形态, zz-c UI 主路径)
+   440→//          ② body.hostGateLimit (UI 平铺兼容形态)
+   441→//          ③ Setting 键 calibration:<ruleId> 落库的校准结果
+   442→//            (value 形状见 ../route.ts: { result, profile, finishedAt },
+   443→//             取 result.recommended.hostGateLimit)
+   444→//        → 钳制 1~8 (与校准引擎 HOST_GATE_CLAMP_MAX 同口径) 后,
+   445→//          合并进规则 config.fetch.hostGateLimit 并落库。
+   446→//
+   447→// 合并方式: 读规则原始 config 字符串 JSON.parse 后原样改写 —— 刻意【不经】
+   448→// parseRuleConfig(其 sanitizeFetchConfig 白名单会剥掉未知键), 除 fetch.hostGateLimit
+   449→// 外其余一切键(含未知扩展键)逐字保留。
+   450→//
+   451→// 响应 : { ok:true, data:{ applied:{hostGateLimit}, recommended, profile, message } }
+   452→//        (对齐项目 {ok,data} 信封, 与 [id]/route.ts 的 ok() 助手一致;
+   453→//         recommended=本次取值来源的完整推荐对象(无则只含 hostGateLimit),
+   454→//         profile=校准落库时的档位(无来源则 null))
+   455→// 错误面: 规则不存在 → 404;
+   456→//        body 无值且无校准 Setting → 400「该规则暂无校准结果」;
+   457→//        规则 config 非法(JSON 解析失败/非对象) → 400;
+   458→//        写库异常 → withGuard 兜底 500 信封。
+   459→---END---
+   460→==== src/app/api/admin/rules/[id]/calibrate/route.ts ====
+   461→// 采集规则极限速率/并发校准 — 单规则任务端点 (zz-a)
+   462→//
+   463→// 规格 : POST   { profile?, siteBase? } → 校验规则存在后后台启动校准(不 await),
+   464→//        202 { jobId: ruleId, status: 'running' }; 同规则重复启动 409;
+   465→//        GET    → { status, result?, startedAt, elapsedMs } / 无 job 时 { status:'idle' }
+   466→//        (附 last=最近一次持久化结果, 取自 Setting calibration:<ruleId>);
+   467→//        DELETE → 置 abortFlag 中止后台校准 { ok: true }。
+   468→// 完成(done)时结果持久化: Setting key=`calibration:${ruleId}`
+   469→//        value=JSON.stringify({ result, profile, finishedAt })。
+   470→// job 状态存 globalThis 单例 Map(防 dev 热重载丢实例, 同 hostgate.ts 模式)。
+   471→// 探测引擎 src/lib/crawl/calibrate.ts 自持节奏(不依赖 hostgate); 模拟源站
+   472→// scripts/ratelimit-site.ts(默认 http://127.0.0.1:3040, standard 档)。
+   473→export const dynamic = 'force-dynamic'
+   474→
+   475→import { NextResponse } from 'next/server'
+   476→import { db } from '@/lib/db'
+   477→import { fail, readBody } from '@/lib/api'
+   478→import { withGuard, httpUrl } from '../../../../_lib/http'
+   479→import { parseRuleConfig } from '@/lib/crawl/types'
+   480→import { calibrateRule, type CalibrationResult, type CalibrationTrace, type CalibrateProfile } from '@/lib/crawl/calibrate'
+   481→
+   482→const PROFILES: CalibrateProfile[] = ['lenient', 'standard', 'strict']
+   483→const DEFAULT_SITE_BASE = 'http://127.0.0.1:3040'
+   484→
+   485→interface CalibJob {
+   486→---END---
+   487→==== src/app/api/admin/rules/[id]/route.ts ====
+   488→// 规则详情/更新/删除
+   489→import { db } from '@/lib/db'
+   490→import { ok, fail, readBody } from '@/lib/api'
+   491→import { collectRegexIssues } from '@/lib/crawl/types'
+   492→import { withGuard, str, isPlainObject } from '../../../_lib/http'
+   493→
+   494→/** 规则配置序列化: 对象→JSON字符串; 字符串→原样; 均限制大小 */
+   495→function configToString(v: unknown): string | null {
+   496→  if (isPlainObject(v)) {
+   497→    const s = JSON.stringify(v)
+   498→    return s.length > 200_000 ? null : s
+   499→  }
+   500→  if (typeof v === 'string') return v.length > 200_000 ? null : v
+   501→  return null
+   502→}
+   503→
+   504→/** regex 入口防线(gg-a, 与 POST /api/admin/rules 同款口径): 非法/灾难型嵌套量词正则 400 拒绝 */
+   505→function regexGate(v: unknown): string | null {
+   506→  const issues = collectRegexIssues(v)
+   507→  if (!issues.length) return null
+   508→  return `规则配置存在非法/危险正则, 已拒绝保存: ${issues.map((i) => `${i.field} ${i.reason}`).join('; ')}`
+   509→}
+   510→
+   511→export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+   512→  return withGuard(async () => {
+   513→---END---
+   514→==== src/app/api/admin/rules/batch/route.ts ====
+   515→// 规则批量操作: delete(整批原子 — 任一规则被任务引用则 409 整批拒绝)
+   516→import { db } from '@/lib/db'
+   517→import { ok, fail, readBody } from '@/lib/api'
+   518→import { withGuard } from '../../../_lib/http'
+   519→import { parseBatchBody } from '../../../_lib/batch'
+   520→
+   521→export async function POST(req: Request) {
+   522→  return withGuard(async () => {
+   523→    const parsed = parseBatchBody(await readBody(req), ['delete'])
+   524→    if (!parsed.ok) return fail(parsed.message)
+   525→    const { ids } = parsed
+   526→
+   527→    // 整批预检: 语义与单删一致(被任务引用的规则不可删), 但批量上升为"整批原子" —
+   528→    // 任一规则存在引用即拒绝整批, 不做部分删除(避免一半删除一半报错的中间态)
+   529→    const used = await db.task.groupBy({
+   530→      by: ['ruleId'],
+   531→      where: { ruleId: { in: ids } },
+   532→      _count: { ruleId: true },
+   533→    })
+   534→    if (used.length > 0) {
+   535→      const rules = await db.rule.findMany({
+   536→        where: { id: { in: used.map((u) => u.ruleId) } },
+   537→        select: { id: true, name: true },
+   538→      })
+   539→      const conflicts = used.map((u) => ({
+   540→---END---
+   541→==== src/app/api/admin/rules/calibrate-all/route.ts ====
+   542→// 采集规则极限速率/并发校准 — 全量批量端点 (zz-a)
+   543→//
+   544→// 规格 : POST { profile?, siteBase? } → 对全部 enabled 规则按序【串行】校准,
+   545→//        共用一个聚合 job(jobId='__all__'), 202 返回 { jobId, status:'running',
+   546→//        currentIndex, total }; 完成/中止时逐条落 Setting(calibration:<ruleId>)。
+   547→//        0 条 enabled 规则 → 200 明确提示(不报错不启动)。
+   548→//        GET  → 聚合形态 { status, currentIndex, total, results?, startedAt, elapsedMs }
+   549→//        (results: Record<ruleId, CalibrationResult>, 含已完成的部分结果)。
+   550→//        DELETE → 置 abortFlag 中止(已完成规则的结果保留)。
+   551→// 路由优先级: 静态段 calibrate-all 优先于动态段 [id], 两者并存互不影响。
+   552→// 聚合 job 与单规则 job 共用 globalThis 单例 Map(键 '__all__' vs ruleId)。
+   553→export const dynamic = 'force-dynamic'
+   554→
+   555→import { NextResponse } from 'next/server'
+   556→import { db } from '@/lib/db'
+   557→import { readBody } from '@/lib/api'
+   558→import { withGuard, httpUrl } from '../../../_lib/http'
+   559→import { parseRuleConfig } from '@/lib/crawl/types'
+   560→import { calibrateRule, type CalibrationResult, type CalibrationTrace, type CalibrateProfile } from '@/lib/crawl/calibrate'
+   561→
+   562→const PROFILES: CalibrateProfile[] = ['lenient', 'standard', 'strict']
+   563→const DEFAULT_SITE_BASE = 'http://127.0.0.1:3040'
+   564→const BATCH_JOB_ID = '__all__'
+   565→
+   566→interface BatchJob {
+   567→---END---
+   568→==== src/app/api/admin/rules/route.ts ====
+   569→// 采集规则 CRUD
+   570→import { db } from '@/lib/db'
+   571→import { ok, fail, readBody } from '@/lib/api'
+   572→import { defaultRuleConfig, collectRegexIssues } from '@/lib/crawl/types'
+   573→import { withGuard, str, isPlainObject } from '../../_lib/http'
+   574→
+   575→/** 规则配置序列化: 对象→JSON字符串; 字符串→原样; 均限制大小防DB膨胀 */
+   576→function configToString(v: unknown): string | null {
+   577→  if (isPlainObject(v)) {
+   578→    const s = JSON.stringify(v)
+   579→    return s.length > 200_000 ? null : s
+   580→  }
+   581→  if (typeof v === 'string') return v.length > 200_000 ? null : v
+   582→  return null
+   583→}
+   584→
+   585→/** regex 入口防线(gg-a): 保存前全量审查配置中的正则四入口
+   586→ *  (四段 regex 型 expression / 全部 replaceFrom / fetch.tokenPattern regex: 形态 / clean.adPatterns),
+   587→ *  非法正则(引擎 try/catch 静默忽略 = 静默失效面)与灾难型嵌套量词(可挂住事件循环)
+   588→ *  一律 400 拒绝并指明字段与原因; 零误伤前提已验证(存量 27 规则 251 个正则面字段全数通过) */
+   589→function regexGate(v: unknown): string | null {
+   590→  const issues = collectRegexIssues(v)
+   591→  if (!issues.length) return null
+   592→  return `规则配置存在非法/危险正则, 已拒绝保存: ${issues.map((i) => `${i.field} ${i.reason}`).join('; ')}`
+   593→}
+   594→---END---
+   595→==== src/app/api/admin/rules/test/route.ts ====
+   596→// 规则四段测试路由(列表页/书籍页/目录页/章节内容页) — 后台规则编辑器内嵌测试面板的引擎入口
+   597→// 规格(与 worklog n1/n3/主控(cc)/cc-d2 交付口径一致):
+   598→//   入参 { section,url,rule,fetch,clean,engine,limit } → 引擎抓取+解析 → 200 信封;
+   599→//   空 body/非法 section/非法 URL → 400; 抓取/解析失败 → 502 信封;
+   600→//   90s 硬护栏(Promise 定局 clearTimeout, 不挂定时器); tocLink 流程与 runner.extractToc 同序
+   601→//   (tocLink → 书籍页本页 → 目录链接嗅探回退, tocLink 解析 0 章回退书籍页重解析);
+   602→//   列表段 URL 占位符展开与 runner 同口径({page}=页号, {offset:N}=(页号-1)*N, 测试固定第 1 页,
+   603→//   兼容 httpUrl 规范化产生的 %7B%7D 编码形态); 深消毒入参(sanitize* 白名单, 与 types.ts 单源);
+   604→//   cleanedText/cleanedHtml 按码点截断 1500(emoji 代理对不斩半)
+   605→import { ok, fail, readBody } from '@/lib/api'
+   606→import { withGuard, httpUrl, clampInt, isPlainObject } from '../../../_lib/http'
+   607→import {
+   608→  sanitizeFetchConfig,
+   609→  sanitizePageRule,
+   610→  sanitizeCleanConfig,
+   611→  type CleanConfig,
+   612→  type FetchConfig,
+   613→  type PageRule,
+   614→} from '@/lib/crawl/types'
+   615→import { fetchPage } from '@/lib/crawl/fetcher'
+   616→import {
+   617→  parseList,
+   618→  parseBook,
+   619→  parseToc,
+   620→  parseContent,
+   621→---END---
+   622→==== src/app/api/admin/settings/route.ts ====
+   623→// 全局设置
+   624→import { db } from '@/lib/db'
+   625→import { ok, fail, readBody } from '@/lib/api'
+   626→import { withGuard, isPlainObject } from '../../_lib/http'
+   627→import { WHEEL_SETTING_KEY, invalidateLinksCache } from '@/lib/links'
+   628→
+   629→/** key 白名单: 字母数字下划线点横线, 1~64位 */
+   630→const KEY_RE = /^[A-Za-z0-9_.-]{1,64}$/
+   631→/** 单个 value JSON 上限, 防DB膨胀 */
+   632→const VALUE_MAX = 100_000
+   633→
+   634→async function readAllSettings(): Promise<Record<string, unknown>> {
+   635→  const rows = await db.setting.findMany()
+   636→  const settings: Record<string, unknown> = {}
+   637→  for (const r of rows) {
+   638→    try { settings[r.key] = JSON.parse(r.value) } catch { settings[r.key] = r.value }
+   639→  }
+   640→  return settings
+   641→}
+   642→
+   643→export async function GET() {
+   644→  return withGuard(async () => {
+   645→    return ok(await readAllSettings())
+   646→  })
+   647→}
+   648→---END---
+   649→==== src/app/api/admin/sites/[id]/route.ts ====
+   650→// 站点更新/删除
+   651→import { db } from '@/lib/db'
+   652→import { ok, fail, readBody } from '@/lib/api'
+   653→import { THEMES } from '@/lib/crawl/themes'
+   654→import { withGuard, str, clampInt } from '../../../_lib/http'
+   655→
+   656→// 与 POST 同步: 放行 localhost[:port](种子默认站域名即 localhost:3000, 旧正则误拒致站点无法回存)
+   657→const DOMAIN_RE = /^(localhost(:\d{1,5})?|[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\d{1,5})?)$/
+   658→
+   659→export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
+   660→  return withGuard(async () => {
+   661→    const { id } = await params
+   662→    const body = await readBody(req)
+   663→    const exist = await db.site.findUnique({ where: { id } })
+   664→    if (!exist) return fail('站点不存在', 404)
+   665→
+   666→    const data: Record<string, unknown> = {}
+   667→    if (body?.name !== undefined) {
+   668→      const name = str(body.name, 100).trim()
+   669→      if (!name) return fail('站点名称不能为空')
+   670→      data.name = name
+   671→    }
+   672→    // 字段长度与 POST 保持一致: title 200 / description·keywords 500 / icbm 50 / geoRegion 10 / geoPlacename 50
+   673→    const FIELD_CAPS = { title: 200, description: 500, keywords: 500, icbm: 50, geoRegion: 10, geoPlacename: 50 } as const
+   674→    for (const k of ['title', 'description', 'keywords', 'icbm', 'geoRegion', 'geoPlacename'] as const) {
+   675→---END---
+   676→==== src/app/api/admin/sites/batch/route.ts ====
+   677→// 站点批量操作: delete(默认站保护跳过) / theme(校验 THEMES 注册表) / offset(clampInt 钳制) / wheel(链轮参与开关)
+   678→import { db } from '@/lib/db'
+   679→import { ok, fail, readBody } from '@/lib/api'
+   680→import { THEMES } from '@/lib/crawl/themes'
+   681→import { withGuard, clampInt, errText } from '../../../_lib/http'
+   682→import { parseBatchBody, payloadString, skipItem, type BatchSkippedItem } from '../../../_lib/batch'
+   683→
+   684→export async function POST(req: Request) {
+   685→  return withGuard(async () => {
+   686→    const parsed = parseBatchBody(await readBody(req), ['delete', 'theme', 'offset', 'wheel'])
+   687→    if (!parsed.ok) return fail(parsed.message)
+   688→    const { action, ids, payload } = parsed
+   689→    const skipped: BatchSkippedItem[] = []
+   690→
+   691→    switch (action) {
+   692→      // ---------------- 批量删除: 默认站点保护(与单删一致), 跳过而非整批拒绝 ----------------
+   693→      case 'delete': {
+   694→        const rows = await db.site.findMany({
+   695→          where: { id: { in: ids } },
+   696→          select: { id: true, name: true, isDefault: true },
+   697→        })
+   698→        const byId = new Map(rows.map((s) => [s.id, s]))
+   699→        let affected = 0
+   700→        for (const id of ids) {
+   701→          const s = byId.get(id)
+   702→---END---
+   703→==== src/app/api/admin/sites/route.ts ====
+   704→// 站群站点 CRUD
+   705→import { db } from '@/lib/db'
+   706→import { ok, fail, readBody } from '@/lib/api'
+   707→import { THEMES } from '@/lib/crawl/themes'
+   708→import { withGuard, str, clampInt } from '../../_lib/http'
+   709→
+   710→/** 域名格式: 支持多级域名 + 可选端口; 另放行 localhost[:port](种子默认站即此形态, 旧正则误拒致默认站无法回存) */
+   711→const DOMAIN_RE = /^(localhost(:\d{1,5})?|[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\d{1,5})?)$/
+   712→
+   713→function validTheme(raw: unknown): string {
+   714→  const id = str(raw, 50).trim()
+   715→  return THEMES.some((t) => t.id === id) ? id : 'aurora'
+   716→}
+   717→
+   718→export async function GET() {
+   719→  return withGuard(async () => {
+   720→    const sites = await db.site.findMany({ orderBy: { createdAt: 'asc' } })
+   721→    return ok(sites)
+   722→  })
+   723→}
+   724→
+   725→export async function POST(req: Request) {
+   726→  return withGuard(async () => {
+   727→    const body = await readBody(req)
+   728→    const name = str(body?.name, 100).trim()
+   729→---END---
+   730→==== src/app/api/admin/stats/route.ts ====
+   731→// 统计
+   732→import { db } from '@/lib/db'
+   733→import { ok } from '@/lib/api'
+   734→import { TaskRunner } from '@/lib/crawl/runner'
+   735→import { withGuard } from '../../_lib/http'
+   736→
+   737→const globalForBoot = globalThis as unknown as { __novelBootRecovered?: boolean }
+   738→
+   739→export async function GET() {
+   740→  return withGuard(async () => {
+   741→    // 服务启动恢复: 曾在运行的任务转入暂停 (每个进程仅执行一次)
+   742→    if (!globalForBoot.__novelBootRecovered) {
+   743→      globalForBoot.__novelBootRecovered = true
+   744→      TaskRunner.instance.recoverOnBoot().catch(() => {})
+   745→    }
+   746→    const [books, chapters, rules, tasks, runningTasks, sites, tags, downloads] = await Promise.all([
+   747→      db.book.count(),
+   748→      db.chapter.count(),
+   749→      db.rule.count(),
+   750→      db.task.count(),
+   751→      db.task.count({ where: { status: { in: ['running', 'paused'] } } }),
+   752→      db.site.count(),
+   753→      db.bookTag.count(),
+   754→      db.downloadJob.count(),
+   755→    ])
+   756→---END---
+   757→==== src/app/api/admin/tasks/[id]/control/route.ts ====
+   758→// 任务控制: start / pause / stop
+   759→import { readBody, ok, fail } from '@/lib/api'
+   760→import { TaskRunner } from '@/lib/crawl/runner'
+   761→import { db } from '@/lib/db'
+   762→import { withGuard, str } from '../../../../_lib/http'
+   763→
+   764→const ACTIONS = ['start', 'pause', 'stop'] as const
+   765→type ControlAction = (typeof ACTIONS)[number]
+   766→
+   767→export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+   768→  return withGuard(async () => {
+   769→    const { id } = await params
+   770→    const body = await readBody(req)
+   771→    const action = String(body?.action || '')
+   772→    if (!(ACTIONS as readonly string[]).includes(action)) return fail('无效操作')
+   773→    const act = action as ControlAction
+   774→
+   775→    const task = await db.task.findUnique({ where: { id } })
+   776→    if (!task) return fail('任务不存在', 404)
+   777→
+   778→    // 启动前重置终态(状态机: done/error/stopped → pending 后由 runner 置 running)
+   779→    // zz-d: updateMany 条件原子写 —— 修前无条件 update 存在竞态覆写窗口(读到旧终态快照
+   780→    // 的并发 start 可把已被其他请求置为 running/paused 的状态覆写回 pending, 标签漂移);
+   781→    // 条件不满足(count=0)时静默放行, 后续 TaskRunner.control 的状态机校验兜底
+   782→    if (act === 'start' && ['done', 'error', 'stopped'].includes(task.status)) {
+   783→---END---
+   784→==== src/app/api/admin/tasks/[id]/logs/route.ts ====
+   785→// 任务日志(增量轮询)
+   786→import { db } from '@/lib/db'
+   787→import { ok, fail } from '@/lib/api'
+   788→import { withGuard, str } from '../../../../_lib/http'
+   789→
+   790→export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+   791→  return withGuard(async () => {
+   792→    const { id } = await params
+   793→    const url = new URL(req.url)
+   794→    const after = str(url.searchParams.get('after'), 64).trim()
+   795→
+   796→    // 任务存在性校验: 不存在的任务直接 404, 避免前端对僵尸任务空轮询
+   797→    const task = await db.task.findUnique({ where: { id }, select: { id: true } })
+   798→    if (!task) return fail('任务不存在', 404)
+   799→
+   800→    const logs = await db.taskLog.findMany({
+   801→      where: { taskId: id, ...(after ? { id: { gt: after } } : {}) },
+   802→      orderBy: { id: 'asc' },
+   803→      take: 200,
+   804→    })
+   805→    return ok(logs)
+   806→  })
+   807→}
+   808→---END---
+   809→==== src/app/api/admin/tasks/[id]/route.ts ====
+   810→// 任务详情/在线调节(线程/间隔等)/删除
+   811→import { db } from '@/lib/db'
+   812→import { ok, fail, readBody } from '@/lib/api'
+   813→import { TaskRunner } from '@/lib/crawl/runner'
+   814→import { withGuard, str } from '../../../_lib/http'
+   815→import { normalizeTaskData, validateTaskPair } from '../_shared'
+   816→
+   817→export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+   818→  return withGuard(async () => {
+   819→    const { id } = await params
+   820→    const task = await db.task.findUnique({ where: { id }, include: { rule: true } })
+   821→    if (!task) return fail('任务不存在', 404)
+   822→    return ok({ ...task, live: TaskRunner.instance.isRunning(id) })
+   823→  })
+   824→}
+   825→
+   826→// 在线调节: 线程范围/间隔范围/重采模式等, 运行中也可调整
+   827→export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
+   828→  return withGuard(async () => {
+   829→    const { id } = await params
+   830→    const body = await readBody(req)
+   831→    const exist = await db.task.findUnique({ where: { id } })
+   832→    if (!exist) return fail('任务不存在', 404)
+   833→
+   834→    const { data, error } = normalizeTaskData({ ...exist, ...body }, 'partial')
+   835→---END---
+   836→==== src/app/api/admin/tasks/batch/route.ts ====
+   837→// 任务批量操作: start / pause / stop / delete
+   838→// start/pause/stop 逐个复用 tasks/[id]/control 真实路径(终态重置 + TaskRunner.control),
+   839→// 单个失败不中断整批, 失败项进 skipped[{name, reason}]; delete 对运行中任务跳过(isRunning 语义)
+   840→import { db } from '@/lib/db'
+   841→import { ok, fail, readBody } from '@/lib/api'
+   842→import { TaskRunner } from '@/lib/crawl/runner'
+   843→import { withGuard, errText } from '../../../_lib/http'
+   844→import { parseBatchBody, skipItem, type BatchSkippedItem } from '../../../_lib/batch'
+   845→
+   846→const ACTIONS = ['start', 'pause', 'stop', 'delete'] as const
+   847→type BatchAction = (typeof ACTIONS)[number]
+   848→
+   849→/** 终态: start 前需重置为 pending(与单条 control 路由一致) */
+   850→const FINAL_STATUSES = ['done', 'error', 'stopped']
+   851→
+   852→export async function POST(req: Request) {
+   853→  return withGuard(async () => {
+   854→    const parsed = parseBatchBody(await readBody(req), [...ACTIONS])
+   855→    if (!parsed.ok) return fail(parsed.message)
+   856→    const { action, ids } = parsed
+   857→    const act = action as BatchAction
+   858→    const skipped: BatchSkippedItem[] = []
+   859→    let affected = 0
+   860→
+   861→    if (act === 'delete') {
+   862→---END---
+   863→==== src/app/api/admin/tasks/route.ts ====
+   864→// 采集任务 CRUD
+   865→import { db } from '@/lib/db'
+   866→import { ok, fail, readBody } from '@/lib/api'
+   867→import { withGuard, str } from '../../_lib/http'
+   868→import { normalizeTaskData, validateTaskPair, TASK_STATUSES, type NormalizedTask } from './_shared'
+   869→
+   870→export async function GET(req: Request) {
+   871→  return withGuard(async () => {
+   872→    const url = new URL(req.url)
+   873→    const status = str(url.searchParams.get('status'), 20).trim()
+   874→    // 状态白名单过滤: 非法值忽略(不报错, 保持列表可用)
+   875→    const validStatus = (TASK_STATUSES as readonly string[]).includes(status) ? status : undefined
+   876→    const tasks = await db.task.findMany({
+   877→      where: validStatus ? { status: validStatus } : undefined,
+   878→      orderBy: { updatedAt: 'desc' },
+   879→      include: { rule: { select: { id: true, name: true } } },
+   880→    })
+   881→    return ok(tasks)
+   882→  })
+   883→}
+   884→
+   885→export async function POST(req: Request) {
+   886→  return withGuard(async () => {
+   887→    const body = await readBody(req)
+   888→
+   889→---END---
+   890→==== src/app/api/admin/themes/route.ts ====
+   891→// 主题模板列表
+   892→import { ok } from '@/lib/api'
+   893→import { THEMES } from '@/lib/crawl/themes'
+   894→import { withGuard } from '../../_lib/http'
+   895→
+   896→export async function GET() {
+   897→  return withGuard(async () => {
+   898→    return ok(THEMES)
+   899→  })
+   900→}
+   901→---END---
+   902→==== src/app/api/public/book/route.ts ====
+   903→// 前台书籍详情 + 目录(TDK/SEO数据源)
+   904→import { db } from '@/lib/db'
+   905→import { ok, fail } from '@/lib/api'
+   906→import { withGuard, str, clampInt } from '../../_lib/http'
+   907→
+   908→export async function GET(req: Request) {
+   909→  return withGuard(async () => {
+   910→    const url = new URL(req.url)
+   911→    const id = str(url.searchParams.get('id'), 64).trim()
+   912→    const tocPage = clampInt(url.searchParams.get('tocPage'), 1, 1, 1_000_000)
+   913→    const tocSize = clampInt(url.searchParams.get('tocSize'), 100, 1, 300)
+   914→    if (!id) return fail('缺少id')
+   915→
+   916→    const book = await db.book.findUnique({
+   917→      where: { id },
+   918→      include: { category: true },
+   919→    })
+   920→    if (!book) return fail('书籍不存在', 404)
+   921→
+   922→    const [total, tags, chapters] = await Promise.all([
+   923→      db.chapter.count({ where: { bookId: id } }),
+   924→      db.bookTag.findMany({ where: { bookId: id }, orderBy: { hits: 'desc' }, take: 30 }),
+   925→      db.chapter.findMany({
+   926→        where: { bookId: id },
+   927→        orderBy: { idx: 'asc' },
+   928→---END---
+   929→==== src/app/api/public/books/route.ts ====
+   930→// 前台书籍列表 — 支持站群偏移量/分类/搜索/分页
+   931→import { db } from '@/lib/db'
+   932→import { ok } from '@/lib/api'
+   933→import { withGuard, str, likeSafe, clampInt } from '../../_lib/http'
+   934→
+   935→export async function GET(req: Request) {
+   936→  return withGuard(async () => {
+   937→    const url = new URL(req.url)
+   938→    const siteId = str(url.searchParams.get('site'), 64).trim()
+   939→    const q = likeSafe(url.searchParams.get('q'))
+   940→    const cat = str(url.searchParams.get('cat'), 64).trim()
+   941→    const status = str(url.searchParams.get('status'), 20).trim()
+   942→    const sort = str(url.searchParams.get('sort'), 20).trim() || 'latest'
+   943→    // 分页边界: page≥1 / size 1~60, 防 skip/take 负数导致 Prisma 500
+   944→    const page = clampInt(url.searchParams.get('page'), 1, 1, 1_000_000)
+   945→    const size = clampInt(url.searchParams.get('size'), 24, 1, 60)
+   946→
+   947→    // 站群: 偏移量 + 可选域名 (站点不存在时 offset 保持 0)
+   948→    let offset = 0
+   949→    if (siteId) {
+   950→      const site = await db.site.findUnique({ where: { id: siteId } })
+   951→      if (site) offset = Math.max(0, site.offset)
+   952→    }
+   953→
+   954→    const where: Record<string, unknown> = {}
+   955→---END---
+   956→==== src/app/api/public/categories/route.ts ====
+   957→// 前台分类图文展示 — 非空分类 + 每分类字数最高带封面书作代表(首页 6 分类封面卡)
+   958→import { db } from '@/lib/db'
+   959→import { ok } from '@/lib/api'
+   960→import { withGuard, clampInt } from '../../_lib/http'
+   961→
+   962→export async function GET(req: Request) {
+   963→  return withGuard(async () => {
+   964→    const url = new URL(req.url)
+   965→    // 返回分类数钳制 1~60(缺省 24), 前台展示取前 6
+   966→    const limit = clampInt(url.searchParams.get('limit'), 24, 1, 60)
+   967→
+   968→    // 非空过滤: books:{some:{}} → 空分类不进图文卡
+   969→    const cats = await db.category.findMany({
+   970→      where: { books: { some: {} } },
+   971→      orderBy: { sortOrder: 'asc' },
+   972→      take: limit,
+   973→      include: { _count: { select: { books: true } } },
+   974→    })
+   975→
+   976→    // 每分类代表书: 字数最高且带封面; 分类内全无封面时回退字数最高(空封面由前台渐变占位兜底)
+   977→    const items = await Promise.all(
+   978→      cats.map(async (c) => {
+   979→        const rep =
+   980→          (await db.book.findFirst({
+   981→            where: { categoryId: c.id, cover: { not: '' } },
+   982→---END---
+   983→==== src/app/api/public/chapter/route.ts ====
+   984→// 前台章节内容(阅读页)
+   985→import { db } from '@/lib/db'
+   986→import { ok, fail } from '@/lib/api'
+   987→import { readChapterTxt } from '@/lib/crawl/storage'
+   988→import { withGuard, str } from '../../_lib/http'
+   989→
+   990→export async function GET(req: Request) {
+   991→  return withGuard(async () => {
+   992→    const url = new URL(req.url)
+   993→    const id = str(url.searchParams.get('id'), 64).trim()
+   994→    if (!id) return fail('缺少id')
+   995→
+   996→    const ch = await db.chapter.findUnique({
+   997→      where: { id },
+   998→      include: { book: { select: { id: true, name: true, author: true, status: true, keywords: true } } },
+   999→    })
+  1000→    if (!ch) return fail('章节不存在', 404)
+  1001→
+  1002→    let content = ch.content || ''
+  1003→    if (ch.storage === 'txt' && ch.filePath) {
+  1004→      const raw = await readChapterTxt(ch.filePath)
+  1005→      if (raw) {
+  1006→        content = raw.split('\n').slice(1).join('\n').trim()
+  1007→        // 修复(存储型注入面): txt 文件内容是 htmlToPlainText 产物 —— 实体已解码, 源站
+  1008→        // "&lt;img src=x onerror=…&gt;" 这类实体编码载荷在落盘时还原成标签字面量;
+  1009→---END---
+  1010→==== src/app/api/public/cover/route.ts ====
+  1011→// 封面webp服务 — data/covers/{file}.webp
+  1012→import { fail } from '@/lib/api'
+  1013→import { readCover } from '@/lib/crawl/storage'
+  1014→import { withGuard, str } from '../../_lib/http'
+  1015→
+  1016→export async function GET(req: Request) {
+  1017→  return withGuard(async () => {
+  1018→    const url = new URL(req.url)
+  1019→    // searchParams 已做一次URL解码, %2e%2e(%2E%2E) 到这里已是 '..'; 正则 + readCover 的
+  1020→    // basename 双重防护下, 任何路径穿越输入都会被拒
+  1021→    const file = str(url.searchParams.get('file'), 200).replace(/^covers\//, '')
+  1022→    if (!file || !/^\w[\w.-]*\.webp$/.test(file)) {
+  1023→      return fail('非法的封面文件名', 400)
+  1024→    }
+  1025→    let buf: Buffer | null = null
+  1026→    try {
+  1027→      buf = await readCover(file)
+  1028→    } catch {
+  1029→      buf = null
+  1030→    }
+  1031→    if (!buf) return fail('封面不存在', 404)
+  1032→    return new Response(new Uint8Array(buf), {
+  1033→      headers: {
+  1034→        'Content-Type': 'image/webp',
+  1035→        'Cache-Control': 'public, max-age=86400',
+  1036→---END---
+  1037→==== src/app/api/public/download/route.ts ====
+  1038→// 成品TXT下载 — Node流式响应, 错误分支统一信封
+  1039→import { db } from '@/lib/db'
+  1040→import { fail } from '@/lib/api'
+  1041→import { DATA_ROOT, DOWNLOADS_DIR } from '@/lib/crawl/storage'
+  1042→import { createReadStream, promises as fsp } from 'fs'
+  1043→import { Readable } from 'stream'
+  1044→import { withGuard, str, safeJoin } from '../../_lib/http'
+  1045→
+  1046→/** RFC5987: UTF-8 文件名用 filename*=UTF-8'' 传输, 另附 ASCII 回退 */
+  1047→function contentDisposition(name: string): string {
+  1048→  const encoded = encodeURIComponent(name).replace(/['()]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase())
+  1049→  const asciiFallback = name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_') || 'download.txt'
+  1050→  return `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encoded}`
+  1051→}
+  1052→
+  1053→export async function GET(req: Request) {
+  1054→  return withGuard(async () => {
+  1055→    const url = new URL(req.url)
+  1056→    const id = str(url.searchParams.get('id'), 64).trim()
+  1057→    // book=<bookId>: 前台书籍页"TXT 下载"按书取最新已完成成品
+  1058→    // (原先传 book.id 走 ?id= 任务通道, 永远查不到任务 → 恒 404 死链)
+  1059→    const bookId = str(url.searchParams.get('book'), 64).trim()
+  1060→    if (!id && !bookId) return fail('缺少id')
+  1061→
+  1062→    const job = bookId
+  1063→---END---
+  1064→==== src/app/api/public/keyword/route.ts ====
+  1065→// 关键词独立访问页 — 下拉关键词作为关联词, 页面均指向主书籍信息页
+  1066→import { db } from '@/lib/db'
+  1067→import { ok } from '@/lib/api'
+  1068→import { withGuard, str } from '../../_lib/http'
+  1069→
+  1070→export async function GET(req: Request) {
+  1071→  return withGuard(async () => {
+  1072→    const url = new URL(req.url)
+  1073→    const kw = str(url.searchParams.get('kw'), 100).trim()
+  1074→    const tag = (str(url.searchParams.get('tag'), 100).trim() || kw).slice(0, 100)
+  1075→
+  1076→    if (!tag) return ok({ tag: '', book: null, related: [] })
+  1077→
+  1078→    // 主书籍: 命中该标签的书籍(按词频)
+  1079→    const hits = await db.bookTag.findMany({
+  1080→      where: { tag },
+  1081→      orderBy: { hits: 'desc' },
+  1082→      include: { book: { include: { category: true } } },
+  1083→      take: 10,
+  1084→    })
+  1085→
+  1086→    // 相关词: 同一本书的其他标签
+  1087→    const mainBook = hits[0]?.book
+  1088→    let related: string[] = []
+  1089→    if (mainBook) {
+  1090→---END---
+  1091→==== src/app/api/public/links/route.ts ====
+  1092→// 前台页脚链接 — 友情链接(启用中, sortOrder 升序) + 站群链轮(实时随机)
+  1093→// ?site=<siteId> 排除当前站, 链轮永不指向调用方自己
+  1094→import { ok } from '@/lib/api'
+  1095→import { withGuard, str } from '../../_lib/http'
+  1096→import { computeWheelLinks, getPublicFriendLinks, getWheelConfig } from '@/lib/links'
+  1097→
+  1098→export async function GET(req: Request) {
+  1099→  return withGuard(async () => {
+  1100→    const url = new URL(req.url)
+  1101→    const siteId = str(url.searchParams.get('site'), 64).trim()
+  1102→
+  1103→    const [friend, cfg] = await Promise.all([getPublicFriendLinks(), getWheelConfig()])
+  1104→    // 链轮实时随机: 仅取 status=true + inLinkWheel=true 的站, 排除当前站
+  1105→    const wheel = cfg.enabled ? await computeWheelLinks(cfg, siteId || undefined) : []
+  1106→
+  1107→    return ok({
+  1108→      friend,
+  1109→      wheel,
+  1110→      wheelEnabled: cfg.enabled,
+  1111→      mode: cfg.mode,
+  1112→      count: cfg.count,
+  1113→    })
+  1114→  })
+  1115→}
+  1116→---END---
+  1117→==== src/app/api/public/search/route.ts ====
+  1118→// 前台搜索
+  1119→import { db } from '@/lib/db'
+  1120→import { ok } from '@/lib/api'
+  1121→import { withGuard, likeSafe, clampInt } from '../../_lib/http'
+  1122→
+  1123→export async function GET(req: Request) {
+  1124→  return withGuard(async () => {
+  1125→    const url = new URL(req.url)
+  1126→    const q = likeSafe(url.searchParams.get('q'))
+  1127→    // limit 边界: 1~50, 防 take 负数导致 Prisma 500
+  1128→    const limit = clampInt(url.searchParams.get('limit'), 20, 1, 50)
+  1129→    if (!q) return ok({ q, books: [] })
+  1130→
+  1131→    const books = await db.book.findMany({
+  1132→      where: {
+  1133→        OR: [
+  1134→          { name: { contains: q } },
+  1135→          { author: { contains: q } },
+  1136→          { intro: { contains: q } },
+  1137→          { keywords: { contains: q } },
+  1138→        ],
+  1139→      },
+  1140→      orderBy: { wordCount: 'desc' },
+  1141→      take: limit,
+  1142→      include: { category: true },
+  1143→---END---
+  1144→==== src/app/api/public/sitemap/route.ts ====
+  1145→// sitemap.xml 生成 (站群: 可带 ?site= 指定站点)
+  1146→import { db } from '@/lib/db'
+  1147→import { withGuard, str } from '../../_lib/http'
+  1148→
+  1149→/** 站点域名 → 安全的 https base (仅接受合法域名格式, 防注入非法URL) */
+  1150→function siteBase(domain: string): string | null {
+  1151→  const d = domain.trim().toLowerCase()
+  1152→  if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\d{1,5})?$/.test(d)) return null
+  1153→  return `https://${d}`
+  1154→}
+  1155→
+  1156→export async function GET(req: Request) {
+  1157→  return withGuard(async () => {
+  1158→    const url = new URL(req.url)
+  1159→    const siteId = str(url.searchParams.get('site'), 64).trim()
+  1160→    let base = url.origin
+  1161→    if (siteId) {
+  1162→      const site = await db.site.findUnique({ where: { id: siteId } })
+  1163→      const custom = site?.domain && site.domain !== 'localhost:3000' ? siteBase(site.domain) : null
+  1164→      if (custom) base = custom
+  1165→    }
+  1166→
+  1167→    const books = await db.book.findMany({
+  1168→      orderBy: { updatedAt: 'desc' },
+  1169→      take: 5000,
+  1170→---END---
+  1171→==== src/app/api/public/tags/route.ts ====
+  1172→// 全站搜索下拉词 — distinct 标签按热度取池 + Fisher-Yates 随机洗牌(首页/页脚随机展示与换一批)
+  1173→import { db } from '@/lib/db'
+  1174→import { ok } from '@/lib/api'
+  1175→import { withGuard, clampInt } from '../../_lib/http'
+  1176→
+  1177→// 词池上限: distinct 标签按最高 hits 降序截取
+  1178→const POOL_SIZE = 400
+  1179→
+  1180→/** Fisher-Yates 洗牌(返回新数组, 不修改入参) */
+  1181→function shuffle<T>(arr: readonly T[]): T[] {
+  1182→  const a = [...arr]
+  1183→  for (let i = a.length - 1; i > 0; i--) {
+  1184→    const j = Math.floor(Math.random() * (i + 1))
+  1185→    const tmp = a[i]
+  1186→    a[i] = a[j]
+  1187→    a[j] = tmp
+  1188→  }
+  1189→  return a
+  1190→}
+  1191→
+  1192→export async function GET(req: Request) {
+  1193→  return withGuard(async () => {
+  1194→    const url = new URL(req.url)
+  1195→    // 返回条数钳制 1~120(缺省 24), 防止超大 n 拖垮响应
+  1196→    const n = clampInt(url.searchParams.get('n'), 24, 1, 120)
+  1197→---END---
+  1198→==== src/app/api/route.ts ====
+  1199→import { ok } from '@/lib/api'
+  1200→
+  1201→export async function GET() {
+  1202→  // 根路径健康检查 — 保持与全站一致的 {ok,data} 信封
+  1203→  return ok({ message: 'Hello, world!' })
+  1204→}
+  1205→---END---

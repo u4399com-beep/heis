@@ -1,0 +1,200 @@
+Resolving dependencies
+Resolved, downloaded and extracted [45]
+Saved lockfile
+next.config.ts(1,33): error TS2307: Cannot find module 'next' or its corresponding type declarations.
+scripts/export-autofill-rules.ts(23,42): error TS2591: Cannot find name 'node:fs'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/export-autofill-rules.ts(24,31): error TS2591: Cannot find name 'node:path'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/export-autofill-rules.ts(25,31): error TS2591: Cannot find name 'node:url'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/fix-dd-b-stale-task.ts(41,126): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/fix-dd-b-stale-task.ts(42,5): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/fix-dd-b-stale-task.ts(82,3): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/fix-dd-b-stale-task.ts(87,3): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/mock-novel-site.ts(2,18): error TS2591: Cannot find name 'http'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/mock-novel-site.ts(23,17): error TS2591: Cannot find name 'Buffer'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/ratelimit-site.ts(44,18): error TS2591: Cannot find name 'http'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/ratelimit-site.ts(66,13): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/ratelimit-site.ts(67,20): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/ratelimit-site.ts(67,42): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-80ge.ts(111,14): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-aijjxs.ts(238,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-aijjxs.ts(241,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-biqugetw.ts(191,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-biqugetw.ts(194,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-book4.ts(243,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-book4.ts(246,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-bqg713.ts(180,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-dafengdagengren.ts(212,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-dafengdagengren.ts(215,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-daweixs.ts(204,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-daweixs.ts(207,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-deqixs.ts(161,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-deqixs.ts(164,17): error TS2339: Property 'main' does not exist on type 'ImportMeta'.
+scripts/seed-rule-fanqie.ts(157,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-fanqie.ts(160,17): error TS2339: Property 'main' does not exist on type 'ImportMeta'.
+scripts/seed-rule-hodei.ts(189,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-hodei.ts(192,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-iidcr.ts(253,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-iidcr.ts(256,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-jpxs123.ts(122,51): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-kanunu8.ts(209,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-kanunu8.ts(212,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-piaotia.ts(218,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-piaotia.ts(221,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-qimao.ts(155,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-qimao.ts(158,17): error TS2339: Property 'main' does not exist on type 'ImportMeta'.
+scripts/seed-rule-ratelimit-demo.ts(188,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-ratelimit-demo.ts(189,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-ratelimit-demo.ts(193,17): error TS2339: Property 'main' does not exist on type 'ImportMeta'.
+scripts/seed-rule-shudugu.ts(246,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-shudugu.ts(249,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-wanben.ts(289,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-wanben.ts(317,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-wanben.ts(319,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-wanben.ts(323,17): error TS2339: Property 'main' does not exist on type 'ImportMeta'.
+scripts/seed-rule-wuxiaworld.ts(128,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-xjp.ts(186,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-xjp.ts(189,17): error TS2339: Property 'main' does not exist on type 'ImportMeta'.
+scripts/seed-rule-yybsw.ts(228,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-yybsw.ts(231,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-zxcs.ts(165,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rule-zxcs.ts(168,17): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed-rules-v2.ts(370,7): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed.ts(6,19): error TS2307: Cannot find module 'sharp' or its corresponding type declarations.
+scripts/seed.ts(7,32): error TS2591: Cannot find name 'fs'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed.ts(8,18): error TS2591: Cannot find name 'path'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed.ts(11,30): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed.ts(98,27): error TS2591: Cannot find name 'Buffer'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed.ts(260,15): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/seed.ts(263,5): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/verify-ab-b-ratelimit.ts(19,18): error TS2591: Cannot find name 'http'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/verify-ab-b-ratelimit.ts(20,30): error TS2591: Cannot find name 'fs'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/verify-ab-b-ratelimit.ts(21,31): error TS2591: Cannot find name 'path'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/verify-ab-b-ratelimit.ts(22,31): error TS2591: Cannot find name 'url'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/verify-ab-b-ratelimit.ts(241,1): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/verify-ab-c-apply.ts(15,30): error TS2591: Cannot find name 'fs'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/verify-ab-c-apply.ts(16,22): error TS2591: Cannot find name 'path'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/verify-ab-c-apply.ts(17,31): error TS2591: Cannot find name 'url'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/verify-ab-c-apply.ts(210,3): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/verify-kk-b-docker.ts(7,42): error TS2591: Cannot find name 'node:fs'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/verify-kk-b-docker.ts(8,26): error TS2591: Cannot find name 'node:child_process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/verify-kk-b-docker.ts(157,3): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/verify-ll-a-docker.ts(18,42): error TS2591: Cannot find name 'node:fs'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/verify-ll-a-docker.ts(75,15): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/verify-ll-a-docker.ts(76,1): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/verify-ss-a-docker.ts(34,42): error TS2591: Cannot find name 'node:fs'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/verify-ss-a-docker.ts(35,31): error TS2591: Cannot find name 'node:path'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/verify-ss-a-docker.ts(36,31): error TS2591: Cannot find name 'node:url'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/verify-ss-a-docker.ts(265,15): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/verify-zz-a-calibrate.ts(16,23): error TS2591: Cannot find name 'child_process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/verify-zz-a-calibrate.ts(17,30): error TS2591: Cannot find name 'fs'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/verify-zz-a-calibrate.ts(18,22): error TS2591: Cannot find name 'path'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/verify-zz-a-calibrate.ts(19,31): error TS2591: Cannot find name 'url'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+scripts/verify-zz-a-calibrate.ts(146,3): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+src/app/api/_lib/http.ts(6,18): error TS2591: Cannot find name 'path'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+src/app/api/admin/books/_cover.ts(4,32): error TS2591: Cannot find name 'fs'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+src/app/api/admin/books/batch/route.ts(12,32): error TS2591: Cannot find name 'fs'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+src/app/api/admin/books/batch/route.ts(93,18): error TS2339: Property 'sourceUrl' does not exist on type '{}'.
+src/app/api/admin/books/batch/route.ts(94,53): error TS2339: Property 'name' does not exist on type '{}'.
+src/app/api/admin/books/batch/route.ts(99,28): error TS2339: Property 'sourceRuleId' does not exist on type '{}'.
+src/app/api/admin/books/batch/route.ts(105,68): error TS2339: Property 'name' does not exist on type '{}'.
+src/app/api/admin/books/batch/route.ts(108,28): error TS2339: Property 'sourceUrl' does not exist on type '{}'.
+src/app/api/admin/books/batch/route.ts(110,32): error TS2339: Property 'storageMode' does not exist on type '{}'.
+src/app/api/admin/books/batch/route.ts(122,69): error TS2339: Property 'name' does not exist on type '{}'.
+src/app/api/admin/books/batch/route.ts(128,49): error TS2339: Property 'name' does not exist on type '{}'.
+src/app/api/admin/books/batch/route.ts(233,40): error TS2304: Cannot find name 'setImmediate'.
+src/app/api/admin/books/batch/route.ts(236,60): error TS2339: Property 'name' does not exist on type '{}'.
+src/app/api/admin/books/batch/route.ts(239,36): error TS2304: Cannot find name 'setImmediate'.
+src/app/api/admin/categories/batch/route.ts(35,63): error TS2339: Property 'name' does not exist on type '{}'.
+src/app/api/admin/chapters/[id]/route.ts(5,32): error TS2591: Cannot find name 'fs'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+src/app/api/admin/chapters/batch/route.ts(8,32): error TS2591: Cannot find name 'fs'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+src/app/api/admin/downloads/[id]/route.ts(4,32): error TS2591: Cannot find name 'fs'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+src/app/api/admin/downloads/batch/route.ts(8,32): error TS2591: Cannot find name 'fs'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+src/app/api/admin/downloads/batch/route.ts(40,26): error TS2339: Property 'book' does not exist on type '{}'.
+src/app/api/admin/downloads/batch/route.ts(40,45): error TS2339: Property 'id' does not exist on type '{}'.
+src/app/api/admin/downloads/batch/route.ts(48,34): error TS2339: Property 'filePath' does not exist on type '{}'.
+src/app/api/admin/downloads/batch/route.ts(60,37): error TS2339: Property 'status' does not exist on type '{}'.
+src/app/api/admin/downloads/batch/route.ts(64,42): error TS2339: Property 'status' does not exist on type '{}'.
+src/app/api/admin/downloads/batch/route.ts(73,55): error TS2339: Property 'options' does not exist on type '{}'.
+src/app/api/admin/downloads/batch/route.ts(85,48): error TS2339: Property 'bookId' does not exist on type '{}'.
+src/app/api/admin/rules/[id]/calibrate/route.ts(15,30): error TS2307: Cannot find module 'next/server' or its corresponding type declarations.
+src/app/api/admin/rules/calibrate-all/route.ts(14,30): error TS2307: Cannot find module 'next/server' or its corresponding type declarations.
+src/app/api/admin/rules/test/route.ts(32,26): error TS2307: Cannot find module 'cheerio' or its corresponding type declarations.
+src/app/api/admin/sites/batch/route.ts(30,17): error TS2339: Property 'isDefault' does not exist on type '{}'.
+src/app/api/admin/sites/batch/route.ts(31,49): error TS2339: Property 'name' does not exist on type '{}'.
+src/app/api/admin/sites/batch/route.ts(39,49): error TS2339: Property 'name' does not exist on type '{}'.
+src/app/api/admin/tasks/batch/route.ts(36,53): error TS2339: Property 'name' does not exist on type '{}'.
+src/app/api/admin/tasks/batch/route.ts(46,47): error TS2339: Property 'name' does not exist on type '{}'.
+src/app/api/admin/tasks/batch/route.ts(66,58): error TS2339: Property 'status' does not exist on type '{}'.
+src/app/api/admin/tasks/batch/route.ts(72,48): error TS2339: Property 'name' does not exist on type '{}'.
+src/app/api/admin/tasks/batch/route.ts(77,45): error TS2339: Property 'name' does not exist on type '{}'.
+src/app/api/public/cover/route.ts(15,14): error TS2591: Cannot find name 'Buffer'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+src/app/api/public/download/route.ts(5,51): error TS2591: Cannot find name 'fs'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+src/app/api/public/download/route.ts(6,26): error TS2591: Cannot find name 'stream'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+src/app/layout.tsx(1,31): error TS2307: Cannot find module 'next' or its corresponding type declarations.
+src/app/layout.tsx(2,35): error TS2307: Cannot find module 'next/font/google' or its corresponding type declarations.
+src/app/layout.tsx(3,8): error TS2882: Cannot find module or type declarations for side-effect import of './globals.css'.
+src/app/layout.tsx(39,13): error TS2503: Cannot find namespace 'React'.
+src/app/layout.tsx(42,5): error TS2875: This JSX tag requires the module path 'react/jsx-runtime' to exist, but none could be found. Make sure you have types for the appropriate package installed.
+src/app/page.tsx(11,33): error TS2307: Cannot find module 'next/navigation' or its corresponding type declarations.
+src/app/page.tsx(12,26): error TS2307: Cannot find module 'react' or its corresponding type declarations.
+src/app/page.tsx(39,7): error TS2875: This JSX tag requires the module path 'react/jsx-runtime' to exist, but none could be found. Make sure you have types for the appropriate package installed.
+src/components/admin/AdminApp.tsx(7,37): error TS2307: Cannot find module 'react' or its corresponding type declarations.
+src/components/admin/AdminApp.tsx(23,8): error TS2307: Cannot find module 'lucide-react' or its corresponding type declarations.
+src/components/admin/AdminApp.tsx(112,5): error TS2875: This JSX tag requires the module path 'react/jsx-runtime' to exist, but none could be found. Make sure you have types for the appropriate package installed.
+src/components/admin/BookDetail.tsx(8,77): error TS2307: Cannot find module 'react' or its corresponding type declarations.
+src/components/admin/BookDetail.tsx(32,118): error TS2307: Cannot find module 'lucide-react' or its corresponding type declarations.
+src/components/admin/BookDetail.tsx(33,23): error TS2307: Cannot find module 'sonner' or its corresponding type declarations.
+src/components/admin/BookDetail.tsx(330,5): error TS2875: This JSX tag requires the module path 'react/jsx-runtime' to exist, but none could be found. Make sure you have types for the appropriate package installed.
+src/components/admin/BooksSection.tsx(7,67): error TS2307: Cannot find module 'react' or its corresponding type declarations.
+src/components/admin/BooksSection.tsx(44,8): error TS2307: Cannot find module 'lucide-react' or its corresponding type declarations.
+src/components/admin/BooksSection.tsx(45,23): error TS2307: Cannot find module 'sonner' or its corresponding type declarations.
+src/components/admin/BooksSection.tsx(229,5): error TS2875: This JSX tag requires the module path 'react/jsx-runtime' to exist, but none could be found. Make sure you have types for the appropriate package installed.
+src/components/admin/CalibrateDialog.tsx(29,58): error TS2307: Cannot find module 'react' or its corresponding type declarations.
+src/components/admin/CalibrateDialog.tsx(76,8): error TS2307: Cannot find module 'lucide-react' or its corresponding type declarations.
+src/components/admin/CalibrateDialog.tsx(77,23): error TS2307: Cannot find module 'sonner' or its corresponding type declarations.
+src/components/admin/CalibrateDialog.tsx(241,5): error TS2875: This JSX tag requires the module path 'react/jsx-runtime' to exist, but none could be found. Make sure you have types for the appropriate package installed.
+src/components/admin/CategoriesSection.tsx(7,59): error TS2307: Cannot find module 'react' or its corresponding type declarations.
+src/components/admin/CategoriesSection.tsx(32,70): error TS2307: Cannot find module 'lucide-react' or its corresponding type declarations.
+src/components/admin/CategoriesSection.tsx(33,23): error TS2307: Cannot find module 'sonner' or its corresponding type declarations.
+src/components/admin/CategoriesSection.tsx(167,5): error TS2875: This JSX tag requires the module path 'react/jsx-runtime' to exist, but none could be found. Make sure you have types for the appropriate package installed.
+src/components/admin/ConfirmDialog.tsx(3,24): error TS2307: Cannot find module 'react' or its corresponding type declarations.
+src/components/admin/ConfirmDialog.tsx(4,25): error TS2307: Cannot find module 'lucide-react' or its corresponding type declarations.
+src/components/admin/ConfirmDialog.tsx(74,5): error TS2875: This JSX tag requires the module path 'react/jsx-runtime' to exist, but none could be found. Make sure you have types for the appropriate package installed.
+src/components/admin/Dashboard.tsx(6,58): error TS2307: Cannot find module 'react' or its corresponding type declarations.
+src/components/admin/Dashboard.tsx(22,8): error TS2307: Cannot find module 'lucide-react' or its corresponding type declarations.
+src/components/admin/Dashboard.tsx(99,5): error TS2875: This JSX tag requires the module path 'react/jsx-runtime' to exist, but none could be found. Make sure you have types for the appropriate package installed.
+src/components/admin/DownloadsSection.tsx(7,67): error TS2307: Cannot find module 'react' or its corresponding type declarations.
+src/components/admin/DownloadsSection.tsx(25,74): error TS2307: Cannot find module 'lucide-react' or its corresponding type declarations.
+src/components/admin/DownloadsSection.tsx(26,23): error TS2307: Cannot find module 'sonner' or its corresponding type declarations.
+src/components/admin/DownloadsSection.tsx(240,5): error TS2875: This JSX tag requires the module path 'react/jsx-runtime' to exist, but none could be found. Make sure you have types for the appropriate package installed.
+src/components/admin/FieldRuleEditor.tsx(7,26): error TS2307: Cannot find module 'react' or its corresponding type declarations.
+src/components/admin/FieldRuleEditor.tsx(19,52): error TS2307: Cannot find module 'lucide-react' or its corresponding type declarations.
+src/components/admin/FieldRuleEditor.tsx(44,7): error TS2875: This JSX tag requires the module path 'react/jsx-runtime' to exist, but none could be found. Make sure you have types for the appropriate package installed.
+src/components/admin/LinksSection.tsx(8,59): error TS2307: Cannot find module 'react' or its corresponding type declarations.
+src/components/admin/LinksSection.tsx(40,71): error TS2307: Cannot find module 'lucide-react' or its corresponding type declarations.
+src/components/admin/LinksSection.tsx(41,23): error TS2307: Cannot find module 'sonner' or its corresponding type declarations.
+src/components/admin/LinksSection.tsx(279,5): error TS2875: This JSX tag requires the module path 'react/jsx-runtime' to exist, but none could be found. Make sure you have types for the appropriate package installed.
+src/components/admin/RuleEditor.tsx(7,62): error TS2307: Cannot find module 'react' or its corresponding type declarations.
+src/components/admin/RuleEditor.tsx(32,58): error TS2307: Cannot find module 'lucide-react' or its corresponding type declarations.
+src/components/admin/RuleEditor.tsx(33,23): error TS2307: Cannot find module 'sonner' or its corresponding type declarations.
+src/components/admin/RuleEditor.tsx(137,5): error TS2875: This JSX tag requires the module path 'react/jsx-runtime' to exist, but none could be found. Make sure you have types for the appropriate package installed.
+src/components/admin/RuleEditor.tsx(339,15): error TS2322: Type '{ key: any; label: any; value: FieldRule | undefined; onChange: (v: FieldRule | undefined) => void; placeholder: any; }' is not assignable to type 'FieldRuleEditorProps'.
+  Property 'key' does not exist on type 'FieldRuleEditorProps'.
+src/components/admin/RulesSection.tsx(8,59): error TS2307: Cannot find module 'react' or its corresponding type declarations.
+src/components/admin/RulesSection.tsx(15,92): error TS2307: Cannot find module 'lucide-react' or its corresponding type declarations.
+src/components/admin/RulesSection.tsx(16,23): error TS2307: Cannot find module 'sonner' or its corresponding type declarations.
+src/components/admin/RulesSection.tsx(124,5): error TS2875: This JSX tag requires the module path 'react/jsx-runtime' to exist, but none could be found. Make sure you have types for the appropriate package installed.
+src/components/admin/SettingsSection.tsx(6,37): error TS2307: Cannot find module 'react' or its corresponding type declarations.
+src/components/admin/SettingsSection.tsx(11,53): error TS2307: Cannot find module 'lucide-react' or its corresponding type declarations.
+src/components/admin/SettingsSection.tsx(12,23): error TS2307: Cannot find module 'sonner' or its corresponding type declarations.
+src/components/admin/SettingsSection.tsx(57,5): error TS2875: This JSX tag requires the module path 'react/jsx-runtime' to exist, but none could be found. Make sure you have types for the appropriate package installed.
+src/components/admin/SitesSection.tsx(8,59): error TS2307: Cannot find module 'react' or its corresponding type declarations.
+src/components/admin/SitesSection.tsx(32,78): error TS2307: Cannot find module 'lucide-react' or its corresponding type declarations.
+src/components/admin/SitesSection.tsx(33,23): error TS2307: Cannot find module 'sonner' or its corresponding type declarations.
+src/components/admin/SitesSection.tsx(234,5): error TS2875: This JSX tag requires the module path 'react/jsx-runtime' to exist, but none could be found. Make sure you have types for the appropriate package installed.
+src/components/admin/TaskDialog.tsx(7,37): error TS2307: Cannot find module 'react' or its corresponding type declarations.
+src/components/admin/TaskDialog.tsx(29,31): error TS2307: Cannot find module 'lucide-react' or its corresponding type declarations.
+src/components/admin/TaskDialog.tsx(30,23): error TS2307: Cannot find module 'sonner' or its corresponding type declarations.
+src/components/admin/TaskDialog.tsx(195,5): error TS2875: This JSX tag requires the module path 'react/jsx-runtime' to exist, but none could be found. Make sure you have types for the appropriate package installed.
+src/components/admin/TaskMonitor.tsx(7,58): error TS2307: Cannot find module 'react' or its corresponding type declarations.
+src/components/admin/TaskMonitor.tsx(24,8): error TS2307: Cannot find module 'lucide-react' or its corresponding type declarations.
