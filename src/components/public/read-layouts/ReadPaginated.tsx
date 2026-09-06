@@ -21,6 +21,7 @@ import {
   TocDrawer,
   actualFontPx,
   contentToHtml,
+  readerActionsRef,
   textureStyle,
   useReadPosMemory,
   useReadingTimeTracker,
@@ -81,6 +82,20 @@ export function ReadPaginated({
     const next = isBookmarked(bk.id, ch.id)
     if (next !== bookmarked) setBookmarked(next)
   }
+
+  // feat-round-5 B1: 注册全局阅读器动作 (分页式使用横向滚动, top/bottom = 首末页)
+  useEffect(() => {
+    const actions = {
+      onPrev: () => data?.prev && navigate({ view: 'read', chapterId: data.prev.id }),
+      onNext: () => data?.next && navigate({ view: 'read', chapterId: data.next.id }),
+      onScrollTop: () => stageRef.current?.scrollTo({ left: 0, behavior: 'smooth' }),
+      onScrollBottom: () => stageRef.current?.scrollTo({ left: stageRef.current.scrollWidth, behavior: 'smooth' }),
+    }
+    readerActionsRef.current = actions
+    return () => {
+      if (readerActionsRef.current === actions) readerActionsRef.current = {}
+    }
+  })
 
   // 夜间调色（与旧版语义一致）
   const stageBg = night ? (theme.dark ? 'rgba(0,0,0,0.45)' : '#15171c') : v.surface
@@ -146,12 +161,16 @@ export function ReadPaginated({
   }
 
   // 键盘翻页（舞台聚焦时）
+  // feat-round-5 B1: stopPropagation 防止冒泡到 window, 让 ReadView 全局快捷键的
+  // ArrowLeft/Right 在舞台聚焦时仍走页内翻页, 而非章节切换
   const onStageKey = (e: ReactKeyboardEvent) => {
     if (e.key === 'ArrowRight' || e.key === 'PageDown') {
       e.preventDefault()
+      e.stopPropagation()
       goPage(1)
     } else if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
       e.preventDefault()
+      e.stopPropagation()
       goPage(-1)
     }
   }
@@ -249,6 +268,7 @@ export function ReadPaginated({
             style={{ border: `1px solid ${lineColor}`, color: v.text, borderRadius: v.radius, background: withAlpha(v.surfaceAlt, night ? 0.15 : 0.6) }}
             aria-label="打开章节目录抽屉"
             aria-expanded={drawer}
+            data-reader-toc-trigger=""
           >
             <ListTree className="h-3.5 w-3.5" aria-hidden />
             目录

@@ -6,7 +6,8 @@
 // ============================================================
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import type { CSSProperties } from 'react'
 import { ArrowUpToLine, ChevronLeft, ChevronRight, ListTree } from 'lucide-react'
 import { readOf } from '@/lib/crawl/themes'
 import { usePublic } from '../ctx'
@@ -21,6 +22,7 @@ import {
   TocDrawer,
   actualFontPx,
   contentToHtml,
+  readerActionsRef,
   textureStyle,
   useReadPosMemory,
   useReadingProgress,
@@ -69,6 +71,21 @@ export function ReadClassic({
       setBookmarked(next)
     }
   }
+
+  // feat-round-5 B1: 注册全局阅读器动作 (供 ReadView 键盘快捷键派发)
+  // useEffect 无 deps — 每次 render 后写入最新闭包, 卸载时清空 (避免读到陈旧 data)
+  useEffect(() => {
+    const actions = {
+      onPrev: () => data?.prev && navigate({ view: 'read', chapterId: data.prev.id }),
+      onNext: () => data?.next && navigate({ view: 'read', chapterId: data.next.id }),
+      onScrollTop: () => window.scrollTo({ top: 0, behavior: 'smooth' }),
+      onScrollBottom: () => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' }),
+    }
+    readerActionsRef.current = actions
+    return () => {
+      if (readerActionsRef.current === actions) readerActionsRef.current = {}
+    }
+  })
 
   // 夜间调色（与旧版语义一致：暗主题更沉, 浅主题切深底）
   const panelBg = night
@@ -159,6 +176,7 @@ export function ReadClassic({
             style={{ border: `1px solid ${lineColor}`, color: v.text, borderRadius: v.radius, background: withAlpha(v.surfaceAlt, night ? 0.15 : 0.6) }}
             aria-label="打开章节目录抽屉"
             aria-expanded={drawer}
+            data-reader-toc-trigger=""
           >
             <ListTree className="h-3.5 w-3.5" aria-hidden />
             目录
@@ -240,8 +258,12 @@ export function ReadClassic({
               }}
             >
               <div
-                className={read.indent ? '[&_p]:my-3 [&_p]:indent-8' : '[&_p]:my-4'}
-                style={read.justify ? { textAlign: 'justify' } : undefined}
+                className={`text-justify read-content-dropcap ${read.indent ? '[&_p]:my-3 [&_p]:indent-8' : '[&_p]:my-4'}`}
+                style={{
+                  ...(read.justify ? { textAlign: 'justify' } : null),
+                  '--reader-accent': decoColor,
+                  '--reader-title-font': v.titleFont,
+                } as CSSProperties}
                 dangerouslySetInnerHTML={{ __html: contentToHtml(ch.content) || '<p>本章节内容为空</p>' }}
               />
             </div>

@@ -158,3 +158,33 @@
 .animate-book-pulse {
   animation: bookPulse 2.4s ease-in-out infinite;
 }
+
+/* ============================================================
+ * feat-round-5 S3: 阅读器首段首字下沉 (drop-cap)
+ * 仅 .read-content-dropcap 容器的第一个 <p> 的首字应用大字 + 主题色 + 浮动
+ * ============================================================ */
+.read-content-dropcap > p:first-of-type::first-letter {
+  float: left;
+  font-size: 3.2em;
+  line-height: 0.85;
+  margin: 0.1em 0.12em 0 0;
+  font-weight: 700;
+  color: var(--reader-accent, currentColor);
+  font-family: var(--reader-title-font, inherit);
+}
+
+/* feat-round-5 S2: 自定义滚动条 (TOC 等长列表区) */
+.reader-scroll-fine {
+  scrollbar-width: thin;
+}
+.reader-scroll-fine::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.reader-scroll-fine::-webkit-scrollbar-thumb {
+  background: rgba(128, 128, 128, 0.35);
+  border-radius: 3px;
+}
+.reader-scroll-fine::-webkit-scrollbar-track {
+  background: transparent;
+}

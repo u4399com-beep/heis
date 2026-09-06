@@ -16,7 +16,7 @@ export function BookCard({ book }: { book: BookItem }) {
   const v = theme.vars
   return (
     <article
-      className="group cursor-pointer overflow-hidden transition-all duration-200 hover:-translate-y-1 hover:shadow-lg"
+      className="group relative cursor-pointer overflow-hidden transition-all duration-200 hover:-translate-y-1 hover:shadow-lg"
       style={{
         background: v.surface,
         border: `1px solid ${v.border}`,
@@ -26,6 +26,8 @@ export function BookCard({ book }: { book: BookItem }) {
       {...bookNavProps(navigate, book.id)}
       aria-label={`查看《${book.name}》详情`}
     >
+      {/* feat-round-5 S1: 封面梯度光晕 (hover 时显现) */}
+      <div aria-hidden className="pointer-events-none absolute -inset-2 -z-10 opacity-0 blur-2xl transition-opacity duration-300 group-hover:opacity-70" style={{ background: `radial-gradient(circle at 50% 25%, ${withAlpha(v.primary, 0.5)}, transparent 70%)` }} />
       <div className="relative">
         <BookCover name={book.name} cover={book.cover} className="aspect-[3/4] w-full" />
         <span className="absolute left-2 top-2">
@@ -98,6 +100,8 @@ export function BookPoster({ book }: { book: BookItem }) {
       {...bookNavProps(navigate, book.id)}
       aria-label={`查看《${book.name}》详情`}
     >
+      {/* feat-round-5 S1: 海报梯度光晕 (hover 时显现) */}
+      <div aria-hidden className="pointer-events-none absolute -inset-2 -z-10 opacity-0 blur-2xl transition-opacity duration-300 group-hover:opacity-70" style={{ background: `radial-gradient(circle at 50% 25%, ${withAlpha(v.primary, 0.5)}, transparent 70%)` }} />
       <BookCover name={book.name} cover={book.cover} className="aspect-[3/4] w-full" />
       <div
         className="absolute inset-x-0 bottom-0 p-2.5 pt-8"

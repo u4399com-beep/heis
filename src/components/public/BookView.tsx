@@ -5,15 +5,17 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import type { CSSProperties } from 'react'
-import { Bookmark, ChevronLeft, ChevronRight, Clock, Download, Hash, ListTree } from 'lucide-react'
-import { fetchBook, type BookDetailData } from './data'
+import type { CSSProperties, ReactNode } from 'react'
+import { Bookmark, ChevronLeft, ChevronRight, Clock, Download, FileText, Hash, ListTree, Sparkles, Type } from 'lucide-react'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { Skeleton } from '@/components/ui/skeleton'
+import { fetchBook, fetchChapter, type BookDetailData } from './data'
 import { usePublic } from './ctx'
 import { coverSrc, fmtDate, formatWords, statusLabel, useSiteSEO, withAlpha } from './seo'
 import { BookCover } from './BookCover'
 import { EmptyState, ErrorState, SecTitle, Sk, StatusBadge, TagCloud } from './bits'
 import { ReadFirstButton } from './BookCard'
-import type { BookTagHit, TocChapter } from './types'
+import type { BookItem, BookTagHit, TocChapter } from './types'
 import { getReadPos, formatReadTimeShort } from './read-layouts/reading-memory'
 
 function TocSkeleton({ themeId }: { themeId: string }) {
@@ -40,6 +42,255 @@ function TocSkeleton({ themeId }: { themeId: string }) {
   )
 }
 
+/* ---------- feat-round-5 A2: 章节预览 tooltip (hover 300ms debounce + cache) ---------- */
+
+/** 把章节正文 HTML 截成纯文本预览 (去标签 + 实体解码 + 取前 N 字) */
+function htmlToPreview(html: string, max = 100): string {
+  if (!html) return ''
+  // 容错: 没有 DOMParser 时直接 strip 标签
+  if (typeof document === 'undefined') {
+    return html
+      .replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&amp;/g, '&')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, max)
+  }
+  try {
+    const tmp = document.createElement('div')
+    tmp.innerHTML = html
+    const text = (tmp.textContent || tmp.innerText || '').replace(/\s+/g, ' ').trim()
+    return text.slice(0, max)
+  } catch {
+    return ''
+  }
+}
+
+interface PreviewState {
+  text: string
+  loading: boolean
+}
+
+function TocChapterButton({
+  ch,
+  current,
+  cache,
+  onClick,
+  className,
+  style,
+  ariaLabel,
+  children,
+}: {
+  ch: TocChapter
+  current: boolean
+  cache: React.MutableRefObject<Map<string, string>>
+  onClick: () => void
+  className?: string
+  style?: CSSProperties
+  ariaLabel?: string
+  children: ReactNode
+}) {
+  const [preview, setPreview] = useState<PreviewState | null>(null)
+  const timerRef = useRef<number>(0)
+
+  const onEnter = () => {
+    if (cache.current.has(ch.id)) {
+      setPreview({ text: cache.current.get(ch.id)!, loading: false })
+      return
+    }
+    setPreview({ text: '', loading: true })
+    if (timerRef.current) window.clearTimeout(timerRef.current)
+    timerRef.current = window.setTimeout(() => {
+      fetchChapter(ch.id)
+        .then((d) => {
+          const text = htmlToPreview(d.chapter.content, 100)
+          cache.current.set(ch.id, text)
+          setPreview({ text, loading: false })
+        })
+        .catch(() => setPreview({ text: '', loading: false }))
+    }, 300)
+  }
+
+  const onLeave = () => {
+    if (timerRef.current) window.clearTimeout(timerRef.current)
+  }
+
+  return (
+    <Tooltip delayDuration={300}>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={onClick}
+          onMouseEnter={onEnter}
+          onMouseLeave={onLeave}
+          onFocus={onEnter}
+          onBlur={onLeave}
+          className={className}
+          style={style}
+          aria-label={ariaLabel}
+          aria-current={current ? 'true' : undefined}
+        >
+          {children}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent
+        side="top"
+        align="center"
+        sideOffset={4}
+        className="max-w-xs border p-3 shadow-xl"
+        style={{ background: 'var(--popover, #fff)', color: 'var(--popover-foreground, #1a1a1a)', borderColor: 'var(--border, #e5e7eb)' }}
+      >
+        {preview?.loading ? (
+          <div className="space-y-1.5" aria-live="polite">
+            <Skeleton className="h-3 w-56" />
+            <Skeleton className="h-3 w-44" />
+            <Skeleton className="h-3 w-40" />
+          </div>
+        ) : (
+          <p className="line-clamp-3 text-xs leading-relaxed">{preview?.text || '暂无预览'}</p>
+        )}
+        <p className="mt-2 border-t pt-1.5 text-[10px] opacity-70" style={{ borderColor: 'var(--border, #e5e7eb)' }}>
+          {ch.wordCount.toLocaleString()} 字 · 点击阅读
+        </p>
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+/* ---------- feat-round-5 A3: 阅读统计条 ---------- */
+
+function BookStatsBar({ chapters, wordCount }: { chapters: number; wordCount: number }) {
+  const { theme } = usePublic()
+  const v = theme.vars
+  const avg = chapters > 0 ? Math.round(wordCount / chapters) : 0
+  // 300 字/分钟 → 分钟, 转小时 + 分钟
+  const mins = wordCount > 0 ? Math.round(wordCount / 300) : 0
+  const hh = Math.floor(mins / 60)
+  const mm = mins % 60
+  const readTimeStr = mins <= 0 ? '—' : hh > 0 ? `${hh} 小时${mm > 0 ? ` ${mm} 分` : ''}` : `${mm} 分钟`
+
+  const chipBase =
+    'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] tabular-nums'
+  const chipStyle: CSSProperties = {
+    background: withAlpha(v.primary, theme.dark ? 0.14 : 0.08),
+    color: v.text,
+    border: `1px solid ${withAlpha(v.border, 0.6)}`,
+  }
+  const muted: CSSProperties = { color: v.textMuted }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className={chipBase} style={chipStyle}>
+        <FileText className="h-3 w-3" style={{ color: v.primary }} aria-hidden />
+        <span style={muted}>章节</span>
+        <span className="font-semibold">{chapters.toLocaleString()}</span>
+      </span>
+      <span className={chipBase} style={chipStyle}>
+        <Type className="h-3 w-3" style={{ color: v.primary }} aria-hidden />
+        <span style={muted}>总字数</span>
+        <span className="font-semibold">{formatWords(wordCount)}</span>
+      </span>
+      <span className={chipBase} style={chipStyle}>
+        <Sparkles className="h-3 w-3" style={{ color: v.primary }} aria-hidden />
+        <span style={muted}>平均</span>
+        <span className="font-semibold">{avg.toLocaleString()}</span>
+        <span style={muted}>字/章</span>
+      </span>
+      <span className={chipBase} style={chipStyle}>
+        <Clock className="h-3 w-3" style={{ color: v.primary }} aria-hidden />
+        <span style={muted}>约</span>
+        <span className="font-semibold">{readTimeStr}</span>
+        <span style={muted}>阅读</span>
+      </span>
+    </div>
+  )
+}
+
+/* ---------- feat-round-5 A1: 相关推荐 ---------- */
+
+function RelatedBooks({ bookId, siteId }: { bookId: string; siteId: string }) {
+  const { theme, navigate } = usePublic()
+  const v = theme.vars
+  const [books, setBooks] = useState<BookItem[] | null>(null)
+  useEffect(() => {
+    let alive = true
+    fetch(`/api/public/related?id=${encodeURIComponent(bookId)}&site=${encodeURIComponent(siteId)}&limit=6`)
+      .then((r) => r.json())
+      .then((j: { ok?: boolean; data?: { books?: BookItem[] } }) => {
+        if (!alive) return
+        if (j?.ok && Array.isArray(j.data?.books)) setBooks(j.data!.books!)
+        else setBooks([])
+      })
+      .catch(() => alive && setBooks([]))
+    return () => {
+      alive = false
+    }
+  }, [bookId, siteId])
+
+  if (books === null) {
+    return (
+      <section className="pt-8" aria-label="相关推荐">
+        <div className="mb-4 flex items-center gap-2">
+          <Sparkles className="h-4 w-4" style={{ color: v.primary }} aria-hidden />
+          <h2 className="text-sm font-bold tracking-widest" style={{ color: v.text }}>相关推荐</h2>
+        </div>
+        <div className="grid grid-cols-3 gap-3 sm:grid-cols-6">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="space-y-1.5">
+              <Sk className="aspect-[3/4] w-full" />
+              <Sk className="h-3 w-full" />
+              <Sk className="h-2.5 w-2/3" />
+            </div>
+          ))}
+        </div>
+      </section>
+    )
+  }
+  if (books.length === 0) return null
+
+  return (
+    <section className="pt-8" aria-label="相关推荐">
+      <div className="mb-4 flex items-center gap-2">
+        <Sparkles className="h-4 w-4" style={{ color: v.primary }} aria-hidden />
+        <h2 className="text-sm font-bold tracking-widest" style={{ color: v.text }}>相关推荐</h2>
+      </div>
+      <div className="grid grid-cols-3 gap-3 sm:grid-cols-6">
+        {books.map((b) => (
+          <article
+            key={b.id}
+            role="button"
+            tabIndex={0}
+            onClick={() => navigate({ view: 'book', bookId: b.id })}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                navigate({ view: 'book', bookId: b.id })
+              }
+            }}
+            className="group cursor-pointer overflow-hidden transition-transform duration-200 hover:-translate-y-0.5"
+            style={{
+              background: v.surface,
+              border: `1px solid ${withAlpha(v.border, 0.7)}`,
+              borderRadius: v.radius,
+            }}
+            aria-label={`查看《${b.name}》详情`}
+          >
+            <BookCover name={b.name} cover={b.cover} className="aspect-[3/4] w-full" />
+            <div className="space-y-0.5 p-1.5">
+              <h3 className="line-clamp-1 text-xs font-semibold" style={{ color: v.text }}>{b.name}</h3>
+              <p className="line-clamp-1 text-[10px]" style={{ color: v.textMuted }}>{b.author}</p>
+              <p className="text-[10px] tabular-nums" style={{ color: v.primary }}>{formatWords(b.wordCount)}</p>
+            </div>
+          </article>
+        ))}
+      </div>
+    </section>
+  )
+}
+
 interface FetchState {
   key: string
   data?: BookDetailData
@@ -52,6 +303,13 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
   const [state, setState] = useState<FetchState | null>(null)
   const tocRef = useRef<HTMLDivElement>(null)
   const firstRender = useRef(true)
+  // feat-round-5 A2: 章节预览缓存 (跨翻页共享, 同 BookView 生命周期内复用)
+  const previewCacheRef = useRef<Map<string, string>>(new Map())
+  // feat-round-5 S2: 当前章节高亮 — 来自 URL ?chapter=<id> (读者跳回详情页时)
+  const [currentChapterId, setCurrentChapterId] = useState<string | undefined>(() => {
+    if (typeof window === 'undefined') return undefined
+    return new URLSearchParams(window.location.search).get('chapter') || undefined
+  })
   // feat-a D: 上次阅读位置 + 累计阅读时长徽章 (localStorage, 数据加载时读一次)
   // 使用 render-time 检测 bookId 变化模式 (与 ReadView 的 prevCh 同款), 避免 effect 内同步 setState
   const [savedPos, setSavedPos] = useState<ReturnType<typeof getReadPos> | null>(null)
@@ -59,7 +317,15 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
   if (prevBookId !== bookId) {
     setPrevBookId(bookId)
     setSavedPos(bookId ? getReadPos(bookId) : null)
+    if (typeof window !== 'undefined') {
+      setCurrentChapterId(new URLSearchParams(window.location.search).get('chapter') || undefined)
+    }
   }
+  // feat-round-5 A2: 切书时清空预览缓存 (在 effect 内执行, 避免在 render 阶段写 ref)
+  useEffect(() => {
+    if (!bookId) return
+    previewCacheRef.current = new Map()
+  }, [bookId])
 
   const key = `${bookId || ''}|${tocPage}|${site.id}`
 
@@ -167,17 +433,19 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
         return (
           <div data-pili-toc className="grid grid-cols-1 gap-x-8 sm:grid-cols-2 lg:grid-cols-4">
             {list.map((ch) => (
-              <button
+              <TocChapterButton
                 key={ch.id}
-                type="button"
+                ch={ch}
+                current={ch.id === currentChapterId}
+                cache={previewCacheRef}
                 onClick={() => go(ch)}
                 className="flex min-h-[36px] w-full items-center gap-2 border-b py-2 text-left text-[13px] transition-colors hover:text-[#fd8929]"
-                style={{ borderColor: withAlpha(v.border, 0.55), color: v.text }}
-                aria-label={`阅读 ${ch.title}`}
+                style={{ borderColor: withAlpha(v.border, 0.55), color: ch.id === currentChapterId ? v.primary : v.text, background: ch.id === currentChapterId ? withAlpha(v.primary, theme.dark ? 0.16 : 0.08) : undefined }}
+                ariaLabel={`阅读 ${ch.title}`}
               >
                 <span className="shrink-0 text-[11px] tabular-nums" style={{ color: v.textMuted }}>{ch.idx}.</span>
                 <span className="line-clamp-1 flex-1">{ch.title}</span>
-              </button>
+              </TocChapterButton>
             ))}
           </div>
         )
@@ -187,16 +455,18 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
         return (
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
             {list.map((ch) => (
-              <button
+              <TocChapterButton
                 key={ch.id}
-                type="button"
+                ch={ch}
+                current={ch.id === currentChapterId}
+                cache={previewCacheRef}
                 onClick={() => go(ch)}
                 className="flex items-center gap-2 px-3 py-2 text-left text-sm transition-transform hover:-translate-y-0.5"
-                style={{ background: v.surface, border: `1px solid ${v.border}`, borderRadius: v.radius, color: v.text }}
+                style={{ background: ch.id === currentChapterId ? withAlpha(v.primary, theme.dark ? 0.16 : 0.08) : v.surface, border: `1px solid ${ch.id === currentChapterId ? v.primary : v.border}`, borderRadius: v.radius, color: ch.id === currentChapterId ? v.primary : v.text }}
               >
                 <span className="shrink-0 text-[10px] tabular-nums" style={{ color: v.accent }}>{String(ch.idx).padStart(3, '0')}</span>
                 <span className="line-clamp-1 flex-1">{ch.title}</span>
-              </button>
+              </TocChapterButton>
             ))}
           </div>
         )
@@ -207,16 +477,19 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
           <ol className="mx-auto max-w-2xl">
             {list.map((ch) => (
               <li key={ch.id} style={{ borderBottom: `1px dashed ${v.border}` }}>
-                <button
-                  type="button"
+                <TocChapterButton
+                  ch={ch}
+                  current={ch.id === currentChapterId}
+                  cache={previewCacheRef}
                   onClick={() => go(ch)}
                   className="flex w-full items-baseline gap-3 py-2.5 text-left transition-colors hover:opacity-70"
+                  style={ch.id === currentChapterId ? { background: withAlpha(v.primary, theme.dark ? 0.16 : 0.08) } : undefined}
                 >
                   <span className="shrink-0 text-xs tabular-nums" style={{ color: v.textMuted }}>{String(ch.idx).padStart(2, '0')}</span>
-                  <span className="flex-1 text-sm" style={{ color: v.text, fontFamily: v.titleFont }}>{ch.title}</span>
+                  <span className="flex-1 text-sm" style={{ color: ch.id === currentChapterId ? v.primary : v.text, fontFamily: v.titleFont }}>{ch.title}</span>
                   <span className="mx-1 hidden flex-1 border-b border-dotted sm:block" style={{ borderColor: v.textMuted }} aria-hidden />
                   <span className="shrink-0 text-[11px] tabular-nums" style={{ color: v.textMuted }}>{ch.wordCount}字</span>
-                </button>
+                </TocChapterButton>
               </li>
             ))}
           </ol>
@@ -227,15 +500,17 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
         return (
           <div className="flex flex-wrap gap-2">
             {list.map((ch) => (
-              <button
+              <TocChapterButton
                 key={ch.id}
-                type="button"
+                ch={ch}
+                current={ch.id === currentChapterId}
+                cache={previewCacheRef}
                 onClick={() => go(ch)}
                 className="px-3.5 py-2 text-sm font-medium transition-transform hover:scale-105"
-                style={{ background: v.surfaceAlt, border: `1px solid ${v.border}`, borderRadius: 999, color: v.text }}
+                style={{ background: ch.id === currentChapterId ? withAlpha(v.primary, theme.dark ? 0.16 : 0.08) : v.surfaceAlt, border: `1px solid ${ch.id === currentChapterId ? v.primary : v.border}`, borderRadius: 999, color: ch.id === currentChapterId ? v.primary : v.text }}
               >
                 {ch.idx}. {ch.title}
-              </button>
+              </TocChapterButton>
             ))}
           </div>
         )
@@ -245,17 +520,19 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
         return (
           <div className="gap-x-12 md:columns-2">
             {list.map((ch) => (
-              <button
+              <TocChapterButton
                 key={ch.id}
-                type="button"
+                ch={ch}
+                current={ch.id === currentChapterId}
+                cache={previewCacheRef}
                 onClick={() => go(ch)}
                 className="flex w-full items-center gap-3 border-b py-2.5 text-left text-sm transition-colors hover:opacity-60"
-                style={{ borderColor: withAlpha(v.border, 0.7), color: v.text, breakInside: 'avoid' }}
+                style={{ borderColor: withAlpha(v.border, 0.7), color: ch.id === currentChapterId ? v.primary : v.text, breakInside: 'avoid', background: ch.id === currentChapterId ? withAlpha(v.primary, theme.dark ? 0.14 : 0.06) : undefined }}
               >
                 <span className="w-6 shrink-0 text-[10px] tabular-nums" style={{ color: v.textMuted }}>{ch.idx}</span>
                 <span className="line-clamp-1 flex-1">{ch.title}</span>
                 <span className="shrink-0 text-[10px] tabular-nums" style={{ color: v.textMuted }}>{ch.wordCount}</span>
-              </button>
+              </TocChapterButton>
             ))}
           </div>
         )
@@ -266,17 +543,20 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
           <ol className="divide-y" style={{ borderColor: withAlpha(v.border, 0.7) }}>
             {list.map((ch) => (
               <li key={ch.id}>
-                <button
-                  type="button"
+                <TocChapterButton
+                  ch={ch}
+                  current={ch.id === currentChapterId}
+                  cache={previewCacheRef}
                   onClick={() => go(ch)}
                   className="flex w-full items-baseline gap-3 py-2.5 text-left transition-colors hover:opacity-75"
+                  style={ch.id === currentChapterId ? { background: withAlpha(v.primary, theme.dark ? 0.14 : 0.06) } : undefined}
                 >
                   <span className="w-8 shrink-0 text-right text-sm font-black italic tabular-nums" style={{ color: v.accent, fontFamily: v.titleFont }}>
                     {ch.idx}
                   </span>
-                  <span className="flex-1 text-sm" style={{ color: v.text, fontFamily: v.titleFont }}>{ch.title}</span>
+                  <span className="flex-1 text-sm" style={{ color: ch.id === currentChapterId ? v.primary : v.text, fontFamily: v.titleFont }}>{ch.title}</span>
                   <span className="shrink-0 text-[10px] tabular-nums" style={{ color: v.textMuted }}>{ch.wordCount}字</span>
-                </button>
+                </TocChapterButton>
               </li>
             ))}
           </ol>
@@ -286,11 +566,14 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
       return (
         <div className="divide-y" style={{ borderColor: withAlpha(v.border, 0.7) }}>
           {list.map((ch) => (
-            <button
+            <TocChapterButton
               key={ch.id}
-              type="button"
+              ch={ch}
+              current={ch.id === currentChapterId}
+              cache={previewCacheRef}
               onClick={() => go(ch)}
               className="flex w-full items-center gap-3 py-2.5 text-left transition-colors hover:bg-white/5"
+              style={ch.id === currentChapterId ? { background: withAlpha(v.primary, theme.dark ? 0.18 : 0.1) } : undefined}
             >
               <span
                 className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold tabular-nums"
@@ -298,9 +581,9 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
               >
                 EP{String(ch.idx).padStart(2, '0')}
               </span>
-              <span className="line-clamp-1 flex-1 text-sm" style={{ color: v.text }}>{ch.title}</span>
+              <span className="line-clamp-1 flex-1 text-sm" style={{ color: ch.id === currentChapterId ? v.primary : v.text }}>{ch.title}</span>
               <span className="shrink-0 text-[10px] tabular-nums" style={{ color: v.textMuted }}>{formatWords(ch.wordCount)}</span>
-            </button>
+            </TocChapterButton>
           ))}
         </div>
       )
@@ -374,6 +657,8 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
             <section data-pili-book style={panelStyle} className="p-5 sm:p-7" aria-label="书籍信息">
               <div className="flex flex-col gap-6 sm:flex-row sm:gap-8">
                 <div className="relative mx-auto w-40 shrink-0 sm:mx-0 sm:w-48">
+                  {/* feat-round-5 S1: 封面梯度光晕 (halo) */}
+                  <div aria-hidden className="pointer-events-none absolute -inset-3 -z-10 opacity-70 blur-2xl" style={{ background: `radial-gradient(circle at 50% 30%, ${withAlpha(v.primary, 0.45)}, transparent 70%)` }} />
                   <BookCover name={book.name} cover={book.cover} showAuthor={book.author} className="aspect-[3/4] w-full" />
                   {(book.status === 'completed' || book.status === 'ongoing') && (
                     <span
@@ -467,7 +752,9 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
           <section style={panelStyle} className="p-5 sm:p-7" aria-label="书籍信息">
             <div className="flex flex-col gap-5 sm:flex-row sm:gap-7">
               <div className="mx-auto shrink-0 sm:mx-0">
-                <div className={coverW}>
+                <div className={`relative ${coverW}`}>
+                  {/* feat-round-5 S1: 封面梯度光晕 (halo) */}
+                  <div aria-hidden className="pointer-events-none absolute -inset-3 -z-10 opacity-70 blur-2xl" style={{ background: `radial-gradient(circle at 50% 30%, ${withAlpha(v.primary, 0.45)}, transparent 70%)` }} />
                   <div
                     className={theme.id === 'rose' ? 'p-1' : ''}
                     style={theme.id === 'rose' ? { border: `2px solid ${v.accent}`, borderRadius: v.radius, background: v.bg } : undefined}
@@ -567,6 +854,14 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
           </section>
           )}
 
+          {/* feat-round-5 A3: 阅读统计条 */}
+          <div className="mt-4">
+            <BookStatsBar chapters={data?.tocTotal || chapters.length || 0} wordCount={book.wordCount} />
+          </div>
+
+          {/* feat-round-5 S2: 分隔线 */}
+          <div aria-hidden className="mt-6 h-px" style={{ background: withAlpha(v.border, 0.45) }} />
+
           {/* 标签云 */}
           {tags.length > 0 && theme.id !== 'pili' && (
             <section className="pt-6" aria-label="本书标签">
@@ -577,6 +872,9 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
               <TagCloud tags={tags.slice(0, 16).map((t) => t.tag)} />
             </section>
           )}
+
+          {/* feat-round-5 S2: 分隔线 */}
+          <div aria-hidden className="mt-6 h-px" style={{ background: withAlpha(v.border, 0.45) }} />
 
           {/* 目录 */}
           <section ref={tocRef} className="scroll-mt-6 pt-8" aria-label="章节目录">
@@ -639,6 +937,12 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
               </div>
             )}
           </section>
+
+          {/* feat-round-5 S2: 分隔线 */}
+          <div aria-hidden className="mt-6 h-px" style={{ background: withAlpha(v.border, 0.45) }} />
+
+          {/* feat-round-5 A1: 相关推荐 */}
+          <RelatedBooks bookId={book.id} siteId={site.id} />
         </>
       )}
     </div>

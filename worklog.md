@@ -940,3 +940,126 @@ Stage Summary:
 - Files created: src/app/api/public/sites/route.ts, src/components/public/HistoryView.tsx, src/components/public/search-history.ts
 - Files modified: src/components/public/data.ts (critical fix), PublicSite.tsx, ctx.tsx, page.tsx, SiteHeader.tsx, SearchView.tsx, ReadView.tsx, BookCard.tsx
 - All quality gates green; public site fully functional again; new features verified via agent-browser
+
+---
+Task ID: feat-round-5
+Agent: Book detail + reader enhancements + style polish
+Task: Related books recommendation + chapter preview tooltip + reading stats + keyboard shortcuts + progress bar + chapter transition + drop-cap + card glow
+
+Work Log:
+- Read worklog (prior rounds: reader enhancement, dashboard viz, history/书架 page, search suggestions). Read BookView.tsx (646 lines), ReadView.tsx (137 lines), shared.tsx (969 lines), 4 read layouts (ReadClassic/Immersive/Paginated/Pili), BookCard.tsx, globals.css, /api/public/book/route.ts, /api/public/chapter/route.ts, /api/public/books/route.ts, bits.tsx, ctx.tsx, types.ts, tooltip/dialog/skeleton shadcn components, PublicSite.tsx render dispatch (to understand BookView prop wiring).
+- Created `src/app/api/public/related/route.ts` — `GET ?id=<bookId>&site=<siteId>&limit=6`. Step1: same-category by wordCount desc. Step2: fill with global top-by-wordCount. Excludes current + already-selected. Returns `{books: BookItem[]}` (id/name/author/cover/status/wordCount/category/categoryId). curl test → 200 with 5 books for the lone-category test book (草原上的骑兵, 历史 category).
+- Modified `src/components/public/BookView.tsx`:
+  * Imports: added FileText/Type/Sparkles lucide icons, Tooltip/TooltipContent/TooltipTrigger from shadcn, Skeleton, fetchChapter from data, BookItem type, CSSProperties+ReactNode types.
+  * Added `htmlToPreview(html, max=100)` helper — strips HTML via DOMParser, returns first 100 chars of plain text. SSR-safe fallback (regex strip).
+  * Added `TocChapterButton` component — wraps each TOC entry with shadcn Tooltip. onMouseEnter/onFocus triggers 300ms-debounced fetchChapter → cache in `previewCacheRef` (useRef<Map<string,string>> in BookView). Tooltip content: 3-line preview + wordCount + 点击阅读. Skeleton while loading. Carries `aria-current` for current-chapter highlight.
+  * Added `BookStatsBar` component — 4 chips (FileText/Type/Sparkles/Clock icons): 章节 (chapters) / 总字数 (totalWords via formatWords) / 平均 X 字/章 (avg) / 约 X 小时阅读 (300字/分钟 → hh + mm). Responsive flex-wrap.
+  * Added `RelatedBooks` component — fetches /api/public/related on mount. 3-col mobile / 6-col desktop grid. Each card: BookCover + name + author + wordCount. Skeleton while loading. Empty: renders nothing (no section).
+  * BookView body: added previewCacheRef + currentChapterId state (init from URL ?chapter=). On bookId change render-time check: clears cache via useEffect (avoid ref mutation during render).
+  * Replaced all 7 theme-variant TOC `<button>` blocks with `<TocChapterButton ch={ch} current={ch.id === currentChapterId} cache={previewCacheRef} ...>`. Each variant preserves its theme-specific className/style; current-chapter highlight via `aria-current` + colored bg/text.
+  * Added gradient glow div (radial-gradient circle at 50% 30% primary 45% → transparent 70%, blur-2xl, opacity-70) behind both pili & non-pili covers.
+  * Added BookStatsBar after book info section + 3 dividers (h-px withAlpha(border 0.45)) between sections (info→tags→TOC→related).
+  * Added RelatedBooks section after TOC.
+- Modified `src/components/public/BookCard.tsx`:
+  * BookCard: added `group relative` class + gradient glow div (opacity-0 → group-hover:opacity-70 transition).
+  * BookPoster: same gradient glow (hover-revealed).
+- Modified `src/components/public/read-layouts/shared.tsx`:
+  * Added `ReaderActions` interface + `readerActionsRef: { current: ReaderActions }` module-level singleton.
+  * Added `data-reader-bookmark-trigger=""` attribute to BookmarkToggle button.
+  * Added `data-reader-settings-trigger=""` attribute to ReaderSettingsPopover trigger button.
+- Modified `src/components/public/read-layouts/ReadClassic.tsx`:
+  * Added useEffect import + CSSProperties type import.
+  * Added useEffect (no deps) registering readerActionsRef.current = { onPrev, onNext, onScrollTop (window.scrollTo), onScrollBottom (window.scrollTo scrollHeight) }. Cleanup clears ref if still ours.
+  * Added `data-reader-toc-trigger=""` to the toolbar TOC button.
+  * Added `read-content-dropcap` class + `--reader-accent`/`--reader-title-font` CSS vars (decoColor/v.titleFont) to the content div for S3 drop-cap.
+- Modified `src/components/public/read-layouts/ReadImmersive.tsx`:
+  * Added readerActionsRef import + useEffect registration. onScrollTop/onScrollBottom use scrollerRef (internal scroller).
+  * Added `data-reader-toc-trigger=""` to the header TOC button.
+  * (No drop-cap per spec — immersive has different aesthetic.)
+- Modified `src/components/public/read-layouts/ReadPaginated.tsx`:
+  * Added readerActionsRef import + useEffect registration. onScrollTop/onScrollBottom use stageRef (horizontal scroll → left=0 / left=scrollWidth).
+  * Added `e.stopPropagation()` to onStageKey (ArrowLeft/Right/PageUp/PageDown) so when stage has focus, window-level chapter-nav handler doesn't double-fire; page-flip wins.
+  * Added `data-reader-toc-trigger=""` to the toolbar TOC button.
+  * (No drop-cap per spec — paginated has different aesthetic.)
+- Modified `src/components/public/read-layouts/ReadPili.tsx`:
+  * Added useEffect import + CSSProperties type import + readerActionsRef import.
+  * Added useEffect registration (window.scrollTo for top/bottom).
+  * Added `data-reader-toc-trigger=""` (already implicit via the toolbar TOC button — pili's main TOC button is in the bottom nav; verified the existing button gets the attribute via the modified MultiEdit).
+  * Added `read-content-dropcap` class + CSS vars to the data-pili-content div for S3 drop-cap.
+- Modified `src/components/public/ReadView.tsx` (full rewrite):
+  * Added imports: Clock/HelpCircle/Keyboard lucide, Dialog/DialogContent/DialogHeader/DialogTitle, readerActionsRef + useReadingProgress from shared, withAlpha from seo.
+  * Added `direction: NavDirection` state ('next'|'prev'|'none').
+  * Render-time check `prevCh !== chapterId`: before clearing data, infer direction by comparing new chapterId with current `data.next.id` (→ next) / `data.prev.id` (→ prev) / else 'none'. Then setData(null) etc.
+  * Added useEffect keydown listener: ArrowLeft/Right → readerActionsRef.current.onPrev/onNext. Home/End → onScrollTop/onScrollBottom. b/B → click [data-reader-bookmark-trigger]. t/T → click [data-reader-toc-trigger]. s/S → click [data-reader-settings-trigger]. ? → toggle helpOpen. Escape → close help. Guarded against INPUT/TEXTAREA/SELECT/contentEditable focus.
+  * Added useReadingProgress(undefined, chapterId) for B2 top progress bar.
+  * Added `helpOpen` state + Dialog (keyboard shortcuts list, kbd-styled keys) + floating HelpCircle button at `fixed bottom-20 left-4 z-[60]` (above ReadPili's fixed bottom nav ~64px tall).
+  * Added `topProgressBar` (3px fixed top, z-[80], linear-gradient primary→accent, smooth width transition, glow box-shadow when progress > 0).
+  * Wrap key = `${chapterId}-${direction}` forces remount on both. slideClass: `animate-in fade-in slide-in-from-right-4 duration-300` (next) / `slide-in-from-left-4` (prev) / `fade-in` (none). tw-animate-css provides the slide-in keyframes.
+  * Wrapped all 4 layout dispatches in `<>` fragments with topProgressBar + slideClass wrapper + helpButton + helpDialog.
+- Modified `src/app/globals.css`:
+  * Added `.read-content-dropcap > p:first-of-type::first-letter` rule: float left, 3.2em font-size, 0.85 line-height, theme accent color via `var(--reader-accent, currentColor)`, theme title font via `var(--reader-title-font, inherit)`.
+  * Added `.reader-scroll-fine` scrollbar styling (6px thin) for future use.
+
+Test results:
+- `bun run lint` → 0 errors / 0 warnings.
+- `bunx tsc --noEmit` (excluding examples/skills) → 0 errors.
+- Dev server: `GET /?view=home` 200, `/?view=book&id=...` 200, `/?view=read&chapter=...` 200, `/api/public/related?id=...&limit=6` 200.
+- Compiled CSS contains `slide-in-from-right`, `slide-in-from-left`, `read-content-dropcap`.
+- agent-browser smoke (single short session, closed immediately after):
+  * Book detail page renders 4 sections (书籍信息 / 本书标签 / 章节目录 / 相关推荐). Stats chips (章节/总字数/平均/阅读) all present. 5 related books for the lone-category test book (草原上的骑兵, 历史). Gradient glow div (blur-2xl) present.
+  * Reader page (classic layout): 1 TOC trigger + 1 bookmark trigger + 1 settings trigger all carry data-attrs. `read-content-dropcap` class on content div. Help button (HelpCircle) at fixed bottom-20 left-4. Top progress bar (h-[3px]) at top.
+  * Keyboard shortcuts: `?` → help dialog opens (shows 9 shortcuts list with kbd-styled keys). Esc → dialog closes. ArrowRight → URL chapter id changes from `...005s...` to `...005t...` (next chapter). `b` → bookmark icon flips from lucide-bookmark to lucide-bookmark-check (fill-current). `t` → TOC drawer (role=dialog aria-label="章节目录") opens. Esc → drawer closes.
+  * No errors in dev log after browser test.
+
+Stage Summary:
+- Files created (2): `src/app/api/public/related/route.ts`, `agent-ctx/feat-round-5-book-reader-enhancement.md`.
+- Files modified (9): `src/components/public/BookView.tsx`, `src/components/public/BookCard.tsx`, `src/components/public/ReadView.tsx`, `src/components/public/read-layouts/shared.tsx`, `src/components/public/read-layouts/ReadClassic.tsx`, `src/components/public/read-layouts/ReadImmersive.tsx`, `src/components/public/read-layouts/ReadPaginated.tsx`, `src/components/public/read-layouts/ReadPili.tsx`, `src/app/globals.css`.
+- Features delivered:
+  * A1: /api/public/related endpoint + 相关推荐 section in BookView (3-col mobile / 6-col desktop grid of 6 cards, same-category first then global top-by-wordCount fill).
+  * A2: Chapter preview tooltip on every TOC entry (all 7 theme variants), 300ms debounce + Map cache, first 100 chars + wordCount + 点击阅读 hint, skeleton while loading.
+  * A3: Reading stats bar (章节/总字数/平均字/章/约阅读时长) below book info, responsive flex-wrap chips with FileText/Type/Sparkles/Clock icons.
+  * B1: Keyboard shortcuts across all 4 read layouts (←/→/Home/End/b/t/s/?/Esc). Help dialog with shortcut list. Floating HelpCircle button bottom-left.
+  * B2: Top 3px progress bar at fixed top-0 z-[80] (window-scroll for classic/pili; immersive/paginated keep their own internal bars since window doesn't scroll there).
+  * B3: Chapter transition slide animation — direction auto-inferred from old data.prev/next.id comparison; next slides from right, prev from left, drawer jumps fade only. tw-animate-css provides slide-in keyframes; wrapKey includes direction to force remount.
+  * S1: Gradient glow (radial-gradient primary 45% → transparent 70% + blur-2xl) behind BookView covers (pili & non-pili) and BookCard/BookPoster (hover-revealed opacity-0 → 70).
+  * S2: 3 dividers between BookView sections (info→tags→TOC→related). Current-chapter highlight in TOC (URL ?chapter= → aria-current + colored bg/text in all 7 theme variants).
+  * S3: Drop-cap on first paragraph (CSS `::first-letter` 3.2em float-left) for ReadClassic + ReadPili via `.read-content-dropcap` class + `--reader-accent` / `--reader-title-font` CSS vars. ReadImmersive + ReadPaginated intentionally skip drop-cap per spec.
+- Constraints honored: only touched allowed files; created new /api/public/related (left /api/public/book untouched); all new client components are 'use client'; reused existing shadcn (Tooltip/Skeleton/Dialog) + lucide-react + tw-animate-css; readerActionsRef + useEffect pattern avoids module-level mutation during render (eslint react-hooks/immutability clean).
+
+---
+Task ID: feat-round-5
+Agent: Book detail + reader enhancements + style polish
+Task: Related books + chapter preview tooltip + reading stats + keyboard shortcuts + progress bar + chapter transition + drop-cap + card glow
+
+Work Log:
+- QA baseline: lint 0/0, tsc 0, dev server stable. All public APIs 200 (sites/categories/books/book/search/keyword/tags/related). Public site loads "dewew" correctly. Bookshelf + search suggestions + reader features all work. OOM awareness: sandbox 4GB, agent-browser + next-server can OOM if both heavy — tested primarily with curl, agent-browser only for single short sessions.
+- Feature A1 (Related books recommendation):
+  - Created `src/app/api/public/related/route.ts` — GET ?id=&site=&limit=6. Same-category books by wordCount desc first, fill with global top by wordCount. Returns 1-6 books.
+  - BookView.tsx: 相关注荐 section (region), responsive grid 3-col mobile / 6-col desktop, compact cards with cover/name/author/wordCount, clickable navigation.
+- Feature A2 (Chapter preview tooltip):
+  - shared.tsx: TocChapterButton wraps every TOC entry across all 7 theme variants. 300ms hover debounce + useRef<Map> cache. Skeleton while loading, shows first 100 chars + wordCount + 点击阅读 hint.
+- Feature A3 (Reading stats bar):
+  - BookView: 4 chips with icons (FileText 章节 / Type 总字数 / Sparkles 平均 X 字/章 / Clock 约 X 小时阅读 @ 300字/分钟).
+- Feature B1 (Keyboard shortcuts):
+  - shared.tsx + ReadView: ←/→ prev/next, Home/End scroll top/bottom, b bookmark, t TOC, s settings, ? help, Esc close. Module-level readerActionsRef + DOM-click triggers via data-reader-*-trigger. Floating HelpCircle button + Dialog with shortcut list. Guards against input/textarea focus.
+- Feature B2 (Top reading progress bar):
+  - ReadView: 3px fixed top-0 z-[80] linear-gradient primary→accent + smooth width transition. Wraps all 4 layouts.
+- Feature B3 (Chapter transition slide):
+  - ReadView: direction auto-inferred from old data.prev/next.id comparison at chapterId change. wrapKey includes direction → forces remount → slide-in-from-right-4 (next) / slide-in-from-left-4 (prev) / fade-only (drawer jumps).
+- Style S1 (Cover gradient glow):
+  - BookView + BookCard: radial-gradient primary 45% → transparent 70% + blur-2xl. Static for BookView covers (pili & non-pili); hover-revealed for BookCard.
+- Style S2 (Layout refinement):
+  - BookView: 3 dividers between sections; current-chapter highlight (aria-current + colored bg/text) in TOC when URL has ?chapter=.
+- Style S3 (Drop-cap):
+  - globals.css: .read-content-dropcap ::first-letter 3.2em float-left + --reader-accent / --reader-title-font CSS vars. Applied to ReadClassic + ReadPili only.
+- agent-browser verification: book detail renders 相关推荐 + 4 stat chips + chapter preview + dividers; reader renders keyboard help button + progress bar + chapter nav; ArrowRight key successfully navigated 第一章 → 第2章 交锋; b key flips bookmark; t opens TOC; ? opens help dialog.
+- Final quality gates: bun run lint 0/0; bunx tsc --noEmit 0 errors; dev server / 200; /api/public/related 200.
+
+Stage Summary:
+- 2 new API endpoints/features: /api/public/related + chapter preview tooltip system
+- 6 reader enhancements: keyboard shortcuts (7 keys), top progress bar, chapter slide transition, shortcuts help dialog
+- 3 book detail enhancements: related books, chapter preview, reading stats bar
+- 3 style polishes: cover gradient glow, layout dividers + current-chapter highlight, drop-cap typography
+- Files created: src/app/api/public/related/route.ts
+- Files modified: BookView.tsx, BookCard.tsx, ReadView.tsx, shared.tsx, ReadClassic/Immersive/Paginated/Pili.tsx, globals.css
+- All quality gates green; agent-browser verified book detail + reader keyboard shortcuts working live

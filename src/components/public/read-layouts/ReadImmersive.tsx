@@ -19,6 +19,7 @@ import {
   TocDrawer,
   actualFontPx,
   contentToHtml,
+  readerActionsRef,
   textureStyle,
   useReadPosMemory,
   useReadingProgress,
@@ -67,6 +68,20 @@ export function ReadImmersive({
     const next = isBookmarked(bk.id, ch.id)
     if (next !== bookmarked) setBookmarked(next)
   }
+
+  // feat-round-5 B1: 注册全局阅读器动作 (沉浸式使用内部滚动容器)
+  useEffect(() => {
+    const actions = {
+      onPrev: () => data?.prev && navigate({ view: 'read', chapterId: data.prev.id }),
+      onNext: () => data?.next && navigate({ view: 'read', chapterId: data.next.id }),
+      onScrollTop: () => scrollerRef.current?.scrollTo({ top: 0, behavior: 'smooth' }),
+      onScrollBottom: () => scrollerRef.current?.scrollTo({ top: scrollerRef.current.scrollHeight, behavior: 'smooth' }),
+    }
+    readerActionsRef.current = actions
+    return () => {
+      if (readerActionsRef.current === actions) readerActionsRef.current = {}
+    }
+  })
 
   // 沉浸画布配色：始终暗底（浅色主题也转入暗色画布）; night = 墨黑加深
   const canvas = night ? '#000000' : theme.dark ? undefined : '#14171c'
@@ -151,6 +166,7 @@ export function ReadImmersive({
           style={{ background: pillBg, color: textColor, border: `1px solid ${hairline}` }}
           aria-label="打开章节目录"
           aria-expanded={drawer}
+          data-reader-toc-trigger=""
         >
           <ListTree className="h-3.5 w-3.5" aria-hidden />
           目录

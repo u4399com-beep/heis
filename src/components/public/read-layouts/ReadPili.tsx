@@ -6,7 +6,8 @@
 // ============================================================
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import type { CSSProperties } from 'react'
 import { ChevronLeft, ChevronRight, ListTree } from 'lucide-react'
 import { readOf } from '@/lib/crawl/themes'
 import { usePublic } from '../ctx'
@@ -21,6 +22,7 @@ import {
   TocDrawer,
   actualFontPx,
   contentToHtml,
+  readerActionsRef,
   useReadPosMemory,
   useReadingProgress,
   useReadingTimeTracker,
@@ -64,6 +66,20 @@ export function ReadPili({
     const next = isBookmarked(bk.id, ch.id)
     if (next !== bookmarked) setBookmarked(next)
   }
+
+  // feat-round-5 B1: 注册全局阅读器动作 (供 ReadView 键盘快捷键派发)
+  useEffect(() => {
+    const actions = {
+      onPrev: () => data?.prev && navigate({ view: 'read', chapterId: data.prev.id }),
+      onNext: () => data?.next && navigate({ view: 'read', chapterId: data.next.id }),
+      onScrollTop: () => window.scrollTo({ top: 0, behavior: 'smooth' }),
+      onScrollBottom: () => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' }),
+    }
+    readerActionsRef.current = actions
+    return () => {
+      if (readerActionsRef.current === actions) readerActionsRef.current = {}
+    }
+  })
 
   // 夜间调色: 日间=原站暖纸画布 #ede7da, 夜间=沉稳暗底
   const canvasBg = night ? '#15171c' : '#ede7da'
@@ -201,8 +217,12 @@ export function ReadPili({
                 {/* 原站 read-content 直接排在 text-wrap 纸面上, 卡内不再二次缩窄居中 */}
                 <div
                   data-pili-content
-                  className={read.indent ? '[&_p]:my-3 [&_p]:indent-8' : '[&_p]:my-4'}
-                  style={read.justify ? { textAlign: 'justify' } : undefined}
+                  className={`read-content-dropcap ${read.indent ? '[&_p]:my-3 [&_p]:indent-8' : '[&_p]:my-4'}`}
+                  style={{
+                    ...(read.justify ? { textAlign: 'justify' } : null),
+                    '--reader-accent': night ? '#5a6470' : v.primary,
+                    '--reader-title-font': v.titleFont,
+                  } as CSSProperties}
                   dangerouslySetInnerHTML={{ __html: contentToHtml(ch.content) || '<p>本章节内容为空</p>' }}
                 />
               </div>

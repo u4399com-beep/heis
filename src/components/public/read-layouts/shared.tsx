@@ -60,6 +60,22 @@ export interface ReadLayoutProps {
   onToggleNight: () => void
 }
 
+/* ---------------- feat-round-5 B1: 阅读器键盘快捷键动作注册 ---------------- */
+
+/**
+ * 阅读器全局动作注册表 — 各布局在 render 期间把 prev/next/scrollTop/scrollBottom
+ * 写入此 module-level ref, ReadView 的 keydown 处理器读 ref 派发。
+ * 同一时刻仅一个阅读器实例挂载 (key=chapterId 强制 remount), 故单槽 ref 安全。
+ */
+export interface ReaderActions {
+  onPrev?: () => void
+  onNext?: () => void
+  onScrollTop?: () => void
+  onScrollBottom?: () => void
+}
+
+export const readerActionsRef: { current: ReaderActions } = { current: {} }
+
 /** 行距预设 (feat-a C) */
 export const LINE_HEIGHT_PRESETS: { label: string; value: number }[] = [
   { label: '紧凑', value: 1.6 },
@@ -401,6 +417,7 @@ export function ReaderSettingsPopover({
           style={triggerStyle}
           aria-label={ariaLabel}
           aria-haspopup="dialog"
+          data-reader-settings-trigger=""
         >
           <Type className="h-4 w-4" aria-hidden />
         </button>
@@ -564,6 +581,7 @@ export function BookmarkToggle({
       aria-label={ariaLabel || (bookmarked ? '移除书签' : '加入书签')}
       aria-pressed={bookmarked}
       title={bookmarked ? '移除书签' : '加入书签'}
+      data-reader-bookmark-trigger=""
     >
       <Icon className={bookmarked ? 'h-4 w-4 fill-current' : 'h-4 w-4'} aria-hidden />
     </button>
