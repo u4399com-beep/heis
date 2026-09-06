@@ -22,7 +22,7 @@ function Shell() {
 
   const publicView = isSite
     ? {
-        view: view as 'home' | 'book' | 'read' | 'search' | 'keyword' | 'category',
+        view: view as 'home' | 'book' | 'read' | 'search' | 'keyword' | 'category' | 'history',
         bookId: searchParams.get('id') || undefined,
         chapterId: searchParams.get('chapter') || undefined,
         q: searchParams.get('q') || undefined,

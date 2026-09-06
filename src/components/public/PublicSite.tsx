@@ -24,6 +24,7 @@ import { ReadView } from './ReadView'
 import { SearchView } from './SearchView'
 import { KeywordView } from './KeywordView'
 import { CategoryView } from './CategoryView'
+import { HistoryView } from './HistoryView'
 import { Sk } from './bits'
 import type { SiteInfo } from './types'
 
@@ -36,7 +37,7 @@ export default function PublicSite({
   embedMode,
 }: {
   initialSiteId?: string
-  initialView?: { view: 'home' | 'book' | 'read' | 'search' | 'keyword' | 'category'; bookId?: string; chapterId?: string; q?: string; tag?: string; cat?: string; page?: number; theme?: string }
+  initialView?: { view: 'home' | 'book' | 'read' | 'search' | 'keyword' | 'category' | 'history'; bookId?: string; chapterId?: string; q?: string; tag?: string; cat?: string; page?: number; theme?: string }
   onBack?: () => void
   embedMode?: boolean
 }) {
@@ -211,6 +212,8 @@ export default function PublicSite({
         return <ReadView key={`read-${view.chapterId || ''}`} chapterId={view.chapterId} />
       case 'search':
         return <SearchView key={`search-${view.q || ''}`} q={view.q} />
+      case 'history':
+        return <HistoryView key={`history-${site.id}`} />
       case 'keyword':
         return <KeywordView key={`kw-${view.tag || ''}`} tag={view.tag} />
       case 'category':

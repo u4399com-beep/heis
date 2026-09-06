@@ -848,3 +848,95 @@ Stage Summary:
 - Files modified: 6 admin components (aliveRef fix), test/route.ts (debug data), TestPanel.tsx (visual debug UI), Dashboard.tsx (gradient cards)
 - Files created: DebugHtmlViewer.tsx
 - All quality gates green; all admin pages load correctly; visual debugger renders with safe sandboxed iframe
+
+---
+Task ID: feat-round-4
+Agent: Reading history page + search enhancements + style polish
+Task: HistoryView (书架) + search suggestions dropdown + search history + hot search chips + category count pill + reader fade-in
+
+Work Log:
+- Read prior worklog + agent-ctx records to understand reader-enhancement / dashboard-viz baseline; read ctx.tsx / SiteHeader.tsx / SearchView.tsx / ReadView.tsx / BookCard.tsx / reading-memory.ts / bookmarks.ts / data.ts / page.tsx.
+- Verified `tw-animate-css@1.4.0` is imported in globals.css → `animate-in fade-in duration-300` works out of the box (no need to add custom fadeIn keyframe).
+- Confirmed `/api/public/tags?n=<int>` shape: `{ ok, data: { tags: string[] } }` (param is `n`, not `limit`).
+- Created `src/components/public/search-history.ts`: localStorage-backed `getSearchHistory`/`addSearchHistory`/`removeSearchHistory`/`clearSearchHistory`. Single key `heis_search_history`, JSON array, cap 20, dedupe-on-add, privacy-mode try/catch.
+- Extended `ctx.tsx`: added `'history'` to `PublicView` union + `VIEW_LIST` (so `parseView('?view=history')` round-trips).
+- Created `src/components/public/HistoryView.tsx`: 我的书架 page. Reads `listReadPos()` on mount (cap 50), batch-fetches `fetchBook(bookId,1,1)` per entry via Promise.all to enrich cover/name/author, shows loading skeletons + per-card "still loading" cover. Card: cover + hover-translate + small "X" remove (calls `clearReadPos`, removes from local state) + bottom progress bar + "X%" badge + "读到: <title>" + 已读时长 (`formatReadTime`) + 相对时间 (`formatRelativeTime` reused from bookmarks.ts) + 继续阅读 button → `?view=read&chapter=<id>`. Header: Library icon + title + 共 N 本 subtitle + 清空历史 button → AlertDialog confirm → clears all entries. Empty state: BookMarked 大图标 + "还没有阅读记录" + "去书城找本书读读吧" + 去书城 button (navigates home).
+- Modified `PublicSite.tsx`: imported HistoryView, added `case 'history'` to `renderView` dispatch, extended `initialView` view union to include `'history'`.
+- Modified `src/app/page.tsx`: extended top-level `view as` cast union to include `'history'` (otherwise `/?view=history` fell through to admin LoginGate).
+- Modified `src/components/public/SiteHeader.tsx` (full rewrite of SearchBox logic + nav pill + bookshelf entry):
+  * Added `useSuggestPool()` hook: fetches `/api/public/tags?n=24` once on mount, returns string[] | null (null = loading, [] = failed/empty).
+  * Added `useSearchBoxLogic(initialQ, wrapRef, onNavigate)` hook returning `{ q, setQ, open, setOpen, highlight, setHighlight, state, onPick, onKeyDown, removeHistory, clearHistory, submit }`. State derives `history` (only when input empty), `hot` (top 8 from pool when input empty), `matched` (filtered by includes when input non-empty). Highlight is clamped via `safeHighlight` at render-time (no setState-in-effect). Click-away closes via mousedown listener + wrapRef. Keyboard: ArrowDown opens when closed & jumps to 0, ArrowDown/Up wraps mod totalItems, Enter selects highlighted, Escape closes. `tick` state forces history re-read after remove/clear.
+  * Added `SuggestDropdown` component: relative-positioned card-like absolute dropdown. Sections: 搜索历史 (when input empty & history non-empty) — each item Clock icon + term + per-item X remove (click + key handler) + 清空历史 link; 热门搜索/匹配建议 (TrendingUp for hot, Search for matched).
+  * `SearchBox` and `PiliSearchBox` now wrap input in `<form ref={wrapRef}>` + render `<SuggestDropdown>` when open. Both call `addSearchHistory(term)` on submit/pick and `navigate({view:'search', q:term})`.
+  * CategoryNav count: replaced `<span className="ml-1 text-[10px] opacity-60">{count}</span>` with the spec'd pill `<span className="ml-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-white/10 px-1 text-[9px] tabular-nums opacity-70">{count}</span>` (applied to BOTH CategoryNav main variant and PiliCategoryNav — pili uses a brown-tinted pill to match its cream theme).
+  * Added `BookshelfButton` (Library icon; desktop = full pill button "书架", mobile = icon-only 9x9 button). Inserted into all 4 header variants: pili (separate 复古 button + mobile icon button), centered (below search), split (next to compact search), regular (in the right cluster).
+- Modified `src/components/public/SearchView.tsx`: empty state (`!q`) now renders:
+  * 搜索历史 section (from `getSearchHistory()`, re-read on `historyTick`): heading + 清空搜索历史 button + per-term chip (Clock icon) → clicking runs search.
+  * 热门搜索 section: fetches `/api/public/tags?n=20` once on mount when `!q`; renders skeleton while null, "暂无热门搜索词" if empty, otherwise Flame-icon chips (top 3 chips get a Flame prefix).
+  * 站点关键词 section (existing `TagCloud`) retained as fallback.
+  * When `q` changes, `addSearchHistory(q)` is called via effect (so direct URL `?view=search&q=foo` also records history).
+- Modified `src/components/public/ReadView.tsx`: wrapped each `ReadClassic/Immersive/Paginated/Pili` return in `<div key={`wrap-${chapterId}`} className="animate-in fade-in duration-300">` so chapter changes replay the fade-in (tw-animate-css provides the keyframe + utility).
+- Modified `src/components/public/BookCard.tsx`: bumped `transition-transform duration-200 hover:-translate-y-1` → `transition-all duration-200 hover:-translate-y-1 hover:shadow-lg` (matches spec).
+- No changes to globals.css needed (animate-in already provided by tw-animate-css).
+
+Test results:
+- `bun run lint` → 0 errors / 0 warnings.
+- `bunx tsc --noEmit 2>&1 | grep -v "examples\|skills" | wc -l` → 0.
+- Dev server: `GET /?view=history&site=...` 200, `GET /?view=search&site=...` 200, `GET /?view=home&site=...` 200.
+- agent-browser smoke tests (all PASS):
+  * `/?view=history` initial state: shows the "九霄丹帝" history card (cover, title, 0% progress bar, "继续阅读" button, X remove, "清空全部阅读历史" header button).
+  * Click header 书架 button → URL `?view=history`, HistoryView mounts.
+  * Click 继续阅读 → `?view=read&chapter=<id>`; reader wrapper has `class="animate-in fade-in duration-300"`.
+  * Click 下一章 → new chapter loads, fade-in replays (key changes).
+  * Click header search box → dropdown opens, shows 搜索历史 + 8 热门搜索 chips (input empty).
+  * Type "九霄" → dropdown filters to 3 matching suggestions.
+  * Click suggestion → URL becomes `?view=search&q=九霄丹帝结局`, SearchView shows results.
+  * Keyboard: ArrowDown opens dropdown, ArrowDown moves highlight through history→hot, Enter selects highlighted item & navigates to search.
+  * Escape closes dropdown (verified listbox count 1→0).
+  * `/?view=search` empty: shows 搜索历史 region (with previously searched terms) + 热门搜索 region (20 chips) + 清空搜索历史 button.
+  * Remove (X) on a history card → card removed, HistoryView falls through to empty state ("还没有阅读记录" + 去书城 button).
+  * Category nav: visible text "仙侠1" is actually two siblings — `<button>仙侠<span class="rounded-full bg-white/10 ...">1</span></button>` — pill correctly applied to BOTH main CategoryNav and PiliCategoryNav variants.
+  * Seeded a fresh read-pos via `storage local set` → reload `/?view=history` → card shows 42% progress + "1小时2分" reading time + "刚刚" relative time.
+
+Stage Summary:
+- Files created (2): `src/components/public/search-history.ts`, `src/components/public/HistoryView.tsx`, `agent-ctx/feat-round-4-history-search.md`.
+- Files modified (6): `src/components/public/ctx.tsx` (PublicView + VIEW_LIST), `src/components/public/PublicSite.tsx` (history route + import + initialView type), `src/app/page.tsx` (top-level view cast union), `src/components/public/SiteHeader.tsx` (search dropdown + 书架 button + count pill both navs + PiliSearchBox dropdown), `src/components/public/SearchView.tsx` (history chips + hot chips + clear button), `src/components/public/ReadView.tsx` (chapter fade-in wrapper), `src/components/public/BookCard.tsx` (hover shadow-lg).
+- Features delivered: (A) Public 我的书架 reading-history page with empty/populated states, per-card progress/time/relative-time, continue-reading + per-book remove + clear-all-with-confirm; entry point in all 4 header variants. (B) Header search box suggestions dropdown (hot tags + filtered matches + keyboard nav + click-away), localStorage search history (per-item remove + clear-all), SearchView empty-state hot-search chips (20) + history chips. Style polish: category count pill (both nav variants), reader chapter fade-in via tw-animate-css, BookCard hover shadow.
+- Constraints honored: only touched allowed files; no API routes / crawl / admin / prisma / mini-services changes; all new client components are `'use client'`; reused existing `listReadPos` / `clearReadPos` / `formatReadTime` / `formatRelativeTime` / `fetchBook` / `BookCover` / `Sk` / `withAlpha` / `useSiteSEO` / `usePublic` / `AlertDialog` (shadcn) / lucide icons.
+
+---
+Task ID: feat-round-4
+Agent: Reading history page + search enhancements + critical auth-regression fix
+Task: HistoryView (书架) + search suggestions dropdown + search history + hot search chips + category count pill + reader fade-in + FIX public site auth regression
+
+Work Log:
+- QA baseline: lint 0/0, tsc 0, dev server stable. Dashboard + all admin pages load. Reader features (settings/bookmarks/TOC) all work. 6 demo books + 234 chapters.
+- CRITICAL BUG DISCOVERED (auth-regression from feat-round-1): public site front-end `fetchSites()` and `fetchCategories()` in src/components/public/data.ts called `/api/admin/sites` and `/api/admin/categories` — these admin endpoints now require auth (added in round 1). Public site (no cookie) → 401 → "站点加载失败". This broke the ENTIRE public site (home/book/read/search all depend on site loading).
+- FIX (critical):
+  - Created `src/app/api/public/sites/route.ts` — public endpoint returning only status=true sites, selecting only public fields (no sensitive admin data). Returns 2 sites.
+  - Modified `src/components/public/data.ts`:
+    - `fetchSites()` → `/api/public/sites` (was `/api/admin/sites`)
+    - `fetchCategories()` → `/api/public/categories?limit=60` (was `/api/admin/categories`), with shape mapping `{items:[{id,name,bookCount}]} → [{id,name,_count:{books}}]`
+  - Verified: curl `/api/public/sites` → 200 (2 sites); curl `/api/public/categories` → 200 (6 categories); agent-browser `/?view=home` → "dewew" site loads (no longer "站点加载失败"); bookshelf page renders; category nav shows counts as separate pills.
+- Feature A (HistoryView / 我的书架, feat-round-4 agent):
+  - Created `src/components/public/HistoryView.tsx`: reads listReadPos(), batch fetchBook for covers, responsive grid (2-6 cols), each card shows cover/title/author/progress bar/%/已读时长/相对时间/继续阅读/移除. Empty state: BookMarked icon + "还没有阅读记录" + "去书城" button. Header: Library icon + 共 N 本 + 清空历史 (AlertDialog confirm).
+  - Routed: `case 'history'` in PublicSite.tsx + `'history'` added to PublicView union (ctx.tsx) + top-level cast in src/app/page.tsx.
+  - 书架 entry button (Library icon, icon-only on mobile) in all 4 header variants.
+- Feature B (search enhancements, feat-round-4 agent):
+  - Created `src/components/public/search-history.ts`: getSearchHistory/addSearchHistory/removeSearchHistory/clearSearchHistory (localStorage `heis_search_history`, cap 20, dedupe).
+  - SiteHeader search box: dropdown with hot-tag pool (one fetch /api/public/tags?n=24 on mount, client-filtered ≤8). Input empty: 搜索历史 (Clock icon + per-item X + 清空) + 8 热门搜索 (TrendingUp). Input non-empty: filtered matches (Search icon). Keyboard nav ↑↓/Enter/Esc, click-away. Applied to PiliSearchBox too.
+  - SearchView empty state: 搜索历史 chips + 热门搜索 chips (20, top 3 get Flame icon) + skeleton + 站点关键词 fallback.
+- Style polish (feat-round-4 agent):
+  - Category count: adjacent-text → pill `bg-white/10 rounded-full h-4 min-w-4 px-1 text-[9px] tabular-nums opacity-70` in BOTH CategoryNav (main) and PiliCategoryNav (pili brown-tinted pill). Verified in DOM: `<button>仙侠<span class="rounded-full bg-white/10 …">1</span></button>`.
+  - ReadView: each layout wrapped in `<div key={chapterId} className="animate-in fade-in duration-300">` (tw-animate-css provides keyframe).
+  - BookCard: `transition-all duration-200 hover:-translate-y-1 hover:shadow-lg`.
+- Final verification (agent-browser): public home loads "dewew" site ✓; 我的书架 button + page renders (empty state "还没有阅读记录" + 去书城) ✓; category nav shows "仙侠 1" as separate pill ✓; footer navigation + friend links render ✓.
+- Final quality gates: bun run lint 0/0; bunx tsc --noEmit 0 errors; dev server serves / 200 and /?view=home 200 and /?view=history 200.
+
+Stage Summary:
+- 1 CRITICAL bug fixed (public site auth-regression: created /api/public/sites + rewired fetchSites/fetchCategories to public endpoints)
+- 2 new features: HistoryView (我的书架) with reading progress/time/continue-reading; search experience enhancements (suggestions dropdown + search history + hot search chips)
+- 3 style polishes: category count pill, reader fade-in animation, book card hover
+- Files created: src/app/api/public/sites/route.ts, src/components/public/HistoryView.tsx, src/components/public/search-history.ts
+- Files modified: src/components/public/data.ts (critical fix), PublicSite.tsx, ctx.tsx, page.tsx, SiteHeader.tsx, SearchView.tsx, ReadView.tsx, BookCard.tsx
+- All quality gates green; public site fully functional again; new features verified via agent-browser

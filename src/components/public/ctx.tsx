@@ -7,7 +7,7 @@ import { createContext, useContext } from 'react'
 import type { ThemeDef } from '@/lib/crawl/themes'
 import type { SiteInfo } from './types'
 
-export type PublicView = 'home' | 'book' | 'read' | 'search' | 'keyword' | 'category'
+export type PublicView = 'home' | 'book' | 'read' | 'search' | 'keyword' | 'category' | 'history'
 
 export interface ViewParams {
   view: PublicView
@@ -59,7 +59,7 @@ export function viewToUrl(v: ViewParams, siteId: string): string {
   return qs ? `/?${qs}` : '/'
 }
 
-const VIEW_LIST: PublicView[] = ['home', 'book', 'read', 'search', 'keyword', 'category']
+const VIEW_LIST: PublicView[] = ['home', 'book', 'read', 'search', 'keyword', 'category', 'history']
 
 /** 查询串 → 视图参数 */
 export function parseView(search: string): ViewParams {

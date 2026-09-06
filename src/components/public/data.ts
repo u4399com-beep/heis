@@ -25,14 +25,15 @@ async function get<T>(url: string): Promise<T> {
   return json.data
 }
 
-/** 站点列表（站群切换器用） */
+/** 站点列表（站群切换器用） — 走公开端点, 避免 admin auth 拦截 */
 export function fetchSites(): Promise<SiteInfo[]> {
-  return get<SiteInfo[]>('/api/admin/sites')
+  return get<SiteInfo[]>('/api/public/sites')
 }
 
-/** 分类列表（顶部导航用） */
-export function fetchCategories(): Promise<CategoryItem[]> {
-  return get<CategoryItem[]>('/api/admin/categories')
+/** 分类列表（顶部导航用） — 走公开端点; public/categories 返回 {items:[...]}, 这里解包 */
+export async function fetchCategories(): Promise<CategoryItem[]> {
+  const data = await get<{ items: Array<{ id: string; name: string; bookCount: number }> }>('/api/public/categories?limit=60')
+  return (data?.items || []).map((c) => ({ id: c.id, name: c.name, _count: { books: c.bookCount } }))
 }
 
 export interface BooksQuery {

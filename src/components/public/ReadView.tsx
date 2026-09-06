@@ -178,8 +178,27 @@ export function ReadView({ chapterId }: { chapterId?: string }) {
     onToggleNight: () => setNight((n) => !n),
   }
 
-  if (layout === 'immersive') return <ReadImmersive key={`ri-${chapterId || ''}`} {...shared} />
-  if (layout === 'paginated') return <ReadPaginated key={`rp-${chapterId || ''}`} {...shared} />
-  if (layout === 'pili') return <ReadPili key={`rpl-${chapterId || ''}`} {...shared} />
-  return <ReadClassic key={`rc-${chapterId || ''}`} {...shared} />
+  if (layout === 'immersive')
+    return (
+      <div key={`wrap-${chapterId || ''}`} className="animate-in fade-in duration-300">
+        <ReadImmersive key={`ri-${chapterId || ''}`} {...shared} />
+      </div>
+    )
+  if (layout === 'paginated')
+    return (
+      <div key={`wrap-${chapterId || ''}`} className="animate-in fade-in duration-300">
+        <ReadPaginated key={`rp-${chapterId || ''}`} {...shared} />
+      </div>
+    )
+  if (layout === 'pili')
+    return (
+      <div key={`wrap-${chapterId || ''}`} className="animate-in fade-in duration-300">
+        <ReadPili key={`rpl-${chapterId || ''}`} {...shared} />
+      </div>
+    )
+  return (
+    <div key={`wrap-${chapterId || ''}`} className="animate-in fade-in duration-300">
+      <ReadClassic key={`rc-${chapterId || ''}`} {...shared} />
+    </div>
+  )
 }

@@ -16,7 +16,7 @@ export function BookCard({ book }: { book: BookItem }) {
   const v = theme.vars
   return (
     <article
-      className="group cursor-pointer overflow-hidden transition-transform duration-200 hover:-translate-y-1"
+      className="group cursor-pointer overflow-hidden transition-all duration-200 hover:-translate-y-1 hover:shadow-lg"
       style={{
         background: v.surface,
         border: `1px solid ${v.border}`,
