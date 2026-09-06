@@ -212,3 +212,22 @@ model FriendLink {
 
   @@index([enabled, sortOrder])
 }
+
+// ==================== 用户反馈 ====================
+model Feedback {
+  id        String   @id @default(cuid())
+  type      String   // bug | suggestion | praise | other
+  contact   String?  // 可选联系方式 (邮箱/QQ)
+  content   String   // 反馈正文
+  url       String?  // 提交反馈时所在页地址
+  siteId    String?
+  userAgent String?
+  ip        String?
+  status    String   @default("new") // new | read | resolved | ignored
+  adminNote String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, createdAt])
+  @@index([type])
+}

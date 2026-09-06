@@ -1156,3 +1156,162 @@ Stage Summary:
 - Files created: StepIndicator.tsx, TaskWizard.tsx
 - Files modified: TasksSection.tsx, TaskDialog.tsx (kept for edit), RulesSection.tsx, AdminApp.tsx, helpers.ts
 - All quality gates green; agent-browser verified wizard full flow + import/export buttons
+
+---
+Task ID: feat-round-7
+Agent: Feedback system + public site polish
+Task: User feedback (prisma model + public API + widget + admin management) + 404 page + back-to-top + loading skeletons + style polish
+
+Work Log:
+- QA baseline: lint 0/0, tsc 0, dev server stable on port 3000. 6 demo books, 3 rules, 0 feedback records.
+- Feature A1 (Prisma Feedback model):
+  - Added Feedback model to prisma/schema.prisma: id/type/contact?/content/url?/siteId?/userAgent?/ip?/status(default new)/adminNote?/createdAt/updatedAt + @@index([status, createdAt]) + @@index([type]).
+  - `bunx prisma db push --skip-generate` → "Your database is now in sync with your Prisma schema. Done in 17ms".
+  - `bunx prisma generate` → "Generated Prisma Client (v6.19.2) to ./node_modules/@prisma/client".
+- Feature A2 (Public feedback API):
+  - Created `src/app/api/public/feedback/route.ts`:
+    * POST: validate type∈[bug,suggestion,praise,other], content 5-1000 chars (trimmed), contact ≤100 chars.
+    * Spam protection: reject if content has >3 URLs (regex `https?://\S+`), reject if all caps (6+ letters), reject if same IP has ≥5 feedback in last hour (db.feedback.count query).
+    * Captures siteId (query), userAgent (header, ≤500 chars), ip (x-forwarded-for first segment or req.ip, ≤64 chars).
+    * Returns `{ok:true, data:{id}}`.
+    * GET: returns 405 + "Method Not Allowed".
+- Feature A3 (FeedbackWidget):
+  - Created `src/components/public/FeedbackWidget.tsx` ('use client'): floating bottom-right button (lucide MessageCircle, violet-600, shadow-lg shadow-violet-950/50) + Dialog.
+  * 4 type cards in 2x2 grid: bug (Bug icon, red ring/border/bg-950/30), suggestion (Lightbulb, amber), praise (Heart, pink), other (MessageCircle, zinc). Selected state: border-2 + bg-*-950/30.
+  * Content textarea: min-h-28, 5-1000 chars, char counter (red if over, zinc if under 5, normal otherwise).
+  * Contact input: optional, max 100 chars, placeholder "邮箱/QQ (可选, 方便我们回复)".
+  * Submit button: disabled until content valid; on submit POSTs to /api/public/feedback with body including current window.location.href as `url`.
+  * On success: toast.success("感谢反馈！我们会尽快处理") + close dialog + reset.
+  * On error: toast.error with server message or "网络异常".
+  * Privacy note with ShieldCheck icon: "反馈内容将包含当前页面地址和浏览器信息, 用于问题定位".
+- Feature A4/A5 (Admin feedback management):
+  - Created `src/app/api/admin/feedback/route.ts` GET: list with filters (status/type/q), pagination (page/size, size capped 5-100, take ≤100), ordered by createdAt desc. Returns `{rows, total, page, size, pages, stats:{total,new,resolved}}`.
+  - Created `src/app/api/admin/feedback/[id]/route.ts`:
+    * GET: single feedback detail (includes userAgent + adminNote).
+    * PATCH: update status (must be in new/read/resolved/ignored) and/or adminNote (max 1000 chars, empty → null). P2025 → 404.
+    * DELETE: delete feedback. P2025 → 404.
+  - Created `src/components/admin/FeedbackSection.tsx`:
+    * Stats cards: total / new (sky) / resolved (emerald).
+    * Filters: status dropdown (全部/新/已读/已处理/已忽略), type dropdown (全部/问题/建议/表扬/其他), search box (LIKE on content).
+    * Table: type badge (color-coded) + dot, content (truncate 80 chars + Tooltip with full), contact (mono truncate 20), status badge (sky/zinc/emerald/zinc-light), createdAt (whitespace-nowrap + title), actions (查看/删除).
+    * Row click → detail dialog: full meta (type/contact/time/IP/url/userAgent), content (max-h-48 scroll), status Select (new/read/resolved/ignored), adminNote Textarea. Auto-marks new→read on open (silent PATCH).
+    * Save → PATCH /api/admin/feedback/[id] with {status, adminNote}.
+    * Delete → ConfirmDialog with content preview, then DELETE.
+    * Empty state: Inbox icon + "暂无反馈" + "用户在前台提交反馈后, 将在此处显示".
+    * Pagination: 上一页/下一页 with page/pages display.
+  - Modified `src/components/admin/AdminApp.tsx`:
+    * Added 'feedback' to SectionKey union.
+    * Added NAV entry `{ key: 'feedback', label: '用户反馈', icon: MessageSquare }` after 'settings'.
+    * Added renderSection case `case 'feedback': return <FeedbackSection />`.
+    * Imported MessageSquare from lucide-react.
+  - Modified `src/components/admin/helpers.ts`:
+    * Added api.patch method (POST/PUT/DELETE pattern).
+    * Added FeedbackRow + FeedbackDetail + FeedbackListResp interfaces.
+    * Added FEEDBACK_TYPE_META (bug/suggestion/praise/other labels + className + dot colors).
+    * Added FEEDBACK_STATUS_META (new=read=resolved=ignored labels + colors).
+- Feature B1 (Custom 404 page):
+  - Created `src/app/not-found.tsx`: replaces Next.js default 404 globally.
+    * BookOpen icon (h-8 w-8) in circle (border zinc-800 bg zinc-900/60).
+    * Large "404" text (text-[7rem] sm:text-[9rem] font-black, .not-found-404 gradient violet→fuchsia).
+    * "页面不存在" heading (text-xl sm:text-2xl).
+    * "你访问的页面可能已被移除或地址错误" description.
+    * Buttons: 返回首页 (Link to /, bg-violet-600 hover:violet-500, Home icon), 返回后台 (Link to /?admin=1, border-zinc-700 bg-zinc-900, LayoutDashboard icon).
+    * Wrapper: <html lang="zh-CN"><body className="not-found-bg min-h-screen bg-zinc-950">.
+    * metadata: `{ title: '404 - 页面不存在', robots: { index: false, follow: false } }`.
+- Feature B2 (BackToTop):
+  - Created `src/components/public/BackToTop.tsx` ('use client'):
+    * Floating button fixed bottom-[80px] right-5 (above FeedbackWidget at bottom-5 right-5).
+    * Mobile: bottom-[80px] right-5, sm:bottom-[88px], h-10 w-10 (sm: h-11 w-11).
+    * Appears when scroll > 400px. Polls every 500ms for `[data-reader-scroll]` element; falls back to window.scrollY if not found.
+    * Smooth scroll to top (window.scrollTo behavior:smooth or element.scrollTo).
+    * Fade in/out via translate-y + opacity transition.
+    * ArrowUp lucide icon (h-4 w-4). sr-only "返回顶部".
+- Feature B3 (Loading skeletons):
+  - Added to `src/components/public/bits.tsx`:
+    * `BookGridSkeleton({count=12})`: grid grid-cols-2 sm:3 md:4 lg:5 xl:6, each cell cover aspect-[3/4] + h-4 w-4/5 + h-3 w-1/2. role="status" aria-live="polite".
+    * `ChapterListSkeleton({count=8})`: space-y-2 with h-9 w-full rows. role="status" aria-live="polite".
+  - Modified `src/components/public/HomeView.tsx`: imported BookGridSkeleton, added defensive fallback when theme.layout not in known set + loading.
+  - Modified `src/components/public/BookView.tsx`: imported ChapterListSkeleton, used as default TocSkeleton fallback (non-pili/aurora/mango themes).
+  - Modified `src/components/public/BookCard.tsx`: imported BookGridSkeleton, used in ThemeBookList for grid layout loading state (replaced inline grid skeleton).
+- Embed widgets in PublicSite:
+  - Modified `src/components/public/PublicSite.tsx`: imported FeedbackWidget + BackToTop, rendered both outside view router (on every public page) with comment "全站悬浮反馈 + 返回顶部 (与 embedMode 返回后台按钮错位避让)".
+- Style polish:
+  - Added to `src/app/globals.css`:
+    * `@keyframes feedbackPulse`: 0%/100% box-shadow 0 0 0 0 rgba(139,92,246,0.4); 50% box-shadow 0 0 0 12px rgba(139,92,246,0).
+    * `.feedback-fab`: width/height 48px, animation feedbackPulse 3s ease-in-out infinite.
+    * `@media (max-width: 640px)`: width/height 40px, right 16px, bottom 16px.
+    * `.not-found-bg`: background-image stacked radial-gradient(circle at 50% 30%, violet 8% → transparent 60%) + dot pattern (rgba(255,255,255,0.04) 1px transparent 1px, size 24px 24px).
+    * `.not-found-404`: bg gradient to-br violet-400 → fuchsia-500, -webkit-background-clip text, color transparent.
+    * `@keyframes heisShimmer` + `.heis-shimmer`: 1.6s ease-in-out linear-gradient 90% slide.
+  - S1/S2/S3 specs honored: violet feedback button with shadow + pulse, type cards 2x2 with selected border/bg-950/30, 404 page with violet gradient + dot pattern + violet primary button + zinc outline button.
+
+Test results:
+- `bun run lint` → 0 errors / 0 warnings.
+- `bunx tsc --noEmit 2>&1 | grep -v "examples\|skills" | wc -l` → 0.
+- Dev server: `GET /` 200, `GET /?view=home` 200, `GET /?admin=1` 200, `GET /nonexistent-xyz` 404 (renders custom page with "页面不存在" / "返回首页" / "返回后台" / .not-found-404 / .not-found-bg classes).
+- API smoke (curl, all 200/400/405 as expected):
+  * POST /api/public/feedback valid → 200 + {id}
+  * POST too many URLs (>3) → 400 + "反馈内容包含过多链接"
+  * POST all caps → 400 + "反馈内容请勿全部大写"
+  * POST bad type → 400 + "反馈类型不合法"
+  * POST too short (<5 chars) → 400 + "反馈内容至少 5 个字符"
+  * POST 6th in hour from same IP → 429 + "提交过于频繁, 请稍后再试"
+  * GET /api/public/feedback → 405 + "Method Not Allowed"
+  * GET /api/admin/feedback (authed) → 200 + {rows, total, pages, stats}
+  * GET /api/admin/feedback?status=new → filtered to new only
+  * GET /api/admin/feedback?type=praise → filtered to praise only
+  * GET /api/admin/feedback?q=valid → filtered by content LIKE
+  * GET /api/admin/feedback/[id] → 200 + full detail (incl userAgent + adminNote)
+  * PATCH /api/admin/feedback/[id] {status:resolved, adminNote} → 200 + updated record
+  * DELETE /api/admin/feedback/[id] → 200 + {ok:true}
+- All test feedback records cleaned up via admin DELETE API after verification (final: 0 records).
+- Dev server required restart after `prisma generate` (per task instruction). Killed agent-browser chrome processes first (freeing ~1.7GB), then `setsid nohup bun run dev` to detach from shell session. Earlier attempts (plain background `&` / `nohup`) died from shell session teardown. Avoided agent-browser re-launch to preserve dev server memory (OOM awareness).
+
+Stage Summary:
+- Files created (7): src/app/api/public/feedback/route.ts, src/app/api/admin/feedback/route.ts, src/app/api/admin/feedback/[id]/route.ts, src/components/public/FeedbackWidget.tsx, src/components/public/BackToTop.tsx, src/app/not-found.tsx, src/components/admin/FeedbackSection.tsx
+- Files modified (8): prisma/schema.prisma (+Feedback model), src/components/public/PublicSite.tsx (+widgets), src/components/public/bits.tsx (+BookGridSkeleton +ChapterListSkeleton), src/components/public/HomeView.tsx (+defensive skeleton), src/components/public/BookView.tsx (+ChapterListSkeleton fallback), src/components/public/BookCard.tsx (+BookGridSkeleton in ThemeBookList), src/components/admin/AdminApp.tsx (+feedback section/nav), src/components/admin/helpers.ts (+FeedbackRow types +api.patch +FEEDBACK_*_META), src/app/globals.css (+feedbackPulse keyframe +.feedback-fab +.not-found-bg/404 +.heis-shimmer)
+- Database changes: new Feedback table pushed to SQLite via `prisma db push --skip-generate` + client regenerated via `prisma generate`.
+- Features delivered:
+  * A1: Prisma Feedback model with type/contact/content/url/siteId/userAgent/ip/status/adminNote + indexes on [status,createdAt] and [type]
+  * A2: Public feedback POST endpoint with type/content/contact validation + 3 spam guards (URL count, all-caps, IP rate limit 5/hr) + GET 405
+  * A3: FeedbackWidget — violet floating button with 3s pulse animation + Dialog with 4 type cards (2x2 grid, color-coded), textarea 5-1000 with char counter, contact input, privacy note, success toast
+  * A4: Admin feedback CRUD — GET list with filters+pagination+stats / GET detail / PATCH status+adminNote / DELETE
+  * A4: FeedbackSection — stats cards + filters (status/type/search) + table with badges/tooltips + detail dialog with auto-mark-read + delete confirm + empty state + pagination
+  * A5: AdminApp wired — "用户反馈" sidebar entry (MessageSquare icon) after "系统设置"
+  * B1: Custom 404 — BookOpen + gradient 404 + dot pattern background + 返回首页/返回后台 buttons
+  * B2: BackToTop — floating bottom-right (above feedback widget) ArrowUp, fade-in after 400px scroll, smooth scroll, reader container detection
+  * B3: BookGridSkeleton + ChapterListSkeleton utilities wired into HomeView (defensive fallback), BookView (TocSkeleton default), BookCard.ThemeBookList (grid loading)
+  * S1/S2/S3: feedbackPulse keyframe + mobile sizing, type cards 2x2 with selected border/bg-950/30, 404 page violet gradient + dot pattern + violet/zinc buttons
+- All quality gates green: lint 0/0, tsc 0 errors, dev server / 200 + /?view=home 200 + /?admin=1 200 + 404 route renders custom page. All API endpoints verified via curl.
+- Constraints honored: only touched allowed files. Did NOT modify /lib/crawl/*, /api/* other than feedback routes, /read-layouts/*, mini-services/*, Docker, next.config.ts, eslint.config.mjs, tsconfig.json. All new client components are 'use client'. Reused existing shadcn (Dialog/Button/Input/Textarea/Badge/Card/Skeleton/Select/Table/Tooltip) + lucide-react.
+
+---
+Task ID: feat-round-7
+Agent: Feedback system + public site polish
+Task: User feedback (prisma model + public API + widget + admin management) + 404 page + back-to-top + loading skeletons + style polish
+
+Work Log:
+- QA baseline: lint 0/0, tsc 0, dev server stable. Task wizard end-to-end verified (created "正则表达式示例-单书采集" task successfully). Rules import/export buttons present. All prior features functional.
+- Feature A (User feedback system):
+  - A1: Added Feedback model to prisma/schema.prisma (type/contact?/content/url?/siteId?/userAgent?/ip?/status/adminNote? + indexes [status,createdAt] + [type]). Pushed via bunx prisma db push + regenerated client.
+  - A2: Created /api/public/feedback POST route. Validates type ∈ [bug/suggestion/praise/other], content 5-1000, contact ≤100. Spam guards: reject >3 URLs, all-caps (6+ letters), same IP ≥5 in last hour. Captures siteId/userAgent/ip. GET → 405.
+  - A3: Created FeedbackWidget.tsx — floating violet button bottom-right (48px desktop/40px mobile, 3s pulse animation) + Dialog with 4 type cards (2x2 grid, color-coded bug/suggestion/praise/other), textarea 5-1000 with char counter, contact input, privacy note. Toast success/error.
+  - A4: Created admin feedback CRUD: GET /api/admin/feedback (filters status/type/q + pagination + stats), GET/PATCH/DELETE /api/admin/feedback/[id]. FeedbackSection.tsx: stats cards (total/new/resolved) + filters + table (type/status badges + content tooltips) + detail dialog (auto-marks new→read on open) + delete confirm + empty state + pagination.
+  - A5: AdminApp wired — added 'feedback' to SectionKey + NAV entry "用户反馈" (MessageSquare icon) after "系统设置" + renderSection case.
+- Feature B (Public site polish):
+  - B1: Created src/app/not-found.tsx — custom 404: BookOpen icon, large gradient 404 (violet→fuchsia), "页面不存在" + description, 返回首页/返回后台 buttons, dot-pattern background.
+  - B2: Created BackToTop.tsx — floating ArrowUp button (stacked above feedback widget), appears after 400px scroll, fade in/out, smooth scroll, polls for [data-reader-scroll] container with window fallback.
+  - B3: Added BookGridSkeleton + ChapterListSkeleton to bits.tsx. Wired into HomeView/BookView/BookCard.ThemeBookList.
+- Style polish: feedbackPulse keyframes (3s violet box-shadow) + .feedback-fab mobile sizing, 4 type cards selected/unselected states, 404 page violet gradient + dot pattern + violet/zinc buttons.
+- agent-browser verified: 404 page renders "404"/"页面不存在"/返回首页/返回后台; admin feedback section renders heading + stats + search + table with test feedback row; sidebar "用户反馈" entry present.
+- API verified (curl): POST /api/public/feedback valid→200+id; invalid type/too short→400; GET public→405; admin list/stats/get/patch/delete all 200; test feedback cleaned up.
+- Final quality gates: bun run lint 0/0; bunx tsc --noEmit 0 errors; dev server / 200, /nonexistent 404 (custom page).
+
+Stage Summary:
+- 1 new feature: user feedback system (prisma model + public POST API + floating widget + admin CRUD section with stats/filters/detail)
+- 1 new feature: custom 404 page (gradient 404 + dot pattern + navigation buttons)
+- 1 new feature: back-to-top button (scroll-aware, reader-container-aware)
+- 3 enhancements: loading skeletons (book grid + chapter list), feedback type cards, 404 background polish
+- Files created: 7 (FeedbackWidget, BackToTop, not-found, FeedbackSection, 3 API routes)
+- Files modified: 9 (schema.prisma, PublicSite, bits, HomeView, BookView, BookCard, AdminApp, helpers, globals.css)
+- All quality gates green; agent-browser verified feedback admin section + 404 page; API verified via curl

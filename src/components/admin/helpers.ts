@@ -48,6 +48,8 @@ export const api = {
     request<T>(url, { method: 'POST', body: JSON.stringify(body ?? {}) }),
   put: <T>(url: string, body?: unknown) =>
     request<T>(url, { method: 'PUT', body: JSON.stringify(body ?? {}) }),
+  patch: <T>(url: string, body?: unknown) =>
+    request<T>(url, { method: 'PATCH', body: JSON.stringify(body ?? {}) }),
   del: <T>(url: string, params?: Record<string, string | number | undefined>) =>
     request<T>(url + (params ? qs(params) : ''), { method: 'DELETE' }),
 }
@@ -210,6 +212,51 @@ export interface DownloadJobRow {
   size: number
   createdAt: string
   book?: { name: string; author: string }
+}
+
+// ---------------- feat-round-7: 用户反馈 ----------------
+export type FeedbackType = 'bug' | 'suggestion' | 'praise' | 'other'
+export type FeedbackStatus = 'new' | 'read' | 'resolved' | 'ignored'
+
+export interface FeedbackRow {
+  id: string
+  type: string
+  contact: string | null
+  content: string
+  url: string | null
+  siteId: string | null
+  status: string
+  ip: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface FeedbackDetail extends FeedbackRow {
+  userAgent: string | null
+  adminNote: string | null
+}
+
+export interface FeedbackListResp {
+  rows: FeedbackRow[]
+  total: number
+  page: number
+  size: number
+  pages: number
+  stats: { total: number; new: number; resolved: number }
+}
+
+export const FEEDBACK_TYPE_META: Record<string, { label: string; className: string; dot: string }> = {
+  bug: { label: '问题', className: 'bg-red-500/15 text-red-400 border-red-500/40', dot: 'bg-red-500' },
+  suggestion: { label: '建议', className: 'bg-amber-500/15 text-amber-400 border-amber-500/40', dot: 'bg-amber-500' },
+  praise: { label: '表扬', className: 'bg-pink-500/15 text-pink-400 border-pink-500/40', dot: 'bg-pink-500' },
+  other: { label: '其他', className: 'bg-zinc-600/30 text-zinc-300 border-zinc-500/40', dot: 'bg-zinc-400' },
+}
+
+export const FEEDBACK_STATUS_META: Record<string, { label: string; className: string; dot: string }> = {
+  new: { label: '新', className: 'bg-sky-500/15 text-sky-300 border-sky-500/40', dot: 'bg-sky-400' },
+  read: { label: '已读', className: 'bg-zinc-600/30 text-zinc-300 border-zinc-500/40', dot: 'bg-zinc-400' },
+  resolved: { label: '已处理', className: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/40', dot: 'bg-emerald-500' },
+  ignored: { label: '已忽略', className: 'bg-zinc-700/40 text-zinc-400 border-zinc-700', dot: 'bg-zinc-500' },
 }
 
 export interface StatsData {

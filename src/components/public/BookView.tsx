@@ -13,13 +13,12 @@ import { fetchBook, fetchChapter, type BookDetailData } from './data'
 import { usePublic } from './ctx'
 import { coverSrc, fmtDate, formatWords, statusLabel, useSiteSEO, withAlpha } from './seo'
 import { BookCover } from './BookCover'
-import { EmptyState, ErrorState, SecTitle, Sk, StatusBadge, TagCloud } from './bits'
+import { EmptyState, ErrorState, SecTitle, Sk, StatusBadge, TagCloud, ChapterListSkeleton } from './bits'
 import { ReadFirstButton } from './BookCard'
 import type { BookItem, BookTagHit, TocChapter } from './types'
 import { getReadPos, formatReadTimeShort } from './read-layouts/reading-memory'
 
 function TocSkeleton({ themeId }: { themeId: string }) {
-  const rows = 10
   if (themeId === 'pili') {
     // pili 四列章节网格骨架
     return (
@@ -35,11 +34,8 @@ function TocSkeleton({ themeId }: { themeId: string }) {
       </div>
     )
   }
-  return (
-    <div className="space-y-3">
-      {Array.from({ length: rows }).map((_, i) => <Sk key={i} className="h-4 w-full" />)}
-    </div>
-  )
+  // feat-round-7 B3: 默认主题走通用 ChapterListSkeleton
+  return <ChapterListSkeleton count={10} />
 }
 
 /* ---------- feat-round-5 A2: 章节预览 tooltip (hover 300ms debounce + cache) ---------- */

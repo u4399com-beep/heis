@@ -188,3 +188,76 @@
 .reader-scroll-fine::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/* ============================================================
+ * feat-round-7 S1: 反馈悬浮按钮 (feedback-fab)
+ * 桌面 48px, 移动端 40px (右下 16px 边距), 紫色脉冲 3s 间隔
+ * 脉冲: box-shadow 由 0 0 0 0 rgba(139,92,246,0.4) → 0 0 0 12px rgba(0,0,0,0)
+ * ============================================================ */
+@keyframes feedbackPulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 12px rgba(139, 92, 246, 0);
+  }
+}
+
+.feedback-fab {
+  width: 48px;
+  height: 48px;
+  animation: feedbackPulse 3s ease-in-out infinite;
+}
+
+@media (max-width: 640px) {
+  .feedback-fab {
+    width: 40px;
+    height: 40px;
+    right: 16px;
+    bottom: 16px;
+  }
+}
+
+/* ============================================================
+ * feat-round-7 B1: 404 页面 — 径向渐变光晕 + 点阵底纹
+ * ============================================================ */
+.not-found-bg {
+  background-image:
+    radial-gradient(circle at 50% 30%, rgba(139, 92, 246, 0.08), transparent 60%),
+    radial-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+  background-size: 100% 100%, 24px 24px;
+  background-position: center, center;
+  background-repeat: no-repeat, repeat;
+}
+
+.not-found-404 {
+  background: linear-gradient(to bottom right, #a78bfa, #e879f9);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+/* ============================================================
+ * feat-round-7 B3: 加载骨架 shimmer 微动 (shadcn Skeleton 自带 pulse, 这里仅 alias)
+ * ============================================================ */
+@keyframes heisShimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.heis-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.06) 0%,
+    rgba(255, 255, 255, 0.14) 50%,
+    rgba(255, 255, 255, 0.06) 100%
+  );
+  background-size: 200% 100%;
+  animation: heisShimmer 1.6s ease-in-out infinite;
+}

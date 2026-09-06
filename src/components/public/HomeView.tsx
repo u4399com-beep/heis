@@ -9,7 +9,7 @@ import { ArrowDownWideNarrow, Flame, Hash, Home } from 'lucide-react'
 import { fetchBooks, type BooksData } from './data'
 import { usePublic } from './ctx'
 import { siteKeywordList, useSiteSEO, withAlpha } from './seo'
-import { EmptyState, ErrorState, SuggestTagCloud, TagCloud } from './bits'
+import { EmptyState, ErrorState, SuggestTagCloud, TagCloud, BookGridSkeleton } from './bits'
 import { CategoryShowcase } from './CategoryShowcase'
 // 默认主题 aurora → shelf: 首屏保证, 保持静态 import; 其余 6 布局按需分包(ab-d 懒加载试点)
 // —— 布局仅在本组件内引用且站点/主题经客户端 fetch 获知, SSR 首屏只会命中 shelf,
@@ -168,6 +168,10 @@ export function HomeView({ page, cat }: { page: number; cat?: string }) {
           {theme.layout === 'magazine' && <HomeMagazine books={books} loading={loading} />}
           {theme.layout === 'theater' && <HomeTheater books={books} loading={loading} />}
           {theme.layout === 'pili' && <HomePili books={books} loading={loading} />}
+          {/* feat-round-7 B3: 防御性兜底 — 未知布局/loading 期无任何布局命中时用 BookGridSkeleton */}
+          {!['shelf', 'list', 'grid', 'minimal', 'magazine', 'theater', 'pili'].includes(theme.layout) && loading && (
+            <BookGridSkeleton count={12} />
+          )}
         </>
       )}
 

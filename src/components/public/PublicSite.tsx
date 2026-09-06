@@ -26,6 +26,8 @@ import { KeywordView } from './KeywordView'
 import { CategoryView } from './CategoryView'
 import { HistoryView } from './HistoryView'
 import { Sk } from './bits'
+import { FeedbackWidget } from './FeedbackWidget'
+import { BackToTop } from './BackToTop'
 import type { SiteInfo } from './types'
 
 export type { ViewParams, PublicView } from './ctx'
@@ -265,6 +267,10 @@ export default function PublicSite({
             预览主题：{theme.name}
           </div>
         )}
+
+        {/* feat-round-7: 全站悬浮反馈 + 返回顶部 (与 embedMode 返回后台按钮错位避让) */}
+        <BackToTop />
+        <FeedbackWidget />
       </div>
     </PublicProvider>
   )

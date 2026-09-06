@@ -8,7 +8,7 @@ import type { BookItem } from './types'
 import { usePublic } from './ctx'
 import { fmtDate, formatWords, withAlpha } from './seo'
 import { BookCover } from './BookCover'
-import { bookNavProps, EmptyState, Sk, StatusBadge } from './bits'
+import { bookNavProps, EmptyState, Sk, StatusBadge, BookGridSkeleton } from './bits'
 
 /** 通用书籍卡片（网格布局，主题化圆角/阴影/描边） */
 export function BookCard({ book }: { book: BookItem }) {
@@ -143,17 +143,8 @@ export function ThemeBookList({ books, loading }: { books: BookItem[]; loading?:
         </div>
       )
     }
-    return (
-      <div className="grid grid-cols-2 gap-4 py-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
-        {Array.from({ length: 12 }).map((_, i) => (
-          <div key={i} className="space-y-2">
-            <Sk className="aspect-[3/4] w-full" />
-            <Sk className="h-4 w-4/5" />
-            <Sk className="h-3 w-1/2" />
-          </div>
-        ))}
-      </div>
-    )
+    // feat-round-7 B3: 网格布局 loading 用通用 BookGridSkeleton
+    return <BookGridSkeleton count={12} />
   }
 
   if (!books.length) return <EmptyState text="没有找到相关书籍" hint="换个关键词或分类试试" />

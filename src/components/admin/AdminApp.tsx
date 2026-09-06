@@ -18,6 +18,7 @@ import {
   LayoutDashboard,
   Link2,
   ListChecks,
+  MessageSquare,
   Palette,
   Settings,
 } from 'lucide-react'
@@ -31,6 +32,7 @@ import { ThemesSection } from './ThemesSection'
 import { DownloadsSection } from './DownloadsSection'
 import { LinksSection } from './LinksSection'
 import { SettingsSection } from './SettingsSection'
+import { FeedbackSection } from './FeedbackSection'
 
 type SectionKey =
   | 'dashboard'
@@ -43,6 +45,7 @@ type SectionKey =
   | 'themes'
   | 'downloads'
   | 'settings'
+  | 'feedback'
 
 const NAV: { key: SectionKey; label: string; icon: typeof LayoutDashboard }[] = [
   { key: 'dashboard', label: '仪表盘', icon: LayoutDashboard },
@@ -55,6 +58,7 @@ const NAV: { key: SectionKey; label: string; icon: typeof LayoutDashboard }[] = 
   { key: 'themes', label: '主题模板', icon: Palette },
   { key: 'downloads', label: 'TXT下载', icon: FileDown },
   { key: 'settings', label: '系统设置', icon: Settings },
+  { key: 'feedback', label: '用户反馈', icon: MessageSquare },
 ]
 
 const SCROLLBAR_CSS = `
@@ -102,6 +106,8 @@ export default function AdminApp({ onPreviewSite }: { onPreviewSite?: (themeId?:
         return <DownloadsSection preselectBookId={downloadPreselect} onConsumedPreselect={() => setDownloadPreselect(null)} />
       case 'settings':
         return <SettingsSection />
+      case 'feedback':
+        return <FeedbackSection />
       case 'dashboard':
       default:
         return <Dashboard onNavigate={(s) => setSection(s as SectionKey)} />

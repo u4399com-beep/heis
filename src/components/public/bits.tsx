@@ -227,3 +227,36 @@ export function Sk({ className, style }: { className?: string; style?: CSSProper
   const ctx = usePublicOptional()
   return <Skeleton className={className} style={{ backgroundColor: ctx?.theme.vars.surfaceAlt || 'rgba(255,255,255,0.12)', ...style }} />
 }
+
+/**
+ * feat-round-7 B3: 通用加载骨架
+ * BookGridSkeleton — N 个书籍卡骨架 (封面 + 标题/作者两行文字)
+ * ChapterListSkeleton — N 个章节行骨架
+ * 均使用主题化 Sk (未挂载 Provider 时退化为中性灰)
+ */
+
+export function BookGridSkeleton({ count = 12 }: { count?: number }) {
+  return (
+    <div className="grid grid-cols-2 gap-4 py-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6" role="status" aria-live="polite" aria-label="书籍列表加载中">
+      {Array.from({ length: count }).map((_, i) => (
+        <div key={i} className="space-y-2">
+          <Sk className="aspect-[3/4] w-full" />
+          <Sk className="h-4 w-4/5" />
+          <Sk className="h-3 w-1/2" />
+        </div>
+      ))}
+      <span className="sr-only">加载中…</span>
+    </div>
+  )
+}
+
+export function ChapterListSkeleton({ count = 8 }: { count?: number }) {
+  return (
+    <div className="space-y-2" role="status" aria-live="polite" aria-label="章节列表加载中">
+      {Array.from({ length: count }).map((_, i) => (
+        <Sk key={i} className="h-9 w-full" />
+      ))}
+      <span className="sr-only">加载中…</span>
+    </div>
+  )
+}
