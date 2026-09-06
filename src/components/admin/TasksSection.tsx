@@ -24,6 +24,7 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { TaskDialog } from './TaskDialog'
+import { TaskWizard } from './TaskWizard'
 import { TaskMonitor } from './TaskMonitor'
 import {
   BatchActionButton,
@@ -43,10 +44,11 @@ import {
   type TaskStatus,
 } from './helpers'
 
-export function TasksSection() {
+export function TasksSection({ onNavigate }: { onNavigate?: (section: string) => void }) {
   const [rows, setRows] = useState<TaskRow[]>([])
   const [loading, setLoading] = useState(true)
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [wizardOpen, setWizardOpen] = useState(false)
   const [editing, setEditing] = useState<TaskRow | null>(null)
   const [deleting, setDeleting] = useState<TaskRow | null>(null)
   const [monitorId, setMonitorId] = useState<string | null>(null)
@@ -163,7 +165,7 @@ export function TasksSection() {
             className="h-9 gap-1.5"
             onClick={() => {
               setEditing(null)
-              setDialogOpen(true)
+              setWizardOpen(true)
             }}
           >
             <Plus className="h-3.5 w-3.5" />
@@ -349,6 +351,12 @@ export function TasksSection() {
       </Card>
 
       <TaskDialog open={dialogOpen} onOpenChange={setDialogOpen} task={editing} onSaved={() => load(true)} />
+      <TaskWizard
+        open={wizardOpen}
+        onOpenChange={setWizardOpen}
+        onSaved={() => load(true)}
+        onNavigateToRules={() => onNavigate?.('rules')}
+      />
 
       {/* 批量删除确认 */}
       <ConfirmDialog

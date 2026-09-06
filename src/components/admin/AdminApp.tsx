@@ -87,7 +87,7 @@ export default function AdminApp({ onPreviewSite }: { onPreviewSite?: (themeId?:
       case 'rules':
         return <RulesSection />
       case 'tasks':
-        return <TasksSection />
+        return <TasksSection onNavigate={(s) => setSection(s as SectionKey)} />
       case 'books':
         return <BooksSection onGoDownload={goDownload} />
       case 'categories':

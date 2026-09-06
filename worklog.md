@@ -1063,3 +1063,96 @@ Stage Summary:
 - Files created: src/app/api/public/related/route.ts
 - Files modified: BookView.tsx, BookCard.tsx, ReadView.tsx, shared.tsx, ReadClassic/Immersive/Paginated/Pili.tsx, globals.css
 - All quality gates green; agent-browser verified book detail + reader keyboard shortcuts working live
+
+---
+Task ID: feat-round-6
+Agent: Task wizard + rule import/export + style polish
+Task: Multi-step task creation wizard + rule JSON import/export + rule duplication enhancement + step indicator style
+
+Work Log:
+- QA baseline: lint 0/0, tsc 0, dev server stable, 3 rules + 0 tasks, login via /api/auth/login (password audit-fix-2025). Read TaskDialog.tsx (571 lines single-form), TasksSection.tsx, RulesSection.tsx, helpers.ts, /api/admin/rules/route.ts (POST accepts object OR string config — verified both 200), /api/admin/tasks/route.ts (POST creates), /api/admin/tasks/[id]/control/route.ts (POST action:start).
+- Feature A (TaskWizard — multi-step CREATE dialog):
+  - Created `src/components/admin/StepIndicator.tsx`: reusable 4-step indicator. Circles size-8 + connecting lines. Completed = emerald-500 + Check icon. Current = violet-500 + ring-2 ring-violet-500/40. Future = zinc-700. Labels text-[10px] below. Mobile: admin-scroll overflow-x-auto + min-w-max (no label truncate).
+  - Created `src/components/admin/TaskWizard.tsx` (~570 lines, 'use client'): 4-step wizard.
+    * Step 1 选规则: grid (1-col mobile / 2-col sm) of enabled rules. Card = name + line-clamp-2 desc + 已启用/已停用 badge. Selected = border-violet-500 bg-violet-950/30 + Check badge top-right. Hover = border-violet-600 bg-zinc-900. Empty state: FileText icon + "暂无采集规则" + "前往采集规则页 →" (onNavigateToRules → closes dialog + onNavigate('rules')). Loading spinner.
+    * Step 2 配范围: task name input (auto-suggests `${rule.name}-单书采集` or `${rule.name}-范围${listStart}-${listEnd}`; nameTouched flag prevents overwriting user edits). Mode radio (单本/范围). Single → bookUrl input. Range → bordered card: listUrl (placeholder = rule's parsed list.urlTemplate via safeParseRuleConfig) + listStart/listEnd + bookStart/bookEnd. Hint: "列表地址支持 {page} 占位符, 将自动翻页采集".
+    * Step 3 调度: 3 preset buttons grid-cols-3 (慢速=Snail 1-2线程/3-5s, 标准=Gauge 2-3线程/1-2s, 快速=Zap 3-5线程/0.5-1s). Active = bg-violet-600 text-white. Inactive = border-zinc-700 hover:bg-zinc-800. Thread slider (1-10, dual-thumb) + label "X ~ Y 线程". Interval slider (100-10000 step=100, dual-thumb) + label "X ~ Y ms". Storage radio (数据库/TXT). Smart toggles (智能分类/智能完结/自动下拉词) grid-cols-3. autoRefresh card: Switch + Info tooltip + refreshIntervalMin input (5-1440).
+    * Step 4 确认: emerald banner + Card dl/dt/dd with 9 summary rows + info box. Footer: 取消 / 上一步 / 创建但不启动 (Save, outline) / 创建并立即启动 (Play, bg-emerald-600).
+    * Validation per step: 0=ruleId; 1=valid http(s) URL (+ listStart<=listEnd + bookStart<=bookEnd for range); 2=threadMin<=threadMax + intervalMin<=intervalMax + autoRefresh 5-1440. 下一步 disabled until valid.
+    * createTask(start): POST /api/admin/tasks → if start, POST /api/admin/tasks/{id}/control {action:start} → toast + onSaved + close. Start failure toasted separately (task still created).
+  - Modified `src/components/admin/TasksSection.tsx`: added onNavigate prop + wizardOpen state. 新建任务 → opens TaskWizard. TaskDialog kept for edit (setEditing + setDialogOpen). Renders both. `<TaskWizard onNavigateToRules={() => onNavigate?.('rules')} />`.
+  - Modified `src/components/admin/AdminApp.tsx`: `<TasksSection onNavigate={(s) => setSection(s as SectionKey)} />`.
+- Feature B (Rule import/export):
+  - Modified `src/components/admin/RulesSection.tsx`:
+    * Added: useRef, Download/Upload icons, RuleImportItem interface, FLASH_STYLE (CSS keyframe heis-rule-flash: violet 35% → transparent 1.6s).
+    * State: fileInputRef, importing, pendingImport, importConfirmOpen, flashId, flashTimerRef.
+    * Toolbar: 导入 (Upload, triggers fileInputRef.click()) + 导出 (Download) buttons added between 搜索框 and 刷新. Hidden `<input type="file" accept=".json" className="hidden">`.
+    * exportRules(): batch.selected.size > 0 → selected; else all enabled. Maps to {name, description, config (parsed object, fallback raw string), enabled}. Filename `heis-rules-YYYYMMDD-HHmm.json`. Blob → URL.createObjectURL → temp `<a download>` → click → revoke. Toast "已导出 N 条规则 → filename".
+    * onImportFileChange(): file.text() → JSON.parse (catch → "JSON 解析失败") → validateImport() → dedupe names (existingNames from rows + seen Set; dupes get " (导入)" / " (导入2)" suffix). N>5 → setPendingImport + ConfirmDialog. Else runImport. 5MB size guard. Clears input.value for re-pick.
+    * validateImport() (pure module fn): Array + non-empty + ≤200. Each item: object with string non-empty name; config undefined/null/object/string; enabled default true; description default ''. Returns {ok,rules} or {ok:false,error} with "第 N 条..." specifics.
+    * runImport(): toast.loading("导入中 0/N…") with id. Sequential POST per rule. ok++/fail++ + per-fail toast.error. Updates loading toast "导入中 X/N…". Final: success("成功导入 N 条") or warning("导入完成: 成功 X / 失败 Y"). Awaits load().
+    * ConfirmDialog for >5: tone="teal", loading=importing, onConfirm → runImport(pendingImport).
+- Feature B3 (Duplicate enhancement):
+  - copyRule(): captures created.id → await load() → setFlashId(id) → requestAnimationFrame(scrollIntoView smooth center via [data-rule-id]) → setTimeout clear 1.8s (clears prev timer). useEffect cleanup on unmount.
+  - TableRow: `data-rule-id={r.id}` + conditional `heis-rule-flash` class. `<style dangerouslySetInnerHTML>` injects keyframe.
+- Style polish:
+  - S1 Step indicator: size-8 circles, emerald+Check (completed), violet+ring-2 (current), zinc-700 (future). Labels text-[10px]. Lines h-0.5. Mobile horizontal scroll.
+  - S2 Rule cards: border + hover:border-violet-600 + hover:bg-zinc-900. Selected = border-violet-500 bg-violet-950/30 + Check badge. Grid 1-col mobile / 2-cols sm. max-h-80 overflow-y-auto.
+  - S3 Preset buttons: grid-cols-3. Active = bg-violet-600 text-white. Inactive = border-zinc-700 hover:bg-zinc-800. Icons Snail/Gauge/Zap + label + hint text-[10px].
+- Constraints honored: only touched allowed files (TaskWizard.tsx + StepIndicator.tsx created; TasksSection.tsx + RulesSection.tsx + AdminApp.tsx modified). No /api/* /lib/crawl/* /public/* /prisma/* /mini-services/* changes. All new components 'use client'. Reused shadcn Dialog/Button/Input/Slider/Switch/RadioGroup/Label/Card/Badge/Tooltip + lucide icons.
+
+Test results:
+- `bun run lint` → 0 errors / 0 warnings.
+- `bunx tsc --noEmit 2>&1 | grep -v "examples\|skills" | wc -l` → 0.
+- Dev server: `GET /` 200, `GET /?admin=1` 200.
+- API smoke (python urllib): POST /api/admin/rules with object config → 200 (created+deleted). POST /api/admin/rules with string config → 200. POST /api/admin/tasks → 200. POST /api/admin/tasks/{id}/control {action:start} → 200.
+- agent-browser smoke (single session, closed after):
+  * Tasks → 新建任务 → wizard opens: title "新建采集任务向导" + 4-step indicator + 3 enabled rule cards + 下一步 disabled.
+  * Step 1: select XPath规则 → 下一步 enabled.
+  * Step 2: name auto-filled "XPath结构化站点示例-单书采集" + 单本 mode + bookUrl input. Filled URL → 下一步 enabled.
+  * Step 3: 3 presets (标准 active) + thread slider [2,3] + interval slider [1000,2000] + 数据库/TXT radios + 3 smart toggles on + autoRefresh off.
+  * Step 4: summary card 9 rows + 创建但不启动 / 创建并立即启动. Indicator 1✓2✓3✓4(current).
+  * Click 创建但不启动 → wizard closes → task list shows "XPath结构化站点示例-单书采集 | 单本 | 增量更新 | 数据库 | 2~3线程 | 1000~2000ms | 等待中". Created successfully.
+  * Rules → 导出 (no selection): downloaded heis-rules-20260906-1321.json (9539 bytes, 3 rules, config as parsed objects with keys list/book/toc/content/fetch/clean).
+  * 导入: uploaded 2-rule JSON → both created → appeared at top of list. Toast "成功导入 2 条规则".
+  * 复制: clicked 复制 → new row "导入测试规则B (副本)" at top with `heis-rule-flash` class active (eval: flash=true) + scrolled into view. Flash cleared after 1.8s.
+- Test data cleaned up via API. Final: 3 rules, 0 tasks (baseline restored).
+
+Stage Summary:
+- Files created (2): src/components/admin/StepIndicator.tsx, src/components/admin/TaskWizard.tsx.
+- Files modified (3): src/components/admin/TasksSection.tsx (wizard for create + onNavigate prop), src/components/admin/RulesSection.tsx (import/export + duplicate scroll/flash + validateImport + runImport + exportRules + ConfirmDialog >5), src/components/admin/AdminApp.tsx (pass onNavigate to TasksSection).
+- Features delivered: (A) 4-step task creation wizard (选规则 → 配范围 → 调度 → 确认) with step indicator, rule card grid, auto-name, preset sliders, smart toggles, summary + dual create buttons; edit mode unchanged (TaskDialog). (B1) Rule export to JSON (selected or all-enabled, client-side Blob download, parsed config object). (B2) Rule import from JSON (file picker → validate → dedupe → confirm if >5 → sequential POST with progress toast → success/failure summary). (B3) Duplicate enhancement (scroll to new row + violet flash animation 1.6s). (S1-S3) step indicator / rule cards / preset buttons styled per spec.
+- All quality gates green: lint 0/0, tsc 0, dev / 200 + /?admin=1 200. agent-browser verified full wizard flow + export + import + duplicate flash.
+
+---
+Task ID: feat-round-6
+Agent: Task wizard + rule import/export + style polish
+Task: Multi-step task creation wizard (4 steps) + rule JSON import/export + rule duplicate flash + step indicator style
+
+Work Log:
+- QA baseline: lint 0/0, tsc 0, dev server stable. Public site + reader + admin dashboard all functional. Reader keyboard shortcuts (ArrowRight/?) + book detail enhancements (相关推荐/统计) all verified working.
+- Feature A (Task creation wizard):
+  - Created `src/components/admin/StepIndicator.tsx`: reusable 4-step indicator (emerald+Check completed / violet ring current / zinc future / text-[10px] labels / mobile horizontal scroll).
+  - Created `src/components/admin/TaskWizard.tsx` (~570L): 4-step dialog for CREATE only:
+    - Step 1 选规则: grid of enabled rules (1-col mobile/2-col sm), selected=violet border+bg+Check badge, empty state links to rules page.
+    - Step 2 配范围: auto-suggested task name (规则名-单书采集 / 规则名-范围1-5), mode tabs (单书/范围), range inputs with rule's list.urlTemplate placeholder.
+    - Step 3 调度: 3 preset buttons (慢速 Snail 1-2线程/3-5s, 标准 Gauge 2-3线程/1-2s, 快速 Zap 3-5线程/0.5-1s) fill dual-thumb sliders, storage radio, 3 smart toggles, autoRefresh with Info tooltip.
+    - Step 4 确认: summary card (规则/模式/范围/线程/间隔/存储/智能/autoRefresh) + 创建但不启动 / 创建并立即启动 (POST task → POST control start).
+  - TasksSection.tsx: "新建任务" opens TaskWizard; TaskDialog kept for edit. Added onNavigate prop.
+  - AdminApp.tsx: passes onNavigate to TasksSection for wizard's "前往采集规则页" link.
+- Feature B (Rule import/export + duplicate enhancement):
+  - RulesSection.tsx: added 导入/导出 buttons next to 新建规则.
+    - Export: downloads heis-rules-YYYYMMDD-HHmm.json (selected rules if batch picked, else all enabled; config as parsed object; excludes id/createdAt/updatedAt).
+    - Import: hidden file input → reads+validates JSON (array, name required, config object/string) → dedupes names with " (导入)" suffix → ConfirmDialog if N>5 → sequential POST with progress toast → final summary.
+    - Duplicate: captures new rule id → scrolls into view (smooth, center) → applies heis-rule-flash CSS animation (violet 35% → transparent, 1.6s) → clears after 1.8s. Added data-rule-id to rows + injected keyframe style.
+- agent-browser verified: wizard 4-step flow complete (选规则→配范围→调度→确认); task name auto-updates "正则表达式示例-范围1-5"; step indicator highlights current step; preset buttons (慢速/标准/快速) render; confirmation summary shows all config; rules page has 导入/导出 buttons.
+- Final quality gates: bun run lint 0/0; bunx tsc --noEmit 0 errors; dev server / 200.
+
+Stage Summary:
+- 1 new feature: 4-step task creation wizard (StepIndicator + TaskWizard) with auto-suggested names, preset configs, confirmation summary
+- 1 new feature: rule JSON import/export (client-side download/upload, validation, dedup, progress toast)
+- 1 enhancement: rule duplicate flash + scroll-into-view
+- 3 style polishes: step indicator, rule cards, preset buttons
+- Files created: StepIndicator.tsx, TaskWizard.tsx
+- Files modified: TasksSection.tsx, TaskDialog.tsx (kept for edit), RulesSection.tsx, AdminApp.tsx, helpers.ts
+- All quality gates green; agent-browser verified wizard full flow + import/export buttons
