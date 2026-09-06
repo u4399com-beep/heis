@@ -2,25 +2,42 @@
 // 阅读布局 · immersive 沉浸暗色（仿 uaa.com 阅读器公知特征）
 // 全屏暗底接管 + 大字号高行距 + 顶部进度线 + 底部翻章条
 // + 悬浮字号胶囊 + 滚动自动收纳 chrome + 暗色目录抽屉
+// + feat-a: 阅读位置记忆 / 书签 / 行距·字距控制 (统一设置面板)
 // ============================================================
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { AArrowDown, AArrowUp, ArrowUpToLine, ChevronLeft, ChevronRight, ListTree, Moon, Sun } from 'lucide-react'
+import { ArrowUpToLine, ChevronLeft, ChevronRight, ListTree } from 'lucide-react'
 import { readOf } from '@/lib/crawl/themes'
 import { usePublic } from '../ctx'
-import { formatWords } from '../seo'
+import { formatWords, withAlpha } from '../seo'
 import { Sk } from '../bits'
+import { isBookmarked, toggleBookmark } from './bookmarks'
 import {
+  BookmarkToggle,
+  ReaderSettingsPopover,
   TocDrawer,
   actualFontPx,
   contentToHtml,
   textureStyle,
+  useReadPosMemory,
   useReadingProgress,
+  useReadingTimeTracker,
   type ReadLayoutProps,
 } from './shared'
 
-export function ReadImmersive({ data, loading, fontSize, night, onFontSize, onToggleNight }: ReadLayoutProps) {
+export function ReadImmersive({
+  data,
+  loading,
+  fontSize,
+  night,
+  lineHeight,
+  letterSpacing,
+  onFontSize,
+  onLineHeight,
+  onLetterSpacing,
+  onToggleNight,
+}: ReadLayoutProps) {
   const { theme, navigate } = usePublic()
   const v = theme.vars
   const read = readOf(theme)
@@ -32,6 +49,24 @@ export function ReadImmersive({ data, loading, fontSize, night, onFontSize, onTo
 
   const ch = data?.chapter
   const bk = data?.book
+
+  // feat-a B: 书签状态 (data 变化时同步)
+  const [bookmarked, setBookmarked] = useState(false)
+  // feat-a A/D: 位置记忆 (内部滚动容器 scrollerRef) + 阅读时长
+  const ready = !loading && !!ch && !!bk
+  const { restoredHint } = useReadPosMemory({
+    bookId: bk?.id,
+    chapterId: ch?.id,
+    title: ch?.title,
+    scrollerRef,
+    ready,
+  })
+  useReadingTimeTracker(bk?.id)
+
+  if (typeof window !== 'undefined' && bk && ch) {
+    const next = isBookmarked(bk.id, ch.id)
+    if (next !== bookmarked) setBookmarked(next)
+  }
 
   // 沉浸画布配色：始终暗底（浅色主题也转入暗色画布）; night = 墨黑加深
   const canvas = night ? '#000000' : theme.dark ? undefined : '#14171c'
@@ -64,6 +99,7 @@ export function ReadImmersive({ data, loading, fontSize, night, onFontSize, onTo
 
   const navBtn =
     'inline-flex min-h-[44px] flex-1 items-center justify-center gap-1.5 rounded-full px-4 text-sm font-medium backdrop-blur transition-all hover:opacity-85 disabled:cursor-not-allowed disabled:opacity-30 sm:flex-none sm:px-6'
+  const toolBtn = 'inline-flex h-11 w-11 items-center justify-center rounded-full transition-opacity hover:opacity-75'
 
   return (
     <div
@@ -151,7 +187,8 @@ export function ReadImmersive({ data, loading, fontSize, night, onFontSize, onTo
                 style={{
                   color: textColor,
                   fontSize: fontPx,
-                  lineHeight: read.lineHeight,
+                  lineHeight,
+                  letterSpacing: `${letterSpacing}px`,
                   maxWidth: read.measure,
                   margin: '0 auto',
                 }}
@@ -240,44 +277,53 @@ export function ReadImmersive({ data, loading, fontSize, night, onFontSize, onTo
         </div>
       </footer>
 
-      {/* 悬浮字号/墨黑胶囊（不随滚动收纳, 常驻控制） */}
+      {/* 悬浮 Aa设置/书签 胶囊（不随滚动收纳, 常驻控制） */}
       <div
         className="absolute bottom-24 right-4 z-20 flex flex-col items-center gap-1 rounded-full px-1.5 py-1.5 backdrop-blur sm:bottom-28 sm:right-6"
         style={{ background: pillBg, border: `1px solid ${hairline}` }}
         role="group"
         aria-label="阅读设置"
       >
-        <button
-          type="button"
-          onClick={() => onFontSize(-1)}
-          className="inline-flex h-11 w-11 items-center justify-center rounded-full transition-opacity hover:opacity-75"
-          style={{ color: textColor }}
-          aria-label="减小字号"
-        >
-          <AArrowDown className="h-4 w-4" aria-hidden />
-        </button>
-        <span className="w-8 text-center text-[10px] tabular-nums" style={{ color: metaColor }}>{fontPx}</span>
-        <button
-          type="button"
-          onClick={() => onFontSize(1)}
-          className="inline-flex h-11 w-11 items-center justify-center rounded-full transition-opacity hover:opacity-75"
-          style={{ color: textColor }}
-          aria-label="增大字号"
-        >
-          <AArrowUp className="h-4 w-4" aria-hidden />
-        </button>
-        <span className="my-0.5 h-px w-6" style={{ background: hairline }} aria-hidden />
-        <button
-          type="button"
-          onClick={onToggleNight}
-          className="inline-flex h-11 w-11 items-center justify-center rounded-full transition-opacity hover:opacity-75"
-          style={{ color: night ? v.primary : textColor }}
-          aria-label={night ? '切换默认暗色' : '切换墨黑模式'}
-          aria-pressed={night}
-        >
-          {night ? <Sun className="h-4 w-4" aria-hidden /> : <Moon className="h-4 w-4" aria-hidden />}
-        </button>
+        {/* feat-a C: Aa 设置面板触发器 */}
+        <ReaderSettingsPopover
+          fontSize={fontSize}
+          lineHeight={lineHeight}
+          letterSpacing={letterSpacing}
+          night={night}
+          onFontSize={onFontSize}
+          onLineHeight={onLineHeight}
+          onLetterSpacing={onLetterSpacing}
+          onToggleNight={onToggleNight}
+          dark
+          triggerClassName={toolBtn}
+          triggerStyle={{ color: textColor }}
+          ariaLabel="阅读设置"
+        />
+        {/* feat-a B: 书签 */}
+        <BookmarkToggle
+          bookmarked={bookmarked}
+          onToggle={() => {
+            if (!bk || !ch) return
+            const added = toggleBookmark(bk.id, { id: ch.id, idx: ch.idx, title: ch.title })
+            setBookmarked(added)
+          }}
+          triggerClassName={toolBtn}
+          triggerStyle={{ color: bookmarked ? v.primary : textColor }}
+          activeColor={v.primary}
+          inactiveColor={textColor}
+        />
       </div>
+
+      {/* feat-a A: 位置恢复 inline 提示 */}
+      {restoredHint && (
+        <div
+          className="pointer-events-none absolute left-1/2 top-12 z-30 -translate-x-1/2 rounded-full px-3.5 py-1.5 text-xs shadow-md"
+          style={{ background: withAlpha(v.primary, 0.95), color: v.primaryText }}
+          role="status"
+        >
+          已定位到上次阅读位置
+        </div>
+      )}
 
       <TocDrawer open={drawer} onClose={() => setDrawer(false)} bookId={bk?.id} activeChapterId={ch?.id} variant="immersive" />
     </div>

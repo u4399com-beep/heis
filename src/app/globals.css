@@ -120,3 +120,41 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* ============================================================
+ * feat-a E: 登录页动画 + 书型图标脉冲
+ * 登录页背景: 深紫 → 靛 → 锌黑 渐变, 8s 缓动循环
+ * BookOpen 图标: 2s 缩放/阴影呼吸, 增强品牌感
+ * ============================================================ */
+@keyframes gradientShift {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.animate-login-gradient {
+  background-size: 200% 200%;
+  animation: gradientShift 8s ease-in-out infinite;
+}
+
+@keyframes bookPulse {
+  0%,
+  100% {
+    transform: translateY(0);
+    filter: drop-shadow(0 0 0 rgba(167, 139, 250, 0));
+  }
+  50% {
+    transform: translateY(-3px);
+    filter: drop-shadow(0 6px 14px rgba(167, 139, 250, 0.35));
+  }
+}
+
+.animate-book-pulse {
+  animation: bookPulse 2.4s ease-in-out infinite;
+}

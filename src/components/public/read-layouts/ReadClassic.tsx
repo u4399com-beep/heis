@@ -2,27 +2,44 @@
 // 阅读布局 · classic 典书版（仿 guichuideng.info 经典书站 DNA）
 // 居中窄栏纸面 + 衬线正文 + 面包屑 + 章节头尾装饰分隔
 // + 上一章/目录/下一章 经典三键导航 + 懒加载目录抽屉
+// + feat-a: 阅读位置记忆 / 书签 / 行距·字距控制 (统一设置面板)
 // ============================================================
 'use client'
 
 import { useState } from 'react'
-import { AArrowDown, AArrowUp, ArrowUpToLine, ChevronLeft, ChevronRight, ListTree, Moon, Sun } from 'lucide-react'
+import { ArrowUpToLine, ChevronLeft, ChevronRight, ListTree } from 'lucide-react'
 import { readOf } from '@/lib/crawl/themes'
 import { usePublic } from '../ctx'
 import { formatWords, withAlpha } from '../seo'
 import { Sk } from '../bits'
+import { isBookmarked, toggleBookmark } from './bookmarks'
 import {
+  BookmarkToggle,
   ChapterDeco,
   ChapterEndDeco,
+  ReaderSettingsPopover,
   TocDrawer,
   actualFontPx,
   contentToHtml,
   textureStyle,
+  useReadPosMemory,
   useReadingProgress,
+  useReadingTimeTracker,
   type ReadLayoutProps,
 } from './shared'
 
-export function ReadClassic({ data, loading, fontSize, night, onFontSize, onToggleNight }: ReadLayoutProps) {
+export function ReadClassic({
+  data,
+  loading,
+  fontSize,
+  night,
+  lineHeight,
+  letterSpacing,
+  onFontSize,
+  onLineHeight,
+  onLetterSpacing,
+  onToggleNight,
+}: ReadLayoutProps) {
   const { site, theme, navigate } = usePublic()
   const v = theme.vars
   const read = readOf(theme)
@@ -31,6 +48,27 @@ export function ReadClassic({ data, loading, fontSize, night, onFontSize, onTogg
 
   const ch = data?.chapter
   const bk = data?.book
+
+  // feat-a B: 书签状态 (data 变化时同步)
+  const [bookmarked, setBookmarked] = useState(false)
+  // feat-a A/D: 位置记忆 + 阅读时长 (data 就绪后激活)
+  const ready = !loading && !!ch && !!bk
+  const { restoredHint } = useReadPosMemory({
+    bookId: bk?.id,
+    chapterId: ch?.id,
+    title: ch?.title,
+    ready,
+  })
+  useReadingTimeTracker(bk?.id)
+
+  // feat-a B: data 变化时重新读 localStorage bookmarked
+  if (typeof window !== 'undefined' && bk && ch) {
+    const next = isBookmarked(bk.id, ch.id)
+    if (next !== bookmarked) {
+      // 直接在 render 期间检测并 setState (与原 prevCh 同款模式, 安全)
+      setBookmarked(next)
+    }
+  }
 
   // 夜间调色（与旧版语义一致：暗主题更沉, 浅主题切深底）
   const panelBg = night
@@ -47,6 +85,9 @@ export function ReadClassic({ data, loading, fontSize, night, onFontSize, onTogg
   const fontPx = actualFontPx(fontSize, read)
 
   const navBtn = 'inline-flex min-h-[44px] flex-1 items-center justify-center gap-1.5 px-4 text-sm font-medium transition-opacity hover:opacity-75 disabled:cursor-not-allowed disabled:opacity-35 sm:flex-none sm:px-5'
+  // feat-a B/C: 工具条按钮统一样式 (Aa 设置 / 书签)
+  const toolBtn =
+    'inline-flex h-11 w-11 items-center justify-center transition-opacity hover:opacity-75'
 
   return (
     <div className="read-layout-classic mx-auto w-full max-w-3xl px-3 py-5 sm:px-6 sm:py-8">
@@ -62,7 +103,7 @@ export function ReadClassic({ data, loading, fontSize, night, onFontSize, onTogg
         />
       </div>
 
-      {/* 文头工具条（inline 形态）: 面包屑式返回 + 字号/夜间/目录 */}
+      {/* 文头工具条（inline 形态）: 面包屑式返回 + Aa设置/书签/目录 */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <button
           type="button"
@@ -75,41 +116,42 @@ export function ReadClassic({ data, loading, fontSize, night, onFontSize, onTogg
           {bk?.name || '书籍详情'}
         </button>
         <div className="flex items-center gap-1.5" role="group" aria-label="阅读设置">
-          <button
-            type="button"
-            onClick={() => onFontSize(-1)}
-            className="inline-flex h-11 w-11 items-center justify-center transition-opacity hover:opacity-75"
-            style={{ color: v.text, border: `1px solid ${lineColor}`, borderRadius: v.radius, background: withAlpha(v.surfaceAlt, night ? 0.15 : 0.6) }}
-            aria-label="减小字号"
-          >
-            <AArrowDown className="h-4 w-4" aria-hidden />
-          </button>
-          <span className="w-10 text-center text-xs tabular-nums" style={{ color: metaColor }}>{fontPx}px</span>
-          <button
-            type="button"
-            onClick={() => onFontSize(1)}
-            className="inline-flex h-11 w-11 items-center justify-center transition-opacity hover:opacity-75"
-            style={{ color: v.text, border: `1px solid ${lineColor}`, borderRadius: v.radius, background: withAlpha(v.surfaceAlt, night ? 0.15 : 0.6) }}
-            aria-label="增大字号"
-          >
-            <AArrowUp className="h-4 w-4" aria-hidden />
-          </button>
-          <button
-            type="button"
-            onClick={onToggleNight}
-            className="inline-flex min-h-[44px] items-center gap-1.5 px-3.5 text-xs font-medium transition-opacity hover:opacity-75"
-            style={{
-              background: night ? v.primary : withAlpha(v.surfaceAlt, 0.6),
-              color: night ? v.primaryText : v.text,
-              border: `1px solid ${night ? v.primary : lineColor}`,
+          {/* feat-a C: 统一 Aa 设置面板 (字号/行距/字距/夜间) */}
+          <ReaderSettingsPopover
+            fontSize={fontSize}
+            lineHeight={lineHeight}
+            letterSpacing={letterSpacing}
+            night={night}
+            onFontSize={onFontSize}
+            onLineHeight={onLineHeight}
+            onLetterSpacing={onLetterSpacing}
+            onToggleNight={onToggleNight}
+            dark={night || theme.dark}
+            triggerClassName={toolBtn}
+            triggerStyle={{
+              color: v.text,
+              border: `1px solid ${lineColor}`,
               borderRadius: v.radius,
+              background: withAlpha(v.surfaceAlt, night ? 0.15 : 0.6),
             }}
-            aria-label={night ? '切换日间模式' : '切换夜间模式'}
-            aria-pressed={night}
-          >
-            {night ? <Sun className="h-3.5 w-3.5" aria-hidden /> : <Moon className="h-3.5 w-3.5" aria-hidden />}
-            {night ? '日间' : '夜间'}
-          </button>
+          />
+          {/* feat-a B: 书签切换 */}
+          <BookmarkToggle
+            bookmarked={bookmarked}
+            onToggle={() => {
+              if (!bk || !ch) return
+              const added = toggleBookmark(bk.id, { id: ch.id, idx: ch.idx, title: ch.title })
+              setBookmarked(added)
+            }}
+            triggerClassName={toolBtn}
+            triggerStyle={{
+              border: `1px solid ${lineColor}`,
+              borderRadius: v.radius,
+              background: withAlpha(v.surfaceAlt, night ? 0.15 : 0.6),
+            }}
+            activeColor={v.primary}
+            inactiveColor={v.text}
+          />
           <button
             type="button"
             onClick={() => setDrawer(true)}
@@ -123,6 +165,17 @@ export function ReadClassic({ data, loading, fontSize, night, onFontSize, onTogg
           </button>
         </div>
       </div>
+
+      {/* feat-a A: 位置恢复 inline 提示 (2s 自动消失) */}
+      {restoredHint && (
+        <div
+          className="pointer-events-none fixed left-1/2 top-3 z-50 -translate-x-1/2 rounded-full px-3.5 py-1.5 text-xs shadow-md"
+          style={{ background: withAlpha(v.primary, 0.95), color: v.primaryText }}
+          role="status"
+        >
+          已定位到上次阅读位置
+        </div>
+      )}
 
       {/* 纸面正文面板 */}
       <article
@@ -180,7 +233,8 @@ export function ReadClassic({ data, loading, fontSize, night, onFontSize, onTogg
                 color: textColor,
                 fontFamily: v.fontFamily,
                 fontSize: fontPx,
-                lineHeight: read.lineHeight,
+                lineHeight,
+                letterSpacing: `${letterSpacing}px`,
                 maxWidth: read.measure,
                 margin: '0 auto',
               }}

@@ -2,26 +2,43 @@
 // 阅读布局 · paginated 分页横滑型
 // 固定高度舞台 + CSS 多列分页 + 横向滑动/点按翻页
 // + 页码指示与页进度 + 侧翼点按热区 + 底部工具条/翻章
+// + feat-a: 阅读位置记忆 (横向分页) / 书签 / 行距·字距控制 (统一设置面板)
 // ============================================================
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
-import { AArrowDown, AArrowUp, ChevronLeft, ChevronRight, ListTree, Moon, Sun } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ListTree } from 'lucide-react'
 import { readOf } from '@/lib/crawl/themes'
 import { usePublic } from '../ctx'
 import { formatWords, withAlpha } from '../seo'
 import { Sk } from '../bits'
+import { isBookmarked, toggleBookmark } from './bookmarks'
 import {
+  BookmarkToggle,
   ChapterDeco,
+  ReaderSettingsPopover,
   TocDrawer,
   actualFontPx,
   contentToHtml,
   textureStyle,
+  useReadPosMemory,
+  useReadingTimeTracker,
   type ReadLayoutProps,
 } from './shared'
 
-export function ReadPaginated({ data, loading, fontSize, night, onFontSize, onToggleNight }: ReadLayoutProps) {
+export function ReadPaginated({
+  data,
+  loading,
+  fontSize,
+  night,
+  lineHeight,
+  letterSpacing,
+  onFontSize,
+  onLineHeight,
+  onLetterSpacing,
+  onToggleNight,
+}: ReadLayoutProps) {
   const { theme, navigate } = usePublic()
   const v = theme.vars
   const read = readOf(theme)
@@ -33,6 +50,37 @@ export function ReadPaginated({ data, loading, fontSize, night, onFontSize, onTo
 
   const ch = data?.chapter
   const bk = data?.book
+
+  // feat-a B: 书签状态
+  const [bookmarked, setBookmarked] = useState(false)
+  // feat-a A/D: 横向分页的 ratio = scrollLeft / (scrollWidth - clientWidth)
+  const ready = !loading && !!ch && !!bk
+  const getRatio = useCallback((): number => {
+    const el = stageRef.current
+    if (!el) return 0
+    const max = el.scrollWidth - el.clientWidth
+    return max > 0 ? Math.min(1, Math.max(0, el.scrollLeft / max)) : 0
+  }, [])
+  const setRatio = useCallback((r: number): void => {
+    const el = stageRef.current
+    if (!el) return
+    const max = el.scrollWidth - el.clientWidth
+    el.scrollTo({ left: Math.round(max * r) })
+  }, [])
+  const { restoredHint } = useReadPosMemory({
+    bookId: bk?.id,
+    chapterId: ch?.id,
+    title: ch?.title,
+    ready,
+    getRatio,
+    setRatio,
+  })
+  useReadingTimeTracker(bk?.id)
+
+  if (typeof window !== 'undefined' && bk && ch) {
+    const next = isBookmarked(bk.id, ch.id)
+    if (next !== bookmarked) setBookmarked(next)
+  }
 
   // 夜间调色（与旧版语义一致）
   const stageBg = night ? (theme.dark ? 'rgba(0,0,0,0.45)' : '#15171c') : v.surface
@@ -68,7 +116,7 @@ export function ReadPaginated({ data, loading, fontSize, night, onFontSize, onTo
       window.clearTimeout(t)
       window.removeEventListener('resize', measure)
     }
-  }, [measure, data?.chapter.id, fontSize, loading])
+  }, [measure, data?.chapter.id, fontSize, lineHeight, letterSpacing, loading])
 
   // 吸附定时器随卸载清理: 卸载后 160ms 定时器仍会对 detached 舞台 scrollTo(无害空转, 卫生级)
   useEffect(() => {
@@ -145,7 +193,7 @@ export function ReadPaginated({ data, loading, fontSize, night, onFontSize, onTo
         />
       </div>
 
-      {/* 文头工具条: 返回 + 字号/夜间/目录 */}
+      {/* 文头工具条: 返回 + Aa设置/书签/目录 */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <button
           type="button"
@@ -158,41 +206,42 @@ export function ReadPaginated({ data, loading, fontSize, night, onFontSize, onTo
           {bk?.name || '书籍详情'}
         </button>
         <div className="flex items-center gap-1.5" role="group" aria-label="阅读设置">
-          <button
-            type="button"
-            onClick={() => onFontSize(-1)}
-            className={iconPill}
-            style={{ color: v.text, border: `1px solid ${lineColor}`, borderRadius: v.radius, background: withAlpha(v.surfaceAlt, night ? 0.15 : 0.6) }}
-            aria-label="减小字号"
-          >
-            <AArrowDown className="h-4 w-4" aria-hidden />
-          </button>
-          <span className="w-10 text-center text-xs tabular-nums" style={{ color: metaColor }}>{fontPx}px</span>
-          <button
-            type="button"
-            onClick={() => onFontSize(1)}
-            className={iconPill}
-            style={{ color: v.text, border: `1px solid ${lineColor}`, borderRadius: v.radius, background: withAlpha(v.surfaceAlt, night ? 0.15 : 0.6) }}
-            aria-label="增大字号"
-          >
-            <AArrowUp className="h-4 w-4" aria-hidden />
-          </button>
-          <button
-            type="button"
-            onClick={onToggleNight}
-            className={pill}
-            style={{
-              background: night ? v.primary : withAlpha(v.surfaceAlt, 0.6),
-              color: night ? v.primaryText : v.text,
-              border: `1px solid ${night ? v.primary : lineColor}`,
+          {/* feat-a C: 统一 Aa 设置面板 */}
+          <ReaderSettingsPopover
+            fontSize={fontSize}
+            lineHeight={lineHeight}
+            letterSpacing={letterSpacing}
+            night={night}
+            onFontSize={onFontSize}
+            onLineHeight={onLineHeight}
+            onLetterSpacing={onLetterSpacing}
+            onToggleNight={onToggleNight}
+            dark={night || theme.dark}
+            triggerClassName={iconPill}
+            triggerStyle={{
+              color: v.text,
+              border: `1px solid ${lineColor}`,
               borderRadius: v.radius,
+              background: withAlpha(v.surfaceAlt, night ? 0.15 : 0.6),
             }}
-            aria-label={night ? '切换日间模式' : '切换夜间模式'}
-            aria-pressed={night}
-          >
-            {night ? <Sun className="h-3.5 w-3.5" aria-hidden /> : <Moon className="h-3.5 w-3.5" aria-hidden />}
-            {night ? '日间' : '夜间'}
-          </button>
+          />
+          {/* feat-a B: 书签 */}
+          <BookmarkToggle
+            bookmarked={bookmarked}
+            onToggle={() => {
+              if (!bk || !ch) return
+              const added = toggleBookmark(bk.id, { id: ch.id, idx: ch.idx, title: ch.title })
+              setBookmarked(added)
+            }}
+            triggerClassName={iconPill}
+            triggerStyle={{
+              border: `1px solid ${lineColor}`,
+              borderRadius: v.radius,
+              background: withAlpha(v.surfaceAlt, night ? 0.15 : 0.6),
+            }}
+            activeColor={v.primary}
+            inactiveColor={v.text}
+          />
           <button
             type="button"
             onClick={() => setDrawer(true)}
@@ -206,6 +255,17 @@ export function ReadPaginated({ data, loading, fontSize, night, onFontSize, onTo
           </button>
         </div>
       </div>
+
+      {/* feat-a A: 位置恢复 inline 提示 */}
+      {restoredHint && (
+        <div
+          className="pointer-events-none fixed left-1/2 top-3 z-50 -translate-x-1/2 rounded-full px-3.5 py-1.5 text-xs shadow-md"
+          style={{ background: withAlpha(v.primary, 0.95), color: v.primaryText }}
+          role="status"
+        >
+          已定位到上次阅读位置
+        </div>
+      )}
 
       {/* 章节题头（左对齐, 与典书版居中制式区分） */}
       {loading || !ch || !bk ? (
@@ -250,7 +310,8 @@ export function ReadPaginated({ data, loading, fontSize, night, onFontSize, onTo
             columnFill: 'auto',
             color: textColor,
             fontSize: fontPx,
-            lineHeight: read.lineHeight,
+            lineHeight,
+            letterSpacing: `${letterSpacing}px`,
             ...textureStyle(read.texture, read.texture === 'vignette' && !night),
           }}
         >

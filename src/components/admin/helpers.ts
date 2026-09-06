@@ -233,6 +233,12 @@ export interface StatsData {
     _count?: { chapters: number }
   }[]
   categories: { id: string; name: string; _count?: { books: number } }[]
+  // feat-b: 可视化字段 (后端每项独立 try/catch, 失败时为空数组, 客户端按空数组处理)
+  wordsByCategory: { name: string; words: number }[]
+  booksByStatus: { status: string; count: number }[]
+  chaptersLast7d: { day: string; count: number }[]
+  booksLast7d: { day: string; count: number }[]
+  taskStatusBreakdown: { status: string; count: number }[]
 }
 
 export interface RuleTestResult {
@@ -248,6 +254,46 @@ export interface RuleTestResult {
   cleanedLength?: number
   cleanedText?: string
   cleanedHtml?: string
+}
+
+// ---------------- feat-b: 健康监控 (与 /api/admin/health 响应一致) ----------------
+export type HealthStatus = 'healthy' | 'degraded' | 'unhealthy'
+
+export interface HealthService {
+  reachable: boolean
+  selfTestOk?: boolean
+  note?: string
+}
+
+export interface HealthData {
+  status: HealthStatus
+  uptime: number
+  db: 'ok' | 'fail'
+  runner: { activeTasks: number; runtimes: number }
+  hostGate: { hosts: number }
+  services: Record<string, HealthService>
+  memory: { rss: number; heapUsed: number; heapTotal: number }
+  reqId?: string
+}
+
+/** 运行时长格式化: "运行 X天 Y小时 Z分钟" / "运行 Y小时 Z分钟" / "运行 Z分钟" */
+export function fmtUptime(seconds?: number | null): string {
+  const s = Math.max(0, Math.floor(Number(seconds) || 0))
+  if (s < 60) return `运行 ${s}秒`
+  const d = Math.floor(s / 86400)
+  const h = Math.floor((s % 86400) / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const parts: string[] = []
+  if (d > 0) parts.push(`${d}天`)
+  if (h > 0 || d > 0) parts.push(`${h}小时`)
+  parts.push(`${m}分钟`)
+  return `运行 ${parts.join('')}`
+}
+
+/** 字节数 → MB 字符串, 1 位小数 */
+export function fmtMB(n?: number | null): string {
+  const v = Number(n) || 0
+  return `${(v / 1024 / 1024).toFixed(1)}MB`
 }
 
 // ---------------- JSON 安全解析 ----------------

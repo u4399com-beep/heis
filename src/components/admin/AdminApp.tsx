@@ -164,11 +164,19 @@ export default function AdminApp({ onPreviewSite }: { onPreviewSite?: (themeId?:
                 type="button"
                 onClick={() => setSection(n.key)}
                 aria-current={active ? 'page' : undefined}
-                className={`flex items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors ${
+                className={`relative flex items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors ${
                   active
-                    ? 'border border-violet-500/30 bg-violet-500/15 font-medium text-violet-300'
-                    : 'border border-transparent text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'
+                    ? 'bg-violet-500/15 font-medium text-violet-300'
+                    : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'
                 }`}
+                style={
+                  active
+                    ? {
+                        borderLeft: '3px solid var(--color-violet-500)',
+                        paddingLeft: 'calc(0.75rem - 1px)',
+                      }
+                    : { borderLeft: '3px solid transparent' }
+                }
               >
                 <n.icon className={`h-4 w-4 ${active ? 'text-violet-400' : ''}`} />
                 {n.label}

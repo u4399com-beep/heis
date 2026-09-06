@@ -6,7 +6,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
-import { Bookmark, ChevronLeft, ChevronRight, Download, Hash, ListTree } from 'lucide-react'
+import { Bookmark, ChevronLeft, ChevronRight, Clock, Download, Hash, ListTree } from 'lucide-react'
 import { fetchBook, type BookDetailData } from './data'
 import { usePublic } from './ctx'
 import { coverSrc, fmtDate, formatWords, statusLabel, useSiteSEO, withAlpha } from './seo'
@@ -14,6 +14,7 @@ import { BookCover } from './BookCover'
 import { EmptyState, ErrorState, SecTitle, Sk, StatusBadge, TagCloud } from './bits'
 import { ReadFirstButton } from './BookCard'
 import type { BookTagHit, TocChapter } from './types'
+import { getReadPos, formatReadTimeShort } from './read-layouts/reading-memory'
 
 function TocSkeleton({ themeId }: { themeId: string }) {
   const rows = 10
@@ -51,6 +52,14 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
   const [state, setState] = useState<FetchState | null>(null)
   const tocRef = useRef<HTMLDivElement>(null)
   const firstRender = useRef(true)
+  // feat-a D: 上次阅读位置 + 累计阅读时长徽章 (localStorage, 数据加载时读一次)
+  // 使用 render-time 检测 bookId 变化模式 (与 ReadView 的 prevCh 同款), 避免 effect 内同步 setState
+  const [savedPos, setSavedPos] = useState<ReturnType<typeof getReadPos> | null>(null)
+  const [prevBookId, setPrevBookId] = useState(bookId)
+  if (prevBookId !== bookId) {
+    setPrevBookId(bookId)
+    setSavedPos(bookId ? getReadPos(bookId) : null)
+  }
 
   const key = `${bookId || ''}|${tocPage}|${site.id}`
 
@@ -400,6 +409,26 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
                   )}
                   <div className="flex flex-wrap items-center gap-3 pt-1">
                     <ReadFirstButton firstChapterId={chapters[0]?.id} label="开始阅读" />
+                    {/* feat-a D: 上次阅读徽章 (有 saved 位置时显示) */}
+                    {savedPos?.chapterId && (
+                      <button
+                        type="button"
+                        onClick={() => savedPos.chapterId && navigate({ view: 'read', chapterId: savedPos.chapterId })}
+                        className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium transition-opacity hover:opacity-85"
+                        style={{
+                          border: `1px solid ${withAlpha(v.primary, 0.45)}`,
+                          color: v.primary,
+                          borderRadius: v.radius,
+                          background: withAlpha(v.primary, theme.dark ? 0.16 : 0.08),
+                        }}
+                        aria-label={`继续阅读 ${savedPos.title || ''}`}
+                        title={savedPos.title || '继续阅读'}
+                      >
+                        <Clock className="h-3.5 w-3.5" aria-hidden />
+                        上次阅读
+                        {savedPos.readTimeMs && savedPos.readTimeMs > 0 ? ` · 已读 ${formatReadTimeShort(savedPos.readTimeMs)}` : ''}
+                      </button>
+                    )}
                     <button
                       type="button"
                       className="inline-flex items-center gap-1.5 px-5 py-2 text-sm font-medium transition-opacity hover:opacity-85"
@@ -491,6 +520,26 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
                 </p>
                 <div className="flex flex-wrap items-center gap-3 pt-1">
                   <ReadFirstButton firstChapterId={chapters[0]?.id} label="开始阅读" />
+                  {/* feat-a D: 上次阅读徽章 (有 saved 位置时显示) */}
+                  {savedPos?.chapterId && (
+                    <button
+                      type="button"
+                      onClick={() => savedPos.chapterId && navigate({ view: 'read', chapterId: savedPos.chapterId })}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium transition-opacity hover:opacity-85"
+                      style={{
+                        border: `1px solid ${withAlpha(v.primary, 0.45)}`,
+                        color: v.primary,
+                        borderRadius: v.radius,
+                        background: withAlpha(v.primary, theme.dark ? 0.16 : 0.08),
+                      }}
+                      aria-label={`继续阅读 ${savedPos.title || ''}`}
+                      title={savedPos.title || '继续阅读'}
+                    >
+                      <Clock className="h-3.5 w-3.5" aria-hidden />
+                      上次阅读
+                      {savedPos.readTimeMs && savedPos.readTimeMs > 0 ? ` · 已读 ${formatReadTimeShort(savedPos.readTimeMs)}` : ''}
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium transition-opacity hover:opacity-85"

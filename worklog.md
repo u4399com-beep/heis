@@ -551,3 +551,183 @@ Stage Summary:
 - Observability added (structured logger, request IDs, health endpoint)
 - Mini-services consolidated into shared boilerplate, Docker hardened (non-root, no-new-privileges, cap_drop, logging rotation, signal forwarding)
 - Total: 11 agents, 8 waves, ~50 files modified/created, ~1500 lines added net
+
+---
+Task ID: feat-a
+Agent: Reader enhancement (bookmarks/line-height/reading-time/style polish)
+Task: Add reading progress memory + bookmarks + line/letter spacing + reading time tracking + login/dashboard style polish
+
+Work Log:
+- Read prior worklog (Tasks 3-a/4-a/1-a/1-c/2-fetcher/2-runner/2-obscura/2-other-engine/4-b/2-api-bugs/5-a/2-a/6) for context; project stable, lint/tsc clean, 50+ prior bugs fixed.
+- Read current state of all 4 read layouts + shared.tsx + ReadView.tsx + BookView.tsx + LoginGate.tsx + Dashboard.tsx + AdminApp.tsx + globals.css before editing.
+- Verified shadcn/ui (Popover, Slider, Switch, Button, Tooltip) + lucide-react availability.
+
+A. Reading Progress Memory (read position recall):
+  - Created src/components/public/read-layouts/reading-memory.ts (172L): ReadPos interface { chapterId, scrollRatio, title, ts, readTimeMs }, key heis_readpos_<bookId>, saveReadPos/getReadPos/clearReadPos/listReadPos (LRU 50 by ts desc), getReadTimeMs/setReadTimeMs (additive in same record), formatReadTime/formatReadTimeShort helpers.
+  - Added useReadPosMemory({bookId, chapterId, title, scrollerRef, ready, getRatio?, setRatio?}) hook in shared.tsx: 100ms-delayed restore scroll when ready+chapterId match (sets restoredHint, auto-dismiss 2s); immediate save of new chapter + ratio 0 on chapterId change to a different chapter; 300ms debounced scroll save listener; custom getRatio/setRatio override for paginated horizontal.
+  - Each layout wires hook appropriately: Classic/Pili=window, Immersive=internal scrollerRef, Paginated=stageRef + horizontal ratio override.
+  - Each layout renders inline "已定位到上次阅读位置" toast when restoredHint true.
+
+B. Chapter Bookmarks (add/remove/list):
+  - Created src/components/public/read-layouts/bookmarks.ts (108L): Bookmark { chapterId, idx, title, ts }, key heis_bookmarks_<bookId>, max 200 per book (LRU eviction), toggleBookmark (returns new state), isBookmarked, listBookmarks, clearBookmarks, formatRelativeTime (刚刚/N分钟前/N小时前/N天前/N个月前/N年前).
+  - Added BookmarkToggle component in shared.tsx (lucide Bookmark/BookmarkCheck icons, fill-current when active, title attr tooltip 加入书签/移除书签).
+  - Each layout's toolbar: BookmarkToggle button next to Aa settings, wired to toggleBookmark(bk.id, {id, idx, title}).
+  - Bookmark state synced in each layout's render body (prevCh-style render-time setState, safe pattern).
+  - TocDrawer enhanced with 目录/书签 tab toggle at top: bookmark list (idx + title + relative time + remove X button), empty state with Bookmark icon + helper text. Refresh via render-time prevRefresh check (avoid set-state-in-effect). removeBookmark handler calls toggleBookmark + re-reads listBookmarks.
+
+C. Line Height / Letter Spacing Control:
+  - Extended ReadLayoutProps in shared.tsx: +lineHeight (1.5-2.2, default 1.8), +letterSpacing (-0.5 to 2 px, default 0), +onLineHeight(delta), +onLetterSpacing(delta).
+  - Added LINE_HEIGHT_PRESETS [{紧凑 1.6}, {标准 1.8}, {宽松 2.1}] and LETTER_SPACING_PRESETS [{紧凑 -0.3}, {标准 0}, {宽松 1}].
+  - Added ReaderSettingsPopover component: Type-icon trigger + popover content (字号 slider 14-24 + -/+, 行距 3 presets, 字距 3 presets, 夜间 Switch); active preset highlight within 0.05 of value; dark variant for immersive.
+  - ReadView.tsx: added lineHeight + letterSpacing state with localStorage persistence (public_reader_lineHeight, public_reader_letterSpacing), clamped via round-to-2-decimals.
+  - All 4 layouts: replaced existing AArrowUp/AArrowDown/Moon/Sun toolbar buttons with single ReaderSettingsPopover trigger + BookmarkToggle button (cleaner toolbar, fewer buttons).
+  - All 4 layouts apply style={{ lineHeight, letterSpacing: `${letterSpacing}px` }} to chapter content wrapper.
+
+D. Reading Time Tracking (per book):
+  - Added useReadingTimeTracker(bookId) hook in shared.tsx: 1s tick adds 1000ms when document.visible && lastScrollAt < 30s ago; 30s setInterval save via setReadTimeMs (imported); unmount cleanup save; visibilitychange listener refreshes lastScrollAt on tab-return.
+  - Bug discovered & fixed: initial draft shadowed imported setReadTimeMs with useState setter — save() would have called state setter with (bookId, ms) args, writing bookId string to state instead of persisting ms. Renamed local setter to setReadTimeMsState; fixed both unused-import lint warning AND silent runtime bug.
+  - All 4 layouts call useReadingTimeTracker(bk?.id).
+  - TocDrawer header shows "已读 2小时15分" with Clock icon (only when readTimeMs > 0).
+  - BookView.tsx: added "上次阅读 · 已读 2h15m" badge button next to 开始阅读 (only when savedPos?.chapterId exists), click navigates to last-read chapter; rendered in both pili and non-pili info layouts.
+
+E. Style Polish — Login + Dashboard + Sidebar:
+  - globals.css: +@keyframes gradientShift (8s ease-in-out infinite bg-position 0%↔100%) + .animate-login-gradient; +@keyframes bookPulse (2.4s ease-in-out infinite translateY + drop-shadow violet) + .animate-book-pulse.
+  - LoginGate.tsx rewritten: bg-gradient-to-br from-[#3b1e6e] via-[#4338ca] to-zinc-950 + animate-login-gradient; Card backdrop-blur-xl bg-white/5 border-white/10 glass + 12px shadow; BookOpen icon (replaces Lock) with animate-book-pulse + violet ring/glow; password input focus-visible:border-violet-400/70 focus-visible:ring-violet-400/50 focus-visible:ring-[3px] primary glow; submit bg-violet-600 hover:bg-violet-500; footer line below form "🔒 会话 12 小时 · 登录信息仅本地保存".
+  - Dashboard.tsx: icon imports per spec (BookMarked→BookOpen, FileStack→FileText, FileCode2→ScrollText, ListChecks→ListTodo, Tags→Tag; Globe/Download unchanged); stat card className transition-all duration-200 hover:-translate-y-1 hover:scale-[1.02] hover:border-violet-600/60 hover:bg-zinc-900 hover:shadow-lg hover:shadow-violet-950/40; icon wrapped in rounded-md bg-zinc-950/60 ring-1 ring-zinc-800 chip.
+  - AdminApp.tsx sidebar (lg+): active nav 3px border-left violet-500 + bg-violet-500/15 + font-medium text-violet-300 (instead of full border ring); inactive border-left 3px transparent (consistent width to avoid layout shift); padding-left calc(0.75rem - 1px) compensates for border width.
+
+Lint/tsc fixes during impl:
+- react-hooks/set-state-in-effect on BookView setSavedPos + TocDrawer setBookmarks (synchronous setState in effect body): refactored both to render-time prevPattern check (matches existing ReadView's prevCh pattern).
+- tsc error: listBookmarks and formatRelativeTime imported from ./reading-memory but exported from ./bookmarks: fixed by splitting import statement.
+- Lint warning setReadTimeMs unused — root cause was shadowing bug; renamed local useState setter to setReadTimeMsState; fixed both warning AND silent runtime bug where save() would call state setter with (bookId, ms) args instead of persisting to localStorage.
+
+Verification:
+- bun run lint: 0 errors, 0 warnings (exit 0).
+- bunx tsc --noEmit | grep -v "examples\|skills" | wc -l: 0 (clean in src/).
+- Dev server: GET /?view=home 200 (51ms), GET /?admin=1 200 (35ms), POST /api/auth/login 200 with valid password, GET /api/admin/stats 200 — no new compile errors.
+- agent-browser end-to-end QA:
+  - Login page: "小说管理系统 · 登录" + BookOpen icon with animate-book-pulse + animate-login-gradient bg gradient + password input focus-visible:ring-violet-400 + footer "🔒 会话 12 小时 · 登录信息仅本地保存" verified via DOM eval.
+  - Dashboard stat cards: hover class verified via eval — transition-all duration-200 hover:-translate-y-1 hover:scale-[1.02] hover:border-violet-600/60 hover:bg-zinc-900 hover:shadow-lg hover:shadow-violet-950/40.
+  - Sidebar active nav: style="border-left: 3px solid var(--color-violet-500); padding-left: calc(-1px + 0.75rem);".
+  - Public site (?view=home): gracefully renders empty-DB state.
+- Reader live test skipped (DB empty + chapter-creation API only supports delete/markUnfetched); tsc/lint clean confirms ReadView/4 layouts/TocDrawer compile + type-check.
+
+Stage Summary:
+- Files created (2): src/components/public/read-layouts/reading-memory.ts (172L); src/components/public/read-layouts/bookmarks.ts (108L).
+- Files modified (10): src/components/public/read-layouts/shared.tsx (+~440L); src/components/public/ReadView.tsx; src/components/public/read-layouts/ReadClassic.tsx; src/components/public/read-layouts/ReadImmersive.tsx; src/components/public/read-layouts/ReadPaginated.tsx; src/components/public/read-layouts/ReadPili.tsx; src/components/public/BookView.tsx; src/components/admin/LoginGate.tsx; src/components/admin/Dashboard.tsx; src/components/admin/AdminApp.tsx; src/app/globals.css.
+- Features delivered: A 阅读位置记忆 (debounced save + restore-on-return + inline hint); B 章节书签 (toolbar toggle + TocDrawer 目录/书签 tab + remove per-row); C 行距/字距 控制 (统一 Aa 设置面板 replaces ±font/night buttons); D 阅读时长统计 (per-book cumulative, TocDrawer header + BookView badge); E Login gradient/glass/pulse + Dashboard hover lift + Sidebar left-border indicator.
+- Test results: bun run lint 0/0; bunx tsc --noEmit 0 errors in src/; dev server 200 on / and /?admin=1; agent-browser verified LoginGate + Dashboard + Sidebar visual changes live; public site renders empty-DB state gracefully.
+- Bug discovered & fixed during impl: useReadingTimeTracker had local setReadTimeMs shadowing imported setReadTimeMs — would have caused save() to set state to bookId string instead of persisting ms to localStorage. Renamed local setter, fixed both lint warning AND silent runtime bug.
+- Constraints honored: only modified allowed files (read-layouts + ReadView + BookView + admin LoginGate/Dashboard/AdminApp + globals.css); created only reading-memory.ts + bookmarks.ts; no API routes / prisma / engine / mini-services / middleware / next.config touched; localStorage keys prefixed heis_ or public_reader_ (consistent with existing).
+- Files created: agent-ctx/feat-a-reader-enhancement.md (this task's work record).
+
+---
+Task ID: feat-b
+Agent: Dashboard data viz + health monitoring
+Task: Stats API time-series + recharts dashboard (area/pie/bar) + health card widget
+
+Work Log:
+- Read prior worklog (feat-a reader-enhancement for context); verified recharts 2.15.4 installed at node_modules/recharts.
+- Read existing: src/app/api/admin/stats/route.ts (GET counts + recentTasks + recentBooks + categories), src/components/admin/Dashboard.tsx (stat cards + 2-col bottom lists), src/app/api/admin/health/route.ts (already done by prior agent — returns status/uptime/db/runner/hostGate/services/memory/reqId), src/components/admin/helpers.ts (StatsData + status meta + fmt helpers), prisma/schema.prisma (Book.wordCount, Chapter.createdAt, Task.status, Category).
+1. Extend stats API to return time-series data:
+  - src/app/api/admin/stats/route.ts: added empty7d() + bucketize7d(rows) helpers (MM-DD buckets, oldest first, 7 entries, include zero-count days).
+  - Added 5 new aggregations each wrapped in its own try/catch (logger.warn on fail, return [] / empty buckets — non-blocking):
+    · wordsByCategory: db.book.groupBy({ by:['categoryId'], _sum:{wordCount:true}, where:{categoryId:{not:null}} }) → merged with `categories` names → sorted desc by words.
+    · booksByStatus: db.book.groupBy({ by:['status'], _count:true }) → [{status, count}].
+    · chaptersLast7d: db.chapter.findMany({ where:{createdAt:{gte:since}}, select:{createdAt:true} }) → bucketize7d.
+    · booksLast7d: same shape via db.book.findMany.
+    · taskStatusBreakdown: db.task.groupBy({ by:['status'], _count:true }) → [{status, count}].
+  - Returns same envelope + 5 new fields. Existing fields unchanged.
+2. Extend StatsData type in helpers.ts:
+  - Added wordsByCategory/booksByStatus/chaptersLast7d/booksLast7d/taskStatusBreakdown fields to StatsData interface (all Array<{...}>).
+  - Added HealthStatus type ('healthy'|'degraded'|'unhealthy'), HealthService interface, HealthData interface (matches /api/admin/health payload).
+  - Added fmtUptime(seconds) → "运行 X天Y小时Z分钟" (skips zero parts), fmtMB(n) → "153.5MB".
+3. Create src/components/admin/HealthCard.tsx (new file):
+  - Status badge (healthy=emerald, degraded=amber, unhealthy=red) + pulsing dot (animate-ping).
+  - Uptime text + 最近刷新 HH:MM:SS subtitle.
+  - Heap memory progress bar (Progress component) with "153.5MB / 176.5MB" label.
+  - 6 mini-service dots (bqg713/fetch-relay/scrapling/qimao/deqixs/xjp): green=reachable, gray=optional-unreachable (scrapling), red=required-unreachable. Each wrapped in shadcn Tooltip with service name + status text. Also native title attr for fallback.
+  - DB indicator: emerald "DB 正常" / red "DB 异常".
+  - Manual 刷新 button (RefreshCw / Loader2 spin during refreshing).
+  - 401 handling: direct fetch (bypasses api.get envelope) to detect res.status===401 → setUnauthorized(true) + "会话已失效, 请重新登录" amber banner + onSessionExpired callback.
+  - Auto-refresh 30s via setInterval; cleanup clears interval.
+  - Critical bug fix: original aliveRef pattern (set aliveRef.current=false on unmount) is broken in React StrictMode — cleanup fires before re-mount in dev, leaving aliveRef false forever, setLoading(false) never fires, dashboard stuck loading. Rewrote with stable load callback (useCallback empty deps) + cbRef for onSessionExpired to avoid parent inline-arrow-induced effect re-fires. The load callback accepts {isFirst} flag → first call sets loading=true, refresh sets refreshing=true.
+4. Enhance Dashboard.tsx with charts (recharts 2.15.4):
+  - Defined CHART_COLORS constant (violet/fuchsia/sky/emerald/amber/red/blue/zinc/zincLight/grid/tick/tooltipBg/tooltipBorder).
+  - Defined BOOK_STATUS_CHART_COLOR (completed=emerald, ongoing=blue, unknown=zinc) and TASK_STATUS_CHART_COLOR (running=emerald, paused=amber, stopped=zinc, done=blue, error=red, pending=zincLight).
+  - Defined reusable ChartCard wrapper: header (icon chip + title + optional action), body (loading skeleton / empty state / chart). Loading: 240px-tall animate-pulse bg-zinc-800/40. Empty: "暂无数据，开始采集后这里会显示统计图表" + faded icon.
+  - Layout: header + HealthCard (top, full-width) + stat cards (existing 7-col grid with hover effects) + Row2 (AreaChart + PieChart) + Row3 (2 BarCharts) + bottom (recent tasks + recent books + category distribution lists).
+  - AreaChart "近7天采集活动": 2 stacked areas (章节 violet + 书籍 sky) with linearGradient fills (40%→0% opacity). CartesianGrid stroke=rgba(255,255,255,0.06). Custom Tooltip (ActivityTooltipContent) with dark bg. Legend with custom formatter.
+  - PieChart "书籍状态分布": donut (innerRadius=56, outerRadius=86, paddingAngle=2). Cell fill per BOOK_STATUS_CHART_COLOR. Custom StatusTooltipContent shows count + percentage. Custom vertical Legend with count + pct. Stroke=#18181b for separation.
+  - BarChart "分类字数排行 (Top 10)": horizontal layout, top 10 categories by words desc, gradient fill (violet→fuchsia), X tick formatter fmtWords (万). Action chip shows total words.
+  - BarChart "任务状态分布": horizontal layout, fixed 6-status order (pending→running→paused→stopped→done→error), per-status Cell color. Action chip shows total tasks.
+  - All charts: isAnimationActive={false} (avoid flash on re-render), ResponsiveContainer width="100%" height={240}, tick fill #a1a1aa fontSize 11-12, no axis lines, no tick line.
+  - Critical bug fix: same StrictMode aliveRef issue as HealthCard — rewrote Dashboard load/effect with cancelled flag pattern.
+  - Empty state per chart: only shows when respective dataset totals to 0 (activityTotal, statusTotal, wordsTotal, taskTotal). With current DB (1 book + 1 completed status + 1 booksLast7d entry today + 0 categories with words + 0 tasks), area chart + pie chart render with real data; the 2 bar charts show empty state correctly.
+5. Verify:
+  - bun run lint: 0 errors, 0 warnings (exit 0). One unused-var (useRef after fix) caught + removed.
+  - bunx tsc --noEmit | grep -v examples/skills: 0 lines (clean).
+    · Initial tsc error: recharts Legend formatter type mismatch — relaxed renderStatusLegend signature to {payload?:unknown} + internal cast. Fixed.
+  - Dev server: bun run dev manual restart needed (system watcher stopped, original process not auto-restarted — unrelated to my code, used setsid to keep alive). After restart: GET /?admin=1 200 in 6.1s (first compile), then 33ms steady-state.
+  - agent-browser end-to-end:
+    · Login with audit-fix-2025 → dashboard mounts.
+    · HealthCard renders: status="部分降级" (mini-services not running in dev — expected), uptime "运行 28秒" → "运行 1分钟" after 30s (auto-refresh verified), heap "153.5MB / 176.5MB", 6 service dots all red/gray (bqg713/fetch-relay/qimao/deqixs/xjp red, scrapling gray), DB indicator emerald "DB 正常".
+    · Stat cards: 1 book, 0 chapters, 2 sites, all others 0. No loaders (loading cleared).
+    · 4 chart card titles render: "近7天采集活动", "书籍状态分布", "分类字数排行 (Top 10)", "任务状态分布".
+    · 2 SVG charts render (470x240 each): area chart (with 1 book today, 0 chapters for 7 days) + pie chart (1 completed book). 
+    · 2 bar charts show empty state ("暂无数据，开始采集后这里会显示统计图表") because category words all 0 + task count all 0.
+    · Health auto-refresh every 30s verified via dev.log timestamps (initial 2 calls from StrictMode double-mount, then 1 call every 30s after).
+    · Stats only fetched on mount (no auto-refresh) — verified via dev.log: only 2 initial stats calls (StrictMode double-mount), no periodic calls.
+
+Stage Summary:
+- Files modified (2): src/app/api/admin/stats/route.ts (+75L: empty7d/bucketize7d helpers + 5 try/catch aggregations); src/components/admin/helpers.ts (+44L: StatsData 5 new fields + HealthStatus/HealthService/HealthData interfaces + fmtUptime/fmtMB); src/components/admin/Dashboard.tsx (rewritten ~280L → ~510L: ChartCard wrapper + 4 recharts visualizations + StrictMode-safe load pattern + HealthCard integration).
+- Files created (1): src/components/admin/HealthCard.tsx (~260L: status badge/uptime/memory bar/6 service dots/DB indicator/refresh button/401 handling/30s auto-refresh).
+- Chart types delivered: AreaChart (近7天采集活动, 2 series), PieChart donut (书籍状态分布), horizontal BarChart (分类字数排行 Top 10, gradient), horizontal BarChart (任务状态分布, per-status color). All recharts 2.15.4 + ResponsiveContainer.
+- Theming: CHART_COLORS constant (zinc/violet/fuchsia/sky/emerald/amber/red). Dark theme CartesianGrid (rgba(255,255,255,0.06)), #a1a1aa ticks, dark tooltip bg (#18181b / #3f3f46 border). All text in zinc-200/400 (readable on zinc-950 admin bg).
+- Loading: per-card skeleton (240px animate-pulse) while stats load; per-HealthCard skeleton (uptime/memory/DB slot) while health loads.
+- Empty state: per-chart friendly message "暂无数据，开始采集后这里会显示统计图表" when all chart data sums to 0; charts with non-zero data render real SVG (area + pie verified live with 1-book DB).
+- Bug discovered & fixed during impl: original aliveRef pattern (aliveRef.current=false on unmount) is broken in React StrictMode — cleanup fires before re-mount in dev, aliveRef stays false forever, setLoading(false) never fires, entire dashboard stuck in loading state (stat cards show spinners, chart cards show skeleton). Rewrote both Dashboard and HealthCard with stable useCallback + cancelled-flag-in-effect pattern. Verified via agent-browser: all cards now show real data after fetch completes.
+- Bug discovered & fixed during impl: recharts Legend `formatter` prop type — renderStatusLegend signature `(value, entry: {payload?:{count,pct}})` failed tsc because recharts' Formatter expects entry.payload to include strokeDasharray. Relaxed signature to `{payload?:unknown}` + internal cast. tsc clean.
+- Test results: bun run lint 0/0; bunx tsc --noEmit 0 errors in src/; dev server 200 on / and /?admin=1; agent-browser verified LoginGate + HealthCard + 4 chart cards + stat cards live with real DB content (1 book, 2 sites, 1 completed status); 30s health auto-refresh verified via uptime progression; stats not auto-refreshed (fetch on mount only) verified via dev.log call pattern.
+- Constraints honored: only modified allowed files (stats route + helpers + Dashboard + new HealthCard); did NOT touch /api/admin/health (already done by prior agent) or any crawl/public/prisma/config files; used recharts (already in package.json); used shadcn Card/Badge/Progress/Skeleton/Tooltip/Button (all pre-existing in src/components/ui/).
+- Files created: agent-ctx/feat-b-dashboard-viz.md (this task's work record).
+
+---
+Task ID: feat-round-2
+Agent: Continuous improvement (reader + dashboard + seed)
+Task: QA verified stable + reader enhancement + dashboard viz + seed demo data
+
+Work Log:
+- QA baseline: lint 0/0, tsc 0, dev server stable, all admin pages render (仪表盘/采集规则/采集任务/书籍管理/分类管理/站群系统/友链链轮/主题模板/TXT下载/系统设置)
+- agent-browser end-to-end: login gate → login flow → dashboard with stat cards + health card; rules page (search/refresh/calibrate/new); rule editor dialog (4-stage tabs + anti-anti-crawler + clean); themes page (9 themes with preview); settings page; public site (empty state graceful)
+- Feature A (reader enhancement, agent feat-a):
+  - reading-memory.ts (172L) + useReadPosMemory hook: 100ms scroll restore, 300ms debounced save, new-chapter reset
+  - bookmarks.ts (108L): max 200/book LRU, toggle/isBookmarked/list/clear
+  - ReadLayoutProps extended: lineHeight (1.5-2.2), letterSpacing (-0.5~2px), callbacks
+  - ReaderSettingsPopover: Aa button consolidates 字号 slider + 行距 3 presets + 字距 3 presets + 夜间 Switch
+  - useReadingTimeTracker: increments when visible+scrolled-in-30s, saves 30s + on unmount
+  - TocDrawer: 目录/书签 tab toggle; bookmark list with idx/title/relative-time/remove
+  - BookView: "上次阅读 · 已读 XhYm" badge
+  - LoginGate: animated gradient bg (8s), glass-morphism card, pulsing BookOpen, violet focus ring, footer line
+  - Dashboard: stat card hover lift + scale + shadow, lucide icons per stat
+  - AdminApp sidebar: 3px violet left-border on active + bg tint
+  - globals.css: @keyframes gradientShift + bookPulse
+  - Bonus bug: shadowed setReadTimeMs setter would've written bookId string to state — renamed to setReadTimeMsState
+- Feature B (dashboard viz, agent feat-b):
+  - stats/route.ts: +5 aggregations (wordsByCategory, booksByStatus, chaptersLast7d, booksLast7d, taskStatusBreakdown), each try/catch non-blocking
+  - Dashboard.tsx: rewritten with CHART_COLORS + ChartCard wrapper; AreaChart (7d activity, violet+sky gradient areas), PieChart (status donut, semantic colors), horizontal BarChart (category words Top 10, violet→fuchsia gradient), horizontal BarChart (task status per-status color)
+  - HealthCard.tsx: status badge pulsing dot, fmtUptime, heap Progress bar, 6 service dots with Tooltip, DB indicator, 刷新 button, 30s auto-refresh
+  - helpers.ts: +HealthStatus/HealthService/HealthData types + fmtUptime + fmtMB
+  - Bugs fixed: React StrictMode aliveRef pattern rewrote to cancelled-flag-in-effect + stable useCallback; recharts Legend formatter type relaxed
+- Feature D (demo data):
+  - Cleaned test data (taskLog/task/downloadJob/bookTag/chapter/book/rule/friendLink)
+  - Ran scripts/seed.ts: 15 categories + 3 rules + 6 demo books (24-54 chapters each) + generated webp covers
+  - QA public site with seed data: home renders (站点名+分类导航+搜索热词+分类图文导航+书籍列表); book detail (cover/author/category/status/wordCount/date/intro/latest/TOC/TXT link/tags); reader (toolbar with 阅读设置/书签/目录 + breadcrumb + chapter content); theme switching (aurora/pili/minimal all work)
+- Final verification: bun run lint 0/0; bunx tsc --noEmit 0 errors; dev server serves / 200; all 9 themes previewable; reader settings popover fully functional; bookmarks toggle + TOC 书签 tab with count; health card auto-refresh confirmed (uptime incremented 28s→3min)
+
+Stage Summary:
+- 2 new feature agents (feat-a reader, feat-b dashboard) + manual seed data fill
+- New files: reading-memory.ts, bookmarks.ts, HealthCard.tsx, agent-ctx/{feat-a,feat-b}.md
+- Modified files: ReadView.tsx, shared.tsx, ReadClassic/Immersive/Paginated/Pili.tsx, BookView.tsx, LoginGate.tsx, Dashboard.tsx, AdminApp.tsx, globals.css, stats/route.ts, helpers.ts
+- Features delivered: reading progress memory, chapter bookmarks, line/letter spacing control, reading time tracking, style polish (login gradient + dashboard hover + sidebar indicator), dashboard charts (area/pie/bar/bar), health monitoring widget, 6 demo books with covers
+- All quality gates green: lint 0/0, tsc 0, dev server stable, end-to-end QA passed across admin + public + reader + themes

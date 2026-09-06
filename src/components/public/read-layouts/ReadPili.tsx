@@ -2,26 +2,43 @@
 // 阅读布局 · pili 书屋版（仿霹雳书屋 pilishuwu.com 正文页）
 // 暖纸画布 + 顶部细 read-header 条(返回书页/章题/字号夜间) + 段首缩进大栏
 // + 底部 chapter-control(上一章/目录抽屉/下一章 橙色主按钮) + 懒加载目录抽屉
+// + feat-a: 阅读位置记忆 / 书签 / 行距·字距控制 (统一设置面板)
 // ============================================================
 'use client'
 
 import { useState } from 'react'
-import { AArrowDown, AArrowUp, ChevronLeft, ChevronRight, ListTree, Moon, Sun } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ListTree } from 'lucide-react'
 import { readOf } from '@/lib/crawl/themes'
 import { usePublic } from '../ctx'
 import { formatWords, withAlpha } from '../seo'
 import { Sk } from '../bits'
+import { isBookmarked, toggleBookmark } from './bookmarks'
 import {
+  BookmarkToggle,
   ChapterDeco,
   ChapterEndDeco,
+  ReaderSettingsPopover,
   TocDrawer,
   actualFontPx,
   contentToHtml,
+  useReadPosMemory,
   useReadingProgress,
+  useReadingTimeTracker,
   type ReadLayoutProps,
 } from './shared'
 
-export function ReadPili({ data, loading, fontSize, night, onFontSize, onToggleNight }: ReadLayoutProps) {
+export function ReadPili({
+  data,
+  loading,
+  fontSize,
+  night,
+  lineHeight,
+  letterSpacing,
+  onFontSize,
+  onLineHeight,
+  onLetterSpacing,
+  onToggleNight,
+}: ReadLayoutProps) {
   const { theme, navigate } = usePublic()
   const v = theme.vars
   const read = readOf(theme)
@@ -30,6 +47,23 @@ export function ReadPili({ data, loading, fontSize, night, onFontSize, onToggleN
 
   const ch = data?.chapter
   const bk = data?.book
+
+  // feat-a B: 书签状态
+  const [bookmarked, setBookmarked] = useState(false)
+  // feat-a A/D: 位置记忆 (window 滚动) + 阅读时长
+  const ready = !loading && !!ch && !!bk
+  const { restoredHint } = useReadPosMemory({
+    bookId: bk?.id,
+    chapterId: ch?.id,
+    title: ch?.title,
+    ready,
+  })
+  useReadingTimeTracker(bk?.id)
+
+  if (typeof window !== 'undefined' && bk && ch) {
+    const next = isBookmarked(bk.id, ch.id)
+    if (next !== bookmarked) setBookmarked(next)
+  }
 
   // 夜间调色: 日间=原站暖纸画布 #ede7da, 夜间=沉稳暗底
   const canvasBg = night ? '#15171c' : '#ede7da'
@@ -45,6 +79,7 @@ export function ReadPili({ data, loading, fontSize, night, onFontSize, onToggleN
   const fontPx = actualFontPx(fontSize, read)
 
   const ctrlBtn = 'inline-flex min-h-[44px] flex-1 items-center justify-center gap-1.5 px-3 text-sm font-medium transition-opacity hover:opacity-85 disabled:cursor-not-allowed disabled:opacity-35'
+  const toolBtn = 'inline-flex h-11 w-11 items-center justify-center transition-opacity hover:opacity-70'
 
   return (
     <div data-pili-read className="read-layout-pili flex min-h-screen flex-col" style={{ background: canvasBg, transition: 'background-color .3s' }}>
@@ -52,6 +87,17 @@ export function ReadPili({ data, loading, fontSize, night, onFontSize, onToggleN
       <div className="pointer-events-none fixed inset-x-0 top-0 z-[60] h-0.5" aria-hidden>
         <div style={{ width: `${progress}%`, height: '100%', background: `linear-gradient(90deg, ${v.primary}, ${v.accent})`, transition: 'width 80ms linear' }} />
       </div>
+
+      {/* feat-a A: 位置恢复 inline 提示 */}
+      {restoredHint && (
+        <div
+          className="pointer-events-none fixed left-1/2 top-3 z-[60] -translate-x-1/2 rounded-full px-3.5 py-1.5 text-xs shadow-md"
+          style={{ background: withAlpha(v.primary, 0.95), color: v.primaryText }}
+          role="status"
+        >
+          已定位到上次阅读位置
+        </div>
+      )}
 
       {/* 顶部细 read-header 条: 返回书页 + 章题 + 阅读设置 */}
       <header
@@ -74,34 +120,34 @@ export function ReadPili({ data, loading, fontSize, night, onFontSize, onToggleN
             {ch ? ch.title : loading ? '加载中…' : ''}
           </p>
           <div className="flex shrink-0 items-center gap-1" role="group" aria-label="阅读设置">
-            <button
-              type="button"
-              onClick={() => onFontSize(-1)}
-              className="inline-flex h-11 w-11 items-center justify-center transition-opacity hover:opacity-70"
-              style={{ color: textColor }}
-              aria-label="减小字号"
-            >
-              <AArrowDown className="h-4 w-4" aria-hidden />
-            </button>
-            <button
-              type="button"
-              onClick={() => onFontSize(1)}
-              className="inline-flex h-11 w-11 items-center justify-center transition-opacity hover:opacity-70"
-              style={{ color: textColor }}
-              aria-label="增大字号"
-            >
-              <AArrowUp className="h-4 w-4" aria-hidden />
-            </button>
-            <button
-              type="button"
-              onClick={onToggleNight}
-              className="inline-flex h-11 w-11 items-center justify-center transition-opacity hover:opacity-70"
-              style={{ color: night ? v.primary : textColor }}
-              aria-label={night ? '切换日间模式' : '切换夜间模式'}
-              aria-pressed={night}
-            >
-              {night ? <Sun className="h-4 w-4" aria-hidden /> : <Moon className="h-4 w-4" aria-hidden />}
-            </button>
+            {/* feat-a C: 统一 Aa 设置面板 */}
+            <ReaderSettingsPopover
+              fontSize={fontSize}
+              lineHeight={lineHeight}
+              letterSpacing={letterSpacing}
+              night={night}
+              onFontSize={onFontSize}
+              onLineHeight={onLineHeight}
+              onLetterSpacing={onLetterSpacing}
+              onToggleNight={onToggleNight}
+              dark={night}
+              triggerClassName={toolBtn}
+              triggerStyle={{ color: textColor }}
+              ariaLabel="阅读设置"
+            />
+            {/* feat-a B: 书签 */}
+            <BookmarkToggle
+              bookmarked={bookmarked}
+              onToggle={() => {
+                if (!bk || !ch) return
+                const added = toggleBookmark(bk.id, { id: ch.id, idx: ch.idx, title: ch.title })
+                setBookmarked(added)
+              }}
+              triggerClassName={toolBtn}
+              triggerStyle={{ color: bookmarked ? v.primary : textColor }}
+              activeColor={v.primary}
+              inactiveColor={textColor}
+            />
           </div>
         </div>
       </header>
@@ -145,7 +191,8 @@ export function ReadPili({ data, loading, fontSize, night, onFontSize, onToggleN
               <div
                 style={{
                   fontSize: fontPx,
-                  lineHeight: read.lineHeight,
+                  lineHeight,
+                  letterSpacing: `${letterSpacing}px`,
                   maxWidth: read.measure,
                   margin: '0 auto',
                   color: textColor,
