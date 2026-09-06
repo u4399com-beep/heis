@@ -16,6 +16,7 @@ import type { CSSProperties, RefObject } from 'react'
 import {
   Bookmark,
   BookmarkCheck,
+  Check,
   ChevronLeft,
   ChevronRight,
   Clock,
@@ -41,6 +42,7 @@ import {
   formatReadTime,
 } from './reading-memory'
 import { listBookmarks, toggleBookmark, formatRelativeTime, type Bookmark as BookmarkItem } from './bookmarks'
+import { getReadChapters, markChapterRead } from './chapter-progress'
 
 /** 三种阅读布局的统一入参（数据与用户偏好由 ReadView 编排, 布局组件只管形态） */
 export interface ReadLayoutProps {
@@ -180,6 +182,8 @@ export function useReadPosMemory({
   const [restoredHint, setRestoredHint] = useState(false)
   const lastSavedChapterRef = useRef<string | undefined>(undefined)
   const hintTimerRef = useRef<number>(0)
+  // feat-round-10 B1: 已读标记 ref — 同章节已标过就不再写 localStorage
+  const markedReadRef = useRef<boolean>(false)
 
   // 默认 ratio 读取 (window 或 scrollerRef 的纵向滚动)
   const defaultGetRatio = useCallback((): number => {
@@ -234,22 +238,45 @@ export function useReadPosMemory({
     const saved = getReadPos(bookId)
     if (saved && saved.chapterId === chapterId) {
       lastSavedChapterRef.current = chapterId
+      // feat-round-10 B1: 章节切换时, 重置已读标记 ref; 若 saved 记录中已读过该章,
+      // 直接置 true 避免重复写入 (跨刷新页面恢复场景)
+      markedReadRef.current = getReadChapters(bookId).has(chapterId)
       return
     }
     // 新章节: 写入 ratio 0 + 当前标题
     saveReadPos(bookId, chapterId, 0, title || '')
     lastSavedChapterRef.current = chapterId
+    // feat-round-10 B1: 新章节尚未标记已读
+    markedReadRef.current = getReadChapters(bookId).has(chapterId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bookId, chapterId])
 
-  // 3. scroll 监听 debounce 300ms 保存
+  // feat-round-10 B1: 章节就绪后, 若 saved 记录的 ratio 已 >= 0.1, 立即标记已读
+  // (覆盖场景: 用户上次读到一半退出, 重新打开 → 章节加载完成即视为已读)
+  useEffect(() => {
+    if (!bookId || !chapterId || !ready) return
+    if (markedReadRef.current) return
+    const saved = getReadPos(bookId)
+    if (saved && saved.chapterId === chapterId && saved.scrollRatio >= 0.1) {
+      markChapterRead(bookId, chapterId)
+      markedReadRef.current = true
+    }
+  }, [bookId, chapterId, ready])
+
+  // 3. scroll 监听 debounce 300ms 保存 + feat-round-10 B1: 滚动 >10% 标记已读
   useEffect(() => {
     if (!bookId || !chapterId) return
     let timer = 0
     const save = () => {
       if (timer) window.clearTimeout(timer)
       timer = window.setTimeout(() => {
-        saveReadPos(bookId, chapterId, readRatio(), title || '')
+        const r = readRatio()
+        saveReadPos(bookId, chapterId, r, title || '')
+        // feat-round-10 B1: 滚动超过 10% 即视为"已读"; 用 ref 去重避免高频写 localStorage
+        if (!markedReadRef.current && r >= 0.1) {
+          markChapterRead(bookId, chapterId)
+          markedReadRef.current = true
+        }
       }, 300)
     }
     const el = scrollerRef?.current
@@ -683,6 +710,8 @@ export function TocDrawer({
   const [bookmarks, setBookmarks] = useState<BookmarkItem[]>([])
   // feat-a D: 阅读时长 (open 时从 localStorage 读, 用于 header 展示)
   const [readTimeMs, setReadTimeMsState] = useState(0)
+  // feat-round-10 B2: 已读章节集合 (localStorage, open/tab 切换时刷新)
+  const [readSet, setReadSet] = useState<Set<string>>(() => new Set())
   // 使用 render-time 检测 open/tab 变化 (与 ReadView 的 prevCh 同款), 避免 effect 内同步 setState
   const [prevRefresh, setPrevRefresh] = useState<{ open: boolean; tab: string } | null>(null)
   const refreshKey = `${open ? '1' : '0'}|${tab}`
@@ -691,8 +720,11 @@ export function TocDrawer({
     if (open && bookId) {
       setBookmarks(listBookmarks(bookId))
       setReadTimeMsState(getReadTimeMs(bookId))
+      setReadSet(getReadChapters(bookId))
     }
   }
+  // feat-round-10 B2: 书签 id 集合 (render-time 推导, 不需额外 state)
+  const bookmarkIds = new Set(bookmarks.map((b) => b.chapterId))
 
   useEffect(() => {
     if (!open || !bookId) return
@@ -722,6 +754,10 @@ export function TocDrawer({
   const entries = loaded && loaded.page === page ? loaded.entries : null
   const totalPages = loaded && loaded.page === page ? loaded.totalPages : 1
   const total = loaded && loaded.page === page ? loaded.total : 0
+
+  // feat-round-10 B2/B3: 阅读进度 (已读 / 总章数, 钳制 0-100)
+  const readCount = readSet.size
+  const readPct = total > 0 ? Math.min(100, Math.round((readCount / total) * 100)) : 0
 
   // Escape 关闭
   useEffect(() => {
@@ -777,12 +813,17 @@ export function TocDrawer({
           <div className="flex items-center justify-between gap-2">
             <div className="min-w-0">
               <p className="text-sm font-bold">{tab === 'toc' ? '章节目录' : '书签列表'}</p>
-              {tab === 'toc' && total > 0 && (
-                <p className="mt-0.5 text-[11px] tabular-nums opacity-60">
-                  共 {total} 章 · 第 {page}/{totalPages} 页
-                </p>
-              )}
-              {tab === 'bookmark' && (
+              {tab === 'toc' ? (
+                total > 0 ? (
+                  <p className="mt-0.5 text-[11px] tabular-nums opacity-60">
+                    已读 {readCount}/{total} 章 · 第 {page}/{totalPages} 页
+                  </p>
+                ) : (
+                  <p className="mt-0.5 text-[11px] tabular-nums opacity-60">
+                    第 {page}/{totalPages} 页
+                  </p>
+                )
+              ) : (
                 <p className="mt-0.5 text-[11px] tabular-nums opacity-60">
                   共 {bookmarks.length} 个书签
                 </p>
@@ -798,11 +839,35 @@ export function TocDrawer({
             </button>
           </div>
 
-          {/* feat-a D: 阅读时长徽章 */}
-          {readTimeMs > 0 && (
-            <div className="mt-2 flex items-center gap-1.5 text-[11px]" style={{ color: dark ? '#8a919c' : v.textMuted }}>
-              <Clock className="h-3 w-3" aria-hidden />
-              <span>已读 {formatReadTime(readTimeMs)}</span>
+          {/* feat-round-10 B3: 阅读进度条 + 阅读时长 (仅目录 tab) */}
+          {tab === 'toc' && total > 0 && (
+            <div className="mt-2 space-y-1.5">
+              <div
+                className="h-1.5 w-full overflow-hidden rounded-full"
+                style={{ background: dark ? 'rgba(255,255,255,0.08)' : withAlpha(v.border, 0.4) }}
+                role="progressbar"
+                aria-valuenow={readPct}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-label="阅读进度"
+              >
+                <div
+                  className="h-full rounded-full transition-all"
+                  style={{ width: `${readPct}%`, background: `linear-gradient(90deg, ${v.primary}, ${v.accent})` }}
+                />
+              </div>
+              {readTimeMs > 0 && (
+                <div className="flex items-center gap-1.5 text-[11px]" style={{ color: dark ? '#8a919c' : v.textMuted }}>
+                  <Clock className="h-3 w-3" aria-hidden />
+                  <span>已读 {readCount} 章 · {readPct}% · 累计 {formatReadTime(readTimeMs)}</span>
+                </div>
+              )}
+              {readTimeMs === 0 && (
+                <div className="flex items-center gap-1.5 text-[11px]" style={{ color: dark ? '#8a919c' : v.textMuted }}>
+                  <Clock className="h-3 w-3" aria-hidden />
+                  <span>已读 {readCount} 章 · {readPct}%</span>
+                </div>
+              )}
             </div>
           )}
 
@@ -898,21 +963,66 @@ export function TocDrawer({
           ) : (
             <ol>
               {(() => {
-                // 目录单条渲染(分卷/非分卷两分支共用, 标记与改前一致)
+                // feat-round-10 B2: 目录单条渲染 — 状态图标 + 行背景
+                // 状态优先级: 当前(高亮紫底+左紫边) > 书签(琥珀 Bookmark 图标) > 已读(绿 Check 弱化) > 未读(zinc 圆点)
                 const renderEntry = (c: TocEntry) => {
                   const active = c.id === activeChapterId
+                  const read = readSet.has(c.id)
+                  const marked = bookmarkIds.has(c.id)
+                  // 行内联样式: 当前 → violet 底色 + 左紫边; 已读 → zinc 底色; 未读 → 透明
+                  const rowStyle: CSSProperties = active
+                    ? {
+                        background: withAlpha(v.primary, dark ? 0.22 : 0.12),
+                        borderLeft: `2px solid ${v.primary}`,
+                        color: v.primary,
+                        opacity: 1,
+                      }
+                    : read
+                      ? {
+                          background: dark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.035)',
+                          opacity: 0.65,
+                        }
+                      : { opacity: 1 }
                   return (
-                    <li key={c.id}>
+                    <li key={c.id} className="relative">
                       <button
                         type="button"
                         onClick={() => goChapter(c.id)}
-                        className="flex min-h-[44px] w-full items-baseline gap-2.5 rounded px-2.5 py-2.5 text-left text-sm transition-colors hover:bg-black/5"
-                        style={active ? { background: activeBg, color: v.primary } : undefined}
+                        className="flex min-h-[44px] w-full items-center gap-2 rounded px-2.5 py-2.5 text-left text-sm transition-colors hover:bg-black/5"
+                        style={rowStyle}
                         aria-current={active ? 'true' : undefined}
+                        aria-label={`阅读 ${c.title}${active ? ' (当前)' : read ? ' (已读)' : ''}`}
                       >
-                        <span className="w-9 shrink-0 text-right text-[11px] tabular-nums opacity-55">{String(c.idx).padStart(2, '0')}</span>
+                        {/* feat-round-10 B2: 状态图标 — 16px inline */}
+                        <span className="flex h-4 w-4 shrink-0 items-center justify-center" aria-hidden>
+                          {active ? (
+                            // 当前章节: 脉冲紫圆点
+                            <span
+                              className="inline-block h-2 w-2 animate-pulse rounded-full"
+                              style={{ background: v.primary, boxShadow: `0 0 6px ${withAlpha(v.primary, 0.7)}` }}
+                            />
+                          ) : marked ? (
+                            // 书签: 琥珀 Bookmark 图标
+                            <Bookmark className="h-3.5 w-3.5 fill-current" style={{ color: '#f59e0b' }} />
+                          ) : read ? (
+                            // 已读: 绿 Check
+                            <Check className="h-3.5 w-3.5" style={{ color: '#10b981' }} />
+                          ) : (
+                            // 未读: zinc 小圆点
+                            <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ background: dark ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.25)' }} />
+                          )}
+                        </span>
+                        <span className="w-7 shrink-0 text-right text-[11px] tabular-nums opacity-55">{String(c.idx).padStart(2, '0')}</span>
                         <span className="line-clamp-1 flex-1">{c.title}</span>
                       </button>
+                      {/* feat-round-10 S2: 已加书签但非当前章节 — 右上角琥珀 Bookmark 小图标 */}
+                      {marked && !active && (
+                        <Bookmark
+                          className="pointer-events-none absolute right-2 top-1.5 h-3 w-3 fill-current"
+                          style={{ color: '#f59e0b' }}
+                          aria-hidden
+                        />
+                      )}
                     </li>
                   )
                 }

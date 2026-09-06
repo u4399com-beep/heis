@@ -1,32 +1,39 @@
 'use client'
 
 // ============================================================
-// TaskMonitor — 任务实时监控
+// TaskMonitor — 任务实时监控 (feat-round-10)
 // 2s 轮询任务状态 + 增量日志; 在线调节线程/间隔; 进度与统计
+// feat-round-10 A: 增强日志查看器(过滤/搜索/自动滚动) + 速率迷你图 + 错误统计 + 分段进度
 // ============================================================
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Slider } from '@/components/ui/slider'
 import { Progress } from '@/components/ui/progress'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { Area, AreaChart, ResponsiveContainer } from 'recharts'
 import {
+  AlertTriangle,
   ArrowLeft,
+  CheckCircle2,
   CirclePause,
   CirclePlay,
   CircleStop,
+  Clock,
   Loader2,
   PauseCircle,
   RefreshCw,
   ScrollText,
   Terminal,
+  Timer,
+  XCircle,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   api,
   fmtNum,
-  LOG_LEVEL_STYLE,
   PHASE_META,
   safeJsonParse,
   TASK_STATUS_META,
@@ -35,6 +42,7 @@ import {
   type TaskStats,
   type TaskStatus,
 } from './helpers'
+import { TaskLogViewer, type TaskLog } from './TaskLogViewer'
 
 interface TaskMonitorProps {
   taskId: string
@@ -48,17 +56,18 @@ interface Tuning {
   intervalMax: number
 }
 
+// feat-round-10 A2: 速率图回看窗口(分钟)
+const RATE_WINDOW_MIN = 10
+
 export function TaskMonitor({ taskId, onBack }: TaskMonitorProps) {
   const [task, setTask] = useState<TaskRow | null>(null)
   const [live, setLive] = useState(false)
-  const [logs, setLogs] = useState<{ id: string; level: string; message: string; time: string }[]>([])
-  const [autoScroll, setAutoScroll] = useState(true)
+  const [logs, setLogs] = useState<TaskLog[]>([])
   const [controlsLoading, setControlsLoading] = useState<string>('')
   const [tuning, setTuning] = useState<Tuning>({ threadMin: 1, threadMax: 3, intervalMin: 500, intervalMax: 2000 })
 
   const lastLogIdRef = useRef<string>('')
   const taskSeqRef = useRef(0) // 任务状态响应序号: 防慢响应迟到覆盖新状态(2s 轮询与控制后手动刷新并发时)
-  const scrollRef = useRef<HTMLDivElement>(null)
   const tuningTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const tuningRef = useRef(tuning)
   const aliveRef = useRef(true)
@@ -109,23 +118,26 @@ export function TaskMonitor({ taskId, onBack }: TaskMonitorProps) {
   }, [task])
 
   // 追加日志并处理滚动 (按 id 去重, 防历史回填与轮询重叠产生重复行/重复 key)
+  // feat-round-10 A: 同时保留 ts 毫秒时间戳 (速率图分桶用)
   const appendLogs = useCallback((rows: { id: string; level: string; message: string; createdAt: string }[]) => {
     if (!rows.length) return
     setLogs((prev) => {
       const seen = new Set(prev.map((l) => l.id))
-      const fresh = rows.filter((r) => !seen.has(r.id)).map((r) => ({ id: r.id, level: r.level, message: r.message, time: fmtTime(r.createdAt) }))
+      const fresh = rows
+        .filter((r) => !seen.has(r.id))
+        .map((r) => ({
+          id: r.id,
+          level: r.level,
+          message: r.message,
+          time: fmtTime(r.createdAt),
+          ts: safeTs(r.createdAt),
+        }))
       if (!fresh.length) return prev
       const next = [...prev, ...fresh]
       return next.length > 800 ? next.slice(next.length - 800) : next
     })
     lastLogIdRef.current = rows[rows.length - 1].id
   }, [])
-
-  useEffect(() => {
-    if (autoScroll && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
-    }
-  }, [logs, autoScroll])
 
   // 增量拉取日志: after=lastId 翻页回填(每页200, 单轮最多8页), 进行中防重入
   // 注: 不依赖 lastLogIdRef 非空 — 任务初启动尚无日志时也能拉到第一批, 否则会永远"暂无日志"
@@ -222,6 +234,78 @@ export function TaskMonitor({ taskId, onBack }: TaskMonitorProps) {
   // 钳制到 0~100, 防止 done 计数含"更新"导致超 100%
   const booksPct = progress.booksTotal ? Math.min(100, Math.round(((progress.booksDone || 0) / progress.booksTotal) * 100)) : 0
   const contentPct = progress.contentTotal ? Math.min(100, Math.round(((progress.contentDone || 0) / progress.contentTotal) * 100)) : 0
+
+  // feat-round-10 A2/A3: 日志级别计数 (用于 ErrorStats + 分段进度条 + 速率图)
+  const logCounts = useMemo(() => {
+    let success = 0
+    let warn = 0
+    let error = 0
+    for (const l of logs) {
+      if (l.level === 'success') success += 1
+      else if (l.level === 'warn') warn += 1
+      else if (l.level === 'error') error += 1
+    }
+    return { success, warn, error }
+  }, [logs])
+
+  // feat-round-10 A2: 速率图数据 — success 日志且消息含"章"或"chapter"(忽略大小写), 按分钟分桶 (近 RATE_WINDOW_MIN 分钟)
+  const speedData = useMemo(() => {
+    const now = Date.now()
+    const windowMs = RATE_WINDOW_MIN * 60 * 1000
+    const startMs = now - windowMs
+    // 初始化 10 个分钟桶 (从 9 分钟前到当前分钟)
+    const buckets: { minuteIdx: number; ts: number; count: number; label: string }[] = []
+    const currentMinute = Math.floor(now / 60000)
+    for (let i = 0; i < RATE_WINDOW_MIN; i++) {
+      const minuteIdx = currentMinute - (RATE_WINDOW_MIN - 1 - i)
+      const ts = minuteIdx * 60000
+      const d = new Date(ts)
+      const label = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+      buckets.push({ minuteIdx, ts, count: 0, label })
+    }
+    // 遍历日志, 命中桶则累加
+    const bucketMap = new Map(buckets.map((b) => [b.minuteIdx, b]))
+    for (const l of logs) {
+      if (l.level !== 'success') continue
+      // 关键字: 章 (中文) 或 chapter (英文, 忽略大小写)
+      if (!/章|chapter/i.test(l.message)) continue
+      if (l.ts < startMs) continue
+      const minuteIdx = Math.floor(l.ts / 60000)
+      const b = bucketMap.get(minuteIdx)
+      if (b) b.count += 1
+    }
+    return buckets
+  }, [logs])
+
+  // feat-round-10 A3: 速率 = 近10分钟 success+章 日志总数 / 10 分钟 (章/分)
+  const ratePerMin = useMemo(() => {
+    const total = speedData.reduce((sum, b) => sum + b.count, 0)
+    return total / RATE_WINDOW_MIN
+  }, [speedData])
+
+  // feat-round-10 A3: 预估剩余 = 剩余章节数 / 速率 (分钟)
+  const etaMin = useMemo(() => {
+    const remaining = Math.max(0, (progress.contentTotal || 0) - (progress.contentDone || 0))
+    if (ratePerMin <= 0 || remaining <= 0) return null
+    return Math.ceil(remaining / ratePerMin)
+  }, [ratePerMin, progress.contentTotal, progress.contentDone])
+
+  // feat-round-10 A4: 分段进度条比例 (success/warn/error 占这三者之和)
+  const segmentProps = useMemo(() => {
+    const total = logCounts.success + logCounts.warn + logCounts.error
+    if (total === 0) return { successPct: 0, warnPct: 0, errorPct: 0, hasData: false }
+    return {
+      successPct: (logCounts.success / total) * 100,
+      warnPct: (logCounts.warn / total) * 100,
+      errorPct: (logCounts.error / total) * 100,
+      hasData: true,
+    }
+  }, [logCounts])
+
+  // feat-round-10 A1: 清空显示的日志 (服务端日志不动; lastLogIdRef 继续指向最新, 后续只增量拉新日志)
+  const handleClearLogs = useCallback(() => {
+    setLogs([])
+  }, [])
 
   if (!task) {
     return (
@@ -373,7 +457,7 @@ export function TaskMonitor({ taskId, onBack }: TaskMonitorProps) {
           </CardContent>
         </Card>
 
-        {/* 进度 */}
+        {/* 进度 + 分段进度条 + 速率图 (feat-round-10 A2/A4) */}
         <Card className="border-zinc-800 bg-zinc-900/60 xl:col-span-2">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm text-zinc-200">
@@ -390,10 +474,62 @@ export function TaskMonitor({ taskId, onBack }: TaskMonitorProps) {
               pct={booksPct}
               hint={progress.discovered ? `已发现 ${progress.discovered} 本` : undefined}
             />
-            <ProgressRow
-              label={`章节正文 ${progress.contentDone || 0} / ${progress.contentTotal || 0}`}
-              pct={contentPct}
-            />
+            {/* feat-round-10 A4: 章节进度行 + 悬浮 ETA Tooltip */}
+            <div>
+              <div className="mb-1.5 flex items-center justify-between text-xs">
+                <span className="text-zinc-400">
+                  章节正文 <span className="tabular-nums text-zinc-300">{progress.contentDone || 0} / {progress.contentTotal || 0}</span>
+                  {progress.contentTotal ? <span className="ml-1 text-zinc-500">({contentPct}%)</span> : null}
+                </span>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      className="flex items-center gap-1 font-mono text-zinc-300 outline-none transition-colors hover:text-violet-300"
+                      aria-label="预估剩余时间"
+                    >
+                      <Clock className="h-3 w-3" aria-hidden />
+                      <span>
+                        {etaMin === null ? '预估 -' : `预估剩余 ~${etaMin}min`}
+                      </span>
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent className="border border-zinc-700 bg-zinc-900 text-zinc-200">
+                    <div className="space-y-0.5 text-xs">
+                      <div>当前速率: <span className="font-mono text-violet-300">{ratePerMin.toFixed(2)} 章/分</span></div>
+                      <div>剩余章节: <span className="font-mono">{Math.max(0, (progress.contentTotal || 0) - (progress.contentDone || 0))}</span></div>
+                      <div>预估剩余: <span className="font-mono">{etaMin === null ? '-' : `~${etaMin} 分钟`}</span></div>
+                    </div>
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+              {/* 章节进度条 (简单) */}
+              <Progress value={contentPct} className="h-2 bg-zinc-800" />
+              {/* feat-round-10 A4: 分段进度条 — 日志级别比例 (绿/琥珀/红) */}
+              <div className="mt-2">
+                <div className="mb-1 flex items-center justify-between text-[11px] text-zinc-500">
+                  <span>日志级别分布</span>
+                  <span className="tabular-nums">
+                    成功 {logCounts.success} · 警告 {logCounts.warn} · 错误 {logCounts.error}
+                  </span>
+                </div>
+                <div
+                  className="flex h-2 w-full overflow-hidden rounded-full bg-zinc-800"
+                  role="img"
+                  aria-label={`日志级别分布: 成功 ${logCounts.success} 警告 ${logCounts.warn} 错误 ${logCounts.error}`}
+                >
+                  {segmentProps.hasData ? (
+                    <>
+                      <div className="h-full bg-emerald-500 transition-all" style={{ width: `${segmentProps.successPct}%` }} />
+                      <div className="h-full bg-amber-500 transition-all" style={{ width: `${segmentProps.warnPct}%` }} />
+                      <div className="h-full bg-red-500 transition-all" style={{ width: `${segmentProps.errorPct}%` }} />
+                    </>
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center text-[10px] text-zinc-600">暂无日志数据</div>
+                  )}
+                </div>
+              </div>
+            </div>
             <div className="flex flex-wrap gap-2 pt-1">
               <StatChip label="新建书籍" value={stats.booksCreated || 0} tone="text-emerald-400 border-emerald-500/30 bg-emerald-500/10" />
               <StatChip label="更新书籍" value={stats.booksUpdated || 0} tone="text-teal-400 border-teal-500/30 bg-teal-500/10" />
@@ -407,7 +543,82 @@ export function TaskMonitor({ taskId, onBack }: TaskMonitorProps) {
         </Card>
       </div>
 
-      {/* 实时日志 */}
+      {/* feat-round-10 A3: 错误统计行 (5 个小卡片: 成功/警告/错误/速率/预估剩余) */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        <ErrorStatCard
+          icon={<CheckCircle2 className="h-4 w-4" aria-hidden />}
+          label="成功"
+          value={fmtNum(logCounts.success)}
+          tone="border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
+        />
+        <ErrorStatCard
+          icon={<AlertTriangle className="h-4 w-4" aria-hidden />}
+          label="警告"
+          value={fmtNum(logCounts.warn)}
+          tone="border-amber-500/30 bg-amber-500/10 text-amber-400"
+        />
+        <ErrorStatCard
+          icon={<XCircle className="h-4 w-4" aria-hidden />}
+          label="错误"
+          value={fmtNum(logCounts.error)}
+          tone="border-red-500/30 bg-red-500/10 text-red-400"
+        />
+        <ErrorStatCard
+          icon={<Timer className="h-4 w-4" aria-hidden />}
+          label="速率"
+          value={`${ratePerMin.toFixed(1)} 章/分`}
+          tone="border-violet-500/30 bg-violet-500/10 text-violet-400"
+        />
+        <ErrorStatCard
+          icon={<Clock className="h-4 w-4" aria-hidden />}
+          label="预估剩余"
+          value={etaMin === null ? '-' : `~${etaMin}min`}
+          tone="border-sky-500/30 bg-sky-500/10 text-sky-400"
+        />
+      </div>
+
+      {/* feat-round-10 A2: 速率迷你图 (近10分钟速率) */}
+      <Card className="border-zinc-800 bg-zinc-900/60">
+        <CardHeader className="pb-1">
+          <CardTitle className="flex items-center justify-between text-xs text-zinc-300">
+            <span className="flex items-center gap-1.5">
+              <Timer className="h-3.5 w-3.5 text-violet-400" aria-hidden />
+              近 {RATE_WINDOW_MIN} 分钟章节速率
+            </span>
+            <span className="font-mono text-violet-300">
+              {ratePerMin.toFixed(2)} 章/分
+            </span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-4 pt-1">
+          {speedData.every((b) => b.count === 0) ? (
+            <div className="flex h-[80px] items-center justify-center text-xs text-zinc-600">暂无速率数据</div>
+          ) : (
+            <div style={{ width: '100%', height: 80 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={speedData} margin={{ top: 4, right: 0, bottom: 0, left: 0 }}>
+                  <defs>
+                    <linearGradient id="speedGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#8b5cf6" stopOpacity={0.4} />
+                      <stop offset="100%" stopColor="#8b5cf6" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <Area
+                    type="monotone"
+                    dataKey="count"
+                    stroke="#8b5cf6"
+                    strokeWidth={1.5}
+                    fill="url(#speedGradient)"
+                    isAnimationActive={false}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* 实时日志 (feat-round-10 A1: 抽离至 TaskLogViewer) */}
       <Card className="border-zinc-800 bg-zinc-900/60">
         <CardHeader className="flex-row items-center justify-between space-y-0 pb-2">
           <CardTitle className="flex items-center gap-2 text-sm text-zinc-200">
@@ -415,31 +626,9 @@ export function TaskMonitor({ taskId, onBack }: TaskMonitorProps) {
             实时日志
             <span className="text-xs font-normal text-zinc-500">(2秒增量轮询 · 共 {logs.length} 条)</span>
           </CardTitle>
-          <Button
-            size="sm"
-            variant="outline"
-            className={`h-7 gap-1 border-zinc-700 text-xs ${autoScroll ? 'text-emerald-400' : 'text-zinc-400'}`}
-            onClick={() => setAutoScroll((v) => !v)}
-          >
-            {autoScroll ? '自动滚动中' : '滚动已暂停'}
-          </Button>
         </CardHeader>
-        <CardContent className="p-0 pb-4">
-          <div
-            ref={scrollRef}
-            className="admin-scroll mx-4 max-h-96 overflow-y-auto rounded-md border border-zinc-800 bg-zinc-950 p-3 font-mono text-xs leading-relaxed"
-          >
-            {logs.length === 0 ? (
-              <div className="py-8 text-center text-zinc-600">暂无日志, 启动任务后开始输出</div>
-            ) : (
-              logs.map((l) => (
-                <div key={l.id} className="flex gap-2 py-0.5">
-                  <span className="shrink-0 text-zinc-600">{l.time}</span>
-                  <span className={`break-all ${LOG_LEVEL_STYLE[l.level] || 'text-zinc-300'}`}>{l.message}</span>
-                </div>
-              ))
-            )}
-          </div>
+        <CardContent className="p-4 pt-2">
+          <TaskLogViewer logs={logs} onClear={handleClearLogs} />
         </CardContent>
       </Card>
     </div>
@@ -470,8 +659,39 @@ function StatChip({ label, value, tone }: { label: string; value: number; tone: 
   )
 }
 
+// feat-round-10 A3: 错误统计小卡片 (图标 + 标签 + 值)
+function ErrorStatCard({
+  icon,
+  label,
+  value,
+  tone,
+}: {
+  icon: React.ReactNode
+  label: string
+  value: string
+  tone: string
+}) {
+  return (
+    <div className={`flex items-center gap-2.5 rounded-lg border px-3 py-2.5 ${tone}`}>
+      <span className="shrink-0">{icon}</span>
+      <div className="min-w-0">
+        <p className="text-[10px] uppercase tracking-wide opacity-70">{label}</p>
+        <p className="truncate text-sm font-semibold tabular-nums">{value}</p>
+      </div>
+    </div>
+  )
+}
+
+/** HH:mm:ss 时间格式 (展示用) */
 function fmtTime(s: string): string {
   const d = new Date(s)
   if (isNaN(d.getTime())) return '-'
   return d.toLocaleTimeString('zh-CN', { hour12: false })
+}
+
+/** 毫秒时间戳 (速率图分桶用); 解析失败回退 0 */
+function safeTs(s: string): number {
+  const d = new Date(s)
+  if (isNaN(d.getTime())) return 0
+  return d.getTime()
 }

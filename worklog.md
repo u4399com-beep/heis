@@ -1411,3 +1411,135 @@ Stage Summary:
 - Files created: 5 (3 API routes + BackupSection + SeoAuditSection)
 - Files modified: 2 (AdminApp + helpers)
 - All quality gates green; agent-browser verified both new sections; API verified via curl (backup 263KB, restore atomic, seo-audit 2 sites avg 86)
+
+---
+Task ID: feat-round-10
+Agent: Task monitor enhancement + reader chapter progress map
+Task: Real-time log viewer (filter/search/autoscroll) + speed chart + error stats + chapter read tracking + TocDrawer visual progress
+
+Work Log:
+- Read prior worklog (rounds 1-9) + agent-ctx notes for feat-a/feat-round-9 to understand file boundaries & conventions; project stable with lint/tsc clean, 6 demo books, 3 rules, 2 sites, no tasks seeded.
+- Read current state of TaskMonitor.tsx, TasksSection.tsx (implicit), shared.tsx (TocDrawer/useReadPosMemory/useReadingTimeTracker), reading-memory.ts, bookmarks.ts, ReadView.tsx, ReadClassic/Immersive/Paginated/Pili to understand existing patterns.
+- Inspected runner.ts log message format to design "speed chart" keyword filter — success-level logs containing "章正文已采集" + "线程批次 × N 章"; chose regex /章|chapter/i to be tolerant of both Chinese 章 and English chapter.
+- Verified shadcn/ui Progress/Tooltip/Badge/Button/Card + lucide-react icons + recharts (already installed ^2.15.4) all available; no new deps needed.
+
+A. Task Monitor Enhancement (real-time log viewer + speed chart + error stats + segmented progress):
+
+  A1. Created src/components/admin/TaskLogViewer.tsx (~280L, 'use client'):
+    - Props: { logs: TaskLog[], onClear: () => void }
+    - TaskLog interface exported: { id, level, message, time: string (HH:mm:ss), ts: number (ms) }
+    - Auto-scroll: ref-based scroll listener detects user manual scroll-up (distanceFromBottom >= 50px); pauses autoscroll + tracks newCount; floating "↓ N 条新日志" button (bottom-right, violet bg, animate-pulse) jumps to bottom.
+    - Level filtering: 4 pill toggle buttons (info/success/warn/error) with dot+label+count badge; default all on; active=colored bg (zinc/emerald/amber/red), inactive=zinc border.
+    - Search: small input (case-insensitive, filters by message contains).
+    - Clear button: calls onClear (TaskMonitor wipes logs state; server logs untouched; lastLogIdRef continues from latest so future polls only fetch new logs).
+    - Copy logs: navigator.clipboard.writeText with textarea fallback for older browsers; toast confirm.
+    - Log line format: [time tabular-nums zinc-500] [level dot 4px] [message] — colors: info=zinc-300, success=emerald-400, warn=amber-400, error=red-400.
+    - Status row: "显示 N / M 条" + "自动滚动已暂停" indicator.
+
+  A2. Speed chart (inline in TaskMonitor via recharts AreaChart):
+    - Data: filter logs where level==='success' && /章|chapter/i.test(message); bucket by minute (Math.floor(ts/60000)); 10 minute window (RATE_WINDOW_MIN=10).
+    - 10 buckets initialized with current minute - 9 to current; ts + HH:mm label per bucket.
+    - Area chart height 80px, width full, violet gradient fill (#8b5cf6 0.4 → transparent), stroke 1.5px violet, no axes/grid/legend (per spec S3).
+    - Label: "近 10 分钟章节速率  X.XX 章/分" (header right-aligned mono violet).
+    - Empty state: "暂无速率数据" centered in 80px box.
+    - isAnimationActive={false} to avoid re-render thrash during polling.
+
+  A3. Error stats row (5 small cards above logs):
+    - 成功 (CheckCircle2 emerald) / 警告 (AlertTriangle amber) / 错误 (XCircle red) — logCounts from all logs.
+    - 速率 (Timer violet) — ratePerMin.toFixed(1) 章/分.
+    - 预估剩余 (Clock sky) — etaMin ? `~${etaMin}min` : '-'.
+    - Each card: icon + uppercase label + tabular-nums value, responsive 2/3/5 columns (sm/lg breakpoints).
+    - ratePerMin = (sum of speed buckets) / 10; etaMin = ceil(remainingChapters / ratePerMin) or null when rate=0 or no remaining.
+
+  A4. Progress visualization (in progress card):
+    - Existing ProgressRow for books kept; chapter row replaced with manual layout containing chapter count + contentPct + ETA tooltip trigger.
+    - Tooltip (shadcn/ui Tooltip) on Clock button shows: 当前速率 / 剩余章节 / 预估剩余 (~X 分钟).
+    - Simple Progress bar (h-2) below chapter label.
+    - NEW segmented bar (mt-2) showing log level proportions: emerald (success) + amber (warn) + red (error) segments, width = count/total_of_three * 100%. Empty state when no logs.
+    - Header above segmented bar: "日志级别分布" + counts summary "成功 N · 警告 N · 错误 N".
+    - Removed obsolete autoScroll state + scrollRef from TaskMonitor (now managed by TaskLogViewer).
+    - Removed LOG_LEVEL_STYLE import (unused after refactor).
+
+  A5. Refactored TaskMonitor.tsx:
+    - Added safeTs(s: string): number helper next to fmtTime for ts ms timestamp (used by speed chart bucketing).
+    - Extended logs state type to TaskLog[] (with ts field); appendLogs now maps rows to include ts.
+    - Added useMemo hooks: logCounts (success/warn/error), speedData (10 buckets), ratePerMin, etaMin, segmentProps.
+    - handleClearLogs callback: setLogs([]) — passes to TaskLogViewer onClear prop.
+    - New ErrorStatCard helper component (icon + label + value + tone).
+    - Replaced inline log display with <TaskLogViewer logs={logs} onClear={handleClearLogs} />.
+
+B. Reader Chapter Progress Map (read chapters tracker + TocDrawer visual):
+
+  B1. Created src/components/public/read-layouts/chapter-progress.ts (~95L):
+    - Key: heis_readchapters_<bookId>, max 500 entries, JSON array, LRU eviction by insertion order (head trimmed).
+    - getReadChapters(bookId): Set<string> — for TocDrawer status rendering.
+    - markChapterRead(bookId, chapterId): idempotent; if exists + already at tail → no-op (skip IO); if exists mid-list → splice + push tail; if new → push + trim if >500.
+    - getReadChapterCount(bookId): number.
+    - clearReadChapters(bookId): void (reserved for settings page).
+
+  B1 (wiring). Extended useReadPosMemory in shared.tsx (no layout edits needed — hook covers all 4 layouts):
+    - Added markedReadRef<boolean> — tracks if current chapter already marked read (avoids repeated localStorage writes).
+    - On chapterId change: sync markedReadRef.current = getReadChapters(bookId).has(chapterId) (covers cross-refresh resume).
+    - On ready: if saved.scrollRatio >= 0.1 (user previously read past 10%), call markChapterRead immediately — handles "user read half, exited, re-opened" case.
+    - In scroll debounce handler: compute r = readRatio(); if !markedReadRef.current && r >= 0.1, call markChapterRead + set ref true.
+    - This wires all 4 layouts (classic/pili window scroll, immersive scrollerRef, paginated getRatio override) without per-layout edits.
+
+  B2. TocDrawer chapter status icons (in shared.tsx):
+    - Added readSet: Set<string> state; refresh on open/tab-change via existing prevRefresh pattern (alongside bookmarks/readTimeMs).
+    - Added bookmarkIds: Set<string> derived from bookmarks array (render-time, no extra state).
+    - Replaced renderEntry function: now computes active/read/marked status per chapter.
+    - Status icon priority: 当前 (animate-pulse violet dot) > 书签 (amber fill Bookmark 14px) > 已读 (green Check 14px) > 未读 (zinc 6px dot).
+    - Row style: active → violet bg + 2px left border + v.primary color; read → muted bg + opacity 0.65; unread → transparent.
+    - Marked-but-not-active: floating amber Bookmark icon top-right (absolute, pointer-events-none).
+    - Chapter idx column shrunk from w-9 to w-7 to fit the new 4x4 status icon slot.
+
+  B3. TocDrawer header reading progress (toc tab only):
+    - Replaced "共 N 章 · 第 p/t 页" with "已读 X/N 章 · 第 p/t 页" (only when total > 0).
+    - Added progress bar (h-1.5) with linear-gradient(v.primary → v.accent), role="progressbar" with aria-valuenow.
+    - Added Clock inline row: "已读 X 章 · Y% · 累计 NhNmm" (or "已读 X 章 · Y%" when no read time yet) — only in toc tab.
+    - bookmark tab unchanged: still shows "共 N 个书签".
+
+S. Style polish:
+  - S1 TaskLogViewer: bg-zinc-950 border-zinc-800 rounded-lg p-3 font-mono text-xs container; each line flex with time (zinc-500 tabular-nums) + 4px level dot + message; filter pills active=colored/inactive=zinc border; "↓ 新日志" floating violet animate-pulse.
+  - S2 TocDrawer: 16px status icons inline before title; current = violet-950/30 bg + 2px violet-500 left border (mapped to theme primary); read = opacity 60%; bookmarked = amber Bookmark top-right.
+  - S3 Speed chart: minimal area only, violet gradient (violet-500/40 → transparent), no grid/axes/legend, 80px height.
+
+Test results:
+- bun run lint → 0 errors / 0 warnings (initial run had 1 unused import + 1 stale eslint-disable; both fixed).
+- bunx tsc --noEmit | grep -v examples/skills → 0 errors (0 lines).
+- GET / → 200; GET /?admin=1 → 200; GET /?view=read&chapter=<valid-id> → 200; GET /?view=book&id=<valid-id> → 200.
+- Dev log: no unhandled exceptions, no TypeError/ReferenceError/stack traces after edits; only normal "Compiled in Xms" + 200 request lines.
+- No OOM events; curl-only testing (no agent-browser session needed — visual diff verified via component source review + lint/tsc).
+
+Stage Summary:
+- Files created (2):
+  - src/components/public/read-layouts/chapter-progress.ts (95L) — read chapters localStorage module
+  - src/components/admin/TaskLogViewer.tsx (280L) — extracted log viewer with filter/search/autoscroll/clear/copy
+- Files modified (2):
+  - src/components/public/read-layouts/shared.tsx — Check/BookmarkCheck icon imports, markChapterRead integration in useReadPosMemory, TocDrawer readSet state + bookmarkIds + readCount/readPct + header progress bar + status-icon chapter rows
+  - src/components/admin/TaskMonitor.tsx — TaskLog type import, safeTs helper, logCounts/speedData/ratePerMin/etaMin/segmentProps useMemo, replaced inline log display with TaskLogViewer, added ErrorStats row (5 cards), SpeedChart (recharts AreaChart 80px violet gradient), segmented progress bar + ETA Tooltip; removed obsolete autoScroll state + scrollRef + LOG_LEVEL_STYLE import.
+- Features delivered: A1 (real-time log viewer w/ filter+search+autoscroll+clear+copy), A2 (speed curve mini-chart recharts violet gradient), A3 (5-card error stats row), A4 (segmented progress bar + ETA tooltip), B1 (chapter-progress.ts + useReadPosMemory integration marks read on scroll >10%), B2 (TocDrawer status icons + row backgrounds), B3 (TocDrawer header reading progress bar + percentage + accumulated read time).
+- Constraints honored: only modified allowed files; shadcn/ui Progress/Tooltip/Badge/Button/Card used; recharts already installed; lucide-react icons; all new client components 'use client'; engine/API/TasksSection/prisma/mini-services untouched.
+
+---
+Task ID: feat-round-10
+Agent: Task monitor enhancement + reader chapter progress map
+Task: Real-time log viewer (filter/search/autoscroll) + speed chart + error stats + chapter read tracking + TocDrawer visual progress
+
+Work Log:
+- QA baseline: lint 0/0, tsc 0, dev server stable. SEO audit verified (dewew site score 78, TDK/domain/链轮/sitemap issues with fix suggestions + 通过项 7 collapsible). Backup section renders 导出/导入 cards. All prior features functional.
+- Feature A (Task monitor enhancement):
+  - Created `src/components/admin/TaskLogViewer.tsx` (280L): extracted log viewer with 4-pill level filter (info/success/warn/error + count badges), case-insensitive search, smart auto-scroll (pauses on user scroll-up, floating violet "↓ N 条新日志" button jumps to bottom), Clear (view-only) + Copy (clipboard w/ fallback) buttons, log lines [HH:mm:ss] [dot] message color-coded per level.
+  - Modified `TaskMonitor.tsx`: added ts ms field to log entries + safe_ts helper; useMemo for logCounts/speedData(10-min buckets)/ratePerMin/etaMin/segmentProps; replaced inline log display with <TaskLogViewer logs={logs} onClear={...} />; added SpeedChart (recharts AreaChart 80px violet gradient, label "近10分钟章节速率 X.XX 章/分"); added ErrorStats row (5 cards: 成功/警告/错误/速率/预估剩余); added segmented progress bar (emerald/amber/red log-level proportions) + ETA Tooltip on chapter progress.
+- Feature B (Reader chapter progress map):
+  - Created `src/components/public/read-layouts/chapter-progress.ts` (95L): localStorage module getReadChapters/markChapterRead/getReadChapterCount/clearReadChapters (cap 500, LRU trim, idempotent).
+  - Modified `shared.tsx`: extended useReadPosMemory to call markChapterRead on scroll ≥10% (covers all 4 layouts: classic/pili window, immersive scrollerRef, paginated horizontal ratio via markedReadRef dedup); TocDrawer refreshes readSet on open/tab-switch, replaces header line with "已读 X/N 章 · 第 p/t 页", adds thin progress bar + "已读 X 章 · Y% · 累计 NhNmm" line (toc tab only), per-chapter status icons (current=violet pulse dot, bookmarked=amber Bookmark, read=green Check, unread=zinc dot) with row backgrounds (active=violet bg+2px left border, read=muted 65% opacity, bookmarked=top-right amber icon).
+- agent-browser verified: TocDrawer shows "已读 0/36 章 · 第 1/1 页" + progressbar (阅读进度) + "已读 0 章 · 0%" + 目录/书签 tabs. Reader page renders chapter content + toolbar (阅读设置/加入书签/目录) + 章节导航 (上一章/下一章).
+- Final quality gates: bun run lint 0/0; bunx tsc --noEmit 0 errors; dev server / 200 and /?view=read 200.
+
+Stage Summary:
+- 1 new feature: task monitor enhancement (TaskLogViewer with filter/search/autoscroll/copy + speed chart + error stats + segmented progress + ETA)
+- 1 new feature: reader chapter progress map (chapter-progress.ts localStorage tracker + TocDrawer visual: 已读 X/N, progress bar, per-chapter status icons current/read/bookmarked/unread, row backgrounds)
+- Files created: 2 (TaskLogViewer.tsx, chapter-progress.ts)
+- Files modified: 2 (TaskMonitor.tsx, shared.tsx)
+- All quality gates green; agent-browser verified TocDrawer chapter progress display
