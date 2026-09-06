@@ -1543,3 +1543,56 @@ Stage Summary:
 - Files created: 2 (TaskLogViewer.tsx, chapter-progress.ts)
 - Files modified: 2 (TaskMonitor.tsx, shared.tsx)
 - All quality gates green; agent-browser verified TocDrawer chapter progress display
+
+---
+Task ID: feat-round-11
+Agent: Rule field visualization + PWA support
+Task: Field type badges + expression preview + single-field test + field templates + manifest + service worker + install prompt
+
+Work Log:
+- 读取 worklog / FieldRuleEditor / RuleEditor / TestPanel / layout / globals.css / rules/test 路由 / DebugHtmlViewer / PublicSite 等关键文件, 摸清既有四段编辑器结构、测试 API 入参出参、helpers 类型导出、可视化调试 iframe 注入路径与 PWA 现状(无)。
+- A1+A2+A3 在 FieldRuleEditor.tsx 中: 头部新增 TypeBadge(css=blue/xpath=amber/regex=rose/json=emerald/const=zinc) + 表达式预览(40 字符截断, mono, zinc-400) + attr pill(zinc-800); 未配置态"添加"按钮升级为 DropdownMenu(空白规则 + 8 种常见字段模板: 书名/作者/简介/封面/章节标题/章节链接/正文/最新章节); 新增 FieldTestButton 子组件(Popover 触发) + FieldTestContext 类型, 复用既有 /api/admin/rules/test, 客户端从 debugMatches/fields/sample 过滤出本字段首条值, "查看高亮"按钮内联展开 DebugHtmlViewer(activeMatch 聚焦本字段)。
+- 修改 RuleEditor.tsx: PageRulePanel 内构造 FieldTestContext(section/pageRule/fetchConfig/cleanConfig/defaultUrl), 透传给 fields.map 中的 FieldRuleEditor(fieldKey + testContext); 其它 FieldRuleEditor 实例(itemSelector/tocLink/pagination.nextLink)不传 testContext, 不显示测试按钮(保持原行为)。
+- 修两处 set-state-in-effect lint 报错: (1) FieldTestButton 的 defaultUrl→url 同步 effect 改为在 handleOpenChange 打开分支刷新; (2) InstallPrompt 的 standalone 检测改为 useState 懒初始化, effect 仅注册 beforeinstallprompt/appinstalled 监听器。
+- B1 创建 public/manifest.json(name/short_name/start_url/display/background_color #09090b/theme_color #7c3aed/orientation portrait/icons SVG any+maskable/categories/lang zh-CN) + public/icon.svg(512x512 紫色圆角方块 + 白色 BookOpen 路径 + 右下角"小"字角标, maskable 安全区留白)。
+- B2 创建 public/sw.js(~85 行 vanilla JS, 无 Workbox): install 预缓存 / + /manifest.json + /icon.svg(skipWaiting), activate 清旧缓存(CACHE_VERSION=heis-v1-r11, clients.claim), fetch 分发 — 导航 network-first 回退缓存 App Shell + 离线 503 兜底页; 静态资源 cache-first + 后台 SWR; API(/api/*) network-only; 跨域放行; 仅拦截 GET/HEAD。创建 src/components/PwaRegister.tsx(client 组件, useEffect 注册 SW, 仅 production + load 后注册, dev 跳过避免 HMR 干扰)。
+- B3 创建 src/components/public/InstallPrompt.tsx: beforeinstallprompt 捕获 deferredPrompt + 展示底部居中横幅(紫色边框 + Download 图标 + 安装/关闭按钮); appinstalled 触发隐藏 + sonner toast; dismiss 写 localStorage(7 天 TTL); 已 standalone 模式懒初始化不展示; 横幅挂 .heis-install-banner 类触发 slide-up 动画; 在 PublicSite.tsx 末尾挂载(全站可用, 仅 embedMode 与公开站均生效)。
+- 修改 src/app/layout.tsx: 加 manifest/appleWebApp/icons.apple 元数据 + Viewport API 导出 themeColor #7c3aed(Next 16 推荐方式, metadata.themeColor 已弃用) + head 内显式 <link rel="apple-touch-icon"> + body 末尾挂 <PwaRegister />。
+- 修改 src/components/public/PublicSite.tsx: import + 挂载 <InstallPrompt />。
+- 修改 src/app/globals.css: 新增 @keyframes heisInstallSlideUp + .heis-install-banner 类(0.32s cubic-bezier 滑入, translate(-50%,24px) → translate(-50%,0))。
+- 校验: bun run lint = 0 error 0 warning; bunx tsc --noEmit (排除 examples/skills) = 0; curl / = 200, /manifest.json = 200 application/json, /icon.svg = 200 image/svg+xml, /sw.js = 200 application/javascript; 首页 HTML head 验证含 <link rel="manifest"> + <meta name="theme-color" content="#7c3aed"> + <link rel="apple-touch-icon" href="/icon.svg"> + <meta name="apple-mobile-web-app-title" content="小说阅读"> + <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">; dev.log 无新错误。
+
+Stage Summary:
+- 创建文件: public/manifest.json, public/icon.svg, public/sw.js, src/components/PwaRegister.tsx, src/components/public/InstallPrompt.tsx
+- 修改文件: src/components/admin/FieldRuleEditor.tsx(完全重写, 549 行, +badges +templates +FieldTestButton), src/components/admin/RuleEditor.tsx(+FieldTestContext import +testContext useMemo +透传 fieldKey/testContext 到 fields.map), src/app/layout.tsx(+manifest/themeColor/appleWebApp/icons/PwaRegister), src/components/public/PublicSite.tsx(+InstallPrompt 挂载), src/app/globals.css(+heisInstallSlideUp 动画)
+- 交付: 字段类型徽章 + 表达式预览 + attr pill(可扫), 单字段测试 Popover(复用既有 test API + 客户端过滤 + 内联 DebugHtmlViewer 聚焦), 8 种字段模板下拉, PWA manifest + SVG 图标 + vanilla SW(导航/静态/API 三策略 + 离线 App Shell 兜底页) + 安装横幅(beforeinstallprompt + 7 天 dismiss + 懒检测 standalone + slide-up 动画)
+- 不变: src/lib/crawl/* / src/app/api/* / prisma/* / mini-services/* / Docker / next.config / eslint.config / tsconfig 全部未触碰; 既有 TestPanel/DebugHtmlViewer/rules/test 路由零改动, FieldTestButton 直接复用同款 fetch+filter
+- 测试: lint 0/0, tsc 0, curl 5 路径全 200, dev.log 干净
+
+---
+Task ID: feat-round-11
+Agent: Rule field visualization + PWA support
+Task: Field type badges + expression preview + single-field test + field templates + manifest + service worker + install prompt
+
+Work Log:
+- QA baseline: lint 0/0, tsc 0, dev server stable. TocDrawer chapter progress verified ("已读 0/36 章 · 第 1/1 页" + progressbar + "已读 0 章 · 0% · 累计 29秒"). TaskMonitor enhancements verified in code (TaskLogViewer + ratePerMin + etaMin). All prior features functional.
+- Feature A (Rule field visualization):
+  - A1 Type badges + expression preview: FieldRuleEditor shows compact chip row — TypeBadge (css=sky/xpath=amber/regex=rose/json=emerald/const=zinc) + expression preview (40-char mono truncate, "未配置" when empty) + attr pill (text/href/src or 组N for regex). Field list scannable without expanding.
+  - A2 Single-field test: "测试" button (FlaskConical icon) per field-list editor. Popover with URL input + Run → calls existing /api/admin/rules/test → client-side filters to this field's value (via debugMatches/fields/sample fallback). Shows value (100-char) + meta chips + "查看高亮" button that inline-expands DebugHtmlViewer with activeMatch focused.
+  - A3 Field templates: unconfigured state's "添加" button upgraded to DropdownMenu — "空白规则" + 8 common patterns (书名/作者/简介/封面/章节标题/章节链接/正文/最新章节) with type+expression+attr pre-filled.
+  - RuleEditor.tsx: PageRulePanel builds FieldTestContext (section/pageRule/fetchConfig/cleanConfig/defaultUrl) threads to field-list editors.
+- Feature B (PWA support):
+  - B1 Manifest + Icon: public/manifest.json (name 小说阅读 / theme #7c3aed / background #09090b / standalone / portrait / SVG icons any+maskable / zh-CN) + public/icon.svg (512×512 violet gradient rounded square + white BookOpen path + "小" corner mark, maskable safe-area).
+  - B2 Service Worker: public/sw.js (~85 lines vanilla JS, no Workbox) — install precaches App Shell (/, /manifest.json, /icon.svg) + skipWaiting; activate cleans old caches + clients.claim; fetch dispatches: navigation=network-first→cached /→503 offline, static=cache-first+SWR, /api/*=network-only, cross-origin passthrough. Registered via src/components/PwaRegister.tsx (production-only, post-load, dev-skipped).
+  - B3 Install Prompt: src/components/public/InstallPrompt.tsx — beforeinstallprompt captures deferredPrompt → fixed bottom-center banner (violet border + Download icon + 安装/关闭) with slide-up animation; appinstalled → toast "已安装"; dismiss → localStorage 7-day TTL; standalone mode lazy-detected.
+  - Layout wiring: layout.tsx adds manifest/appleWebApp/icons.apple Metadata + Viewport API themeColor #7c3aed + explicit apple-touch-icon link + PwaRegister. PublicSite.tsx mounts InstallPrompt. globals.css adds heisInstallSlideUp keyframes.
+- agent-browser verified: CSS rule editor shows "列表项容器 itemSelector" + "CSS" type badge + "text" attr pill; field configuration area with CSS选择器 dropdown + expression input + attr input. Unconfigured fields show "· 未配置".
+- curl verified: /manifest.json 200 application/json; /icon.svg 200 image/svg+xml; /sw.js 200 application/javascript; HTML head contains rel="manifest" + theme-color #7c3aed + apple-touch-icon + apple-mobile-web-app meta tags.
+- Final quality gates: bun run lint 0/0; bunx tsc --noEmit 0 errors; dev server / 200.
+
+Stage Summary:
+- 1 new feature: rule field visualization (type badges + expression preview + attr pills + single-field test popover + 8 field templates dropdown)
+- 1 new feature: PWA support (manifest + SVG icon + vanilla service worker with offline shell + install prompt banner with 7-day dismiss)
+- Files created: 5 (manifest.json, icon.svg, sw.js, PwaRegister.tsx, InstallPrompt.tsx)
+- Files modified: 4 (FieldRuleEditor.tsx, RuleEditor.tsx, layout.tsx, PublicSite.tsx, globals.css)
+- All quality gates green; agent-browser verified field badges; curl verified all PWA resources 200

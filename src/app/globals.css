@@ -261,3 +261,22 @@
   background-size: 200% 100%;
   animation: heisShimmer 1.6s ease-in-out infinite;
 }
+
+/* ============================================================
+ * feat-round-11 B3: PWA 安装横幅滑入动画
+ * beforeinstallprompt 触发时, 横幅从屏幕底部滑入(translateY 24px → 0 + 淡入)
+ * ============================================================ */
+@keyframes heisInstallSlideUp {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 24px);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+.heis-install-banner {
+  animation: heisInstallSlideUp 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
+}

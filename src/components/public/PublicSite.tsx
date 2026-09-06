@@ -28,6 +28,7 @@ import { HistoryView } from './HistoryView'
 import { Sk } from './bits'
 import { FeedbackWidget } from './FeedbackWidget'
 import { BackToTop } from './BackToTop'
+import { InstallPrompt } from './InstallPrompt'
 import type { SiteInfo } from './types'
 
 export type { ViewParams, PublicView } from './ctx'
@@ -271,6 +272,8 @@ export default function PublicSite({
         {/* feat-round-7: 全站悬浮反馈 + 返回顶部 (与 embedMode 返回后台按钮错位避让) */}
         <BackToTop />
         <FeedbackWidget />
+        {/* feat-round-11 B3: PWA 安装提示横幅(仅 beforeinstallprompt 触发时展示, 7 天 dismiss) */}
+        <InstallPrompt />
       </div>
     </PublicProvider>
   )

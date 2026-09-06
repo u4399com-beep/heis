@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- feat-round-11 B1: PWA 应用图标 — 紫色圆角方块 + 白色 BookOpen 图标
+     - 矢量 SVG, 任意尺寸清晰(在 manifest 中以 sizes:"any" 声明)
+     - 兼容 maskable: 中央 60% 安全区留白, 适配 Android 圆形/方形遮罩
+     - 浏览器对 manifest SVG 图标支持度参差(Chrome/Edge 支持, Safari iOS 不支持);
+       生产环境若需更广兼容, 可用 `sharp`/`rsvg-convert` 从本 SVG 预生成
+       icon-192.png / icon-512.png 并补充进 manifest 的 icons 数组 -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="heis-icon-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#8b5cf6"/>
+      <stop offset="100%" stop-color="#6d28d9"/>
+    </linearGradient>
+  </defs>
+  <!-- 圆角背景: 占满 512x512 画布(maskable 安全区为中心 60%, 即 ~307px) -->
+  <rect x="0" y="0" width="512" height="512" rx="112" ry="112" fill="url(#heis-icon-grad)"/>
+  <!-- BookOpen 图标(lucide): 中心 280x280, 留 maskable 安全区 -->
+  <g transform="translate(116, 116) scale(1.0)" fill="none" stroke="#ffffff" stroke-width="18" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M140 56 V 252"/>
+    <path d="M28 210 a 14 14 0 0 1 -14 -14 V 56 a 14 14 0 0 1 14 -14 h 70 a 56 56 0 0 1 56 56"/>
+    <path d="M252 210 a 14 14 0 0 0 14 -14 V 56 a 14 14 0 0 0 -14 -14 h -70 a 56 56 0 0 0 -56 56"/>
+  </g>
+  <!-- 角标 "小" 字(白色, 右下角, 强化中文小说品牌感) -->
+  <text x="382" y="420" font-family="ui-sans-serif, system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="120" font-weight="700" fill="#ffffff" text-anchor="middle" opacity="0.92">小</text>
+</svg>

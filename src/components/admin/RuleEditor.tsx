@@ -31,7 +31,7 @@ import {
 } from '@/components/ui/select'
 import { Loader2, Save, ChevronDown, ChevronRight } from 'lucide-react'
 import { toast } from 'sonner'
-import { FieldRuleEditor } from './FieldRuleEditor'
+import { FieldRuleEditor, type FieldTestContext } from './FieldRuleEditor'
 import { TestPanel } from './TestPanel'
 import {
   api,
@@ -297,6 +297,18 @@ interface PageRulePanelProps {
 
 function PageRulePanel({ section, pageRule, onChange, onFieldChange, fetchConfig, extra, pagination, onPaginationChange, showJoinWith, cleanConfig }: PageRulePanelProps) {
   const fields = useMemo(() => SECTION_FIELD_DEFS[section], [section])
+  // feat-round-11 A2: 单字段测试上下文 — 透传本段配置 + 默认 URL(list 段从 urlTemplate 推导)
+  // 给 FieldRuleEditor 的"测试此字段"按钮复用, 与右侧 TestPanel 共享同一段规则/抓取配置
+  const testContext: FieldTestContext = useMemo(
+    () => ({
+      section,
+      pageRule,
+      fetchConfig,
+      cleanConfig,
+      defaultUrl: section === 'list' ? (pageRule.urlTemplate || '').replace('{page}', '1') : '',
+    }),
+    [section, pageRule, fetchConfig, cleanConfig],
+  )
 
   return (
     <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
@@ -341,6 +353,8 @@ function PageRulePanel({ section, pageRule, onChange, onFieldChange, fetchConfig
               value={pageRule.fields?.[f.key]}
               onChange={(v) => onFieldChange(f.key, v)}
               placeholder={f.placeholder}
+              fieldKey={f.key}
+              testContext={testContext}
             />
           ))}
         </div>
