@@ -10,6 +10,7 @@ import { Toaster } from '@/components/ui/sonner'
 import {
   BookMarked,
   BookOpenText,
+  Database,
   ExternalLink,
   FileCode2,
   FileDown,
@@ -21,6 +22,7 @@ import {
   MessageSquare,
   Palette,
   Settings,
+  Stethoscope,
 } from 'lucide-react'
 import { Dashboard } from './Dashboard'
 import { RulesSection } from './RulesSection'
@@ -33,6 +35,8 @@ import { DownloadsSection } from './DownloadsSection'
 import { LinksSection } from './LinksSection'
 import { SettingsSection } from './SettingsSection'
 import { FeedbackSection } from './FeedbackSection'
+import { BackupSection } from './BackupSection'
+import { SeoAuditSection } from './SeoAuditSection'
 
 type SectionKey =
   | 'dashboard'
@@ -46,6 +50,8 @@ type SectionKey =
   | 'downloads'
   | 'settings'
   | 'feedback'
+  | 'backup'
+  | 'seo-audit'
 
 const NAV: { key: SectionKey; label: string; icon: typeof LayoutDashboard }[] = [
   { key: 'dashboard', label: '仪表盘', icon: LayoutDashboard },
@@ -59,6 +65,8 @@ const NAV: { key: SectionKey; label: string; icon: typeof LayoutDashboard }[] = 
   { key: 'downloads', label: 'TXT下载', icon: FileDown },
   { key: 'settings', label: '系统设置', icon: Settings },
   { key: 'feedback', label: '用户反馈', icon: MessageSquare },
+  { key: 'backup', label: '数据备份', icon: Database },
+  { key: 'seo-audit', label: 'SEO 体检', icon: Stethoscope },
 ]
 
 const SCROLLBAR_CSS = `
@@ -108,6 +116,10 @@ export default function AdminApp({ onPreviewSite }: { onPreviewSite?: (themeId?:
         return <SettingsSection />
       case 'feedback':
         return <FeedbackSection />
+      case 'backup':
+        return <BackupSection />
+      case 'seo-audit':
+        return <SeoAuditSection onNavigateSites={() => setSection('sites')} />
       case 'dashboard':
       default:
         return <Dashboard onNavigate={(s) => setSection(s as SectionKey)} />

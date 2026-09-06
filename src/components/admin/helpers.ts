@@ -288,6 +288,86 @@ export interface StatsData {
   taskStatusBreakdown: { status: string; count: number }[]
 }
 
+// ---------------- feat-round-9: 数据备份 / SEO 体检 ----------------
+
+/** 备份文件头部 (version + counts + warnings + exportedAt) */
+export interface BackupFile {
+  version: number
+  exportedAt: string
+  counts?: Record<string, number>
+  warnings?: string[]
+  data?: {
+    settings?: unknown[]
+    categories?: unknown[]
+    sites?: unknown[]
+    friendLinks?: unknown[]
+    rules?: unknown[]
+    books?: unknown[]
+    tasks?: unknown[]
+    downloadJobs?: unknown[]
+  }
+}
+
+/** 导入返回 (imported 计数 + warnings + 耗时 ms) */
+export interface RestoreResult {
+  imported: {
+    settings: number
+    categories: number
+    sites: number
+    friendLinks: number
+    rules: number
+    books: number
+    chapters: number
+    tags: number
+    tasks: number
+    downloadJobs: number
+  }
+  warnings: string[]
+  took: number
+}
+
+/** SEO 体检 — 单条问题 */
+export interface SeoAuditIssue {
+  severity: 'error' | 'warning' | 'info'
+  category: 'tdk' | 'domain' | 'content' | 'links' | 'theme' | 'geo' | 'sitemap' | 'offset' | 'tech'
+  message: string
+  fix: string
+}
+
+/** SEO 体检 — 单个站点报告 */
+export interface SeoAuditSite {
+  siteId: string
+  siteName: string
+  domain: string
+  score: number
+  issues: SeoAuditIssue[]
+  passed: string[]
+}
+
+/** SEO 体检 — 全量报告 */
+export interface SeoAuditReport {
+  sites: SeoAuditSite[]
+  summary: {
+    totalSites: number
+    avgScore: number
+    totalIssues: number
+    totalErrors: number
+  }
+}
+
+/** 体检问题类别 → 中文标签 */
+export const SEO_CATEGORY_META: Record<string, { label: string; className: string }> = {
+  tdk: { label: 'TDK', className: 'bg-violet-500/15 text-violet-300 border-violet-500/40' },
+  domain: { label: '域名', className: 'bg-sky-500/15 text-sky-300 border-sky-500/40' },
+  content: { label: '内容', className: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40' },
+  links: { label: '链轮', className: 'bg-amber-500/15 text-amber-300 border-amber-500/40' },
+  theme: { label: '主题', className: 'bg-fuchsia-500/15 text-fuchsia-300 border-fuchsia-500/40' },
+  geo: { label: 'GEO', className: 'bg-teal-500/15 text-teal-300 border-teal-500/40' },
+  sitemap: { label: 'Sitemap', className: 'bg-cyan-500/15 text-cyan-300 border-cyan-500/40' },
+  offset: { label: '偏移', className: 'bg-rose-500/15 text-rose-300 border-rose-500/40' },
+  tech: { label: '技术', className: 'bg-zinc-600/30 text-zinc-300 border-zinc-500/40' },
+}
+
 /** feat-c: 可视化调试单条匹配记录 — 描述某个字段被哪个选择器命中、命中第几个列表项、值与预览 */
 export interface DebugMatch {
   /** 字段名(title/url/name/author/content/...) */

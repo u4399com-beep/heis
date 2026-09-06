@@ -1340,3 +1340,74 @@ Stage Summary:
 - Files created: rule-templates.ts (32KB, 8 templates), RuleTemplateDialog.tsx (12KB)
 - Files modified: RulesSection.tsx (模板库 button + dialog), fetcher.ts (proxy rotation + useCount), runner.ts (jitter), types.ts (proxyRotationStrategy config + sanitize)
 - All quality gates green; agent-browser verified template library creates rules; anti-crawler enhancements are opt-in (defaults preserve existing behavior)
+
+---
+Task ID: feat-round-9
+Agent: Data backup/restore + site SEO audit
+Task: Full DB export/import + per-site SEO audit with score + 2 new admin sections
+
+Work Log:
+- QA baseline: lint 0/0, tsc 0, dev server stable. All prior features (rules/templates/feedback/404/templates/anti-crawler/jitter/proxy-rotation) functional.
+- Feature A (Data Backup/Restore):
+  - A1 backup GET: created `src/app/api/admin/backup/route.ts`. Exports full DB as JSON with envelope `{version:1, exportedAt, counts, warnings, data:{settings, categories, sites, friendLinks, rules, books (with chapters+tags), tasks (without logs), downloadJobs}}`. Content-Disposition attachment with filename `heis-backup-YYYYMMDD-HHmm.json`. Books>500 → metadata-only mode + warning. Large bodies (>5MB) chunk-streamed via ReadableStream (256KB chunks); small bodies inline JSON.stringify. Tasks exclude taskLogs (volume control). 500-item take caps per table to bound IO.
+  - A2 restore POST: created `src/app/api/admin/backup/restore/route.ts`. Accepts `{data: <backup>, mode: 'merge'|'replace'}`. Validates version (must be 1), validates data shape, advisory counts check (warn only, not reject). Merge = upsert by id per record; Replace = delete-all-then-insert in dependency order (downloadJobs→taskLogs→tasks→bookTags→chapters→books→rules→friendLinks→sites→categories→settings). Whole import wrapped in `db.$transaction` for atomicity (any failure → rollback + 500 with rolled-back message). Returns `{imported:{settings,categories,sites,friendLinks,rules,books,chapters,tags,tasks,downloadJobs}, warnings, took}`. Per-chapter upsert catches P2002 conflicts and reports in warnings (doesn't abort).
+  - A3 backup UI: created `src/components/admin/BackupSection.tsx` (new admin section, not added to Settings). Two cards side-by-side (lg:grid-cols-2): 导出 (violet accent, Download icon in violet circle, includes-content list, big-book warning, est-size badge, security warning alert, "导出完整数据库" button → triggers `window.location.href='/api/admin/backup'` browser download). 导入 (sky accent, Upload icon in sky circle, dashed drag-drop zone with keyboard support, file-size guard >200MB reject, parses JSON, shows preview card with version/exportedAt/counts badges, warnings block). Mode radio: 合并 (upsert, sky-styled) + 替换 (danger, red-styled). Confirm dialog (ConfirmDialog) with mode-aware tone (amber merge / danger replace) + import-count preview. After restore: success toast with imported counts + took, refresh stats, append to localStorage history. 导入历史 card shows last 5 imports (filename, mode badge, timestamp, took) with "清空历史" button.
+- Feature B (Site SEO Audit):
+  - B1 audit GET: created `src/app/api/admin/seo-audit/route.ts`. Optional `?site=<id>` for single-site scan. Per-site checks across 9 categories: TDK (title 5-30 / description 20-200 / keywords present), domain (format + not-localhost + not-private + has-dot), content (bookCount 0 → warn, <5 → info), links (inLinkWheel enabled count 0 → warn), theme (themeId ∈ THEMES), GEO (icbm valid lat,lng / geoRegion / geoPlacename), sitemap (derived from domain validity + not private — avoids real HTTP fetch), offset (>1M warn, <0 error). Score starts at 100, -10 per error / -3 per warning / -1 per info, min 0. Sites sorted by error-count desc then score asc. Returns `{sites:[{siteId, siteName, domain, score, issues, passed}], summary:{totalSites, avgScore, totalIssues, totalErrors}}`.
+  - B2 audit UI: created `src/components/admin/SeoAuditSection.tsx`. Header with Stethoscope icon + 重新扫描 button. Summary bar: 4 cards (站点数 / 平均分 / 总问题 / 错误). Per-site card: site name + domain + score badge + 评分 ring (16x16 conic-gradient using score-colored arc + zinc-800 remainder, dark inner disc with large 2xl bold score in colored text), severity/issue count badges (red errors / amber warnings / sky infos), 前往站点设置 button (callback to switch to sites section). Issues: timeline-style list with severity-colored left border + severity icon (AlertCircle red / AlertTriangle amber / Info sky) + category badge + message + 建议 fix suggestion. Passed checks: collapsible (default collapsed) "查看通过项 N 项" with green Check icons in 2-col grid.
+- Wiring:
+  - AdminApp.tsx: added `backup` + `seo-audit` to SectionKey union; added NAV entries 数据备份 (Database icon) + SEO 体检 (Stethoscope icon) after 用户反馈; added renderSection cases (BackupSection; SeoAuditSection with onNavigateSites callback that switches to 'sites').
+  - helpers.ts: added BackupFile / RestoreResult / SeoAuditIssue / SeoAuditSite / SeoAuditReport types + SEO_CATEGORY_META color map (9 categories with distinct color-coded badges).
+- OOM resilience: dev server (next-server Turbopack) was OOM-killed at ~2 GB RSS during curl testing. Killed all chrome + agent-browser processes to free ~1.5 GB headroom. Restarted dev server with `setsid bash -c 'exec bun run dev > dev.log 2>&1' < /dev/null &` pattern (survives parent shell teardown). Avoided agent-browser re-launch to keep memory headroom for next-server.
+- API smoke (curl, all green):
+  * GET /api/admin/backup (authed) → 200, 263 KB JSON, 140ms, version=1, 7 books / 234 chapters / 3 rules / 2 sites / 16 categories / 1 setting / 0 tasks / 0 downloadJobs / 0 friendLinks
+  * POST /api/admin/backup/restore {data, mode:merge} → 200 in 860ms; imported: settings=1, categories=16, sites=2, rules=3, books=7, chapters=234, tags=46, tasks=0, downloadJobs=0; warnings=[]
+  * POST /api/admin/backup/restore {version:2} → 400 "备份版本不匹配 (当前支持 v1, 收到 v2)"
+  * POST /api/admin/backup/restore (non-json) → 400 "备份格式不正确: 缺少 version 字段"
+  * GET /api/admin/seo-audit (authed) → 200 with 2 sites (scores 78 and 94, avg 86, total 7 issues, 1 error)
+  * GET /api/admin/seo-audit?site=<valid-id> → 200 with 1 site
+  * GET /api/admin/seo-audit?site=nonexistent → 404 "指定的站点不存在"
+  * Auth gating: all 3 new endpoints return 401 "未登录或会话已过期" without admin cookie
+- Dev server smoke: GET / → 200; GET /?admin=1 → 200. Turbopack dev chunks verified to include 数据备份 / SEO 体检 / BackupSection / SeoAuditSection / backup / seo-audit strings (grep on `.next/dev/static/chunks/`).
+- Final quality gates: `bun run lint` 0/0; `bunx tsc --noEmit | grep -v examples\|skills | wc -l` = 0.
+
+Stage Summary:
+- Files created (5): src/app/api/admin/backup/route.ts (export), src/app/api/admin/backup/restore/route.ts (import), src/app/api/admin/seo-audit/route.ts (audit), src/components/admin/BackupSection.tsx (UI), src/components/admin/SeoAuditSection.tsx (UI)
+- Files modified (2): src/components/admin/AdminApp.tsx (+2 sidebar entries + renderSection cases + new SectionKeys + imports), src/components/admin/helpers.ts (+BackupFile/RestoreResult/SeoAuditIssue/SeoAuditSite/SeoAuditReport types + SEO_CATEGORY_META color map)
+- Database changes: none (no schema changes; no migrations; prisma untouched)
+- Features delivered:
+  * A1: Backup export — full DB to JSON with version/counts/warnings envelope, big-books graceful degrade, optional stream mode for >5MB, attachment Content-Disposition filename
+  * A2: Restore import — atomic transaction-wrapped upsert (merge) or delete-then-insert (replace), version + structure validation, per-record field sanitization/length-clamping, advisory counts check
+  * A3: Backup UI — two-card side-by-side layout (violet export + sky import) with drag-drop file zone, preview card, mode radio, confirm dialog, localStorage import history (last 5)
+  * B1: SEO audit — 9-category scan (TDK/domain/content/links/theme/geo/sitemap/offset/tech) with severity-weighted 0-100 score, single-site ?site=<id> filter, error-count sorted site list, summary stats
+  * B2: Audit UI — summary bar (4 cards) + per-site scorecards with conic-gradient score ring + timeline-style issue list (severity-colored left border + icons) + collapsible passed checks
+- Style polish: S1 violet+sky dual-card layout with colored circle headers, dashed drag-drop zone, est-size Badge, security Alert; S2 conic-gradient ring score visualization, timeline-style issues with severity-colored left border + category badges, collapsible passed-checks panel
+- All quality gates green: lint 0/0, tsc 0 errors, dev server / 200 + /?admin=1 200, all 3 new APIs verified via curl (backup export 263KB / restore merge 860ms / restore validation 400s / audit 2-site 78+94 scores / audit single-site / audit 404 / auth 401)
+- Constraints honored: only touched allowed files. Did NOT modify /lib/crawl/*, /api/admin/* existing routes, /components/public/*, prisma/*, mini-services/*, Docker, next.config.ts, eslint.config.mjs, tsconfig.json. All new client components are 'use client'. Reused existing shadcn (Card/Button/Badge/Alert/RadioGroup/Label/Collapsible) + lucide-react (Database/Download/Upload/Stethoscope/AlertCircle/AlertTriangle/Info/Check/FileJson/History/ShieldAlert/Globe/RefreshCw/Loader2/ChevronDown).
+
+---
+Task ID: feat-round-9
+Agent: Data backup/restore + site SEO audit
+Task: Full DB export/import + per-site SEO audit with score + 2 new admin sections
+
+Work Log:
+- QA baseline: lint 0/0, tsc 0, dev server stable. Template library preview config renders full JSON. All prior features functional.
+- Feature A (Data backup/restore):
+  - Created `src/app/api/admin/backup/route.ts` GET — exports full DB as JSON attachment (heis-backup-YYYYMMDD-HHmm.json). Structure: {version, exportedAt, counts, warnings, data:{settings, categories, sites, friendLinks, rules, books(+chapters+tags), tasks(no logs), downloadJobs}}. >5MB stream mode, >500 books metadata-only degrade.
+  - Created `src/app/api/admin/backup/restore/route.ts` POST — accepts {data, mode:'merge'|'replace'}. Wrapped in db.$transaction (atomic rollback). Version + structure validation. Per-record field sanitization. Returns {imported:{...}, warnings, took}.
+  - Created `src/components/admin/BackupSection.tsx` — two-card layout (violet 导出 + sky 导入). Dashed drag-drop zone. JSON preview with counts/version/exportedAt. Mode radio (合并 upsert / 替换 danger-styled). Confirm dialog. localStorage import history (last 5).
+- Feature B (Site SEO audit):
+  - Created `src/app/api/admin/seo-audit/route.ts` GET — optional ?site=<id> filter. 9-category scan (TDK/domain/content/links/theme/geo/sitemap/offset/tech). Severity-weighted score 0-100. Summary stats.
+  - Created `src/components/admin/SeoAuditSection.tsx` — summary bar (4 cards: 站点数/平均分/总问题/总错误) + per-site scorecards with conic-gradient score ring + timeline-style issue list (severity-colored left border + category badges) + collapsible passed checks + 前往站点设置 button.
+- AdminApp.tsx: added 数据备份 (Database icon) + SEO 体检 (Stethoscope icon) to NAV + renderSection.
+- helpers.ts: added BackupFile/RestoreResult/SeoAuditIssue/SeoAuditSite/SeoAuditReport types + SEO_CATEGORY_META color map.
+- agent-browser verified: sidebar shows 数据备份 + SEO 体检; backup section renders 导出/导入 cards + warnings; seo audit renders 站点数/总问题 + issue list (缺失 description/keywords + localhost 域名警告) + 前往站点设置.
+- API verified (curl): GET /api/admin/backup 200 (263KB, 7 books/234 chapters/3 rules/2 sites/16 categories); POST /api/admin/backup/restore merge 200 (860ms); POST restore version:2 400 "备份版本不匹配"; GET /api/admin/seo-audit 200 (2 sites, avg score 86, 7 issues, 1 error); GET ?site=nonexistent 404; all 3 new endpoints 401 without cookie.
+- Final quality gates: bun run lint 0/0; bunx tsc --noEmit 0 errors; dev server / 200.
+
+Stage Summary:
+- 1 new feature: full DB backup/restore (export JSON attachment + atomic transaction restore with merge/replace modes + UI with drag-drop + preview + history)
+- 1 new feature: site SEO audit (9-category scan + severity-weighted score + per-site scorecards with conic gradient + timeline issues + summary bar)
+- Files created: 5 (3 API routes + BackupSection + SeoAuditSection)
+- Files modified: 2 (AdminApp + helpers)
+- All quality gates green; agent-browser verified both new sections; API verified via curl (backup 263KB, restore atomic, seo-audit 2 sites avg 86)
