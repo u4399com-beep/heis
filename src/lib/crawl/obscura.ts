@@ -796,6 +796,10 @@ interface ObscuraGlobal {
   probeOk: boolean | null
   probeAt: number
   hooksRegistered: boolean
+  /** R4-12: shutdownObscura 进行中标志 —— withObscuraPage 获取/重建槽位后须检查,
+   *  命中即关闭自身 ctx 并抛错, 防止 recreateSlot 在 shutdownObscura 已 splice 全部槽位
+   *  之后又创建新 ctx/page 写回已被释放的 slot 对象(orphan 泄漏 BrowserContext + Page) */
+  shuttingDown?: boolean
 }
 const globalForObscura = globalThis as unknown as { __obscuraState?: ObscuraGlobal }
 const S: ObscuraGlobal = globalForObscura.__obscuraState ?? {
@@ -1068,6 +1072,14 @@ export async function withObscuraPage<T>(
         ?? S.slots.find((s) => !s.busy)
       if (free) {
         free.busy = true // 先占位再异步重建, 防止并发抢占同一空槽
+        // R4-12: shutdownObscura 已开始时(shuttingDown=true), 即使拿到 free 槽位也立即放弃:
+        //  recreateSlot 内 newStealthContext 会因 S.browser=null 重新拉浏览器, 与 shutdownObscura
+        //  正在 await b.close() 冲突, 拉起的新 ctx 会写回已被 splice 的 slot 对象(orphan)
+        if (S.shuttingDown) {
+          free.busy = false
+          wakeNext()
+          throw new Error('Obscura: 浏览器正在关闭, 请稍后重试')
+        }
         if (free.domain !== domain || free.page.isClosed()) {
           try {
             await recreateSlot(free, domain, randomFingerprint({ userAgent: opts.userAgent }))
@@ -1089,6 +1101,14 @@ export async function withObscuraPage<T>(
           S.pendingCreates--
           // 建槽失败时容量已释放, 唤醒一个等待者去重试(否则等待队列可能永久挂起)
           wakeNext()
+        }
+        // R4-12: createSlot 完成后再次检查 shuttingDown —— shutdownObscura 在 createSlot
+        //  期间(splice 全部槽位)刚发生时, 新建的 slot 已不在 S.slots 中(被 splice 清掉),
+        //  ctx/page 即将 orphan。手动关闭 ctx 并抛错, 不让 fn 在已关 ctx 上跑
+        if (S.shuttingDown) {
+          try { await slot.ctx.close().catch(() => {}) } catch { /* ignore */ }
+          slot = null
+          throw new Error('Obscura: 浏览器正在关闭, 请稍后重试')
         }
         break
       }
@@ -1180,18 +1200,24 @@ async function isChallengeUIVisible(page: Page): Promise<boolean> {
  *  主 frame 用 .cf-turnstile 限定选择器(防误点站内常规 checkbox); CF 跨域 iframe 内通常
  *  仅有一个 input[type=checkbox](即 Turnstile widget), 用通用选择器无歧义命中 */
 async function tryClickTurnstile(page: Page): Promise<void> {
+  // R4-13: 整体 8s 截止时间 —— 旧行为只对单 frame click 设 1500ms 超时, 但 8 个 frame
+  //  最坏情况 12s, 多次调用累计接近 challengeWaitMs 40s, 浪费在 hopeless 页面上
+  const deadline = Date.now() + 8000
   const frames = page.frames()
   for (let i = 0; i < frames.length && i < 8; i++) {
+    if (Date.now() >= deadline) return // 整体预算耗尽, 剩余 frame 跳过(留时间给上层循环复查)
     let frameUrl = ''
     try { frameUrl = frames[i].url() || '' } catch {}
     const isCfFrame = /challenges\.cloudflare\.com|cdn-cgi\/challenge-platform/.test(frameUrl)
     // 主 frame 用 .cf-turnstile 限定(避免误点站内常规 checkbox);
     // CF 跨域 iframe 内用 input[type=checkbox](iframe 内通常仅 Turnstile 复选框)
     const sel = isCfFrame ? 'input[type=checkbox]' : '.cf-turnstile input[type=checkbox]'
+    // 单 frame click 超时不得超出整体剩余预算(避免单次 click 用尽 1500ms 后整体超 8s)
+    const remaining = Math.max(200, deadline - Date.now())
     try {
       const cnt = await frames[i].locator(sel).count()
       if (cnt === 0) continue
-      await frames[i].click(sel, { timeout: 1500 })
+      await frames[i].click(sel, { timeout: Math.min(1500, remaining) })
       return
     } catch { /* 静默: 元素消失/被遮挡/不可点 — 换下一个 frame */ }
   }
@@ -1357,6 +1383,9 @@ export async function obscuraFetch(url: string, opts: ObscuraFetchOptions = {}):
 
 /** 主动关闭浏览器与页面池(空闲回收/进程退出/测试收尾时调用) */
 export async function shutdownObscura(): Promise<void> {
+  // R4-12: 设置 shuttingDown 标志, withObscuraPage 获取/重建槽位路径会检测本标志并立即抛错,
+  //  防止 shutdownObscura splice 全部槽位后又有新槽位被创建(orphan ctx/page 泄漏)
+  S.shuttingDown = true
   if (S.idleTimer) { clearTimeout(S.idleTimer); S.idleTimer = null }
   // E5: 取消心跳回收定时器(浏览器实例已关, 不再需要扫描)
   if (S.reclaimTimer) { clearInterval(S.reclaimTimer); S.reclaimTimer = null }
@@ -1372,4 +1401,6 @@ export async function shutdownObscura(): Promise<void> {
   if (b) {
     try { await b.close() } catch { /* 已死则忽略 */ }
   }
+  // 清除 shuttingDown 标志(收尾完成, 后续 ensureBrowser 重新拉起时不再被拦截)
+  S.shuttingDown = false
 }

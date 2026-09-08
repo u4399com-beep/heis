@@ -1,10 +1,57 @@
 :81 {
-	@transform_port_query {
-		query XTransformPort=*
-	}
+	# R4A-8: SSRF 防御 —— 仅放行项目自有的 mini-services 端口(3010-3015),
+	# 拒绝任意 ?XTransformPort=N(原配置可代理到 localhost 任意端口, SSH banner 泄漏/
+	# 内部未鉴权服务访问/云元数据 SSRF)。Caddy 的 query matcher 不支持端口范围,
+	# 改为逐端口显式列举; 命中后透传 X-Forwarded-For 等标准头
+	@transform_port_3010 { query XTransformPort=3010 }
+	@transform_port_3011 { query XTransformPort=3011 }
+	@transform_port_3012 { query XTransformPort=3012 }
+	@transform_port_3013 { query XTransformPort=3013 }
+	@transform_port_3014 { query XTransformPort=3014 }
+	@transform_port_3015 { query XTransformPort=3015 }
 
-	handle @transform_port_query {
-		reverse_proxy localhost:{query.XTransformPort} {
+	handle @transform_port_3010 {
+		reverse_proxy localhost:3010 {
+			header_up Host {host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Real-IP {remote_host}
+		}
+	}
+	handle @transform_port_3011 {
+		reverse_proxy localhost:3011 {
+			header_up Host {host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Real-IP {remote_host}
+		}
+	}
+	handle @transform_port_3012 {
+		reverse_proxy localhost:3012 {
+			header_up Host {host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Real-IP {remote_host}
+		}
+	}
+	handle @transform_port_3013 {
+		reverse_proxy localhost:3013 {
+			header_up Host {host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Real-IP {remote_host}
+		}
+	}
+	handle @transform_port_3014 {
+		reverse_proxy localhost:3014 {
+			header_up Host {host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Real-IP {remote_host}
+		}
+	}
+	handle @transform_port_3015 {
+		reverse_proxy localhost:3015 {
 			header_up Host {host}
 			header_up X-Forwarded-For {remote_host}
 			header_up X-Forwarded-Proto {scheme}

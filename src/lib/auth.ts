@@ -154,6 +154,11 @@ export function verifySession(cookieValue: string | null | undefined): boolean {
   } catch {
     return false
   }
+  // R4A-14: JSON.parse 可返回 null/数字/字符串等非对象 —— 旧行为直接访问 parsed.exp 会抛
+  //  TypeError: Cannot read properties of null (reading 'exp'), 该错误逃出 try/catch
+  //  (try 只包裹 JSON.parse), 上抛到 proxy.ts middleware 返回 500 + 日志污染。必须显式
+  //  校验 parsed 是非 null 对象再继续读取字段
+  if (parsed === null || typeof parsed !== 'object') return false
   if (typeof parsed.exp !== 'number' || !Number.isFinite(parsed.exp)) return false
   if (Date.now() > parsed.exp) return false
   // R3-32: payload 仅允许 {exp, nonce} 两键 —— 伪造者构造合法 HMAC 后无法塞额外字段

@@ -70,7 +70,8 @@ interface CachedHealth {
 }
 const G = globalThis as unknown as { __heisHealthCache?: CachedHealth }
 
-/** 探针单个 mini-service /health, 1s 超时; 失败一律返回 { reachable: false } 不抛 */
+/** 探针单个 mini-service /health, 1s 超时; 失败一律返回 { reachable: false } 不抛
+ *  R4A-15: 检查 Content-Length, 超 64KB 直接拒绝(防中继服务异常返回 1GB JSON OOM 主进程) */
 async function probeService(port: number): Promise<ServiceHealth> {
   try {
     const ctrl = new AbortController()
@@ -81,6 +82,13 @@ async function probeService(port: number): Promise<ServiceHealth> {
         headers: { accept: 'application/json' },
       })
       if (!res.ok) return { reachable: false }
+      // R4A-15: health 响应正常几十字节, 超 64KB 视为异常返回值, 拒绝读取防 OOM
+      const cl = Number(res.headers.get('content-length') || 0)
+      const HEALTH_PROBE_MAX_BYTES = 64 * 1024
+      if (cl && cl > HEALTH_PROBE_MAX_BYTES) {
+        try { await res.body?.cancel().catch(() => {}) } catch { /* ignore */ }
+        return { reachable: false, note: 'health 响应体过大(>64KB), 已拒绝读取' }
+      }
       const body = (await res.json().catch(() => ({}))) as { selfTestOk?: unknown }
       const st = body.selfTestOk
       return {

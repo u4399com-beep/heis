@@ -12,7 +12,10 @@ import { withGuard } from '../../_lib/http'
 import { logger } from '@/lib/logger'
 
 const BACKUP_VERSION = 1
-const BIG_BOOKS_THRESHOLD = 500
+// R4A-12: 降低大书库阈值 500 → 200 —— 499 书 × 500 章节场景 dumpBooksFull 单 findMany
+// 加载所有行到内存, JSON.stringify payload 多百 MB 堆峰值。200 上限与 metadata-only
+// 模式仍保留(站群场景常见 100~200 书仍可正常导出含章节)
+const BIG_BOOKS_THRESHOLD = 200
 const STREAM_THRESHOLD_BYTES = 5 * 1024 * 1024 // 5 MB
 
 /** 日期片段 YYYYMMDD-HHmm (本地时区, 仅文件名用途) */
@@ -24,22 +27,37 @@ function stamp(d: Date): string {
   )
 }
 
-/** books + chapters + tags 全量打包 */
+/** books + chapters + tags 全量打包
+ *  R4A-12: 按 50 本一批流式加载, 防 499×500=250k 章节行一次性入内存堆峰值 */
 async function dumpBooksFull() {
-  const books = await db.book.findMany({
-    include: {
-      chapters: {
-        orderBy: { idx: 'asc' },
-        select: {
-          id: true, bookId: true, idx: true, title: true, volume: true,
-          url: true, content: true, storage: true, filePath: true,
-          wordCount: true, fetched: true, createdAt: true, updatedAt: true,
+  const allBooks: any[] = []
+  const BATCH = 50
+  let cursor: string | undefined
+  // 用 cursor 分页(比 skip/take 高效, 不必每次跳过 N 行)
+  for (;;) {
+    const books: any[] = await db.book.findMany({
+      take: BATCH,
+      ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+      orderBy: { id: 'asc' },
+      include: {
+        chapters: {
+          orderBy: { idx: 'asc' },
+          select: {
+            id: true, bookId: true, idx: true, title: true, volume: true,
+            url: true, content: true, storage: true, filePath: true,
+            wordCount: true, fetched: true, createdAt: true, updatedAt: true,
+          },
         },
+        tags: { select: { id: true, bookId: true, tag: true, source: true, hits: true } },
       },
-      tags: { select: { id: true, bookId: true, tag: true, source: true, hits: true } },
-    },
-  })
-  return books
+    })
+    if (books.length === 0) break
+    allBooks.push(...books)
+    cursor = books[books.length - 1].id
+    // 让出事件循环防长请求阻塞其它请求
+    await new Promise((r) => setImmediate(r))
+  }
+  return allBooks
 }
 
 export async function GET() {

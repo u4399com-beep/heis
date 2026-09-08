@@ -1,15 +1,25 @@
 // sitemap.xml 生成 (站群: 可带 ?site= 指定站点)
 // API-13/20: sitemap index 模式 + 私网 IP 拒绝
-//   - ?index=1        → <sitemapindex> 列出所有分页 URL(每页 50000 条, 最多 1000 页 = 50M URLs)
-//   - ?page=N&site=X  → 该页 <urlset>(take:50000, skip:(N-1)*50000, books+chapters 合并分页)
+//   - ?index=1        → <sitemapindex> 列出所有分页 URL(每页 5000 条, 最多 1000 页 = 5M URLs)
+//   - ?page=N&site=X  → 该页 <urlset>(take:5000, skip:(N-1)*5000, books+chapters 合并分页)
 //   - 无 ?page/无 ?index → 旧行为(单页 take:5000)向后兼容
 //   - siteBase 拒绝 127.0.0.1 等 loopback/私网/CGNAT 地址段
+//   - R4A-13: 5min 服务端缓存 —— 公共路由 120 req/min × 50k 行扫描 = 6M 行/min 饱和 DB,
+//     缓存命中后绝大多数请求零 DB 查询。Cache-Control 已是 600, 但直接命中 Next.js 时
+//     不经 CDN, 故服务端内存缓存兜底
 import { db } from '@/lib/db'
 import { withGuard, str, clampInt } from '../../_lib/http'
 
-const PAGE_SIZE = 50_000
-const MAX_PAGES = 1000 // 50_000 * 1_000 = 50M URLs 上限
+// R4A-13: PAGE_SIZE 50k → 5k —— 单次 50k 行扫描 + 100k 字符串构建, 120 req/min × 50k = 6M 行/min
+//   会饱和 SQLite。降到 5k 与 legacy 同口径, MAX_PAGES 仍 1000 → 5M URLs 总量上限不变
+const PAGE_SIZE = 5_000
+const MAX_PAGES = 1000 // 5_000 * 1_000 = 5M URLs 上限
 const LEGACY_TAKE = 5000 // 向后兼容单页上限
+// R4A-13: 服务端内存缓存(5min) —— index/page 两种响应分别缓存, 公共路由高频轮询命中后零 DB 查询
+const SITEMAP_CACHE_MS = 5 * 60 * 1000
+
+interface SitemapCacheEntry { ts: number; xml: string; status: number }
+const sitemapCache = new Map<string, SitemapCacheEntry>()
 
 /** 私网/loopback/链路本地/CGNAT 段正则(API-20) —— 防止把内网地址写进 sitemap 暴露给搜索引擎 */
 const PRIVATE_HOST_RE =
@@ -101,7 +111,21 @@ export async function GET(req: Request) {
     const pageParam = url.searchParams.get('page')
     const indexParam = url.searchParams.get('index')
 
-    // ?page=N → 返回该页 <urlset>(take:50000, skip:(N-1)*50000)
+    // R4A-13: 服务端 5min 缓存 —— 公共路由 120 req/min × 50k 行扫描 = 6M 行/min 饱和 DB,
+    //   内存缓存命中后零 DB 查询。缓存键 = base + page/index + site, base 不变时全共享
+    const cacheKey = `${base}|page=${pageParam || ''}|index=${indexParam || ''}|site=${siteId}`
+    const cached = sitemapCache.get(cacheKey)
+    if (cached && Date.now() - cached.ts < SITEMAP_CACHE_MS) {
+      return new Response(cached.xml, {
+        status: cached.status,
+        headers: {
+          'Content-Type': 'application/xml; charset=utf-8',
+          'Cache-Control': 'public, max-age=600',
+        },
+      })
+    }
+
+    // ?page=N → 返回该页 <urlset>(take:5000, skip:(N-1)*5000)
     if (pageParam !== null) {
       const page = clampInt(pageParam, 1, 1, MAX_PAGES)
       const total = await totalPages()
@@ -111,6 +135,7 @@ export async function GET(req: Request) {
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 ${entries.join('\n')}
 </urlset>`
+      sitemapCache.set(cacheKey, { ts: Date.now(), xml, status: 200 })
       return new Response(xml, {
         headers: {
           'Content-Type': 'application/xml; charset=utf-8',
@@ -134,6 +159,7 @@ ${entries.join('\n')}
 <sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 ${sitemapEntries.join('\n')}
 </sitemapindex>`
+      sitemapCache.set(cacheKey, { ts: Date.now(), xml, status: 200 })
       return new Response(xml, {
         headers: {
           'Content-Type': 'application/xml; charset=utf-8',
@@ -167,6 +193,7 @@ ${sitemapEntries.join('\n')}
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 ${entries.join('\n')}
 </urlset>`
+    sitemapCache.set(cacheKey, { ts: Date.now(), xml, status: 200 })
     return new Response(xml, {
       headers: {
         'Content-Type': 'application/xml; charset=utf-8',

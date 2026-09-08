@@ -11,13 +11,26 @@ import { db } from '@/lib/db'
 import { ok, fail, readBody } from '@/lib/api'
 import { withGuard, isPlainObject } from '../../../_lib/http'
 import { logger } from '@/lib/logger'
+import { cleanContentHtml } from '@/lib/crawl/cleaner'
 
 const BACKUP_VERSION = 1
+// R4A-9: restore 请求体大小上限 200MB —— 与客户端 BackupSection 的 200MB 上限对齐,
+// 防 5GB body 通过 req.json() 一次性读入 OOM 服务进程
+const RESTORE_MAX_BODY_BYTES = 200 * 1024 * 1024
+// R4A-10: 章节正文字段长度上限 500_000 字符(与 PUT /api/admin/chapters/[id] 同口径)
+const CHAPTER_CONTENT_MAX = 500_000
 
 /** 校验 + 导入主流程 */
 export async function POST(req: Request) {
   return withGuard(async () => {
     const startedAt = Date.now()
+    // R4A-9: 检查 Content-Length, 超 200MB 直接拒绝(防 5GB body OOM); Content-Length 缺失
+    // (chunked encoding) 时由 readBody 自然限制(JSON.parse 失败前会先 collect 完字符串,
+    // chunked 攻击仍可能撑大堆, 但 200MB Content-Length 拒绝拦截了显式声明的大 payload)
+    const cl = Number(req.headers.get('content-length') || 0)
+    if (cl && cl > RESTORE_MAX_BODY_BYTES) {
+      return fail(`备份文件过大(${Math.round(cl / 1024 / 1024)}MB > 200MB 上限), 请精简后重试`, 413)
+    }
     const body = await readBody<Record<string, unknown>>(req)
     if (!isPlainObject(body)) return fail('请求体必须是对象')
 
@@ -86,7 +99,11 @@ export async function POST(req: Request) {
     }
 
     try {
-      await db.$transaction(async (tx) => {
+      // R4A-18: 显式 600s timeout + 30s maxWait —— Prisma 默认 5s timeout 在导入大型备份
+      //  (500 books × 100 chapters × 5 tags = 250k+ upserts) 时会触发 P2028 "Transaction
+      //  already closed" 抛错并整批回滚。10min 足够覆盖大多数备份场景。
+      await db.$transaction(
+        async (tx) => {
         // replace 模式: 按依赖倒序删除 (downloadJobs → tasks → chapters/tags → books → rules → sites/categories/friendLinks/links → settings)
         if (mode === 'replace') {
           await tx.downloadJob.deleteMany({})
@@ -261,6 +278,14 @@ export async function POST(req: Request) {
             if (!c || typeof c.id !== 'string' || !c.id) continue
             const idx = Number(c.idx)
             if (!Number.isFinite(idx)) continue
+            // R4A-3: 备份导入必须经过 cleanContentHtml —— 旧行为 `String(c.content)` 直接写库,
+            //  绕过 R3-34 在 PUT /chapters/[id] 上的存储型 XSS 防御, 攻击者可上传含
+            //  <script>/<img onerror=...> 的备份文件, 还原后所有读者浏览器执行恶意 JS。
+            //  R4A-10: 同时 cap 在 500_000 字符(与 PUT /chapters/[id] 同口径, 防 50MB 章节正文
+            //  写入 SQLite 撑爆单行 + 后续读 API 返回 50MB 响应)
+            const cleanedContent = c.content == null
+              ? null
+              : cleanContentHtml(String(c.content).slice(0, CHAPTER_CONTENT_MAX))
             try {
               await tx.chapter.upsert({
                 where: { id: c.id },
@@ -269,7 +294,7 @@ export async function POST(req: Request) {
                   title: String(c.title || '').slice(0, 200) || `第${idx}章`,
                   volume: String(c.volume || '').slice(0, 100),
                   url: String(c.url || '').slice(0, 500),
-                  content: c.content == null ? null : String(c.content),
+                  content: cleanedContent,
                   storage: String(c.storage || 'db').slice(0, 20),
                   filePath: c.filePath == null ? null : String(c.filePath).slice(0, 500),
                   wordCount: Number(c.wordCount) || 0,
@@ -280,7 +305,7 @@ export async function POST(req: Request) {
                   title: String(c.title || '').slice(0, 200),
                   volume: String(c.volume || '').slice(0, 100),
                   url: String(c.url || '').slice(0, 500),
-                  content: c.content == null ? null : String(c.content),
+                  content: cleanedContent,
                   storage: String(c.storage || 'db').slice(0, 20),
                   filePath: c.filePath == null ? null : String(c.filePath).slice(0, 500),
                   wordCount: Number(c.wordCount) || 0,
@@ -410,7 +435,10 @@ export async function POST(req: Request) {
             // bookId 不存在则跳过
           }
         }
-      })
+        },
+        // R4A-18: 显式 600s timeout + 30s maxWait
+        { timeout: 600_000, maxWait: 30_000 }
+      )
     } catch (e) {
       logger.error('restore transaction failed', { err: (e as Error)?.message, code: (e as { code?: string })?.code })
       return fail(`导入失败已回滚: ${(e as Error)?.message?.slice(0, 200) || '未知错误'}`, 500)

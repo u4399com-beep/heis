@@ -1939,3 +1939,234 @@ Stage Summary:
 - Critical security: SSRF (4 vectors), XSS (stored reader-side), DoS (rate limit bypass + memory exhaustion), auth session forgery defense
 - Anti-crawler: UA pool 34, fingerprint headers, proxy rotation, stealth chromium, request jitter, CF challenge
 - Code pushed to https://github.com/u4399com-beep/heis.git (commit c67ddca)
+
+---
+Task ID: audit-r4-engine
+Agent: Deep audit round 4 (engine)
+Task: Deep line-by-line bug hunt across 14 crawl engine files — find NEW bugs that rounds 1 (30) + 2 (22) + 3 (30) = 82 bugs all missed. RESEARCH ONLY — no code modifications.
+
+Work Log:
+- Re-read worklog.md for prior rounds (R1: 30 / R2: 22 / R3: 30 fixed; R3 fixes enumerated R3-1..R3-42 skipping false positives).
+- Fresh line-by-line pass through every engine file: fetcher.ts (2278L), runner.ts (1365L), obscura.ts (1375L), hostgate.ts (481L), calibrate.ts (554L), parser.ts (837L), cleaner.ts (426L), sorter.ts (381L), storage.ts (169L), downloader.ts (240L), types.ts (879L), smart.ts (171L), suggest.ts (123L), themes.ts (346L), rule-templates.ts (591L).
+- Cross-checked each candidate against R1/R2/R3 fix lists to avoid duplicates. Found 22 NEW bugs not previously reported.
+- Files modified: NONE (research-only task per spec).
+- Tests: did not execute lint/tsc (no source edits made); no test scripts written.
+
+Stage Summary:
+- 22 NEW bugs identified (R4-1 … R4-22), none duplicating rounds 1-3.
+- Severity breakdown: 3 Critical, 9 High, 7 Medium, 3 Low.
+- Category breakdown: 5 race/concurrency, 4 resource-limit/OOM, 3 logic, 3 error-handling, 2 security/SSRF, 2 ReDoS/regex, 1 leak, 1 encoding, 1 performance.
+- Files most-affected: fetcher.ts (7 bugs), runner.ts (3), obscura.ts (2), hostgate.ts (2), calibrate.ts (2), cleaner.ts (2), parser.ts (2), types.ts (1), storage.ts (1), sorter.ts (1), downloader.ts (1).
+
+Bug List (R4-1 .. R4-22):
+
+• R4-1 [High] src/lib/crawl/fetcher.ts:1828-1839 — Token cache stampede (no in-flight de-duplication)
+  Category: race/concurrency. Trigger: TTL (30s) expires while N parallel chapter requests for same host+tokenUrl+pattern all miss cache simultaneously. Impact: All N requests fire `fetchHttpWithCurlFallback(real, ...)` concurrently → N× load on token endpoint (may trigger 429 on token host), wasted bandwidth, potential cascade where token host rate-limits the engine. Fix: Add in-flight promise de-duplication — store `Promise<string>` in cache instead of resolved token; concurrent misses await the same in-flight promise.
+
+• R4-2 [High] src/lib/crawl/fetcher.ts:1162, 1171 — Native fetch response body no size limit (OOM risk)
+  Category: resource-limit. Trigger: Source site returns 100MB+ HTML response (success or error body). Impact: `await res.arrayBuffer()` allocates full body in memory → process OOM kill. The curl path has `MAX_HTML_BYTES = 10MB` guard (line 1260) but native fetch path has none — asymmetric protection. Fix: Stream-read native fetch responses with running byte counter (like `fetchBinary` line 2251-2266), abort on overflow.
+
+• R4-3 [Medium] src/lib/crawl/fetcher.ts:964-966 — Proxy cooldown has no exponential backoff
+  Category: logic. Trigger: A proxy dies permanently (DNS gone / IP blocked). Impact: `markProxyFailed` always sets `failedUntil = now + 30s`. Every 30s, the dead proxy is re-tried (1 wasted attempt per cycle per dead proxy). With 10 dead proxies in pool, 10 wasted attempts every 30s = ~20 req/min of pure waste; sustained for hours/days of long-running tasks. Fix: Track `consecutiveFailures` per proxy; cooldown = `min(300s, 30s × 2^failures)`.
+
+• R4-4 [Medium] src/lib/crawl/fetcher.ts:1456, 1471 — relayHop body/JSON no size limit
+  Category: resource-limit. Trigger: Relay bridge returns huge JSON response (100MB+) or huge base64 body. Impact: `await res.json()` allocates full JSON in memory; `Buffer.from(payload.bodyB64, 'base64')` allocates ~75% of base64 size. Process OOM. Relay is internal (127.0.0.1:3011) so trust boundary holds, but a misbehaving relay (bug or compromise) can OOM the engine. Fix: Check `res.headers.get('content-length')` before reading; cap at 10MB (matching curl path).
+
+• R4-5 [Medium] src/lib/crawl/fetcher.ts:2216 — fetchBinary doesn't store Set-Cookie from redirect chain
+  Category: logic. Trigger: Cover image URL redirects through a session-cookie-setting intermediate (e.g., CDN anti-hotlink). Impact: `fetchBinary` follows redirects (manual, 5 hops) but never calls `cookieJar.store(...)`. Session cookies from binary redirects are lost → subsequent content fetches for the same domain miss the session cookie → 403. Fix: In the redirect loop, call `cookieJar.store(originHost(hopUrl), setCookies)` like `fetchHttp` line 1124.
+
+• R4-6 [Low] src/lib/crawl/fetcher.ts:1973 — trySolveTokenChallenge only matches double-quoted tokens
+  Category: logic. Trigger: Source site uses `let token = '...'` (single quotes) instead of `"..."`. Impact: Token challenge not solved → falls back to browser rendering (slow). Fix: Regex alternation `["']`: `/(?:let|var)\s+token\s*=\s*["']([A-Za-z0-9+/=_-]{20,})["']/`.
+
+• R4-7 [Low] src/lib/crawl/fetcher.ts:465-467 — domainUa Map has no version check on HMR
+  Category: race/concurrency (HMR). Trigger: Dev mode HMR replaces module; `__novelDomainUa_v2` persists old Map. If structure changes (v2→v3), old entries with stale shape persist. Impact: CookieJar has `validJar()` version check (line 326-328) but domainUa doesn't — structure drift undetected. Fix: Add versioned key `__novelDomainUa_v3` with shape validation, or `validJar`-style guard.
+
+• R4-8 [Critical] src/lib/crawl/runner.ts:253-258 — control() 30s timeout doesn't cancel controlInner
+  Category: race/concurrency. Trigger: `controlInner` hangs on `db.task.update` (SQLite busy lock >30s); 30s timeout fires and rejects `run`, but underlying `controlInner` keeps executing. Impact: When `controlInner` eventually completes (e.g., 35s later), its `db.task.update({ status: 'running' })` clobbers a subsequent `control('stop')` that set `status: 'stopped'` at t=31s. Task shows "running" in DB despite user clicking stop. The `executeTask` scheduling (line 310) also fires late, spawning a duplicate run loop. Fix: Use `AbortController` to cancel the slow DB call, or track a "cancelled" flag that `controlInner` checks before each `db.task.update`.
+
+• R4-9 [High] src/lib/crawl/runner.ts:700-704 — category.upsert race (P2002 unhandled)
+  Category: race/concurrency. Trigger: Two parallel `crawlOneBook` calls for different books with the same `categoryName` (e.g., "玄幻") hit `db.category.upsert` simultaneously. Impact: Prisma upsert is `if exists update else create`; both check "exists" (no), both create → `@@unique(name)` violation → P2002 thrown → unhandled → `crawlOneBook` throws → book skipped, counted as error. For batch tasks touching many books in same category, ~1 in N concurrent books fails per category. Fix: Wrap in try/catch that retries P2002 as `db.category.findFirst` (the winner already created it).
+
+• R4-10 [Medium] src/lib/crawl/runner.ts:1257-1261 — bookTag.upsert race silently drops tags
+  Category: race/concurrency. Trigger: Same as R4-9 but for `bookTag` (`@@unique([bookId, tag])`). Impact: `.catch(() => {})` swallows P2002; tag silently dropped. `added` count is short. Suggest keywords undercount. Less severe than R4-9 (no book skip) but data loss. Fix: Same — retry P2002 as findFirst.
+
+• R4-11 [Low] src/lib/crawl/runner.ts:915-918 — existChapters query loads all chapter rows (memory)
+  Category: performance. Trigger: Book with 10000+ chapters. Impact: `db.chapter.findMany({ where: { bookId } })` loads all rows into memory (each row has `title`, `url`, `idx`, `volume`, `fetched`). For 10k chapters × ~200 bytes = ~2MB per book. Multi-book parallel tasks multiply this. Not a correctness bug but limits scalability. Fix: Use cursor-based pagination or only select `id`+`url`+`idx` (already does, but could stream).
+
+• R4-12 [High] src/lib/crawl/obscura.ts:1070-1082 + 1363 — withObscuraPage slot orphaning on shutdown race
+  Category: leak/race. Trigger: `shutdownObscura` runs while `withObscuraPage` is in `recreateSlot` (between `slot.ctx.close()` at line 931 and `newStealthContext` at line 932). Impact: `shutdownObscura` splices all slots from `S.slots` (line 1363) and closes their ctx. But `recreateSlot` creates a NEW ctx at line 932 (re-launching browser via `ensureBrowser` since `S.browser` is now null). The new ctx/page are written to `slot` (the orphaned `free` object), which is no longer in `S.slots`. After `fn` completes, `finally` sets `slot.busy = false` but the slot is orphaned — never reused, never closed. Real BrowserContext + Page leak. Fix: Check `S.browser` after `newStealthContext`; if browser was shut down, abort and re-throw.
+
+• R4-13 [Low] src/lib/crawl/obscura.ts:1182-1198 — tryClickTurnstile has no overall deadline
+  Category: resource-limit. Trigger: Page with 8 frames, each has a checkbox but click fails (e.g., element obscured). Impact: 8 frames × 1500ms click timeout = 12s worst case per call. `tryClickTurnstile` is called inside the challenge-wait loop (line 1243), which is bounded by `challengeWaitMs` (40s). So 3 calls × 12s = 36s, near the 40s limit. Wastes time on hopeless pages. Fix: Add `const deadline = Date.now() + 5000` and break when exceeded.
+
+• R4-14 [High] src/lib/crawl/hostgate.ts:316-318 — minGapMs MAX semantics permanently poisons host
+  Category: logic. Trigger: Task A acquires host X with `minGapMs: 60000` (misconfigured or intentional slow-paced). Later, task B acquires same host X with `minGapMs: 500`. Impact: `st.minGapMs = Math.max(st.minGapMs || 0, minGapMs)` — once set to 60000, it NEVER decreases. Task B is throttled to 60s per request even though it asked for 500ms. Persists for the lifetime of the host state (until idle eviction via sweep, which requires `inFlight=0 && waiters=[] && penaltyUntil<now && rateLimitedUntil<now`). A single misconfigured task poisons the host for all concurrent and subsequent tasks. Fix: Decay `minGapMs` over time (e.g., halve every 5min of idle), or track per-caller `minGapMs` instead of per-host.
+
+• R4-15 [Medium] src/lib/crawl/hostgate.ts:475-481 — hostGateReset doesn't clear waiter timeout timers
+  Category: leak/error-handling. Trigger: Test isolation calls `hostGateReset()` while waiters are pending. Impact: `hostGateReset` clears `gapTimer` and `penaltyTimer` for each host but NOT `waiter.timer` (the per-waiter 30s timeout). Waiters' timers fire later, calling `w.reject(e)` with `HostGateTimeout`. The caller's `await acquireHostGate` rejects — but if the caller already moved on (test ended), this is an unhandled rejection. Also, `st.waiters` array is orphaned (host deleted from map), so `w.reject` references stale `st`. Fix: In `hostGateReset`, iterate all waiters for each host, clearTimeout their timers, and reject with a "reset" error.
+
+• R4-16 [Critical] src/lib/crawl/calibrate.ts:439, 453-454 — calibrateRule SSRF (siteBase not validated by engine)
+  Category: security/SSRF. Trigger: Admin (or attacker who can influence CalibrateOptions) passes `siteBase = 'http://169.254.169.254'` or `siteBase = 'http://10.0.0.1'`. Impact: `fetch(\`${base}/reset\`, ...)` (line 439) and `chapterUrls`/`chainUrls` (lines 453-454) hit internal/metadata addresses. The comment says "仅当 siteBase 为回环地址时由调用方(API 路由)置 true", but the ENGINE doesn't validate — defense in depth missing. If the API route has a bug or is bypassed, SSRF to cloud metadata (AWS/Azure/GCP IMDS) leaks credentials. Fix: `assertSafeTarget(base, { allowLoopback: true })` at function entry; reject if not safe.
+
+• R4-17 [Low] src/lib/crawl/calibrate.ts:150, 197 — probeFetch timeout=0 causes immediate abort
+  Category: logic. Trigger: `opts.timeoutMs = 0` (misconfiguration or edge case). Impact: `timeoutMs = opts.timeoutMs ?? 10_000` — `0 ?? 10_000 = 0` (nullish coalescing only defaults null/undefined, not 0). `setTimeout(fn, 0)` fires immediately → `ctl.abort()` before fetch starts → all probes fail with status=0 → calibration produces "most conservative" (1 thread / 2000ms) result for any site. Fix: `timeoutMs = opts.timeoutMs && opts.timeoutMs > 0 ? opts.timeoutMs : 10_000`.
+
+• R4-18 [Medium] src/lib/crawl/parser.ts:240-246 — jsonGet [k=v] filter breaks on `&` in values
+  Category: logic. Trigger: JSON path filter `[name=a&b]` where the intended value is `a&b`. Impact: `op.split('&')` splits on every `&`, producing `[['name','a'], ['b','']]`. The second condition `b === ''` filters elements where `b` is empty string — wrong result. Real bug for any JSON with `&` in values (rare but possible in user-generated content). Fix: Use a different separator (e.g., `;`) or escape `&` in values, or document the limitation.
+
+• R4-19 [Medium] src/lib/crawl/parser.ts:19-21 — applyTransform ReDoS on user-provided replaceFrom regex
+  Category: ReDoS. Trigger: Admin configures `replaceFrom = '(a+)+$'` (or any catastrophic backtracking pattern) in a FieldRule. Impact: `new RegExp(rule.replaceFrom, 'g')` compiled without timeout; `v.replace(re, ...)` on a 100-char string can hang the event loop for 30s+. Unlike `cleaner.removeAdLines` (which has length + nested-quantifier gates at line 337-340) and `types.validateRegexSafety` (API-layer guard), `applyTransform` has NO runtime guard. If a rule bypasses API validation (direct DB write) or the heuristic misses the pattern, engine hangs. Fix: Wrap `v.replace` in a Promise.race with timeout (e.g., 500ms), or reuse `hasNestedQuantifier` check at runtime.
+
+• R4-20 [High] src/lib/crawl/cleaner.ts:153-173 — cleanContentHtml plainText mode leaks script/style content
+  Category: security/injection. Trigger: Chapter content stored as HTML with `<script>alert(1)</script>` or `<style>body{...}</style>` and `cfg.plainText = true`. Impact: plainText mode (line 158-160) strips tags via `replace(/<[^>]+>/g, '')` but does NOT first remove `script`/`style`/`noscript`/`iframe` tags with their CONTENT. So `<script>alert(1)</script>` → `alert(1)` in the output text. The HTML mode (line 179) does remove these first. Asymmetric protection — plainText mode is vulnerable. Fix: In plainText mode, before stripping tags, run `html.replace(/<(script|style|noscript|iframe|object|embed)[\s\S]*?<\/\1>/gi, '')` to remove dangerous tag content.
+
+• R4-21 [High] src/lib/crawl/cleaner.ts:56-58 — buildDiffCharSet convBack error bypasses homograph filter (乾/係/唸)
+  Category: encoding/logic. Trigger: `convBack(converted)` throws (OpenCC internal error on certain characters). Impact: The `catch` block (line 58) does NOT `continue` — it falls through to `set.add(ch)`. So homograph characters (乾/係/唸 — characters that are valid in simplified Chinese like 乾隆/乾县/乾坤) are added to `diffSet` as "variant Chinese" triggers. Then `t2sText` sees 乾 in simplified text, thinks it's traditional, and converts 乾→干, corrupting 乾隆→乾隆 (OK, phrase-protected) but 乾县→干县 (NOT phrase-protected, real corruption). The comment at line 58 says "保守收录(旧行为)" but the "old behavior" was the BUG being fixed — this catch reverts the fix on convBack errors. Fix: In the catch block, `continue` (skip the character) instead of falling through to `set.add`.
+
+• R4-22 [Medium] src/lib/crawl/types.ts:454-468 — sanitizeFetchConfig allows dangerous HTTP headers
+  Category: security. Trigger: Admin configures `headers: { 'Host': 'evil.com', 'Content-Length': '0', 'Transfer-Encoding': 'chunked', 'Connection': 'keep-alive' }` in a rule's fetch config. Impact: `safeHeaderKey` (line 365) only filters to RFC 7230 token chars (`[!#$%&'*+\-.^_\`|~0-9A-Za-z]`) — it allows `Host`, `Content-Length`, `Transfer-Encoding`, `Connection` etc. These are HTTP smuggling vectors. The engine's `fetch` call would send these headers, potentially confusing upstream proxies/CDNs. Real bug — defense in depth missing. Fix: Blacklist `host`, `content-length`, `transfer-encoding`, `connection`, `upgrade`, `te`, `trailer`, `expect` in `safeHeaderKey`.
+
+
+---
+Task ID: audit-r4-api
+Agent: Deep audit round 4 (API + frontend)
+Task: Deep line-by-line bug hunt across all API routes (admin + public), middleware/proxy.ts, auth.ts, lib files, and admin+public React components — find NEW bugs that rounds 1 (30) + 2 (22) + 3 (30) + r4-engine (22) = 104 bugs all missed. RESEARCH ONLY — no code modifications.
+
+Work Log:
+- Re-read worklog.md for prior rounds (R1: 30 / R2: 22 / R3: 30 + fixes / R4-engine: 22).
+- Fresh line-by-line pass through every file in scope: src/proxy.ts, src/lib/{auth,api,links,logger,db}.ts, src/app/api/_lib/{http,batch}.ts, all 13 admin route trees (books/categories/chapters/downloads/links/rules/sites/tasks/themes/settings/stats/feedback/health) + 14 public routes (book/books/categories/chapter/cover/download/feedback/keyword/links/related/search/sitemap/sites/tags) + auth/{login,logout,check}, src/app/{layout,page,not-found,globals.css}.tsx, src/components/admin/* (28 files: AdminApp, LoginGate, Dashboard, HealthCard, BooksSection, BookDetail, TasksSection, TaskDialog, TaskWizard, TaskMonitor, TaskLogViewer, RulesSection, RuleEditor, FieldRuleEditor, TestPanel, DebugHtmlViewer, RuleTemplateDialog, DownloadsSection, LinksSection, SitesSection, ThemesSection, SettingsSection, FeedbackSection, BackupSection, SeoAuditSection, CalibrateDialog, ConfirmDialog, helpers, StepIndicator, batch), src/components/public/* (22 files: PublicSite, HomeView, BookView, BookCard, ReadView, read-layouts/*, ctx, data, seo, bits, types, SearchView, CategoryView, KeywordView, HistoryView, SiteHeader, SiteFooter, FeedbackWidget, BackToTop, InstallPrompt, PwaRegister, Pagination, search-history, BookCover, CategoryShowcase, layouts/*), public/sw.js, Caddyfile.
+- Cross-checked each candidate against R1/R2/R3/R4-engine fix lists to avoid duplicates. Found 18 NEW bugs not previously reported.
+- Files modified: NONE (research-only task per spec).
+- Tests: did not execute lint/tsc (no source edits made); no test scripts written.
+
+Stage Summary:
+- 18 NEW bugs identified (R4A-1 … R4A-18), none duplicating rounds 1-4.
+- Severity breakdown: 1 Critical, 4 High, 8 Medium, 5 Low.
+- Category breakdown: 4 security/auth-bypass, 3 DoS-unbounded-skip, 2 XSS-defense-depth, 2 DoS-amplifier, 2 OOM-body-size, 1 SSRF-open-proxy, 1 logic/dead-code, 1 error-handling, 1 transaction-timeout, 1 unbounded-loop.
+- Files most-affected: src/app/api/admin/backup/restore/route.ts (3 bugs), src/app/api/auth/login/route.ts (1), src/app/api/public/feedback/route.ts (1), src/app/api/public/book/route.ts (1), src/components/public/read-layouts/shared.tsx (1), src/lib/links.ts (1), Caddyfile (1), src/app/api/public/sitemap/route.ts (1), src/app/api/admin/backup/route.ts (1), src/lib/auth.ts (1), src/app/api/admin/health/route.ts (1), src/app/api/admin/rules/batch/route.ts (1), src/app/api/admin/books/[id]/toc/route.ts (1), src/app/api/admin/books/batch/route.ts (1).
+
+Bug List (R4A-1 .. R4A-18):
+
+• R4A-1 [High] src/app/api/auth/login/route.ts:15-22 — clientIp() prefers X-Forwarded-For over req.ip, contradicting the R3-30 fix in proxy.ts which intentionally prefers req.ip (TCP socket IP, unspoofable) over XFF.
+  Category: auth-bypass / rate-limit-evasion. Trigger: Attacker sends `X-Forwarded-For: 1.2.3.N` with rotating N for each login attempt. Each new XFF value creates a fresh loginAttempts bucket with 5-attempt quota. Impact: Brute-force protection effectively defeated — attacker can sustain unlimited password guesses (only constrained by the proxy.ts 'auth' bucket of 60 req/min, which still allows 60 distinct IP-buckets/min × 5 attempts = 300 password tries/min). Fix: Mirror proxy.ts clientIp — `const sockIp = (req as unknown as { ip?: string }).ip; if (sockIp && sockIp.trim()) return sockIp.trim(); const xff = req.headers.get('x-forwarded-for'); ...` (prefer req.ip first).
+
+• R4A-2 [High] src/app/api/public/feedback/route.ts:22-32 — Same XFF-first clientIp() pattern. Public route (no auth) IP rate-limit (5 feedback/hour) can be bypassed by XFF rotation.
+  Category: auth-bypass / rate-limit-evasion / spam. Trigger: Attacker rotates XFF header per feedback submission. Each new XFF gets a fresh 5/hour bucket. Impact: Spam feedback database pollution; can flood admin feedback inbox; disk/DB fill DoS. Fix: Same as R4A-1 — prefer req.ip over XFF.
+
+• R4A-3 [High] src/app/api/admin/backup/restore/route.ts:271-289 — Restore route writes chapter content via `tx.chapter.upsert({ data: { content: c.content == null ? null : String(c.content), ... } })` WITHOUT calling cleanContentHtml(). The R3-34 fix added cleanContentHtml to PUT /chapters/[id] for stored-XSS prevention; restore bypasses this entirely.
+  Category: stored-XSS / write-side-bypass. Trigger: Admin (or attacker with stolen session, or admin tricked into restoring a shared "backup file") uploads a backup JSON where `data.books[].chapters[].content` contains `<img src=x onerror=alert(document.cookie)>` or `<script>...</script>`. Restore writes raw payload to DB. Public chapter reader (ReadClassic/ReadImmersive/ReadPaginated/ReadPili) renders via `dangerouslySetInnerHTML={{ __html: contentToHtml(ch.content) }}` — payload executes in reader browser. Impact: Stored XSS affecting all readers of that chapter; cookie theft (heis_admin session cookie is HttpOnly so cookie theft limited, but DOM manipulation / phishing / defacement possible); admin session hijack via injected fetch to /api/admin/* with cookie auto-attached. Fix: In restore loop, run `content: c.content == null ? null : cleanContentHtml(String(c.content))` before upsert (mirror R3-34).
+
+• R4A-4 [Medium] src/app/api/public/book/route.ts:10-29 — tocPage clampInt(1, 1, 1_000_000) and tocSize clampInt(100, 1, 300) → worst-case skip = (1M-1)*300 ≈ 300M rows. SQLite must scan all skipped rows for OFFSET. Public route (no auth, 120 req/min rate limit).
+  Category: DoS / unbounded-skip. Trigger: `GET /api/public/book?id=<existing>&tocPage=999999&tocSize=300` — SQLite OFFSET 300M scan, multi-second response time, locks DB for concurrent readers. Impact: Single request can stall the entire SQLite DB for seconds; 120 req/min × 5s/req = 600 DB-seconds/min = full DB saturation. Fix: Add skip cap matching /api/public/books route (which has API-7 cap at 10000): `const requestedSkip = (tocPage - 1) * tocSize; const effectiveSkip = Math.min(requestedSkip, 10000); if (requestedSkip > 10000) return fail('已超出最大可分页深度')`.
+
+• R4A-5 [Low] src/app/api/admin/books/[id]/toc/route.ts:11-12 — Same unbounded skip pattern: page clampInt(1, 1, 1M) × size clampInt(50, 1, 200) → skip up to 200M. Admin-only mitigates but compromised admin token or runaway script can saturate DB.
+  Category: DoS / unbounded-skip. Trigger: `GET /api/admin/books/<id>/toc?page=999999&size=200`. Impact: SQLite 200M row scan. Fix: Same as R4A-4 — cap skip at 10000.
+
+• R4A-6 [Medium] src/components/public/read-layouts/shared.tsx:96-106 (contentToHtml) — When chapter content has any `<p>`, `<div>`, or `<br>` tag (i.e., the DB-stored HTML mode), the entire content is passed through unchanged to `dangerouslySetInnerHTML`. The HTML-escape branch (replacing `&<>` and wrapping in `<p>`) only runs for plain-text content. Defense in depth missing on read side.
+  Category: XSS / defense-in-depth. Trigger: If DB content is ever corrupted (R4A-3 restore bypass, future bug, direct DB write, legacy data pre-R3-34), the reader renders the malicious HTML as-is. Impact: Any future write-side regression immediately becomes exploitable on the read side. Fix: Wrap `contentToHtml` output with a sanitization pass — either re-run `cleanContentHtml(content)` on the client (heavy, requires cheerio in client bundle) OR run a lightweight DOMPurify-style sanitizer that strips `<script>/<iframe>/on*=*/javascript:` before passing to dangerouslySetInnerHTML.
+
+• R4A-7 [Medium] src/lib/links.ts:88-118 (pickRandomBooks) — For each wheel slot (count=30 max via WHEEL_COUNT_MAX), performs up to RETRY=5 iterations of `db.book.count({ where: { id: { notIn } } })` + `db.book.findFirst({ skip: random, take: 1 })`. Worst case 30 × 5 × 2 = 300 sequential DB queries per `/api/public/links` call.
+  Category: DoS amplifier / N+1 query. Trigger: `GET /api/public/links` (no auth, 120 req/min). Each request with `count=30` mode=book/mixed fires up to 300 DB queries. With N books in DB, average skip = N/2 → SQLite OFFSET scans N/2 rows per query. For 10k books, 300 × 5k = 1.5M row scans per request. Impact: 120 req/min × 1.5M = 180M row scans/min → SQLite saturates. Fix: Replace with single `db.book.findMany({ take: need * 3, orderBy: { createdAt: 'asc' } })` + JS-side Fisher-Yates shuffle + dedupe; eliminates sequential count+findFirst loop.
+
+• R4A-8 [Critical] Caddyfile:1-13 — `@transform_port_query { query XTransformPort=* }` matcher + `reverse_proxy localhost:{query.XTransformPort}` allows ANY client reaching Caddy's :81 to pivot to ANY localhost port by setting `?XTransformPort=N` in the URL.
+  Category: SSRF / open proxy. Trigger: Attacker sends `GET /?XTransformPort=22 HTTP/1.1` to Caddy :81 → Caddy proxies to localhost:22 (SSH banner leak). `?XTransformPort=3010` → bqg713-proxy internal API. `?XTransformPort=9200` → Elasticsearch if present. `?XTransformPort=8080` → admin interface. Impact: Full localhost service enumeration; banner leak; potential RCE if any internal service has unauthenticated endpoints (the project's own mini-services on 3010-3015 are open relays by design — see Security Audit Task 4). Mitigation: Caddyfile is sample only (not in docker-compose.yml), but operators may copy it. Fix: Remove the @transform_port_query block entirely, OR restrict to authenticated requests, OR whitelist specific ports (3010-3015 only).
+
+• R4A-9 [Medium] src/app/api/admin/backup/restore/route.ts:21 — `const body = await readBody<Record<string, unknown>>(req)` reads full request body via `req.json()` with NO size limit. The BackupSection client caps file at 200MB (line 109), but server has no enforcement.
+  Category: OOM / unbounded body. Trigger: Attacker with stolen admin session POSTs a 5GB body to /api/admin/backup/restore. Server allocates full body in memory via `req.json()` → process OOM kill. Impact: Process crash; in-flight tasks lost; service unavailable. Fix: Check `req.headers.get('content-length')` before reading; reject >200MB with 413. Or stream-parse with size cap.
+
+• R4A-10 [Medium] src/app/api/admin/backup/restore/route.ts:272, 283 — Chapter content written via `content: c.content == null ? null : String(c.content)` with NO length cap. Compare to PUT /api/admin/chapters/[id] route which enforces CHAPTER_CONTENT_MAX = 500_000 chars (line 44).
+  Category: OOM / SQLite bloat / missing input validation. Trigger: Backup file contains a chapter with content field of 50MB. Restore writes 50MB string to SQLite row. Impact: SQLite DB bloat; potential OOM on `JSON.stringify` of full payload; reader route tries to return 50MB response per chapter request. Fix: Cap chapter content at restore: `content: c.content == null ? null : String(c.content).slice(0, 500_000)`.
+
+• R4A-11 [Medium] src/app/api/admin/books/batch/route.ts:170-248 (t2s case) — Inner `for (;;)` cursor loop has no upper bound on iterations per book. Each iteration fetches T2S_CHAPTER_BATCH=100 chapters and runs t2sText/t2sHtml per chapter, then `db.chapter.update` per chapter.
+  Category: DoS / unbounded loop / long-running request. Trigger: Admin triggers batch t2s on 50 books (T2S_MAX_BOOKS=50), each book has 10000 chapters. Worst case: 50 × (10000/100) = 5000 batches × ~200ms/batch = 1000s request. HTTP client (browser fetch) typically times out at 30-60s; server keeps running in IIFE? NO — this is synchronous in the request handler. Next.js may abort the request, but the transaction may continue. Impact: Request timeout; potential partial writes (some chapters converted, others not); admin UI shows "loading" indefinitely. Fix: Add per-book chapter cap (e.g., 5000 chapters/book); or move to background job like calibrate.
+
+• R4A-12 [Medium] src/app/api/admin/backup/route.ts:67-69 — `BIG_BOOKS_THRESHOLD = 500` triggers metadata-only mode. But for 499 books with full chapters (e.g., avg 500 chapters each = ~250k chapter rows + tags), `dumpBooksFull()` loads all into memory via single `db.book.findMany({ include: { chapters: {...}, tags: {...} } })`. Then `JSON.stringify(payload)` allocates the full string. Multi-hundred-MB memory spike.
+  Category: OOM / unbounded include. Trigger: Admin clicks "导出" with 499 books × 500 chapters = 250k chapter rows. Impact: Heap spike; potential OOM kill on small instances (Docker default 4GB). Fix: Stream books in batches of 50; or lower BIG_BOOKS_THRESHOLD to 100; or use cursor-based findMany pagination.
+
+• R4A-13 [Medium] src/app/api/public/sitemap/route.ts:37-83 (fetchPageEntries) — For `?page=N`, queries `db.book.findMany({ take: 50000 })` + `db.chapter.findMany({ take: 50000 })` (worst case 100k rows) then builds 100k string entries per request. Public route (no auth, 120 req/min). MAX_PAGES=1000.
+  Category: DoS / unbounded query. Trigger: Attacker hits `/api/public/sitemap?page=1` then `?page=2` ... up to `?page=1000`. Each request: 50k row scan + 100k string build. Cache-Control: max-age=600 only helps if a CDN/proxy is in front; direct hits to Next.js bypass cache. Impact: 120 req/min × 50k rows = 6M row scans/min; multi-second responses; SQLite lock contention. Fix: Reduce PAGE_SIZE to 5000 (matching legacy) OR add server-side cache (5min TTL like health route) keyed by page number.
+
+• R4A-14 [Low] src/lib/auth.ts:151-167 (verifySession) — If `JSON.parse(Buffer.from(payload, 'base64url'))` returns JS `null` (requires attacker to forge a valid HMAC of base64url("null"), which requires the secret — so unlikely but possible if SESSION_SECRET leaks), the subsequent `if (typeof parsed.exp !== 'number')` throws `TypeError: Cannot read properties of null (reading 'exp')`. This TypeError is NOT caught by the try/catch around JSON.parse (which only wraps the parse call).
+  Category: error-handling / log pollution. Trigger: Cookie `heis_admin=null.<valid-hmac-of-"null">`. Impact: TypeError propagates to proxy.ts middleware; Next.js returns 500 to client instead of 401; logger logs "api unhandled error" polluting logs; minor DoS amplifier (each malformed cookie triggers error stack generation). Fix: After JSON.parse, add `if (parsed === null || typeof parsed !== 'object') return false`.
+
+• R4A-15 [Low] src/app/api/admin/health/route.ts:74-96 (probeService) — `res.json()` allocates full response body in memory; no Content-Length check before reading. Mini-services are internal (127.0.0.1) but a buggy or compromised service could return a 1GB JSON response → OOM in main process.
+  Category: OOM / missing body limit. Trigger: A mini-service (bqg713-proxy, fetch-relay, etc.) goes rogue and returns 1GB JSON to /health. Admin dashboard polls /api/admin/health every 30s → each poll OOMs. Impact: Process crash loop. Fix: Check `res.headers.get('content-length')` before reading; cap at 64KB (health responses are tiny).
+
+• R4A-16 [Low] src/app/api/admin/rules/batch/route.ts:42-48 — `deleteMany({ where: { id: { in: ids } } })` does NOT throw P2025 (only `delete({ where: { id } })` / `update({ where: { id } })` with unique `where` throw P2025). The catch block for P2025 is dead code; will never fire.
+  Category: dead code / misleading error handling. Trigger: N/A (dead branch). Impact: Low — code gives false impression of error handling; future refactor may rely on this catch. Fix: Remove the P2025 branch from deleteMany catch (or replace deleteMany with loop of delete for per-item 404 reporting, matching books/batch delete behavior).
+
+• R4A-17 [Low] src/app/api/admin/books/batch/route.ts:170-248 (t2s case) — File write `await fs.writeFile(full, ...)` happens BEFORE `db.chapter.update`. If file write succeeds but DB update fails (P2025 chapter was cascade-deleted by book deletion), the file is rolled back via `await fs.rm(full, { force: true })`. But: the file write and DB update are NOT in a transaction. If process crashes between file write and DB update (e.g., SIGKILL), the file is orphaned with stale content while DB still has old content.
+  Category: race / orphaned file. Trigger: Process SIGKILL between fs.writeFile and db.chapter.update. Impact: Orphaned txt file with new content; DB retains old content; next read returns old content but file exists with new content (after next t2s run, file is overwritten, so eventually consistent). Low severity. Fix: Write to temp file, then atomic rename after DB update succeeds.
+
+• R4A-18 [Medium] src/app/api/admin/backup/restore/route.ts:88-413 — Uses `db.$transaction` (interactive mode) for entire import with NO explicit timeout config. Prisma's default `timeout` is 5s, `maxWait` is 2s. For backup with 500 books × 100 chapters × 5 tags each = 250k+ upsert operations, transaction easily exceeds 5s.
+  Category: transaction timeout / data loss. Trigger: Restore a backup with >500 books (with chapters). After 5s, Prisma throws P2028 (Transaction already closed: A transaction cannot be traced...). Entire transaction rolled back. Impact: Even moderately-sized backups fail to restore; user sees "导入失败已回滚: Transaction timeout" error. Fix: Configure explicit timeout: `db.$transaction(async (tx) => {...}, { timeout: 600_000, maxWait: 30_000 })` (10min for large backups).
+
+
+---
+Task ID: fix-r4
+Agent: Fix 40 round-4 bugs (engine 22 + API/frontend 18)
+Task: Fix all 40 bugs identified in audit-r4-engine (R4-1..R4-22) and audit-r4-api (R4A-1..R4A-18). Modify only `src/lib/crawl/*`, `src/app/api/**`, `src/lib/{auth,api,links,logger}.ts`, `src/proxy.ts`, `src/components/**`, `Caddyfile`.
+
+Work Log:
+- Re-read worklog audit-r4-engine + audit-r4-api bug lists (40 bugs total: 3 Critical + 9 High + 7 Medium + 3 Low engine; 1 Critical + 4 High + 8 Medium + 5 Low API/frontend).
+- Read target engine files (fetcher/runner/obscura/hostgate/calibrate/parser/cleaner/types) around each bug's cited line range to confirm root cause before patching.
+- Read all 14 API/frontend target files (login/feedback/restore routes, public/book, shared.tsx, links.ts, Caddyfile, sitemap, backup, books/batch, books/[id]/toc, auth.ts, health, rules/batch).
+- Wrote per-bug fixes in batch, each with explanatory comment block citing the bug ID and rationale.
+- Created `/home/z/my-project/agent-ctx/fix-r4-fix-40-round-4-bugs.md` documenting the fix plan.
+- Verified: `bun run lint` = 0 errors / 0 warnings; `bunx tsc --noEmit` (excluding examples/skills) = 0 errors; dev server `/` returns 200.
+
+Stage Summary:
+- All 40 round-4 bugs fixed (22 engine + 18 API/frontend).
+- Verification: lint 0/0, tsc 0, dev server 200 OK.
+- Files modified: src/lib/crawl/{runner,fetcher,obscura,hostgate,calibrate,parser,cleaner,types}.ts, src/app/api/{auth/login,public/feedback,public/book,public/sitemap,admin/backup,admin/backup/restore,admin/books/[id]/toc,admin/books/batch,admin/health,admin/rules/batch}/route.ts, src/lib/{auth,links}.ts, src/components/public/read-layouts/shared.tsx, Caddyfile.
+
+Bug Fix Status:
+
+Engine (22):
+- R4-1 fetcher.ts token stampede: ✅ Added `tokenInflight` Map<string, Promise<string>>; concurrent callers share single in-flight prefetch promise; failures clear entry so next caller re-prefetches.
+- R4-2 fetcher.ts native fetch OOM: ✅ Added `readBodyCapped` helper with 10MB cap (matches curl path MAX_HTML_BYTES); applies to success/3xx-error/!ok-error body reads; content-length pre-check + streaming byte counter + reader.cancel() on overflow.
+- R4-3 fetcher.ts proxy no backoff: ✅ Added `consecutiveFailures` per-proxy; cooldown = min(300s, 30s × 2^(failures-1)); markProxySucceeded resets on success.
+- R4-4 fetcher.ts relayHop OOM: ✅ Pre-check Content-Length, cap at 20MB; stream-read TextDecoder + counter; reject if bodyB64 length > 20MB × 4/3.
+- R4-5 fetcher.ts fetchBinary cookies lost: ✅ Call `cookieJar.store(originHost(hopUrl), setCookies)` after each redirect hop in fetchBinary (same as fetchHttp).
+- R4-6 fetcher.ts single-quote token: ✅ Regex updated to `/(?:let|var)\s+token\s*=\s*(["'\`])([A-Za-z0-9+/=_-]{20,})\1/` — supports double/single/backtick quotes with matching open/close.
+- R4-7 fetcher.ts domainUa HMR: ✅ Bumped key to `__novelDomainUa_v3` + `validDomainUa` instanceof Map shape guard (same pattern as CookieJar.validJar).
+- R4-8 runner.ts control() timeout race: ✅ Added per-task `dbStatusChains` Map; `serializeStatusWrite(taskId, status)` chains all `db.task.update({data:{status:...}})` calls through prev.then; old controlInner's pending write commits before new control's write issues — last-write-wins.
+- R4-9 runner.ts category P2002: ✅ try/catch around category.upsert; on P2002 re-find by name; 50ms backoff retry for uncommitted-transaction edge case; non-P2002 re-thrown.
+- R4-10 runner.ts bookTag race: ✅ Replaced `.then(added++).catch(()=>{})` with try/catch; P2002 counted as success (deduped by parallel task); other errors silently skipped (preserves backward-compat no-fail-fast semantics).
+- R4-11 runner.ts existChapters memory: ✅ Added `take: 10_000` cap (select fields already minimal: id/url/title/idx/volume/fetched; all used downstream for re-ordering/dedup/unfetched backfill).
+- R4-12 obscura.ts slot orphan leak: ✅ Added `shuttingDown?: boolean` flag to ObscuraGlobal; set true at start of shutdownObscura, false at end; withObscuraPage checks flag after acquiring free slot (before recreateSlot) and after createSlot — closes orphan ctx and throws if true.
+- R4-13 obscura.ts turnstile deadline: ✅ Added 8s overall deadline; per-frame click timeout = min(1500ms, remaining); loop breaks when deadline exhausted.
+- R4-14 hostgate.ts minGapMs poison: ✅ Added `minGapMsLastValue: number` to HostState; when new caller's minGapMs differs from last recorded value, replace st.minGapMs (not MAX); same caller maintains MAX for rate-limit cooldown protection.
+- R4-15 hostgate.ts hostGateReset waiter leak: ✅ Iterate all waiters per host, clearTimeout(w.timer), mark settled, reject with `HostGateReset` error; clear st.waiters array before map.clear().
+- R4-16 calibrate.ts SSRF: ✅ Call `assertSafeTarget(base + '/', { allowLoopback: true })` at function entry; reject early with conservative 1-thread/2s recommendation if siteBase is unsafe.
+- R4-17 calibrate.ts timeout=0: ✅ Changed `opts.timeoutMs ?? 10_000` to `opts.timeoutMs && opts.timeoutMs > 0 ? opts.timeoutMs : 10_000` in probeFetch/probeLevel/stageVerify (0 is falsy so `||` short-circuits to default).
+- R4-18 parser.ts jsonGet &-split: ✅ Split `[k=v&k2=v2]` on `&`; per-condition `indexOf('=')` < 0 → skip (was treated as `[c,'']` failure); value supports `%26` escape decoded to literal `&` (RFC-3986 style).
+- R4-19 parser.ts applyTransform ReDoS: ✅ Length cap 1000 chars (already enforced by sanitizeFieldRule safeStr 1000); nested-quantifier gate `/[+*]\s*\)\s*[+*{]/` skip; >200 char input chunked into 200-char slices with fresh RegExp per chunk (prevents global-flag lastIndex pollution + bounds single-chunk ReDoS time).
+- R4-20 cleaner.ts plainText script leak: ✅ Pre-strip `<script>/<style>/<noscript>/<iframe>/<object>/<embed>` tags AND their inner content via `/<(?:script|style|...)\b[^>]*>[\s\S]*?<\/\1\s*>/gi` before generic `<[^>]+>/g` strip; also handles self-closing `<script .../>` form.
+- R4-21 cleaner.ts t2s homograph bypass: ✅ In catch block of `convBack(converted)`, `continue` instead of fall-through to `set.add(ch)` — 乾/係/唸 no longer misclassified as traditional triggers when convBack throws.
+- R4-22 types.ts smuggling headers: ✅ Added `HEADER_KEY_DENYLIST` set (host/content-length/transfer-encoding/connection/upgrade/te/trailer/expect/keep-alive/proxy-connection/proxy-authorization/proxy-authenticate/front-end-https/x-http-method-override); `safeHeaderKey` returns undefined for denylisted keys.
+
+API + Frontend (18):
+- R4A-1 login XFF bypass: ✅ Reversed clientIp() priority — `req.ip` first (TCP socket IP, unspoofable), XFF only as fallback when req.ip is empty.
+- R4A-2 feedback XFF bypass: ✅ Same reversal — `req.ip` first, XFF fallback.
+- R4A-3 backup restore XSS: ✅ Import `cleanContentHtml` from cleaner; run on each chapter content before upsert (mirrors R3-34 PUT /chapters/[id]).
+- R4A-4 public/book unbounded skip: ✅ Cap `effectiveSkip = Math.min((tocPage-1)*tocSize, 10000)` before chapter.findMany skip.
+- R4A-5 admin toc unbounded skip: ✅ Same 10000 cap on admin toc route.
+- R4A-6 shared.tsx read-side sanitize: ✅ Added `sanitizeReaderHtml` regex stripper (no cheerio — client bundle sensitive): strips `<script>/<iframe>/<object>/<embed>/<noscript>/<template>` + content, `on*` event attributes, `javascript:`/`vbscript:`/`data:text/html` URLs (single/double/backtick/unquoted forms).
+- R4A-7 links.ts N+1 query: ✅ Replaced pickRandomBooks loop with single `db.book.findMany({ take: need*3, orderBy: { wordCount: 'desc' } })` + JS-side Fisher-Yates shuffle + excludeIds filter + slice(0, need). Eliminates up to 300 sequential count+findFirst queries.
+- R4A-8 Caddyfile open-proxy SSRF: ✅ Replaced wildcard `?XTransformPort=*` matcher with 6 explicit matchers for ports 3010-3015 only; each has its own `handle` block with same reverse_proxy + header_up config. Other ports rejected (Caddy 404 falls through to default handle).
+- R4A-9 restore no body limit: ✅ Check `content-length` header before readBody; reject > 200MB with 413 status.
+- R4A-10 restore content no cap: ✅ Slice chapter content to 500_000 chars before cleanContentHtml + upsert (CHAPTER_CONTENT_MAX constant matching PUT /chapters/[id]).
+- R4A-11 t2s unbounded loop: ✅ Added `T2S_MAX_CHAPTERS_PER_BOOK = 5000`; inner cursor loop breaks + skips entry when chapterCount >= 5000; user can re-run t2s (no-op detection gate skips already-converted chapters).
+- R4A-12 backup export OOM: ✅ Lowered BIG_BOOKS_THRESHOLD 500 → 200; dumpBooksFull now cursor-paginated (BATCH=50, cursor on book.id, setImmediate between batches) instead of single findMany.
+- R4A-13 sitemap unbounded query: ✅ Reduced PAGE_SIZE 50_000 → 5_000; added `sitemapCache` Map<string, {ts, xml, status}> with 5min TTL; keyed by base+page+index+site.
+- R4A-14 auth.ts null payload: ✅ Added `if (parsed === null || typeof parsed !== 'object') return false` after JSON.parse (was reading parsed.exp on potentially-null value).
+- R4A-15 health probe body cap: ✅ Check Content-Length before `res.json()`; reject > 64KB with `{ reachable: false, note: '...' }`.
+- R4A-16 rules batch dead catch: ✅ Removed `if (e?.code === 'P2025')` branch from deleteMany catch (P2025 only thrown by single-record delete/update with unique where, never by deleteMany).
+- R4A-17 t2s file-write race: ✅ Write to `${full}.tmp-${ch.id}-${Date.now()}` temp file; only `fs.rename(tmp, full)` after db.chapter.update succeeds; rollback tmp on P2025 / non-P2025 errors; rename failure also cleans tmp.
+- R4A-18 restore transaction timeout: ✅ Wrapped transaction with explicit options: `{ timeout: 600_000, maxWait: 30_000 }` (10min for large backups; was Prisma default 5s).
+
+Tests:
+- `bun run lint` → 0 errors / 0 warnings.
+- `bunx tsc --noEmit 2>&1 | grep -v "examples\|skills" | wc -l` → 0.
+- Dev server `/` → 200 (compile + render + proxy.ts all green).

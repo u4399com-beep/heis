@@ -89,6 +89,33 @@ export class TaskRunner {
   private refreshTimers = new Map<string, ReturnType<typeof setTimeout>>()
   /** rr-c2: control 每 task 串行化链(键=taskId, 值=队尾 promise; 尾 settles 后自删防无界增长) */
   private controlChains = new Map<string, Promise<unknown>>()
+  /** R4-8: control() 30s timeout race 修复 —— per-task 状态写串行化链。
+   *  原问题: controlInner 卡在 SQLite busy 等待时, Promise.race 30s 超时让 run reject,
+   *  但底层 controlInner 继续执行; 后续 control('stop') 入队执行, 其 db.task.update(status='stopped')
+   *  与卡住的 db.task.update(status='running') 同时在 SQLite 队列中, 提交顺序不确定, 旧写晚提交
+   *  会覆盖新写(status 显示 running 但实际任务已停)。修法: per-task 把所有 db.task.update(status:...)
+   *  串行化, 旧写必先完成、新写后发, last-write-wins 保证新 control 的状态写总胜出 */
+  private dbStatusChains = new Map<string, Promise<unknown>>()
+
+  /** R4-8: per-task status 串行写 —— 把 db.task.update(status:...) 串到 prev 链尾,
+   *  保证旧 controlInner(可能已 Promise.race 超时)的写必先完成、新 controlInner 的写后发,
+   *  提交序与调用序一致。失败(如 P2025 任务已删)透传给调用方。 */
+  private async serializeStatusWrite(taskId: string, status: string): Promise<void> {
+    const prev = this.dbStatusChains.get(taskId) ?? Promise.resolve()
+    const next = prev.then(
+      () => db.task.update({ where: { id: taskId }, data: { status } }).catch((e: any) => {
+        if (e?.code === 'P2025') return // 任务已删, 写无处可去, 视作正常终态
+        throw e
+      }),
+    )
+    // tail 不抛错防链断: 调用方通过 await next 收到错误; 链尾只负责串行化顺序
+    const tail = next.catch(() => {})
+    this.dbStatusChains.set(taskId, tail)
+    void tail.then(() => {
+      if (this.dbStatusChains.get(taskId) === tail) this.dbStatusChains.delete(taskId)
+    })
+    await next
+  }
 
   static get instance(): TaskRunner {
     if (!globalForRunner.__novelTaskRunner) {
@@ -284,7 +311,7 @@ export class TaskRunner {
         if (rt.running) {
           if (rt.paused) {
             rt.paused = false
-            await db.task.update({ where: { id: taskId }, data: { status: 'running' } })
+            await this.serializeStatusWrite(taskId, 'running')
             await this.log(taskId, 'success', '▶ 任务已恢复运行')
             return { ok: true, message: '已恢复' }
           }
@@ -304,7 +331,7 @@ export class TaskRunner {
         // E2: LRU 上限保护 —— runtimes Map 长期累积终态任务条目无上限增长(任务历史从执行, 后续不再运行),
         // 插入新条目后检查是否超 200, 超过则驱逐最旧的已终态条目(running===false 的 epoch/cooldown)
         this.pruneRuntimesIfNeeded()
-        await db.task.update({ where: { id: taskId }, data: { status: 'running' } })
+        await this.serializeStatusWrite(taskId, 'running')
         await this.log(taskId, 'success', `▶ 任务启动 [${task.name}] 模式:${task.mode === 'single' ? '单本' : '范围'} 重采:${task.recrawlMode === 'full' ? '完全覆盖' : '增量更新'} 存储:${task.storageMode === 'db' ? '数据库' : 'TXT文件'} 线程:${task.threadMin}~${task.threadMax} 间隔:${task.intervalMin}~${task.intervalMax}ms`)
         // 异步执行, 不阻塞API
         this.executeTask(taskId).catch(async (e) => {
@@ -316,7 +343,7 @@ export class TaskRunner {
       case 'pause': {
         if (!rt.running) return { ok: false, message: '任务未在运行' }
         rt.paused = true
-        await db.task.update({ where: { id: taskId }, data: { status: 'paused' } })
+        await this.serializeStatusWrite(taskId, 'paused')
         await this.log(taskId, 'warn', '⏸ 任务已暂停')
         return { ok: true, message: '已暂停' }
       }
@@ -332,7 +359,7 @@ export class TaskRunner {
         this.runtimes.set(taskId, rt)
         // jj-e: 手动停止视为用户明确意图, 同时取消已排定的自动刷新
         this.cancelAutoRefresh(taskId)
-        await db.task.update({ where: { id: taskId }, data: { status: 'stopped' } })
+        await this.serializeStatusWrite(taskId, 'stopped')
         await this.log(taskId, 'warn', '⏹ 任务已停止(自动刷新已取消)')
         return { ok: true, message: '已停止' }
       }
@@ -697,12 +724,38 @@ export class TaskRunner {
     }
     let categoryId: string | null = null
     if (categoryName) {
-      const cat = await db.category.upsert({
-        where: { name: categoryName },
-        create: { name: categoryName },
-        update: {},
-      })
-      categoryId = cat.id
+      // R4-9: category.upsert 在并行任务创建同名分类时 @@unique(name) 冲突 P2002;
+      //  旧行为未捕获 → crawlOneBook 抛错 → 本书被跳过计为 error。改为 try/catch,
+      //  P2002 时 re-findByName 拿到由另一个并行任务创建的分类 ID(其事务已 commit)
+      try {
+        const cat = await db.category.upsert({
+          where: { name: categoryName },
+          create: { name: categoryName },
+          update: {},
+        })
+        categoryId = cat.id
+      } catch (e: any) {
+        if (e?.code === 'P2002') {
+          const existing = await db.category.findUnique({
+            where: { name: categoryName },
+            select: { id: true },
+          })
+          if (existing) {
+            categoryId = existing.id
+          } else {
+            // 极罕见: 另一事务已创建但未提交, P2002 后 findUnique 暂未读到;
+            // 短退避后再查一次(等待对方事务 commit)
+            await new Promise((r) => setTimeout(r, 50))
+            const retry = await db.category.findUnique({
+              where: { name: categoryName },
+              select: { id: true },
+            })
+            categoryId = retry?.id ?? null
+          }
+        } else {
+          throw e
+        }
+      }
     }
 
     // 智能完结(先存unknown, 目录采完后最终判定)
@@ -912,9 +965,15 @@ export class TaskRunner {
 
     // ---------- 5. 章节入库(增量/全量) + 正文多线程采集 ----------
     const isFull = taskCfg.recrawlMode === 'full'
+    // R4-11: existChapters 限定 10000 行内存上限 —— 10000+ 章节的大部头书原先 findMany 全量加载
+    //  每行 ~200B = ~2MB / 书, 并行多任务会乘以倍数。select 已最小化(id/url/title/idx/volume/fetched
+    //  各字段后续重排/去重/未采回填都需用到, 不能再裁), 仅用 take 10000 限定内存: 超过 10000 章的
+    //  书尾部章节视为"新"(并入 queue, 增量重采语义保持, 多采几次内容, 但内存有界)。
     const existChapters = await db.chapter.findMany({
       where: { bookId },
       select: { id: true, url: true, title: true, fetched: true, idx: true, volume: true },
+      take: 10_000,
+      orderBy: { idx: 'asc' },
     })
     const existUrlMap = new Map(existChapters.filter((c) => c.url).map((c) => [c.url, c]))
     const existTitleMap = new Map(existChapters.map((c) => [c.title, c]))
@@ -1254,11 +1313,24 @@ export class TaskRunner {
         const words = mergeSuggestWords(bookName, sug, 25)
         let added = 0
         for (const w of words) {
-          await db.bookTag.upsert({
-            where: { bookId_tag: { bookId, tag: w } },
-            create: { bookId, tag: w, source: 'suggest' },
-            update: {},
-          }).then(() => { added++ }).catch(() => {})
+          // R4-10: bookTag.upsert 在并行任务对同书同 tag 操作时 @@unique([bookId, tag]) 冲突 P2002;
+          //  旧 .then(added++).catch(()=>{}) 静默吞掉 P2002 → tag 漏写、added 虚低。改为:
+          //  P2002 时 re-findByBookIdTag 拿到既有行, 计入 added(不丢统计口径)
+          try {
+            await db.bookTag.upsert({
+              where: { bookId_tag: { bookId, tag: w } },
+              create: { bookId, tag: w, source: 'suggest' },
+              update: {},
+            })
+            added++
+          } catch (e: any) {
+            if (e?.code === 'P2002') {
+              // 已由并行任务创建, 视作成功(本任务去重链无需重复入库)
+              added++
+            } else {
+              // 其余错误(真 DB 故障) 静默跳过, 与旧行为兼容(不强断下拉词链)
+            }
+          }
         }
         stats.suggestWords += added
         const okEngines = sug.filter((s) => s.ok).map((s) => s.engine).join(',')

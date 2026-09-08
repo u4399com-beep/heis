@@ -96,13 +96,38 @@ export const LETTER_SPACING_PRESETS: { label: string; value: number }[] = [
 export function contentToHtml(raw: string): string {
   const content = (raw || '').trim()
   if (!content) return ''
-  if (/<\s*(p|div|br)\b/i.test(content)) return content
+  if (/<\s*(p|div|br)\b/i.test(content)) return sanitizeReaderHtml(content)
   return content
     .split(/\n+/)
     .map((s) => s.trim())
     .filter(Boolean)
     .map((s) => `<p>${s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>`)
     .join('')
+}
+
+/**
+ * R4A-6: 阅读侧 defense-in-depth —— 写侧 cleanContentHtml/R3-34 已防 stored XSS, 但
+ * DB 数据若被绕过(直接 DB 写 / 备份还原 R4A-3 / 旧数据 R3-34 前)或未来写侧回归, 读者
+ * 浏览器会直接执行恶意 HTML。客户端轻量正则消毒(不用 cheerio, 客户端包大小敏感):
+ *  1. 剥 <script>/<iframe>/<object>/<embed>/<noscript> 完整标签 + 内部文本
+ *  2. 剥 on* 事件属性(onclick/onerror/onload…)
+ *  3. 剥 javascript: URLs(href/src 含此协议的标签整段去掉)
+ * 不影响正常 <p>/<br>/<a href=https...>/<img src=https...> 白名单标签
+ */
+function sanitizeReaderHtml(html: string): string {
+  // 1. 完整剥危险标签及其内部文本(script/style 等的内容必丢, 防 <script>alert(1)</script> 渗漏)
+  let out = html
+    .replace(/<(script|style|noscript|iframe|object|embed|template)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, ' ')
+    .replace(/<(script|style|noscript|iframe|object|embed|template)\b[^>]*\/?>/gi, ' ')
+  // 2. 剥 on* 事件属性(<a onclick=...> <img onerror=...>)——匹配 on 开头 + 字母数字 + ="..."或='...'或=`...`
+  out = out.replace(/\s+on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|`[^`]*`|[^\s>]+)/gi, '')
+  // 3. 剥 javascript: / vbscript: / data:text/html URL(href/src 属性值整段去掉该属性, 防 javascript:alert(1))
+  out = out.replace(/\s+(href|src)\s*=\s*"(?:javascript|vbscript|data:text\/html)[^"]*"/gi, '')
+  out = out.replace(/\s+(href|src)\s*=\s*'(?:javascript|vbscript|data:text\/html)[^']*'/gi, '')
+  out = out.replace(/\s+(href|src)\s*=\s*`(?:javascript|vbscript|data:text\/html)[^`]*`/gi, '')
+  // 无引号形态: <a href=javascript:alert(1)>
+  out = out.replace(/\s+(href|src)\s*=\s*(?:javascript|vbscript|data:text\/html)[^\s>]+/gi, '')
+  return out
 }
 
 /**

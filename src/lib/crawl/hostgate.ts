@@ -88,6 +88,10 @@ interface HostState {
   waiters: Waiter[]
   /** 同 host 相邻准入最小间隔 ms(zz-b, 跟随最近一次 acquire 传入值, 缺省 0=不限速) */
   minGapMs: number
+  /** R4-14: 最近一次 acquire 传入的 minGapMs 原值(用于检测"新 caller / 新 epoch"——
+   *  不同于已记录值即视为新 caller 接管, 重置 st.minGapMs 为新值, 不再做 MAX 合并,
+   *  防止旧 caller 留下的 60000ms 永久毒杀新 caller 的 500ms 节奏) */
+  minGapMsLastValue: number
   /** 上次准入时刻 ms(zz-b, 初始 0=首请求免等); 准入判定: Date.now()-lastAdmitAt ≥ minGapMs */
   lastAdmitAt: number
   /** 限流冷却截止时刻 ms(zz-b, 429 感知): 该时刻前 pump 不放行任何请求(初始 0=无冷却) */
@@ -125,6 +129,7 @@ function stateOf(host: string, baseLimit: number): HostState {
       penaltyUntil: 0,
       waiters: [],
       minGapMs: 0,
+      minGapMsLastValue: 0,
       lastAdmitAt: 0,
       rateLimitedUntil: 0,
       gapTimer: null,
@@ -301,20 +306,30 @@ export function acquireHostGate(
   // 已准入请求不中断(存量自然回落)
   st.baseLimit = baseLimit
   if (st.limit > st.baseLimit) st.limit = st.baseLimit
-  // zz-b Bug 6 修复: minGapMs 取【既有与新值】的 MAX, 不是直接覆盖。
-  // 原实现 st.minGapMs = minGapMs 让最近一次调用方覆盖前序调用方设置: 长跑采集任务里
-  // 若某 caller 传 minGapMs=5000(严格), 紧接一个 caller 传 minGapMs=0(取消节流),
-  // 窗口内的 5s 节流立即失效, 窗口尾部的请求立刻背靠背放行, 触发原 caller 想
-  // 防的限流冷却。MAX 语义保证节流只能收紧不能放宽, 同窗口内所有 caller 的下限都保留。
-  // 同时: 限流冷却(rateLimitedUntil>now, 429 来自源站)生效时, minGapMs 不得低于
-  // 冷却剩余时长 —— 否则冷却到期瞬间, 节流早已放宽, 立即 admission storm 撞上原限流源站。
-  // (注: 本文件中 rateLimitedUntil 才是真正的"限流冷却"语义; penaltyUntil 是降额操作冷却,
-  // 仅冷却"再降一档"动作, 不阻准入, 不在此判定内)
+  // zz-b Bug 6 修复 + R4-14: minGapMs 不再永久 MAX。
+  //  旧行为 `st.minGapMs = Math.max(st.minGapMs, minGapMs)` —— caller A 设 60000ms 后,
+  //  caller B 设 500ms 仍被卡在 60000ms(MAX 不会下降)。caller A 任务结束、host 由
+  //  caller B 接管, 节奏却永不能恢复, 永久毒杀。
+  //  修法: 记录 st.minGapMsLastValue, 新 caller 传入值与旧值不同时, 视为 caller 换代,
+  //  重置 st.minGapMs 为新值(不 MAX, 替换)。同 caller(同 minGapMs 值)维持 MAX 合并
+  //  以保留"限流冷却推后 minGapMs 防止冷却到期瞬间 admission storm"语义。
+  //  限流冷却(rateLimitedUntil>now, 429 来自源站)生效时, minGapMs 不得低于冷却剩余时长
+  //  —— 否则冷却到期瞬间, 节流早已放宽, 立即 admission storm 撞上原限流源站。
+  //  (注: 本文件中 rateLimitedUntil 才是真正的"限流冷却"语义; penaltyUntil 是降额操作冷却,
+  //  仅冷却"再降一档"动作, 不阻准入, 不在此判定内)
   const now0 = Date.now()
+  const isNewCaller = st.minGapMsLastValue !== minGapMs
+  if (isNewCaller) {
+    st.minGapMsLastValue = minGapMs
+    st.minGapMs = minGapMs
+  }
   if (st.rateLimitedUntil > now0) {
     const cooldownImpliedGap = st.rateLimitedUntil - now0
     st.minGapMs = Math.max(st.minGapMs || 0, minGapMs, cooldownImpliedGap)
+  } else if (isNewCaller) {
+    // 已经在 if (isNewCaller) 分支赋值过 st.minGapMs = minGapMs; 不再重复
   } else {
+    // 同 caller(同 minGapMs 值) 维持 MAX 合并语义(保留原 Bug 6 修复的 rate-limit 保护)
     st.minGapMs = Math.max(st.minGapMs || 0, minGapMs)
   }
   settleRateLimitExpiry(st)
@@ -471,11 +486,26 @@ export function hostGateStats(): { hosts: number; cap: number; sweepEvery: numbe
   }
 }
 
-/** 清空全部闸门状态(验证脚本隔离用; 生产代码勿调): 连同挂起唤醒定时器一并清除 */
+/** 清空全部闸门状态(验证脚本隔离用; 生产代码勿调): 连同挂起唤醒定时器一并清除
+ *  R4-15: 原 hostGateReset 只清 st.gapTimer/st.penaltyTimer, 不清 waiter.timer
+ *  (per-waiter 30s 超时定时器)——waiters 数组在 map.clear() 后虽被 GC, 但已 setTimeout
+ *  的 timer 仍持有对 waiter.reject 的闭包引用, 后续 fire 时调用 w.reject(Error) 把
+ *  "HostGateTimeout" 抛给已结束的 awaiter(测试场景下成为 unhandled rejection)。
+ *  现逐 host 显式 reject 所有 waiter 并清 timer, 让调用方立即收到 reset 信号 */
 export function hostGateReset(): void {
+  const resetErr = new Error('HostGate reset')
+  resetErr.name = 'HostGateReset'
   for (const st of gates().values()) {
     if (st.gapTimer) { clearTimeout(st.gapTimer); st.gapTimer = null }
     if (st.penaltyTimer) { clearTimeout(st.penaltyTimer); st.penaltyTimer = null }
+    // R4-15: 清空 waiter 30s 超时定时器并立即 reject, 防 fire 后调到已结束的 awaiter
+    for (const w of st.waiters) {
+      if (w.settled) continue
+      w.settled = true
+      if (w.timer) { clearTimeout(w.timer); w.timer = null }
+      try { w.reject(resetErr) } catch { /* ignore */ }
+    }
+    st.waiters = []
   }
   gates().clear()
 }

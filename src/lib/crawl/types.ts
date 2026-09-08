@@ -360,10 +360,21 @@ function safeSingleLine(v: string): string {
   return v.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '').replace(/\r\n?|\n/g, ' ')
 }
 
-/** HTTP 头键安全化(ee-d): 仅保留 RFC 7230 token 字符, 非法键返回 undefined(丢弃) */
+/** HTTP 头键安全化(ee-d): 仅保留 RFC 7230 token 字符, 非法键返回 undefined(丢弃)
+ *  R4-22: 同时拒收 HTTP smuggling 向量头(host/content-length/transfer-encoding/
+ *  connection/upgrade/te/trailer/expect)——这些头由运行时/代理统一管理, 用户配置注入
+ *  会引发请求走私/分块解析混淆/连接复用串味。仅放行真正应用层自定义头 */
+const HEADER_KEY_DENYLIST = new Set([
+  'host', 'content-length', 'transfer-encoding', 'connection', 'upgrade',
+  'te', 'trailer', 'expect', 'keep-alive', 'proxy-connection', 'proxy-authorization',
+  'proxy-authenticate', 'front-end-https', 'x-http-method-override',
+])
 function safeHeaderKey(v: string): string | undefined {
   const s = v.replace(/[^!#$%&'*+\-.^_`|~0-9A-Za-z]/g, '')
-  return s.length > 0 ? s : undefined
+  if (s.length === 0) return undefined
+  // R4-22: 拒收 smuggling 向量头(大小写不敏感)
+  if (HEADER_KEY_DENYLIST.has(s.toLowerCase())) return undefined
+  return s
 }
 
 /** 安全字符串数组: 过滤非字符串项, 钳项数与单项长度 */

@@ -38,12 +38,11 @@ export async function POST(req: Request) {
       const res = await db.rule.deleteMany({ where: { id: { in: ids } } })
       return ok({ affected: res.count })
     } catch (e: any) {
-      // P2003 外键约束(并发期间新建了引用任务) / P2025 记录不存在 → 兜底为整批拒绝, 不留半删状态
+      // P2003 外键约束(并发期间新建了引用任务) → 兜底为整批拒绝, 不留半删状态
+      // R4A-16: 删除原 P2005 分支 —— deleteMany 不抛 P2025(只有 unique where 的 delete/update
+      //  抛 P2025), 该 catch 是死代码; 未来重构若误依赖该分支会产生误导。
       if (e?.code === 'P2003') {
         return fail('删除时发现规则仍被任务引用(并发变更), 已整批拒绝, 请刷新后重试', 409)
-      }
-      if (e?.code === 'P2025') {
-        return fail('部分规则已不存在, 已整批拒绝, 请刷新后重试', 409)
       }
       throw e
     }

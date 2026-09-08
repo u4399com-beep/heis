@@ -19,6 +19,10 @@ const RECRAWL_MAX = 20
 const T2S_MAX_BOOKS = 50
 /** 繁转简章节分批大小 + 批间让出事件循环 */
 const T2S_CHAPTER_BATCH = 100
+/** R4A-11: 每本书 t2s 章节数上限 —— 10000+ 章大部头书 t2s 同步转换会让请求超时
+ *  (50 × 10000 / 100 × 200ms ≈ 17min), 客户端早已断开。cap 在 5000 章, 超出部分
+ *  需用户分批操作(同书多次执行 t2s, 已转章节零写库检测门会快速跳过) */
+const T2S_MAX_CHAPTERS_PER_BOOK = 5000
 
 export async function POST(req: Request) {
   return withGuard(async () => {
@@ -169,7 +173,13 @@ export async function POST(req: Request) {
 
             // 2) 章节: title(t2sText) + content(t2sHtml), 每批 100 章按 idx 顺序游标推进
             let lastIdx = -1
+            let chapterCount = 0
             for (;;) {
+              if (chapterCount >= T2S_MAX_CHAPTERS_PER_BOOK) {
+                // R4A-11: 每本书章节上限 —— 防止 10000+ 章大部头书 t2s 卡死请求
+                skipped.push(skipItem(`章节超过 ${T2S_MAX_CHAPTERS_PER_BOOK} 上限, 已转换部分, 请再执行一次以继续`, b.name))
+                break
+              }
               const chapters = await db.chapter.findMany({
                 where: { bookId: id, idx: { gt: lastIdx } },
                 orderBy: { idx: 'asc' },
@@ -178,6 +188,7 @@ export async function POST(req: Request) {
               })
               if (chapters.length === 0) break
               lastIdx = chapters[chapters.length - 1].idx
+              chapterCount += chapters.length
 
               for (const ch of chapters) {
                 if (ch.storage === 'txt') {
@@ -205,26 +216,42 @@ export async function POST(req: Request) {
                   ) {
                     continue
                   }
+                  // R4A-17: 先写 .tmp 临时文件, DB update 成功后再 atomic rename, 防
+                  //  fs.writeFile 已完成但 db.chapter.update 抛错(并发删除等)后留下与 DB
+                  //  不一致的孤儿文件; rename 在同分区是原子操作(POSIX rename(2))
+                  const tmp = `${full}.tmp-${ch.id}-${Date.now()}`
                   try {
-                    await fs.writeFile(full, `${newTitle}${newRest}`, 'utf-8')
+                    await fs.writeFile(tmp, `${newTitle}${newRest}`, 'utf-8')
                   } catch {
+                    try { await fs.rm(tmp, { force: true }) } catch { /* ignore */ }
                     txtFailed++
                     continue
                   }
                   const dbTitle = newTitle.trim()
                   if (dbTitle && dbTitle !== ch.title) {
                     // API-15: writeFile 与 chapter.update 间的并发删除窗口(P2025) —— 文件已写但章
-                    // 被级联删, 原会留下孤儿文件且未被回滚; 捕获后回滚文件, 再重抛转换失败
+                    // 被级联删, 原会留下孤儿文件且未被回滚; 捕获后回滚临时文件, 再重抛转换失败
                     try {
                       await db.chapter.update({ where: { id: ch.id }, data: { title: dbTitle } })
                     } catch (e: any) {
                       if (e?.code === 'P2025') {
-                        try { await fs.rm(full, { force: true }) } catch { /* ignore */ }
+                        try { await fs.rm(tmp, { force: true }) } catch { /* ignore */ }
                         txtFailed++
                         continue
                       }
+                      // 真 DB 故障: 临时文件清理后重抛
+                      try { await fs.rm(tmp, { force: true }) } catch { /* ignore */ }
                       throw e
                     }
+                  }
+                  // R4A-17: DB update 成功后 atomic rename tmp → full
+                  try {
+                    await fs.rename(tmp, full)
+                  } catch {
+                    // rename 失败极罕见(同分区权限/磁盘故障), 视为本次转换失败但 DB 已更新
+                    try { await fs.rm(tmp, { force: true }) } catch { /* ignore */ }
+                    txtFailed++
+                    continue
                   }
                   chapterUpdated++
                 } else {

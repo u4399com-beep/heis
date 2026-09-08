@@ -11,6 +11,12 @@ export async function GET(req: Request) {
     const tocSize = clampInt(url.searchParams.get('tocSize'), 100, 1, 300)
     if (!id) return fail('缺少id')
 
+    // R4A-4: skip 上限钳制 —— (tocPage-1)*tocSize 最坏 300M 行, SQLite OFFSET 全表扫描
+    // 会让单个请求占用 DB 数秒, 120 req/min 限流下能饱和整个 DB。cap 在 10000(与
+    // /api/public/books API-7 同口径), 超出返回空 urlset 不报错(公共路由容错优先)
+    const requestedSkip = (tocPage - 1) * tocSize
+    const effectiveSkip = Math.min(requestedSkip, 10_000)
+
     const book = await db.book.findUnique({
       where: { id },
       include: { category: true },
@@ -24,7 +30,7 @@ export async function GET(req: Request) {
         where: { bookId: id },
         orderBy: { idx: 'asc' },
         select: { id: true, idx: true, title: true, wordCount: true, volume: true },
-        skip: (tocPage - 1) * tocSize,
+        skip: effectiveSkip,
         take: tocSize,
       }),
     ])

@@ -55,7 +55,14 @@ function buildDiffCharSet(conv: T2SConv, convBack: T2SConv): Set<string> {
       // 合法存在(乾隆/乾坤), 不作为繁体触发信号 —— 否则简体文本被误转换
       try {
         if (convBack(converted) !== ch) continue
-      } catch { /* 反向转换异常: 保守收录(旧行为) */ }
+      } catch {
+        // R4-21: convBack 抛错时不再"保守收录"——旧行为 fall-through 到 set.add(ch) 会把
+        // 乾/係/唸 这类"在规范简体中合法存在但 convBack 异常"的字当作繁体触发信号, 导致
+        // 简体源站被误判为繁体并执行 t2s 转换(乾县→干县, 真实简体损坏)。改为 continue
+        // 跳过该字(保守视为非繁体信号), 与"无变化"分支同口径——单字漏判不触发整段转换,
+        // 整段真正含繁体字时其他字仍会命中 diffSet
+        continue
+      }
       set.add(ch)
     }
   }
@@ -154,7 +161,12 @@ export function cleanContentHtml(raw: string, cfgOverride?: Partial<CleanConfig>
     // 纯文本模式: 剥全部标签, 保留换行
     // (实体解码走单遍 decodeEntitiesOnce —— 先剥真实标签后解码, 源站 "&lt;b&gt;" 类
     //  编码文本解码后保持字面量, 不会反向变成标签被误剥)
+    // R4-20: 先剥危险标签(script/style/noscript/iframe/object/embed)及其内部文本再剥全部标签——
+    //  旧行为只剥 <[^>]+> 标签本身, <script>alert(1)</script> 中的 alert(1) 文本会漏进纯文本输出
+    //  (存储型注入面: 前台纯文本渲染虽不执行 JS, 但内容污染/广告灌水/有可能被二次 HTML 渲染时执行)
     let text = html
+      .replace(/<(script|style|noscript|iframe|object|embed)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, ' ')
+      .replace(/<(script|style|noscript|iframe|object|embed)\b[^>]*\/>/gi, ' ')
       .replace(/<\s*br\s*\/?>/gi, '\n')
       .replace(/<\/(p|div|h[1-6]|li)>/gi, '\n')
       .replace(/<[^>]+>/g, '')

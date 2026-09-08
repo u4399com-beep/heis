@@ -11,6 +11,11 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     const page = clampInt(url.searchParams.get('page'), 1, 1, 1_000_000)
     const size = clampInt(url.searchParams.get('size'), 50, 1, 200)
 
+    // R4A-5: skip 上限钳制 —— admin toc 与 public/book 同款 DoS 风险(尽管 admin 限流 60/min
+    // 仍可被脚本饱和 DB)。cap 在 10000 行(与 /api/public/books 同口径)
+    const requestedSkip = (page - 1) * size
+    const effectiveSkip = Math.min(requestedSkip, 10_000)
+
     const book = await db.book.findUnique({ where: { id }, select: { id: true } })
     if (!book) return fail('书籍不存在', 404)
 
@@ -19,7 +24,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
       db.chapter.findMany({
         where: { bookId: id },
         orderBy: { idx: 'asc' },
-        skip: (page - 1) * size,
+        skip: effectiveSkip,
         take: size,
         select: { id: true, idx: true, title: true, url: true, storage: true, filePath: true, wordCount: true, fetched: true, volume: true, updatedAt: true },
       }),

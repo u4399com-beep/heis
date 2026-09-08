@@ -13,12 +13,16 @@ import {
 import { readBody } from '@/lib/api'
 
 function clientIp(req: Request): string {
+  // R4A-1: 优先 TCP 套接字 IP(req.ip) —— 与 proxy.ts 同款 R3-30 修复, 防 XFF 头部
+  // 伪造绕过每 IP 5 次/60s 登录限流。XFF 仅作为 req.ip 不可读时的兜底(Next 16 边缘运行时)
+  const sockIp = (req as unknown as { ip?: string }).ip
+  if (sockIp && sockIp.trim()) return sockIp.trim()
   const xff = req.headers.get('x-forwarded-for')
   if (xff) {
     const first = xff.split(',')[0]?.trim()
     if (first) return first
   }
-  return (req as unknown as { ip?: string }).ip || 'unknown'
+  return 'unknown'
 }
 
 export async function POST(req: Request) {

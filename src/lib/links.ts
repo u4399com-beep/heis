@@ -81,40 +81,34 @@ export interface WheelBook {
 }
 
 /**
- * 随机挑选 N 本书 (总数→skip 随机单行 + notIn 去重 + 有界重试)。
- * 每个链位: count 总数 → 随机 skip → findFirst 单行, 已选中的书用 notIn 排除;
- * skip 落空(并发删除等)时重试, 有界(≤5次)防死循环; 书库耗尽即止(宁缺毋滥)。
+ * 随机挑选 N 本书 (单查询 + Fisher-Yates 洗牌 + 去重)。
+ * R4A-7: 旧行为每个链位 up to 5 次 count + findFirst 顺序查询, 30 个槽位最坏 300 次查询,
+ *  10k 书库下 1.5M 行扫描/请求 × 120 req/min = 180M 行/min, SQLite 饱和。
+ *  改为单次 findMany take need*3(冗余应对 excludeIds 命中) → JS 侧洗牌 + 去重, 单次查询替代 N×M 次串行查询。
+ *  书库不足 take 时 findMany 返回全部行, 链位填不满则少给(宁缺毋滥语义不变)。
  */
 export async function pickRandomBooks(need: number, excludeIds: string[] = []): Promise<WheelBook[]> {
   const out: WheelBook[] = []
   if (need <= 0) return out
-  const notIn = [...excludeIds]
-  const RETRY = 5
-  for (let i = 0; i < need; i++) {
-    let picked: WheelBook | null = null
-    for (let r = 0; r < RETRY; r++) {
-      const where = notIn.length ? { id: { notIn } } : undefined
-      const total = await db.book.count({ where })
-      if (total <= 0) break // 去重后书库已空
-      const skip = Math.floor(Math.random() * total)
-      const row = await db.book.findFirst({
-        where,
-        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], // 稳定排序使随机 skip 均匀有效
-        skip,
-        take: 1,
-        select: { id: true, name: true },
-      })
-      if (row) {
-        picked = row
-        break
-      }
-      // 该 skip 恰好无行(极小概率竞态) → 换一个随机位重试
-    }
-    if (!picked) break // 书库不足: 不硬凑
-    notIn.push(picked.id)
-    out.push(picked)
+  const excludeSet = new Set(excludeIds)
+  // 多取 need*3 应对 excludeIds 命中后剩余仍够 need; 同时数据库内行数 < need*3 时全量返回
+  const take = Math.max(need * 3, need)
+  const rows = await db.book.findMany({
+    take,
+    orderBy: { wordCount: 'desc' }, // 稳定排序使 JS 侧洗牌的随机性有意义
+    select: { id: true, name: true },
+  })
+  // JS 侧 Fisher-Yates 洗牌
+  const shuffled: WheelBook[] = []
+  for (const r of rows) {
+    if (excludeSet.has(r.id)) continue
+    shuffled.push({ id: r.id, name: r.name })
   }
-  return out
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]
+  }
+  return shuffled.slice(0, need)
 }
 
 // ---------------- 链轮链接计算 ----------------

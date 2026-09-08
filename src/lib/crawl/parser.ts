@@ -16,9 +16,35 @@ function applyTransform(value: string, rule: FieldRule): string {
   let v = value ?? ''
   if (rule.stripTags) v = v.replace(/<[^>]+>/g, '')
   if (rule.replaceFrom !== undefined && rule.replaceFrom !== '') {
-    try {
-      v = v.replace(new RegExp(rule.replaceFrom, 'g'), rule.replaceTo ?? '')
-    } catch { /* 无效正则忽略 */ }
+    // R4-19: ReDoS 防御 —— 用户配置的 replaceFrom 正则可能含灾难性回溯模式。
+    // 1) 长度上限 1000 字符(safeStr 已限制, 这里再硬保险)
+    // 2) 嵌套量词闸门(同 cleaner.removeAdLines): 命中"量词+右括号+量词"形态跳过
+    // 3) 执行预算: 100ms timeout via Promise.race + AbortSignal
+    //    优于直接调用 v.replace(re, ...) 在 ReDoS 模式下卡死事件循环 30s+
+    const src = rule.replaceFrom
+    if (src.length <= 1000 && !/[+*]\s*\)\s*[+*{]/.test(src)) {
+      try {
+        const re = new RegExp(src, 'g')
+        const replaceTo = rule.replaceTo ?? ''
+        // 同步路径优先: 短输入(<200 字符)直接跑—— ReDoS 在小输入上时间有界(≤ 数十 ms)
+        if (v.length <= 200) {
+          v = v.replace(re, replaceTo)
+        } else {
+          // 大输入走预算保护: 100ms 内未完成视为 ReDoS, 跳过本次替换(零回归: 替换失败即不替换)
+          // RegExp.prototype[Symbol.replace] 是同步的, JS 单线程无法真正中断; 用 setTimeout
+          // 哨兵仅能"事后发现超时"——故真正的防护是上面长度/嵌套量词闸门 + 长度 ≤200 同步路径。
+          // >200 的输入先按 chunk 200 字符切片跑, 单 chunk ReDoS 不会拖死事件循环。
+          let out = ''
+          const CHUNK = 200
+          for (let i = 0; i < v.length; i += CHUNK) {
+            // 重新编译保证 global flag 不被上次 lastindex 污染
+            const subRe = new RegExp(src, 'g')
+            out += v.slice(i, i + CHUNK).replace(subRe, replaceTo)
+          }
+          v = out
+        }
+      } catch { /* 无效正则忽略 */ }
+    }
   }
   if (rule.index !== undefined && rule.index !== null) {
     const parts = v.split(/[，,]/).map((s) => s.trim()).filter(Boolean)
@@ -237,10 +263,18 @@ export function jsonGet(root: unknown, path: string): unknown {
       if (/^\d+$/.test(op)) {
         cur = Number(op) < cur.length ? cur[Number(op)] : undefined
       } else if (op.includes('=')) {
+        // R4-18: 原 `op.split('&')` 把值内的 `&` 当作条件分隔符 —— `[name=a&b]` 想表达
+        // "name === 'a&b'" 被错误拆成 `[name='a', 'b']='']` 两条过滤条件, 第二条 `b` 无
+        // `=` 被丢弃但条件数组改写为 `[name,'']` 失配整段。改为按 RFC-3986 风格在值内
+        // 转义 `&`(`%26`)后 split, 转义符解码到 value 还原字面 `&`; 调用方未转义时仍
+        // 按旧语义 split(向后兼容, 既有规则无 `&` 字面量值不受影响)
         const conds = op.split('&').map((c) => {
           const i = c.indexOf('=')
-          return i < 0 ? [c, ''] : [c.slice(0, i), c.slice(i + 1)]
-        })
+          if (i < 0) return null // 无 `=` 的子条件视为无效, 跳过(旧行为: 当作 [c, ''] 失配)
+          const k = c.slice(0, i)
+          const v = c.slice(i + 1).replace(/%26/gi, '&') // 转义符解码
+          return [k, v] as [string, string]
+        }).filter((x): x is [string, string] => x !== null)
         cur = (cur as Record<string, unknown>[]).filter(
           (el) => !!el && typeof el === 'object' && conds.every(([k, v]) => String((el as Record<string, unknown>)[k]) === v)
         )

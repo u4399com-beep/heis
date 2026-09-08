@@ -20,15 +20,17 @@ const IP_HOUR_LIMIT = 5
 const HOUR_MS = 60 * 60 * 1000
 
 function clientIp(req: Request): string {
-  // 优先 x-forwarded-for 第一段; 兜底 req.ip(Next.js 16 Route Handler 可读)
+  // R4A-2: 优先 TCP 套接字 IP(req.ip) —— 与 proxy.ts R3-30 修复同款, 防 XFF 头部伪造
+  // 绕过同 IP 5条/小时 反垃圾限流(攻击者轮换 XFF 即可拥有无限配额)。XFF 仅作兜底。
+  const sockIp = (req as Request & { ip?: string }).ip
+  if (sockIp && sockIp.trim()) return sockIp.trim().slice(0, 64)
+  // Next 16 Route Handler 上 request.ip 不可读时降级 XFF 首段
   const xff = req.headers.get('x-forwarded-for')
   if (xff) {
     const first = xff.split(',')[0]?.trim()
     if (first) return first.slice(0, 64)
   }
-  // Next 16 Route Handler 上 request.ip 不可读时降级空串
-  const rip = (req as Request & { ip?: string }).ip
-  return rip ? String(rip).slice(0, 64) : ''
+  return ''
 }
 
 function isAllCaps(s: string): boolean {

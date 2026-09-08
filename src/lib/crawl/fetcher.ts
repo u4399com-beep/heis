@@ -462,9 +462,16 @@ const BROWSER_PROBE_RETRY_MS = 60_000
 
 /** 每域 UA 钉扎: 同域连续请求保持同一 UA —— Cookie 罐是按域共享的, 若每个章节都换 UA,
  *  "同一会话 UA 跳变"本身就是一个典型爬虫特征; 整轮失败时清除钉扎, 下次调用换新身份 */
-const globalForUa = globalThis as unknown as { __novelDomainUa_v2?: Map<string, string> }
-const domainUa: Map<string, string> = globalForUa.__novelDomainUa_v2 || new Map()
-globalForUa.__novelDomainUa_v2 = domainUa
+// R4-7: 版本化缓存键 __novelDomainUa_v3 + 形态校验, 防 dev HMR 模块重载时复用结构已变的旧实例
+// (同 CookieJar.validJar 设计; 旧 v2 仅是 plain Map, 无法识别方法缺失/字段漂移)
+const globalForUa = globalThis as unknown as { __novelDomainUa_v3?: Map<string, string> }
+function validDomainUa(m: unknown): m is Map<string, string> {
+  return m instanceof Map
+}
+const domainUa: Map<string, string> = validDomainUa(globalForUa.__novelDomainUa_v3)
+  ? globalForUa.__novelDomainUa_v3 as Map<string, string>
+  : new Map<string, string>()
+globalForUa.__novelDomainUa_v3 = domainUa
 
 function pickUaFor(domain: string, cfg: FetchConfig): string {
   if (cfg.uaMode === 'custom' && cfg.customUa) return cfg.customUa
@@ -935,8 +942,14 @@ export function isLoopbackTarget(url: string): boolean {
 interface ProxyState {
   useCount: number
   failedUntil: number
+  /** R4-3: 连续失败计数 —— 旧实现固定 30s 冷却, 死代理每 30s 重新尝试一次浪费一次请求。
+   *  改为指数退避: cooldown = min(300s, 30s × 2^failures), 死代理冷却期会指数拉长至 5min,
+   *  减少无效重试; 任一成功重置为 0 */
+  consecutiveFailures: number
 }
 const PROXY_FAIL_COOLDOWN_MS = 30_000
+/** R4-3: 指数退避上限 —— 30s × 2^4 = 480s, 钳至 300s 防冷却过长 */
+const PROXY_FAIL_COOLDOWN_MAX_MS = 300_000
 const globalForProxyState = globalThis as unknown as { __novelProxyState_v1?: Map<string, ProxyState> }
 const proxyState: Map<string, ProxyState> = globalForProxyState.__novelProxyState_v1 ?? new Map()
 globalForProxyState.__novelProxyState_v1 = proxyState
@@ -944,7 +957,7 @@ globalForProxyState.__novelProxyState_v1 = proxyState
 /** 获取(或初始化)某代理的运行时状态 */
 function getProxyState(proxy: string): ProxyState {
   let s = proxyState.get(proxy)
-  if (!s) { s = { useCount: 0, failedUntil: 0 }; proxyState.set(proxy, s) }
+  if (!s) { s = { useCount: 0, failedUntil: 0, consecutiveFailures: 0 }; proxyState.set(proxy, s) }
   return s
 }
 
@@ -960,9 +973,23 @@ function markProxyUsed(proxy: string): void {
   getProxyState(proxy).useCount++
 }
 
-/** 标记代理失败+30s 冷却(仅网络层失败调用, HTTP 状态错误不冷却) */
+/** 标记代理失败+指数退避冷却(仅网络层失败调用, HTTP 状态错误不冷却)
+ *  R4-3: cooldown = min(PROXY_FAIL_COOLDOWN_MAX_MS, PROXY_FAIL_COOLDOWN_MS × 2^consecutiveFailures)
+ *  死代理连续失败时冷却指数拉长(30s→60s→120s→240s→300s 上限), 减少无效重试;
+ *  代理恢复成功(succeedProxyState) 时 consecutiveFailures 清零 */
 function markProxyFailed(proxy: string, cooldownMs = PROXY_FAIL_COOLDOWN_MS): void {
-  getProxyState(proxy).failedUntil = Date.now() + cooldownMs
+  const s = getProxyState(proxy)
+  s.consecutiveFailures++
+  // 指数退避: 30s × 2^(failures-1) → 30/60/120/240/480s, 上限 300s
+  const exp = cooldownMs * Math.pow(2, Math.max(0, s.consecutiveFailures - 1))
+  s.failedUntil = Date.now() + Math.min(PROXY_FAIL_COOLDOWN_MAX_MS, exp)
+}
+
+/** 代理请求成功 → 清零连续失败计数(R4-3: 让指数退避在恢复后立即解除) */
+function markProxySucceeded(proxy: string): void {
+  const s = proxyState.get(proxy)
+  if (!s) return
+  s.consecutiveFailures = 0
 }
 
 /** 判定错误是否属代理网络层失败(应冷却): HTTP status 存在=源站响应, 不冷却;
@@ -1087,6 +1114,50 @@ async function fetchHttp(url: string, cfg: FetchConfig, ua: string, proxy = '', 
   // 打标后 runner/gateFetch 可区分“源站超时”与“停止/换代在途中止”, 前者计失败嗂 hostGate, 后者才享 x-a 豁免
   let timedOut = false
   const timer = setTimeout(() => { timedOut = true; controller.abort() }, timeoutMs)
+  // R4-2: native fetch 响应体大小上限 —— 与 curl 路径 MAX_HTML_BYTES = 10MB 对齐, 防 100MB+
+  // 异常响应体 OOM。读前先看 content-length 提前拒绝, 无 content-length 时流式读 + 计数 abort
+  const MAX_NATIVE_HTML_BYTES = 10 * 1024 * 1024
+  /** 安全读响应体: content-length 已超限 → 抛 RangeError; body 流式读超限 → 抛 RangeError;
+   *  其余情况返回完整 buffer。3xx 与 !ok 分支同样调用此函数, 故错误体也受同一上限保护 */
+  const readBodyCapped = async (res: Response | RelayResponseLike): Promise<ArrayBuffer> => {
+    const cl = Number(res.headers.get('content-length') || 0)
+    if (cl && cl > MAX_NATIVE_HTML_BYTES) {
+      try { await res.body?.cancel().catch(() => {}) } catch { /* ignore */ }
+      throw new RangeError(`响应体过大(content-length=${cl} > ${MAX_NATIVE_HTML_BYTES}字节), 已中止`)
+    }
+    // body 流式读 + 计数; 中继形态无 body 字段或 body 仅 { cancel } 时回退 arrayBuffer()
+    const rawBody = res.body as { getReader?: () => any; cancel?: () => any } | null | undefined
+    if (!rawBody || typeof rawBody.getReader !== 'function') {
+      const buf = await res.arrayBuffer()
+      if (buf.byteLength > MAX_NATIVE_HTML_BYTES) {
+        throw new RangeError(`响应体过大(${buf.byteLength} > ${MAX_NATIVE_HTML_BYTES}字节, 已读取)`)
+      }
+      return buf
+    }
+    const reader = rawBody.getReader()
+    const chunks: Uint8Array[] = []
+    let total = 0
+    let overflow = false
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value) continue
+      total += value.byteLength
+      if (total > MAX_NATIVE_HTML_BYTES) {
+        overflow = true
+        try { await reader.cancel().catch(() => {}) } catch { /* ignore */ }
+        break
+      }
+      chunks.push(value)
+    }
+    if (overflow) {
+      throw new RangeError(`响应体流式读超 ${MAX_NATIVE_HTML_BYTES}字节上限, 已中止`)
+    }
+    const merged = new Uint8Array(total)
+    let off = 0
+    for (const c of chunks) { merged.set(c, off); off += c.byteLength }
+    return merged.buffer as ArrayBuffer
+  }
   // 出口代理(dd-a): ''=直连; bun fetch 原生 RequestInit.proxy 仅支持 http/https,
   // socks5 条目在此链即时失败(UnsupportedProxyProtocol)后由 fetchHttpWithCurlFallback
   // 同代理重试 curl 链(-x 全形态), 支持矩阵见代理池段注释
@@ -1135,7 +1206,8 @@ async function fetchHttp(url: string, cfg: FetchConfig, ua: string, proxy = '', 
         } catch {
           // 非法 Location: 视作最终响应走 !res.ok 抛错语义(带 status+bodyHtml)
           // ee-d: 错误体同样走 charset 感知解码(GBK 站挑战壳若按 utf8 读成 FFFD, looksBlocked/isJsChallenge 全部漏判)
-          const bodyHtml = await res.arrayBuffer().then((b) => decodeBuffer(b, res.headers.get('content-type') ?? undefined)).catch(() => '')
+          // R4-2: 错误体也走 readBodyCapped 防 OOM(原 arrayBuffer() 无上限)
+          const bodyHtml = await readBodyCapped(res).then((b) => decodeBuffer(b, res.headers.get('content-type') ?? undefined)).catch(() => '')
           const err: any = new Error(`HTTP ${res.status}(Location 非法)`)
           err.status = res.status
           err.bodyHtml = bodyHtml
@@ -1159,7 +1231,8 @@ async function fetchHttp(url: string, cfg: FetchConfig, ua: string, proxy = '', 
       if (!res.ok) {
         // 读出错误响应体供挑战识别(isJsChallenge/CF壳), 挂在 error.bodyHtml 上
         // ee-d: 与成功路径同走 decodeBuffer(charset 三级探测), 否则 GBK 站 403 壳页乱码化后挑战识别失效
-        const bodyHtml = await res.arrayBuffer().then((b) => decodeBuffer(b, res.headers.get('content-type') ?? undefined)).catch(() => '')
+        // R4-2: 错误体也走 readBodyCapped 防 OOM(原 arrayBuffer() 无上限)
+        const bodyHtml = await readBodyCapped(res).then((b) => decodeBuffer(b, res.headers.get('content-type') ?? undefined)).catch(() => '')
         const err: any = new Error(`HTTP ${res.status}`)
         err.status = res.status
         err.bodyHtml = bodyHtml
@@ -1168,7 +1241,8 @@ async function fetchHttp(url: string, cfg: FetchConfig, ua: string, proxy = '', 
         attachRetryAfterMs(err, res.headers)
         throw err
       }
-      const buf = await res.arrayBuffer()
+      // R4-2: 成功路径同样走 readBodyCapped(原 res.arrayBuffer() 无上限, 100MB+ 响应 OOM)
+      const buf = await readBodyCapped(res)
       return decodeBuffer(buf, res.headers.get("content-type") ?? undefined)
     }
   } catch (e: any) {
@@ -1451,14 +1525,60 @@ async function relayHop(url: string, headers: Headers | Record<string, string>, 
     if (e?.name === 'AbortError' || e?.code === 'ABORT_ERR') throw e
     throw new RelayTransportError(`中继不可达(${RELAY_URL}): ${String(e?.message || e).slice(0, 120)}`)
   }
+  // R4-4: relay 响应体大小上限 —— 中继响应是 JSON 包装的 {status, headers, setCookie, bodyB64},
+  //  bodyB64 是目标响应体的 base64 编码(膨胀 ~33%)。fetch-relay bridge 自身有 20MB 上限,
+  //  但若中继服务异常/被攻击返回 1GB JSON, 引擎侧 res.json() 一次性读入会 OOM。
+  //  读前先看 content-length 拒绝明显超大响应, 流式读时也 cap 在 20MB
+  const RELAY_MAX_JSON_BYTES = 20 * 1024 * 1024
+  const cl = Number(res.headers.get('content-length') || 0)
+  if (cl && cl > RELAY_MAX_JSON_BYTES) {
+    try { await res.body?.cancel().catch(() => {}) } catch { /* ignore */ }
+    throw new RelayTransportError(`中继响应体过大(content-length=${cl} > ${RELAY_MAX_JSON_BYTES}字节), 已中止`)
+  }
+  let payloadText: string
+  if (res.body && typeof res.body.getReader === 'function') {
+    // 流式读 + 计数, 超限中止防 OOM
+    const reader = res.body.getReader()
+    const dec = new TextDecoder('utf-8')
+    let acc = ''
+    let total = 0
+    let overflow = false
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value) continue
+      total += value.byteLength
+      if (total > RELAY_MAX_JSON_BYTES) {
+        overflow = true
+        try { await reader.cancel().catch(() => {}) } catch { /* ignore */ }
+        break
+      }
+      acc += dec.decode(value, { stream: true })
+    }
+    acc += dec.decode() // flush
+    if (overflow) {
+      throw new RelayTransportError(`中继响应体流式读超 ${RELAY_MAX_JSON_BYTES}字节上限, 已中止`)
+    }
+    payloadText = acc
+  } else {
+    // 无 body 流(理论不可达, 兜底走 text())
+    payloadText = await res.text()
+    if (payloadText.length > RELAY_MAX_JSON_BYTES) {
+      throw new RelayTransportError(`中继响应体过大(${payloadText.length} > ${RELAY_MAX_JSON_BYTES}字符, 已读取)`)
+    }
+  }
   let payload: { status?: number; headers?: [string, string][]; setCookie?: string[]; bodyB64?: string; relayError?: string }
   try {
-    payload = await res.json()
+    payload = JSON.parse(payloadText)
   } catch (e: any) {
     throw new RelayTransportError(`中继响应非 JSON(HTTP ${res.status}): ${String(e?.message || e).slice(0, 100)}`)
   }
   if (payload.relayError || typeof payload.status !== 'number' || typeof payload.bodyB64 !== 'string') {
     throw new RelayTransportError(`中继层失败: ${String(payload.relayError || '响应形态非法').slice(0, 160)}`)
+  }
+  // R4-4: base64 body 同样 cap(防中继层未限大小就塞进来, 解码后 buf.length > 20MB 拒收)
+  if (payload.bodyB64.length > Math.ceil(RELAY_MAX_JSON_BYTES * 4 / 3)) {
+    throw new RelayTransportError(`中继 bodyB64 过大(${payload.bodyB64.length}字符), 已拒绝`)
   }
   const h = new Headers()
   for (const [k, v] of payload.headers || []) {
@@ -1728,13 +1848,17 @@ export async function fetchHttpWithCurlFallback(url: string, cfg: FetchConfig, u
   for (const proxy of order) {
     markProxyUsed(proxy)
     try {
-      return await fetchHttpWithCurlSingle(url, cfg, ua, proxy)
+      const result = await fetchHttpWithCurlSingle(url, cfg, ua, proxy)
+      // R4-3: 代理请求成功 → 清零连续失败计数, 让指数退避在代理恢复后立即解除
+      markProxySucceeded(proxy)
+      return result
     } catch (e: any) {
       lastErr = e
       // feat-round-8: B3 — 网络层失败(无 HTTP status)标记代理冷却 30s; HTTP 状态错误不冷却
+      // R4-3: 冷却改为指数退避(30s→60s→120s→240s→300s 上限)
       if (isProxyNetworkError(e)) {
         markProxyFailed(proxy)
-        console.warn(`[fetcher] 代理网络层失败+30s冷却(${redactProxy(proxy)}): ${String(e?.message || e).slice(0, 140)}`)
+        console.warn(`[fetcher] 代理网络层失败+指数退避冷却(${redactProxy(proxy)}): ${String(e?.message || e).slice(0, 140)}`)
       } else {
         console.warn(`[fetcher] 代理请求失败(源站响应, 不冷却)(${redactProxy(proxy)}): ${String(e?.message || e).slice(0, 140)}`)
       }
@@ -1780,10 +1904,20 @@ function tokenCacheTrim(cache: Map<string, { token: string; at: number }>) {
   }
 }
 
-const globalForToken = globalThis as unknown as { __novelTokenPrefetch_v1?: Map<string, { token: string; at: number }> }
+const globalForToken = globalThis as unknown as {
+  __novelTokenPrefetch_v1?: Map<string, { token: string; at: number }>
+  /** R4-1: in-flight token 预取 promise —— 并发调用同 cacheKey 时复用同一 promise, 防
+   *  TTL 过期瞬间 N 个并行章节请求同时 miss cache、同时触发 N 次 fetchHttpWithCurlFallback
+   *  打爆 token 端点(触发对端 429 / 自伤出口 IP)。Promise resolve 后清条目 */
+  __novelTokenInflight_v1?: Map<string, Promise<string>>
+}
 function tokenCache(): Map<string, { token: string; at: number }> {
   if (!globalForToken.__novelTokenPrefetch_v1) globalForToken.__novelTokenPrefetch_v1 = new Map()
   return globalForToken.__novelTokenPrefetch_v1
+}
+function tokenInflight(): Map<string, Promise<string>> {
+  if (!globalForToken.__novelTokenInflight_v1) globalForToken.__novelTokenInflight_v1 = new Map()
+  return globalForToken.__novelTokenInflight_v1
 }
 
 /** token 提取: 'regex:' 前缀=正则第一捕获组(无捕获组取全匹配), 否则 JSON 点路径。
@@ -1827,16 +1961,35 @@ async function prefetchToken(targetUrl: string, cfg: FetchConfig, ua: string): P
   const cacheKey = `${originHost(targetUrl)}|${real}|${pattern}`
   const cached = tokenCache().get(cacheKey)
   if (cached && Date.now() - cached.at < TOKEN_CACHE_TTL_MS) return cached.token
-  try {
-    const body = await fetchHttpWithCurlFallback(real, cfg, ua)
-    const token = await extractToken(body, pattern)
-    if (token) {
-      const cache = tokenCache()
-      cache.set(cacheKey, { token, at: Date.now() })
-      tokenCacheTrim(cache) // rr-c3: 有界化(修前逐章分键条目永不清扫 → 长任务无界增长)
+  // R4-1: in-flight 去重 —— TTL 过期瞬间 N 个并行章节请求同时 miss cache, 原实现每个都
+  // 触发一次 fetchHttpWithCurlFallback(real, ...), N× 负载打在 token 端点上(触发对端 429
+  // 或自伤出口 IP)。现复用同一 in-flight promise, N 个 caller 共享一次预取结果
+  const inflightMap = tokenInflight()
+  const existing = inflightMap.get(cacheKey)
+  if (existing) {
+    try {
+      return await existing
+    } catch {
+      // 上一次预取失败, 落到下方自己重试一次(单次, 不再 in-flight 嵌套)
     }
-    return token
-  } catch { return '' }
+  }
+  const p = (async () => {
+    try {
+      const body = await fetchHttpWithCurlFallback(real, cfg, ua)
+      const token = await extractToken(body, pattern)
+      if (token) {
+        const cache = tokenCache()
+        cache.set(cacheKey, { token, at: Date.now() })
+        tokenCacheTrim(cache) // rr-c3: 有界化(修前逐章分键条目永不清扫 → 长任务无界增长)
+      }
+      return token
+    } finally {
+      // 完成后清 in-flight 条目, 让下次 TTL 过期能重新预取
+      inflightMap.delete(cacheKey)
+    }
+  })()
+  inflightMap.set(cacheKey, p)
+  return p
 }
 
 // ---------- 镜像域名自动故障切换 (dd-b) ----------
@@ -1970,9 +2123,12 @@ async function trySolveTokenChallenge(url: string, html: string, cfg: FetchConfi
   // challenge-platform 脚本 + 含 token=... 字面量)。改为要求两特征【同时】出现且在 500 字符
   // 邻近范围内(典型 token 挑战壳体极短 <2k, 二者必紧邻)。仅命中 token= 而无 challenge 拼接,
   // 或仅命中 challenge 而无 token= 的形态一律放弃求解(交回浏览器升级链, 不浪费双跳请求)
-  const m = html.match(/(?:let|var)\s+token\s*=\s*"([A-Za-z0-9+/=_-]{20,})"/)
+  // R4-6: 原正则只匹配双引号 token —— 源站用 `let token = '...'`(单引号)或反引号时求解漏触发,
+  //  降级走浏览器渲染(慢)。改为 ["'`] 字符组同时支持双引号/单引号/反引号, 且开闭引号必须一致
+  const m = html.match(/(?:let|var)\s+token\s*=\s*(["'`])([A-Za-z0-9+/=_-]{20,})\1/)
   if (!m) return null
   const tokenIdx = m.index ?? -1
+  const token = m[2]
   // challenge 拼接模式: location.href = ... + "?challenge=" + token, 允许 ? 或 = 单独成块,
   // 但要求是同一行/紧邻 token 定义(<500 字符)。encodeURIComponent 分支显式列出防止误命中
   const chalRe = /location\.href\s*=\s*[^;]{0,200}\?\s*challenge\s*=?|location\.href\s*=\s*[^;]{0,200}\+\s*encodeURIComponent/
@@ -1981,7 +2137,7 @@ async function trySolveTokenChallenge(url: string, html: string, cfg: FetchConfi
   const chalIdx = cm.index ?? -1
   if (tokenIdx < 0 || chalIdx < 0) return null
   if (Math.abs(tokenIdx - chalIdx) > 500) return null
-  const challengeUrl = `${url}${url.includes('?') ? '&' : '?'}challenge=${encodeURIComponent(m[1])}`
+  const challengeUrl = `${url}${url.includes('?') ? '&' : '?'}challenge=${encodeURIComponent(token)}`
   try {
     const solved = await fetchHttpWithCurlFallback(challengeUrl, cfg, ua)
     return looksBlocked(solved) ? null : solved
@@ -2021,7 +2177,8 @@ async function fetchPageOnce(url: string, cfg: FetchConfig): Promise<FetchResult
   let reqUrl = url
   let effCfg: FetchConfig = cfg
   if ((cfg.tokenUrl || '').trim() && (cfg.tokenPattern || '').trim()) {
-    const token = await prefetchToken(url, cfg, ua)
+    // R4-1: prefetchToken 现可 reject(in-flight promise 异常上抛), 失败时静默降级直连(零回归)
+    const token = await prefetchToken(url, cfg, ua).catch(() => '')
     if (token) {
       if (cfg.tokenInjection === 'header') {
         // 请求头名同样清洗控制字符与冒号(与 curl 头注入防护同口径)
@@ -2214,6 +2371,13 @@ export async function fetchBinary(
     for (let hop = 0; hop <= MAX_BINARY_REDIRECT_HOPS; hop++) {
       const headers = buildHeaders(hopUrl, cfg, ua)
       res = await fetch(hopUrl, { headers, signal: controller.signal, redirect: 'manual' })
+      // R4-5: fetchBinary 逐跳存储 Set-Cookie —— 旧行为从未调用 cookieJar.store, 重定向链中
+      // 中间跳(如 CDN anti-hotlink)种下的会话 Cookie 全部丢失, 后续同域正文/章节抓取拿不到
+      // 会话 Cookie → 403。与 fetchHttp 逐跳同口径调用 store
+      if (cfg.autoCookie !== false) {
+        const setCookies = typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : []
+        if (setCookies.length) cookieJar.store(originHost(hopUrl), setCookies)
+      }
       if (res.status >= 300 && res.status < 400 && res.headers.get('location')) {
         // 不消费 3xx 响应体, 显式 cancel 释放连接
         try { void res.body?.cancel().catch(() => {}) } catch { /* ignore */ }

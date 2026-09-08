@@ -35,7 +35,7 @@
 // URL 池与链路长度。当前实现仅读取 cfg.fetch.hostGateLimit 用于对比说明。
 // ============================================================
 import type { RuleConfig } from './types'
-import { parseRetryAfterHeaderMs } from './fetcher'
+import { parseRetryAfterHeaderMs, assertSafeTarget } from './fetcher'
 
 export type CalibrateProfile = 'lenient' | 'standard' | 'strict'
 
@@ -146,8 +146,12 @@ interface ProbeReply {
 
 /** 单次探测请求: 浏览器指纹头 + 超时控制 + Retry-After 解析 */
 async function probeFetch(url: string, timeoutMs: number): Promise<ProbeReply> {
+  // R4-17: timeoutMs=0 时不应立即 abort —— 旧行为 `opts.timeoutMs ?? 10_000` 用 nullish 合并,
+  //  `0 ?? 10_000 = 0`, setTimeout(fn, 0) 立即 abort → 所有探测 status=0 → 校准产出最保守配置。
+  //  改为 `||` 短路: 0 / NaN / 负数 均回退 10_000 默认值。caller 未传时(undefined ?? 10_000 也 = 10_000)
+  const realTimeout = timeoutMs && timeoutMs > 0 ? timeoutMs : 10_000
   const ctl = new AbortController()
-  const timer = setTimeout(() => ctl.abort(), timeoutMs)
+  const timer = setTimeout(() => ctl.abort(), realTimeout)
   try {
     const res = await fetch(url, {
       headers: {
@@ -194,7 +198,7 @@ async function probeLevel(
   opts: CalibrateOptions,
   noteExtra?: string
 ): Promise<LevelOutcome> {
-  const timeoutMs = opts.timeoutMs ?? 10_000
+  const timeoutMs = opts.timeoutMs && opts.timeoutMs > 0 ? opts.timeoutMs : 10_000 // R4-17: 0 也走默认值
   // 目标序列: 混合 URL 池循环取样, 恒 PROBES_PER_LEVEL 条
   const seq: string[] = []
   for (let i = 0; i < PROBES_PER_LEVEL; i++) seq.push(targets[i % targets.length])
@@ -368,7 +372,7 @@ async function stageVerify(
   intervalMin: number,
   intervalMax: number
 ): Promise<LevelOutcome> {
-  const timeoutMs = opts.timeoutMs ?? 10_000
+  const timeoutMs = opts.timeoutMs && opts.timeoutMs > 0 ? opts.timeoutMs : 10_000 // R4-17: 0 也走默认值
   let hit429 = 0
   let hit403 = 0
   let other = 0
@@ -431,6 +435,25 @@ export async function calibrateRule(cfg: RuleConfig, opts: CalibrateOptions): Pr
   const base = opts.siteBase.replace(/\/+$/, '')
   const profile = opts.profile
   const label = PROFILE_LABEL[profile] ?? profile
+
+  // R4-16: SSRF 防御 —— 引擎侧也校验 siteBase, 防 API 路由配置错误或被绕过时探测内部/云元数据地址。
+  //  允许 loopback(模拟源站 ratelimit-site.ts 在 127.0.0.1:3040 上跑), 但拒绝云元数据(169.254.x)
+  //  与私网(10.x / 192.168.x / 172.16-31.x)。base 校验通过后, chapterUrls / chainUrls 是 base 的
+  //  衍生 URL, 无需逐条再校验(同 host)
+  const ssrf = await assertSafeTarget(`${base}/`, { allowLoopback: true })
+  if (!ssrf.ok) {
+    return {
+      ok: false,
+      maxConcurrency: 1,
+      minIntervalMs: INTERVAL_LADDER[0],
+      safeThresholdNote: 'SSRF 守卫拒绝: ' + ssrf.reason,
+      recommended: { hostGateLimit: 1, threadMin: 1, threadMax: 1, intervalMin: INTERVAL_LADDER[0], intervalMax: Math.round(INTERVAL_LADDER[0] * 2.5) },
+      trace: [],
+      message: `校准失败: 目标地址不安全(${ssrf.reason}), 已拒绝`,
+      durationMs: Date.now() - t0,
+      finishedAt: new Date().toISOString(),
+    }
+  }
 
   // zz-a2: 重置模拟源站(仅回环地址, 调用方安全门)——上一轮残余的 429 计数/临时封禁
   // 会推进封禁升级链污染本轮探测; 失败静默忽略(真实站点该端点不存在, 404/405 无副作用)
