@@ -14,11 +14,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
     const recrawlMode = body?.mode === 'full' ? 'full' : 'incremental'
     // 找一个可用规则(优先来源规则)
-    let ruleId = book.sourceRuleId
-    if (!ruleId || !(await db.rule.findUnique({ where: { id: ruleId } }))) {
+    let ruleId: string | null = book.sourceRuleId
+    let sourceRule = ruleId ? await db.rule.findUnique({ where: { id: ruleId } }) : null
+    if (!sourceRule) {
       const anyRule = await db.rule.findFirst()
       if (!anyRule) return fail('系统中无采集规则, 请先创建')
       ruleId = anyRule.id
+      sourceRule = anyRule
+    }
+    // R3-40: 已禁用的规则不允许直接重采 —— 否则会按一条半残废规则抓回一堆脏数据,
+    // 与用户"禁用规则"的意图相反。提示用户先启用规则再重采
+    if (sourceRule.enabled === false) {
+      return fail('规则已禁用, 请先启用规则')
     }
 
     // FK 竞态兜底(tt-b, 与 POST /api/admin/tasks 同型): ruleId 校验通过后规则被并发删除
@@ -28,7 +35,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       task = await db.task.create({
         data: {
           name: `${recrawlMode === 'full' ? '完全覆盖' : '增量更新'}重采:《${book.name.slice(0, 80)}》`,
-          ruleId,
+          ruleId: ruleId as string,
           mode: 'single',
           bookUrl: book.sourceUrl,
           recrawlMode,

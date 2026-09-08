@@ -56,9 +56,13 @@ function htmlToPreview(html: string, max = 100): string {
       .slice(0, max)
   }
   try {
-    const tmp = document.createElement('div')
-    tmp.innerHTML = html
-    const text = (tmp.textContent || tmp.innerText || '').replace(/\s+/g, ' ').trim()
+    // R3-42: 用 DOMParser 代替 createElement('div') + innerHTML —— 后者会把 <img>/<script>/
+    // <iframe> 等 HTML 节点真正物化为活动节点, 触发资源加载(<img src> 异步请求外部图, <script>
+    // 在 ssr/hydration 后可能执行)。DOMParser.parseFromString 解析结果是不挂载到 document 的
+    // 静态 Document 实例, 不触发任何资源加载/脚本执行, 仅作字符串解析。原实现虽只取 textContent,
+    // 但副作用路径(innerHTML 物化 → <img> 加载)在慢网络/存在外链时已造成实际泄漏
+    const doc = new DOMParser().parseFromString(html, 'text/html')
+    const text = (doc.body.textContent || '').replace(/\s+/g, ' ').trim()
     return text.slice(0, max)
   } catch {
     return ''

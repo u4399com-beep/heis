@@ -667,10 +667,25 @@ export async function parseToc(
   let current = html
   const maxPages = pageRule.pagination?.enabled ? (pageRule.pagination.maxPages || 20) : 1
   const seen = new Set<string>()
+  // R3-24: 同 path 不同 query 的"伪翻页"计数器 —— 部分站点把"下一页"链 query 改个时间戳/
+  // 随机数/nocache 仍指回当前页(分页 rule 配置错或源站分页 bug), 原 seen.has 防环判重不命中
+  // (每次 next 都是新 URL), maxPages 上限 20 内不断拉取重复内容入库。连 5 次同 path 即停。
+  let samePathStreak = 0
+  let lastPath = ''
   let pagesUsed = 0
 
   for (let p = 1; p <= maxPages && url; p++) {
     pagesUsed = p
+    // R3-24: 计算当前 url 的 path, 与上一页 path 对比; 同 path 不同 query 累计计数
+    let curPath = ''
+    try { curPath = new URL(url).pathname.toLowerCase() } catch { /* 解析失败忽略 */ }
+    if (curPath && curPath === lastPath) {
+      samePathStreak++
+      if (samePathStreak >= 5) break
+    } else {
+      samePathStreak = 0
+    }
+    lastPath = curPath
     const $ = cheerio.load(current)
     const doc = getDoc(current)
     // <base href> 生效时目录相对链接按基址解析; 自引用过滤仍以文档 URL 为基准

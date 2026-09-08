@@ -33,15 +33,24 @@ interface Bucket { tokens: number; last: number }
 const MAX_BUCKETS = 10_000
 const buckets = new Map<string, Bucket>()
 
-/** 取客户端 IP: 优先取 X-Forwarded-For 首段, 兜底 request.ip / 'unknown' */
+/** 取客户端 IP: 优先 TCP 套接字 IP(req.ip), 兜底 X-Forwarded-For 首段
+ *  R3-30 修复: 原实现优先 XFF 首段 → 攻击者只需在每个请求里塞不同 XFF 值即可绕过
+ *  每 IP 令牌桶(每次新 IP 都是新桶, 满载 capacity 立即可消费)。req.ip 是 TCP 套接字
+ *  对端地址(由 Caddy 反向代理握手建立), 攻击者无法伪造 —— 只有真正持有连接的客户端
+ *  才能被 req.ip 命中。XFF 仅作为 req.ip 不可读时的兜底(Next 16 边缘运行时下 req.ip 缺失)。
+ *  信任链: 本服务部署于 Caddy 后, Caddy 始终以真实客户端 IP 建立到本服务的 TCP 连接,
+ *  故 req.ip 在 nodejs runtime 下即真实客户端 IP, 无须依赖 XFF 头部信任。 */
 function clientIp(req: NextRequest): string {
+  // NextRequest 在 nodejs runtime 下携带 ip 字段(TCP 套接字对端)
+  const sockIp = (req as unknown as { ip?: string }).ip
+  if (sockIp && sockIp.trim()) return sockIp.trim()
+  // req.ip 不可读时降级 XFF(边缘运行时/调试场景); 生产 nodejs runtime 永不触达此分支
   const xff = req.headers.get('x-forwarded-for')
   if (xff) {
     const first = xff.split(',')[0]?.trim()
     if (first) return first
   }
-  // NextRequest 在 nodejs runtime 下携带 ip 字段
-  return (req as unknown as { ip?: string }).ip || 'unknown'
+  return 'unknown'
 }
 
 /**

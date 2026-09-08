@@ -29,6 +29,9 @@ interface TaskRuntime {
    *  防止操作员在故障源上反复硬敲(熔断→重启→再熔断)。epoch 漂移/正常完成时不清零,
    *  作为该 task 的最近一次熔断记忆(冷却过后允许重启) */
   circuitTrippedAt?: number
+  /** R3-10: runtime 最后活跃时间戳(每次 start/pause/controlInner 路径更新) —— LRU 驱逐
+   *  时优先淘汰 paused 且 1h 未活跃的条目, 避免长期挂起但已不可恢复的任务占住 Map 槽位 */
+  lastActiveAt: number
 }
 
 interface TaskProgress {
@@ -97,13 +100,20 @@ export class TaskRunner {
   /** autoRefresh 开启且任务处于终态时, delayMin 分钟后自动重新采集(jj-e 实时更新) */
   scheduleAutoRefresh(taskId: string, delayMin: number, taskName = '') {
     this.cancelAutoRefresh(taskId)
-    const ms = Math.max(0, Math.round(delayMin * 60_000))
+    // R3-35: 钳制 delayMin 到 [5, 1440] 分钟 —— 防误配 0(立即无限触发循环)或 >1440(>1天
+    // 极少刷新)。原实现 Math.max(0, ...) 仅下限 0, 配置 0.01 → 600ms 循环触发, 高频打 hostGate
+    // + DB 反复 update → 自伤站点。下限 5 分钟与正常采集批次间隔同量级, 上限 1 天防止定时器
+    // 在长生命周期内永久驻留。autoRefresh 自愈语义不变(站点改版场景 5 分钟足够冷启动一次)
+    const clampedMin = Math.max(5, Math.min(1440, Math.round(delayMin)))
+    const ms = Math.max(0, Math.round(clampedMin * 60_000))
     const timer = setTimeout(async () => {
       this.refreshTimers.delete(taskId)
       // 触发时复核: 任务仍存在/autoRefresh 仍开/未在运行/仍处终态(期间被 stop/pause 则放弃)
+      // R3-14: 同 recoverOnBoot, 'stopped' 不参与自动刷新(用户手动停止的明确意图, 不应
+      // 被定时器拉回)。仅 done(自然完成)/error(异常终止) 触发自愈重采
       try {
         const t = await db.task.findUnique({ where: { id: taskId } })
-        if (!t || !t.autoRefresh || this.isRunning(taskId) || !['done', 'error', 'stopped'].includes(t.status)) return
+        if (!t || !t.autoRefresh || this.isRunning(taskId) || !['done', 'error'].includes(t.status)) return
         await this.log(taskId, 'info', `⟳ 自动刷新触发, 重新开始采集「${t.name}」`)
         const res = await this.control(taskId, 'start')
         if (!res.ok) await this.log(taskId, 'warn', `⟳ 自动刷新启动失败: ${res.message}`)
@@ -116,7 +126,7 @@ export class TaskRunner {
     if (typeof timer.unref === 'function') timer.unref()
     this.refreshTimers.set(taskId, timer)
     if (taskName) {
-      const label = delayMin >= 1 ? `${Math.round(delayMin)} 分钟` : `${Math.round(ms / 1000)} 秒`
+      const label = clampedMin >= 1 ? `${clampedMin} 分钟` : `${Math.round(ms / 1000)} 秒`
       this.log(taskId, 'info', `⟳ 已排定自动刷新: ${label}后重新采集「${taskName}」`).catch(() => {})
     }
   }
@@ -138,14 +148,26 @@ export class TaskRunner {
 
   /** E2: LRU 驱逐 —— runtimes Map 上限 200 条。超出时按插入序找最旧的【已终态】条目
    *  (running===false: 含 done/error/stopped) 驱逐; 活跃任务(running===true, 含 paused)
-   *  永不驱逐(保留 epoch/cooldown/暂停态)。全部活跃时跳过(不阻塞插入)。 */
+   *  永不驱逐(保留 epoch/cooldown/暂停态)。全部活跃时跳过(不阻塞插入)。
+   *  R3-10: 原实现每次仅驱逐一条, 站群场景下大量任务终态时仍可能逐步涨至 200+ 触发持续
+   *  分配开销。改为最多驱逐 50 条(或 10% cap), 一次性把当前批次终态条目都释放掉。
+   *  另: paused 态条目若 lastActiveAt > 1h 未活跃(操作员忘记 resume/已不可恢复), 视为
+   *  "僵尸暂停" 一并驱逐; lastActiveAt 缺失(老条目兼容)用 0 兜底立即驱逐 */
   private pruneRuntimesIfNeeded() {
     if (this.runtimes.size < 200) return
+    const now = Date.now()
+    const PAUSED_STALE_MS = 60 * 60 * 1000 // 1h
+    let evicted = 0
+    const MAX_EVICT = Math.max(50, Math.floor(this.runtimes.size * 0.1))
     for (const [k, rt] of this.runtimes) {
+      if (evicted >= MAX_EVICT) break
+      const last = rt.lastActiveAt || 0
+      const isPausedStale = rt.paused && !rt.running && (now - last) > PAUSED_STALE_MS
       // 优先驱逐无熔断冷却记忆的终态条目; 冷却中的终态条目也优先保畬(60s 窗口短, 不碍 LRU)
-      if (!rt.running) {
+      // R3-10: paused 态 + 1h 未活跃也驱逐(僵尸暂停, 操作员不会再来 resume)
+      if (!rt.running && (!rt.circuitTrippedAt || (now - rt.circuitTrippedAt) >= CIRCUIT_COOLDOWN_MS) || isPausedStale) {
         this.runtimes.delete(k)
-        return
+        evicted++
       }
     }
     // 全部活跃: 不驱逐(不强杀在跑任务), 待下次终态后自然驱逐
@@ -176,8 +198,12 @@ export class TaskRunner {
         await this.log(t.id, 'warn', '服务重启, 任务自动转入暂停状态, 可点击继续恢复采集')
       }
       // jj-e: 重启后恢复 autoRefresh 任务的定时刷新(进程内 timer 随进程消失; 终态任务重新排定)
+      // R3-14: 排除 'stopped' —— 用户手动 stop 是明确意图(不希望任务再跑), 不应被
+      // recoverOnBoot 自动重排定触发。原实现把 stopped 与 done/error 一视同仁地恢复
+      // autoRefresh, 用户操作"停止任务"后只要 autoRefresh=true, 进程一重启就会立即被
+      // 排定时器拉回来跑, 与用户意图相反。done/error 是自然终态/异常终态, 自愈行为合理
       const autoTasks = await db.task.findMany({
-        where: { autoRefresh: true, status: { in: ['done', 'error', 'stopped'] } },
+        where: { autoRefresh: true, status: { in: ['done', 'error'] } },
         select: { id: true, name: true, refreshIntervalMin: true },
       })
       for (const t of autoTasks) {
@@ -219,8 +245,18 @@ export class TaskRunner {
     // await), stop 的整段 body(含状态写+日志)完成后 start#2 才开始, 状态写调用序=提交序;
     // 与 ll-c epoch 双循环窗口修复互补(那边修内存 epoch 绑定, 这边修 DB 状态写序)。
     // 单次 control 失败不阻断后续(链上吞错); 尾 settles 自删 Map 项防长任务无界增长。
+    // R3-13: controlInner 包裹 30s 超时 —— 原 controlInner 持有 db.task.update/日志写入
+    // 与(在 start 路径)异步 executeTask 调度, 单次卡死(如 SQLite busy 锁等待)会让后续所有
+    // control 串行卡在 prev.then 后, 任务永远停不下来也启不动。Promise.race 上限 30s,
+    // 超时则当前 control reject, 链尾 catch 吞错后释放 → 下次 control 可正常入队执行
     const prev = this.controlChains.get(taskId) ?? Promise.resolve()
-    const run = prev.then(() => this.controlInner(taskId, action))
+    const inner = () => Promise.race([
+      this.controlInner(taskId, action),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('control timeout(30s)')), 30_000),
+      ),
+    ])
+    const run = prev.then(() => inner())
     const tail = run.catch(() => {})
     this.controlChains.set(taskId, tail)
     void tail.then(() => {
@@ -232,7 +268,10 @@ export class TaskRunner {
   private async controlInner(taskId: string, action: ControlAction): Promise<{ ok: boolean; message: string }> {
     const task = await db.task.findUnique({ where: { id: taskId } })
     if (!task) return { ok: false, message: '任务不存在' }
-    const rt = this.runtimes.get(taskId) || { paused: false, stopped: false, running: false, epoch: 0 }
+    const rt = this.runtimes.get(taskId) || { paused: false, stopped: false, running: false, epoch: 0, lastActiveAt: Date.now() }
+    // R3-10: 每次进入 controlInner 都更新 lastActiveAt, 供 pruneRuntimesIfNeeded 判定
+    // "僵尸暂停"(paused + 1h 未活跃); 无 operation 直接 update 触发顺序避免 await 间隙
+    rt.lastActiveAt = Date.now()
 
     switch (action) {
       case 'start': {
@@ -285,6 +324,11 @@ export class TaskRunner {
         rt.stopped = true
         rt.paused = false
         rt.running = false
+        // R3-11: 显式重置熔断冷却记忆 —— 用户手动 stop 是明确意图, 与熔断不同(后者是
+        // 上游故障触发的被动中止), 不应让用户在 60s 内无法 restart。原实现保留记忆
+        // 导致 stop 后立即 restart 会被 E4 冷却检查拦截("熔断冷却中"提示), 与"我手动
+        // 停下, 想立刻再启"的用户预期不符
+        rt.circuitTrippedAt = undefined
         this.runtimes.set(taskId, rt)
         // jj-e: 手动停止视为用户明确意图, 同时取消已排定的自动刷新
         this.cancelAutoRefresh(taskId)

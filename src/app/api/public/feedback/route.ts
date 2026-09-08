@@ -51,7 +51,11 @@ export async function POST(req: Request) {
     const type = str(body?.type, 20).trim()
     if (!VALID_TYPES.has(type)) return fail('反馈类型不合法')
 
-    const content = str(body?.content, CONTENT_MAX).trim()
+    // R3-36: 内容先剥 HTML 标签再校验长度 —— 防反馈正文里塞 <script>/<img onerror=...> 等
+    // 载荷(管理员后台虽以纯文本渲染, 但反馈可能被回执邮件/RSS 等其他出口渲染成 HTML 时
+    // 触发存储型 XSS)。剥后 slice(0, 1000) 兜底上限(CONTENT_MAX), 防 str() 上限失效场景
+    const rawContent = str(body?.content, CONTENT_MAX).trim()
+    const content = rawContent.replace(/<[^>]+>/g, '').slice(0, CONTENT_MAX).trim()
     if (content.length < CONTENT_MIN) return fail(`反馈内容至少 ${CONTENT_MIN} 个字符`)
     if (content.length > CONTENT_MAX) return fail(`反馈内容不能超过 ${CONTENT_MAX} 个字符`)
 

@@ -747,6 +747,9 @@ interface PoolSlot {
   /** E5: 最后一次释放(busy=false)的时间戳; 心跳回收线程据此判定 10min 未用即 close ctx 释放资源
    *  (槽位本身保留, 下次获取时 page.isClosed() 触发 recreateSlot 重建) */
   lastUsedAt: number
+  /** R3-17: 连续重建失败计数 —— recreateSlot 失败时累加, 成功时清零。
+   *  达 3 次后该槽位从 S.slots 移除, 避免持续重试占用 MAX_CONCURRENCY 名额 */
+  consecutiveFailures?: number
 }
 
 /** chromium 启动参数: 防检测 + 容器环境兼容 */
@@ -919,7 +922,11 @@ async function createSlot(domain: string, fp: ObscuraFingerprint): Promise<PoolS
  *  描述符/内存)。且 slot.ctx/page/cdp 仍是已关的旧引用, 调用方拿到的 page 一访问就抛
  *  "Target closed"。改为 try/catch 包裹 newPage+CDP, 失败时 await ctx.close() 回收新 ctx 再抛;
  *  slot 各字段不更新(保持旧已关 ctx 引用), 调用方 withObscuraPage 的 free.page.isClosed()
- *  会再次触发 recreateSlot 重建 —— 旧 ctx 已关被 recreateSlot 第一行 close().catch() 容错 */
+ *  会再次触发 recreateSlot 重建 —— 旧 ctx 已关被 recreateSlot 第一行 close().catch() 容错
+ *  R3-17: consecutiveFailures 计数 —— 失败 3 次后认为该槽位"不可恢复"(chromium 进程异常/
+ *  系统资源耗尽/page 损坏持续态), 把槽位从 S.slots 移除以缩减池容量, 避免持续重试占用
+ *  MAX_CONCURRENCY 名额。同时触发 checkObscuraAvailable() 重探测: 若 chromium 整体不可用,
+ *  probeOk 立即转 false, 后续请求直接走裸 Playwright 降级路径不再卡 obscura */
 async function recreateSlot(slot: PoolSlot, domain: string, fp: ObscuraFingerprint): Promise<void> {
   try { await slot.ctx.close().catch(() => {}) } catch { /* ignore */ }
   const ctx = await newStealthContext(fp)
@@ -933,9 +940,21 @@ async function recreateSlot(slot: PoolSlot, domain: string, fp: ObscuraFingerpri
     slot.cdp = cdp
     slot.busy = true
     slot.lastUsedAt = Date.now()
+    // R3-17: 重建成功 → 清零连续失败计数
+    slot.consecutiveFailures = 0
   } catch (e) {
     // 新 ctx 已建但 newPage/CDP 失败: 关掉新 ctx 防泄漏, 旧 ctx 已关保持不变(下次获取时重建)
     await ctx.close().catch(() => {})
+    // R3-17: 累计失败次数, 达阈值把槽位移出 S.slots 缩减池容量, 避免持续重试占用名额
+    slot.consecutiveFailures = (slot.consecutiveFailures || 0) + 1
+    if (slot.consecutiveFailures >= 3) {
+      const idx = S.slots.indexOf(slot)
+      if (idx >= 0) S.slots.splice(idx, 1)
+      console.warn(`[obscura] recreateSlot 连续失败 ${slot.consecutiveFailures} 次, 移除该槽位缩减池容量(slots=${S.slots.length})`)
+      // 触发重探测: 若 chromium 整体不可用, probeOk 转 false, 后续请求走降级路径
+      S.probeOk = null
+      S.probeAt = 0
+    }
     throw e
   }
 }
@@ -1073,7 +1092,24 @@ export async function withObscuraPage<T>(
         }
         break
       }
-      await new Promise<void>((resolve) => S.waiters.push(resolve))
+      // R3-16: 排队等待需有 30s 超时 —— 原实现 push(resolve) 后无超时, 槽位持有者若
+      // 因 page.goto 卡死(timeout 未生效/无限等待 selector)永远不释放 busy, 排队者
+      // 永远卡在 await new Promise 处, 调用方 gateFetch 也跟着卡死 → 整个 obscura 路径死锁。
+      // 30s 超时后 reject 触发到 gateFetch 的 catch → 落 HTTP 引擎, 链路自愈。醒来后
+      // 须从 waiters 数组中把自己摘掉(否则槽位释放时 wakeNext 调用空 resolve 不报错但浪费)
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => {
+          // 从 waiters 中移除自己(若仍存在), 防 wakeNext 调到已 reject 的 resolver
+          const idx = S.waiters.indexOf(resolver)
+          if (idx >= 0) S.waiters.splice(idx, 1)
+          reject(new Error('obscura slot timeout(30s): 池满且所有槽位长期被占用'))
+        }, 30_000)
+        const resolver = () => {
+          clearTimeout(t)
+          resolve()
+        }
+        S.waiters.push(resolver)
+      })
     }
     resetIdleTimer()
     return await fn(slot.page, slot.ctx)

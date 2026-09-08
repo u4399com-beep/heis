@@ -89,7 +89,12 @@ export async function GET(req: Request) {
     let base = url.origin
     if (siteId) {
       const site = await db.site.findUnique({ where: { id: siteId } })
-      const custom = site?.domain && site.domain !== 'localhost:3000' ? siteBase(site.domain) : null
+      // R3-37: site.status === false 时禁用 sitemap 自定义 base —— 该站点已被管理员关闭,
+      // 不应再把自定义域名写进 sitemap 暴露给搜索引擎(继续走 url.origin 默认 base 让
+      // sitemap 仍可访问但不对外推广)。site.domain === 'localhost:3000' 同样不放行
+      const custom = site && site.status !== false && site.domain && site.domain !== 'localhost:3000'
+        ? siteBase(site.domain)
+        : null
       if (custom) base = custom
     }
 

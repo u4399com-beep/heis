@@ -37,7 +37,11 @@ export async function saveChapterTxt(
   const slugSafe = Array.from(slug).slice(0, 40).join('') || 'chapter'
   const fileName = `${String(idx).padStart(5, '0')}_${slugSafe}.txt`
   const filePath = path.join(dir, fileName)
-  await fs.writeFile(filePath, `${title}\n\n${content}\n`, 'utf-8')
+  // R3-27: 标题强制单行 —— 源站标题偶含 \r\n(列表项跨行/HTML br 转文本时残留), 写入
+  // "${title}\n\n${content}\n" 后会被分割成多行, 读取侧 readChapterTxt.split('\n').slice(1)
+  // 会把标题尾行误当正文首段。落盘前剥成单行(替换 \r\n 为单空格)
+  const safeTitle = title.replace(/[\r\n]+/g, ' ')
+  await fs.writeFile(filePath, `${safeTitle}\n\n${content}\n`, 'utf-8')
   return path.relative(DATA_ROOT, filePath) // 相对 data/ 的路径
 }
 

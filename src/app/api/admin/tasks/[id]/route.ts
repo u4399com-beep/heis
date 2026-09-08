@@ -34,6 +34,21 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
       data.ruleId = ruleId
     }
 
+    // R3-41: 任务运行中时禁止修改 mode/bookUrl/listUrl —— 这三个字段决定任务执行流
+    // (single→单书/ Range→列表批量; bookUrl/listUrl 是采集入口)。运行中改这些字段,
+    // 当前循环 loadConfig 下一批次会读到新值, 但已发现的 toc/书架可能与新 mode 不匹配
+    // (例如 single→list 中途切换, 已 start 的 single 任务拿 listUrl 去解析 toc → 抛错/脏数据)。
+    // 非模式字段(threadMin/intervalMin/recrawlMode 等)允许热调(运行时 loadConfig 已支持)
+    const isRunning = TaskRunner.instance.isRunning(id)
+    if (isRunning) {
+      const modeChanged = data.mode !== undefined && data.mode !== exist.mode
+      const bookUrlChanged = data.bookUrl !== undefined && data.bookUrl !== exist.bookUrl
+      const listUrlChanged = data.listUrl !== undefined && data.listUrl !== exist.listUrl
+      if (modeChanged || bookUrlChanged || listUrlChanged) {
+        return fail('任务运行中, 无法修改模式参数, 请先停止任务', 400)
+      }
+    }
+
     // 模式与URL联动: 用"现值+补丁"合并后的生效值校验
     const pairErr = validateTaskPair(
       (data.mode as string) ?? exist.mode,
@@ -63,7 +78,9 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
         const mergedInterval = data.refreshIntervalMin !== undefined ? Number(data.refreshIntervalMin) : exist.refreshIntervalMin
         if (mergedAuto === false) {
           TaskRunner.instance.cancelAutoRefresh(id)
-        } else if (['done', 'error', 'stopped'].includes(exist.status) && !TaskRunner.instance.isRunning(id)) {
+        } else if (['done', 'error'].includes(exist.status) && !TaskRunner.instance.isRunning(id)) {
+          // R3-14: 同 recoverOnBoot/scheduleAutoRefresh 内部复核, 'stopped' 不参与自动刷新
+          // (用户手动 stop 的明确意图, 排定时器拉回与意图相反)
           TaskRunner.instance.scheduleAutoRefresh(id, mergedInterval, task.name)
         }
       } catch { /* 排定面异常不影响任务更新主流程 */ }

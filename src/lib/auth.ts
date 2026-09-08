@@ -21,8 +21,40 @@ export const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000 // 12h
 // ---- 登录尝试限流 (in-process, per IP) ----
 const MAX_LOGIN_ATTEMPTS = 5
 const LOGIN_WINDOW_MS = 60_000
+/** R3-31: loginAttempts Map 上限 —— 防 XFF 伪造/IP 翻动攻击者撑爆内存。
+ *  满载时按插入序 FIFO 淘汰最旧项(与 proxy.ts buckets 同款) */
+const MAX_LOGIN_MAP = 10_000
+/** R3-31: 周期性清扫窗口外过期条目, 防长期未触达 IP 条目无界累积(扫描间隔 5min) */
+const LOGIN_SWEEP_INTERVAL_MS = 5 * 60_000
 interface AttemptEntry { count: number; firstAt: number }
 const loginAttempts = new Map<string, AttemptEntry>()
+
+/** R3-31: 周期性扫描 loginAttempts, 删除 firstAt 已超过 LOGIN_WINDOW_MS 的条目。
+ *  惰性启动: 首次写入条目时挂载定时器, 全局仅一个(挂到 globalThis 防 HMR 多实例)。
+ *  定时器 unref 不阻止进程退出; 触发时同步扫描清旧, 任何异常均吞掉防影响登录主路径 */
+function ensureLoginSweep(): void {
+  const g = globalThis as unknown as { __heisLoginSweepTimer?: ReturnType<typeof setInterval> | null }
+  if (g.__heisLoginSweepTimer) return
+  const timer = setInterval(() => {
+    try {
+      const now = Date.now()
+      for (const [k, e] of loginAttempts) {
+        if (now - e.firstAt > LOGIN_WINDOW_MS) loginAttempts.delete(k)
+      }
+    } catch { /* ignore */ }
+  }, LOGIN_SWEEP_INTERVAL_MS)
+  if (typeof timer.unref === 'function') timer.unref()
+  g.__heisLoginSweepTimer = timer
+}
+
+/** R3-31: 容量上限 FIFO 淘汰(满载时删最早一条), 防 XFF 伪造撑爆内存 */
+function trimLoginMap(): void {
+  while (loginAttempts.size >= MAX_LOGIN_MAP) {
+    const oldest = loginAttempts.keys().next().value
+    if (oldest === undefined) break
+    loginAttempts.delete(oldest)
+  }
+}
 
 // ---- 密钥解析 (惰性, 单次缓存; 缓存挂到 globalThis 以避免 dev HMR 模块重载
 //      导致随机 fallback 密码被重新生成而令既有会话全部失效) ----
@@ -102,7 +134,9 @@ export function createSession(): { cookie: string; expiresAt: number } {
 /** 清除会话 Cookie (logout) */
 export function clearSessionCookie(): string {
   const secure = process.env.NODE_ENV === 'production' ? '; Secure' : ''
-  return `${SESSION_COOKIE_NAME}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secure}`
+  // R3-33: 显式 Expires=epoch 与 Max-Age=0 双保险 —— Max-Age=0 在某些代理/老浏览器
+  // 下被忽略或与已有 Cookie 的 Max-Age 不对齐导致不立即失效; Expires 永远有效(已过去)
+  return `${SESSION_COOKIE_NAME}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT${secure}`
 }
 
 /** 校验会话 token: 重算 HMAC + 等长短路 + timingSafeEqual + 检查 exp */
@@ -122,6 +156,14 @@ export function verifySession(cookieValue: string | null | undefined): boolean {
   }
   if (typeof parsed.exp !== 'number' || !Number.isFinite(parsed.exp)) return false
   if (Date.now() > parsed.exp) return false
+  // R3-32: payload 仅允许 {exp, nonce} 两键 —— 伪造者构造合法 HMAC 后无法塞额外字段
+  // (虽然不知道 secret, 但防御深度: 漏写/被泄漏场景下额外字段一律拒)。nonce 必须是
+  // 16B hex 串(createSession 生成形态), 不合规即拒
+  if (typeof parsed.nonce !== 'string' || !/^[0-9a-f]{32}$/.test(parsed.nonce)) return false
+  const allowedKeys = new Set(['exp', 'nonce'])
+  for (const k of Object.keys(parsed)) {
+    if (!allowedKeys.has(k)) return false
+  }
   return true
 }
 
@@ -150,6 +192,9 @@ export function consumeLoginAttempt(ip: string): boolean {
   const now = Date.now()
   const e = loginAttempts.get(ip)
   if (!e || now - e.firstAt > LOGIN_WINDOW_MS) {
+    // R3-31: 写入新条目前先 FIFO 淘汰 + 启动周期清扫(惰性, 仅首次挂载)
+    trimLoginMap()
+    ensureLoginSweep()
     loginAttempts.set(ip, { count: 1, firstAt: now })
     return true
   }

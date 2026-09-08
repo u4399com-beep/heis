@@ -371,7 +371,10 @@ function normalizeUrlKey(u: string): string {
     const search = sorted.length
       ? '?' + sorted.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&')
       : ''
-    return url.host + url.pathname.replace(/\/+$/, '') + search
+    // R3-26: 用 url.origin 代替 url.host —— origin 归一化默认端口(https://x.com:443 →
+    // https://x.com, http://x.com:80 → http://x.com), 修前同站不同默认端口被识别为不同章节
+    // (代理/CDN 链路有时会重写 host:port 形态, 入库前需统一)
+    return url.origin + url.pathname.replace(/\/+$/, '') + search
   } catch {
     return u
   }

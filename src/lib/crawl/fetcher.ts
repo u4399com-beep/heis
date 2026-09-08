@@ -303,9 +303,16 @@ class CookieJar {
     if (!cookieStr) return
     let jar = this.jars.get(domain)
     if (!jar) { jar = new Map(); this.jars.set(domain, jar) }
+    // R3-2: 应用与 store() 同口径的 ATTR_NAMES 过滤 —— 否则 seed('Path=/; Secure; HttpOnly')
+    // 形态会把"Path/Secure/HttpOnly"当 cookie 名塞进罐, 后续 buildHeaders 拼出 "Path=/; Secure=..."
+    // 头发送给服务端, 触发 400。手工 seed 多见于规则配置的 starter cookies, 字面量常含属性声明
+    const ATTR_NAMES = new Set(['path', 'domain', 'expires', 'max-age', 'secure', 'httponly', 'samesite'])
     for (const pair of cookieStr.split(';')) {
       const idx = pair.indexOf('=')
-      if (idx > 0) jar.set(pair.slice(0, idx).trim(), { v: pair.slice(idx + 1).trim(), at: Date.now() })
+      if (idx <= 0) continue
+      const name = pair.slice(0, idx).trim().toLowerCase()
+      if (!name || ATTR_NAMES.has(name)) continue
+      jar.set(pair.slice(0, idx).trim(), { v: pair.slice(idx + 1).trim(), at: Date.now() })
     }
   }
   /** 清空指定 host 的罐(ff-b): 403 且无新 Cookie 时疑陈旧会话, 清空重走 autoCookie */
@@ -478,7 +485,15 @@ function pickUaFor(domain: string, cfg: FetchConfig): string {
     ua = randomUa()
   }
   if (domain) {
-    if (domainUa.size > 200) domainUa.clear() // 防站群场景无限增长
+    // R3-1: 原 domainUa.clear() 把站群场景下所有已钉扎 UA 一次性清空, 后续请求全部随机选 UA
+    // → 同站会话 UA 跳变被反爬识别。改为按插入序 FIFO 淘汰 20 个最旧条目, 留下近期活跃站点
+    if (domainUa.size > 200) {
+      let n = 20
+      for (const k of domainUa.keys()) {
+        if (n-- <= 0) break
+        domainUa.delete(k)
+      }
+    }
     domainUa.set(domain, ua)
   }
   return ua
@@ -594,7 +609,12 @@ async function renderWithBrowserRaw(url: string, cfg: FetchConfig, ua: string): 
       await page.waitForTimeout(1500)
       html = await page.content()
     }
-    await ctx.close()
+    // R3-5: ctx.close() 在导航残留/TargetClosedError 等场景下会抛错并丢弃已捕获的 html,
+    // 改为 try/catch 吞错 —— html 已在内存中, 浏览器侧的 close 失败由 finally 段的
+    // browser.close() 兜底回收(进程级单例, 一次失败不阻塞后续渲染)。原实现若 ctx.close
+    // 抛错, 整个 try 块抛出到 finally 关 browser 后向上传播, 上层 gateFetch 走 catch
+    // 分支不计入正确结果 → 章节丢失
+    try { await ctx.close() } catch { /* ignore: html already captured */ }
     return html
   } finally {
     await browser.close()
@@ -827,7 +847,10 @@ function loopbackBypassAllowed(url: string, cfg: FetchConfig): boolean {
   const matches = (rawUrl: string): boolean => {
     try {
       // tokenUrl 可能含 {url} 占位符, 替换为合法 URL 后解析
-      const u = new URL(rawUrl.replace('{url}', encodeURIComponent('https://example.com/')))
+      // R3-3: 原 replace('{url}', ...) 仅替首个占位符, 多占位符模板第二个起漏替换 →
+      // URL 解析失败 → matches 返回 false → tokenUrl 配置的回环目标永远拿不到 loopback 豁免。
+      // split/join 全量替换保证所有占位符都被替, 与 prefetchToken 内同款修复口径一致
+      const u = new URL(rawUrl.split('{url}').join(encodeURIComponent('https://example.com/')))
       return u.hostname.toLowerCase().replace(/^\[|\]$/g, '') === uHost && (u.port || '') === uPort
     } catch { return false }
   }
@@ -883,13 +906,17 @@ export function parseProxyPool(proxyUrl: string | undefined | null): string[] {
   return out
 }
 
-/** 回环豁免: 目标 host 为 localhost/*.localhost/127.0.0.0/8/::1/0.0.0.0 时跳过代理直连
+/** 回环豁免: 目标 host 为 localhost/*.localhost/127.0.0.0/8/::1 时跳过代理直连
  *  —— 否则本地 mock 服务/token 代理 tokenUrl(如 bqg713-proxy 127.0.0.1:3010)会被代理
- *  转发出不去。hostname 对 IPv6 含方括号需剥离 */
+ *  转发出不去。hostname 对 IPv6 含方括号需剥离
+ *  R3-9: 移除 '0.0.0.0' 分支 —— 它本就由 SSRF 守卫的"不可路由 0.0.0.0/8"规则拦截,
+ *  此处把它当 loopback 放行会产生矛盾(走 loopbackBypassAllowed 时若 tokenUrl 指向
+ *  0.0.0.0 会因 SSRF 拒; 不指 tokenUrl 时 isLoopbackTarget 又返回 true 让代理豁免,
+ *  但 SSRF 拦截依然生效)→ 配置错误日志混乱。直接由 SSRF 守卫统一拒绝更清晰 */
 export function isLoopbackTarget(url: string): boolean {
   try {
     const h = new URL(url).hostname.toLowerCase().replace(/^\[|\]$/g, '')
-    return h === 'localhost' || h.endsWith('.localhost') || h === '::1' || h === '0.0.0.0' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)
+    return h === 'localhost' || h.endsWith('.localhost') || h === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)
   } catch {
     return false
   }
@@ -989,7 +1016,10 @@ export function pickProxyFor(url: string, cfg: FetchConfig): string {
 
 /** 日志用代理脱敏: 隐藏内联凭证(u:p@ → ***@) */
 function redactProxy(proxy: string): string {
-  return proxy.replace(/^(https?|socks5h?|socks4a?):\/\/[^@/]+@/i, '$1://***@')
+  // R3-4: 原 [^@/]+ 排除 '/' 字符, 但密码含 '/'(常见于 base64/hex 编码凭证)时正则不匹配,
+  // 凭证以明文留在日志。改为 [^@\s]+ 仅排除空白(密码含 '/' ':' '?' 均安全 —— URL 凭证段
+  // 由 '://' 与 '@' 严格界定, 不可能跨越 @ 边界)
+  return proxy.replace(/^(https?|socks5h?|socks4a?):\/\/[^@\s]+@/i, '$1://***@')
 }
 
 /** Playwright per-context proxy 参数: 内联凭证拆出 username/password
@@ -1328,6 +1358,15 @@ export async function fetchViaCurl(url: string, cfg: FetchConfig, ua: string, pr
         }
         if (!body.length) {
           reject(new Error(`curl 响应体为空${stderr ? `: ${stderr.slice(0, 160)}` : ''}`))
+          return
+        }
+        // R3-6: rounds 为空 = curl 拿到响应体但没解析出任何 HTTP 状态行(畸形响应/连接被劫持
+        // 到非 HTTP 服务/SSH banner 等被 -L 跟随后吞掉)。原实现此时 status=0 落到下方
+        // status>=400 检查为 false, body 非空直接 resolve(...) → 畸形内容入库污染。改为
+        // 显式 reject 当作 curl 失败(上层 fetchHttpWithCurlSingle 会落回错误处理, 不会
+        // 把 SSH banner 等内容当正文返回)
+        if (rounds.length === 0 || status === 0) {
+          reject(new Error(`curl 未解析到 HTTP 状态行(响应畸形或被劫持)${stderr ? `: ${stderr.slice(0, 160)}` : ''}`))
           return
         }
         resolve(decodeBuffer(toArrayBufferView(body), contentType))
@@ -1926,10 +1965,22 @@ export async function fetchPage(url: string, cfgOverride?: Partial<FetchConfig>)
  */
 async function trySolveTokenChallenge(url: string, html: string, cfg: FetchConfig, ua: string): Promise<string | null> {
   if (!html || html.length > 5000) return null
-  const m = html.match(/token\s*=\s*"([A-Za-z0-9+/=_-]{20,})"/)
-  // 必须同时命中 "?challenge=" 拼接模式才认: 防止 CF "Attention Required" 等无关拦截页
-  // 里的 challenge-platform 字样误触发求解(白烧两跳请求)
-  if (!m || !/["'`]\s*\?\s*challenge\s*=?|challenge\s*=\s*"?["'`+]|\+\s*encodeURIComponent/i.test(html)) return null
+  // R3-8: 原实现把 token=... 与 "?challenge=" 两个特征作【独立 OR】判定 —— 任意"含 token 字符串
+  // + 出现 ?challenge 字样"的拦截页都会误触发求解(如 CF "Attention Required" 挑战页 HTML 内嵌
+  // challenge-platform 脚本 + 含 token=... 字面量)。改为要求两特征【同时】出现且在 500 字符
+  // 邻近范围内(典型 token 挑战壳体极短 <2k, 二者必紧邻)。仅命中 token= 而无 challenge 拼接,
+  // 或仅命中 challenge 而无 token= 的形态一律放弃求解(交回浏览器升级链, 不浪费双跳请求)
+  const m = html.match(/(?:let|var)\s+token\s*=\s*"([A-Za-z0-9+/=_-]{20,})"/)
+  if (!m) return null
+  const tokenIdx = m.index ?? -1
+  // challenge 拼接模式: location.href = ... + "?challenge=" + token, 允许 ? 或 = 单独成块,
+  // 但要求是同一行/紧邻 token 定义(<500 字符)。encodeURIComponent 分支显式列出防止误命中
+  const chalRe = /location\.href\s*=\s*[^;]{0,200}\?\s*challenge\s*=?|location\.href\s*=\s*[^;]{0,200}\+\s*encodeURIComponent/
+  const cm = html.match(chalRe)
+  if (!cm) return null
+  const chalIdx = cm.index ?? -1
+  if (tokenIdx < 0 || chalIdx < 0) return null
+  if (Math.abs(tokenIdx - chalIdx) > 500) return null
   const challengeUrl = `${url}${url.includes('?') ? '&' : '?'}challenge=${encodeURIComponent(m[1])}`
   try {
     const solved = await fetchHttpWithCurlFallback(challengeUrl, cfg, ua)

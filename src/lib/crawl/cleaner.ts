@@ -262,15 +262,23 @@ export function cleanContentHtml(raw: string, cfgOverride?: Partial<CleanConfig>
   // 2.5 白名单标签属性消毒: 采集正文内嵌 on* 事件属性 / style 表达式会随内容入库,
   // 前台 dangerouslySetInnerHTML 渲染成活动节点(存储型注入面)。白名单语义
   // 是"只保留内容标签", 默认白名单(p/br/b/strong/em/i/u/h1-6)内所有标签均无合法属性
-  // 用例 —— 属性一律剥除; 仅 a 标签(自定义白名单可能放行)保留 href 且必须为 http(s)
-  // 绝对地址(与 parser.absolutize 的协议过滤同口径)。须置于 1.8 重排之后:
+  // 用例 —— 属性一律剥除; 仅 a/img(自定义白名单可能放行)保留指定属性:
+  //   • a href: 必须 http(s) 绝对地址(与 parser.absolutize 的协议过滤同口径)
+  //   • img src: 必须 http(s) 绝对地址; data: 不放行(防 base64 大图撑爆正文 + 内容回环)
+  //     (R3-25: 修前 img 标签白名单放行但 src 被一刀切剥光, 正文插图全裂)
+  //   • img alt: 任意文本(纯描述性, 不存在注入面)
+  // 其余属性(onerror/onload/style 等)一律剥除。须置于 1.8 重排之后:
   // 重排依赖 data-id 属性判定, 先剥会永久禁用重排。
   $(`#__clean_root *`).each((_, el) => {
     const a = (el as any).attribs as Record<string, string> | undefined
     if (!a) return
     const tag = (el as any).tagName?.toLowerCase()
     for (const name of Object.keys(a)) {
-      const keep = tag === 'a' && name === 'href' && /^https?:\/\//i.test(a[name] || '')
+      const val = a[name] || ''
+      const keep =
+        (tag === 'a' && name === 'href' && /^https?:\/\//i.test(val)) ||
+        (tag === 'img' && name === 'src' && /^https?:\/\//i.test(val)) ||
+        (tag === 'img' && name === 'alt')
       if (!keep) $(el).removeAttr(name)
     }
   })

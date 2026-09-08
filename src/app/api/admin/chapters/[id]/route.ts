@@ -5,7 +5,7 @@ import { readChapterTxt, DATA_ROOT, NOVELS_DIR } from '@/lib/crawl/storage'
 import { promises as fs } from 'fs'
 import path from 'path'
 import { withGuard, str, safeJoin } from '../../../_lib/http'
-import { decodeEntitiesOnce } from '@/lib/crawl/cleaner'
+import { decodeEntitiesOnce, cleanContentHtml } from '@/lib/crawl/cleaner'
 
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   return withGuard(async () => {
@@ -45,7 +45,12 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
       if (body.content.length > CHAPTER_CONTENT_MAX) {
         return fail(`正文超过长度上限(${CHAPTER_CONTENT_MAX} 字符)`, 400)
       }
-      const content: string = body.content
+      // R3-34: 后台编辑保存的正文必须经清洗消毒后再落库 —— 管理员/导入流程可能直接粘贴
+      // 含 <img onerror=...>/<script> 等载荷的 HTML, 前台 ReadView 以 dangerouslySetInnerHTML
+      // 渲染章节正文, 存储型 XSS 会影响所有读者。cleanContentHtml 内已剥 script/iframe/on*/javascript:
+      // 与白名单外的标签, 仅保留 p/br/b/em/a(href http(s))/img(src http(s)+alt)。wordCount
+      // 同样基于清洗后的内容统计, 与入库内容自洽
+      const content: string = cleanContentHtml(body.content)
       newContent = content
       data.content = content
       // API-16: 先剥标签再解实体统计字数 —— 原实现把 &nbsp;/&lt; 等 HTML 实体当 4~6 字符计入字数, 高估

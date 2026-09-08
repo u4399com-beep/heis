@@ -59,6 +59,9 @@ function obfuscateText(text: string, mode: string, density: number): string {
   let out = ''
   // 安全性说明: for...of 按码点迭代(代理对不会拆半); 同形字分支仅在 HOMOGLYPHS[ch] 命中
   // (键全为 BMP 字符)时才 slice(0,-1), 因此零宽插入/替换永远落在完整码点边界上, 不会产生乱码半字符
+  // R3-28: 原 out.slice(0, -1) 按 UTF-16 code unit 截断, 当上一字符是 astral 字符
+  // (emoji/CJK 扩展)时, 代理对被斩半 → out 末尾留半个代理 → 拼接同形字产出 U+FFFD 乱码。
+  // 改 Array.from 按码点迭代后 slice(0,-1) 安全(从完整码点序列删末位)
   for (const ch of text) {
     out += ch
     if (Math.random() < d) {
@@ -67,7 +70,8 @@ function obfuscateText(text: string, mode: string, density: number): string {
           out += ZW_CHARS[Math.floor(Math.random() * ZW_CHARS.length)]
           break
         case 'homoglyph':
-          if (HOMOGLYPHS[ch] && Math.random() < d * 8) out = out.slice(0, -1) + HOMOGLYPHS[ch]
+          // R3-28: 码点安全截断(详见函数头注释)
+          if (HOMOGLYPHS[ch] && Math.random() < d * 8) out = Array.from(out).slice(0, -1).join('') + HOMOGLYPHS[ch]
           break
         case 'punctuation':
           // 修复: 原实现把 '，' 替换成同样的 '，'(无任何效果的空操作); 改为在标点后
@@ -76,7 +80,7 @@ function obfuscateText(text: string, mode: string, density: number): string {
           break
         case 'mixed':
           if (Math.random() < 0.5) out += ZW_CHARS[Math.floor(Math.random() * ZW_CHARS.length)]
-          else if (HOMOGLYPHS[ch] && Math.random() < 0.3) out = out.slice(0, -1) + HOMOGLYPHS[ch]
+          else if (HOMOGLYPHS[ch] && Math.random() < 0.3) out = Array.from(out).slice(0, -1).join('') + HOMOGLYPHS[ch]
           break
       }
     }
