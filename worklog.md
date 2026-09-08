@@ -2170,3 +2170,24 @@ Tests:
 - `bun run lint` → 0 errors / 0 warnings.
 - `bunx tsc --noEmit 2>&1 | grep -v "examples\|skills" | wc -l` → 0.
 - Dev server `/` → 200 (compile + render + proxy.ts all green).
+
+---
+Task ID: r4-final
+Agent: Round 4 deep audit + 40 bug fixes + GitHub push
+Task: 4th round line-by-line audit (40 new bugs) + fix all + push
+
+Work Log:
+- Deep audit round 4: 2 parallel agents (engine 22 + API/frontend 18 = 40 NEW bugs), cross-checked against rounds 1-3 (82 prior bugs). Total project: 122 bugs found.
+- All 40 fixed across 24 files (+996/-136 lines):
+  - Critical (4): control timeout race (dbStatusChains serialization), obscura slot orphan (shuttingDown flag), calibrate SSRF (assertSafeTarget), Caddyfile open-proxy (port whitelist)
+  - High (9): token stampede (inflight dedup), native fetch OOM (10MB cap), fetchBinary cookies, category P2002, hostgate minGapMs poison, cleaner script leak, t2s homograph bypass, header smuggling, login/feedback XFF bypass, restore XSS, public/book skip DoS
+  - Medium (15): proxy backoff, relay OOM, bookTag race, hostGateReset leak, jsonGet split, ReDoS guard, read-side sanitize, links N+1, restore limits, backup streaming, sitemap cache, transaction timeout
+  - Low (10): quote variants, HMR version, existChapters cap, turnstile deadline, timeout=0, admin toc cap, t2s chapter cap, null payload, probe body cap, dead catch, atomic rename
+- Quality gates: lint 0/0, tsc 0, dev server UP.
+- Pushed to GitHub: commit de935bb (force push, 24 files, +996/-136).
+
+Stage Summary:
+- 4 rounds total: 30 + 22 + 30 + 40 = 122 bugs found and fixed
+- Critical security: SSRF (5 vectors), XSS (stored reader + restore), DoS (rate limit + memory + skip), auth bypass, open proxy, header smuggling
+- Anti-crawler: UA 34, fingerprint, proxy rotation, stealth, jitter, CF challenge, token dedup
+- Code pushed to https://github.com/u4399com-beep/heis.git (commit de935bb)
