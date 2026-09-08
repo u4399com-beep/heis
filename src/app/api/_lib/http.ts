@@ -3,7 +3,7 @@
 // 职责: 统一异常兜底 / 参数钳制 / LIKE 通配符过滤 / 路径穿越防护
 // 5-a: unhandled 与 batch-item 异常改走结构化 logger (带 reqId/脱敏/分级)
 // ============================================================
-import { fail } from '@/lib/api'
+import { fail, BodyTooLargeError } from '@/lib/api'
 import { logger } from '@/lib/logger'
 import path from 'path'
 
@@ -12,6 +12,10 @@ export async function withGuard(fn: () => Promise<Response>): Promise<Response> 
   try {
     return await fn()
   } catch (e: any) {
+    // R5-5: readBody 超限 → 413 Payload Too Large (而非 500)
+    if (e instanceof BodyTooLargeError) {
+      return fail(`请求体过大(超过 ${(e.maxBytes / 1024 / 1024).toFixed(1)}MB 上限)`, 413)
+    }
     // 5-a: 结构化日志 — err/stack/code 字段, 敏感字段自动脱敏
     logger.error('api unhandled error', {
       err: e?.message,

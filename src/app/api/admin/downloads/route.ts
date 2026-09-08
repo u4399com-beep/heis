@@ -11,8 +11,20 @@ const OBFUSCATE_MODES = ['zero-width', 'homoglyph', 'punctuation', 'mixed'] as c
  *  batch 的 retry/regenerate 委托本 POST, 自动同享该上限 */
 const MAX_CONCURRENT_DOWNLOAD_JOBS = 3
 /** 本进程在途生成计数(gg-a): 与 DB count 取 max —— 检查后、建行前无 await(同步占位),
- *  关闭"并发请求同读 count=0 全部放行"的 TOCTOU 窗口; 进程重启归零由 DB count 兜底 */
-let inFlightGenerations = 0
+ *  关闭"并发请求同读 count=0 全部放行"的 TOCTOU 窗口; 进程重启归零由 DB count 兜底
+ *
+ *  R5-8: HMR 兼容 —— 原 `let inFlightGenerations = 0` 是模块级变量, dev 热重载每轮模块
+ *  重求值都重置为 0; 若有进行中的下载作业(占位 ++, 还未释放 --), 新模块版本读到 0 → 新请求
+ *  占位 1, 与旧模块版本未释放的占位叠加可突破 MAX_CONCURRENT_DOWNLOAD_JOBS 上限。
+ *  现挂到 globalThis 单例(HMR 复用同一引用), 计数跨模块版本持久化。 */
+const gInFlight = globalThis as unknown as { __heisDownloadInFlight?: number }
+gInFlight.__heisDownloadInFlight ??= 0
+const inFlightGenerations = {
+  get(): number { return gInFlight.__heisDownloadInFlight! },
+  incr(): number { return (gInFlight.__heisDownloadInFlight = (gInFlight.__heisDownloadInFlight || 0) + 1) },
+  decr(): number { return (gInFlight.__heisDownloadInFlight = Math.max(0, (gInFlight.__heisDownloadInFlight || 0) - 1)) },
+  setMax(v: number): number { return (gInFlight.__heisDownloadInFlight = Math.max(0, Math.round(v))) },
+}
 /** 陈旧在途任务判定: 生成循环与 POST 同进程, 服务重启会遗留永久 pending 的孤儿任务 ——
  *  不自愈会把并发额度永久占满。1h 未见终态(正常 41 章书生成秒级/万章书分钟级)视为孤儿,
  *  POST 入口顺带清扫置 error */
@@ -93,7 +105,7 @@ export async function POST(req: Request) {
     // await 的 DB 计数判定 —— 校验失败路径(fail return)不经过占位, 非法请求不烧额度。
     // mySlot 取自占位瞬间(JS 单线程同步自增, 原子), 判定不重读共享计数(并发请求彼此
     // 的占位会推高计数, 重读会让全体请求同判超限)
-    const mySlot = ++inFlightGenerations
+    const mySlot = inFlightGenerations.incr()
 
     // 并发上限(gg-a 引入, tt-b 真闭合): 修前"先 await DB count 再同步占位", 并发请求
     // 同读 count=N(<MAX) 后全部放行, TOCTOU 窗口可突破上限; 修后占位先行(同步无 await,
@@ -103,7 +115,7 @@ export async function POST(req: Request) {
       where: { status: { in: ['pending', 'running'] } },
     })
     if (dbActive >= MAX_CONCURRENT_DOWNLOAD_JOBS || mySlot > MAX_CONCURRENT_DOWNLOAD_JOBS) {
-      inFlightGenerations-- // 429 路径回滚占位, 防额度虚耗
+      inFlightGenerations.decr() // 429 路径回滚占位, 防额度虚耗
       return fail(`已有 ${MAX_CONCURRENT_DOWNLOAD_JOBS} 个下载任务进行中，请稍后再试`, 429)
     }
 
@@ -113,7 +125,7 @@ export async function POST(req: Request) {
         data: { bookId, options: JSON.stringify(options), status: 'pending' },
       })
     } catch (e) {
-      inFlightGenerations-- // 建行失败回滚占位, 防额度虚耗
+      inFlightGenerations.decr() // 建行失败回滚占位, 防额度虚耗
       throw e
     }
 
@@ -126,7 +138,7 @@ export async function POST(req: Request) {
       const releaseSlot = () => {
         if (slotReleased) return
         slotReleased = true
-        inFlightGenerations = Math.max(0, inFlightGenerations - 1)
+        inFlightGenerations.decr()
       }
 
       const workP = (async () => {

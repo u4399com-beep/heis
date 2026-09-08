@@ -254,7 +254,11 @@ async function probeLevel(
     pass,
     note: notes.length ? notes.join(', ') : '全通过',
   }
-  opts.onProgress?.(trace)
+  // R5-11: aborted 后不再回调 —— 旧行为在 shouldAbort 命中后, sleepAbortable 抛 CalibrateAbort,
+  //  路由层捕获并把 job.status 改为 'error'; 但本函数末尾的 onProgress 仍会执行(因为在抛错前
+  //  本档已探完, 抛错发生在下次迭代开头)。job 已是 error 态, push trace 到已关闭的 job 是脏数据。
+  //  现 probeLevel 入口已查 shouldAbort, 出口再查一次确保 callback 不在 abort 后触发。
+  if (!opts.shouldAbort?.()) opts.onProgress?.(trace)
   return { trace, banEscalated, maxRetryAfterMs }
 }
 
@@ -379,9 +383,18 @@ async function stageVerify(
   let banEscalated = false
   let maxRetryAfterMs = 0
   let done = 0
+  // R5-14: stageVerify 总体 120s 截止时间 —— 旧行为 `while (done < VERIFY_REQUESTS)` 在
+  //  chainUrls.length < VERIFY_REQUESTS 时(done+=0 永不前进)会死循环。当前 chainUrls.length=20
+  //  === VERIFY_REQUESTS=20 安全, 但未来调小 chainUrls 或加大 VERIFY_REQUESTS 会立刻爆。
+  //  即便不变, 探测请求挂死(status=0 但 fetch 不返回)也会让循环卡死。120s 截止时间兜底。
+  const stageStart = Date.now()
+  const STAGE_VERIFY_DEADLINE_MS = 120_000
 
   while (done < VERIFY_REQUESTS) {
     if (opts.shouldAbort?.()) throw new CalibrateAbort()
+    if (Date.now() - stageStart > STAGE_VERIFY_DEADLINE_MS) break // R5-14: 总体截止
+    // R5-14: 防死循环 —— chainUrls 取尽时(done >= chainUrls.length)batch 永远空, done 不增, 死循环
+    if (done >= chainUrls.length) break
     const batch = chainUrls.slice(done, done + threadMax)
     done += batch.length
     const replies = await Promise.all(batch.map((u) => probeFetch(u, timeoutMs)))
@@ -420,7 +433,8 @@ async function stageVerify(
         ? `验证通过: 并发${threadMax} / 间隔${intervalMin}~${intervalMax}ms`
         : `验证失败: 并发${threadMax} / 间隔${intervalMin}~${intervalMax}ms${hit429 ? `, 429×${hit429}` : ''}${hit403 ? `, 403×${hit403}` : ''}${other ? `, 异常×${other}` : ''}`,
   }
-  opts.onProgress?.(trace)
+  // R5-11: aborted 后不再回调(同 probeLevel 口径)
+  if (!opts.shouldAbort?.()) opts.onProgress?.(trace)
   return { trace, banEscalated, maxRetryAfterMs }
 }
 

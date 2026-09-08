@@ -92,6 +92,8 @@ interface HostState {
    *  不同于已记录值即视为新 caller 接管, 重置 st.minGapMs 为新值, 不再做 MAX 合并,
    *  防止旧 caller 留下的 60000ms 永久毒杀新 caller 的 500ms 节奏) */
   minGapMsLastValue: number
+  /** R5-3: 进入限流冷却(rateLimitedUntil 被推后)前的 minGapMs 快照, 冷却到期后回滚用 */
+  minGapMsBeforeCooldown: number
   /** 上次准入时刻 ms(zz-b, 初始 0=首请求免等); 准入判定: Date.now()-lastAdmitAt ≥ minGapMs */
   lastAdmitAt: number
   /** 限流冷却截止时刻 ms(zz-b, 429 感知): 该时刻前 pump 不放行任何请求(初始 0=无冷却) */
@@ -130,6 +132,7 @@ function stateOf(host: string, baseLimit: number): HostState {
       waiters: [],
       minGapMs: 0,
       minGapMsLastValue: 0,
+      minGapMsBeforeCooldown: 0,
       lastAdmitAt: 0,
       rateLimitedUntil: 0,
       gapTimer: null,
@@ -219,6 +222,14 @@ function settleRateLimitExpiry(st: HostState): void {
   if (st.rateLimitedUntil > 0 && Date.now() >= st.rateLimitedUntil) {
     st.rateLimitedUntil = 0
     st.failStreak = 0
+    // R5-3: 冷却到期时回滚 minGapMs 到冷却前快照 ——
+    // reportHostRateLimited 触发后, acquire 路径会把 minGapMs 抬到 cooldownImpliedGap(如 30s);
+    // 冷却到期若不回滚, 同 caller(同 minGapMs 值)继续走 else 分支 max(30000, 500)=30000,
+    // 一次 429 永久毒杀该 caller 的节奏。回滚到 minGapMsBeforeCooldown(若已记录)
+    if (st.minGapMsBeforeCooldown > 0) {
+      st.minGapMs = st.minGapMsBeforeCooldown
+      st.minGapMsBeforeCooldown = 0
+    }
   }
 }
 
@@ -439,6 +450,12 @@ export function reportHostRateLimited(url: string, retryAfterMs?: number): boole
   const cooldown = ra >= 1000 ? Math.min(HOST_GATE_RATE_LIMIT_MAX_MS, ra) : HOST_GATE_RATE_LIMIT_DEFAULT_MS
   const until = Date.now() + cooldown
   if (until <= st.rateLimitedUntil) return false // 已有更晚的冷却期在效, 不回拨不重复报
+  // R5-3: 首次进入冷却时(此前未在冷却)保存 minGapMs 快照, 供冷却到期回滚。
+  // 重复推后冷却期(仍处于冷却中)不覆盖快照, 否则把被抬高后的 minGapMs 当作"原值"保存,
+  // 回滚后将无法恢复到 caller 实际请求的 minGapMs。
+  if (st.rateLimitedUntil <= Date.now()) {
+    st.minGapMsBeforeCooldown = st.minGapMs
+  }
   st.rateLimitedUntil = until
   pump(st) // 立即复查: 若有等待者则安排 penaltyTimer 到点唤醒(pump 内冷却判定会拦住放行)
   return true

@@ -727,33 +727,36 @@ export class TaskRunner {
       // R4-9: category.upsert 在并行任务创建同名分类时 @@unique(name) 冲突 P2002;
       //  旧行为未捕获 → crawlOneBook 抛错 → 本书被跳过计为 error。改为 try/catch,
       //  P2002 时 re-findByName 拿到由另一个并行任务创建的分类 ID(其事务已 commit)
-      try {
-        const cat = await db.category.upsert({
-          where: { name: categoryName },
-          create: { name: categoryName },
-          update: {},
-        })
-        categoryId = cat.id
-      } catch (e: any) {
-        if (e?.code === 'P2002') {
+      // R5-20: 把单次重试扩为最多 3 次带退避循环 —— 极罕见情况下另一任务的事务 >50ms 才
+      //  commit, 单次 50ms 重试仍读到 null, categoryId=null 导致书丢失分类关联; 3 次指数
+      //  退避(50/100/200ms)累计等待 350ms 覆盖典型 SQLite busy 锁, 仍失败则记 warn 但不抛错。
+      const CATEGORY_P2002_MAX_ATTEMPTS = 3
+      for (let attempt = 0; attempt < CATEGORY_P2002_MAX_ATTEMPTS; attempt++) {
+        try {
+          const cat = await db.category.upsert({
+            where: { name: categoryName },
+            create: { name: categoryName },
+            update: {},
+          })
+          categoryId = cat.id
+          break
+        } catch (e: any) {
+          if (e?.code !== 'P2002') throw e
+          // P2002: 并行任务同时创建同名分类, re-findUnique 拿对方 ID
           const existing = await db.category.findUnique({
             where: { name: categoryName },
             select: { id: true },
           })
           if (existing) {
             categoryId = existing.id
-          } else {
-            // 极罕见: 另一事务已创建但未提交, P2002 后 findUnique 暂未读到;
-            // 短退避后再查一次(等待对方事务 commit)
-            await new Promise((r) => setTimeout(r, 50))
-            const retry = await db.category.findUnique({
-              where: { name: categoryName },
-              select: { id: true },
-            })
-            categoryId = retry?.id ?? null
+            break
           }
-        } else {
-          throw e
+          // 另一事务未提交, findUnique 读不到; 退避后再试(最后一次仍读不到则放弃, categoryId=null)
+          if (attempt < CATEGORY_P2002_MAX_ATTEMPTS - 1) {
+            await new Promise((r) => setTimeout(r, 50 * Math.pow(2, attempt)))
+          } else {
+            await this.log(taskId, 'warn', `分类「${categoryName}」3 次重试后仍未就绪, 本书暂不关联分类`).catch(() => {})
+          }
         }
       }
     }
@@ -969,12 +972,35 @@ export class TaskRunner {
     //  每行 ~200B = ~2MB / 书, 并行多任务会乘以倍数。select 已最小化(id/url/title/idx/volume/fetched
     //  各字段后续重排/去重/未采回填都需用到, 不能再裁), 仅用 take 10000 限定内存: 超过 10000 章的
     //  书尾部章节视为"新"(并入 queue, 增量重采语义保持, 多采几次内容, 但内存有界)。
-    const existChapters = await db.chapter.findMany({
+    //
+    // R5-1: 但 R4-11 的"10k 之后视为新章"对"已存在但 idx>10000 的章节"反而是灾难 ——
+    //  @@unique([bookId,idx]) 让阶段C 的 db.chapter.create 必抛 P2002, catch 吞掉后该章
+    //  永远拿不到 chId, 阶段D 回填连锁失败, 连续 20 个 P2002 还会触发熔断使任务卡 error。
+    //  修法: 命中 10000 上限时查 count; <=50000 直接全量加载(50000×~200B≈10MB 安全);
+    //  >50000 维持 10k 采样并 log 警告(极端大部头防 OOM, 接受潜在重复抓取为可接受代价)
+    let existChapters = await db.chapter.findMany({
       where: { bookId },
       select: { id: true, url: true, title: true, fetched: true, idx: true, volume: true },
       take: 10_000,
       orderBy: { idx: 'asc' },
     })
+    if (existChapters.length === 10_000) {
+      const total = await db.chapter.count({ where: { bookId } })
+      if (total > 50_000) {
+        await this.log(
+          taskId,
+          'warn',
+          `《${bookName}》章节 ${total} 条 >50000 上限, 仅用前 10000 条做去重基准, 尾部章节可能被重复抓取(为防 OOM 接受此代价)`,
+        )
+      } else {
+        // 全量加载(<=50000, 内存可控), 防尾部章被误判为新章触发 P2002 风暴 + 熔断
+        existChapters = await db.chapter.findMany({
+          where: { bookId },
+          select: { id: true, url: true, title: true, fetched: true, idx: true, volume: true },
+          orderBy: { idx: 'asc' },
+        })
+      }
+    }
     const existUrlMap = new Map(existChapters.filter((c) => c.url).map((c) => [c.url, c]))
     const existTitleMap = new Map(existChapters.map((c) => [c.title, c]))
 
@@ -1016,6 +1042,13 @@ export class TaskRunner {
     // 当前全书最小 idx 之下(含残留负位), 与任何存量行(含崩溃残留)严格无交。
     const minExistIdx = existChapters.reduce((mn, c) => Math.min(mn, c.idx), 0)
     const tempBase = minExistIdx - moves.length - 1
+    // R5-9/R5-10: 各阶段开头检查 rt.stopped || rt.epoch !== myEpoch ——
+    //  万章+大部头书的阶段A/B/D 是顺序 db.chapter.update 循环, 每条 5-10ms, 全程可达分钟级,
+    //  用户点"停止"信号需在每个阶段入口尽快生效, 避免无响应窗口; 若已停止则记日志并直接 return。
+    if (rt.stopped || rt.epoch !== myEpoch) {
+      await this.log(taskId, 'info', '阶段A: 任务已停止, 中止章节重排').catch(() => {})
+      return 'stopped'
+    }
     for (let mi = 0; mi < moves.length; mi++) {
       // Bug 5: 阶段A .catch 改为 swallowExpectedDb —— 仅放行 P2025(记录已删)/P2002(瞬态撞位),
       // 真 DB 故障上抛中止重排(修前 .catch(()=>{}) 无差别吞, 连锁失败致序号永久错乱)
@@ -1031,6 +1064,11 @@ export class TaskRunner {
     for (const m of moves) newTargetIdx.add(m.to)
     const tailMoves = new Map<string, number>()
     let tailIdx = Math.max(tocItems.length, existChapters.reduce((mx, c) => Math.max(mx, c.idx), 0), 0)
+    // R5-9/R5-10: 阶段B 入口 stop/epoch 检查(同阶段A)
+    if (rt.stopped || rt.epoch !== myEpoch) {
+      await this.log(taskId, 'info', '阶段B: 任务已停止, 中止章节重排').catch(() => {})
+      return 'stopped'
+    }
     for (const c of existChapters) {
       if (movedIds.has(c.id)) continue
       // tt-c 增强: 负 idx 残留章(历史重排中途被杀遗留)也是非法位(章序必须 ≥1), 一并治愈摎尾,
@@ -1044,6 +1082,11 @@ export class TaskRunner {
     }
     // 阶段C: 新章按最终 idx 建行; 单章建行失败只计错误, 不再拖垮整本书
     const idMap = new Map<string, string>()
+    // R5-9/R5-10: 阶段C 入口 stop/epoch 检查(万章级 creates 循环可达分钟级)
+    if (rt.stopped || rt.epoch !== myEpoch) {
+      await this.log(taskId, 'info', '阶段C: 任务已停止, 中止章节重排').catch(() => {})
+      return 'stopped'
+    }
     for (const q of creates) {
       try {
         const created = await db.chapter.create({
@@ -1075,6 +1118,11 @@ export class TaskRunner {
       }
     }
     // 阶段D: 旧章回填最终 idx(序号映射一一对应, 目标位已无其他占用者, 可安全回填)
+    // R5-9/R5-10: 阶段D 入口 stop/epoch 检查(同阶段A/B/C)
+    if (rt.stopped || rt.epoch !== myEpoch) {
+      await this.log(taskId, 'info', '阶段D: 任务已停止, 中止章节重排').catch(() => {})
+      return 'stopped'
+    }
     for (const mv of moves) {
       // Bug 5: 阶段D .catch 改为 swallowExpectedDb(同阶段A/B口径)
       await db.chapter.update({ where: { id: mv.id }, data: { idx: mv.to } }).catch(swallowExpectedDb)
@@ -1089,6 +1137,11 @@ export class TaskRunner {
     // 目标位"的陈旧章, idx > tocItems.length 且 url 不在当前目录中的纯尾部陈旧章(无冲突、
     // 不占目标位)既不挪也不删, 永久残留库中(前台分页/导出拖尾脏章)。本阶段清理之。
     // guard: currentUrls 为空(目录项均无 url 的边角)时跳过(notIn:[] 会匹配全部, 误删有效章)
+    // R5-9/R5-10: 阶段E 入口 stop/epoch 检查(避免停止后仍跑 deleteMany)
+    if (rt.stopped || rt.epoch !== myEpoch) {
+      await this.log(taskId, 'info', '阶段E: 任务已停止, 跳过尾部陈旧章清理').catch(() => {})
+      return 'stopped'
+    }
     const currentUrls = tocItems.map((it) => it.url).filter(Boolean)
     if (currentUrls.length > 0) {
       const staleTail = await db.chapter.deleteMany({

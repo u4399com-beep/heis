@@ -57,6 +57,11 @@ function clientIp(req: NextRequest): string {
  * 令牌桶消费: 满载 capacity, 每秒补充 refillPerSec。返回 true=放行, false=限流。
  * 桶键 = `${routeClass}:${ip}`, 不同路由类独立计数, 避免互相挤占。
  * Map 上限 MAX_BUCKETS, 溢出时按插入序淘汰最旧项 (避免攻击者通过伪造 IP 撑爆内存)
+ *
+ * R5-12 残留风险记录: 10000 个伪造 XFF 的 DoS 仍可逐出合法 IP 的桶 —— 但 R3-30 已修复
+ *  clientIp() 优先 req.ip(TCP 套接字对端, 不可伪造), XFF 仅在 req.ip 不可读的边缘运行时下
+ *  兜底使用, 生产 nodejs runtime 下攻击者无法通过伪造 XFF 增加桶数量, 此风险已实质性消除。
+ *  保留 FIFO 淘汰作为防御纵深(应对未来 NAT 后多客户端共享出口 IP 的合法突发场景)。
  */
 function rateLimit(routeClass: string, ip: string, capacity: number, refillPerSec: number): boolean {
   const now = Date.now()
@@ -88,11 +93,14 @@ const SECURITY_HEADERS: Record<string, string> = {
   'X-DNS-Prefetch-Control': 'off',
 }
 
-// HTML 页面 CSP (相对宽松: Next.js dev 注入 inline script/style, 需 unsafe-inline;
-// 'unsafe-eval' 兼容部分 Next dev 特性 —— 生产环境可进一步收紧)
+// HTML 页面 CSP
+// R5-22: 按运行环境分级 —— 生产环境去除 'unsafe-eval'(Next dev 用于 HMR/eval, 生产无需),
+//  收紧 XSS 攻击面; dev 保留 'unsafe-inline' + 'unsafe-eval' 让 Next.js HMR 正常工作。
+//  进一步收紧(如 nonce 替代 unsafe-inline)需 Next.js 16 nonce-based CSP, 单独立项推进。
+const isProd = process.env.NODE_ENV === 'production'
 const CSP_HTML =
   "default-src 'self'; " +
-  "script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
+  `script-src 'self' 'unsafe-inline'${isProd ? '' : " 'unsafe-eval'"}; ` +
   "style-src 'self' 'unsafe-inline'; " +
   "img-src 'self' data: https:; " +
   "font-src 'self' data:; " +

@@ -363,11 +363,19 @@ function safeSingleLine(v: string): string {
 /** HTTP 头键安全化(ee-d): 仅保留 RFC 7230 token 字符, 非法键返回 undefined(丢弃)
  *  R4-22: 同时拒收 HTTP smuggling 向量头(host/content-length/transfer-encoding/
  *  connection/upgrade/te/trailer/expect)——这些头由运行时/代理统一管理, 用户配置注入
- *  会引发请求走私/分块解析混淆/连接复用串味。仅放行真正应用层自定义头 */
+ *  会引发请求走私/分块解析混淆/连接复用串味。仅放行真正应用层自定义头
+ *  R5-15: 追加 via / x-forwarded-* / x-real-ip / forwarded / x-original-url /
+ *  x-rewrite-url / x-cluster-client-ip —— 这些是 Caddy(见 Caddyfile)/反代/WAF 写入的
+ *  代理识别头, 上游服务可能据此做 IP 鉴权; 引擎再发同名头会与代理头冲突或绕过 IP 鉴权 */
 const HEADER_KEY_DENYLIST = new Set([
   'host', 'content-length', 'transfer-encoding', 'connection', 'upgrade',
   'te', 'trailer', 'expect', 'keep-alive', 'proxy-connection', 'proxy-authorization',
   'proxy-authenticate', 'front-end-https', 'x-http-method-override',
+  // R5-15: 代理识别/转发链头
+  'via', 'forwarded',
+  'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto', 'x-forwarded-port',
+  'x-forwarded-server', 'x-real-ip', 'x-original-url', 'x-rewrite-url',
+  'x-cluster-client-ip',
 ])
 function safeHeaderKey(v: string): string | undefined {
   const s = v.replace(/[^!#$%&'*+\-.^_`|~0-9A-Za-z]/g, '')

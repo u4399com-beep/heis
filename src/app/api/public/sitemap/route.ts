@@ -20,10 +20,31 @@ const SITEMAP_CACHE_MS = 5 * 60 * 1000
 
 interface SitemapCacheEntry { ts: number; xml: string; status: number }
 const sitemapCache = new Map<string, SitemapCacheEntry>()
+// R5-2: 缓存条目上限 + FIFO 驱逐 —— 每条目 ~750KB(page=5000 × ~150B/URL), 公共路由无鉴权,
+// 攻击者轮换 ?site=<random> 即可制造无限 key → Map 无界增长 → OOM。
+// 上限 50 条 × 750KB ≈ 37MB; 达到上限后按插入顺序淘汰最早条目(Map 维持插入序, keys().next() 为最老 key)。
+const MAX_SITEMAP_CACHE_ENTRIES = 50
 
 /** 私网/loopback/链路本地/CGNAT 段正则(API-20) —— 防止把内网地址写进 sitemap 暴露给搜索引擎 */
 const PRIVATE_HOST_RE =
   /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|100\.6[4-9]\.|100\.[7-9]\d\.|100\.1[01]\d\.|100\.12[0-7]\.|0\.)/
+
+/**
+ * R5-2: 带容量上限 + FIFO 驱逐的 cache.set 包装。
+ * Map 维持插入顺序, 迭代器首个 key 即最老条目; 达到上限后先删最老再插入新条目。
+ * 防止攻击者用 ?site=<random> 制造无限 key 触发 OOM。
+ */
+function setSitemapCache(key: string, entry: SitemapCacheEntry): void {
+  // 已存在则先删除, 让更新后的条目排到队尾(避免老条目永远占着队首位置)
+  if (sitemapCache.has(key)) sitemapCache.delete(key)
+  // 达到上限 → FIFO 淘汰最早条目
+  while (sitemapCache.size >= MAX_SITEMAP_CACHE_ENTRIES) {
+    const oldest = sitemapCache.keys().next().value
+    if (oldest === undefined) break
+    sitemapCache.delete(oldest)
+  }
+  sitemapCache.set(key, entry)
+}
 
 /** 站点域名 → 安全的 https base (仅接受合法域名格式 + 拒绝私网段, 防注入非法URL/暴露内网) */
 function siteBase(domain: string): string | null {
@@ -124,7 +145,6 @@ export async function GET(req: Request) {
         },
       })
     }
-
     // ?page=N → 返回该页 <urlset>(take:5000, skip:(N-1)*5000)
     if (pageParam !== null) {
       const page = clampInt(pageParam, 1, 1, MAX_PAGES)
@@ -135,7 +155,7 @@ export async function GET(req: Request) {
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 ${entries.join('\n')}
 </urlset>`
-      sitemapCache.set(cacheKey, { ts: Date.now(), xml, status: 200 })
+      setSitemapCache(cacheKey, { ts: Date.now(), xml, status: 200 })
       return new Response(xml, {
         headers: {
           'Content-Type': 'application/xml; charset=utf-8',
@@ -159,7 +179,7 @@ ${entries.join('\n')}
 <sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 ${sitemapEntries.join('\n')}
 </sitemapindex>`
-      sitemapCache.set(cacheKey, { ts: Date.now(), xml, status: 200 })
+      setSitemapCache(cacheKey, { ts: Date.now(), xml, status: 200 })
       return new Response(xml, {
         headers: {
           'Content-Type': 'application/xml; charset=utf-8',
@@ -193,7 +213,7 @@ ${sitemapEntries.join('\n')}
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 ${entries.join('\n')}
 </urlset>`
-    sitemapCache.set(cacheKey, { ts: Date.now(), xml, status: 200 })
+    setSitemapCache(cacheKey, { ts: Date.now(), xml, status: 200 })
     return new Response(xml, {
       headers: {
         'Content-Type': 'application/xml; charset=utf-8',

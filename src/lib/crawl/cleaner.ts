@@ -164,9 +164,14 @@ export function cleanContentHtml(raw: string, cfgOverride?: Partial<CleanConfig>
     // R4-20: 先剥危险标签(script/style/noscript/iframe/object/embed)及其内部文本再剥全部标签——
     //  旧行为只剥 <[^>]+> 标签本身, <script>alert(1)</script> 中的 alert(1) 文本会漏进纯文本输出
     //  (存储型注入面: 前台纯文本渲染虽不执行 JS, 但内容污染/广告灌水/有可能被二次 HTML 渲染时执行)
+    // R5-16: 第二正则 `<(script|style|...)[^>]*\/?>` 只剥开标签, 留下 alert(1) 文本继续漏进纯文本。
+    //  追加第三正则 `<script[^>]*>.*`(贪婪到串尾, 不要求闭标签), 处理截断 HTML 中无 </script>
+    //  闭合的 script 段(源站响应被中途切断 / malformed HTML 经 t2sHtml 后仍未闭合)
     let text = html
       .replace(/<(script|style|noscript|iframe|object|embed)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, ' ')
       .replace(/<(script|style|noscript|iframe|object|embed)\b[^>]*\/>/gi, ' ')
+      // R5-16: 截断/未闭合的 script|style|... 段 —— 贪婪匹配到串尾, 杜绝 JS 代码/样式漏进纯文本
+      .replace(/<(script|style|noscript|iframe|object|embed)\b[^>]*>[\s\S]*$/gi, ' ')
       .replace(/<\s*br\s*\/?>/gi, '\n')
       .replace(/<\/(p|div|h[1-6]|li)>/gi, '\n')
       .replace(/<[^>]+>/g, '')

@@ -34,7 +34,11 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       data.status = status
     }
     if (body?.adminNote !== undefined) {
-      const note = str(body.adminNote, ADMIN_NOTE_MAX).trim()
+      // R5-17: 剥 HTML 标签 —— adminNote 字段在前端虽以 <Textarea> 纯文本呈现(无
+      //  dangerouslySetInnerHTML), 但若被备份导出/邮件回执等下游 HTML 出口渲染, 含
+      //  <script>/<img onerror=> 的 adminNote 会触发存储型 XSS。str() 仅截断长度不剥标签。
+      const stripped = str(body.adminNote, ADMIN_NOTE_MAX).replace(/<[^>]+>/g, '')
+      const note = stripped.slice(0, ADMIN_NOTE_MAX).trim()
       data.adminNote = note || null
     }
 

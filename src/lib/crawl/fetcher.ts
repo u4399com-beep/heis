@@ -284,8 +284,6 @@ class CookieJar {
   }
   store(domain: string, setCookieHeaders: string[]) {
     if (!setCookieHeaders?.length) return
-    let jar = this.jars.get(domain)
-    if (!jar) { jar = new Map(); this.jars.set(domain, jar) }
     // 2-fetcher Bug 27: 拒收畸形 Set-Cookie。首段无 '=' / 名为属性关键字(Path/Domain/
     // Expires/Max-Age/Secure/HttpOnly/SameSite)的"伪 cookie"原先会被写入罐, 污染后续
     // Cookie 头(发送 "Path=/; Secure" 给服务端, 触发 400 Bad Request)
@@ -296,7 +294,37 @@ class CookieJar {
       if (idx <= 0) continue
       const name = pair.slice(0, idx).trim().toLowerCase()
       if (!name || ATTR_NAMES.has(name)) continue
-      jar.set(pair.slice(0, idx).trim(), { v: pair.slice(idx + 1).trim(), at: Date.now() })
+      // R5-6: 解析 Set-Cookie 的 domain 属性 —— CF clearance 常带 `domain=.example.com`,
+      // 旧行为只按请求 URL host(originHost 拿到 www.example.com)存罐, 后续 fetcher 直连
+      // api.example.com 时 cookieJar.get('api.example.com') 返回空, cf_clearance 不发, 过盾失败。
+      // 修法: 若 Set-Cookie 显式声明 domain=, 把该条 cookie 也存到 cookie 自身 domain 字段
+      // (去前导点: '.example.com' → 'example.com') 对应的罐里; 无 domain= 的(默认 host-only)
+      // 仍存到调用方传入的 request host 罐里。这样跨子域跳转/直连时凭证能跨子域复用。
+      const attrs = raw.split(';').map((s) => s.trim())
+      let cookieDomain: string | null = null
+      for (const a of attrs) {
+        const eq = a.indexOf('=')
+        if (eq <= 0) continue
+        const ak = a.slice(0, eq).trim().toLowerCase()
+        if (ak === 'domain') {
+          let dv = a.slice(eq + 1).trim().toLowerCase()
+          if (dv.startsWith('.')) dv = dv.slice(1) // 去前导点(.example.com → example.com)
+          if (dv) cookieDomain = dv
+          break
+        }
+      }
+      const cookieKey = pair.slice(0, idx).trim()
+      const cookieVal = pair.slice(idx + 1).trim()
+      // 主罐: 按调用方传入的 request host 存
+      let jar = this.jars.get(domain)
+      if (!jar) { jar = new Map(); this.jars.set(domain, jar) }
+      jar.set(cookieKey, { v: cookieVal, at: Date.now() })
+      // 副罐: cookie 自身 domain 属性指定的域(跨子域场景)
+      if (cookieDomain && cookieDomain !== domain) {
+        let jar2 = this.jars.get(cookieDomain)
+        if (!jar2) { jar2 = new Map(); this.jars.set(cookieDomain, jar2) }
+        jar2.set(cookieKey, { v: cookieVal, at: Date.now() })
+      }
     }
   }
   seed(domain: string, cookieStr?: string) {
@@ -680,6 +708,13 @@ function originHost(url: string): string {
  *  字面量 IP 直接判范围; 域名经 node:dns lookup 解析全部地址(v4+v6)逐个比对 —— 防
  *  "外网域名解析到内网 IP" 绕过(如本地 hosts 把 evil.com 指 169.254.169.254)。
  *  DNS 解析结果缓存 60s(Map<hostname, {ips, at}>, 上限 2000 FIFO 淘汰)
+ *
+ *  R5-19 已知限制(DNS rebinding TOCTOU): 本守卫只校验 DNS 解析得到的 IP 是否安全, 实际
+ *  fetch(url) 仍以 hostname 发起连接, 浏览器/Node 会再走一次系统 DNS 查询, 攻击者控制
+ *  DNS 即可在守卫通过后把 hostname 重绑到内网 IP(如 169.254.169.254)绕过本守卫。
+ *  缓解: 60s DNS 缓存窗口内重绑攻击窗口受限; fetcher 的所有 fetch 走 Caddy 出口代理也
+ *  能拆掉部分直连路径。彻底修复需将 DNS 解析结果以 fetch 的 lookup 选项注入(强制走缓存 IP
+ *  + Host 头), 当前 fetch 实现不支持自定义 lookup, 列为已知限制, 待引入 undici dispatcher 时收口。
  */
 const SSRF_DNS_CACHE_MAX = 2000
 const SSRF_DNS_CACHE_TTL_MS = 60_000
@@ -2088,7 +2123,10 @@ export async function fetchPage(url: string, cfgOverride?: Partial<FetchConfig>)
     const hostUrl = rewriteMirrorHost(url, group[i])
     if (!hostUrl) continue
     // 2-fetcher Part A: 镜像 host 也走 SSRF 守卫(防 admin 配置 mirrorDomains 指向内网)
-    const mirrorSsrf = await assertSafeTarget(hostUrl, { allowLoopback: false })
+    // R5-13: 原硬编码 allowLoopback:false 会把 URL 自身的 loopback token 代理(如 127.0.0.1:3010)
+    //  在 i=0 首次迭代(=URL 自身 host)时拒掉 → 该镜像被跳过 → 章节抓取静默失败。
+    //  改用 loopbackBypassAllowed(hostUrl, cfg) 与外层 SSRF 守卫同口径(配置豁免则放行)
+    const mirrorSsrf = await assertSafeTarget(hostUrl, { allowLoopback: loopbackBypassAllowed(hostUrl, cfg) })
     if (!mirrorSsrf.ok) {
       console.warn(`[fetcher] 镜像 ${group[i]} SSRF 拒绝: ${mirrorSsrf.reason}`)
       lastErr = new Error(`SSRF blocked: ${mirrorSsrf.reason}`)

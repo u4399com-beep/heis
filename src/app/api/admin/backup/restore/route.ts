@@ -31,7 +31,10 @@ export async function POST(req: Request) {
     if (cl && cl > RESTORE_MAX_BODY_BYTES) {
       return fail(`备份文件过大(${Math.round(cl / 1024 / 1024)}MB > 200MB 上限), 请精简后重试`, 413)
     }
-    const body = await readBody<Record<string, unknown>>(req)
+    // R5-5: 双层防护 —— ① 已有的 Content-Length 显式 >200MB 拒绝(返回友好提示)
+    // ② R5-5 改造后的 readBody 默认 5MB 上限, 此处需放宽到 200MB 与 R4A-9 同口径。
+    // Content-Length 缺失(chunked)时由 readBody 的 maxBytes 兜底拦截。
+    const body = await readBody<Record<string, unknown>>(req, RESTORE_MAX_BODY_BYTES)
     if (!isPlainObject(body)) return fail('请求体必须是对象')
 
     // 客户端标准形态: { data: <完整备份对象>, mode: 'merge'|'replace' }

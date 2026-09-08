@@ -18,6 +18,10 @@ const URL_REGEX = /https?:\/\/\S+/gi
 const URL_LIMIT = 3
 const IP_HOUR_LIMIT = 5
 const HOUR_MS = 60 * 60 * 1000
+// R5-4: 公开路由 readBody 默认 5MB 上限对反馈接口仍过大 —— 500MB body 会先全量入内存才被
+// req.json() 解析, 单次请求即可 OOM 进程(120 req/min × 500MB = 60GB/min)。
+// 反馈字段全部已知上限(CONTENT_MAX+CONTACT_MAX+URL_MAX+type ≈ 4KB), 给 100KB 富余即可。
+const FEEDBACK_MAX_BODY_BYTES = 100 * 1024
 
 function clientIp(req: Request): string {
   // R4A-2: 优先 TCP 套接字 IP(req.ip) —— 与 proxy.ts R3-30 修复同款, 防 XFF 头部伪造
@@ -48,7 +52,7 @@ export async function POST(req: Request) {
   return withGuard(async () => {
     const url = new URL(req.url)
     const siteId = str(url.searchParams.get('site'), 64).trim() || null
-    const body = await readBody<Record<string, any>>(req)
+    const body = await readBody<Record<string, any>>(req, FEEDBACK_MAX_BODY_BYTES)
 
     const type = str(body?.type, 20).trim()
     if (!VALID_TYPES.has(type)) return fail('反馈类型不合法')

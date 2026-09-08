@@ -1117,18 +1117,27 @@ export async function withObscuraPage<T>(
       // 永远卡在 await new Promise 处, 调用方 gateFetch 也跟着卡死 → 整个 obscura 路径死锁。
       // 30s 超时后 reject 触发到 gateFetch 的 catch → 落 HTTP 引擎, 链路自愈。醒来后
       // 须从 waiters 数组中把自己摘掉(否则槽位释放时 wakeNext 调用空 resolve 不报错但浪费)
+      //
+      // R5-18: TDZ 兜底 —— 原 setTimeout 回调引用 `resolver`, 而 `const resolver` 在
+      //  setTimeout 之后声明。30s 延时下 resolver 早已赋值, 但若未来为测试改成 0ms 延时
+      //  或事件循环高压下同步 fire, 会触发 TDZ ReferenceError。先 let 声明占位, 再赋值。
+      let resolver: (() => void) | null = null
       await new Promise<void>((resolve, reject) => {
         const t = setTimeout(() => {
           // 从 waiters 中移除自己(若仍存在), 防 wakeNext 调到已 reject 的 resolver
-          const idx = S.waiters.indexOf(resolver)
-          if (idx >= 0) S.waiters.splice(idx, 1)
+          if (resolver) {
+            const idx = S.waiters.indexOf(resolver)
+            if (idx >= 0) S.waiters.splice(idx, 1)
+          }
           reject(new Error('obscura slot timeout(30s): 池满且所有槽位长期被占用'))
         }, 30_000)
-        const resolver = () => {
+        // R5-18: 用局部 const 包装, 让 waiters.push 拿到 () => void 而非可能为 null 的引用
+        const r: () => void = () => {
           clearTimeout(t)
           resolve()
         }
-        S.waiters.push(resolver)
+        resolver = r
+        S.waiters.push(r)
       })
     }
     resetIdleTimer()
