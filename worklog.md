@@ -2438,3 +2438,24 @@ Stage Summary:
 - 5 rounds total: 30 + 22 + 30 + 40 + 22 = 144 bugs found and fixed
 - Critical security + DoS + data loss all addressed
 - Code pushed to https://github.com/u4399com-beep/heis.git (commit fa8e79a)
+
+---
+Task ID: r6-final
+Agent: Round 6 deep audit + 4 bug fixes + pilishuwu rule + GitHub push
+Task: 6th round audit + fix interaction bugs + pilishuwu.com rule
+
+Work Log:
+- Deep audit round 6: focused on interaction bugs + edge cases in round-5 fixes. Found 4 NEW bugs.
+- All 4 fixed across 6 files (+336/-13 lines):
+  - R6-1 Critical: CookieJar.get only queried exact host jar — cross-subdomain cookies (cf_clearance with domain=.example.com) never propagated to subdomains. Fixed: parentDomainChain() walks host's parent domains, get() merges all jars along chain, child overrides parent (same-name cookie priority matches browser behavior).
+  - R6-2 High: hostgate caller swap during rate-limit cooldown didn't update minGapMsBeforeCooldown snapshot → cooldown expiry restored OLD caller's minGapMs → new caller admitted at wrong rate → immediate re-429. Fixed: sync snapshot on caller swap during active cooldown.
+  - R6-3 Critical: readBody maxBytes only checked Content-Length header; chunked encoding (no Content-Length) bypassed the limit → 500MB body OOM. Fixed: chunked body streamed via reader with byte counter, aborts with BodyTooLargeError on exceed.
+  - R6-4 Medium: rule DELETE didn't clean globalThis calibrate jobMap + Setting calibration:<ruleId> row → memory leak + DB bloat + info leak. Fixed: cleanupCalibrateArtifacts() called on single delete + batch delete.
+- New rule: 霹雳书屋 (www.pilishuwu.com) — CF protected, engine=auto + browserFallback[403] auto-degrades to Obscura stealth chromium for CF challenge solving. Inferred selectors (needs admin test panel verification).
+- Quality gates: lint 0/0, tsc 0, dev server UP.
+- Pushed to GitHub: commit 271180b (7 files, +336/-13).
+
+Stage Summary:
+- 6 rounds total: 30 + 22 + 30 + 40 + 22 + 4 = 148 bugs found and fixed
+- New: pilishuwu.com crawl rule (CF-protected site)
+- Code pushed to https://github.com/u4399com-beep/heis.git (commit 271180b)
