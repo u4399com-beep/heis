@@ -228,6 +228,43 @@ function uaModelFor(ua: string, mobile: boolean, _platform: string): string {
  *  下次同 host 直接带)是既有 autoCookie 全局罐能力, 本轮仅补时效与失效清理 */
 const COOKIE_SESSION_TTL_MS = 30 * 60 * 1000
 
+// R6-1: 提取 origin 字符串中的 hostname(去 scheme/port) ——
+//  CookieJar.store/get 接收的 domain 是 originHost(url) = `https://www.example.com` 形态(origin),
+//  需从中取 hostname(www.example.com)做父域拆分。URL 解析失败返回空字符串。
+function hostOf(origin: string): string {
+  if (!origin) return ''
+  try {
+    return new URL(origin).hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  } catch {
+    // 非 URL 形态(可能是已剥好的 hostname), 直接小写化返回
+    return origin.toLowerCase().replace(/^\[|\]$/g, '')
+  }
+}
+
+// R6-1: origin/host → 父域链(含自身, 子域在前父域在后) ——
+//  例: 'https://a.b.example.com' → ['a.b.example.com', 'b.example.com', 'example.com']
+//  例: 'a.b.example.com'          → ['a.b.example.com', 'b.example.com', 'example.com']
+//  IP 字面量 / localhost / 单段 host(无点) → [host](仅自身, 无父域可遍历)
+//  最多 5 级防病态长 TLD; 用于 CookieJar.get 父域 cookie 合并 + store domain 属性校验
+function parentDomainChain(origin: string): string[] {
+  const host = hostOf(origin)
+  if (!host) return []
+  // IP 字面量 / localhost / *.localhost → 仅自身, 不做父域遍历
+  if (/^(\d{1,3}\.){3}\d{1,3}$/.test(host) || host.includes(':')) return [host]
+  if (host === 'localhost' || host.endsWith('.localhost')) return [host]
+  const parts = host.split('.')
+  // 单段(如 'localhost' 已上面处理; 'com' 这类 TLD-only 不应作 host 出现, 但兜底返回自身)
+  if (parts.length < 2) return [host]
+  // 倒序累积: parts=[a,b,example,com] → [a.b.example.com, b.example.com, example.com]
+  //  不含 TLD-only('com'), 防注入者用 TLD 设 cookie 影响全局
+  const out: string[] = []
+  const maxLevels = Math.min(parts.length - 1, 5) // 最多 5 级, 不含 TLD
+  for (let i = 0; i < maxLevels; i++) {
+    out.push(parts.slice(i).join('.'))
+  }
+  return out
+}
+
 class CookieJar {
   private jars = new Map<string, Map<string, { v: string; at: number }>>()
   /** 未过期条目判定(过期即惰性删除) */
@@ -253,19 +290,32 @@ class CookieJar {
     for (const d of empty) this.jars.delete(d)
   }
   get(domain: string): string {
-    const jar = this.jars.get(domain)
-    if (!jar || jar.size === 0) {
+    // R6-1: 跨子域 cookie 合并 —— R5-6 store() 已把带 `domain=` 属性的 cookie 同时存到
+    //  cookie 自身 domain 罐里(如 .example.com → example.com 罐), 但 get() 旧行为只查
+    //  精确匹配的 request host 罐, 永远拿不到父域罐中的 cf_clearance 等凭证。
+    //  修法: 沿 request host 的父域链逐级合并 ——
+    //   host=a.b.example.com → 查 a.b.example.com / b.example.com / example.com 三个罐;
+    //   子域 cookie 覆盖父域同名 cookie(更具体的优先, 与浏览器同源 cookie 优先级一致)。
+    //  域名拆分用点号分段倒序累积, 最多 5 级(常见域名 ≤3 级, 5 级防病态长 TLD);
+    //  IP 字面量/localhost 不做父域遍历(它们不是 DNS 层级结构)。
+    const hosts = parentDomainChain(domain)
+    if (hosts.length === 0) {
       this.prune()
       return ''
     }
-    const out: string[] = []
-    for (const [k, e] of jar) {
-      if (this.fresh(jar, k, e)) out.push(`${k}=${e.v}`)
+    // 合并: 父域先入, 子域后入覆盖同名键(子域优先)
+    const merged = new Map<string, string>()
+    for (let i = hosts.length - 1; i >= 0; i--) {
+      const jar = this.jars.get(hosts[i])
+      if (!jar || jar.size === 0) continue
+      for (const [k, e] of jar) {
+        if (this.fresh(jar, k, e)) merged.set(k, e.v)
+      }
+      if (jar.size === 0) this.jars.delete(hosts[i])
     }
-    // 2-fetcher Bug 9: fresh() 把最后一个条目删空后, 同步删 Map entry 防泄漏
-    if (jar.size === 0) this.jars.delete(domain)
-    else this.prune()
-    return out.join('; ')
+    this.prune()
+    if (merged.size === 0) return ''
+    return Array.from(merged.entries()).map(([k, v]) => `${k}=${v}`).join('; ')
   }
   /** 当前域名已存(未过期)cookie 数(用于判断本次响应是否刚种下新 Cookie) */
   count(domain: string): number {
@@ -288,6 +338,15 @@ class CookieJar {
     // Expires/Max-Age/Secure/HttpOnly/SameSite)的"伪 cookie"原先会被写入罐, 污染后续
     // Cookie 头(发送 "Path=/; Secure" 给服务端, 触发 400 Bad Request)
     const ATTR_NAMES = new Set(['path', 'domain', 'expires', 'max-age', 'secure', 'httponly', 'samesite'])
+    // R6-5: 提取 request host 用于校验 Set-Cookie 的 domain 属性 ——
+    //  RFC 6265 第 5.3 步 6: 服务端只能为「自己或自己的父域」设置 cookie。
+    //  旧行为(R5-6 fix)只看 domain= 属性直接存到该域罐, 未校验 domain 是否为 request host
+    //  的父域。攻击者控制 evil.com 即可设 `Set-Cookie: session=evil; domain=google.com`,
+    //  cookie 被存到 google.com 罐, 后续请求 google.com 时被发出 → 跨域 cookie 注入。
+    //  修法: 解析 domain 属性后, 校验 request host === cookieDomain 或 request host 以
+    //  `.cookieDomain` 结尾(子域); 不通过则丢弃 domain 属性, cookie 仅存到 request host
+    //  罐(host-only 语义, 与无 domain= 属性的 cookie 同行为)。
+    const reqHost = hostOf(domain)
     for (const raw of setCookieHeaders) {
       const [pair] = raw.split(';')
       const idx = pair.indexOf('=')
@@ -313,16 +372,30 @@ class CookieJar {
           break
         }
       }
+      // R6-5: domain 属性安全校验 —— cookieDomain 必须是 request host 自身或其父域;
+      //  不通过则降级为 host-only(不存副罐)。防跨域 cookie 注入(evil.com 设 domain=google.com)。
+      //  parentDomainChain 返回 request host 的所有父域(含自身), cookieDomain 必须在其中。
+      //  IP 字面量/localhost 不参与父域校验(parentDomainChain 返回空, 一律降级 host-only)。
+      let effectiveCookieDomain: string | null = cookieDomain
+      if (effectiveCookieDomain && reqHost) {
+        const allowed = parentDomainChain(domain)
+        if (!allowed.includes(effectiveCookieDomain)) {
+          effectiveCookieDomain = null // 拒绝跨域, 降级为 host-only
+        }
+      } else if (effectiveCookieDomain && !reqHost) {
+        // request host 不可解析(异常 URL), 一律降级 host-only 防注入
+        effectiveCookieDomain = null
+      }
       const cookieKey = pair.slice(0, idx).trim()
       const cookieVal = pair.slice(idx + 1).trim()
       // 主罐: 按调用方传入的 request host 存
       let jar = this.jars.get(domain)
       if (!jar) { jar = new Map(); this.jars.set(domain, jar) }
       jar.set(cookieKey, { v: cookieVal, at: Date.now() })
-      // 副罐: cookie 自身 domain 属性指定的域(跨子域场景)
-      if (cookieDomain && cookieDomain !== domain) {
-        let jar2 = this.jars.get(cookieDomain)
-        if (!jar2) { jar2 = new Map(); this.jars.set(cookieDomain, jar2) }
+      // 副罐: cookie 自身 domain 属性指定的域(跨子域场景); R6-5 已校验为合法父域
+      if (effectiveCookieDomain && effectiveCookieDomain !== domain) {
+        let jar2 = this.jars.get(effectiveCookieDomain)
+        if (!jar2) { jar2 = new Map(); this.jars.set(effectiveCookieDomain, jar2) }
         jar2.set(cookieKey, { v: cookieVal, at: Date.now() })
       }
     }

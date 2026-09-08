@@ -4,6 +4,17 @@ import { ok, fail, readBody } from '@/lib/api'
 import { withGuard } from '../../../_lib/http'
 import { parseBatchBody } from '../../../_lib/batch'
 
+/** R6-4: 与单条 DELETE 同款清理校准 job Map + Setting 残留, 防内存泄漏 + DB bloat。 */
+function cleanupCalibrateArtifacts(ruleId: string): void {
+  try {
+    const g = globalThis as unknown as { __novelCalibJobs_v1?: Map<string, unknown> }
+    g.__novelCalibJobs_v1?.delete(ruleId)
+  } catch { /* ignore */ }
+  try {
+    void db.setting.delete({ where: { key: `calibration:${ruleId}` } }).catch(() => {})
+  } catch { /* ignore */ }
+}
+
 export async function POST(req: Request) {
   return withGuard(async () => {
     const parsed = parseBatchBody(await readBody(req), ['delete'])
@@ -36,6 +47,8 @@ export async function POST(req: Request) {
 
     try {
       const res = await db.rule.deleteMany({ where: { id: { in: ids } } })
+      // R6-4: 批量删除成功后, 逐条清理校准 job Map + Setting 残留(与单删同款)
+      for (const id of ids) cleanupCalibrateArtifacts(id)
       return ok({ affected: res.count })
     } catch (e: any) {
       // P2003 外键约束(并发期间新建了引用任务) → 兜底为整批拒绝, 不留半删状态

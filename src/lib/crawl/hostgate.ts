@@ -333,6 +333,16 @@ export function acquireHostGate(
   if (isNewCaller) {
     st.minGapMsLastValue = minGapMs
     st.minGapMs = minGapMs
+    // R6-2: caller 在限流冷却期间换代(旧 caller A 因 429 触发冷却, 新 caller B 启动) ——
+    //  旧行为不更新 minGapMsBeforeCooldown 快照, 冷却到期时 settleRateLimitExpiry 把
+    //  st.minGapMs 回滚到【旧 caller A 的 minGapMs 值】(如 500ms), 而【新 caller B】
+    //  实际请求的 minGapMs 是 1000ms。结果新 caller 被以 500ms 节奏放行 → admission storm
+    //  撞刚恢复的源站 → 立即再次 429。
+    //  修法: caller 换代时同步把快照更新为新 caller 的 minGapMs 值, 冷却到期回滚到【新 caller】
+    //  的实际请求值, 保持各 caller 节奏自洽。无冷却在效时本块不执行(快照保持为 0, 不影响)。
+    if (st.rateLimitedUntil > now0 && st.minGapMsBeforeCooldown !== minGapMs) {
+      st.minGapMsBeforeCooldown = minGapMs
+    }
   }
   if (st.rateLimitedUntil > now0) {
     const cooldownImpliedGap = st.rateLimitedUntil - now0
