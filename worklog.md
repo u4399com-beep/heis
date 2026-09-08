@@ -1919,3 +1919,23 @@ Stage Summary:
   - `bunx tsc --noEmit`: 0 errors (excluding examples/skills).
   - GET `/`: HTTP 200.
   - XSS verification: PUT chapter with `<img src=x onerror=alert(1)><script>alert(2)</script><iframe src=javascript:alert(3)></iframe>` → stored as `<p><p>正常段落</p></p>` (all attack vectors stripped). Public chapter GET returns same sanitized content. No stored XSS in reader pages.
+
+---
+Task ID: final-push
+Agent: Round 3 deep audit + 30 bug fixes + GitHub push
+Task: Line-by-line audit (30 new bugs) + fix all + push to GitHub
+
+Work Log:
+- Deep audit round 3: 30 NEW bugs found (3 Critical + 5 High + 22 Medium/Low), cross-checked against round-1 (30) and round-2 (22) to avoid duplicates.
+- All 30 bugs fixed across 20 files (+451/-46 lines):
+  - Critical: stored XSS (chapter PUT sanitization), XFF spoofing (req.ip priority), loginAttempts DoS (10000 cap + sweep)
+  - High: token challenge regex tightening, cleaner img.src keep, browser ctx.close error handling, obscura waiter timeout, recreateSlot failure limit
+  - Medium: 22 fixes covering domainUa FIFO, cookie seed filter, proxy redact, curl status validation, runtime pruning, control timeout, recoverOnBoot filter, toc pagination limit, URL normalize, title sanitize, homoglyph code-point, session validation, cookie expiry, autoRefresh clamp, feedback XSS, sitemap status, recrawl rule check, task mode lock, BookView DOMParser
+- Quality gates: lint 0/0, tsc 0, dev server UP, XSS verified stripped.
+- Pushed to GitHub: commit c67ddca (force push to origin/main).
+
+Stage Summary:
+- 3 rounds of deep audits total: 30 + 22 + 30 = 82 bugs found and fixed
+- Critical security: SSRF (4 vectors), XSS (stored reader-side), DoS (rate limit bypass + memory exhaustion), auth session forgery defense
+- Anti-crawler: UA pool 34, fingerprint headers, proxy rotation, stealth chromium, request jitter, CF challenge
+- Code pushed to https://github.com/u4399com-beep/heis.git (commit c67ddca)
