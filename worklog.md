@@ -2613,3 +2613,29 @@ Agent: Combinatorial theme system + range incremental
 ## Stage Summary
 - Feature 1: 50400 combinatorial themes now browsable in admin (paginated) + previewable via `?theme=` URL. Existing 9 presets preserved for backward compat. Site validation routes NOT modified (per constraints) — combo IDs cannot be set as site.themeId via API, only previewed.
 - Feature 2: Range task resume now status-aware. Completed books skip entirely (no new chapters possible); ongoing books re-check on restart (fetch TOC → compare last chapter URL → skip if unchanged / incremental crawl if new chapters). Cross-source dedup prevents redundant crawling when same name+author exists from another rule.
+
+---
+Task ID: feat-combo-theme-incremental-push
+Agent: 50400 combo themes + range incremental crawl + push
+Task: Combinatorial theme system + ongoing incremental + cross-source dedup
+
+Work Log:
+- Feature 1: 组合式主题系统 — 50配色×42风格×24布局=50400种组合
+  - theme-matrix.ts: COLOR_SCHEMES(50: 25亮+25暗含双色) × STYLES(42: 极简/玻璃/纸面/霓虹/赛博/和风/水墨等) × LAYOUTS(24: 7首页×4阅读)
+  - generateTheme(c,s,l) 组合三维度生成完整ThemeDef; getThemeById(id) 解析组合ID(处理双色colorId的-分割)
+  - themes.ts: getThemeById 先查9预设再查50400组合, 向后兼容
+  - admin/themes API: ?page=N&size=M 分页返回50409种(9预设+50400组合, totalPages=10082)
+  - PublicSite: ?theme=violet-glasswa-grid-cl 组合主题正常渲染
+- Feature 2: 范围增量采集
+  - completedBookUrls: 完结书籍重启直接跳过(日志: 跳过已完结)
+  - ongoingBookUrls: 连载书籍增量检查(对比latestChapter, 有新章节才重采TOC)
+  - bookLastChapters: 每书最后章节URL持久化, 增量比对依据
+  - 跨源去重: 同名同作者不同源, 对比章节数, 新源更多则增量合并(日志: 跨源去重)
+  - 进度持久化: discoveredBookUrls/completedBookUrls/ongoingBookUrls/bookLastChapters (cap 50000)
+- Quality gates: lint 0/0, tsc 0, dev server UP, 50409 themes, combo theme renders 200
+- Pushed to GitHub: commit de417dc (8 files, +775/-24)
+
+Stage Summary:
+- 50400 combo themes + 9 presets = 50409 total themes
+- Range incremental: completed skip + ongoing recheck + cross-source dedup
+- Code pushed to https://github.com/u4399com-beep/heis.git (commit de417dc)
