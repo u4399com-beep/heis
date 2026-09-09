@@ -150,6 +150,14 @@ export interface FetchConfig {
   tokenInjection?: 'url' | 'header'
   /** tokenInjection='header' 时的请求头名, 缺省 X-Token */
   tokenHeaderName?: string
+  /** 内容代理 URL(如 xjp-proxy /content?u={url}): 配置后, content 段的 fetch 不走原始 URL,
+   *  而是请求 contentProxyUrl(替换 {url} 为原始章节 URL 的 encodeURIComponent), 代理返回
+   *  JSON {ok:true, content:string} 或 {ok:false, error:string}, 引擎直接用该 content 作为 HTML
+   *  传给 parser, 不再 fetch 原始站点。适用于 var c / AES 加密等需服务端解密的站点
+   *  (xjp-proxy/deqixs-proxy 等)。代理响应体为纯文本(以 \n 分段), 引擎把每行 wrap 成 <p>
+   *  传给 parser(content 字段可设 const 类型直接拿全文)。代理失败/响应非法时降级直连原 URL
+   *  (零回归兜底)。loopback(127.0.0.1:301x 等)经 assertSafeTarget({allowLoopback:true}) 放行 */
+  contentProxyUrl?: string
   /** 出口代理池(dd-a, 反反爬核心): 逗号分隔多条代理, 如
    *  "http://u:p@host:port,http://host2:port2"; 多条时每请求随机轮换(与 UA 池同款
    *  random 模式, 分布可测试验证); 失败按池逐条重试, 全部失败降级直连重试一次。
@@ -528,6 +536,15 @@ export function sanitizeFetchConfig(v: unknown): Partial<FetchConfig> {
   if (r.tokenInjection === 'url' || r.tokenInjection === 'header') out.tokenInjection = r.tokenInjection
   const tokenHeaderName = safeStr(r.tokenHeaderName, 100)
   if (tokenHeaderName !== undefined) out.tokenHeaderName = tokenHeaderName
+  // 内容代理 URL(feat-contentproxy-resume): 钳长 500(代理 URL 含查询参数足够) +
+  // 单行化(防 CR/LF 注入), 非法形态整字段丢弃。运行时仅 http(s) 形态经 assertSafeTarget
+  // 放行(loopback 允许, 与 tokenUrl 同口径), 含 {url} 占位符由 fetcher.split('{url}')
+  // .join(enc) 全量替换(prefetchToken 同款实现)
+  const contentProxyUrlRaw = safeStr(r.contentProxyUrl, 500)
+  if (contentProxyUrlRaw !== undefined) {
+    const contentProxyUrl = safeSingleLine(contentProxyUrlRaw)
+    if (contentProxyUrl && /^https?:\/\/\S+$/i.test(contentProxyUrl)) out.contentProxyUrl = contentProxyUrl
+  }
   // 出口代理池(dd-a): 钳长 2000(多条列表形态) + 逐条 scheme 白名单校验
   // (http/https/socks5(h)/socks4(a) + host:port 形态, 与 fetcher.parseProxyPool 同口径);
   // 合法条目去空去重上限 10 条后回写, 全部非法则整字段丢弃

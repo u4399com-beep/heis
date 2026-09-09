@@ -32,6 +32,16 @@ interface TaskRuntime {
   /** R3-10: runtime 最后活跃时间戳(每次 start/pause/controlInner 路径更新) —— LRU 驱逐
    *  时优先淘汰 paused 且 1h 未活跃的条目, 避免长期挂起但已不可恢复的任务占住 Map 槽位 */
   lastActiveAt: number
+  /** feat-contentproxy-resume(范围任务续采): 已在列表页发现过的书籍 URL 集合。
+   *  范围任务重启时, 已发现过的书籍不再加入 bookQueue(节省书籍页抓取/解析/数据库写入),
+   *  仅 list 页上新出现的书籍才进入采集队列; 任务进度 progress.discoveredBookUrls 持久化,
+   *  本进程内存 Set 由 progress 装载。recrawlMode==='full' 任务启动时清空(重采语义) */
+  discoveredBookUrls: Set<string>
+  /** feat-contentproxy-resume(范围任务续采): 已完整采集(章节全采完)的书籍 URL 集合。
+   *  重启时这些书籍整体跳过(不重抓书籍页/目录/正文), 仅 progress.completedBookUrls
+   *  仍包含的才被跳过。crawlOneBook 返回 'ok' 时加入本集合; recrawlMode==='full'
+   *  任务启动时清空(重采语义)。本集合只增不删(同一书籍 URL 不会因重新发现而退集) */
+  completedBookUrls: Set<string>
 }
 
 interface TaskProgress {
@@ -47,6 +57,15 @@ interface TaskProgress {
   lastThread?: number
   lastInterval?: number
   engineStats?: Record<string, number>
+  /** feat-contentproxy-resume(范围任务续采): 已发现的书籍 URL 列表(持久化进 task.progress)。
+   *  范围任务重启时由本字段重建 rt.discoveredBookUrls Set, 用于跳过已发现书籍免再入 bookQueue。
+   *  cap 50000 条防 DB 膨胀(50000×~60B URL≈3MB JSON, SQLite TEXT 上限 1GB, 实际无虞但保守钳) */
+  discoveredBookUrls?: string[]
+  /** feat-contentproxy-resume(范围任务续采): 已完整采集的书籍 URL 列表(持久化进 task.progress)。
+   *  范围任务重启时由本字段重建 rt.completedBookUrls Set, 用于跳过整体重采(节省书籍页/目录/正文
+   *  全链路抓取)。crawlOneBook 返回 'ok' 时追加到 rt.completedBookUrls 后, saveProgress 同步落库。
+   *  cap 50000 条 */
+  completedBookUrls?: string[]
 }
 
 interface TaskStats {
@@ -295,7 +314,15 @@ export class TaskRunner {
   private async controlInner(taskId: string, action: ControlAction): Promise<{ ok: boolean; message: string }> {
     const task = await db.task.findUnique({ where: { id: taskId } })
     if (!task) return { ok: false, message: '任务不存在' }
-    const rt = this.runtimes.get(taskId) || { paused: false, stopped: false, running: false, epoch: 0, lastActiveAt: Date.now() }
+    const rt = this.runtimes.get(taskId) || {
+      paused: false,
+      stopped: false,
+      running: false,
+      epoch: 0,
+      lastActiveAt: Date.now(),
+      discoveredBookUrls: new Set<string>(),
+      completedBookUrls: new Set<string>(),
+    }
     // R3-10: 每次进入 controlInner 都更新 lastActiveAt, 供 pruneRuntimesIfNeeded 判定
     // "僵尸暂停"(paused + 1h 未活跃); 无 operation 直接 update 触发顺序避免 await 间隙
     rt.lastActiveAt = Date.now()
@@ -409,6 +436,30 @@ export class TaskRunner {
       if (!cfg) return
       const progress: TaskProgress = { ...emptyProgress(), ...safeJson(cfg.task.progress) }
       const stats: TaskStats = { ...emptyStats(), ...safeJson(cfg.task.stats) }
+      // feat-contentproxy-resume(范围任务续采): 从 progress 重建内存 Set; rt 是 control('start')
+      // 创建的 TaskRuntime, 初始为空 Set(冷启动场景)。已运行过的任务从 DB progress 装载已发现/
+      // 已采集 URL 列表 → Set, 让范围任务重启时按 Set 跳过已处理的书籍(免再抓书籍页/目录/正文)。
+      // recrawlMode==='full' 任务启动时清空两 Set(完全覆盖重采语义: 用户明确要重采全部书籍);
+      // 增量模式保留 Set 让续采只处理新增/未采完的书籍
+      if (cfg.task.recrawlMode === 'full') {
+        rt.discoveredBookUrls = new Set<string>()
+        rt.completedBookUrls = new Set<string>()
+        progress.discoveredBookUrls = []
+        progress.completedBookUrls = []
+      } else {
+        // 从 progress 恢复(数组 → Set); 数组非法/缺失时 Set 留空(冷启动零回归)
+        const disc = Array.isArray(progress.discoveredBookUrls) ? progress.discoveredBookUrls : []
+        const comp = Array.isArray(progress.completedBookUrls) ? progress.completedBookUrls : []
+        rt.discoveredBookUrls = new Set(disc.filter((u) => typeof u === 'string' && u))
+        rt.completedBookUrls = new Set(comp.filter((u) => typeof u === 'string' && u))
+        if (rt.discoveredBookUrls.size > 0 || rt.completedBookUrls.size > 0) {
+          await this.log(
+            taskId,
+            'info',
+            `范围续采恢复: 已发现 ${rt.discoveredBookUrls.size} 本 / 已完成 ${rt.completedBookUrls.size} 本(从 task.progress 装载, 仅采集新增/未完成书籍)`,
+          ).catch(() => {})
+        }
+      }
       // ---------- 发现书籍URL ----------
       let bookQueue: string[] = []
       // ll-c2: 列表页已提取的书籍字段随行保存(key=absolutized bookUrl) — 部分源站 detail
@@ -446,7 +497,21 @@ export class TaskRunner {
             // 静默失效(发现 0 本书)。双字段都做 absolutize, 取值时 url 优先 bookUrl 兜底
             const parsed = parseList(res.html, url, listRule, ['url', 'bookUrl'])
             const pageUrls = parsed.items.map((i) => i.fields.url || i.fields.bookUrl).filter(Boolean)
-            urls.push(...pageUrls)
+            // feat-contentproxy-resume(范围任务续采): 已发现过的书籍 URL 不再加入 bookQueue
+            // (节省后续书籍页/目录/正文抓取; 已采集过的书籍会被 completedBookUrls 跳过整本)
+            // 本地 Set 用于本轮内去重(同一 URL 在多页/同页重复出现只入队一次); 跨任务重启时
+            // 由 progress.discoveredBookUrls 装载, 范围任务续采只处理新增/未采完书籍
+            let newlyDiscovered = 0
+            let alreadyDiscovered = 0
+            for (const u of pageUrls) {
+              if (rt.discoveredBookUrls.has(u)) {
+                alreadyDiscovered++
+                continue
+              }
+              rt.discoveredBookUrls.add(u)
+              urls.push(u)
+              newlyDiscovered++
+            }
             for (const it of parsed.items) {
               const u = it.fields.url || it.fields.bookUrl
               if (!u || listFields.has(u)) continue
@@ -456,7 +521,9 @@ export class TaskRunner {
             }
             progress.discovered = urls.length
             await this.saveProgress(taskId, progress, stats)
-            await this.log(taskId, 'success', `列表页 P${p} 发现 ${pageUrls.length} 本书籍 (累计${urls.length})`)
+            // 跳过日志用单条汇总, 避免万级 URL 逐条刷日志(每条 taskLog 落 SQLite + 上限 1500 字符裁切)
+            const skipHint = alreadyDiscovered > 0 ? ` 跳过已发现 ${alreadyDiscovered} 本` : ''
+            await this.log(taskId, 'success', `列表页 P${p} 发现 ${pageUrls.length} 本书籍 (新增 ${newlyDiscovered} 本${skipHint}, 累计待采${urls.length})`)
           } catch (e: any) {
             stats.errors++
             await this.log(taskId, 'error', `列表页 P${p} 抓取失败: ${e?.message}`)
@@ -489,6 +556,19 @@ export class TaskRunner {
         while (rt.paused && !rt.stopped && !isStale()) await sleep(600)
         if (rt.stopped || isStale()) break
 
+        // feat-contentproxy-resume(范围任务续采): 已完整采集(章节全采完)的书籍整体跳过
+        // —— 不重抓书籍页/目录/正文, 仅计入 booksDone 让进度条推进。范围任务多次重启时
+        // 已采完的书籍不会再次入网/落库, 节省源站压力 + 出口 IP 配额。recrawlMode==='full'
+        // 启动时 Set 已被清空, 此分支不触发(完全覆盖重采语义保留)
+        if (rt.completedBookUrls.has(bookUrl)) {
+          progress.booksDone++
+          progress.currentBook = bookUrl
+          progress.phaseNote = `跳过已采集 (${bi + 1}/${bookQueue.length})`
+          await this.log(taskId, 'info', `跳过已采集: ${bookUrl}`)
+          await this.saveProgress(taskId, progress, stats)
+          continue
+        }
+
         // 每本书重新读配置(支持在线调整)
         cfg = await this.loadConfig(taskId)
         if (!cfg) break
@@ -508,6 +588,13 @@ export class TaskRunner {
           if (bookResult === 'blocked' || bookResult === 'empty-toc') {
             // 跳过的书也计入已完成, 防 booksDone/booksTotal 进度条永远到不了头
             progress.booksDone++
+          }
+          // feat-contentproxy-resume: 正常完成的书追加到 completedBookUrls —— 下次任务重启时
+          // 整本跳过(免再抓书籍页/目录/正文)。'blocked'/'empty-toc' 不入集合(下次重试可恢复);
+          // 'stopped' 是中途停止(本代 epoch 漂移/用户操作), 也不入集合(下次正常续采)
+          if (bookResult === 'ok') {
+            rt.completedBookUrls.add(bookUrl)
+            await this.saveProgress(taskId, progress, stats)
           }
         } catch (e: any) {
           if (isStale()) {
@@ -1406,6 +1493,15 @@ export class TaskRunner {
     // 查得存在后才 update —— 正常路径仅多一次主键探测(SQLite 本地, 可忽略), 落库行为不变。
     // 查后删除的微秒级竞态窗口仍由 catch 兜底: P2025 静默(此时日志已打出, 有界罕见),
     // 其余异常降为自有 warn(不经 prisma error 层); 整体保持"saveProgress 永不抛"契约
+    //
+    // feat-contentproxy-resume: 同步把 rt.discoveredBookUrls / rt.completedBookUrls 落库 ——
+    // 范围任务重启时由这两数组重建 Set 实现续采。cap 50000 条防 DB 膨胀(50000×~60B URL≈3MB);
+    // 同 URL 在 Set 中只 1 次, 数组天然去重。task 进度字段为 JSON 字符串, 数组形态天然可序列化
+    const rt = this.runtimes.get(taskId)
+    if (rt) {
+      progress.discoveredBookUrls = Array.from(rt.discoveredBookUrls).slice(0, 50_000)
+      progress.completedBookUrls = Array.from(rt.completedBookUrls).slice(0, 50_000)
+    }
     try {
       const exists = await db.task.findUnique({ where: { id: taskId }, select: { id: true } })
       if (!exists) return

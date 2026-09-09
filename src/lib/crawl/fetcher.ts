@@ -970,6 +970,9 @@ function loopbackBypassAllowed(url: string, cfg: FetchConfig): boolean {
     } catch { return false }
   }
   if ((cfg.tokenUrl || '').trim() && matches(cfg.tokenUrl!)) return true
+  // feat-contentproxy-resume: contentProxyUrl 与 tokenUrl 同口径 —— 操作员配置的回环转换代理
+  // (xjp-proxy 127.0.0.1:3015 等), 抓取该代理 URL 走 loopback 豁免(不走出口代理, 不被 SSRF 拒)
+  if ((cfg.contentProxyUrl || '').trim() && matches(cfg.contentProxyUrl!)) return true
   if (matches(RELAY_URL)) return true
   if (matches(SCRAPLING_BRIDGE_URL)) return true
   return false
@@ -2326,6 +2329,49 @@ async function fetchPageOnce(url: string, cfg: FetchConfig): Promise<FetchResult
           }
         }
       }
+    }
+  }
+
+  // feat-contentproxy-resume: 内容代理 URL(xjp-proxy/deqixs-proxy 等服务端解密代理)。
+  // 配置后正文段 fetch 不走原始 URL, 而是请求 contentProxyUrl(替换 {url} 为原始章节 URL 的
+  // encodeURIComponent), 代理返回 JSON {ok:true, content:string}(纯文本, \n 分段), 引擎
+  // 把每行 wrap 成 <p> 作为 html 传给 parser(content 字段可设 const 类型直接拿全文)。
+  // 必须在 fetchPageOnce 内部 token 预取之后、原 URL fetch 之前 —— 拦截掉原 URL 抓取。
+  // SSRF 守卫: contentProxyUrl 是操作员配置的回环转换代理, allowLoopback:true 放行(与 tokenUrl 同口径);
+  // 仍拒绝云元数据/私网(防恶意规则把 contentProxyUrl 指 10.0.0.1)。代理失败/响应非法 → 静默降级原 URL 直连
+  const contentProxyUrl = (cfg.contentProxyUrl || '').trim()
+  if (contentProxyUrl) {
+    // {url} 占位符全量替换(与 prefetchToken 同款 split/join, 防 replace 只替首个多占位符漏替换)
+    const proxyUrl = contentProxyUrl.split('{url}').join(encodeURIComponent(url))
+    const ssrf = await assertSafeTarget(proxyUrl, { allowLoopback: true })
+    if (ssrf.ok) {
+      try {
+        const body = await fetchHttpWithCurlFallback(proxyUrl, cfg, ua)
+        let parsed: unknown = undefined
+        try { parsed = JSON.parse(body) } catch { parsed = undefined }
+        // 容错形态: {ok:true, content:string} 或 {ok:false, error:string}
+        const obj = parsed as { ok?: unknown; content?: unknown; error?: unknown } | undefined
+        if (obj && obj.ok === true && typeof obj.content === 'string' && obj.content) {
+          // 代理返回纯文本(\n 分段), 转 HTML 给 parser(每行一个 <p>, 过滤空行)
+          const html = obj.content
+            .split('\n')
+            .map((l) => l.trim())
+            .filter(Boolean)
+            .map((l) => `<p>${l.replace(/[<>&]/g, (c) => c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&amp;')}</p>`)
+            .join('')
+          if (html) {
+            return { html, engine: 'http', blocked: false }
+          }
+        }
+        // ok=false || content 空 → 静默降级原 URL(fetcher 注释)
+        console.warn(`[fetcher] contentProxyUrl 响应未给出有效内容, 降级直连原 URL: ${String(obj?.error || 'ok/content 字段缺失').slice(0, 120)} (proxy=${proxyUrl.slice(0, 120)})`)
+      } catch (e) {
+        // 代理抓取失败/超时/JSON 解析失败 → 静默降级原 URL 直连(零回归)
+        console.warn(`[fetcher] contentProxyUrl 抓取失败, 降级直连原 URL: ${String((e as Error)?.message || e).slice(0, 120)} (proxy=${proxyUrl.slice(0, 120)})`)
+      }
+    } else {
+      // SSRF 拒绝 → 静默降级原 URL 直连(不抛, 与 token 预取失败同口径)
+      console.warn(`[fetcher] contentProxyUrl SSRF 拒绝: ${ssrf.reason} (proxy=${proxyUrl.slice(0, 120)})`)
     }
   }
 

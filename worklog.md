@@ -2459,3 +2459,71 @@ Stage Summary:
 - 6 rounds total: 30 + 22 + 30 + 40 + 22 + 4 = 148 bugs found and fixed
 - New: pilishuwu.com crawl rule (CF-protected site)
 - Code pushed to https://github.com/u4399com-beep/heis.git (commit 271180b)
+
+---
+Task ID: feat-contentproxy-resume
+Agent: contentProxyUrl + range task resume
+Files: src/lib/crawl/types.ts, src/lib/crawl/fetcher.ts, src/lib/crawl/runner.ts
+Date: 2026-09-09
+
+Work Log:
+- Feature 1 (contentProxyUrl): added new `contentProxyUrl?: string` field to `FetchConfig`
+  interface in types.ts (loopback-friendly proxy URL like `http://127.0.0.1:3015/content?u={url}`).
+  SanitizeFetchConfig validates URL shape (`/^https?:\/\/\S+$/i`), 500-char cap, single-line
+  (防 CR/LF 注入). In fetcher.ts `fetchPageOnce`, after token prefetch block, intercept block
+  fetches the proxy URL (after `assertSafeTarget({allowLoopback:true})`), parses JSON
+  `{ok:true, content:string}`, wraps each non-empty line in `<p>` (HTML-escape `<>&` to防
+  注入), returns `{html, engine:'http', blocked:false}` directly — skips original URL fetch.
+  Failure (SSRF reject / fetch throw / JSON parse fail / ok=false / content empty) → console.warn
+  + silently fall through to normal fetch path (zero-regression fallback). Also added
+  contentProxyUrl to `loopbackBypassAllowed` (sibling of tokenUrl/RELAY_URL/SCRAPLING_BRIDGE_URL)
+  so loopback proxy fetch isn't误判 as SSRF breach.
+- Feature 2 (range task resume): added `discoveredBookUrls: Set<string>` + `completedBookUrls:
+  Set<string>` to `TaskRuntime`; added `discoveredBookUrls?: string[]` + `completedBookUrls?:
+  string[]` to `TaskProgress` (持久化进 task.progress JSON). On `executeTask` start:
+  - `recrawlMode==='full'` → clear both Sets (full re-crawl semantic).
+  - Else: load arrays from `progress.discoveredBookUrls` / `progress.completedBookUrls`,
+    rebuild Sets (filter non-string + empty), log a one-line summary `范围续采恢复: 已发现 N 本 /
+    已完成 M 本` if either non-empty.
+  In list-page loop: per-URL check `rt.discoveredBookUrls.has(u)` → skip + counter,
+  else add + push to urls. Log改成 per-page summary `列表页 P{p} 发现 N 本 (新增 X 本 跳过
+  已发现 Y 本, 累计 Z)` 避免万级 URL 刷 TaskLog 表.
+  In per-book loop: before `loadConfig`, check `rt.completedBookUrls.has(bookUrl)` →
+  increment `booksDone` + log `跳过已采集: {bookUrl}` + continue. After `crawlOneBook`:
+  if `'ok'` → add to completedBookUrls + saveProgress (immediate persistence for restart
+  safety); if `'blocked'`/`'empty-toc'` → not added (recoverable, retry next run); if
+  `'stopped'` → not added (epoch drift / user stop, next run picks up).
+  `saveProgress`: sync `rt.discoveredBookUrls` / `rt.completedBookUrls` → arrays (cap 50000
+  each = ~3MB JSON, SQLite TEXT 1GB 无虞 but保守钳). Existing P2025/catch-on-failure contract
+  preserved.
+- xjp rule update (via API PUT /api/admin/rules/[id]): removed `tokenUrl` / `tokenPattern` /
+  `tokenInjection` (misused to re-fetch proxy with already-proxy URL → hostname check 502'd);
+  added `contentProxyUrl = 'http://127.0.0.1:3015/content?u={url}'`; updated
+  `toc.fields.url.replaceTo` from `http://127.0.0.1:3015/content?u=https://www.xinjianpan.com$1`
+  to `https://www.xinjianpan.com$1` (chapter URL now original, engine routes via contentProxyUrl);
+  set `content.fields.content = {type:'css', expression:'body', attr:'html'}` (NOT const as
+  originally specified — const with empty expression returns '' per constTemplate, verified
+  empirically rawLength=0/cleanedLength=0; CSS body+attr=html returns innerHTML of body = the
+  wrapped <p> content the fetcher produces, preserving paragraph structure).
+- Started mini-services/xjp-proxy (bun run start, port 3015) in background — needed by the
+  production xjp rule's contentProxyUrl.
+
+Test Results:
+- POST /api/admin/rules/test section=content url=https://www.xinjianpan.com/txt/y00k/0o7.html
+  → ok:true, engine:http, htmlSize:19308, ms:1884, rawLength:17981, cleanedLength:2304
+  (chapter "龙族4奥丁之渊 第32节" extracted correctly with paragraph structure).
+- Fallback path: invalid chapter URL → proxy 502 ok:false → console.warn
+  `[fetcher] contentProxyUrl 抓取失败, 降级直连原 URL` → engine tries direct fetch
+  → also 404 → test endpoint returns 502 `测试失败: HTTP 404` (zero-regression fallback confirmed).
+
+Quality Gates:
+- bun run lint: 0 errors / 0 warnings.
+- bunx tsc --noEmit (excluding examples/skills): 0 errors.
+- dev server / : HTTP 200.
+
+Stage Summary:
+- Both features shipped; xjp rule migrated from broken tokenUrl misuse to clean contentProxyUrl.
+- Range task resume: cold start zero-regression; restart skips already-discovered URLs from
+  bookQueue + skips fully-completed books entirely. recrawlMode='full' still forces full re-crawl.
+- Persistent state: discoveredBookUrls + completedBookUrls arrays in task.progress JSON
+  (capped 50000 each), survives process restart and autoRefresh cycles.
