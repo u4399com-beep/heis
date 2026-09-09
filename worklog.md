@@ -2527,3 +2527,28 @@ Stage Summary:
   bookQueue + skips fully-completed books entirely. recrawlMode='full' still forces full re-crawl.
 - Persistent state: discoveredBookUrls + completedBookUrls arrays in task.progress JSON
   (capped 50000 each), survives process restart and autoRefresh cycles.
+
+---
+Task ID: feat-contentproxy-resume-push
+Agent: contentProxyUrl + range resume + push
+Task: Fix xjp SSRF + add content proxy mode + range task resume
+
+Work Log:
+- Problem 1: xinjianpan采集被SSRF拦截 — xjp-proxy(3015)返回解密内容而非token, tokenUrl机制不适用
+- Fix 1: 新增contentProxyUrl字段 — 引擎直接通过代理URL获取内容, 跳过原始URL fetch, allowLoopback豁免
+  - types.ts: FetchConfig.contentProxyUrl + sanitize (500字符, URL校验)
+  - fetcher.ts: fetchPageOnce内contentProxyUrl处理(构建代理URL→SSRF allowLoopback→fetch→JSON解析→纯文本转HTML→直接返回, 失败降级直连)
+  - loopbackBypassAllowed: contentProxyUrl纳入回环豁免
+  - xjp规则: 移除tokenUrl, 设contentProxyUrl, 测试cleanedLength=3053 ✓
+- Problem 2: 范围采集每次重启重扫所有列表页(P414发现30本×累计12420)
+- Fix 2: 范围采集续采 — discoveredBookUrls/completedBookUrls持久化
+  - runner.ts: TaskRuntime新增两个Set, progress JSON持久化(cap 50000)
+  - full模式清空, incremental模式从progress恢复
+  - 列表页: 已发现→跳过; 书籍完成→加入completedBookUrls, 重启跳过
+  - 日志: "跳过已发现"/"跳过已采集"
+- Quality gates: lint 0/0, tsc 0, dev server UP
+- Pushed to GitHub: commit efe9e84 (7 files, +402/-3)
+
+Stage Summary:
+- 2 new features: contentProxyUrl(内容代理模式, 解决xjp类加密站点SSRF+解密), range resume(范围续采, 避免重扫列表)
+- Code pushed to https://github.com/u4399com-beep/heis.git (commit efe9e84)
