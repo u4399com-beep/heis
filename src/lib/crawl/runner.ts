@@ -37,11 +37,23 @@ interface TaskRuntime {
    *  仅 list 页上新出现的书籍才进入采集队列; 任务进度 progress.discoveredBookUrls 持久化,
    *  本进程内存 Set 由 progress 装载。recrawlMode==='full' 任务启动时清空(重采语义) */
   discoveredBookUrls: Set<string>
-  /** feat-contentproxy-resume(范围任务续采): 已完整采集(章节全采完)的书籍 URL 集合。
-   *  重启时这些书籍整体跳过(不重抓书籍页/目录/正文), 仅 progress.completedBookUrls
-   *  仍包含的才被跳过。crawlOneBook 返回 'ok' 时加入本集合; recrawlMode==='full'
-   *  任务启动时清空(重采语义)。本集合只增不删(同一书籍 URL 不会因重新发现而退集) */
+  /** feat-contentproxy-resume(范围任务续采): 已完整采集(章节全采完)的【已完结】书籍 URL 集合。
+   *  仅 status==='completed' 的书才会加入本集合 —— 完结书不会再有新章节, 重启时整体跳过
+   *  (不重抓书籍页/目录/正文)。recrawlMode==='full' 任务启动时清空(重采语义)。
+   *  feat-combo-theme-incremental: 区分 completed/ongoing ——
+   *  原实现把所有 'ok' 返回的书都加进 completedBookUrls, 但【连载中】书籍重启后仍需
+   *  检查新章节, 不应整体跳过。现在只把 detectedStatus==='completed' 的书加入本集合,
+   *  连载书改入 ongoingBookUrls + bookLastChapters */
   completedBookUrls: Set<string>
+  /** feat-combo-theme-incremental(连载书籍增量): status==='ongoing' 的书籍 URL 集合。
+   *  重启时这些书籍【不整体跳过】, 而是抓取书籍页 + 目录, 对比末章 URL 与 stored 末章:
+   *  相同 → 跳过(无新章节); 不同 → 增量采新章节(existUrlMap 自动去重已采过的)。
+   *  recrawlMode==='full' 任务启动时清空。本集合只增不删 */
+  ongoingBookUrls: Set<string>
+  /** feat-combo-theme-incremental(连载书籍增量): bookUrl → 末章 URL(上次采集到的最后一章 URL)。
+   *  重启时与当前目录末章 URL 对比: 相同 → 跳过; 不同 → 增量采新章节。
+   *  recrawlMode==='full' 任务启动时清空 */
+  bookLastChapters: Map<string, string>
 }
 
 interface TaskProgress {
@@ -61,11 +73,20 @@ interface TaskProgress {
    *  范围任务重启时由本字段重建 rt.discoveredBookUrls Set, 用于跳过已发现书籍免再入 bookQueue。
    *  cap 50000 条防 DB 膨胀(50000×~60B URL≈3MB JSON, SQLite TEXT 上限 1GB, 实际无虞但保守钳) */
   discoveredBookUrls?: string[]
-  /** feat-contentproxy-resume(范围任务续采): 已完整采集的书籍 URL 列表(持久化进 task.progress)。
+  /** feat-contentproxy-resume(范围任务续采): 已完整采集的【已完结】书籍 URL 列表(持久化进 task.progress)。
    *  范围任务重启时由本字段重建 rt.completedBookUrls Set, 用于跳过整体重采(节省书籍页/目录/正文
-   *  全链路抓取)。crawlOneBook 返回 'ok' 时追加到 rt.completedBookUrls 后, saveProgress 同步落库。
-   *  cap 50000 条 */
+   *  全链路抓取)。crawlOneBook 在 detectedStatus==='completed' 时追加到 rt.completedBookUrls,
+   *  saveProgress 同步落库。cap 50000 条。
+   *  feat-combo-theme-incremental: 仅完结书加入本字段, 连载书改入 ongoingBookUrls */
   completedBookUrls?: string[]
+  /** feat-combo-theme-incremental(连载书籍增量): status==='ongoing' 的书籍 URL 列表(持久化)。
+   *  重启时由本字段重建 rt.ongoingBookUrls Set, 用于增量检查新章节(不整体跳过)。
+   *  cap 50000 条 */
+  ongoingBookUrls?: string[]
+  /** feat-combo-theme-incremental(连载书籍增量): bookUrl → 末章 URL(持久化)。
+   *  重启时与当前目录末章 URL 对比, 相同则跳过(无新章节), 不同则增量采新章节。
+   *  cap 50000 条 */
+  bookLastChapters?: Record<string, string>
 }
 
 interface TaskStats {
@@ -322,6 +343,8 @@ export class TaskRunner {
       lastActiveAt: Date.now(),
       discoveredBookUrls: new Set<string>(),
       completedBookUrls: new Set<string>(),
+      ongoingBookUrls: new Set<string>(),
+      bookLastChapters: new Map<string, string>(),
     }
     // R3-10: 每次进入 controlInner 都更新 lastActiveAt, 供 pruneRuntimesIfNeeded 判定
     // "僵尸暂停"(paused + 1h 未活跃); 无 operation 直接 update 触发顺序避免 await 间隙
@@ -444,19 +467,34 @@ export class TaskRunner {
       if (cfg.task.recrawlMode === 'full') {
         rt.discoveredBookUrls = new Set<string>()
         rt.completedBookUrls = new Set<string>()
+        rt.ongoingBookUrls = new Set<string>()
+        rt.bookLastChapters = new Map<string, string>()
         progress.discoveredBookUrls = []
         progress.completedBookUrls = []
+        progress.ongoingBookUrls = []
+        progress.bookLastChapters = {}
       } else {
         // 从 progress 恢复(数组 → Set); 数组非法/缺失时 Set 留空(冷启动零回归)
         const disc = Array.isArray(progress.discoveredBookUrls) ? progress.discoveredBookUrls : []
         const comp = Array.isArray(progress.completedBookUrls) ? progress.completedBookUrls : []
         rt.discoveredBookUrls = new Set(disc.filter((u) => typeof u === 'string' && u))
         rt.completedBookUrls = new Set(comp.filter((u) => typeof u === 'string' && u))
-        if (rt.discoveredBookUrls.size > 0 || rt.completedBookUrls.size > 0) {
+        // feat-combo-theme-incremental: 连载增量恢复 —— ongoingBookUrls + bookLastChapters
+        const ongoing = Array.isArray(progress.ongoingBookUrls) ? progress.ongoingBookUrls : []
+        rt.ongoingBookUrls = new Set(ongoing.filter((u) => typeof u === 'string' && u))
+        const lastChapObj = (progress.bookLastChapters && typeof progress.bookLastChapters === 'object')
+          ? progress.bookLastChapters as Record<string, string>
+          : {}
+        rt.bookLastChapters = new Map<string, string>()
+        for (const [k, v] of Object.entries(lastChapObj)) {
+          if (typeof k === 'string' && k && typeof v === 'string' && v) rt.bookLastChapters.set(k, v)
+        }
+        const totalResume = rt.discoveredBookUrls.size + rt.completedBookUrls.size + rt.ongoingBookUrls.size
+        if (totalResume > 0) {
           await this.log(
             taskId,
             'info',
-            `范围续采恢复: 已发现 ${rt.discoveredBookUrls.size} 本 / 已完成 ${rt.completedBookUrls.size} 本(从 task.progress 装载, 仅采集新增/未完成书籍)`,
+            `范围续采恢复: 已发现 ${rt.discoveredBookUrls.size} 本 / 已完结 ${rt.completedBookUrls.size} 本 / 连载中 ${rt.ongoingBookUrls.size} 本(从 task.progress 装载; 完结书整体跳过, 连载书增量检查新章节, 新书全量采)`,
           ).catch(() => {})
         }
       }
@@ -556,15 +594,16 @@ export class TaskRunner {
         while (rt.paused && !rt.stopped && !isStale()) await sleep(600)
         if (rt.stopped || isStale()) break
 
-        // feat-contentproxy-resume(范围任务续采): 已完整采集(章节全采完)的书籍整体跳过
-        // —— 不重抓书籍页/目录/正文, 仅计入 booksDone 让进度条推进。范围任务多次重启时
-        // 已采完的书籍不会再次入网/落库, 节省源站压力 + 出口 IP 配额。recrawlMode==='full'
-        // 启动时 Set 已被清空, 此分支不触发(完全覆盖重采语义保留)
+        // feat-contentproxy-resume + feat-combo-theme-incremental: 已完结书籍整体跳过
+        // —— 仅 status==='completed' 的书才会进 rt.completedBookUrls(完结书不会再有新章节);
+        // 连载中(status==='ongoing')的书在 rt.ongoingBookUrls 中, 不整体跳过, 走 crawlOneBook
+        // 的增量检查逻辑(抓目录→对比末章→无新章跳过/有新章增量采)。recrawlMode==='full' 启动时
+        // 两 Set 已被清空, 此分支不触发(完全覆盖重采语义保留)
         if (rt.completedBookUrls.has(bookUrl)) {
           progress.booksDone++
           progress.currentBook = bookUrl
-          progress.phaseNote = `跳过已采集 (${bi + 1}/${bookQueue.length})`
-          await this.log(taskId, 'info', `跳过已采集: ${bookUrl}`)
+          progress.phaseNote = `跳过已完结 (${bi + 1}/${bookQueue.length})`
+          await this.log(taskId, 'info', `跳过已完结: ${bookUrl}`)
           await this.saveProgress(taskId, progress, stats)
           continue
         }
@@ -589,11 +628,12 @@ export class TaskRunner {
             // 跳过的书也计入已完成, 防 booksDone/booksTotal 进度条永远到不了头
             progress.booksDone++
           }
-          // feat-contentproxy-resume: 正常完成的书追加到 completedBookUrls —— 下次任务重启时
-          // 整本跳过(免再抓书籍页/目录/正文)。'blocked'/'empty-toc' 不入集合(下次重试可恢复);
-          // 'stopped' 是中途停止(本代 epoch 漂移/用户操作), 也不入集合(下次正常续采)
+          // feat-combo-theme-incremental: 状态分流由 crawlOneBook 内部完成 ——
+          // detectedStatus==='completed' 时 crawlOneBook 已将 bookUrl 加入 rt.completedBookUrls;
+          // detectedStatus==='ongoing'/'unknown' 时加入 rt.ongoingBookUrls + 记录末章 URL。
+          // 'blocked'/'empty-toc'/'stopped' 不入任何集合(下次重试可恢复)。本处仅触发
+          // saveProgress 把 Set/Map 落库, 不再硬塞 completedBookUrls(避免连载书被误判完结整体跳过)
           if (bookResult === 'ok') {
-            rt.completedBookUrls.add(bookUrl)
             await this.saveProgress(taskId, progress, stats)
           }
         } catch (e: any) {
@@ -799,6 +839,12 @@ export class TaskRunner {
       || new URL(bookUrl).pathname.slice(1, 30) || '未知书名'
     const intro = cleanIntro(parsed.intro) || cleanIntro(listFields?.intro || '')
     const author = cleanTextField(parsed.author, 60) || cleanTextField(listFields?.author, 60) || '佚名'
+
+    // feat-combo-theme-incremental(连载增量): 标记本次是否为连载书的增量检查
+    // —— rt.ongoingBookUrls 中的书重启后不整体跳过, 抓目录后与 rt.bookLastChapters 中
+    // 存储的末章 URL 对比: 相同 → 跳过新章采集; 不同 → 增量采新章(existUrlMap 自动去重已采过的)
+    const isOngoingRecheck = rt.ongoingBookUrls.has(bookUrl)
+    const storedLastChapterUrl = isOngoingRecheck ? rt.bookLastChapters.get(bookUrl) : undefined
 
     // 智能分类
     let categoryName: string | null = cleanTextField(parsed.category, 30) || cleanTextField(listFields?.category, 30) || null
@@ -1051,6 +1097,85 @@ export class TaskRunner {
         await db.book.update({ where: { id: bookId }, data: { status: detectedStatus } })
         await this.log(taskId, 'info', `智能完结终判: ${det.status}(${det.reason})`)
       }
+    }
+
+    // ---------- feat-combo-theme-incremental: 连载增量检查 ----------
+    // rt.ongoingBookUrls 中的书: 与 rt.bookLastChapters 中存储的末章 URL 对比
+    //  - 相同 → 无新章节, 跳过正文采集(仍计入 booksDone, 加入 ongoingBookUrls 维持记忆)
+    //  - 不同 → 增量采新章(下方 existUrlMap 自动跳过已采过的)
+    // 注: 完结书(rt.completedBookUrls)在外层循环已整体跳过, 不会走到这里
+    if (isOngoingRecheck && storedLastChapterUrl) {
+      const currentLastChapterUrl = tocItems[tocItems.length - 1]?.url || ''
+      if (currentLastChapterUrl && currentLastChapterUrl === storedLastChapterUrl) {
+        // 末章 URL 相同 → 视为无新章节
+        await this.log(
+          taskId,
+          'info',
+          `增量检查连载: 《${bookName}》(末章未变, 跳过新章采集; 上次末章: ${storedLastChapterUrl.slice(0, 80)})`,
+        ).catch(() => {})
+        // 状态分流: 完结→completedBookUrls; 连载中/unknown→ongoingBookUrls + 更新末章 URL
+        if (detectedStatus === 'completed') {
+          rt.completedBookUrls.add(bookUrl)
+          rt.ongoingBookUrls.delete(bookUrl)
+          rt.bookLastChapters.delete(bookUrl)
+        } else {
+          rt.ongoingBookUrls.add(bookUrl)
+          if (currentLastChapterUrl) rt.bookLastChapters.set(bookUrl, currentLastChapterUrl)
+        }
+        progress.booksDone++
+        await this.saveProgress(taskId, progress, stats)
+        return 'ok'
+      }
+      // 末章 URL 不同 → 有新章节, 继续走下方增量采集(existUrlMap 自动跳过已采过的)
+      if (currentLastChapterUrl) {
+        await this.log(
+          taskId,
+          'info',
+          `增量检查连载: 《${bookName}》(上次末章: ${storedLastChapterUrl.slice(0, 80)}, 当前末章: ${currentLastChapterUrl.slice(0, 80)})`,
+        ).catch(() => {})
+      }
+    }
+
+    // ---------- feat-combo-theme-incremental: 跨源去重 ----------
+    // existing(同 URL 或 同 name+author) 来自不同 rule(sourceRuleId !== taskCfg.ruleId):
+    //  - 比较 chapter 数: 本源新 TOC <= 既有章数 → 跳过(已有更完整数据)
+    //  - 本源新 TOC > 既有章数 → 增量合并新章(下方 existUrlMap 自动只采新章)
+    // 注: 既有 db.book.findFirst 在第 3 步已取, 这里复用; existing 不存在时本块跳过
+    if (existing && existing.sourceRuleId && existing.sourceRuleId !== taskCfg.ruleId) {
+      let existingChapCount = 0
+      try {
+        existingChapCount = await db.chapter.count({ where: { bookId: existing.id } })
+      } catch {
+        // count 失败兜底: 视为 0, 走下方比较链(若本源有章节则会增量合并)
+        existingChapCount = 0
+      }
+      if (tocItems.length <= existingChapCount) {
+        // 其他源已有更完整或同等数据 → 跳过本书采集(不写章节, 不更新统计)
+        await this.log(
+          taskId,
+          'info',
+          `跨源去重: 《${bookName}》已存在于其他源(其他源 ${existingChapCount} 章 / 本源 ${tocItems.length} 章), 跳过`,
+        ).catch(() => {})
+        // 状态分流: 完结→completedBookUrls; 连载中/unknown→ongoingBookUrls + 记录末章 URL
+        if (detectedStatus === 'completed') {
+          rt.completedBookUrls.add(bookUrl)
+          rt.ongoingBookUrls.delete(bookUrl)
+          rt.bookLastChapters.delete(bookUrl)
+        } else {
+          rt.ongoingBookUrls.add(bookUrl)
+          const lastUrl = tocItems[tocItems.length - 1]?.url
+          if (lastUrl) rt.bookLastChapters.set(bookUrl, lastUrl)
+        }
+        progress.booksDone++
+        await this.saveProgress(taskId, progress, stats)
+        return 'ok'
+      }
+      // 本源章数更多 → 增量合并新章, 继续走下方章节入库流程(existUrlMap 跳过既有章)
+      await this.log(
+        taskId,
+        'info',
+        `跨源合并: 《${bookName}》其他源 ${existingChapCount} 章 < 本源 ${tocItems.length} 章, 增量合并新章节`,
+      ).catch(() => {})
     }
 
     // ---------- 5. 章节入库(增量/全量) + 正文多线程采集 ----------
@@ -1481,6 +1606,22 @@ export class TaskRunner {
     }
 
     progress.booksDone++
+    // feat-combo-theme-incremental: 状态分流 ——
+    //  - detectedStatus==='completed' → 加入 rt.completedBookUrls(下次重启整体跳过)
+    //  - detectedStatus==='ongoing'/'unknown' → 加入 rt.ongoingBookUrls + 记录末章 URL
+    //    (下次重启走增量检查: 抓目录→对比末章→无新章跳过/有新章增量采)
+    //  - 同时清理可能的"连载→完结"状态跃迁记忆(原在 ongoingBookUrls 中的书若终判完结,
+    //    从 ongoingBookUrls + bookLastChapters 中移除, 改入 completedBookUrls)
+    if (detectedStatus === 'completed') {
+      rt.completedBookUrls.add(bookUrl)
+      rt.ongoingBookUrls.delete(bookUrl)
+      rt.bookLastChapters.delete(bookUrl)
+    } else {
+      // ongoing 或 unknown: 按 ongoing 处理(unknown 仍可能后续新增章节, 谨慎跟踪)
+      rt.ongoingBookUrls.add(bookUrl)
+      const lastChapUrl = tocItems[tocItems.length - 1]?.url
+      if (lastChapUrl) rt.bookLastChapters.set(bookUrl, lastChapUrl)
+    }
     await this.saveProgress(taskId, progress, stats)
     return 'ok'
   }
@@ -1501,6 +1642,17 @@ export class TaskRunner {
     if (rt) {
       progress.discoveredBookUrls = Array.from(rt.discoveredBookUrls).slice(0, 50_000)
       progress.completedBookUrls = Array.from(rt.completedBookUrls).slice(0, 50_000)
+      // feat-combo-theme-incremental: 连载增量字段同步落库(ongoingBookUrls + bookLastChapters)
+      progress.ongoingBookUrls = Array.from(rt.ongoingBookUrls).slice(0, 50_000)
+      // bookLastChapters Map → Object(JSON 序列化友好); cap 50000 条
+      const lastChapObj: Record<string, string> = {}
+      let n = 0
+      for (const [k, v] of rt.bookLastChapters) {
+        if (n >= 50_000) break
+        lastChapObj[k] = v
+        n++
+      }
+      progress.bookLastChapters = lastChapObj
     }
     try {
       const exists = await db.task.findUnique({ where: { id: taskId }, select: { id: true } })

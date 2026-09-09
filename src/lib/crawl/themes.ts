@@ -6,7 +6,13 @@
 //   layout     → 首页布局 (grid/list/shelf/magazine/minimal/theater/pili)
 //   read       → 阅读页布局与排版参数 (经典典书版 / 沉浸暗色 / 分页横滑 / 书屋版)
 // read 可缺省: readOf() 会按 READ_DEFAULTS 回退, 旧调用点零破坏
+//
+// feat-combo-theme-incremental: 在 THEMES(preset) 之外引入组合主题矩阵
+// (50 配色 × 42 风格 × 24 布局 = 50400 组合)。theme-matrix 仅依赖本模块的
+// 类型(type-only import, 编译期擦除无运行时循环依赖); 本模块在 getThemeById
+// 中静态引入组合解析器, preset 命中优先, 未命中回退组合, 全未命中回退 THEMES[0]。
 // ============================================================
+import { getThemeById as resolveComboTheme } from './theme-matrix'
 
 /** 阅读页布局原型 */
 export type ReadLayoutKind = 'classic' | 'immersive' | 'paginated' | 'pili'
@@ -343,4 +349,20 @@ export const THEMES: ThemeDef[] = [
 
 export function getTheme(id: string | null | undefined): ThemeDef {
   return THEMES.find((t) => t.id === id) || THEMES[0]
+}
+
+/** feat-combo-theme-incremental: 组合主题解析入口
+ *  - 先查 10 个手写 preset( THEMES ) —— 命中即返回(向后兼容)
+ *  - 否则按 `{colorId}-{styleId}-{layoutId}` 解析组合主题(50×42×24=50400)
+ *  - 全部未命中返回 THEMES[0](aurora) 兜底, 保证旧 site.themeId 仍可渲染
+ *  本函数是 PublicSite / SiteHeader / admin 校验的唯一入口, 引入组合主题零回归 */
+export function getThemeById(id: string | null | undefined): ThemeDef {
+  if (!id) return THEMES[0]
+  // preset 命中
+  const preset = THEMES.find((t) => t.id === id)
+  if (preset) return preset
+  // 组合主题解析(50×42×24)
+  const combo = resolveComboTheme(id)
+  if (combo) return combo
+  return THEMES[0]
 }

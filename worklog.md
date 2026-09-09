@@ -2552,3 +2552,64 @@ Work Log:
 Stage Summary:
 - 2 new features: contentProxyUrl(内容代理模式, 解决xjp类加密站点SSRF+解密), range resume(范围续采, 避免重扫列表)
 - Code pushed to https://github.com/u4399com-beep/heis.git (commit efe9e84)
+
+---
+Task ID: feat-combo-theme-incremental
+Agent: Combinatorial theme system + range incremental
+
+## Feature 1: Combinatorial Theme System (50×42×24 = 50400 combos)
+
+- New file: `src/lib/crawl/theme-matrix.ts`
+  - COLOR_SCHEMES (50): 25 light + 25 dark, covering violet/indigo/blue/cyan/teal/emerald/green/lime/yellow/amber/orange/red/rose/pink/fuchsia/purple + 9 duotone variants (light+dark) like `vio-gold`, `rose-teal`, `blu-amber`, etc.
+  - STYLES (42): minimal/glasswa/paper/neon/classic/modern/magazine/waterfall/shelf/theater/pili/inkpaint/cyber/steampunk/japanese/nordic/mediterr/forest/desert/aurora/sakura/deepsea/lava/frost/jade/amber/amethyst/rosegarden/lavender/coffee/typewriter/futurist/handwritten/ancient/bambooslip/silk/slate/dawn/dusk/galaxy/waterink/treasure — each with distinct headerStyle/cardShadow/radius/fontFamily/texture/chapterDeco.
+  - LAYOUTS (24): grid-cl/list-im/shelf-pg/mag-pl/min-cl/th-im/pili-pl/grid-im/list-pg/shelf-cl/mag-im/min-pg/th-pl/grid-pg/list-pl/shelf-im/mag-cl/min-im/th-pg/pili-cl/grid-pl/list-cl/shelf-pl/mag-pg — each with distinct readVars.
+  - `generateTheme(colorId, styleId, layoutId)` — synthesizes a full ThemeDef (no pre-generation of 50400 objects).
+  - `parseThemeId(themeId)` — reverse-parse using predefined ID sets (handles `-` in colorIds like `vio-gold-d`).
+  - `getThemeById(themeId)` — single combo resolution.
+  - `getThemeList()` — 50400 lightweight descriptors.
+  - `getThemesPage(page, size)` — paginated list.
+  - `TOTAL_COMBOS = 50400`, verified unique IDs across all combos.
+- Modified: `src/lib/crawl/themes.ts`
+  - Added static import `getThemeById as resolveComboTheme` from `./theme-matrix` (type-only back-dependency, no runtime cycle).
+  - New `getThemeById(id)`: preset → combo → THEMES[0] fallback.
+  - Kept original `getTheme(id)` (preset only) for SiteHeader backward compat.
+- Modified: `src/components/public/PublicSite.tsx`
+  - `import { getTheme } → import { getThemeById as getTheme }` — drop-in rename, `?theme=violet-glasswa-grid-cl` now resolves to combo theme.
+- Modified: `src/app/api/admin/themes/route.ts`
+  - Dual-mode API:
+    - Default (no query): returns THEMES (9 presets array, ThemesSection backward compat).
+    - `?page=N&size=M`: returns `{ page, size, total: 50409, totalPages, items: [presets + combos paginated] }`.
+  - `sliceCombos(from, to)` — lazy slice generator (only computes page-needed items, never builds full 50400 array).
+
+## Feature 2: Range Task Incremental Crawling for Ongoing Novels
+
+- Modified: `src/lib/crawl/runner.ts`
+  - `TaskRuntime` added: `ongoingBookUrls: Set<string>`, `bookLastChapters: Map<string, string>`.
+  - `TaskProgress` added: `ongoingBookUrls?: string[]`, `bookLastChapters?: Record<string, string>` (persisted to task.progress JSON).
+  - `controlInner` start: initializes new fields.
+  - `executeTask` recovery: restores ongoingBookUrls + bookLastChapters from progress (incremental mode); clears them in `full` recrawlMode.
+  - Book loop: only `completedBookUrls` skips entirely; ongoing books go through `crawlOneBook` incremental check.
+  - `crawlOneBook`:
+    - **Status split**: detectedStatus==='completed' → `completedBookUrls`; ongoing/unknown → `ongoingBookUrls` + `bookLastChapters` (records last chapter URL).
+    - **Incremental ongoing check** (`isOngoingRecheck`): after TOC fetch, compares last chapter URL with stored — same → skip new chapter crawl; different → log + proceed (existing existUrlMap auto-skips already-crawled chapters).
+    - **Cross-source dedup**: if existing.sourceRuleId !== taskCfg.ruleId, compare chapter counts — new source ≤ existing → skip (already have equivalent or more data); new source > existing → incremental merge (existUrlMap handles dedup).
+  - `saveProgress`: persists ongoingBookUrls + bookLastChapters (Map → Object, capped 50000 entries).
+  - Logs:
+    - "跳过已完结: {bookUrl}"
+    - "增量检查连载: 《{bookName}》(末章未变, 跳过新章采集; 上次末章: ...)"
+    - "增量检查连载: 《{bookName}》(上次末章: ..., 当前末章: ...)"
+    - "跨源去重: 《{bookName}》已存在于其他源(其他源 N 章 / 本源 M 章), 跳过"
+    - "跨源合并: 《{bookName}》其他源 N 章 < 本源 M 章, 增量合并新章节"
+
+## Quality Gates
+- `bun run lint`: 0/0 ✓
+- `bunx tsc --noEmit 2>&1 | grep -v "examples\|skills" | wc -l`: 0 ✓
+- Dev server `/`: HTTP 200 ✓
+- `/?theme=violet-glasswa-grid-cl`: HTTP 200 ✓ (combo theme resolves)
+- `/api/admin/themes` (default): HTTP 200, returns 9 preset array (backward compat)
+- `/api/admin/themes?page=2&size=15`: HTTP 200, returns `{page:2, size:15, total:50409, totalPages:3361, items:[15]}`
+- 50400 combos all have unique IDs (verified)
+
+## Stage Summary
+- Feature 1: 50400 combinatorial themes now browsable in admin (paginated) + previewable via `?theme=` URL. Existing 9 presets preserved for backward compat. Site validation routes NOT modified (per constraints) — combo IDs cannot be set as site.themeId via API, only previewed.
+- Feature 2: Range task resume now status-aware. Completed books skip entirely (no new chapters possible); ongoing books re-check on restart (fetch TOC → compare last chapter URL → skip if unchanged / incremental crawl if new chapters). Cross-source dedup prevents redundant crawling when same name+author exists from another rule.

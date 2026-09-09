@@ -12,7 +12,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ArrowLeftCircle, Eye } from 'lucide-react'
-import { getTheme } from '@/lib/crawl/themes'
+import { getThemeById as getTheme } from '@/lib/crawl/themes'
 import { fetchSites } from './data'
 import { parseView, PublicProvider, viewToUrl, type PublicCtxValue, type ViewParams } from './ctx'
 import { useSiteSEO, withAlpha } from './seo'
