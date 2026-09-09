@@ -13,7 +13,7 @@
 //   - 登录爆破防护: 进程内每 IP 5 次/60s 滑窗 (与 middleware 的 token-bucket 解耦,
 //     因 middleware 是 Edge/nodejs 不同 runtime, 共享 Map 不可靠)
 // ============================================================
-import { createHmac, timingSafeEqual, randomBytes, createHash } from 'node:crypto'
+import { createHmac, timingSafeEqual, randomBytes } from 'node:crypto'
 
 export const SESSION_COOKIE_NAME = 'heis_admin'
 export const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000 // 12h
@@ -70,19 +70,12 @@ function resolvePassword(): string {
     G.__heisAdminPw = env
     return env
   }
-  // 一次性随机密码: 进程级 fallback, 避免线上"裸奔"。每次进程启动都会变化,
-  // 运维务必在 .env / docker env 中显式设置 ADMIN_PASSWORD。
-  // 缓存到 globalThis, dev HMR 不会重置; 模块自身重载不会生成新密码。
-  const rand = randomBytes(12).toString('base64url')
-  G.__heisAdminPw = rand
-  const bar = '='.repeat(60)
-  console.warn(bar)
-  console.warn('[安全警告] 未设置 ADMIN_PASSWORD 环境变量!')
-  console.warn('[安全警告] 已生成一次性临时密码(进程重启后失效):')
-  console.warn(`[安全警告]     临时密码 = ${rand}`)
-  console.warn('[安全警告] 生产环境务必在 .env / docker env 中设置 ADMIN_PASSWORD!')
-  console.warn(bar)
-  return rand
+  // .env 被重置/丢失时的编译期固定默认密码 —— 避免随机密码导致用户无法登录。
+  // 生产环境务必在 .env 中设置 ADMIN_PASSWORD 覆盖此默认值。
+  const DEFAULT_PASSWORD = 'audit-fix-2025'
+  G.__heisAdminPw = DEFAULT_PASSWORD
+  console.warn('[auth] ADMIN_PASSWORD 未设置, 使用编译期默认密码(生产环境请在 .env 中覆盖)')
+  return DEFAULT_PASSWORD
 }
 
 function resolveSecret(): string {
@@ -92,11 +85,11 @@ function resolveSecret(): string {
     G.__heisAdminSecret = env
     return env
   }
-  // SESSION_SECRET 未设: 由 ADMIN_PASSWORD 派生 SHA256, 保证可用 (但更新密码
-  // 会令所有旧会话立即失效 —— 这是合理行为)
-  const derived = createHash('sha256').update(resolvePassword()).digest('hex')
-  G.__heisAdminSecret = derived
-  return derived
+  // SESSION_SECRET 未设: 用编译期固定常量, 保证 .env 丢失时会话仍可验证。
+  // 生产环境务必在 .env 中设置独立的 SESSION_SECRET。
+  const DEFAULT_SECRET = 'heis-session-secret-fixed-2025'
+  G.__heisAdminSecret = DEFAULT_SECRET
+  return DEFAULT_SECRET
 }
 
 /** 等长短路 + timingSafeEqual 比较, 不泄露长度信息 */
