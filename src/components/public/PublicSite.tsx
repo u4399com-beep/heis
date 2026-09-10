@@ -12,7 +12,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ArrowLeftCircle, Eye } from 'lucide-react'
-import { getThemeById as getTheme } from '@/lib/crawl/themes'
+import { getThemeById as getTheme, THEMES } from '@/lib/crawl/themes'
 import { fetchSites } from './data'
 import { parseView, PublicProvider, viewToUrl, type PublicCtxValue, type ViewParams } from './ctx'
 import { useSiteSEO, withAlpha } from './seo'
@@ -135,7 +135,7 @@ export default function PublicSite({
 
   const site = useMemo(() => sites.find((s) => s.id === siteId) || null, [sites, siteId])
   // 主题解析: 预览覆盖(?theme=)优先于站点自身主题; getTheme 对非法 id 自带回退
-  const theme = useMemo(() => getTheme(themeOverride || site?.themeId), [themeOverride, site?.themeId])
+  const theme = useMemo(() => getTheme(themeOverride || site?.themeId) || THEMES[0], [themeOverride, site?.themeId])
 
   const ctxValue: PublicCtxValue | null = useMemo(
     () =>

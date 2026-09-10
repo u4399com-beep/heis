@@ -356,13 +356,11 @@ export function getTheme(id: string | null | undefined): ThemeDef {
  *  - 否则按 `{colorId}-{styleId}-{layoutId}` 解析组合主题(50×42×24=50400)
  *  - 全部未命中返回 THEMES[0](aurora) 兜底, 保证旧 site.themeId 仍可渲染
  *  本函数是 PublicSite / SiteHeader / admin 校验的唯一入口, 引入组合主题零回归 */
-export function getThemeById(id: string | null | undefined): ThemeDef {
-  if (!id) return THEMES[0]
-  // preset 命中
+export function getThemeById(id: string | null | undefined): ThemeDef | undefined {
+  if (!id) return undefined
   const preset = THEMES.find((t) => t.id === id)
   if (preset) return preset
-  // 组合主题解析(50×42×24)
   const combo = resolveComboTheme(id)
   if (combo) return combo
-  return THEMES[0]
+  return undefined
 }
