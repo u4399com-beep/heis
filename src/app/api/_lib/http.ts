@@ -62,14 +62,31 @@ export function likeSafe(v: unknown, maxLen = 100): string {
   return str(v, maxLen).trim().replace(/[%_\\]/g, ' ')
 }
 
-/** URL 校验: 仅允许 http/https, 返回规范化字符串或 null */
+/**
+ * URL 校验: 仅允许 http/https, 返回规范化字符串或 null
+ * R7-12 修复: 含 `{page}`/`{cat}`/`{offset:N}`/`{keyword}` 等采集占位符的 URL 不被 new URL()
+ * 编码成 `%7Bpage%7D`。先临时替换占位符为 ASCII 安全 token, 通过 URL 校验+规范化后再还原,
+ * 既保证协议白名单(http/https)又保留占位符字面量供 runner.ts 后续替换。
+ */
 export function httpUrl(v: unknown, maxLen = 2000): string | null {
   const s = str(v, maxLen).trim()
   if (!s) return null
   try {
-    const u = new URL(s)
+    // 提取所有 {...} 占位符, 临时替换为 ___PH<i>___ (URL 路径允许的 ASCII 字符)
+    const placeholders: string[] = []
+    const masked = s.replace(/\{[^{}]+\}/g, (m) => {
+      const i = placeholders.length
+      placeholders.push(m)
+      return `___PH${i}___`
+    })
+    const u = new URL(masked)
     if (u.protocol !== 'http:' && u.protocol !== 'https:') return null
-    return u.toString()
+    let norm = u.toString()
+    // 还原占位符(URL.toString() 不会编码 ___PH<i>___ 因为下划线是 URL 安全字符)
+    for (let i = 0; i < placeholders.length; i++) {
+      norm = norm.replace(`___PH${i}___`, placeholders[i])
+    }
+    return norm
   } catch {
     return null
   }

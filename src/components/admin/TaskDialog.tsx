@@ -270,14 +270,18 @@ export function TaskDialog({ open, onOpenChange, task, onSaved }: TaskDialogProp
               <div className="space-y-3 rounded-md border border-zinc-800 bg-zinc-950/60 p-3">
                 <div className="space-y-1.5">
                   <Label className="text-xs text-zinc-400">
-                    列表页 URL * <span className="text-zinc-600">支持 {'{page}'} 占位符</span>
+                    列表页 URL * <span className="text-zinc-600">支持 {'{page}'} / {'{cat}'} 占位符</span>
                   </Label>
                   <Input
                     className="h-9 border-zinc-700 bg-zinc-950 font-mono text-xs"
-                    placeholder="https://example.com/sort/1_{page}.html"
+                    placeholder="https://example.com/sort/{cat}/{page}.html 或 https://example.com/list/0_{page}.html"
                     value={form.listUrl}
                     onChange={(e) => patch({ listUrl: e.target.value })}
                   />
+                  <p className="text-[10px] text-zinc-500 leading-relaxed">
+                    {'{page}'} 会被替换为当前页码；{'{cat}'} 仅在用规则模板且未指定具体分类时使用(默认填 0)。
+                    直接填好分类的 URL(如 <code className="text-zinc-400">/0/list/0_0_0_0_0_0_0_{'{page}'}.html</code>) 不会被覆盖。
+                  </p>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1.5">

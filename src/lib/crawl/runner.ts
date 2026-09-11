@@ -631,6 +631,15 @@ export class TaskRunner {
         progress.phaseNote = '正在解析列表页…'
         await this.saveProgress(taskId, progress, stats)
         const listRule = cfg.rule.list
+        // R7-13 修复: 范围模式优先使用任务级 listUrl(用户在创建/编辑任务时填的具体列表页URL,
+        // 已把分类/筛选参数固定下来, 仅留 {page} 让 runner 替换); 只有当任务未填 listUrl 时
+        // 才回退到规则模板 rule.list.urlTemplate(含 {cat} 等占位符需默认值)。修前无视
+        // task.listUrl 直接用 rule.urlTemplate → 用户填的 pilishuwu/0/list/0_0_..._{page}.html
+        // 被完全忽略, 实际采集 pilishuwu.com/{cat}/list/{page}.html(占位符 {cat} 字面量保留)
+        // R7-14: 残留 {cat} 占位符(任务级 listUrl 已含具体分类; 用 rule 模板且未提供 cat 时
+        // 默认替换为 '0'(常见全分类索引页), 避免请求字面量 {cat}.html 404
+        const urlTemplate = (cfg.task.listUrl && cfg.task.listUrl.trim()) || listRule.urlTemplate || ''
+        const hasTaskListUrl = !!(cfg.task.listUrl && cfg.task.listUrl.trim())
         const urls: string[] = []
         for (let p = cfg.task.listStart; p <= cfg.task.listEnd; p++) {
           if (rt.stopped || isStale()) break
@@ -638,7 +647,9 @@ export class TaskRunner {
           if (rt.stopped || isStale()) break
           // {page}=页号原值; {offset:N}=第p页的列表偏移量(p-1)*N(cc-c: 番茄聚合API
           // searchUrl 用 offset=(page-1)*10 分页, {page} 无法表达算术偏移)
-          const url = (listRule.urlTemplate || '')
+          // {cat}=分类占位符(任务级listUrl已含具体分类无需替换; 用rule模板时默认'0')
+          const url = urlTemplate
+            .replace(/\{cat\}/g, hasTaskListUrl ? '' : '0')
             .replace(/\{offset:(\d+)\}/g, (_, n: string) => String((p - 1) * Math.max(1, parseInt(n, 10) || 1)))
             .replace('{page}', String(p))
           if (!url) continue
