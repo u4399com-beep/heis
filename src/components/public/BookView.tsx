@@ -426,12 +426,13 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
     if (!chapters.length) return <EmptyState text="暂无章节" />
     const go = (ch: TocChapter) => navigate({ view: 'read', chapterId: ch.id })
 
-    /** 主题差异化章节列表渲染(list 入参: 分卷模式下按组传入, 无卷整页传入 — 与改前逐节点一致) */
+    /** 主题差异化章节列表渲染(list 入参: 分卷模式下按组传入, 无卷整页传入 — 与改前逐节点一致)
+     *  所有主题统一使用 3 列网格布局(grid-cols-3), 移动端 1 列, 平板 2 列, 桌面 3 列 */
     const renderChapterList = (list: TocChapter[]) => {
       if (theme.id === 'pili') {
-        // 四列章节网格（原站 works-chapter-item DNA: 紧凑行 + 悬停橙字）
+        // 三列章节网格（原站 works-chapter-item DNA: 紧凑行 + 悬停橙字）
         return (
-          <div data-pili-toc className="grid grid-cols-1 gap-x-8 sm:grid-cols-2 lg:grid-cols-4">
+          <div data-pili-toc className="grid grid-cols-1 gap-x-8 sm:grid-cols-2 lg:grid-cols-3">
             {list.map((ch) => (
               <TocChapterButton
                 key={ch.id}
@@ -451,7 +452,7 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
         )
       }
       if (theme.id === 'aurora') {
-        // 玻璃格子
+        // 玻璃格子 — 3列
         return (
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
             {list.map((ch) => (
@@ -472,11 +473,11 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
         )
       }
       if (theme.id === 'paper') {
-        // 竖排列表（衬线 + 虚线引导）
+        // 3列竖排列表（衬线 + 虚线引导）
         return (
-          <ol className="mx-auto max-w-2xl">
+          <div className="grid grid-cols-1 gap-x-8 sm:grid-cols-2 lg:grid-cols-3">
             {list.map((ch) => (
-              <li key={ch.id} style={{ borderBottom: `1px dashed ${v.border}` }}>
+              <div key={ch.id} style={{ borderBottom: `1px dashed ${v.border}` }}>
                 <TocChapterButton
                   ch={ch}
                   current={ch.id === currentChapterId}
@@ -487,18 +488,16 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
                 >
                   <span className="shrink-0 text-xs tabular-nums" style={{ color: v.textMuted }}>{String(ch.idx).padStart(2, '0')}</span>
                   <span className="flex-1 text-sm" style={{ color: ch.id === currentChapterId ? v.primary : v.text, fontFamily: v.titleFont }}>{ch.title}</span>
-                  <span className="mx-1 hidden flex-1 border-b border-dotted sm:block" style={{ borderColor: v.textMuted }} aria-hidden />
-                  <span className="shrink-0 text-[11px] tabular-nums" style={{ color: v.textMuted }}>{ch.wordCount}字</span>
                 </TocChapterButton>
-              </li>
+              </div>
             ))}
-          </ol>
+          </div>
         )
       }
       if (theme.id === 'mango') {
-        // 大圆角胶囊格子
+        // 大圆角胶囊格子 — 3列
         return (
-          <div className="flex flex-wrap gap-2">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
             {list.map((ch) => (
               <TocChapterButton
                 key={ch.id}
@@ -516,9 +515,9 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
         )
       }
       if (theme.id === 'bamboo') {
-        // 双栏细线极简
+        // 三栏细线极简
         return (
-          <div className="gap-x-12 md:columns-2">
+          <div className="grid grid-cols-1 gap-x-12 sm:grid-cols-2 lg:grid-cols-3">
             {list.map((ch) => (
               <TocChapterButton
                 key={ch.id}
@@ -538,11 +537,11 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
         )
       }
       if (theme.id === 'rose') {
-        // 剧目单（金色编号 + 衬线标题）
+        // 剧目单 — 3列（金色编号 + 衬线标题）
         return (
-          <ol className="divide-y" style={{ borderColor: withAlpha(v.border, 0.7) }}>
+          <div className="grid grid-cols-1 gap-x-8 sm:grid-cols-2 lg:grid-cols-3">
             {list.map((ch) => (
-              <li key={ch.id}>
+              <div key={ch.id} className="border-b" style={{ borderColor: withAlpha(v.border, 0.7) }}>
                 <TocChapterButton
                   ch={ch}
                   current={ch.id === currentChapterId}
@@ -555,16 +554,15 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
                     {ch.idx}
                   </span>
                   <span className="flex-1 text-sm" style={{ color: ch.id === currentChapterId ? v.primary : v.text, fontFamily: v.titleFont }}>{ch.title}</span>
-                  <span className="shrink-0 text-[10px] tabular-nums" style={{ color: v.textMuted }}>{ch.wordCount}字</span>
                 </TocChapterButton>
-              </li>
+              </div>
             ))}
-          </ol>
+          </div>
         )
       }
-      // ocean — 剧集列表
+      // ocean + 默认 — 剧集列表 3列
       return (
-        <div className="divide-y" style={{ borderColor: withAlpha(v.border, 0.7) }}>
+        <div className="grid grid-cols-1 gap-x-8 sm:grid-cols-2 lg:grid-cols-3">
           {list.map((ch) => (
             <TocChapterButton
               key={ch.id}
@@ -572,8 +570,8 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
               current={ch.id === currentChapterId}
               cache={previewCacheRef}
               onClick={() => go(ch)}
-              className="flex w-full items-center gap-3 py-2.5 text-left transition-colors hover:bg-white/5"
-              style={ch.id === currentChapterId ? { background: withAlpha(v.primary, theme.dark ? 0.18 : 0.1) } : undefined}
+              className="flex w-full items-center gap-3 border-b py-2.5 text-left transition-colors hover:bg-white/5"
+              style={{ borderColor: withAlpha(v.border, 0.7), background: ch.id === currentChapterId ? withAlpha(v.primary, theme.dark ? 0.18 : 0.1) : undefined }}
             >
               <span
                 className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold tabular-nums"
