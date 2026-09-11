@@ -1,7 +1,7 @@
 // 站点更新/删除
 import { db } from '@/lib/db'
 import { ok, fail, readBody } from '@/lib/api'
-import { THEMES } from '@/lib/crawl/themes'
+import { getThemeById } from '@/lib/crawl/themes'
 import { withGuard, str, clampInt } from '../../../_lib/http'
 
 // 与 POST 同步: 放行 localhost[:port](种子默认站域名即 localhost:3000, 旧正则误拒致站点无法回存)
@@ -27,7 +27,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     }
     if (body?.themeId !== undefined) {
       const tid = str(body.themeId, 50).trim()
-      if (!THEMES.some((t) => t.id === tid)) return fail('未知主题模板')
+      if (!getThemeById(tid)) return fail('未知主题模板')
       data.themeId = tid
     }
     if (body?.domain !== undefined) {

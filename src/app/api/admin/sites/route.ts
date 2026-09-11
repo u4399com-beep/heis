@@ -1,7 +1,7 @@
 // 站群站点 CRUD
 import { db } from '@/lib/db'
 import { ok, fail, readBody } from '@/lib/api'
-import { THEMES } from '@/lib/crawl/themes'
+import { getThemeById } from '@/lib/crawl/themes'
 import { withGuard, str, clampInt } from '../../_lib/http'
 
 /** 域名格式: 支持多级域名 + 可选端口; 另放行 localhost[:port](种子默认站即此形态, 旧正则误拒致默认站无法回存) */
@@ -9,7 +9,7 @@ const DOMAIN_RE = /^(localhost(:\d{1,5})?|[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-
 
 function validTheme(raw: unknown): string {
   const id = str(raw, 50).trim()
-  return THEMES.some((t) => t.id === id) ? id : 'aurora'
+  return getThemeById(id) ? id : 'aurora'
 }
 
 export async function GET() {

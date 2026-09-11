@@ -1,7 +1,7 @@
 // 站点批量操作: delete(默认站保护跳过) / theme(校验 THEMES 注册表) / offset(clampInt 钳制) / wheel(链轮参与开关)
 import { db } from '@/lib/db'
 import { ok, fail, readBody } from '@/lib/api'
-import { THEMES } from '@/lib/crawl/themes'
+import { getThemeById } from '@/lib/crawl/themes'
 import { withGuard, clampInt, errText } from '../../../_lib/http'
 import { parseBatchBody, payloadString, skipItem, type BatchSkippedItem } from '../../../_lib/batch'
 
@@ -45,7 +45,7 @@ export async function POST(req: Request) {
       // ---------------- 批量换主题: themeId 必须在 THEMES 注册表内(与单条 PUT 校验一致) ----------------
       case 'theme': {
         const tid = payloadString(payload, 'themeId', 50) || ''
-        if (!THEMES.some((t) => t.id === tid)) return fail('未知主题模板')
+        if (!getThemeById(tid)) return fail('未知主题模板')
         const res = await db.site.updateMany({ where: { id: { in: ids } }, data: { themeId: tid } })
         return ok({ affected: res.count, skipped })
       }
