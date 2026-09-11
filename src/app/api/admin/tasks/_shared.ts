@@ -5,7 +5,7 @@ export const TASK_STATUSES = ['pending', 'running', 'paused', 'stopped', 'done',
 
 export interface NormalizedTask {
   name: string
-  mode: 'single' | 'range'
+  mode: 'single' | 'range' | 'urls'
   bookUrl: string
   listUrl: string
   listStart: number
@@ -44,10 +44,14 @@ export function normalizeTaskData(
 
   // 模式(显式提供非法值时报错, 不静默改写为 range 造成误解)
   if (full || body?.mode !== undefined) {
-    if (body?.mode !== undefined && !['single', 'range'].includes(body.mode)) {
-      return { data: {}, error: '采集模式必须是 single(单本) 或 range(范围)' }
+    if (body?.mode !== undefined && !['single', 'range', 'urls'].includes(body.mode)) {
+      return { data: {}, error: '采集模式必须是 single(单本) / range(范围) / urls(指定URL列表)' }
     }
-    out.mode = body?.mode === 'single' ? 'single' : 'range'
+    // agent-H-features: 'urls' 仅 retry-failed 模式专用(POST retryFailedFromTaskId 自动设置),
+    // 普通创建默认 range; 手动指定 'urls' 时需配合 fetchConfig.urls 才有数据
+    out.mode = body?.mode === 'single' ? 'single' : body?.mode === 'urls' ? 'urls' : 'range'
+  } else if (full) {
+    out.mode = 'range'
   }
 
   // URL 字段: 必须是合法 http(s) 或空串
@@ -125,12 +129,14 @@ export function normalizeTaskData(
   return { data: out }
 }
 
-/** 模式与URL联动校验(用合并后的生效值调用) */
+/** 模式与URL联动校验(用合并后的生效值调用)。
+ *  agent-H-features: 'urls' 模式不校验 bookUrl/listUrl(其 URL 列表来自 fetchConfig.urls) */
 export function validateTaskPair(
   mode: string | undefined,
   bookUrl: string | undefined,
   listUrl: string | undefined
 ): string | undefined {
+  if (mode === 'urls') return undefined
   if (mode === 'single' && !bookUrl) return '单本模式必须填写书籍页URL'
   if (mode === 'range' && !listUrl) return '范围模式必须填写列表页URL(含{page})'
   return undefined

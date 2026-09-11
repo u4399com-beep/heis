@@ -257,6 +257,43 @@ export class TaskRunner {
     return this.runtimes.get(taskId)?.running || false
   }
 
+  /** agent-H-features: 任务实时快照 —— 返回内存 TaskRuntime 当前值(requestCount/bytesFetched/
+   *  currentUrl/recentLogs/failedBookUrls 等)供 admin UI 实时显示。无运行时(任务未启动/
+   *  已终态释放)时返回 null, 调用方回退到 DB progress JSON。
+   *  - paused 状态仍保留 runtime(pruneRuntimesIfNeeded 仅驱逐终态/僵尸暂停), 返回最新值
+   *  - running/paused 时返回内存值; 否则返回 null
+   *  - 不读 DB(progress 可能落后内存 5~10s); 调用方按需自行 merge DB 数据
+   *  - memBooksInQueue/memChaptersInQueue 不返回(bookQueue 是局部变量), 调用方从 DB progress 读 */
+  snapshot(taskId: string): {
+    running: boolean
+    paused: boolean
+    requestCount: number
+    bytesFetched: number
+    runStartedAt: number
+    currentUrl: string
+    maxRequests: number
+    memResumeSetsSize: number
+    recentLogs: { level: string; message: string; ts: number }[]
+    failedBookUrlsCount: number
+  } | null {
+    const rt = this.runtimes.get(taskId)
+    if (!rt) return null
+    return {
+      running: rt.running,
+      paused: rt.paused,
+      requestCount: rt.requestCount,
+      bytesFetched: rt.bytesFetched,
+      runStartedAt: rt.runStartedAt,
+      currentUrl: rt.currentUrl,
+      maxRequests: rt.maxRequests,
+      memResumeSetsSize:
+        rt.discoveredBookUrls.size + rt.completedBookUrls.size +
+        rt.ongoingBookUrls.size + rt.failedBookUrls.size + rt.bookLastChapters.size,
+      recentLogs: rt.recentLogs.slice(-MAX_RECENT_LOGS),
+      failedBookUrlsCount: rt.failedBookUrls.size,
+    }
+  }
+
   /** E2: LRU 驱逐 —— runtimes Map 上限 200 条。超出时按插入序找最旧的【已终态】条目
    *  (running===false: 含 done/error/stopped) 驱逐; 活跃任务(running===true, 含 paused)
    *  永不驱逐(保留 epoch/cooldown/暂停态)。全部活跃时跳过(不阻塞插入)。
@@ -553,6 +590,13 @@ export class TaskRunner {
           ).catch(() => {})
         }
       }
+      // agent-H-features(请求预算): rt.maxRequests 从 fetchOverride.maxRequests 读取
+      // (规则侧 cfg.rule.fetch.maxRequests 兜底); 0/未设=不限。control('start') 时 rt.maxRequests
+      // 默认 0, 此处合并 task.fetchConfig 后填上, gateFetch 即可据此检查预算
+      rt.maxRequests = Number(cfg.fetchOverride.maxRequests ?? cfg.rule.fetch.maxRequests) || 0
+      // agent-H-features(任务快照+ETA): runStartedAt 在新一轮 start 重置(control('start')
+      // 已新建 TaskRuntime 但 runStartedAt=0), snapshot 端点据此算 ETA
+      rt.runStartedAt = Date.now()
       // ---------- 发现书籍URL ----------
       let bookQueue: string[] = []
       // ll-c2: 列表页已提取的书籍字段随行保存(key=absolutized bookUrl) — 部分源站 detail
@@ -563,6 +607,17 @@ export class TaskRunner {
         bookQueue = [cfg.task.bookUrl]
         progress.discovered = 1
         await this.log(taskId, 'info', `单本模式: ${cfg.task.bookUrl}`)
+      } else if (cfg.task.mode === 'urls') {
+        // agent-H-features(retry-failed 模式): mode='urls' 时 fetchOverride.urls 直接作为
+        // bookQueue, 跳过 list 发现阶段; 进度立刻进入 book 处理阶段
+        const urlsList = (cfg.fetchOverride.urls && Array.isArray(cfg.fetchOverride.urls) ? cfg.fetchOverride.urls : [])
+          .filter((u) => typeof u === 'string' && u)
+        bookQueue = urlsList.slice()
+        progress.discovered = bookQueue.length
+        progress.phase = 'book'
+        progress.phaseNote = `重试 ${bookQueue.length} 本失败书籍…`
+        await this.saveProgress(taskId, progress, stats)
+        await this.log(taskId, 'info', `重试失败模式: 共 ${bookQueue.length} 本待采集`)
       } else {
         progress.phase = 'discovery'
         progress.phaseNote = '正在解析列表页…'

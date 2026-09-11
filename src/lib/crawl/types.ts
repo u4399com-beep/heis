@@ -217,6 +217,15 @@ export interface FetchConfig {
   /** scrapling 桥地址(fetchMode=scrapling-* 时生效), 缺省 http://127.0.0.1:3012
    *  (可用环境变量 SCRAPLING_BRIDGE_URL 改全局缺省); 桥服务见 mini-services/scrapling-bridge */
   scraplingBridgeUrl?: string
+  /** agent-H-features(请求预算上限): 单任务 HTTP 请求总预算上限, 0/未设=不限。
+   *  正常值范围 100~1_000_000(整数); runner.gateFetch 每次入口检查 requestCount > maxRequests
+   *  即抛 BudgetExceeded 终止任务, 防失控脚本/递归 mirror 域烧站点/IP。
+   *  由 sanitizeFetchConfig 钳制 [100, 1_000_000]; 缺省 0=零回归(现有规则无此字段) */
+  maxRequests?: number
+  /** agent-H-features(retry-failed 模式): 重试失败书籍模式专用 —— 任务 mode='urls' 时
+   *  作为 bookQueue 直接使用, 跳过 list 发现阶段。仅 sanitizeFetchConfig 钳长 + 钳条数,
+   *  非法 URL 整字段丢弃; 普通任务不带此字段(零回归)。条数硬上限 1000(防止过大 JSON) */
+  urls?: string[]
 }
 
 /**
@@ -626,6 +635,27 @@ export function sanitizeFetchConfig(v: unknown): Partial<FetchConfig> {
   if (scraplingBridgeUrlRaw !== undefined) {
     const scraplingBridgeUrl = safeSingleLine(scraplingBridgeUrlRaw)
     if (scraplingBridgeUrl && /^https?:\/\/\S+$/i.test(scraplingBridgeUrl)) out.scraplingBridgeUrl = scraplingBridgeUrl
+  }
+  // agent-H-features(请求预算): maxRequests 钳制 [100, 1_000_000], 0/未设=不限;
+  // runner.gateFetch 检查 requestCount > maxRequests 抛 BudgetExceeded 终止任务
+  const maxRequests = safeNum(r.maxRequests, 100, 1_000_000)
+  if (maxRequests !== undefined) out.maxRequests = maxRequests
+  // agent-H-features(retry-failed): urls 仅 mode='urls' 任务使用; http(s) URL 形态 + 单行化
+  // + 去空去重上限 1000 条; 普通任务不带此字段(undefined = 零回归)
+  if (Array.isArray(r.urls)) {
+    const valid: string[] = []
+    const seen = new Set<string>()
+    for (const raw of r.urls) {
+      const s = safeStr(raw, 1000)
+      if (s === undefined) continue
+      const u = safeSingleLine(s)
+      if (!u || seen.has(u) || valid.length >= 1000) continue
+      if (/^https?:\/\/\S+$/i.test(u)) {
+        seen.add(u)
+        valid.push(u)
+      }
+    }
+    if (valid.length) out.urls = valid
   }
   return out
 }

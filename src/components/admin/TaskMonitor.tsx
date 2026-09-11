@@ -22,9 +22,14 @@ import {
   CirclePlay,
   CircleStop,
   Clock,
+  Database,
+  Download,
+  Gauge,
   Loader2,
+  MemoryStick,
   PauseCircle,
   RefreshCw,
+  RotateCw,
   ScrollText,
   Terminal,
   Timer,
@@ -34,6 +39,7 @@ import { toast } from 'sonner'
 import {
   api,
   fmtNum,
+  LOG_LEVEL_STYLE,
   PHASE_META,
   safeJsonParse,
   TASK_STATUS_META,
@@ -59,12 +65,33 @@ interface Tuning {
 // feat-round-10 A2: 速率图回看窗口(分钟)
 const RATE_WINDOW_MIN = 10
 
+/** agent-H-features: 任务快照端点响应数据 (/api/admin/tasks/[id]/snapshot) */
+interface SnapshotData {
+  running: boolean
+  paused: boolean
+  status: string
+  requestCount: number
+  bytesFetched: number
+  runStartedAt: number
+  currentUrl: string
+  maxRequests: number
+  memBooksInQueue: number
+  memChaptersInQueue: number
+  memResumeSetsSize: number
+  recentLogs: { level: string; message: string; ts: number }[]
+  failedBookUrlsCount: number
+  eta: number | null
+}
+
 export function TaskMonitor({ taskId, onBack }: TaskMonitorProps) {
   const [task, setTask] = useState<TaskRow | null>(null)
   const [live, setLive] = useState(false)
   const [logs, setLogs] = useState<TaskLog[]>([])
   const [controlsLoading, setControlsLoading] = useState<string>('')
   const [tuning, setTuning] = useState<Tuning>({ threadMin: 1, threadMax: 3, intervalMin: 500, intervalMax: 2000 })
+  // agent-H-features: 任务实时快照 (3s 轮询; 仅 status==='running' 时拉取)
+  const [snapshot, setSnapshot] = useState<SnapshotData | null>(null)
+  const [snapshotBusy, setSnapshotBusy] = useState(false)
 
   const lastLogIdRef = useRef<string>('')
   const taskSeqRef = useRef(0) // 任务状态响应序号: 防慢响应迟到覆盖新状态(2s 轮询与控制后手动刷新并发时)
@@ -202,6 +229,50 @@ export function TaskMonitor({ taskId, onBack }: TaskMonitorProps) {
       toast.error(e instanceof Error ? e.message : '操作失败')
     } finally {
       setControlsLoading('')
+    }
+  }
+
+  // agent-H-features: 任务实时快照轮询 —— 仅 status==='running' 时 3s 拉一次; 其他状态停止拉取
+  // (pause 时保留已存快照供查看, 但不再更新; stopped/done/error 时清空快照)
+  useEffect(() => {
+    if (status !== 'running') {
+      setSnapshot(null)
+      return
+    }
+    let active = true
+    const tick = async () => {
+      try {
+        const data = await api.get<SnapshotData>(`/api/admin/tasks/${taskId}/snapshot`)
+        if (active && aliveRef.current) setSnapshot(data)
+      } catch {
+        // 静默失败: 短时网络抖动不弹 toast(主轮询已有 failCount 兜底)
+      }
+    }
+    tick()
+    const t = setInterval(tick, 3000)
+    return () => {
+      active = false
+      clearInterval(t)
+    }
+  }, [taskId, status])
+
+  // agent-H-features: 导出失败书籍列表 —— 浏览器直接下载 .txt(text/plain)
+  const handleExportFailed = () => {
+    // 直接打开新窗口下载; 浏览器会自动触发下载对话框
+    window.open(`/api/admin/tasks/${taskId}/failed-books`, '_blank')
+  }
+
+  // agent-H-features: 重试仅失败书籍 —— POST /api/admin/tasks 创建 mode='urls' 的新任务,
+  // 克隆源任务配置 + 失败 URL 列表; 创建成功后提示用户返回列表查看
+  const handleRetryFailed = async () => {
+    setSnapshotBusy(true)
+    try {
+      const res = await api.post<{ id: string; name: string }>('/api/admin/tasks', { retryFailedFromTaskId: taskId })
+      toast.success(`已创建重试任务「${res.name}」, 请在任务列表中启动`)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '重试失败书籍创建失败')
+    } finally {
+      setSnapshotBusy(false)
     }
   }
 
@@ -618,6 +689,14 @@ export function TaskMonitor({ taskId, onBack }: TaskMonitorProps) {
         </CardContent>
       </Card>
 
+      {/* agent-H-features: 实时快照面板 (3s 轮询, 仅 running 时刷新) */}
+      <TaskSnapshotPanel
+        snapshot={snapshot}
+        busy={snapshotBusy}
+        onExportFailed={handleExportFailed}
+        onRetryFailed={handleRetryFailed}
+      />
+
       {/* 实时日志 (feat-round-10 A1: 抽离至 TaskLogViewer) */}
       <Card className="border-zinc-800 bg-zinc-900/60">
         <CardHeader className="flex-row items-center justify-between space-y-0 pb-2">
@@ -677,6 +756,241 @@ function ErrorStatCard({
       <div className="min-w-0">
         <p className="text-[10px] uppercase tracking-wide opacity-70">{label}</p>
         <p className="truncate text-sm font-semibold tabular-nums">{value}</p>
+      </div>
+    </div>
+  )
+}
+
+// agent-H-features: 实时快照面板 —— 显示 currentUrl/requestCount/bytesFetched/ETA/内存压力/最近日志
+// + 请求预算进度条 + 失败书籍导出/重试按钮; 仅 running 时由父组件轮询刷新, 非运行时显示空态提示
+function TaskSnapshotPanel({
+  snapshot,
+  busy,
+  onExportFailed,
+  onRetryFailed,
+}: {
+  snapshot: SnapshotData | null
+  busy: boolean
+  onExportFailed: () => void
+  onRetryFailed: () => void
+}) {
+  // 当前 URL 截断到 60 字符
+  const truncateUrl = (s: string): string => {
+    if (!s) return '-'
+    return s.length > 60 ? s.slice(0, 57) + '...' : s
+  }
+
+  // 字节数 → 人类可读 (B/KB/MB/GB)
+  const fmtBytes = (n: number): string => {
+    if (n < 1024) return `${n} B`
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+    if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(2)} MB`
+    return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`
+  }
+
+  // ETA 秒 → 人类可读 ("~12分30秒" / "~45秒" / "-")
+  const fmtEta = (s: number | null): string => {
+    if (s === null || !Number.isFinite(s)) return '-'
+    if (s < 60) return `~${s}秒`
+    const m = Math.floor(s / 60)
+    const sec = s % 60
+    if (m < 60) return `~${m}分${sec > 0 ? `${sec}秒` : ''}`
+    const h = Math.floor(m / 60)
+    const mm = m % 60
+    return `~${h}时${mm > 0 ? `${mm}分` : ''}`
+  }
+
+  // 请求预算进度比 (requestCount / maxRequests * 100), maxRequests=0 时不显示
+  const budgetPct = snapshot && snapshot.maxRequests > 0
+    ? Math.min(100, Math.round((snapshot.requestCount / snapshot.maxRequests) * 100))
+    : 0
+
+  // 内存压力级别 (resumeSetsSize 越接近 50000 上限越告急)
+  const memPressureLevel = (size: number): { pct: number; tone: string } => {
+    const pct = Math.min(100, Math.round((size / 50000) * 100))
+    if (pct < 50) return { pct, tone: 'bg-emerald-500' }
+    if (pct < 80) return { pct, tone: 'bg-amber-500' }
+    return { pct, tone: 'bg-red-500' }
+  }
+
+  const memTone = snapshot ? memPressureLevel(snapshot.memResumeSetsSize) : null
+
+  // 最近日志自动滚动 (新日志到达时滚到底部)
+  const logsRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (logsRef.current) logsRef.current.scrollTop = logsRef.current.scrollHeight
+  }, [snapshot?.recentLogs])
+
+  return (
+    <Card className="border-zinc-800 bg-zinc-900/60">
+      <CardHeader className="pb-2">
+        <CardTitle className="flex items-center justify-between text-sm text-zinc-200">
+          <span className="flex items-center gap-2">
+            <Gauge className="h-4 w-4 text-violet-400" aria-hidden />
+            实时快照
+            <span className="text-xs font-normal text-zinc-500">(3秒轮询 · 仅运行中刷新)</span>
+          </span>
+          {snapshot && snapshot.running && (
+            <Badge variant="outline" className="border-emerald-500/40 bg-emerald-500/10 text-emerald-400">
+              <Loader2 className="mr-1 h-3 w-3 animate-spin" aria-hidden />
+              实时
+            </Badge>
+          )}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4 p-4 pt-2">
+        {!snapshot || !snapshot.running ? (
+          <div className="flex h-24 items-center justify-center text-xs text-zinc-600">
+            {snapshot ? '任务未运行, 快照已停止刷新' : '尚未获取快照数据'}
+          </div>
+        ) : (
+          <>
+            {/* 当前 URL */}
+            <div className="space-y-1">
+              <div className="flex items-center gap-1.5 text-[11px] text-zinc-500">
+                <Database className="h-3 w-3" aria-hidden />
+                当前请求 URL
+              </div>
+              <div className="truncate font-mono text-xs text-zinc-300" title={snapshot.currentUrl || '-'}>
+                {truncateUrl(snapshot.currentUrl)}
+              </div>
+            </div>
+
+            {/* 计数器行: 请求数 / 已下载 / ETA / 失败数 */}
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <SnapshotStat label="请求总数" value={fmtNum(snapshot.requestCount)} icon={<RefreshCw className="h-3 w-3" />} tone="text-sky-400" />
+              <SnapshotStat label="已下载" value={fmtBytes(snapshot.bytesFetched)} icon={<Database className="h-3 w-3" />} tone="text-emerald-400" />
+              <SnapshotStat label="ETA" value={fmtEta(snapshot.eta)} icon={<Clock className="h-3 w-3" />} tone="text-violet-400" />
+              <SnapshotStat
+                label="失败书籍"
+                value={fmtNum(snapshot.failedBookUrlsCount)}
+                icon={<AlertTriangle className="h-3 w-3" />}
+                tone={snapshot.failedBookUrlsCount > 0 ? 'text-red-400' : 'text-zinc-400'}
+              />
+            </div>
+
+            {/* 请求预算进度条 (maxRequests > 0 时显示) */}
+            {snapshot.maxRequests > 0 && (
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-zinc-400">请求预算</span>
+                  <span className="font-mono text-zinc-300">
+                    {fmtNum(snapshot.requestCount)} / {fmtNum(snapshot.maxRequests)}
+                    <span className="ml-1 text-zinc-500">({budgetPct}%)</span>
+                  </span>
+                </div>
+                <Progress
+                  value={budgetPct}
+                  className={
+                    budgetPct >= 90
+                      ? 'h-2 bg-zinc-800 [&_[data-slot=progress-indicator]]:bg-red-500'
+                      : 'h-2 bg-zinc-800 [&_[data-slot=progress-indicator]]:bg-violet-500'
+                  }
+                />
+                {budgetPct >= 90 && (
+                  <div className="flex items-center gap-1 text-[11px] text-red-400">
+                    <AlertTriangle className="h-3 w-3" aria-hidden />
+                    请求预算即将耗尽, 任务将在超出后自动停止
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 内存压力行 (resume Sets size, 接近 50000 上限时变红) */}
+            {memTone && (
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="flex items-center gap-1 text-zinc-400">
+                    <MemoryStick className="h-3 w-3" aria-hidden />
+                    内存压力 (resume Sets)
+                  </span>
+                  <span className="font-mono text-zinc-300">
+                    {fmtNum(snapshot.memResumeSetsSize)} / 50,000
+                    <span className="ml-1 text-zinc-500">({memTone.pct}%)</span>
+                  </span>
+                </div>
+                <div className="h-2 w-full overflow-hidden rounded-full bg-zinc-800">
+                  <div
+                    className={`h-full transition-all ${memTone.tone}`}
+                    style={{ width: `${Math.max(2, memTone.pct)}%` }}
+                    role="img"
+                    aria-label={`内存压力 ${memTone.pct}%`}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* 失败书籍导出 + 重试按钮 (failedBookUrlsCount > 0 时显示) */}
+            {snapshot.failedBookUrlsCount > 0 && (
+              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2">
+                <span className="text-xs text-red-300">
+                  共有 {fmtNum(snapshot.failedBookUrlsCount)} 本失败书籍
+                </span>
+                <div className="flex-1" />
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 gap-1 border-zinc-700 bg-zinc-900 text-xs text-zinc-300 hover:bg-zinc-800"
+                  onClick={onExportFailed}
+                >
+                  <Download className="h-3 w-3" aria-hidden />
+                  导出失败列表
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 gap-1 border-amber-500/40 bg-amber-500/10 text-xs text-amber-400 hover:bg-amber-500/20"
+                  disabled={busy}
+                  onClick={onRetryFailed}
+                >
+                  {busy ? <Loader2 className="h-3 w-3 animate-spin" aria-hidden /> : <RotateCw className="h-3 w-3" aria-hidden />}
+                  重试仅失败书籍
+                </Button>
+              </div>
+            )}
+
+            {/* 最近日志 (auto-scroll 到底部; 来自 snapshot.recentLogs, 不走 logs 主轮询) */}
+            <div className="space-y-1">
+              <div className="text-[11px] text-zinc-500">最近日志 (来自任务快照, 最多 10 条)</div>
+              <div
+                ref={logsRef}
+                className="max-h-48 overflow-y-auto rounded-md border border-zinc-800 bg-zinc-950 p-2 font-mono text-[11px] leading-relaxed"
+              >
+                {snapshot.recentLogs && snapshot.recentLogs.length > 0 ? (
+                  <ul className="space-y-0.5">
+                    {snapshot.recentLogs.map((l, i) => (
+                      <li key={`${l.ts}-${i}`} className="flex gap-2">
+                        <span className="shrink-0 text-zinc-600">
+                          {new Date(l.ts).toLocaleTimeString('zh-CN', { hour12: false })}
+                        </span>
+                        <span className={LOG_LEVEL_STYLE[l.level] || 'text-zinc-300'}>
+                          {l.message}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <div className="flex h-12 items-center justify-center text-zinc-600">暂无日志</div>
+                )}
+              </div>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+// agent-H-features: 快照小统计卡片 (图标 + 标签 + 值)
+function SnapshotStat({ label, value, icon, tone }: { label: string; value: string; icon: React.ReactNode; tone: string }) {
+  return (
+    <div className="rounded-md border border-zinc-800 bg-zinc-950/60 px-2.5 py-2">
+      <div className="flex items-center gap-1 text-[10px] text-zinc-500">
+        <span className={tone}>{icon}</span>
+        {label}
+      </div>
+      <div className={`mt-0.5 truncate font-mono text-sm font-semibold tabular-nums ${tone}`} title={value}>
+        {value}
       </div>
     </div>
   )

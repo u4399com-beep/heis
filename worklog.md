@@ -3195,3 +3195,111 @@ Stage Summary:
   · BRIDGE_SSRF_ALLOW_LOOPBACK=1 for archived test scripts that need loopback via fetch-relay.
   · Path/query contracts unchanged; all 6 ports preserved (3010-3015).
 - Lint/tsc: 0/0 across the board (bun + python py_compile).
+
+---
+Task ID: agent-H-features
+Agent: Task snapshot API + UI + additional features
+Task: Expose runner snapshot data + retry-failed mode + budget UI
+
+Work Log:
+- Read /home/z/my-project/worklog.md (last ~300 lines) for prior agent context (agent-B-runner
+  added 7 in-memory snapshot fields to TaskRuntime, agent-E-remaining-crawl completed parser/
+  hostgate/cleaner audits, agent-F-mini-services hardened mini-services).
+- Audited: src/app/api/admin/tasks/[id]/route.ts (auth pattern = withGuard only, middleware in
+  proxy.ts handles admin cookie auth); src/lib/crawl/types.ts FetchConfig interface + sanitizeFetchConfig
+  (whitelist pattern, clamp helpers); src/lib/crawl/runner.ts TaskRuntime interface + executeTask entry
+  (rt.maxRequests/runStartedAt initialization points); TaskMonitor.tsx component structure; helpers.ts
+  api wrapper + types.
+- Implementation (5 changes across 8 files):
+
+  1) src/lib/crawl/types.ts: Added 2 fields to FetchConfig interface:
+     - maxRequests?: number (HTTP request budget; 0=unlimited; clamp [100, 1_000_000])
+     - urls?: string[] (retry-failed mode URL list; up to 1000 entries)
+     Added to sanitizeFetchConfig whitelist:
+     - maxRequests via safeNum(r.maxRequests, 100, 1_000_000) — clamp to integer range
+     - urls via safeStr + safeSingleLine per entry, dedup, http(s) regex, max 1000 entries
+
+  2) src/lib/crawl/runner.ts (3 changes):
+     a. Added public snapshot(taskId) method returning 9 in-memory fields
+        (running/paused/requestCount/bytesFetched/runStartedAt/currentUrl/maxRequests/
+        memResumeSetsSize/recentLogs/failedBookUrlsCount). Returns null when no runtime
+        (caller falls back to DB progress).
+     b. executeTask entry: rt.maxRequests loaded from cfg.fetchOverride.maxRequests ?? 
+        cfg.rule.fetch.maxRequests (default 0); rt.runStartedAt = Date.now() (reset per
+        fresh start, snapshot endpoint uses for ETA).
+     c. Added mode='urls' branch alongside 'single'/'range' — reads cfg.fetchOverride.urls
+        as bookQueue directly, skips list discovery phase, sets progress.phase='book'.
+
+  3) src/app/api/admin/tasks/_shared.ts:
+     - NormalizedTask.mode extended to 'single' | 'range' | 'urls'
+     - normalizeTaskData accepts mode='urls' (errors on other invalid values)
+     - validateTaskPair: mode='urls' skips bookUrl/listUrl requirement (URLs come from
+       fetchConfig.urls)
+
+  4) New API endpoints (2 files):
+     - src/app/api/admin/tasks/[id]/snapshot/route.ts: GET returns snapshot envelope
+       {running, paused, status, requestCount, bytesFetched, runStartedAt, currentUrl,
+       maxRequests, memBooksInQueue, memChaptersInQueue, memResumeSetsSize, recentLogs,
+       failedBookUrlsCount, eta}. ETA computed as (totalBooks-done) * (now-runStartedAt) /
+       done seconds. 404 if task not found, 200 with running:false when no runtime.
+     - src/app/api/admin/tasks/[id]/failed-books/route.ts: GET returns text/plain with
+       one URL per line from progress.failedBookUrls; Content-Disposition triggers browser
+       .txt download with ASCII filename fallback + UTF-8'' filename* for Chinese names.
+       404 if task not found.
+
+  5) src/app/api/admin/tasks/route.ts (POST handler extension):
+     - Added retryFailedFromTaskId special mode: clones source task config (ruleId,
+       threads, intervals, fetchConfig, storageMode) and creates new task with mode='urls',
+       recrawlMode='full' (force re-crawl), fetchConfig.urls=failedBookUrls (cap 1000).
+       Returns 404 if source not found, 400 if no failed URLs, 200 with new task on success.
+
+  6) src/components/admin/TaskMonitor.tsx (UI panel + polling):
+     - Added SnapshotData interface + snapshot/snapshotBusy state
+     - Added 3s polling useEffect (pauses when status !== 'running', clears snapshot)
+     - Added handleExportFailed (window.open downloads .txt)
+     - Added handleRetryFailed (POST retryFailedFromTaskId, toast on success)
+     - Added TaskSnapshotPanel component (200+ lines): shows currentUrl (truncate 60ch),
+       requestCount/bytesFetched/ETA/failedBookUrlsCount stat cards, request budget
+       progress bar (red when ≥90% + warning text), memory pressure bar (emerald<50%,
+       amber<80%, red≥80% — based on memResumeSetsSize vs 50000 cap), failed books
+       export/retry buttons (shown only when failedBookUrlsCount > 0), auto-scrolling
+       recent 10 logs from snapshot.recentLogs (uses LOG_LEVEL_STYLE color map).
+     - Added SnapshotStat helper component (icon + label + value card).
+
+Quality Gates:
+- bun run lint: 0 errors / 0 warnings ✓
+- bunx tsc --noEmit | grep -v "examples|skills" | wc -l: 0 ✓
+- Dev server UP: dev.log shows GET /api/admin/tasks/[id]/snapshot 200 (54ms),
+  GET /api/admin/tasks/[id]/failed-books 200 (89ms after ByteString fix); no errors ✓
+- Endpoint smoke tests (admin auth cookie required):
+  · GET /api/admin/tasks/nonexistent-task-id/snapshot → 404 ✓
+  · GET /api/admin/tasks/<real-id>/snapshot → 200 with full snapshot envelope ✓
+  · GET /api/admin/tasks/nonexistent-task-id/failed-books → 404 ✓
+  · GET /api/admin/tasks/<real-id>/failed-books → 200 text/plain, Content-Disposition
+    with ASCII filename + UTF-8'' filename* (handles Chinese task names) ✓
+  · POST /api/admin/tasks {retryFailedFromTaskId:"nonexistent"} → 404 "源任务不存在" ✓
+  · POST /api/admin/tasks {retryFailedFromTaskId:<real-no-failed>} → 400 "源任务没有
+    失败书籍可重试(失败 URL 列表为空)" ✓
+- Bug found + fixed during testing: failed-books initial version had Chinese chars in
+  filename="..." (ByteString violation, undici threw "Cannot convert argument to a
+  ByteString"); fixed by splitting into ASCII filename fallback + UTF-8'' filename*.
+
+Stage Summary:
+- Endpoints added (2):
+  · GET  /api/admin/tasks/[id]/snapshot       — task runtime snapshot with ETA
+  · GET  /api/admin/tasks/[id]/failed-books   — text/plain failed URL list export
+- POST /api/admin/tasks extended: new retryFailedFromTaskId mode (creates mode='urls'
+  clone task with failed URLs as fetchConfig.urls)
+- UI components added (TaskMonitor.tsx):
+  · TaskSnapshotPanel (实时快照 card) — 3s polling, currentUrl/counters/ETA/memory
+    pressure bars/request budget progress/failed-books action row/recent 10 logs
+  · SnapshotStat helper (icon + label + value mini card)
+- Types/sanitize changes:
+  · FetchConfig.maxRequests + urls fields (with whitelist clamp)
+  · TaskRunner.snapshot(taskId) public method
+  · NormalizedTask.mode: 'single' | 'range' | 'urls' (3rd mode added)
+  · runner.ts executeTask mode='urls' branch (skips list discovery, uses urls directly)
+- Lint: 0/0 ✓ ; TSC: 0 errors ✓ ; Dev server: clean (no errors) ✓
+- Zero-regression: existing single/range mode tasks unaffected; maxRequests=0 means
+  unlimited (default, no behavior change for tasks without explicit maxRequests config);
+  urls field undefined for normal tasks (sanitizeFetchConfig ignores).
