@@ -96,13 +96,17 @@ export function SitesSection() {
   const [batchConfirmOpen, setBatchConfirmOpen] = useState(false)
   const [pendingTheme, setPendingTheme] = useState('')
   const [pendingOffset, setPendingOffset] = useState('')
+  const [themeSearch, setThemeSearch] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [ss, ts] = await Promise.all([api.get<SiteRow[]>('/api/admin/sites'), api.get<SiteTheme[]>('/api/admin/themes')])
+      const [ss, ts] = await Promise.all([
+        api.get<SiteRow[]>('/api/admin/sites'),
+        api.get<{ items: SiteTheme[]; total: number }>('/api/admin/themes?page=1&size=500'),
+      ])
       setSites(Array.isArray(ss) ? ss : [])
-      setThemes(Array.isArray(ts) ? ts : [])
+      setThemes(ts?.items || (Array.isArray(ts) ? ts : []))
     } catch (e) {
       toast.error(e instanceof Error ? e.message : '加载站点失败')
     } finally {
@@ -114,6 +118,9 @@ export function SitesSection() {
     load()
   }, [load])
 
+  const filteredThemes = themeSearch.trim()
+    ? themes.filter((t) => t.id.toLowerCase().includes(themeSearch.toLowerCase()) || t.name.includes(themeSearch))
+    : themes
   const themeOf = (id: string) => themes.find((t) => t.id === id)
 
   const openCreate = () => {
@@ -435,13 +442,19 @@ export function SitesSection() {
               />
             </div>
             <div className="space-y-1.5">
-              <Label className="text-xs text-zinc-400">前台主题</Label>
+              <Label className="text-xs text-zinc-400">前台主题 <span className="text-zinc-600">({themes.length} 套可选, 更多用 URL ?theme= 预览)</span></Label>
+              <Input
+                className="h-8 border-zinc-700 bg-zinc-950 text-xs"
+                placeholder="搜索主题ID或名称(如 violet/paper/grid)..."
+                value={themeSearch}
+                onChange={(e) => setThemeSearch(e.target.value)}
+              />
               <Select value={form.themeId} onValueChange={(v) => setForm({ ...form, themeId: v })}>
                 <SelectTrigger className="h-9 border-zinc-700 bg-zinc-950 text-sm">
                   <SelectValue />
                 </SelectTrigger>
-                <SelectContent>
-                  {themes.map((t) => (
+                <SelectContent className="max-h-[300px]">
+                  {filteredThemes.map((t) => (
                     <SelectItem key={t.id} value={t.id} className="text-sm">
                       <span className="flex items-center gap-2">
                         <span className="flex overflow-hidden rounded-sm border border-zinc-700">
@@ -450,9 +463,11 @@ export function SitesSection() {
                           ))}
                         </span>
                         {t.name}
+                        <span className="text-zinc-600 text-[10px]">{t.id}</span>
                       </span>
                     </SelectItem>
                   ))}
+                  {filteredThemes.length === 0 && <div className="p-2 text-xs text-zinc-500">无匹配主题</div>}
                 </SelectContent>
               </Select>
             </div>
