@@ -238,8 +238,7 @@ export interface FetchConfig {
    *
    *  类型注: 接口字段以 `string` 暴露而非严格联合, 兼容前端 Select 组件 onValueChange 的
    *  任意 string 形态(sanitizeFetchConfig 白名单 + fetcher.scraplingModeOf 双重防线已对非法
-   *  值兜底回退 native, 运行时类型宽松不影响实际安全)。`FetchMode` 联合类型供下游
-   *  窄化场景按需 import 使用。
+   *  值兜底回退 native, 运行时类型宽松不影响实际安全)。
    *
    *  scrapling-* 语义: 整次抓取交本机桥服务代发, 目标侧响应(含 4xx/5xx)如实返回 ——
    *  token 预取/autoCookie/Cookie 挑战重试/浏览器升级链等 native 专有步骤跳过(隐身能力
@@ -296,18 +295,30 @@ export interface FetchConfig {
   /** 代理级联熔断时长 ms(agent-K): 10s 窗口内 ≥3 条代理失败 → 暂停轮换 + 冷却本时长,
    *  防整批代理同时被风控(出口 IP 池被关联识别); 缺省 60_000, 钳 [10_000, 300_000] */
   proxyCascadePauseMs?: number
+  /** agent-S-fetcher-runner-phase4: 指纹轮换周期(请求次数, 缺省 0=关闭)。
+   *  >0 时, 每经过 N 次 fetchPage 调用, 引擎清空进程级 domainUa + sessionPersonalityMap,
+   *  强制下一次 pickUaFor/getSessionPersonality 重新随机选 UA / viewport / timezone / language,
+   *  形成"每 N 请求轮换身份"的反指纹节奏(同 host 钉扎在 N 周期内保持自洽, N 到期整体换新)。
+   *  与 refererChain/autoCookie/captchaCooldown 配合: 身份换新后 Cookie 罐与冷却表保留
+   *  (会话凭证不应随身份轮换丢失)。缺省 0=零回归(钉扎保持整轮, 既有行为);
+   *  钳 [10, 1000]: <10 过频(身份跳变本身是爬虫指纹), >1000 偏离人类阅读节奏。 */
+  fingerprintRotationInterval?: number
+  /** agent-S-fetcher-runner-phase4: 自适应速率限制(缺省 false=零回归)。
+   *  true 时 runner.gateFetch 在每次准入前查询 fetcher.adaptiveMinGapMs(host, baseMs),
+   *  据该 host 的 EWMA 响应延迟调整实际 minGap:
+   *   - avg < 200ms(快站) → minGap × 0.7(允许更快节奏, 真实浏览器秒回时人类会更快点下一页)
+   *   - avg > 2000ms(慢站) → minGap × 1.5(放慢节奏, 避免压垮源站 + 避免固定间隔被识别)
+   *   - 无数据 / 200~2000ms → 原值透传
+   *  fetcher 在 fetchHttp 成功路径记录 per-host EWMA(α=0.3, 500 cap FIFO);
+   *  与 globalRateLimitPerMin 正交(全局上限 vs per-host 节奏) */
+  adaptiveRateLimit?: boolean
 }
 
 /**
- * 采集传输模式联合(供下游窄化场景按需 import, 见 FetchConfig.fetchMode 注释)。
- * FetchConfig.fetchMode 字段以 `string` 暴露以兼容前端 Select 任意 string, 此处仅作
- * 类型导出 —— 实际运行时由 sanitizeFetchConfig 白名单 + fetcher.scraplingModeOf 双重防线兜底。
+ * 采集传输模式: 'native' | 'scrapling-static' | 'scrapling-stealthy' | 'scrapling-playwright'
+ * FetchConfig.fetchMode 字段以 `string` 暴露以兼容前端 Select 任意 string ——
+ * 实际运行时由 sanitizeFetchConfig 白名单 + fetcher.scraplingModeOf 双重防线兜底。
  */
-export type FetchMode =
-  | 'native'
-  | 'scrapling-static'
-  | 'scrapling-stealthy'
-  | 'scrapling-playwright'
 
 /** 内容清洗配置 */
 export interface CleanConfig {
@@ -775,6 +786,14 @@ export function sanitizeFetchConfig(v: unknown): Partial<FetchConfig> {
   // 代理级联熔断 ms: 缺省 60_000, 钳 [10_000, 300_000]
   const proxyCascadePauseMs = safeNum(r.proxyCascadePauseMs, 10_000, 300_000)
   if (proxyCascadePauseMs !== undefined) out.proxyCascadePauseMs = proxyCascadePauseMs
+  // agent-S-fetcher-runner-phase4: 指纹轮换周期(请求次数)
+  // 缺省 0=关闭(零回归, 同 host 钉扎保持整轮); 钳 [0, 1000]。0 视作"关闭",
+  // fetcher 内部对 (0, 10) 区间也按 0 处理(<10 过频本身是爬虫指纹); 10~1000 启用
+  const fingerprintRotationInterval = safeNum(r.fingerprintRotationInterval, 0, 1000)
+  if (fingerprintRotationInterval !== undefined) out.fingerprintRotationInterval = fingerprintRotationInterval
+  // agent-S-fetcher-runner-phase4: 自适应速率限制(布尔, 缺省 false=零回归)
+  const adaptiveRateLimit = safeBool(r.adaptiveRateLimit)
+  if (adaptiveRateLimit !== undefined) out.adaptiveRateLimit = adaptiveRateLimit
   return out
 }
 

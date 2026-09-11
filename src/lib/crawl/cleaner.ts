@@ -5,6 +5,7 @@
 import * as cheerio from 'cheerio'
 import * as OpenCC from 'opencc-js'
 import { type CleanConfig, DEFAULT_CLEAN_CONFIG } from './types'
+import { escapeReg } from '@/lib/utils'
 
 // ---------- 繁体→简体转换(OpenCC, 采集源为繁体时自动启用) ----------
 // 设计: 逐段检测"繁体独有字"命中才触发转换 —— 简体源站零误转, 繁体源站任意段落必然
@@ -497,8 +498,4 @@ export function cleanChapterTitle(raw: string | undefined | null, bookName?: str
   // 按码点截断(与 cleanTextField/cleanIntro 同款): UTF-16 slice(0,120) 会把 emoji 等
   // astral 字符代理对斩半产出乱码(U+FFFD)
   return Array.from(t.trim()).slice(0, 120).join('') || '未命名章节'
-}
-
-function escapeReg(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }

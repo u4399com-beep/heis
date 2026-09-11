@@ -29,7 +29,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Loader2, Save, ChevronDown, ChevronRight } from 'lucide-react'
+import { Loader2, Save, ChevronDown, ChevronRight, Download, Upload, Braces, CheckCircle2, Copy, XCircle } from 'lucide-react'
 import { toast } from 'sonner'
 import { FieldRuleEditor, type FieldTestContext } from './FieldRuleEditor'
 import { TestPanel } from './TestPanel'
@@ -83,6 +83,10 @@ export function RuleEditor({ open, onOpenChange, rule, onSaved }: RuleEditorProp
   const [enabled, setEnabled] = useState(true)
   const [config, setConfig] = useState<RuleConfig>(() => safeParseRuleConfig(''))
   const [saving, setSaving] = useState(false)
+  // feat: JSON 模式编辑器状态(导入/导出/校验)
+  const [jsonOpen, setJsonOpen] = useState(false)
+  const [jsonDraft, setJsonDraft] = useState<string | null>(null)
+  const [jsonError, setJsonError] = useState<string | null>(null)
 
   useEffect(() => {
     if (open) {
@@ -91,6 +95,9 @@ export function RuleEditor({ open, onOpenChange, rule, onSaved }: RuleEditorProp
       setEnabled(rule?.enabled ?? true)
       // 兜底解析: 旧格式/损坏 JSON 不会白屏, 回退默认配置
       setConfig(safeParseRuleConfig(rule?.config))
+      setJsonOpen(false)
+      setJsonDraft(null)
+      setJsonError(null)
     }
   }, [open, rule])
 
@@ -133,6 +140,52 @@ export function RuleEditor({ open, onOpenChange, rule, onSaved }: RuleEditorProp
     }
   }
 
+  // feat: 导出当前 config 为格式化 JSON 文件下载
+  const exportJson = () => {
+    try {
+      const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${(name || 'rule').replace(/[^\w-]+/g, '_')}.json`
+      a.click()
+      URL.revokeObjectURL(url)
+      toast.success('已导出规则 JSON')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '导出失败')
+    }
+  }
+
+  // feat: 应用 JSON 草稿到 config — 必须能成功 parse 并通过形状校验
+  const applyJsonDraft = () => {
+    if (jsonDraft === null) return
+    try {
+      const parsed = JSON.parse(jsonDraft)
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        setJsonError('JSON 顶层必须为对象 {}')
+        return
+      }
+      // 复用 safeParseRuleConfig 做形状兜底 — 缺字段会自动补默认
+      const normalized = safeParseRuleConfig(JSON.stringify(parsed))
+      setConfig(normalized)
+      setJsonError(null)
+      setJsonDraft(null)
+      toast.success('JSON 已应用, 请核对各页签内容')
+    } catch (e) {
+      setJsonError(e instanceof Error ? e.message : 'JSON 解析失败')
+    }
+  }
+
+  // feat: 复制当前 config 到剪贴板(经格式化)
+  const copyJson = async () => {
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(config, null, 2))
+      toast.success('规则 JSON 已复制到剪贴板')
+    } catch {
+      toast.error('复制失败, 请手动选择文本')
+    }
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex h-[94vh] sm:max-w-[min(1100px,96vw)] flex-col gap-0 overflow-hidden border-zinc-800 bg-zinc-900 p-0 sm:rounded-xl">
@@ -146,6 +199,121 @@ export function RuleEditor({ open, onOpenChange, rule, onSaved }: RuleEditorProp
         </DialogHeader>
 
         <div className="admin-scroll min-h-0 flex-1 overflow-y-auto px-6 py-4">
+          {/* feat: JSON 工具栏 — 导出/复制/导入(校验+应用), 让规则跨环境迁移 */}
+          <Collapsible
+            open={jsonOpen}
+            onOpenChange={setJsonOpen}
+            className="mb-4 rounded-md border border-zinc-800 bg-zinc-950/40"
+          >
+            <div className="flex items-center justify-between gap-2 px-3 py-2">
+              <button
+                type="button"
+                onClick={() => setJsonOpen((v) => !v)}
+                aria-expanded={jsonOpen}
+                className="flex items-center gap-1.5 text-xs font-medium text-zinc-300"
+              >
+                {jsonOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                <Braces className="h-3.5 w-3.5 text-violet-400" />
+                JSON 工具(导入 / 导出 / 校验)
+              </button>
+              <div className="flex items-center gap-1.5">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 gap-1 px-2 text-xs text-zinc-400 hover:text-zinc-100"
+                  onClick={exportJson}
+                  aria-label="导出当前规则为 JSON 文件"
+                >
+                  <Download className="h-3 w-3" />
+                  导出文件
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 gap-1 px-2 text-xs text-zinc-400 hover:text-zinc-100"
+                  onClick={copyJson}
+                  aria-label="复制当前规则 JSON 到剪贴板"
+                >
+                  <Copy className="h-3 w-3" />
+                  复制
+                </Button>
+                <label className="inline-flex h-7 cursor-pointer items-center gap-1 rounded px-2 text-xs text-zinc-400 hover:text-zinc-100">
+                  <Upload className="h-3 w-3" />
+                  从文件导入
+                  <input
+                    type="file"
+                    accept="application/json,.json"
+                    className="hidden"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0]
+                      if (!f) return
+                      const reader = new FileReader()
+                      reader.onload = () => {
+                        setJsonDraft(String(reader.result || ''))
+                        setJsonError(null)
+                        setJsonOpen(true)
+                      }
+                      reader.onerror = () => toast.error('文件读取失败')
+                      reader.readAsText(f)
+                      // 清空 input 让同一文件可再次选择
+                      e.target.value = ''
+                    }}
+                  />
+                </label>
+              </div>
+            </div>
+            {jsonOpen && (
+              <div className="space-y-2 border-t border-zinc-800 p-3">
+                <p className="text-[11px] leading-relaxed text-zinc-500">
+                  粘贴或导入 JSON 后点击「应用」, 会经形状校验并补默认字段。当前规则 config 实时反映在下方各页签。
+                </p>
+                <Textarea
+                  className="admin-scroll max-h-72 min-h-32 border-zinc-700 bg-zinc-950 font-mono text-xs"
+                  placeholder='{ "list": { ... }, "book": { ... }, ... }'
+                  value={jsonDraft ?? JSON.stringify(config, null, 2)}
+                  onChange={(e) => {
+                    setJsonDraft(e.target.value)
+                    setJsonError(null)
+                  }}
+                  aria-label="规则 JSON 编辑"
+                />
+                {jsonError && (
+                  <p className="text-[11px] text-red-400" role="alert">
+                    <XCircle className="mr-1 inline h-3 w-3" />
+                    {jsonError}
+                  </p>
+                )}
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="gap-1.5"
+                    onClick={applyJsonDraft}
+                    disabled={jsonDraft === null}
+                    aria-label="应用 JSON 到当前规则"
+                  >
+                    <CheckCircle2 className="h-3 w-3" />
+                    应用到规则
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5 border-zinc-700 bg-transparent text-zinc-300 hover:bg-zinc-800"
+                    onClick={() => {
+                      setJsonDraft(null)
+                      setJsonError(null)
+                    }}
+                  >
+                    取消编辑
+                  </Button>
+                </div>
+              </div>
+            )}
+          </Collapsible>
+
           {/* 基本信息 */}
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_2fr]">
             <div className="space-y-1.5">
@@ -793,7 +961,7 @@ function CleanPanel({ clean, onChange }: { clean: CleanConfig; onChange: (p: Par
             className="h-9 border-zinc-700 bg-zinc-950 font-mono text-xs"
             placeholder="p, br, b, strong, em, i, u"
             value={(clean.whitelist || []).join(', ')}
-            onChange={(e) => onChange({ whitelist: e.target.value.split(/[,,]/).map((s) => s.trim()).filter(Boolean) })}
+            onChange={(e) => onChange({ whitelist: e.target.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean) })}
           />
         </div>
         <ToggleRow label="规范段落 (合并空段 / 缩进清理)" checked={clean.normalize} onChange={(v) => onChange({ normalize: v })} />

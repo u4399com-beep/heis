@@ -75,11 +75,6 @@ export function markChapterRead(bookId: string, chapterId: string): void {
   }
 }
 
-/** 返回本书已读章节数量 (用于 TocDrawer header 进度展示) */
-export function getReadChapterCount(bookId: string): number {
-  return safeReadList(bookId).length
-}
-
 /** 清除本书所有已读章节记录 (预留: 设置页"清除阅读记录"调用) */
 export function clearReadChapters(bookId: string): void {
   if (typeof window === 'undefined') return

@@ -4,7 +4,6 @@
 // 不预生成全部 50400 个 ThemeDef 对象(内存/序列化代价高), 而是按需合成:
 //   getThemeById(themeId)      — 单一组合合成完整 ThemeDef
 //   getThemeList()             — 全部 50400 组合的轻量描述符(id/name/desc/preview)
-//   getThemesPage(page, size)  — 分页
 //
 // 主题 ID 格式: `{colorId}-{styleId}-{layoutId}` (e.g. "violet-glasswa-grid-cl")
 // 与 themes.ts 中的 10 个手写 preset 共存: getThemeById 先查 preset, 未命中再走合成
@@ -326,43 +325,5 @@ export interface ThemeListItem {
   preview: [string, string, string]
 }
 
-/** 全部 50400 组合的轻量描述符列表(惰性生成, 单次访问)
- *  注意: 全量生成约 50400 项 × ~200B = ~10MB 内存占用, 仅 admin 列表 API 单次构建后即丢;
- *  长期持有的 admin/themes 路由每次请求 lazy 重新构建, 不长期驻留 */
-export function getThemeList(): ThemeListItem[] {
-  const out: ThemeListItem[] = []
-  for (const c of COLOR_SCHEMES) {
-    for (const s of STYLES) {
-      for (const l of LAYOUTS) {
-        out.push({
-          id: `${c.id}-${s.id}-${l.id}`,
-          name: `${c.name}·${s.name}·${l.name}`,
-          desc: `${s.desc} · ${c.dark ? '暗色' : '亮色'} · ${l.name}`,
-          layout: l.homeLayout,
-          dark: c.dark,
-          read: { layout: l.readLayout },
-          preview: c.preview,
-        })
-      }
-    }
-  }
-  return out
-}
-
-/** 分页返回主题列表(1-based, 1..N) */
-export function getThemesPage(page: number, size: number): {
-  page: number
-  size: number
-  total: number
-  totalPages: number
-  items: ThemeListItem[]
-} {
-  const all = getThemeList()
-  const total = all.length
-  const totalPages = Math.max(1, Math.ceil(total / Math.max(1, size)))
-  const p = Math.max(1, Math.min(totalPages, Math.floor(page) || 1))
-  const sz = Math.max(1, Math.min(500, Math.floor(size) || 50))
-  const start = (p - 1) * sz
-  const items = all.slice(start, start + sz)
-  return { page: p, size: sz, total, totalPages, items }
-}
+// 全量 getThemeList() 已移除 —— 全域无消费者; admin/themes/route.ts 直接迭代
+// COLOR_SCHEMES × STYLES × LAYOUTS 按需切片, 避免一次性构建 50400 项(~10MB)。

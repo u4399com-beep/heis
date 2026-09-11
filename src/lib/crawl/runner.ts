@@ -9,7 +9,7 @@
 import { db } from '@/lib/db'
 import { sleep } from '@/lib/utils'
 import { type RuleConfig, type TocItem, type FetchConfig, parseRuleConfig, sanitizeFetchConfig } from './types'
-import { fetchPage, fetchBinary, checkBrowser, type FetchResult, effectiveHostGateLimit } from './fetcher'
+import { fetchPage, fetchBinary, checkBrowser, type FetchResult, effectiveHostGateLimit, adaptiveMinGapMs } from './fetcher'
 import { acquireHostGate, releaseHostGate, reportHostSuccess, reportHostFailure, reportHostRateLimited, hostGateSnapshot, hostGateKeyOf } from './hostgate'
 import { parseList, parseBook, parseToc, parseContent, parseJsonBody, absolutize } from './parser'
 import { cleanContentHtml, cleanIntro, cleanChapterTitle, cleanTextField } from './cleaner'
@@ -477,6 +477,21 @@ export class TaskRunner {
         // 若新轮再次熔断会重新打 circuitTrippedAt。冷却检查只在 start 入口做(本函数顶部),
         // 换代后旧循环不会再次走 start 路径, 重置不破坏冷却语义
         rt.circuitTrippedAt = undefined
+        // agent-S-fetcher-runner-phase4: 重置本轮运行时计数器 ——
+        // 修前 BUG: BudgetExceeded(agent-Q 修复让该错误正确上抛到 executeTask 外层 catch → 'error'
+        //  终态 + autoRefresh 重排), 但 autoRefresh 触发 control('start') 时 rt 仍保留上一轮的
+        //  requestCount(已 > maxRequests)。executeTask 入口只重置 maxRequests/runStartedAt,
+        //  不重置 requestCount, 导致新一轮首次 gateFetch 立即 requestCount++ > maxRequests →
+        //  再次 BudgetExceeded → 'error' → autoRefresh → 循环至 refreshIntervalMin 耗尽前无限触发。
+        //  本处仅在新启动(!rt.running → running)分支重置, 暂停→恢复路径(resume)不动计数器(语义保留)。
+        //  被重置的字段: requestCount / bytesFetched / currentUrl / captchaEncountered(均本轮
+        //  运行时统计, 跨轮无意义); rt.maxRequests 由 executeTask 内重新从 cfg 读取(无需在此重置);
+        //  rt.runStartedAt 同样在 executeTask 入口设为 Date.now()。resume Sets / bookLastChapters /
+        //  recentLogs / failedBookUrls 跨轮保留(增量续采 / 诊断可见性 / retry-failed 模式语义)
+        rt.requestCount = 0
+        rt.bytesFetched = 0
+        rt.currentUrl = ''
+        rt.captchaEncountered = 0
         this.runtimes.set(taskId, rt)
         // E2: LRU 上限保护 —— runtimes Map 长期累积终态任务条目无上限增长(任务历史从执行, 后续不再运行),
         // 插入新条目后检查是否超 200, 超过则驱逐最旧的已终态条目(running===false 的 epoch/cooldown)
@@ -924,7 +939,13 @@ export class TaskRunner {
     }
     // mm-b: 浏览器类桥模式(stealthy/playwright)自动钳制 hostGateLimit 至桥内信号量 3 ——
     // 桥内排队不提速只白占槽位; static/native 原值透传(详见 fetcher.effectiveHostGateLimit)
-    const ticket = await acquireHostGate(url, { limit: effectiveHostGateLimit(cfg), minGapMs: opts?.minGapMs })
+    // agent-S-fetcher-runner-phase4: 自适应速率限制 —— cfg.adaptiveRateLimit===true 时, 据该 host
+    //  的 EWMA 响应延迟调整 minGapMs: avg<200ms → ×0.7(快站允许更快节奏); avg>2000ms → ×1.5(慢站
+    //  放慢); 无数据/200~2000ms → 原值透传。fetcher 在 fetchHttp 成功路径记录 per-host EWMA
+    const effectiveMinGap = cfg.adaptiveRateLimit === true && typeof opts?.minGapMs === 'number'
+      ? adaptiveMinGapMs(url, opts.minGapMs)
+      : opts?.minGapMs
+    const ticket = await acquireHostGate(url, { limit: effectiveHostGateLimit(cfg), minGapMs: effectiveMinGap })
     try {
       const res = await fetchPage(url, cfg)
       // agent-B-runner(快照): 累计抓取字节数(响应体长度, 供 snapshot 展示带宽)

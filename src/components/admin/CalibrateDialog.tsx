@@ -348,8 +348,12 @@ export function CalibrateDialog({ open, onOpenChange, rule }: CalibrateDialogPro
   const [traceOpen, setTraceOpen] = useState(true)
   const [fallbackJson, setFallbackJson] = useState<string | null>(null)
   const [pollFailed, setPollFailed] = useState(false)
-  const [nowTick, setNowTick] = useState(() => Date.now())
+  const [nowTick, setNowTick] = useState(0)
   const [bootSeq, setBootSeq] = useState(0)
+  // feat: 首挂载后立即同步到真实时间, 避免 SSR/CSR 初始值不一致导致 hydration 警告
+  useEffect(() => {
+    setNowTick(Date.now())
+  }, [])
 
   const localStartRef = useRef(0)
   const pollInFlightRef = useRef(false)
@@ -564,8 +568,26 @@ export function CalibrateDialog({ open, onOpenChange, rule }: CalibrateDialogPro
   const startedTs = state?.startedAt
     ? new Date(state.startedAt).getTime()
     : localStartRef.current
-  const elapsedMs = state?.elapsedMs ?? (startedTs > 0 ? Math.max(0, nowTick - startedTs) : 0)
+  const elapsedMs = state?.elapsedMs ?? (startedTs > 0 && nowTick > 0 ? Math.max(0, nowTick - startedTs) : 0)
   const profileDesc = PROFILE_META.find((p) => p.value === profile)?.desc ?? ''
+
+  // feat: 探测进度估算 — 按 stage 阶段映射完成度, 并辅以 trace 行数反馈
+  // 3 大阶段(concurrency/rate/verify) 各占 ~1/3, 已完成阶段累加 + 当前阶段已试参数占比
+  const STAGE_ORDER: Record<string, number> = { concurrency: 0, rate: 1, verify: 2 }
+  const stageCount = traceRows.length
+  const lastStageIdx = lastStage ? STAGE_ORDER[lastStage] : -1
+  // 每阶段预期最多 4 次探测步进(粗估), 超过则按当前阶段完成计
+  const stageStepMax = 4
+  const stageRows = lastStage ? traceRows.filter((r) => r.stage === lastStage).length : 0
+  const stageProgress = lastStageIdx >= 0 ? Math.min(1, stageRows / stageStepMax) : 0
+  const overallPct =
+    state?.status === 'done'
+      ? 100
+      : lastStageIdx >= 0
+        ? Math.min(99, Math.round(((lastStageIdx + stageProgress) / 3) * 100))
+        : stageCount > 0
+          ? 5
+          : 0
 
   if (!rule) return null
 
@@ -679,11 +701,20 @@ export function CalibrateDialog({ open, onOpenChange, rule }: CalibrateDialogPro
               </div>
 
               {pollFailed && (
-                <p className="flex items-center gap-1.5 text-xs text-amber-400">
+                <p className="flex items-center gap-1.5 text-xs text-amber-400" role="alert">
                   <TriangleAlert className="h-3.5 w-3.5" />
                   状态获取暂时失败, 正在自动重试…
                 </p>
               )}
+
+              {/* feat: 探测进度条(按阶段估算, 给用户「快好了」的预期) */}
+              <div className="space-y-1" aria-label="校准进度">
+                <Progress value={overallPct} className="h-1.5 bg-zinc-800" />
+                <div className="flex items-center justify-between text-[10px] text-zinc-500">
+                  <span>探测进度 {overallPct}%</span>
+                  <span>{stageCount} 步已试</span>
+                </div>
+              </div>
 
               {traceRows.length > 0 ? (
                 <TraceTable rows={traceRows} />
@@ -751,6 +782,15 @@ export function CalibrateDialog({ open, onOpenChange, rule }: CalibrateDialogPro
 
               {result.message && <p className="text-sm leading-relaxed text-zinc-300">{result.message}</p>}
 
+              {/* feat: 应用前/后对比 — 展示当前规则的 hostGateLimit 与推荐值, 帮助用户判断是否要应用 */}
+              {result.recommended && (
+                <BeforeAfterDiff
+                  before={rule}
+                  after={result.recommended.hostGateLimit}
+                  applied={applied}
+                />
+              )}
+
               {fallbackJson && (
                 <div className="space-y-1.5 rounded-md border border-zinc-800 bg-zinc-950/60 p-3">
                   <div className="flex items-center justify-between gap-2">
@@ -772,7 +812,12 @@ export function CalibrateDialog({ open, onOpenChange, rule }: CalibrateDialogPro
               )}
 
               <div className="flex flex-wrap gap-2">
-                <Button onClick={applyRecommended} disabled={applying || applied} className="gap-1.5">
+                <Button
+                  onClick={applyRecommended}
+                  disabled={applying || applied}
+                  className="gap-1.5"
+                  aria-label={applied ? '已写入规则' : '应用推荐并发上限到规则'}
+                >
                   {applying ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
                   ) : applied ? (
@@ -786,6 +831,7 @@ export function CalibrateDialog({ open, onOpenChange, rule }: CalibrateDialogPro
                   variant="outline"
                   className="gap-1.5 border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800"
                   onClick={() => setView('config')}
+                  aria-label="返回配置重新校准"
                 >
                   <RotateCcw className="h-3.5 w-3.5" />
                   重新校准
@@ -859,6 +905,62 @@ export function CalibrateDialog({ open, onOpenChange, rule }: CalibrateDialogPro
         </div>
       </DialogContent>
     </Dialog>
+  )
+}
+
+// ============================================================
+// feat: 应用前/后对比卡片 — 展示当前规则 fetch.hostGateLimit 与推荐值,
+// 帮助用户判断是否需要应用
+// ============================================================
+function BeforeAfterDiff({
+  before,
+  after,
+  applied,
+}: {
+  before: RuleRow | null
+  after: number
+  applied: boolean
+}) {
+  // 从 rule.config(JSON 字符串) 尝试解析当前 fetch.hostGateLimit; 失败则未知
+  let currentVal: number | string = '—'
+  try {
+    const cfg = before?.config ? JSON.parse(before.config) : null
+    const v =
+      cfg && typeof cfg === 'object'
+        ? (cfg as { fetch?: { hostGateLimit?: number } }).fetch?.hostGateLimit
+        : undefined
+    if (typeof v === 'number' && Number.isFinite(v)) currentVal = v
+  } catch {
+    // 忽略解析错误, 维持 '—'
+  }
+  const willChange = currentVal !== after && currentVal !== '—'
+  return (
+    <div className="rounded-md border border-zinc-800 bg-zinc-950/60 p-3 text-xs">
+      <div className="mb-1.5 flex items-center gap-1.5 text-zinc-400">
+        <Gauge className="h-3.5 w-3.5 text-violet-400" />
+        <span>同站并发上限对比</span>
+      </div>
+      <div className="grid grid-cols-3 items-center gap-2">
+        <div className="space-y-0.5">
+          <p className="text-[10px] text-zinc-500">应用前</p>
+          <p className="font-mono text-sm text-zinc-300">{String(currentVal)}</p>
+        </div>
+        <div className="flex justify-center text-zinc-600" aria-hidden>
+          →
+        </div>
+        <div className="space-y-0.5">
+          <p className="text-[10px] text-zinc-500">推荐值</p>
+          <p className="font-mono text-sm text-emerald-400">{String(after)}</p>
+        </div>
+      </div>
+      <p className="mt-1.5 text-[10px] text-zinc-600">
+        {applied
+          ? '已应用推荐值'
+          : willChange
+            ? `应用后将把当前值从 ${String(currentVal)} 调整为 ${after}`
+            : '当前值与推荐值一致, 可不应用'}
+      </p>
+    </div>
   )
 }
 

@@ -19,6 +19,7 @@
 //   debugHtml/rawHtml 各 200KB 截断; 整段构建包 try/catch, 任何异常三字段回退 null
 //   (调用方按 null 隐藏调试视图, 不影响既有提取结果展示)
 import { ok, fail, readBody } from '@/lib/api'
+import { sleep } from '@/lib/utils'
 import { withGuard, httpUrl, clampInt, isPlainObject } from '../../../_lib/http'
 import {
   sanitizeFetchConfig,
@@ -118,8 +119,6 @@ function budgetTimeout(fetchCfg: Partial<FetchConfig>, started: number): Partial
   const base = typeof fetchCfg.timeout === 'number' ? fetchCfg.timeout : 20_000
   return { ...fetchCfg, timeout: Math.max(1000, Math.min(base, remaining - 500)) }
 }
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 /** feat-c: 字段规则 → 选择器摘要字符串(用于 debugMatches.selector 展示):
  *  css/xpath/regex/json/const 各型给出可读表示, attr 附加在 [..] 中 */

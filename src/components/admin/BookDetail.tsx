@@ -5,7 +5,7 @@
 // 基本信息编辑 / 下拉关键词管理 / 章节目录浏览与正文编辑
 // 章节批量: 目录多选 → 批量删除 / 批量标记未采
 // ============================================================
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Dialog,
   DialogContent,
@@ -29,7 +29,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { BookOpen, ChevronDown, ChevronLeft, ChevronRight, FileText, Loader2, RefreshCw, Save, Tag, Trash2, X } from 'lucide-react'
+import { BookOpen, ChevronDown, ChevronLeft, ChevronRight, FileText, ImageOff, Loader2, RefreshCw, Save, Tag, Trash2, X } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   BatchActionButton,
@@ -341,9 +341,27 @@ export function BookDetail({ bookId, onClose, onChanged }: BookDetailProps) {
         </DialogHeader>
 
         {!book ? (
-          <div className="flex items-center justify-center py-16 text-sm text-zinc-500">
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            加载中…
+          // feat: 骨架屏占位 — 让用户看到内容大致结构而非空白加载圈, 体感更快
+          <div className="space-y-5" role="status" aria-live="polite">
+            <div className="flex flex-col gap-4 sm:flex-row">
+              <div className="shrink-0">
+                <div className="h-[133px] w-24 animate-pulse rounded-md border border-zinc-800 bg-zinc-800/60" />
+                <div className="mt-1.5 h-3 w-16 animate-pulse rounded bg-zinc-800/60" />
+              </div>
+              <div className="grid flex-1 grid-cols-1 gap-3 sm:grid-cols-2">
+                {Array.from({ length: 6 }).map((_, i) => (
+                  <div key={i} className="space-y-1.5">
+                    <div className="h-3 w-12 animate-pulse rounded bg-zinc-800/60" />
+                    <div className="h-8 w-full animate-pulse rounded bg-zinc-800/60" />
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="h-px bg-zinc-800" />
+            <div className="space-y-2">
+              <div className="h-4 w-32 animate-pulse rounded bg-zinc-800/60" />
+              <div className="h-24 w-full animate-pulse rounded bg-zinc-800/60" />
+            </div>
           </div>
         ) : (
           <div className="space-y-5">
@@ -352,7 +370,7 @@ export function BookDetail({ bookId, onClose, onChanged }: BookDetailProps) {
               <div className="shrink-0">
                 <div className="h-[133px] w-24 overflow-hidden rounded-md border border-zinc-800 bg-zinc-950">
                   {book.cover ? (
-                    <img src={coverUrl(book.cover)} alt={book.name} className="h-full w-full object-cover" />
+                    <BookCover src={coverUrl(book.cover)} alt={book.name} />
                   ) : (
                     <div className="flex h-full items-center justify-center text-[10px] text-zinc-600">无封面</div>
                   )}
@@ -667,3 +685,34 @@ export function BookDetail({ bookId, onClose, onChanged }: BookDetailProps) {
     </>
   )
 }
+
+// ============================================================
+// feat: BookCover — 带加载与失败兜底的封面图组件
+// 加载中显示骨架占位; 加载失败(404/CORS/网络)回退到「无封面」图标, 不留破损图
+// memo: 列表页每页 20 行, 不必要的重渲会拖慢滚动; src+alt 不变即跳过
+// ============================================================
+export const BookCover = memo(function BookCover({ src, alt, className }: { src: string; alt: string; className?: string }) {
+  const [status, setStatus] = useState<'loading' | 'ok' | 'error'>('loading')
+  return (
+    <div className={`relative h-full w-full ${className || ''}`}>
+      {status === 'loading' && (
+        <div className="absolute inset-0 animate-pulse bg-zinc-800/70" aria-hidden />
+      )}
+      {status === 'error' ? (
+        <div className="flex h-full flex-col items-center justify-center gap-1 text-[10px] text-zinc-600">
+          <ImageOff className="h-4 w-4" />
+          加载失败
+        </div>
+      ) : (
+        <img
+          src={src}
+          alt={alt}
+          loading="lazy"
+          className="h-full w-full object-cover"
+          onLoad={() => setStatus('ok')}
+          onError={() => setStatus('error')}
+        />
+      )}
+    </div>
+  )
+})

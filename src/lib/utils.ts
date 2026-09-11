@@ -16,3 +16,9 @@ export function sleep(ms: number): Promise<void> {
     if (typeof t.unref === 'function') t.unref()
   })
 }
+
+/** 转义正则元字符, 用于把任意字符串安全地嵌入 RegExp 字面量。
+ *  被 cleaner.ts (章节名清洗) 与 DebugHtmlViewer.tsx (data-field 嵌入) 共用。 */
+export function escapeReg(s: string): string {
+  return (s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}

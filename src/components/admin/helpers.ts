@@ -56,7 +56,6 @@ export const api = {
 
 // ---------------- 通用行类型 ----------------
 export type TaskStatus = 'pending' | 'running' | 'paused' | 'stopped' | 'done' | 'error'
-export type BookStatus = 'ongoing' | 'completed' | 'unknown'
 export type RuleSection = 'list' | 'book' | 'toc' | 'content'
 
 export interface RuleRow {
@@ -229,9 +228,6 @@ export interface DownloadJobRow {
 }
 
 // ---------------- feat-round-7: 用户反馈 ----------------
-export type FeedbackType = 'bug' | 'suggestion' | 'praise' | 'other'
-export type FeedbackStatus = 'new' | 'read' | 'resolved' | 'ignored'
-
 export interface FeedbackRow {
   id: string
   type: string

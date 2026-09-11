@@ -260,131 +260,9 @@ function uaModelFor(ua: string, mobile: boolean, _platform: string): string {
 //     重排头组(Object spread 保留插入序, 详见 applyHeaderOrder)。
 // ============================================================
 
-/** JA3 指纹常量(三大家浏览器代表性 profile, 仅用于 observe-vs-expected 比对 + 文档;
- *  本引擎无法变更 Node TLS 栈, 真正生效需走 CloakBrowser/scrapling-stealthy 路径)。
- *  JA3 = md5(TLSVersion,Ciphers,Extensions,Groups,EC_Point_Formats) —— 此处存 tuple 不存 hash,
- *  便于 observe 后做部分匹配(扩展顺序差异允许部分匹配, 整体 hash 比对会过严) */
-export const JA3_PROFILES: Record<string, {
-  /** TLS 版本(ClientHello.version, 0x0303=TLS1.2, 0x0304=TLS1.3 via supported_versions ext) */
-  tlsVersion: string
-  /** CipherSuites 列表(hex 形态, 顺序敏感) */
-  ciphers: string[]
-  /** Extensions 列表(数字, 顺序敏感) */
-  extensions: number[]
-  /** Supported Groups(named curves) */
-  groups: number[]
-  /** EC_Point_Formats */
-  ecPointFormats: number[]
-  /** 期望的 md5 JA3 hash(用作快速比对; 来源: 公开 ja3er.com / engineering.fb.com 数据) */
-  ja3Hash: string
-}> = {
-  // Chrome 120 (2023-Q4): GREASE values 已规范化, 含 signature_algorithms(13)
-  // 与 compress_certificate(51, BoringSSL-specific)扩展
-  chrome120: {
-    tlsVersion: '0x0303',
-    ciphers: ['0x13a1', '0x1301', '0x1302', '0x1303', '0xc02b', '0xc02f', '0xc02c', '0xc030', '0xcca9', '0xcca8', '0xc013', '0xc014', '0x009c', '0x009d', '0x002f', '0x0035', '0x000a'],
-    extensions: [0, 23, 65281, 10, 11, 35, 16, 5, 34, 51, 43, 13, 45, 28, 65037, 21],
-    groups: [0x001d, 0x0017, 0x0018, 0x0019, 0x0100, 0x0101],
-    ecPointFormats: [0],
-    ja3Hash: 'cd08e31494f9531f560d64c66547b9e4',
-  },
-  // Firefox 121 (2023-Q4): NSS 栈, 扩展顺序与 Chrome 不同; 无 compress_certificate(51)
-  firefox121: {
-    tlsVersion: '0x0303',
-    ciphers: ['0x1301', '0x1303', '0x1302', '0xc02b', '0xc02f', '0xcca9', '0xcca8', '0xc02c', '0xc030', '0xc00a', '0xc009', '0xc013', '0xc014', '0x0033', '0x0039', '0x002f', '0x0035', '0x000a'],
-    extensions: [0, 23, 65281, 10, 11, 35, 16, 5, 34, 51, 43, 13, 45, 28, 65037, 21],
-    groups: [0x001d, 0x0017, 0x0018],
-    ecPointFormats: [0],
-    ja3Hash: 'b5001237ff942c839f6bd0c3d8c6d8e6',
-  },
-  // Safari 17 (2023): SecureTransport 栈, 扩展集合较小, 无 GREASE; signature_algorithms 在前
-  safari17: {
-    tlsVersion: '0x0303',
-    ciphers: ['0x1301', '0x1302', '0x1303', '0xc02c', '0xc02b', '0xcca9', '0xc030', '0xc02f', '0xc014', '0xc013', '0x009e', '0x009f', '0xccaa', '0xc00a', '0xc009', '0x0039', '0x0038', '0x0033', '0x0032', '0x009d', '0x009c', '0x002f', '0x0035', '0x000a'],
-    extensions: [0, 16, 5, 65281, 43, 13, 10, 11, 23, 18, 51, 45, 35, 27, 28, 21],
-    groups: [0x001d, 0x0017, 0x0018, 0x0019],
-    ecPointFormats: [0],
-    ja3Hash: '773906b0efdefa24a7f2b8e4e8b9e5b3',
-  },
-}
-
-/** 校验观测 JA3 是否与期望 profile 一致(部分匹配语义, 防扩展顺序差异过严):
- *  - 观测为 null/undefined(无法观测, 如 native Node fetch 无法获取 TLS 元信息) → return 'unobservable'
- *  - 完全匹配(全 5 字段一致) → 'match'
- *  - 部分匹配(ciphers 子集 + groups 一致, 扩展顺序差异容忍) → 'partial'
- *  - 完全不匹配(ciphers 差异显著) → 'mismatch'
- *  导出供验证脚本与 admin 端诊断调用 */
-export function validateJa3(
-  observed: { tlsVersion?: string; ciphers?: string[]; extensions?: number[]; groups?: number[]; ecPointFormats?: number[] } | null | undefined,
-  expectedProfile: string,
-): 'unobservable' | 'match' | 'partial' | 'mismatch' {
-  if (!observed || !observed.ciphers || !observed.groups) return 'unobservable'
-  const expected = JA3_PROFILES[expectedProfile]
-  if (!expected) return 'mismatch'
-  // ciphers 完全一致 → match; ciphers 子集(expected.ciphers 包含 observed 全部)→ partial
-  const obsCiphers = observed.ciphers.map((c) => c.toLowerCase())
-  const expCiphers = expected.ciphers.map((c) => c.toLowerCase())
-  const ciphersEqual = obsCiphers.length === expCiphers.length &&
-    obsCiphers.every((c, i) => c === expCiphers[i])
-  if (ciphersEqual && observed.groups?.every((g, i) => g === expected.groups[i])) {
-    return 'match'
-  }
-  // 部分匹配: observed.ciphers 是 expected.ciphers 的子集(允许 Chrome GREASE 位置差异)
-  const expSet = new Set(expCiphers)
-  const isSubset = obsCiphers.every((c) => expSet.has(c))
-  return isSubset ? 'partial' : 'mismatch'
-}
-
-/** HTTP/2 SETTINGS 帧指纹常量(三大家浏览器 profile, 用于 observe-vs-expected 比对)。
- *  Akamai BMP / DataDome 等通过 h2 SETTINGS 帧字段值识别 bot:
- *  - SETTINGS_HEADER_TABLE_SIZE: HPACK 动态表大小(Chrome 65536, Firefox 65536, Safari 4096)
- *  - SETTINGS_ENABLE_PUSH: 0=禁用 server push(Chrome/Firefox 禁用, Safari 0)
- *  - SETTINGS_INITIAL_WINDOW_SIZE: 流级初始窗口(Chrome 6291456, Firefox 131072, Safari 4194304)
- *  - SETTINGS_MAX_FRAME_SIZE: 帧上限(Chrome 16384, Firefox 16384, Safari 16384)
- *  - SETTINGS_MAX_CONCURRENT_STREAMS: 最大并发流(Chrome 1000, Firefox 不发, Safari 100)
- *  - WINDOW_UPDATE 增量(连接级, 不同于流级); PRIORITY 帧顺序(stream 0/3/5/7 等)
- *  本字段仅用于诊断对照, Node fetch 默认不启用 h2(详见段头注释) */
-export const H2_FINGERPRINTS: Record<string, {
-  headerTableSize: number
-  enablePush: number
-  initialWindowSize: number
-  maxFrameSize: number
-  maxConcurrentStreams?: number
-  /** 连接级 WINDOW_UPDATE 增量(浏览器首帧前的连接级窗口升级) */
-  windowUpdateIncrement: number
-  /** PRIORITY 帧序列(stream id 列表, 0=连接级, 奇数=流); 浏览器特定顺序 */
-  priorityStreamIds?: number[]
-}> = {
-  chrome120: {
-    headerTableSize: 65536, enablePush: 0, initialWindowSize: 6291456, maxFrameSize: 16384,
-    maxConcurrentStreams: 1000, windowUpdateIncrement: 15663105,
-    priorityStreamIds: [0, 3, 5, 7, 9, 11, 13],
-  },
-  firefox121: {
-    headerTableSize: 65536, enablePush: 0, initialWindowSize: 131072, maxFrameSize: 16384,
-    windowUpdateIncrement: 12517377,
-    priorityStreamIds: [0, 3, 5, 7, 9, 11],
-  },
-  safari17: {
-    headerTableSize: 4096, enablePush: 0, initialWindowSize: 4194304, maxFrameSize: 16384,
-    maxConcurrentStreams: 100, windowUpdateIncrement: 4194304,
-  },
-}
-
-/** 校验观测 h2 SETTINGS 是否与期望 profile 一致(部分匹配语义) */
-export function validateH2Fingerprint(
-  observed: { headerTableSize?: number; enablePush?: number; initialWindowSize?: number; maxFrameSize?: number; maxConcurrentStreams?: number } | null | undefined,
-  expectedProfile: string,
-): 'unobservable' | 'match' | 'partial' | 'mismatch' {
-  if (!observed) return 'unobservable'
-  const expected = H2_FINGERPRINTS[expectedProfile]
-  if (!expected) return 'mismatch'
-  const fields: (keyof typeof expected)[] = ['headerTableSize', 'enablePush', 'initialWindowSize', 'maxFrameSize']
-  const matched = fields.filter((f) => observed[f] === expected[f]).length
-  if (matched === fields.length) return 'match'
-  if (matched >= 2) return 'partial'
-  return 'mismatch'
-}
+/** JA3 / h2 指纹诊断: 已移除未使用的 JA3_PROFILES / H2_FINGERPRINTS 常量与
+ *  validateJa3 / validateH2Fingerprint 校验函数 —— 引擎走 scrapling-* 桥模式
+ *  实现真实 TLS 指纹, observe-vs-expected 比对从未被消费。 */
 
 // ---------- 头组顺序防御(agent-K) ----------
 /**
@@ -896,15 +774,10 @@ const globalForCaptcha = globalThis as unknown as { __novelCaptchaCooldown_v1?: 
 const captchaCooldown: Map<string, CaptchaCooldownEntry> = globalForCaptcha.__novelCaptchaCooldown_v1 ?? new Map()
 globalForCaptcha.__novelCaptchaCooldown_v1 = captchaCooldown
 
-/** 进程级验证码计数(供 admin / snapshot 端点读取, 不持久化 —— 重启即清零) */
+/** 进程级验证码计数(原供 admin / snapshot 端点读取, 已移除暴露; 留 globalThis 句柄
+ *  供 markCaptchaEncountered 累计, 重启即清零; 跨 HMR 保留累计数防 dev 模式丢失) */
 const globalForCaptchaCount = globalThis as unknown as { __novelCaptchaCount_v1?: number }
-const captchaEncountered: number = globalForCaptchaCount.__novelCaptchaCount_v1 ?? 0
-globalForCaptchaCount.__novelCaptchaCount_v1 = captchaEncountered
-
-/** 获取当前进程累计验证码命中次数(供 runner snapshot 增量暴露给 UI) */
-export function getCaptchaEncounteredCount(): number {
-  return globalForCaptchaCount.__novelCaptchaCount_v1 ?? 0
-}
+globalForCaptchaCount.__novelCaptchaCount_v1 ??= 0
 
 /** 内部: 命中验证码时记入冷却表 + 计数; host 不可解析时用整 URL 作 key 兜底 */
 function markCaptchaEncountered(url: string, captchaType: CaptchaType, cooldownMs: number): void {
@@ -1204,6 +1077,114 @@ function triggerProxyHealthCheck(cfg: FetchConfig): void {
     .finally(() => {
       healthCheckState.inflight = false
     })
+}
+
+// ---------- agent-S-fetcher-runner-phase4: 指纹轮换(反持久身份指纹) ----------
+/**
+ * 反反爬核心: 同 host 长期钉扎同一 UA / viewport / timezone / language 会形成"持久身份"指纹,
+ * WAF 可据此关联同出口 IP 的所有请求(即使 Cookie 罐清空, UA+viewport 组合仍可识别)。
+ * 每 N 次 fetchPage 调用(N 由 cfg.fingerprintRotationInterval 配置, 缺省 0=关闭), 清空进程级
+ * domainUa + sessionPersonalityMap, 强制下一次 pickUaFor/getSessionPersonality 重新随机选
+ * UA + viewport + timezone + language。
+ *
+ * 设计要点:
+ *  - 进程级全局计数器(跨 host 累计): N=50 时每 50 次请求轮换一次, 与单 host 节奏解耦
+ *  - 清空 domainUa + sessionPersonalityMap 但不清 cookieJar / captchaCooldown / ssrfDnsCache
+ *    (会话凭证 / 冷却记忆 / DNS 缓存不应随身份轮换丢失, 否则反而触发更严风控)
+ *  - 清空在 fetchPage 入口同步执行(在 in-flight 去重之前), 确保首个新请求(非 duplicate)用新身份
+ *  - duplicate 请求共享 in-flight promise(已用旧身份发起, 不受影响); 计数仍递增(反映真实请求压力)
+ *  - 钳制: N < 10 视作关闭(<10 过频身份跳变本身是爬虫指纹); N > 1000 不钳(safeNum 已上限)
+ *  - 缺省 0=零回归(钉扎保持整轮, 既有行为); 配置 >0 时启用, 与 thinkTimeMs / jitterMs / captchaCooldown
+ *    形成多层防节奏+防身份关联
+ */
+const globalForFpRotation = globalThis as unknown as { __novelFpRotation_v1?: number }
+const fpRotationCount: number = globalForFpRotation.__novelFpRotation_v1 ?? 0
+globalForFpRotation.__novelFpRotation_v1 = fpRotationCount
+
+function maybeRotateFingerprint(cfg: FetchConfig): void {
+  const n = typeof cfg.fingerprintRotationInterval === 'number'
+    && Number.isFinite(cfg.fingerprintRotationInterval)
+    ? Math.floor(cfg.fingerprintRotationInterval)
+    : 0
+  // 缺省 0 / 非法 / <10 = 关闭(<10 过频, 身份跳变本身是爬虫指纹)
+  if (n < 10) return
+  // 进程级全局计数器递增(同步, 无 race —— JS 单线程协作式 async)
+  globalForFpRotation.__novelFpRotation_v1 = (globalForFpRotation.__novelFpRotation_v1 ?? 0) + 1
+  const count = globalForFpRotation.__novelFpRotation_v1
+  if (count % n === 0) {
+    // 清空钉扎表: 下次 pickUaFor/getSessionPersonality 重新随机选身份
+    // domainUa: per-host UA 钉扎(200 cap FIFO); sessionPersonalityMap: per-host viewport+timezone+language
+    // 不清 cookieJar(会话凭证)/captchaCooldown(冷却记忆)/ssrfDnsCache(DNS 缓存)
+    if (domainUa.size > 0) domainUa.clear()
+    if (sessionPersonalityMap.size > 0) sessionPersonalityMap.clear()
+  }
+}
+
+// ---------- agent-S-fetcher-runner-phase4: 自适应速率(响应延迟驱动的节奏调整) ----------
+/**
+ * 反反爬增强: 真实浏览器的请求节奏受"页面加载快慢"反馈调节 —— 页面秒回时人类会更快点击下一页,
+ * 页面卡顿时会放慢(等待渲染完成)。固定 interval 配置(尤其 intervalMin==intervalMax)形成机械
+ * 等间隔模式, WAF 据此识别为 bot。本层提供 per-host EWMA 延迟跟踪 + adaptiveMinGapMs 调整器:
+ *  - avg < 200ms(快站) → minGap × 0.7(允许更快节奏)
+ *  - avg > 2000ms(慢站) → minGap × 1.5(放慢节奏, 避免压垮源站)
+ *  - 无数据 / 200~2000ms → 原值透传(零回归)
+ * runner.gateFetch 在 cfg.adaptiveRateLimit===true 时调用 adaptiveMinGapMs 调整 minGapMs
+ *
+ * 设计:
+ *  - 进程级 Map 持久, dev HMR 经 globalThis 复用; 容量上限 500 FIFO(站群场景防 OOM)
+ *  - EWMA α=0.3(与 proxyState.avgLatencyMs 同口径): avg = avg×0.7 + new×0.3
+ *  - 仅记录成功响应的延迟(失败响应可能是网络层错误, 延迟不代表源站处理能力)
+ *  - 记录点: fetchHttp 成功返回时(单跳 HTTP 请求级别, 与 hostgate 准入粒度一致)
+ */
+const HOST_LATENCY_MAX = 500
+interface HostLatencyEntry { avg: number; count: number; at: number }
+const globalForHostLatency = globalThis as unknown as { __novelHostLatency_v1?: Map<string, HostLatencyEntry> }
+const hostLatencyMap: Map<string, HostLatencyEntry> = globalForHostLatency.__novelHostLatency_v1 ?? new Map()
+globalForHostLatency.__novelHostLatency_v1 = hostLatencyMap
+
+function hostKeyOf(url: string): string {
+  try { return new URL(url).hostname.toLowerCase() } catch { return '' }
+}
+
+/** 记录某 host 的成功响应延迟(EWMA α=0.3, 与 proxyState.avgLatencyMs 同口径) */
+function recordHostLatency(url: string, latencyMs: number): void {
+  const host = hostKeyOf(url)
+  if (!host) return
+  const now = Date.now()
+  const existing = hostLatencyMap.get(host)
+  if (existing) {
+    existing.avg = existing.avg > 0
+      ? Math.round(existing.avg * 0.7 + latencyMs * 0.3)
+      : latencyMs
+    existing.count++
+    existing.at = now
+  } else {
+    // FIFO 淘汰至上限以下(与 ssrfDnsCache/tokenCache 同口径)
+    while (hostLatencyMap.size >= HOST_LATENCY_MAX) {
+      const oldest = hostLatencyMap.keys().next().value
+      if (oldest === undefined) break
+      hostLatencyMap.delete(oldest)
+    }
+    hostLatencyMap.set(host, { avg: latencyMs, count: 1, at: now })
+  }
+}
+
+/** 查询某 host 的 EWMA 延迟(ms); 无数据返回 0。导出供 admin/snapshot 端点诊断 */
+export function getHostLatencyMs(url: string): number {
+  const host = hostKeyOf(url)
+  if (!host) return 0
+  return hostLatencyMap.get(host)?.avg || 0
+}
+
+/** 自适应 minGap 调整: avg<200ms → ×0.7; avg>2000ms → ×1.5; 否则原值透传。
+ *  导出供 runner.gateFetch 在 cfg.adaptiveRateLimit===true 时调用 */
+export function adaptiveMinGapMs(url: string, baseMs: number): number {
+  if (typeof baseMs !== 'number' || !Number.isFinite(baseMs) || baseMs <= 0) return baseMs
+  const avg = getHostLatencyMs(url)
+  if (avg <= 0) return baseMs // 无数据, 原值透传(零回归)
+  if (avg < 200) return Math.max(1, Math.round(baseMs * 0.7))
+  if (avg > 2000) return Math.round(baseMs * 1.5)
+  return baseMs
 }
 
 // ---------- 浏览器渲染 (Playwright, 惰性加载) ----------
@@ -1632,11 +1613,6 @@ export async function assertSafeTarget(url: string, opts?: { allowLoopback?: boo
   return { ok: true }
 }
 
-/** 布尔便捷封装(供规则配置层 / 路由测试直接调用) */
-export async function isSafeTarget(url: string, opts?: { allowLoopback?: boolean }): Promise<boolean> {
-  return (await assertSafeTarget(url, opts)).ok
-}
-
 /** fetchPage 内 loopback 放行判定: URL 必须是操作员配置的 loopback 服务(tokenUrl /
  *  fetch-relay / scrapling bridge)才允许 loopback 抓取 —— 防止规则里塞 127.0.0.1
  *  把内网服务拉爆, 同时不破坏 token 预取/中继/桥接测试链路 */
@@ -1894,45 +1870,6 @@ export function isProxyCascadePaused(): { paused: boolean; remainingMs?: number 
   return { paused: true, remainingMs: cascadeState.cascadeUntil - now }
 }
 
-/** agent-K: 代理池运行时统计(供 admin / snapshot 端点读取; 不持久化 —— 重启即清零) */
-export function proxyPoolStats(): {
-  total: number
-  healthy: number
-  unhealthy: number
-  unknown: number
-  inCooldown: number
-  cascadePaused: boolean
-  cascadeRemainingMs: number
-  byProxy: Array<{ proxy: string; useCount: number; successCount: number; failCount: number; avgLatencyMs: number; healthStatus: string; geoHint: string | null; failedUntil: number }>
-} {
-  const now = Date.now()
-  let healthy = 0, unhealthy = 0, unknown = 0, inCooldown = 0
-  for (const [, s] of proxyState) {
-    if (s.healthStatus === 'healthy') healthy++
-    else if (s.healthStatus === 'unhealthy') unhealthy++
-    else unknown++
-    if (s.failedUntil > now) inCooldown++
-  }
-  const cascade = isProxyCascadePaused()
-  const byProxy = Array.from(proxyState.entries()).map(([proxy, s]) => ({
-    proxy: redactProxy(proxy),
-    useCount: s.useCount,
-    successCount: s.successCount,
-    failCount: s.failCount,
-    avgLatencyMs: s.avgLatencyMs,
-    healthStatus: s.healthStatus,
-    geoHint: s.geoHint,
-    failedUntil: s.failedUntil,
-  }))
-  return {
-    total: proxyState.size,
-    healthy, unhealthy, unknown, inCooldown,
-    cascadePaused: cascade.paused,
-    cascadeRemainingMs: cascade.remainingMs ?? 0,
-    byProxy,
-  }
-}
-
 /** agent-K: 单条代理健康检查 —— 仅 http(s) 代理; socks5 跳过(curl/undici 需 -x 全形态,
  *  health check 走最轻量 HEAD/GET 不可达判定)。返回 { ok, latencyMs }。
  *  导出供 mini-services/_shared 端调用(供 /api/admin/proxies/health 诊断端点) */
@@ -1958,6 +1895,16 @@ export async function checkProxyHealth(proxy: string, opts?: { timeoutMs?: numbe
     const s = getProxyState(proxy)
     s.lastHealthCheckAt = Date.now()
     s.healthStatus = ok ? 'healthy' : 'unhealthy'
+    // agent-S-fetcher-runner-phase4: 健康检查成功时同步清零失败冷却 ——
+    //  修前 BUG: 代理曾被 markProxyFailed 打入指数退避冷却(failedUntil > now), 主动健康
+    //  检查 ping 通后只更新 healthStatus='healthy', 不动 failedUntil/consecutiveFailures;
+    //  pickProxyFor 内 isProxyAvailable 仍判 failedUntil > now → 视作不可用 → 健康代理
+    //  实际不参与轮换, 与"健康检查已确认可达"语义矛盾。修法: 成功时清 failedUntil=0
+    //  + consecutiveFailures=0(与 markProxySucceeded 同口径), 让健康代理立即可用
+    if (ok) {
+      s.failedUntil = 0
+      s.consecutiveFailures = 0
+    }
     return { ok, latencyMs, reason: ok ? undefined : `status=${res.status}` }
   } catch (e: any) {
     const latencyMs = Date.now() - start
@@ -2156,6 +2103,8 @@ function attachWafHeaders(err: any, headers: { get(name: string): string | null 
 }
 
 async function fetchHttp(url: string, cfg: FetchConfig, ua: string, proxy = '', transport: 'native' | 'relay' = 'native'): Promise<string> {
+  // agent-S-fetcher-runner-phase4: 记录请求开始时刻, 成功时喂 recordHostLatency 供 adaptiveMinGapMs 调整
+  const reqStart = Date.now()
   // 超时防御: 规则配置里 timeout 可能是 0/null/负数, setTimeout(fn, 0) 会立即中止请求
   const timeoutMs = cfg.timeout && cfg.timeout > 0 ? cfg.timeout : 20000
   const controller = new AbortController()
@@ -2306,6 +2255,9 @@ async function fetchHttp(url: string, cfg: FetchConfig, ua: string, proxy = '', 
       }
       // R4-2: 成功路径同样走 readBodyCapped(原 res.arrayBuffer() 无上限, 100MB+ 响应 OOM)
       const buf = await readBodyCapped(res)
+      // agent-S-fetcher-runner-phase4: 记录 per-host EWMA 延迟(仅成功路径, 失败延迟不代表源站能力)
+      // 供 adaptiveMinGapMs 调整 minGap: avg<200ms 放快节奏, avg>2000ms 放慢节奏
+      recordHostLatency(url, Date.now() - reqStart)
       return decodeBuffer(buf, res.headers.get("content-type") ?? undefined)
     }
   } catch (e: any) {
@@ -2886,13 +2838,6 @@ async function fetchHttpWithCurlSingle(url: string, cfg: FetchConfig, ua: string
   }
 }
 
-/** @internal 测试专用(gg 中继桥验证): 显式指定 transport 执行单次 HTTP 尝试 ——
- *  bun 运行时下 PROXY_FETCH_SUPPORTED 恒真, node+proxy 决策分支在 bun 探针里不可达,
- *  故以直通入口验证 relay 传输与 fetchHttp 逐跳语义的组合(循环回环端到端) */
-export async function fetchHttpForTest(url: string, cfg: FetchConfig, ua: string, proxy: string, transport: 'native' | 'relay'): Promise<string> {
-  return fetchHttp(url, cfg, ua, proxy, transport)
-}
-
 /**
  * HTTP 双传输封装 + 出口代理轮换(dd-a, 失败降级契约):
  * 配置了代理且目标非回环时, 按策略排序后逐条尝试(每条 = bun fetch→curl 兜底
@@ -3009,9 +2954,27 @@ function tokenCache(): Map<string, { token: string; at: number }> {
   if (!globalForToken.__novelTokenPrefetch_v1) globalForToken.__novelTokenPrefetch_v1 = new Map()
   return globalForToken.__novelTokenPrefetch_v1
 }
+// agent-S-fetcher-runner-phase4: tokenInflight 容量上限 ——
+//  修前 BUG: tokenInflight() 仅在缺失时初始化空 Map, 不做容量检查。R4-1 的 finally
+//  块确实在 promise resolve/reject 后 delete(cacheKey), 正常路径无累积; 但若 tokenUrl
+//  长时间挂起(慢站/桥进程僵死)且并发 N 个不同 cacheKey(逐章 {url} 占位符形态, 站群场景
+//  N×M host), in-flight Map 可短时涨至数千条。每条持有完整 promise + closure, 内存压力
+//  与 tokenCache 同口径。与 tokenCache 同步设 TOKEN_INFLIGHT_MAX=256 FIFO: 超限先全表
+//  扫"已 settled 但未删除"残留(理论上 finally 已清, 但 JS 引擎 microtask 排队期间可
+//  暂存), 仍超限按插入序删最旧 promise(调用方等待会 reject 后自己重试一次, 零回归)
+const TOKEN_INFLIGHT_MAX = 256
 function tokenInflight(): Map<string, Promise<string>> {
   if (!globalForToken.__novelTokenInflight_v1) globalForToken.__novelTokenInflight_v1 = new Map()
-  return globalForToken.__novelTokenInflight_v1
+  const m = globalForToken.__novelTokenInflight_v1
+  if (m.size > TOKEN_INFLIGHT_MAX) {
+    // FIFO 删最旧(N-256 条); settled 残留由 finally 删除, 此处只兜底极端情况
+    let toEvict = m.size - TOKEN_INFLIGHT_MAX
+    for (const k of m.keys()) {
+      m.delete(k)
+      if (--toEvict <= 0) break
+    }
+  }
+  return m
 }
 
 /** token 提取: 'regex:' 前缀=正则第一捕获组(无捕获组取全匹配), 否则 JSON 点路径。
@@ -3247,6 +3210,13 @@ export async function fetchPage(url: string, cfgOverride?: Partial<FetchConfig>)
   // 失败/异常静默吞错(健康检查本身不应阻塞正常采集); 检查结果写入 proxyState.healthStatus,
   // 下次 pickProxyFor 时自动 unhealthy 排后
   if (cfg.proxyHealthCheck === true) triggerProxyHealthCheck(cfg)
+  // agent-S-fetcher-runner-phase4: 指纹轮换(每 N 请求清空 domainUa + sessionPersonalityMap) ——
+  // 反反爬核心: 同 host 长期钉扎同一 UA/viewport/timezone 会形成"持久身份"指纹, WAF 可
+  // 据此关联同出口 IP 的所有请求。每 N 请求(进程级全局计数, 跨 host 累计)清空钉扎表,
+  // 强制 pickUaFor/getSessionPersonality 在下次调用时重新随机选 UA + viewport + timezone
+  // + language。Cookie 罐与 captchaCooldown 保留(会话凭证不应随身份轮换丢失)。
+  // 缺省 fingerprintRotationInterval=0=零回归(钉扎保持整轮, 既有行为)
+  maybeRotateFingerprint(cfg)
   // In-flight 去重: 同 URL+cfg 并发合并(零回归条件: cfg 无 pageFetch / 无 refererChain+refererUrl)
   const dedupKey = inflightKey(url, cfg)
   if (dedupKey) {

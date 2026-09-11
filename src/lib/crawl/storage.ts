@@ -111,16 +111,7 @@ export async function readCover(fileName: string): Promise<Buffer | null> {
   }
 }
 
-/** 下载成品txt: data/downloads/{name}.txt */
-export async function saveDownloadTxt(name: string, content: string): Promise<{ rel: string; size: number }> {
-  const { filePath, rel } = downloadTxtTarget(name)
-  await ensureDirs()
-  await fs.writeFile(filePath, content, 'utf-8')
-  const stat = await fs.stat(filePath)
-  return { rel, size: stat.size }
-}
-
-/** 下载成品文件名计算(saveDownloadTxt 与 openDownloadTxtWriter 共用口径, 防两处漂移):
+/** 下载成品文件名计算(openDownloadTxtWriter 共用口径):
  *  清洗控制字符 + 截断: 超长书名会导致 ENAMETOOLONG 直接抛错(按码点截断防代理对斩半) */
 function downloadTxtTarget(name: string): { filePath: string; rel: string; fileName: string } {
   // Bug 21 修复: 原实现 .slice(0, 100) 按 UTF-16 code unit 截断, astral 字符(emoji/CJK 扩展)

@@ -4,7 +4,7 @@
 // TaskDialog — 新建 / 编辑采集任务
 // 模式: 单本 | 范围; 重采: 完全覆盖 | 增量; 存储: 数据库 | TXT
 // ============================================================
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Dialog,
   DialogContent,
@@ -191,6 +191,14 @@ export function TaskDialog({ open, onOpenChange, task, onSaved }: TaskDialogProp
 
   const num = (v: number) => Number.isFinite(v) ? v : 0
 
+  // feat: URL 预览 — 最终发往源站的首个请求地址, 让用户在保存前验证占位符替换正确
+  const urlPreview = useMemo(() => {
+    if (form.mode === 'single') return form.bookUrl.trim()
+    const raw = form.listUrl.trim()
+    if (!raw) return ''
+    return raw.replace(/\{page\}/g, String(form.listStart)).replace(/\{cat\}/g, '0')
+  }, [form.mode, form.bookUrl, form.listUrl, form.listStart])
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="admin-scroll max-h-[92vh] sm:max-w-[min(720px,96vw)] overflow-y-auto border-zinc-800 bg-zinc-900">
@@ -331,6 +339,18 @@ export function TaskDialog({ open, onOpenChange, task, onSaved }: TaskDialogProp
                     />
                   </div>
                 </div>
+              </div>
+            )}
+
+            {/* feat: URL 预览 — 经 {page}/{cat} 替换后实际请求地址 */}
+            {urlPreview && (
+              <div className="space-y-1 rounded-md border border-violet-500/30 bg-violet-500/10 p-2.5">
+                <div className="flex items-center gap-1.5 text-[10px] text-violet-300">
+                  首页请求预览({form.mode === 'single' ? '单本' : `第 ${form.listStart} 页`})
+                </div>
+                <p className="break-all font-mono text-[11px] leading-relaxed text-violet-200" title={urlPreview}>
+                  {urlPreview}
+                </p>
               </div>
             )}
           </div>

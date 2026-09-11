@@ -336,6 +336,8 @@ interface FieldTestState {
   fieldValue: string
   /** debugMatches 中本字段的首条匹配(用于"查看高亮"定位) */
   matchIdx: number
+  /** feat: 本字段在目标页面命中的元素总数(选择器过宽/过窄提示) */
+  totalMatches: number
   /** 是否已展开 DebugHtmlViewer */
   showDebug: boolean
 }
@@ -348,6 +350,7 @@ function FieldTestButton({ label, fieldKey, testContext }: FieldTestButtonProps)
     result: null,
     fieldValue: '',
     matchIdx: 0,
+    totalMatches: 0,
     showDebug: false,
   })
   const aliveRef = useRef(true)
@@ -370,7 +373,7 @@ function FieldTestButton({ label, fieldKey, testContext }: FieldTestButtonProps)
       toast.error('请先在右侧测试面板填入测试 URL')
       return
     }
-    setState({ loading: true, error: '', result: null, fieldValue: '', matchIdx: 0, showDebug: false })
+    setState({ loading: true, error: '', result: null, fieldValue: '', matchIdx: 0, totalMatches: 0, showDebug: false })
     try {
       const data = await api.post<RuleTestResult>('/api/admin/rules/test', {
         section: testContext.section,
@@ -383,7 +386,9 @@ function FieldTestButton({ label, fieldKey, testContext }: FieldTestButtonProps)
       if (!aliveRef.current) return
       // 客户端过滤: 从 debugMatches 找本字段首条匹配; 兜底走 fields/sample
       const matches = (data.debugMatches || []) as DebugMatch[]
-      const firstMatch = matches.find((m) => m.field === fieldKey)
+      const fieldMatches = matches.filter((m) => m.field === fieldKey)
+      const firstMatch = fieldMatches[0]
+      const totalMatches = fieldMatches.length
       let fieldValue = ''
       let matchIdx = 0
       if (firstMatch) {
@@ -399,7 +404,7 @@ function FieldTestButton({ label, fieldKey, testContext }: FieldTestButtonProps)
       } else if (fieldKey === 'content' && data.cleanedText) {
         fieldValue = data.cleanedText
       }
-      setState({ loading: false, error: '', result: data, fieldValue, matchIdx, showDebug: false })
+      setState({ loading: false, error: '', result: data, fieldValue, matchIdx, totalMatches, showDebug: false })
     } catch (e) {
       if (!aliveRef.current) return
       setState({
@@ -408,6 +413,7 @@ function FieldTestButton({ label, fieldKey, testContext }: FieldTestButtonProps)
         result: null,
         fieldValue: '',
         matchIdx: 0,
+        totalMatches: 0,
         showDebug: false,
       })
     }
@@ -421,7 +427,7 @@ function FieldTestButton({ label, fieldKey, testContext }: FieldTestButtonProps)
     if (next) {
       setUrl(testContext.defaultUrl || '')
     }
-    setState({ loading: false, error: '', result: null, fieldValue: '', matchIdx: 0, showDebug: false })
+    setState({ loading: false, error: '', result: null, fieldValue: '', matchIdx: 0, totalMatches: 0, showDebug: false })
   }
 
   const hasDebugHtml = !!(state.result?.debugHtml)
@@ -505,6 +511,27 @@ function FieldTestButton({ label, fieldKey, testContext }: FieldTestButtonProps)
               <span className="rounded bg-zinc-800 px-1.5 py-0.5">
                 HTML {(state.result.htmlSize / 1024).toFixed(1)}KB
               </span>
+              {/* feat: 命中元素数徽章 — 颜色按数量提示过宽/过窄 */}
+              {state.totalMatches > 0 && (
+                <span
+                  className={`rounded px-1.5 py-0.5 ${
+                    state.totalMatches === 1
+                      ? 'bg-emerald-500/15 text-emerald-300'
+                      : state.totalMatches <= 5
+                        ? 'bg-amber-500/15 text-amber-300'
+                        : 'bg-rose-500/15 text-rose-300'
+                  }`}
+                  title={
+                    state.totalMatches === 1
+                      ? '精准命中 1 个元素'
+                      : state.totalMatches <= 5
+                        ? `命中 ${state.totalMatches} 个元素, 取首个`
+                        : `命中 ${state.totalMatches} 个元素, 选择器可能过宽`
+                  }
+                >
+                  命中 {state.totalMatches}
+                </span>
+              )}
             </div>
 
             {/* 查看高亮按钮 */}

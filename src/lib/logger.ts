@@ -184,7 +184,7 @@ export class Logger {
 
 // ---- globalThis 单例 (HMR 安全) ----
 // dev 模式下模块热重载会重新执行模块体, 直接 const logger = new Logger() 会
-// 在每次重载时创建新实例并重置 level 为环境默认值 (setLogLevel 调用丢失)。
+// 在每次重载时创建新实例并重置 level 为环境默认值。
 // 通过 globalThis.__heisLogger 缓存: 模块重载时返回既有实例, level/bindings 保持。
 interface GlobalWithLogger {
   __heisLogger?: Logger
@@ -197,11 +197,6 @@ if (!G.__heisLogger) {
 
 /** 根 logger (进程级单例, HMR 安全) */
 export const logger: Logger = G.__heisLogger
-
-/** 调整日志级别 (LOG_LEVEL 环境变量初始化后仍可运行时覆盖) */
-export function setLogLevel(level: LogLevel): void {
-  G.__heisLogger!.setLevel(level)
-}
 
 /** 创建绑定 reqId 的子 logger (供中间件按请求打 tag) */
 export function withReqId(reqId: string): Logger {

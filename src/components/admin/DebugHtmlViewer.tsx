@@ -9,6 +9,7 @@
 // ============================================================
 import { useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
+import { escapeReg } from '@/lib/utils'
 
 interface DebugMatchSummary {
   field: string
@@ -130,11 +131,6 @@ function escapeHtmlForPre(s: string): string {
     .replace(/"/g, '&quot;')
 }
 
-/** 转义正则元字符, 用于把 data-field/data-idx 字符串安全地嵌入 RegExp */
-function escapeRegExp(s: string): string {
-  return (s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
 /**
  * 给指定 (field, idx) 的 <mark> 注入 .heis-debug-active 类。
  * 服务端注入的 mark 标签格式: <mark class="heis-debug-match" data-field="X" data-idx="N">...</mark>
@@ -146,7 +142,7 @@ function escapeRegExp(s: string): string {
  */
 function injectActiveClass(html: string, field: string, idx: number): string {
   if (!html) return html
-  const fieldEsc = escapeRegExp(field)
+  const fieldEsc = escapeReg(field)
   // 匹配 class="heis-debug-match" data-field="<field>" data-idx="<idx>"
   // (cheerio 序列化时属性顺序固定, 见 route.ts wrapInner 调用)
   const pattern = new RegExp(

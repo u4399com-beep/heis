@@ -31,8 +31,6 @@ import { BackToTop } from './BackToTop'
 import { InstallPrompt } from './InstallPrompt'
 import type { SiteInfo } from './types'
 
-export type { ViewParams, PublicView } from './ctx'
-
 export default function PublicSite({
   initialSiteId,
   initialView,

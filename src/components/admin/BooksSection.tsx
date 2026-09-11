@@ -40,10 +40,11 @@ import {
   Plus,
   RefreshCw,
   Search,
+  SlidersHorizontal,
   Trash2,
 } from 'lucide-react'
 import { toast } from 'sonner'
-import { BookDetail } from './BookDetail'
+import { BookDetail, BookCover } from './BookDetail'
 import {
   BatchActionButton,
   BatchBar,
@@ -78,6 +79,9 @@ export function BooksSection({ onGoDownload }: BooksSectionProps) {
   const [categoryId, setCategoryId] = useState('')
   const [status, setStatus] = useState('all')
   const [categories, setCategories] = useState<CategoryRow[]>([])
+  // feat: 高级筛选 — 排序字段+方向(默认按更新时间倒序)
+  const [sortBy, setSortBy] = useState<'updatedAt' | 'chapters' | 'wordCount' | 'name'>('updatedAt')
+  const [sortDir, setSortDir] = useState<'desc' | 'asc'>('desc')
 
   const [detailId, setDetailId] = useState<string | null>(null)
   const [recrawlBook, setRecrawlBook] = useState<{ book: BookListRow; mode: 'full' | 'incremental' } | null>(null)
@@ -85,6 +89,8 @@ export function BooksSection({ onGoDownload }: BooksSectionProps) {
   const [creating, setCreating] = useState(false)
 
   // ---- 批量操作状态(跨页保留已选) ----
+  // 注: rows 与 sortedRows 包含相同 ID 集合(排序仅改变顺序), 此处用 rows 避免与下方
+  // sortedRows 的 TDZ(temporal dead zone)冲突 — const 声明顺序敏感
   const rowIds = useMemo(() => rows.map((r) => r.id), [rows])
   const batch = useBatchSelection(rowIds)
   const [batchRunning, setBatchRunning] = useState(false)
@@ -141,6 +147,29 @@ export function BooksSection({ onGoDownload }: BooksSectionProps) {
       if (aliveRef.current && seq === seqRef.current) setLoading(false)
     }
   }, [page, q, categoryId, status])
+
+  // feat: 客户端排序 — API 仅支持 updatedAt desc, 其余排序维度在客户端做(单页 20 行, 开销极低)
+  const sortedRows = useMemo(() => {
+    const arr = [...rows]
+    const dir = sortDir === 'asc' ? 1 : -1
+    arr.sort((a, b) => {
+      switch (sortBy) {
+        case 'name':
+          return a.name.localeCompare(b.name, 'zh-CN') * dir
+        case 'chapters':
+          return ((a._count?.chapters || 0) - (b._count?.chapters || 0)) * dir
+        case 'wordCount':
+          return (a.wordCount - b.wordCount) * dir
+        case 'updatedAt':
+        default: {
+          const ta = new Date(a.updatedAt).getTime()
+          const tb = new Date(b.updatedAt).getTime()
+          return (ta - tb) * dir
+        }
+      }
+    })
+    return arr
+  }, [rows, sortBy, sortDir])
 
   useEffect(() => {
     load()
@@ -286,15 +315,44 @@ export function BooksSection({ onGoDownload }: BooksSectionProps) {
               <SelectItem value="unknown" className="text-sm">未知</SelectItem>
             </SelectContent>
           </Select>
-          <Button variant="outline" size="sm" className="h-9 gap-1.5 border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800" onClick={load}>
+          <Button variant="outline" size="sm" className="h-9 gap-1.5 border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800" onClick={load} aria-label="刷新书籍列表">
             <RefreshCw className="h-3.5 w-3.5" />
             刷新
           </Button>
-          <Button size="sm" className="h-9 gap-1.5" onClick={() => setCreating(true)}>
+          <Button size="sm" className="h-9 gap-1.5" onClick={() => setCreating(true)} aria-label="手动新增书籍">
             <Plus className="h-3.5 w-3.5" />
             手动新增
           </Button>
         </div>
+      </div>
+
+      {/* feat: 高级筛选 — 排序字段+方向(可折叠, 默认展开让用户一眼看到当前排序) */}
+      <div className="flex flex-wrap items-center gap-2 rounded-md border border-zinc-800 bg-zinc-950/40 px-3 py-2">
+        <SlidersHorizontal className="h-3.5 w-3.5 text-zinc-500" />
+        <span className="text-xs text-zinc-400">排序:</span>
+        <Select value={sortBy} onValueChange={(v) => setSortBy(v as typeof sortBy)}>
+          <SelectTrigger className="h-7 w-28 border-zinc-700 bg-zinc-950 text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="updatedAt" className="text-xs">更新时间</SelectItem>
+            <SelectItem value="chapters" className="text-xs">章节数</SelectItem>
+            <SelectItem value="wordCount" className="text-xs">总字数</SelectItem>
+            <SelectItem value="name" className="text-xs">书名</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select value={sortDir} onValueChange={(v) => setSortDir(v as 'asc' | 'desc')}>
+          <SelectTrigger className="h-7 w-20 border-zinc-700 bg-zinc-950 text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="desc" className="text-xs">降序</SelectItem>
+            <SelectItem value="asc" className="text-xs">升序</SelectItem>
+          </SelectContent>
+        </Select>
+        <span className="ml-auto text-[10px] text-zinc-600">
+          排序仅作用于当前页(后端按更新时间倒序返回)
+        </span>
       </div>
 
       <Card className="border-zinc-800 bg-zinc-900/60">
@@ -358,9 +416,19 @@ export function BooksSection({ onGoDownload }: BooksSectionProps) {
             </BatchActionButton>
           </BatchBar>
           {loading ? (
-            <div className="flex items-center justify-center py-16 text-sm text-zinc-500">
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              正在加载书籍…
+            // feat: 行级骨架 — 比单个 spinner 更能传递「正在拉取表格」的语义, 体感更快
+            <div className="space-y-2 p-4" role="status" aria-live="polite">
+              {Array.from({ length: 6 }).map((_, i) => (
+                <div key={i} className="flex items-center gap-3">
+                  <div className="h-4 w-4 shrink-0 animate-pulse rounded bg-zinc-800/60" />
+                  <div className="h-[53px] w-10 shrink-0 animate-pulse rounded bg-zinc-800/60" />
+                  <div className="flex-1 space-y-1.5">
+                    <div className="h-3 w-1/3 animate-pulse rounded bg-zinc-800/60" />
+                    <div className="h-2.5 w-1/4 animate-pulse rounded bg-zinc-800/60" />
+                  </div>
+                  <div className="ml-auto h-6 w-20 animate-pulse rounded bg-zinc-800/60" />
+                </div>
+              ))}
             </div>
           ) : rows.length === 0 ? (
             <div className="py-16 text-center text-sm text-zinc-500">没有符合条件的书籍</div>
@@ -388,7 +456,7 @@ export function BooksSection({ onGoDownload }: BooksSectionProps) {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {rows.map((b) => {
+                  {sortedRows.map((b) => {
                     const meta = BOOK_STATUS_META[b.status] || BOOK_STATUS_META.unknown
                     return (
                       <TableRow key={b.id} className="border-zinc-800/70">
@@ -403,7 +471,7 @@ export function BooksSection({ onGoDownload }: BooksSectionProps) {
                           <div className="flex items-center gap-3">
                             <div className="h-[53px] w-10 shrink-0 overflow-hidden rounded border border-zinc-800 bg-zinc-950">
                               {b.cover ? (
-                                <img src={coverUrl(b.cover)} alt={b.name} className="h-full w-full object-cover" loading="lazy" />
+                                <BookCover src={coverUrl(b.cover)} alt={b.name} />
                               ) : (
                                 <div className="flex h-full items-center justify-center text-[9px] text-zinc-600">无封面</div>
                               )}

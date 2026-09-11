@@ -34,6 +34,7 @@ import {
   Snail,
   Gauge,
   Zap,
+  RotateCcw,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { api, safeParseRuleConfig, type RuleRow } from './helpers'
@@ -96,6 +97,42 @@ const EMPTY_FORM: TaskForm = {
 
 const STEPS = ['选规则', '配范围', '调度', '确认']
 
+// feat: localStorage 草稿键 — 让向导中途关闭后能恢复, 避免重复填表
+const DRAFT_KEY = 'admin:task-wizard-draft'
+const DRAFT_TTL_MS = 24 * 60 * 60 * 1000 // 24h
+
+function loadDraft(): TaskForm | null {
+  try {
+    const raw = typeof window !== 'undefined' ? window.localStorage.getItem(DRAFT_KEY) : null
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as { ts?: number; form?: TaskForm }
+    if (!parsed || typeof parsed.ts !== 'number' || Date.now() - parsed.ts > DRAFT_TTL_MS) {
+      if (raw) window.localStorage.removeItem(DRAFT_KEY)
+      return null
+    }
+    if (!parsed.form || typeof parsed.form !== 'object') return null
+    return parsed.form
+  } catch {
+    return null
+  }
+}
+
+function saveDraft(form: TaskForm): void {
+  try {
+    window.localStorage.setItem(DRAFT_KEY, JSON.stringify({ ts: Date.now(), form }))
+  } catch {
+    // 隐私模式 / 配额满 — 静默降级
+  }
+}
+
+function clearDraft(): void {
+  try {
+    window.localStorage.removeItem(DRAFT_KEY)
+  } catch {
+    // ignore
+  }
+}
+
 // ---- 节奏预设 ----
 type PresetKey = 'slow' | 'standard' | 'fast'
 const PRESETS: Record<PresetKey, {
@@ -137,20 +174,48 @@ export function TaskWizard({ open, onOpenChange, onSaved, onNavigateToRules }: T
   const [nameTouched, setNameTouched] = useState(false)
   const [step, setStep] = useState(0)
   const [saving, setSaving] = useState(false)
+  const [draftRestored, setDraftRestored] = useState(false)
 
-  // 打开时复位 + 拉取规则
+  // 打开时复位 + 拉取规则; 若有 localStorage 草稿则恢复, 让用户继续未完成的配置
   useEffect(() => {
     if (!open) return
     setStep(0)
-    setForm(EMPTY_FORM)
     setNameTouched(false)
     setRulesLoading(true)
+    const draft = loadDraft()
+    if (draft) {
+      setForm(draft)
+      setDraftRestored(true)
+      toast.info('已恢复上次未完成的向导草稿')
+    } else {
+      setForm(EMPTY_FORM)
+      setDraftRestored(false)
+    }
     api
       .get<RuleRow[]>('/api/admin/rules')
       .then((rs) => setRules(Array.isArray(rs) ? rs : []))
       .catch(() => setRules([]))
       .finally(() => setRulesLoading(false))
   }, [open])
+
+  // feat: 表单变更自动续存草稿(每 1s 防抖一次, 避免高频写入)
+  useEffect(() => {
+    if (!open) return
+    // 仅在表单有实质内容时(防止空白也持久化)才保存
+    const hasContent = form.ruleId || form.bookUrl || form.listUrl || form.name
+    if (!hasContent) return
+    const t = window.setTimeout(() => saveDraft(form), 1000)
+    return () => window.clearTimeout(t)
+  }, [open, form])
+
+  const clearDraftAndReset = useCallback(() => {
+    clearDraft()
+    setForm(EMPTY_FORM)
+    setNameTouched(false)
+    setStep(0)
+    setDraftRestored(false)
+    toast.success('已清空草稿')
+  }, [])
 
   const patch = useCallback((p: Partial<TaskForm>) => setForm((f) => ({ ...f, ...p })), [])
 
@@ -219,6 +284,8 @@ export function TaskWizard({ open, onOpenChange, onSaved, onNavigateToRules }: T
     try {
       const body = { ...form, name: form.name.trim() }
       const created = await api.post<{ id: string }>('/api/admin/tasks', body)
+      // feat: 创建成功后清理草稿(避免下次开向导又看到旧数据)
+      clearDraft()
       if (start) {
         try {
           await api.post(`/api/admin/tasks/${created.id}/control`, { action: 'start' })
@@ -248,6 +315,17 @@ export function TaskWizard({ open, onOpenChange, onSaved, onNavigateToRules }: T
       return 'https://example.com/sort/1_{page}.html'
     }
   }, [selectedRule])
+
+  // feat: URL 预览 — 实际填写的 listUrl/bookUrl 经 {page}/{cat} 替换后, 第一页会请求什么地址
+  const urlPreview = useMemo(() => {
+    if (form.mode === 'single') {
+      return form.bookUrl.trim() || ''
+    }
+    const raw = form.listUrl.trim()
+    if (!raw) return ''
+    // 仅替换首页用到的占位符: {page} → listStart, {cat} → 0
+    return raw.replace(/\{page\}/g, String(form.listStart)).replace(/\{cat\}/g, '0')
+  }, [form.mode, form.bookUrl, form.listUrl, form.listStart])
 
   const bookUrlPlaceholder = 'https://example.com/book/123.html'
 
@@ -287,6 +365,7 @@ export function TaskWizard({ open, onOpenChange, onSaved, onNavigateToRules }: T
               patch={patch}
               listUrlTemplate={listUrlTemplate}
               bookUrlPlaceholder={bookUrlPlaceholder}
+              urlPreview={urlPreview}
               onNameEdit={() => setNameTouched(true)}
             />
           )}
@@ -311,14 +390,30 @@ export function TaskWizard({ open, onOpenChange, onSaved, onNavigateToRules }: T
 
         {/* 底部导航 */}
         <div className="flex items-center justify-between gap-2 border-t border-zinc-800 pt-3">
-          <Button
-            variant="outline"
-            size="sm"
-            className="gap-1.5 border-zinc-700 bg-transparent text-zinc-300 hover:bg-zinc-800"
-            onClick={() => onOpenChange(false)}
-          >
-            取消
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5 border-zinc-700 bg-transparent text-zinc-300 hover:bg-zinc-800"
+              onClick={() => onOpenChange(false)}
+              aria-label="取消并关闭向导"
+            >
+              取消
+            </Button>
+            {draftRestored && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="gap-1 px-2 text-xs text-zinc-500 hover:text-zinc-300"
+                onClick={clearDraftAndReset}
+                title="丢弃已恢复的草稿, 从空白开始"
+                aria-label="清空草稿"
+              >
+                <RotateCcw className="size-3" />
+                清空草稿
+              </Button>
+            )}
+          </div>
           <div className="flex items-center gap-2">
             {step > 0 && (
               <Button
@@ -326,6 +421,7 @@ export function TaskWizard({ open, onOpenChange, onSaved, onNavigateToRules }: T
                 size="sm"
                 className="gap-1.5 border-zinc-700 bg-transparent text-zinc-300 hover:bg-zinc-800"
                 onClick={() => setStep((s) => Math.max(0, s - 1))}
+                aria-label="返回上一步"
               >
                 <ChevronLeft className="size-3.5" />
                 上一步
@@ -337,6 +433,7 @@ export function TaskWizard({ open, onOpenChange, onSaved, onNavigateToRules }: T
                 className="gap-1.5"
                 disabled={!stepValid}
                 onClick={() => setStep((s) => Math.min(STEPS.length - 1, s + 1))}
+                aria-label="进入下一步"
               >
                 下一步
                 <ChevronRight className="size-3.5" />
@@ -349,6 +446,7 @@ export function TaskWizard({ open, onOpenChange, onSaved, onNavigateToRules }: T
                   className="gap-1.5 border-zinc-700 bg-transparent text-zinc-200 hover:bg-zinc-800"
                   disabled={saving}
                   onClick={() => createTask(false)}
+                  aria-label="保存任务但不立即启动"
                 >
                   {saving ? <Loader2 className="size-3.5 animate-spin" /> : <Save className="size-3.5" />}
                   创建但不启动
@@ -358,6 +456,7 @@ export function TaskWizard({ open, onOpenChange, onSaved, onNavigateToRules }: T
                   className="gap-1.5 bg-emerald-600 text-white hover:bg-emerald-700"
                   disabled={saving}
                   onClick={() => createTask(true)}
+                  aria-label="创建并立即启动采集任务"
                 >
                   {saving ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
                   创建并立即启动
@@ -465,12 +564,14 @@ function Step2Range({
   patch,
   listUrlTemplate,
   bookUrlPlaceholder,
+  urlPreview,
   onNameEdit,
 }: {
   form: TaskForm
   patch: (p: Partial<TaskForm>) => void
   listUrlTemplate: string
   bookUrlPlaceholder: string
+  urlPreview: string
   onNameEdit: () => void
 }) {
   return (
@@ -577,6 +678,19 @@ function Step2Range({
               />
             </div>
           </div>
+        </div>
+      )}
+
+      {/* feat: URL 预览 — 让用户看到最终发往源站的第一页地址, 校验 {page}/{cat} 占位符是否正确 */}
+      {urlPreview && (
+        <div className="space-y-1 rounded-md border border-violet-500/30 bg-violet-500/10 p-2.5">
+          <div className="flex items-center gap-1.5 text-[10px] text-violet-300">
+            <FileText className="size-3" />
+            首页请求预览({form.mode === 'single' ? '单本' : `第 ${form.listStart} 页`})
+          </div>
+          <p className="break-all font-mono text-[11px] leading-relaxed text-violet-200" title={urlPreview}>
+            {urlPreview}
+          </p>
         </div>
       )}
     </div>
