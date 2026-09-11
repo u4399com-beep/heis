@@ -327,6 +327,58 @@ export async function readBodyCapped(
   return { ok: true, buf: Buffer.concat(chunks) }
 }
 
+// ---------- Mini-service 配置拉取(R7-18) ----------
+/**
+ * 从主应用 /api/public/mini-service-config 拉取配置(如 xjp 的 Ywkey/Ywguid)。
+ * 60s in-memory 缓存 + 失败兜底空对象(不阻断请求, 仅该次配置字段缺失)。
+ *
+ * 主应用鉴权: BRIDGE_KEY 环境变量(留空=dev 模式主应用不校验)。
+ * 本函数自动把 BRIDGE_KEY 注入 X-Bridge-Key 头。
+ *
+ * 使用(在 xjp-proxy 等 mini-service 内):
+ *   const cfg = await fetchMiniServiceConfig()
+ *   const ywkey = cfg?.xjp?.ywkey || ''
+ *   const ywguid = cfg?.xjp?.ywguid || ''
+ */
+const MAIN_APP_URL = process.env.MAIN_APP_URL || 'http://127.0.0.1:3000'
+const BRIDGE_KEY = process.env.BRIDGE_KEY || ''
+const CFG_CACHE_TTL_MS = 60_000
+let cfgCachedAt = 0
+let cfgCached: Record<string, any> | null = null
+
+export async function fetchMiniServiceConfig(): Promise<Record<string, any>> {
+  // 缓存命中
+  if (cfgCached !== null && Date.now() - cfgCachedAt < CFG_CACHE_TTL_MS) return cfgCached
+  try {
+    const headers: Record<string, string> = {}
+    if (BRIDGE_KEY) {
+      headers['X-Bridge-Key'] = BRIDGE_KEY
+    }
+    const res = await fetch(`${MAIN_APP_URL}/api/public/mini-service-config`, {
+      headers,
+      signal: AbortSignal.timeout(5000),
+    })
+    if (!res.ok) {
+      // 401 = BRIDGE_KEY 不匹配; 500 = 主应用异常。降级返回上次缓存或空
+      return cfgCached || {}
+    }
+    const data = await res.json() as { ok?: boolean; data?: Record<string, any> }
+    const cfg = data?.ok ? (data.data || {}) : {}
+    cfgCached = cfg
+    cfgCachedAt = Date.now()
+    return cfg
+  } catch {
+    // 网络错误/超时 → 降级返回上次缓存或空
+    return cfgCached || {}
+  }
+}
+
+/** 显式失效配置缓存(供 mini-service 在已知配置变更时主动调用) */
+export function invalidateMiniServiceConfigCache() {
+  cfgCached = null
+  cfgCachedAt = 0
+}
+
 // ---------- createBridgeServer ----------
 export interface BridgeServerOptions {
   name: string

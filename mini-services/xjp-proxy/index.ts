@@ -37,7 +37,7 @@
  *
  * 启动: cd mini-services/xjp-proxy && bun run start   (bun --hot 热更, 端口固定 3015)
  */
-import { createBridgeServer, json } from '../_shared/server'
+import { createBridgeServer, json, fetchMiniServiceConfig } from '../_shared/server'
 
 const PORT = Number(process.env.PORT || 3015)
 const UPSTREAM = 'https://www.xinjianpan.com'
@@ -209,13 +209,22 @@ async function getRes(url: string, headers: Record<string, string>): Promise<{ o
   return { ok: false, status: -1, buf: new ArrayBuffer(0), error: 'unreachable' }
 }
 
-function chapterHeaders(): Record<string, string> {
-  return {
+async function chapterHeaders(): Promise<Record<string, string>> {
+  const base: Record<string, string> = {
     'User-Agent': UA,
     Referer: `${UPSTREAM}/`,
     Accept: 'text/html,*/*;q=0.8',
     'Accept-Language': 'zh-CN,zh;q=0.9',
   }
+  // R7-18: 从主应用拉取 Ywkey/Ywguid 登录凭证(系统设置 → mini-service 配置 → xjp.ywkey/ywguid)
+  // 凭证缺失时仍发请求(xinjianpan 部分章节免登录可见, 401 时引擎层走降级)
+  try {
+    const cfg = await fetchMiniServiceConfig()
+    const xjp = cfg?.xjp || {}
+    if (xjp.ywkey) base['Ywkey'] = String(xjp.ywkey)
+    if (xjp.ywguid) base['Ywguid'] = String(xjp.ywguid)
+  } catch { /* 配置拉取失败不阻断, 用无凭证请求兜底 */ }
+  return base
 }
 
 // ---------- 核心链路: 章节 URL → 章节页 → 前半SSR + var c 解密后半 → 纯文本 ----------
@@ -228,7 +237,7 @@ async function fetchOnePage(pageUrl: string, pagePath: string): Promise<
   | { ok: true; content: string; nextUrl: string | null }
   | { ok: false; error: string }
 > {
-  const res = await getRes(pageUrl, chapterHeaders())
+  const res = await getRes(pageUrl, await chapterHeaders())
   if (!res.ok) return { ok: false, error: `章节页上游失败(${res.status}${res.error ? ' ' + res.error : ''})` }
   const html = new TextDecoder('utf-8', { fatal: false }).decode(res.buf)
 

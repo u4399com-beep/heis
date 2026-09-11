@@ -3,6 +3,7 @@ import { db } from '@/lib/db'
 import { ok, fail, readBody } from '@/lib/api'
 import { withGuard, isPlainObject } from '../../_lib/http'
 import { WHEEL_SETTING_KEY, invalidateLinksCache } from '@/lib/links'
+import { invalidateMiniServiceConfigCache } from '../../public/mini-service-config/route'
 
 /** key 白名单: 字母数字下划线点横线, 1~64位 */
 const KEY_RE = /^[A-Za-z0-9_.-]{1,64}$/
@@ -52,6 +53,11 @@ export async function PUT(req: Request) {
     }
     // 链轮配置变更 → 失效读侧缓存(友链/链轮配置 60s), 页脚立即生效
     if (entries.some(([key]) => key === WHEEL_SETTING_KEY)) invalidateLinksCache()
+    // R7-18: miniServiceConfig 变更 → 失效 /api/public/mini-service-config 缓存
+    // (公共端点 60s in-memory 缓存, 显式失效让 mini-services 立即可读新配置)
+    if (entries.some(([key]) => key === 'miniServiceConfig')) {
+      invalidateMiniServiceConfigCache()
+    }
     return ok(await readAllSettings())
   })
 }
