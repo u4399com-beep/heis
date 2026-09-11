@@ -9,10 +9,12 @@
 //     B1: 键盘快捷键 (←/→ 上下章, Home/End 滚动, b/t/s 切换书签/目录/设置, ? 帮助, Esc 关闭)
 //     B2: 顶部 3px 阅读进度条
 //     B3: 章节切换方向感知滑动动画 (next 从右滑入, prev 从左滑入)
+// - agent-P: 站点章节内容分页 (byWords/byPages) — 仅请求当前页内容,
+//   底部分页导航(上一页/下一页/页码跳转); SEO TDK 按站点模板渲染(自动/手动)
 // ============================================================
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Clock, HelpCircle, Keyboard } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { fetchChapter } from './data'
@@ -35,6 +37,24 @@ const READER_LETTER_SPACING_KEY = 'public_reader_letterSpacing'
 
 const DEFAULT_LINE_HEIGHT = 1.8
 const DEFAULT_LETTER_SPACING = 0
+
+/**
+ * agent-P: SEO 模板占位符替换。
+ * 模板内 {bookName} {chapterTitle} {page} {totalPages} {siteName} 替换为实际值;
+ * 占位符缺失则保留原字面量(不抛错), 空模板返回空串。
+ */
+function renderSeoTemplate(
+  template: string,
+  ctx: { bookName: string; chapterTitle: string; page: number; totalPages: number; siteName: string },
+): string {
+  if (!template) return ''
+  return template
+    .replace(/\{bookName\}/g, ctx.bookName)
+    .replace(/\{chapterTitle\}/g, ctx.chapterTitle)
+    .replace(/\{page\}/g, String(ctx.page))
+    .replace(/\{totalPages\}/g, String(ctx.totalPages))
+    .replace(/\{siteName\}/g, ctx.siteName)
+}
 
 function readStoredFontSize(): number {
   if (typeof window === 'undefined') return 17
@@ -105,6 +125,13 @@ export function ReadView({ chapterId }: { chapterId?: string }) {
   const [prevCh, setPrevCh] = useState(chapterId)
   // feat-round-5 B1: 帮助对话框
   const [helpOpen, setHelpOpen] = useState(false)
+  // agent-P: 章节内容分页状态 — 仅当站点配置 mode !== 'off' 且 totalPages > 1 时启用
+  const [page, setPage] = useState(1)
+  const [prevChForPage, setPrevChForPage] = useState<string | undefined>(chapterId)
+  if (prevChForPage !== chapterId) {
+    setPrevChForPage(chapterId)
+    setPage(1)
+  }
   if (prevCh !== chapterId) {
     setPrevCh(chapterId)
     // feat-round-5 B3: 用旧 data 的 prev/next id 推断切换方向
@@ -119,10 +146,17 @@ export function ReadView({ chapterId }: { chapterId?: string }) {
   useEffect(() => {
     if (!chapterId) return
     let alive = true
-    fetchChapter(chapterId)
+    // agent-P: 站点分页开启且 page>1 时, 携带 ?page=N & ?site=
+    const wantsPage =
+      site.chapterPaginationMode && site.chapterPaginationMode !== 'off' && page > 1 ? page : undefined
+    fetchChapter(chapterId, wantsPage, site.id)
       .then((d) => {
         if (!alive) return
         setData(d)
+        // 后端越界钳制后, 同步本地 page 状态
+        if (d.pagination && d.pagination.currentPage !== page) {
+          setPage(d.pagination.currentPage)
+        }
         setLoading(false)
       })
       .catch((e: Error) => {
@@ -133,7 +167,7 @@ export function ReadView({ chapterId }: { chapterId?: string }) {
     return () => {
       alive = false
     }
-  }, [chapterId])
+  }, [chapterId, page, site.id, site.chapterPaginationMode])
 
   // 设置持久化
   useEffect(() => {
@@ -220,12 +254,60 @@ export function ReadView({ chapterId }: { chapterId?: string }) {
   // feat-round-5 B2: 顶部阅读进度条 (窗口滚动模式 — classic/pili 有效; immersive/paginated 有自己的进度条)
   const progress = useReadingProgress(undefined, chapterId)
 
+  // agent-P: 站点章节内容分页元数据(后端返回; off 模式 totalPages=1, currentPage=1)
+  const pagination = data?.pagination
+  const totalPages = pagination?.totalPages ?? 1
+  const currentPage = pagination?.currentPage ?? 1
+  const showChapterPagination = !!pagination && pagination.mode !== 'off' && totalPages > 1
+
+  // agent-P: SEO TDK 渲染 — auto 模式使用默认逻辑(向后兼容); 手动模式按站点模板占位符替换
+  const seoCtx = useMemo(
+    () => ({
+      bookName: data?.book.name || '',
+      chapterTitle: data?.chapter.title || '',
+      page: currentPage,
+      totalPages,
+      siteName: site.name,
+    }),
+    [data?.book.name, data?.chapter.title, currentPage, totalPages, site.name],
+  )
+  const seoTitle = useMemo(() => {
+    if (!data) return `阅读 - ${site.name}`
+    if (data.seo && !data.seo.auto && data.seo.titleTemplate) {
+      return renderSeoTemplate(data.seo.titleTemplate, seoCtx) || `${data.chapter.title}_${data.book.name} - ${site.name}`
+    }
+    // 自动模式: 仅当多页时附加"第N页"避免标题重复(同章不同页 = 重复内容, 搜索引擎降权)
+    const baseTitle = `${data.chapter.title}_${data.book.name} - ${site.name}`
+    return showChapterPagination ? `${data.chapter.title}_${data.book.name} 第${currentPage}页 - ${site.name}` : baseTitle
+  }, [data, site.name, showChapterPagination, currentPage, seoCtx])
+  const seoDescription = useMemo(() => {
+    if (!data) return undefined
+    if (data.seo && !data.seo.auto && data.seo.descTemplate) {
+      return renderSeoTemplate(data.seo.descTemplate, seoCtx) || `${data.book.name} ${data.chapter.title} 在线阅读，${formatWords(data.chapter.wordCount)}。`
+    }
+    const base = `${data.book.name} ${data.chapter.title} 在线阅读，${formatWords(data.chapter.wordCount)}。`
+    return showChapterPagination ? `${base} (第${currentPage}/${totalPages}页)` : base
+  }, [data, showChapterPagination, currentPage, totalPages, seoCtx])
+  const seoKeywords = useMemo(() => {
+    if (!data) return undefined
+    if (data.seo && !data.seo.auto && data.seo.keywordsTemplate) {
+      return renderSeoTemplate(data.seo.keywordsTemplate, seoCtx) || data.book.keywords || undefined
+    }
+    return data.book.keywords || undefined
+  }, [data, seoCtx])
+
   const origin = typeof window !== 'undefined' ? window.location.origin : ''
+  // 分页 canonical: 不同页应不同 URL(避免重复内容判定)
+  const canonicalPath = data
+    ? showChapterPagination
+      ? `/?view=read&chapter=${data.chapter.id}&site=${site.id}&page=${currentPage}`
+      : `/?view=read&chapter=${data.chapter.id}&site=${site.id}`
+    : undefined
   useSiteSEO({
-    title: data ? `${data.chapter.title}_${data.book.name} - ${site.name}` : `阅读 - ${site.name}`,
-    description: data ? `${data.book.name} ${data.chapter.title} 在线阅读，${formatWords(data.chapter.wordCount)}。` : undefined,
-    keywords: data?.book.keywords || undefined,
-    canonicalPath: data ? `/?view=read&chapter=${data.chapter.id}&site=${site.id}` : undefined,
+    title: seoTitle,
+    description: seoDescription,
+    keywords: seoKeywords,
+    canonicalPath,
     site,
     jsonLd: data
       ? [
@@ -238,7 +320,7 @@ export function ReadView({ chapterId }: { chapterId?: string }) {
             author: { '@type': 'Person', name: data.book.author },
             inLanguage: 'zh-CN',
             wordCount: data.chapter.wordCount,
-            url: `${origin}/?view=read&chapter=${data.chapter.id}&site=${site.id}`,
+            url: `${origin}/?view=read&chapter=${data.chapter.id}&site=${site.id}${showChapterPagination ? `&page=${currentPage}` : ''}`,
           },
         ]
       : [],
@@ -261,6 +343,20 @@ export function ReadView({ chapterId }: { chapterId?: string }) {
     onLetterSpacing: (delta: number) =>
       setLetterSpacing((s) => Math.min(2, Math.max(-0.5, Math.round((s + delta) * 100) / 100))),
     onToggleNight: () => setNight((n) => !n),
+    // agent-P: 章节内容分页 — 透传给所有 read-layouts, 仅当 totalPages>1 时由布局渲染 ChapterPaginationBar
+    chapterPagination: pagination,
+    onChapterPage: (p: number) => {
+      if (!showChapterPagination) return
+      const target = Math.min(Math.max(1, p), totalPages)
+      if (target === currentPage) return
+      // 切页滚到顶部, 给用户清晰的"翻页"反馈
+      try {
+        window.scrollTo({ top: 0, behavior: 'smooth' })
+      } catch {
+        /* SSR/隐私模式忽略 */
+      }
+      setPage(target)
+    },
   }
 
   // feat-round-5 B3: 滑动动画 class (基于方向)

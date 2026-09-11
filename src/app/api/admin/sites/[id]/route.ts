@@ -2,10 +2,13 @@
 import { db } from '@/lib/db'
 import { ok, fail, readBody } from '@/lib/api'
 import { getThemeById } from '@/lib/crawl/themes'
-import { withGuard, str, clampInt } from '../../../_lib/http'
+import { withGuard, str, clampInt, enumIn } from '../../../_lib/http'
 
 // 与 POST 同步: 放行 localhost[:port](种子默认站域名即 localhost:3000, 旧正则误拒致站点无法回存)
 const DOMAIN_RE = /^(localhost(:\d{1,5})?|[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\d{1,5})?)$/
+
+/** 章节内容分页模式白名单(与 POST 同步) */
+const PAGINATION_MODES = ['off', 'byWords', 'byPages'] as const
 
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   return withGuard(async () => {
@@ -39,6 +42,27 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     if (body?.status !== undefined) data.status = !!body.status
     if (body?.inLinkWheel !== undefined) data.inLinkWheel = !!body.inLinkWheel
     if (body?.isDefault === true) data.isDefault = true
+
+    // 章节分页 + SEO 模板(显式传入才更新, 未传字段保持现状)
+    if (body?.chapterPaginationMode !== undefined) {
+      data.chapterPaginationMode = enumIn(body.chapterPaginationMode, PAGINATION_MODES, 'off')
+    }
+    if (body?.chapterPaginationWords !== undefined) {
+      data.chapterPaginationWords = clampInt(body.chapterPaginationWords, 3000, 500, 50_000)
+    }
+    if (body?.chapterPaginationPages !== undefined) {
+      data.chapterPaginationPages = clampInt(body.chapterPaginationPages, 3, 2, 20)
+    }
+    if (body?.chapterSeoAuto !== undefined) data.chapterSeoAuto = !!body.chapterSeoAuto
+    if (body?.chapterSeoTitleTemplate !== undefined) {
+      data.chapterSeoTitleTemplate = str(body.chapterSeoTitleTemplate, 500)
+    }
+    if (body?.chapterSeoDescTemplate !== undefined) {
+      data.chapterSeoDescTemplate = str(body.chapterSeoDescTemplate, 500)
+    }
+    if (body?.chapterSeoKeywordsTemplate !== undefined) {
+      data.chapterSeoKeywordsTemplate = str(body.chapterSeoKeywordsTemplate, 500)
+    }
 
     try {
       let site

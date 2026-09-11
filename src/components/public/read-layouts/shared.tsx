@@ -29,7 +29,7 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Slider } from '@/components/ui/slider'
 import { Switch } from '@/components/ui/switch'
-import type { ReadVars } from '@/lib/crawl/themes'
+import type { ReadVars, ThemeDef } from '@/lib/crawl/themes'
 import { fetchBook } from '../data'
 import type { ChapterData } from '../types'
 import { usePublic } from '../ctx'
@@ -60,6 +60,10 @@ export interface ReadLayoutProps {
   /** delta 调整字距, 调用方钳制到 [-0.5, 2] */
   onLetterSpacing: (delta: number) => void
   onToggleNight: () => void
+  /** agent-P: 章节内容分页元数据(后端返回; off 模式 totalPages=1, currentPage=1) */
+  chapterPagination?: ChapterData['pagination']
+  /** agent-P: 切换章节内分页(仅 chapterPagination.totalPages > 1 时调用) */
+  onChapterPage?: (p: number) => void
 }
 
 /* ---------------- feat-round-5 B1: 阅读器键盘快捷键动作注册 ---------------- */
@@ -103,6 +107,105 @@ export function contentToHtml(raw: string): string {
     .filter(Boolean)
     .map((s) => `<p>${s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>`)
     .join('')
+}
+
+/* ---------------- agent-P: 章节内容分页导航条 ---------------- */
+
+/**
+ * 章节内容分页导航条 — 仅当 chapterPagination.totalPages > 1 且 mode !== 'off' 时由布局渲染。
+ * 包含: 上一页/下一页按钮 + 页码指示 "第 X / Y 页" + 页码快跳(≤7 页全部展示; 否则首末页+当前页窗口+省略号)。
+ * 样式由主题 vars 驱动(与 Pagination.tsx 同色系), 不依赖外部上下文。
+ */
+export function ChapterPaginationBar({
+  pagination,
+  onPage,
+  theme,
+  night,
+}: {
+  pagination: NonNullable<ChapterData['pagination']>
+  onPage: (p: number) => void
+  theme: ThemeDef
+  night?: boolean
+}) {
+  const v = theme.vars
+  if (!pagination || pagination.mode === 'off') return null
+  const total = Math.max(1, pagination.totalPages)
+  if (total <= 1) return null
+  const cur = Math.min(Math.max(1, pagination.currentPage), total)
+
+  const btn = (active: boolean): CSSProperties => ({
+    background: active ? v.primary : night ? withAlpha(v.surface, 0.6) : v.surface,
+    color: active ? v.primaryText : v.text,
+    border: `1px solid ${active ? v.primary : v.border}`,
+    borderRadius: v.radius,
+  })
+  const pages: (number | 'ellipsis')[] = []
+  if (total <= 7) {
+    for (let i = 1; i <= total; i++) pages.push(i)
+  } else {
+    pages.push(1)
+    const start = Math.max(2, cur - 1)
+    const end = Math.min(total - 1, cur + 1)
+    if (start > 2) pages.push('ellipsis')
+    for (let i = start; i <= end; i++) pages.push(i)
+    if (end < total - 1) pages.push('ellipsis')
+    pages.push(total)
+  }
+
+  return (
+    <nav
+      className="flex flex-wrap items-center justify-center gap-1.5 pt-3"
+      aria-label="章节内分页"
+    >
+      <button
+        type="button"
+        disabled={cur <= 1}
+        onClick={() => onPage(cur - 1)}
+        className="inline-flex h-8 items-center gap-1 px-2.5 text-xs font-medium transition-opacity hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-35"
+        style={btn(false)}
+        aria-label="上一页"
+      >
+        <ChevronLeft className="h-3.5 w-3.5" aria-hidden />
+        上一页
+      </button>
+      {pages.map((p, i) =>
+        p === 'ellipsis' ? (
+          <span key={`e${i}`} className="px-1 text-xs tabular-nums" style={{ color: v.textMuted }} aria-hidden>
+            …
+          </span>
+        ) : (
+          <button
+            key={p}
+            type="button"
+            onClick={() => onPage(p)}
+            className="h-8 min-w-8 px-2 text-xs font-medium tabular-nums transition-opacity hover:opacity-80"
+            style={{
+              ...btn(p === cur),
+              ...(p === cur ? { boxShadow: `0 0 0 3px ${withAlpha(v.primary, 0.18)}` } : {}),
+            }}
+            aria-label={`第 ${p} 页`}
+            aria-current={p === cur ? 'page' : undefined}
+          >
+            {p}
+          </button>
+        ),
+      )}
+      <button
+        type="button"
+        disabled={cur >= total}
+        onClick={() => onPage(cur + 1)}
+        className="inline-flex h-8 items-center gap-1 px-2.5 text-xs font-medium transition-opacity hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-35"
+        style={btn(false)}
+        aria-label="下一页"
+      >
+        下一页
+        <ChevronRight className="h-3.5 w-3.5" aria-hidden />
+      </button>
+      <span className="ml-1 text-xs tabular-nums" style={{ color: v.textMuted }}>
+        第 {cur} / {total} 页
+      </span>
+    </nav>
+  )
 }
 
 /**

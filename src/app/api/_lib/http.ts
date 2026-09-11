@@ -100,6 +100,14 @@ export function isPlainObject(v: unknown): v is Record<string, unknown> {
 }
 
 /**
+ * 枚举值安全化: 非字符串或不在白名单内 → 返回默认值。
+ * 用于 chapterPaginationMode 等离散字段。
+ */
+export function enumIn<T extends string>(v: unknown, allowed: readonly T[], def: T): T {
+  return typeof v === 'string' && (allowed as readonly string[]).includes(v) ? (v as T) : def
+}
+
+/**
  * 路径穿越防护: resolve 后必须仍位于 root 目录内(含分隔符边界)。
  * 防御 ../、绝对路径、%2e%2e 解码后穿越、以及 startsWith 前缀的兄弟目录绕过 (data-x vs data)。
  * 返回解析后的绝对路径, 非法返回 null。

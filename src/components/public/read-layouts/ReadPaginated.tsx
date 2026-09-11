@@ -17,6 +17,7 @@ import { isBookmarked, toggleBookmark } from './bookmarks'
 import {
   BookmarkToggle,
   ChapterDeco,
+  ChapterPaginationBar,
   ReaderSettingsPopover,
   TocDrawer,
   actualFontPx,
@@ -39,6 +40,8 @@ export function ReadPaginated({
   onLineHeight,
   onLetterSpacing,
   onToggleNight,
+  chapterPagination,
+  onChapterPage,
 }: ReadLayoutProps) {
   const { theme, navigate } = usePublic()
   const v = theme.vars
@@ -433,6 +436,16 @@ export function ReadPaginated({
           <ChevronRight className="h-3.5 w-3.5" aria-hidden />
         </button>
       </nav>
+
+      {/* agent-P: 章节内容分页(站点开启且 totalPages>1 时渲染; 与上方 CSS 多列分页互不冲突) */}
+      {chapterPagination && chapterPagination.mode !== 'off' && chapterPagination.totalPages > 1 && onChapterPage && (
+        <ChapterPaginationBar
+          pagination={chapterPagination}
+          onPage={onChapterPage}
+          theme={theme}
+          night={night}
+        />
+      )}
 
       <TocDrawer open={drawer} onClose={() => setDrawer(false)} bookId={bk?.id} activeChapterId={ch?.id} variant="classic" />
     </div>

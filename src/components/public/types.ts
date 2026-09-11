@@ -19,6 +19,21 @@ export interface SiteInfo {
   offset: number
   isDefault: boolean
   status: boolean
+  inLinkWheel?: boolean
+  /** 章节内容分页模式: off | byWords | byPages (agent-P) */
+  chapterPaginationMode?: 'off' | 'byWords' | 'byPages'
+  /** byWords 模式: 每页字数 */
+  chapterPaginationWords?: number
+  /** byPages 模式: 强制拆分页数 */
+  chapterPaginationPages?: number
+  /** 自动生成 SEO TDK */
+  chapterSeoAuto?: boolean
+  /** SEO 标题模板 */
+  chapterSeoTitleTemplate?: string
+  /** SEO 描述模板 */
+  chapterSeoDescTemplate?: string
+  /** SEO 关键词模板 */
+  chapterSeoKeywordsTemplate?: string
 }
 
 /** 分类（/api/admin/categories 返回结构） */
@@ -94,6 +109,21 @@ export interface ChapterData {
   }
   prev: { id: string; title: string } | null
   next: { id: string; title: string } | null
+  /** 章节内容分页元数据 (agent-P) */
+  pagination?: {
+    mode: 'off' | 'byWords' | 'byPages'
+    totalPages: number
+    currentPage: number
+    wordsPerPage?: number | null
+    pagesTarget?: number | null
+  }
+  /** SEO 模板 (agent-P) */
+  seo?: {
+    auto: boolean
+    titleTemplate: string
+    descTemplate: string
+    keywordsTemplate: string
+  }
 }
 
 /** 搜索结果（/api/public/search） */

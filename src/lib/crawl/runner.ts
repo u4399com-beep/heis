@@ -521,6 +521,12 @@ export class TaskRunner {
   private async loadConfig(taskId: string) {
     const task = await db.task.findUnique({ where: { id: taskId }, include: { rule: true } })
     if (!task) return null
+    // agent-Q-deep-audit: rule 关系缺失防御 —— schema 上 rule 关系是 required(无 ?), 正常路径
+    //  Prisma 会强制存在; 但人工 SQL 操作/部分迁移后可能留下孤儿 task(ruleId 指向已删行),
+    //  此时 include.rule 返回 null(Prisma 不抛), task.rule.config 即抛 TypeError 沿调用栈
+    //  上抛到 executeTask 的外层 catch, 任务转 error 终态(而非更优雅地提示\"规则已删\")。
+    //  兜底: rule 缺失时返回 null(等同 task 不存在), executeTask 早退且日志清晰
+    if (!task.rule) return null
     return {
       task,
       rule: parseRuleConfig(task.rule.config),
@@ -676,7 +682,11 @@ export class TaskRunner {
                 alreadyDiscovered++
                 continue
               }
-              rt.discoveredBookUrls.add(u)
+              // agent-Q-deep-audit: 用 addToResumeSet 即时检查内存上限(与 completedBookUrls/
+              // ongoingBookUrls/failedBookUrls 同口径) —— 修前 rt.discoveredBookUrls.add(u)
+              // 无上限检查, 长任务站群场景下 Set 可涨至数百万 → OOM(saveProgress 落库时虽
+              // slice(0, 50000) 截断持久化, 但内存 Set 无界增长)
+              addToResumeSet(rt.discoveredBookUrls, u)
               urls.push(u)
               newlyDiscovered++
             }
@@ -771,7 +781,16 @@ export class TaskRunner {
         } catch (e: any) {
           if (isStale()) {
             // jj-d: 本轮已被新一轮 start 取代(epoch 漂移) —— 进度/计数权归新循环, 旧循环
-            // 在此只吞异常; 修前旧循环在途抓取抛错仍 saveProgress, 新一轮刚写入的进度被旧对象回滚
+            // 在此只吞异常; 修前旧循环在途抓取仍 saveProgress, 新一轮刚写入的进度被旧对象回滚
+          } else if (e?.name === 'BudgetExceeded') {
+            // agent-Q-deep-audit: 请求预算耗尽必须终止整个任务(而非作为单本书失败继续下一本) ——
+            //  修前 BudgetExceeded 落到下方 else 分支被当作普通书籍错误, 仅记一本书的 errors++
+            //  并 saveProgress 后继续 for 循环下一本, 下一本的 gateFetch 又立即抛 BudgetExceeded,
+            //  循环往复直到 bookQueue 跑空。结果: 每本书都被记一次 errors(虚高 N 倍), 任务永不
+            //  进 error 终态, 用户无法从 UI 感知预算耗尽; maxRequests 预算保护机制形同虚设。
+            //  修法: 与 isCircuitBreak 同口径向上抛, 走 executeTask 外层 catch → error 终态 +
+            //  autoRefresh 重排(预算用尽通常意味采集异常超量, 不应静默继续)
+            throw e
           } else if (e?.isCircuitBreak) {
             // tt-c: 熔断错误上抛到任务级 —— 多书任务同样立即终止(同站其余书籍必然同样失败,
             // 逐书硬敲无意义), 由外层 catch 统一转 error 终态 + autoRefresh 重排自愈
@@ -841,7 +860,13 @@ export class TaskRunner {
     } catch (e: any) {
       // ee-d ⑤: 旧循环崩溃同样不得误标新一轮运行中的任务(与结束块同权)
       if (!isStale()) {
-        await this.log(taskId, 'error', `任务崩溃: ${e?.message || e}`)
+        // agent-Q-deep-audit: BudgetExceeded 用更精确的日志(非"任务崩溃") —— 预算耗尽是
+        // 主动停止语义, 不是崩溃; 用户从 UI 看到更准确的失败原因
+        if (e?.name === 'BudgetExceeded') {
+          await this.log(taskId, 'warn', `⏹ ${e?.message || 'HTTP 请求预算耗尽'}`)
+        } else {
+          await this.log(taskId, 'error', `任务崩溃: ${e?.message || e}`)
+        }
         // Bug 25: done 已落库则不再覆盖为 error —— 修前 done 写成功后 saveProgress/autoRefresh
         // 排定抛错会落到本 catch 重写 error, 把已完成任务降级为崩溃态; 保留 done 终态语义,
         // 仅未完成时落 error(autoRefresh 仍按原逻辑在下面排定)
@@ -1003,6 +1028,9 @@ export class TaskRunner {
       || urlPathName || '未知书名'
     const intro = cleanIntro(parsed.intro) || cleanIntro(listFields?.intro || '')
     const author = cleanTextField(parsed.author, 60) || cleanTextField(listFields?.author, 60) || '佚名'
+    // R7-17: 源站字数(规则提取的 wordCount, 如七猫/小雨 API 的 WordsCount 字段)
+    // 纯数字字符串解析为 int; 非数字/缺失时 NaN→0, 后续由章节累计口径覆盖
+    const parsedWordCount = parseInt(String(parsed.wordCount || '').replace(/[^\d]/g, ''), 10) || 0
 
     // feat-combo-theme-incremental(连载增量): 标记本次是否为连载书的增量检查
     // —— rt.ongoingBookUrls 中的书重启后不整体跳过, 抓目录后与 rt.bookLastChapters 中
@@ -1109,13 +1137,15 @@ export class TaskRunner {
       sourceRuleId: taskCfg.ruleId,
       storageMode: taskCfg.storageMode,
       collectedAt: new Date(),
+      // R7-17: 源站字数(规则提取); 0=未提取, 后续由章节累计口径覆盖(line 1733 agg)
+      wordCount: parsedWordCount,
     }
     if (existing) {
       if (taskCfg.recrawlMode === 'full') {
         // 完全覆盖: 删除旧章节(及txt文件), 重置封面
         await db.chapter.deleteMany({ where: { bookId: existing.id } })
         if (existing.storageMode === 'txt') await deleteBookTxt(existing.id)
-        await db.book.update({ where: { id: existing.id }, data: { ...bookData, cover: coverPath, wordCount: 0, latestChapter: '' } })
+        await db.book.update({ where: { id: existing.id }, data: { ...bookData, cover: coverPath, wordCount: parsedWordCount, latestChapter: '' } })
         await this.log(taskId, 'warn', `完全覆盖重采集: 清除《${existing.name}》旧数据`)
       } else {
         const upd: any = { ...bookData }
@@ -1734,10 +1764,21 @@ export class TaskRunner {
     // Bug 24: .catch 收口 —— 修前 .catch(()=>{}) 无差别吞错, 真 DB 故障(P2025 以外)
     // 静默丢统计(wordCount/latestChapter 静默不更新, 前台显示与实际不符)。现仅放行 P2025
     // (书被删), 其余打 warn 日志便于运维感知
+    //
+    // agent-Q-deep-audit (R7-17 wordCount 收尾 bug 修复):
+    //  修前 `wordCount: agg._sum.wordCount || 0` 无条件覆盖, 当所有章节抓取失败(或全量重采时
+    //  章节队列空但源站给了 wordCount)时 agg._sum.wordCount=null → ||0 → 写入 0, 把第 1116 行
+    //  初始化写入的 parsedWordCount(源站报告值, 如七猫/小雨 API 的 WordsCount)抹成 0。
+    //  场景: 慢站/被拦截触发连续失败时, 用户的书仍能看到准确的源站字数而非 0。
+    //  修法: 有 fetched 章节时以累计口径为准(已采实况); 无 fetched 章节时回退源站 parsedWordCount
+    //  (源站报告值更接近真实总数); 两者均缺才落 0
+    const finalWordCount = agg._count > 0
+      ? (agg._sum.wordCount || 0)
+      : (parsedWordCount || 0)
     await db.book.update({
       where: { id: bookId },
       data: {
-        wordCount: agg._sum.wordCount || 0,
+        wordCount: finalWordCount,
         latestChapter: tocItems[tocItems.length - 1]?.title?.slice(0, 100) || '',
       },
     }).catch((e: any) => {

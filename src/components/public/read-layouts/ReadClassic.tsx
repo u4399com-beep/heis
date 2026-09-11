@@ -18,6 +18,7 @@ import {
   BookmarkToggle,
   ChapterDeco,
   ChapterEndDeco,
+  ChapterPaginationBar,
   ReaderSettingsPopover,
   TocDrawer,
   actualFontPx,
@@ -41,6 +42,8 @@ export function ReadClassic({
   onLineHeight,
   onLetterSpacing,
   onToggleNight,
+  chapterPagination,
+  onChapterPage,
 }: ReadLayoutProps) {
   const { site, theme, navigate } = usePublic()
   const v = theme.vars
@@ -319,6 +322,16 @@ export function ReadClassic({
                 回顶部
               </button>
             </nav>
+
+            {/* agent-P: 章节内容分页(站点开启 byWords/byPages 且 totalPages>1 时渲染) */}
+            {chapterPagination && chapterPagination.mode !== 'off' && chapterPagination.totalPages > 1 && onChapterPage && (
+              <ChapterPaginationBar
+                pagination={chapterPagination}
+                onPage={onChapterPage}
+                theme={theme}
+                night={night}
+              />
+            )}
           </>
         )}
       </article>

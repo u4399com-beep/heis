@@ -26,6 +26,14 @@ export function GET() {
         offset: true,
         isDefault: true,
         inLinkWheel: true,
+        // 章节分页 + SEO 模板(前台阅读页消费)
+        chapterPaginationMode: true,
+        chapterPaginationWords: true,
+        chapterPaginationPages: true,
+        chapterSeoAuto: true,
+        chapterSeoTitleTemplate: true,
+        chapterSeoDescTemplate: true,
+        chapterSeoKeywordsTemplate: true,
       },
     })
     return withCache(ok(sites), 300, 600)

@@ -1284,7 +1284,13 @@ export async function checkBrowser(): Promise<boolean> {
  * launch, per-context proxy 无槽位复用串扰面。选路统一经 pickProxyFor 单一函数
  */
 async function renderWithBrowser(url: string, cfg: FetchConfig, ua: string): Promise<string> {
-  if (pickProxyFor(url, cfg)) return renderWithBrowserRaw(url, cfg, ua)
+  // agent-Q-deep-audit: pickProxyFor 副作用(useCount++)去重 —— 修前 renderWithBrowser 调
+  //  pickProxyFor 一次仅为判断"是否配了代理", 命中代理后 renderWithBrowserRaw 内部又调一次
+  //  pickProxyFor 取实际代理(两次可能返回不同代理: random/round-robin 策略下); 第一次返回的
+  //  代理被 markProxyUsed 但从未实际使用 → useCount 虚高 + 负载均衡被污染(least-used 偏向
+  //  本不应被选的代理)。改为调用方计算一次并通过参数透传, renderWithBrowserRaw 不再自查
+  const proxy = pickProxyFor(url, cfg)
+  if (proxy) return renderWithBrowserRaw(url, cfg, ua, proxy)
   try {
     if (await checkObscuraAvailable()) {
       const res = await obscuraFetch(url, {
@@ -1305,7 +1311,7 @@ async function renderWithBrowser(url: string, cfg: FetchConfig, ua: string): Pro
   } catch (e: any) {
     console.warn('[fetcher] Obscura 渲染失败, 降级裸 Playwright:', e?.message?.slice(0, 120))
   }
-  return renderWithBrowserRaw(url, cfg, ua)
+  return renderWithBrowserRaw(url, cfg, ua, '')
 }
 
 /** 裸 Playwright 直连渲染(降级路径, 原 renderWithBrowser 实现)
@@ -1313,13 +1319,14 @@ async function renderWithBrowser(url: string, cfg: FetchConfig, ua: string): Pro
  *  context 覆盖的前提, Playwright 文档: 所有 context 覆盖后全局值永不使用, 可为任意串)
  *  + newContext 注入真实代理(per-context, 本浏览器实例仅本请求专用, 无共享串扰);
  *  无代理时保持原样 launch(零回归) */
-async function renderWithBrowserRaw(url: string, cfg: FetchConfig, ua: string): Promise<string> {
+async function renderWithBrowserRaw(url: string, cfg: FetchConfig, ua: string, proxy: string): Promise<string> {
   if (!pwModule) {
     const ok = await checkBrowser()
     if (!ok) throw new Error('浏览器渲染引擎不可用(未安装playwright/chromium), 请使用HTTP引擎')
   }
   const { chromium } = pwModule
-  const proxy = pickProxyFor(url, cfg)
+  // agent-Q-deep-audit: proxy 由调用方(renderWithBrowser)传入, 不再自查 pickProxyFor ——
+  //  详见 renderWithBrowser 段注释(修前双重调用致 useCount 虚高 + 负载均衡污染)
   // agent-K-crawl-phase2: 会话人格 —— 同 host 整轮任务保持 UA/viewport/timezone/language 一致
   // (per-request 切换 viewport/timezone 反而是爬虫指纹; 真实浏览器会话内不会切换这些)
   const personality = getSessionPersonality(originHost(url), cfg)
@@ -1642,6 +1649,13 @@ function loopbackBypassAllowed(url: string, cfg: FetchConfig): boolean {
     uHost = u.hostname.toLowerCase().replace(/^\[|\]$/g, '')
     uPort = u.port || ''
   } catch { return false }
+  // R7-16 修复: 已知 mini-services 端口白名单 —— 规则的 toc.fields.url 直指
+  // 127.0.0.1:301x(如 deqixs 规则 toc.fields.url.replaceTo='http://127.0.0.1:3014/content?u=')
+  // 但 fetch 配置缺 contentProxyUrl → loopbackBypassAllowed 旧实现仅匹配 tokenUrl/contentProxyUrl/relay/bridge
+  // → SSRF 守卫拒 loopback → 章节采集在生产路径上坏的。修法: 端口 3010~3015 全部放行(均为本机
+  // mini-services, 启动时 bind 127.0.0.1, 无外网暴露面; 与 tokenUrl/contentProxyUrl 同口径豁免)
+  const KNOWN_MINI_SERVICE_PORTS = new Set(['3010', '3011', '3012', '3013', '3014', '3015'])
+  if (KNOWN_MINI_SERVICE_PORTS.has(uPort)) return true
   const matches = (rawUrl: string): boolean => {
     try {
       // tokenUrl 可能含 {url} 占位符, 替换为合法 URL 后解析

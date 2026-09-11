@@ -39,6 +39,7 @@ import {
   useBatchSelection,
 } from './batch'
 import { api, type SiteRow } from './helpers'
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 
 interface SiteTheme {
   id: string
@@ -47,6 +48,8 @@ interface SiteTheme {
   dark: boolean
   preview: [string, string, string]
 }
+
+type ChapterPaginationMode = 'off' | 'byWords' | 'byPages'
 
 interface SiteForm {
   name: string
@@ -62,6 +65,14 @@ interface SiteForm {
   isDefault: boolean
   status: boolean
   inLinkWheel: boolean
+  // 章节内容分页 (agent-P)
+  chapterPaginationMode: ChapterPaginationMode
+  chapterPaginationWords: number
+  chapterPaginationPages: number
+  chapterSeoAuto: boolean
+  chapterSeoTitleTemplate: string
+  chapterSeoDescTemplate: string
+  chapterSeoKeywordsTemplate: string
 }
 
 const emptyForm: SiteForm = {
@@ -78,6 +89,14 @@ const emptyForm: SiteForm = {
   isDefault: false,
   status: true,
   inLinkWheel: true,
+  // 章节内容分页默认关闭, 字数模式默认 3000, 页数模式默认 3 页
+  chapterPaginationMode: 'off',
+  chapterPaginationWords: 3000,
+  chapterPaginationPages: 3,
+  chapterSeoAuto: true,
+  chapterSeoTitleTemplate: '',
+  chapterSeoDescTemplate: '',
+  chapterSeoKeywordsTemplate: '',
 }
 
 export function SitesSection() {
@@ -145,6 +164,13 @@ export function SitesSection() {
       isDefault: s.isDefault,
       status: s.status,
       inLinkWheel: s.inLinkWheel ?? true,
+      chapterPaginationMode: (s.chapterPaginationMode as ChapterPaginationMode) || 'off',
+      chapterPaginationWords: s.chapterPaginationWords ?? 3000,
+      chapterPaginationPages: s.chapterPaginationPages ?? 3,
+      chapterSeoAuto: s.chapterSeoAuto ?? true,
+      chapterSeoTitleTemplate: s.chapterSeoTitleTemplate ?? '',
+      chapterSeoDescTemplate: s.chapterSeoDescTemplate ?? '',
+      chapterSeoKeywordsTemplate: s.chapterSeoKeywordsTemplate ?? '',
     })
     setDialogOpen(true)
   }
@@ -393,7 +419,16 @@ export function SitesSection() {
                   </div>
 
                   <div className="mt-3 flex items-center justify-between border-t border-zinc-800 pt-3">
-                    <span className="font-mono text-xs text-zinc-400">offset {s.offset}</span>
+                    <span className="font-mono text-xs text-zinc-400">
+                      offset {s.offset}
+                      {s.chapterPaginationMode && s.chapterPaginationMode !== 'off' && (
+                        <Badge variant="outline" className="ml-2 border-violet-700/60 bg-violet-950/30 text-[10px] text-violet-300">
+                          {s.chapterPaginationMode === 'byWords'
+                            ? `分页 · ${s.chapterPaginationWords ?? 3000}字/页`
+                            : `分页 · ${s.chapterPaginationPages ?? 3}页`}
+                        </Badge>
+                      )}
+                    </span>
                     <div className="flex gap-0.5">
                       <Button variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs text-zinc-400 hover:text-zinc-100" onClick={() => openEdit(s)}>
                         <Pencil className="h-3 w-3" />
@@ -530,6 +565,116 @@ export function SitesSection() {
               </div>
               <Switch checked={form.inLinkWheel} onCheckedChange={(v) => setForm({ ...form, inLinkWheel: v })} />
             </div>
+          </div>
+
+          {/* 章节内容分页 (agent-P) */}
+          <div className="mt-4 rounded-md border border-violet-900/40 bg-violet-950/10 p-3">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div>
+                <div className="text-xs font-semibold text-violet-300">章节内容分页</div>
+                <div className="text-[10px] text-zinc-500">将一章节内容拆为多页, 利于 SEO 与移动端阅读体验</div>
+              </div>
+              <RadioGroup
+                value={form.chapterPaginationMode}
+                onValueChange={(v) => setForm({ ...form, chapterPaginationMode: v as ChapterPaginationMode })}
+                className="grid grid-cols-3 gap-2"
+              >
+                {(['off', 'byWords', 'byPages'] as const).map((m) => (
+                  <Label
+                    key={m}
+                    className="flex cursor-pointer items-center gap-1.5 rounded border border-zinc-800 bg-zinc-950/60 px-2 py-1 text-[11px] text-zinc-300 hover:border-zinc-700"
+                    style={{
+                      borderColor: form.chapterPaginationMode === m ? 'rgb(139 92 246 / 0.5)' : undefined,
+                    }}
+                  >
+                    <RadioGroupItem value={m} id={`pgmode-${m}`} className="size-3" />
+                    {m === 'off' ? '关闭' : m === 'byWords' ? '按字数分页' : '按页数分页'}
+                  </Label>
+                ))}
+              </RadioGroup>
+            </div>
+
+            {form.chapterPaginationMode === 'byWords' && (
+              <div className="space-y-1.5">
+                <Label className="text-xs text-zinc-400">每页字数 <span className="text-zinc-600">(500 - 50000)</span></Label>
+                <Input
+                  type="number"
+                  min={500}
+                  max={50000}
+                  className="h-9 border-zinc-700 bg-zinc-950 text-sm"
+                  value={form.chapterPaginationWords}
+                  onChange={(e) =>
+                    setForm({ ...form, chapterPaginationWords: Math.min(50000, Math.max(500, Number(e.target.value) || 3000)) })
+                  }
+                />
+                <p className="text-[10px] text-zinc-600">按段落边界切分, 不会破段; 推荐移动端 1500-3000 字/页</p>
+              </div>
+            )}
+
+            {form.chapterPaginationMode === 'byPages' && (
+              <div className="space-y-1.5">
+                <Label className="text-xs text-zinc-400">强制分页数 <span className="text-zinc-600">(2 - 20)</span></Label>
+                <Input
+                  type="number"
+                  min={2}
+                  max={20}
+                  className="h-9 border-zinc-700 bg-zinc-950 text-sm"
+                  value={form.chapterPaginationPages}
+                  onChange={(e) =>
+                    setForm({ ...form, chapterPaginationPages: Math.min(20, Math.max(2, Number(e.target.value) || 3)) })
+                  }
+                />
+                <p className="text-[10px] text-zinc-600">将整章按段落数均分为 N 页; 短章节会自动合并(末页可短)</p>
+              </div>
+            )}
+
+            {form.chapterPaginationMode !== 'off' && (
+              <div className="mt-3 space-y-2 border-t border-zinc-800 pt-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-xs font-medium text-zinc-300">自动生成 SEO TDK</div>
+                    <div className="text-[10px] text-zinc-600">关闭后使用下方自定义模板</div>
+                  </div>
+                  <Switch
+                    checked={form.chapterSeoAuto}
+                    onCheckedChange={(v) => setForm({ ...form, chapterSeoAuto: v })}
+                  />
+                </div>
+                {!form.chapterSeoAuto && (
+                  <div className="space-y-2">
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-zinc-400">
+                        标题模板 <span className="text-zinc-600">占位符: {'{bookName}'} {'{chapterTitle}'} {'{page}'} {'{totalPages}'} {'{siteName}'}</span>
+                      </Label>
+                      <Input
+                        className="h-9 border-zinc-700 bg-zinc-950 text-sm"
+                        placeholder="例: {bookName} {chapterTitle} 第{page}页 - {siteName}"
+                        value={form.chapterSeoTitleTemplate}
+                        onChange={(e) => setForm({ ...form, chapterSeoTitleTemplate: e.target.value.slice(0, 500) })}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-zinc-400">描述模板</Label>
+                      <Textarea
+                        className="admin-scroll max-h-24 min-h-14 border-zinc-700 bg-zinc-950 text-sm"
+                        placeholder="例: {bookName} {chapterTitle} 第{page}页, 共{totalPages}页 - {siteName}"
+                        value={form.chapterSeoDescTemplate}
+                        onChange={(e) => setForm({ ...form, chapterSeoDescTemplate: e.target.value.slice(0, 500) })}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-zinc-400">关键词模板</Label>
+                      <Input
+                        className="h-9 border-zinc-700 bg-zinc-950 text-sm"
+                        placeholder="例: {bookName}, {chapterTitle}, 在线阅读"
+                        value={form.chapterSeoKeywordsTemplate}
+                        onChange={(e) => setForm({ ...form, chapterSeoKeywordsTemplate: e.target.value.slice(0, 500) })}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           <DialogFooter>

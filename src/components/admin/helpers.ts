@@ -198,6 +198,20 @@ export interface SiteRow {
   status: boolean
   /** 是否参与站群链轮(页脚互链); 缺省参与 — 旧数据可能缺字段 */
   inLinkWheel?: boolean
+  /** 章节内容分页模式: off | byWords | byPages (agent-P) */
+  chapterPaginationMode?: 'off' | 'byWords' | 'byPages'
+  /** byWords 模式: 每页字数 (500-50000) */
+  chapterPaginationWords?: number
+  /** byPages 模式: 强制拆分页数 (2-20) */
+  chapterPaginationPages?: number
+  /** 自动生成 SEO TDK */
+  chapterSeoAuto?: boolean
+  /** SEO 标题模板(占位符: {bookName} {chapterTitle} {page} {totalPages} {siteName}) */
+  chapterSeoTitleTemplate?: string
+  /** SEO 描述模板 */
+  chapterSeoDescTemplate?: string
+  /** SEO 关键词模板 */
+  chapterSeoKeywordsTemplate?: string
   createdAt: string
   updatedAt: string
 }

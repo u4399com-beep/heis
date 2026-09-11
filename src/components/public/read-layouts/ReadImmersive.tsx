@@ -15,6 +15,7 @@ import { Sk } from '../bits'
 import { isBookmarked, toggleBookmark } from './bookmarks'
 import {
   BookmarkToggle,
+  ChapterPaginationBar,
   ReaderSettingsPopover,
   TocDrawer,
   actualFontPx,
@@ -38,6 +39,8 @@ export function ReadImmersive({
   onLineHeight,
   onLetterSpacing,
   onToggleNight,
+  chapterPagination,
+  onChapterPage,
 }: ReadLayoutProps) {
   const { theme, navigate } = usePublic()
   const v = theme.vars
@@ -291,6 +294,15 @@ export function ReadImmersive({
             <ChevronRight className="h-4 w-4" aria-hidden />
           </button>
         </div>
+        {/* agent-P: 章节内容分页(站点开启且 totalPages>1 时渲染) */}
+        {chapterPagination && chapterPagination.mode !== 'off' && chapterPagination.totalPages > 1 && onChapterPage && (
+          <ChapterPaginationBar
+            pagination={chapterPagination}
+            onPage={onChapterPage}
+            theme={theme}
+            night
+          />
+        )}
       </footer>
 
       {/* 悬浮 Aa设置/书签 胶囊（不随滚动收纳, 常驻控制） */}

@@ -1063,6 +1063,8 @@ export function parseBook(html: string, baseUrl: string, pageRule: PageRule): Pa
     cover: cover ? absolutize(cover, baseUrl) : undefined,
     latestChapter,
     status: f.status || undefined,
+    // R7-17: 透传规则提取的 wordCount 字段(七猫/小雨 API 的 WordsCount 等)
+    wordCount: f.wordCount || undefined,
   }
 }
 

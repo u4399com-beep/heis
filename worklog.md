@@ -4001,3 +4001,407 @@ Stage Summary:
     behavior was effectively misuse; new behavior fixes the misuse)
   · All public API signatures unchanged (parseList/parseBook/parseToc/parseContent)
   · Existing rule tests (xiaoyu list/toc) confirmed working — 1397 chapters, list count > 0
+
+---
+Task ID: agent-Q-deep-audit
+Agent: fetcher.ts + runner.ts deep audit
+Task: Line-by-line bug hunt + memory leak + race condition audit
+
+Work Log:
+- Read /home/z/my-project/worklog.md (last ~400 lines) for prior agent context (agent-O-cleanup
+  consolidated sleep + tightened any→unknown; agent-N-parser added JSONPath features; agent-M-fetcher-phase3
+  fixed applyGlobalRateLimit over-shoot). Confirmed dev server UP at start (HTTP 401 on /api/admin/health,
+  307ms baseline).
+- Baseline check before edits: `bun run lint` → 0/0 ✓, `bunx tsc --noEmit` (excl examples/skills) → 0 ✓.
+- Read fetcher.ts (3759 lines, 9 chunks of 400-500 lines each) end-to-end. Read runner.ts (2068 lines,
+  5 chunks) end-to-end. Cross-referenced agent-K/M/O prior audits (memory bounds documented, race
+  conditions analyzed, throw paths verified).
+- Verified scope: only fetcher.ts + runner.ts modified (4 other concurrent agents working on parser.ts,
+  types.ts, components/public/*, prisma/schema.prisma — left untouched).
+
+Audit findings (per task focus areas):
+
+1) R7-16 KNOWN_MINI_SERVICE_PORTS whitelist (fetcher.ts:1650-1651):
+   - Security analysis: WHITELIST IS SAFE. loopbackBypassAllowed() guards on isLoopbackTarget()
+     (line 1637) FIRST — only 127.x.x.x/::1/localhost/*.localhost hosts reach the port check.
+     Non-loopback URLs (e.g. http://evil.com:3014/) are rejected at line 1637 before port whitelist.
+     Port 3010-3015 corresponds to documented mini-services (bqg713-proxy:3010, fetch-relay:3011,
+     scrapling-bridge:3012, xjp-proxy:3015, etc.) — all bind 127.0.0.1 + require AUTH_TOKEN env.
+     Any rule fetching 127.0.0.1:3010-3015 without contentProxyUrl config → SSRF guard allows, but
+     mini-service validates AUTH_TOKEN header (unauthorized → 401). No security hole. ACCEPTABLE.
+
+2) Memory leak audit (fetcher.ts):
+   - captchaCooldown Map: cap 5000 + stale cleanup (line 923-934) ✓
+   - globalRateStamps array: bounded by cfg.globalRateLimitPerMin (sanitized to [10, 100000]).
+     Pruned on every tryAcquire call. Max 100k entries × 8B = 800KB. Bounded ✓.
+     (Note: shift() in while-loop is O(n²) worst case when all entries expire at once, but bounded
+     by limit; performance issue not correctness bug. Left as-is — optimization not in scope.)
+   - inflightMap: cap 500 + TTL 30s + FIFO eviction (line 3178-3196) ✓
+   - cookieJar.jars: 5min prune + per-entry TTL (line 529-540) ✓
+   - ssrfDnsCache: cap 2000 FIFO (line 1578-1582) ✓
+   - tokenCache: cap 256 FIFO + TTL 30s (line 2979-2992) ✓
+   - tokenInflight Map: cleared in finally block (line 3075); dedup correct (sync get→set, no race) ✓
+   - domainUa: cap 200 FIFO (line 1250-1256) ✓
+   - sessionPersonalityMap: cap 200 FIFO (line 1088-1094) ✓
+   - proxyState: implicit cap 10 (MAX_PROXY_POOL) ✓
+   - cascadeState.recentFailTs: filtered on every push (line 2852) ✓
+   - healthCheckState: single object, not a Map ✓
+   All bounded. No new leaks found.
+
+3) Race conditions in concurrent fetchPageOnce sharing globalRateStamps:
+   - Verified: tryAcquire() is fully synchronous (no await between get/set/push). JavaScript
+     single-threaded cooperative async → no interleaving possible. agent-M-fetcher-phase3 already
+     fixed the over-shoot + thundering herd issues with jitter + re-check loop. No new races found.
+
+4) AbortController cleanup on all paths:
+   - fetchHttp: clearTimeout(timer) in finally (line 2310) ✓
+   - fetchViaCurl: killTimer cleared in error/close handlers (line 2416, 2424) ✓
+   - fetchBinary: clearTimeout(timer) in finally (line 3756) ✓
+   - checkProxyHealth: clearTimeout(timer) in finally (line 1964) ✓
+   - checkCurl: 5s timer cleared in error/close handlers (line 2340-2344) ✓
+   - checkRelay: AbortSignal.timeout(1500) auto-cleaned ✓
+   - fetchViaScraplingBridge: AbortSignal.timeout auto-cleaned ✓
+   - relayHop: uses caller's clientSignal (fetchHttp's AbortController) ✓
+   All paths clean.
+
+5) Throw paths context (URL, status, headers):
+   - fetchHttp: all throw sites attach status/bodyHtml/retryAfterMs/serverHeader/cfRay/cfMitigated
+     (line 2261-2298). Redirect loop error (line 2223) has no URL context but runner adds bookUrl
+     in catch log; acceptable.
+   - fetchViaCurl: status/bodyHtml/retryAfterMs/WAF headers attached (line 2490-2500). Other throws
+     (no curl, invalid URL, overflow, empty body, malformed) have descriptive messages.
+   - fetchPageOnce: CaptchaCooldown error has captchaType + captchaCooldownRemainingMs (line 3354-3360).
+     HTTP+browser fail errors have status + retryAfterMs (line 3644-3657).
+   All throw paths have sufficient context for runner.gateFetch categorization.
+
+6) contentProxyUrl path (fetcher.ts:3444-3478):
+   - Verified: when cfg.contentProxyUrl is set, proxyUrl is built via {url} placeholder replacement,
+     SSRF-checked (allowLoopback:true), fetched via fetchHttpWithCurlFallback, response parsed as
+     JSON {ok:true, content:string}, content split by \n and wrapped in <p> tags with HTML escape
+     (<, >, & escaped). Returns {html, engine:'http', blocked:false}. On any failure (SSRF reject,
+     fetch error, JSON parse fail, ok=false, content empty) → silent degrade to original URL fetch.
+     All paths correct, no leaks, no double-fetch.
+
+7) Degrade-native mode (browser fallback):
+   - renderWithBrowser (line 1286-1315): when Obscura fails, falls back to renderWithBrowserRaw
+     with same cfg + ua. Cookies from Obscura (if any) already stored in jar via cookieJar.store
+     (line 1302). Headers from buildHeaders reconstructed in renderWithBrowserRaw (line 1340).
+     No cookie/header loss on degrade. ✓
+   - BUG FOUND: pickProxyFor called twice (renderWithBrowser line 1287 + renderWithBrowserRaw
+     line 1322). See bug #4 below.
+
+8) Edge cases:
+   - Empty URL: assertSafeTarget catches URL parse fail (line 1601), returns {ok:false, reason}.
+   - Malformed URL: same path.
+   - Redirect loops: bounded by MAX_REDIRECT_HOPS=20 (line 2222).
+   - GBK detection: decodeBuffer upgrades gb2312/gbk → gb18030 (line 725), iconv.encodingExists
+     fallback for unknown charsets.
+   - Type coercion: all parseInt have radix 10/16; all Number() have || 0 or && X guards.
+   All clean.
+
+9) R7-17 wordCount fix (runner.ts):
+   - parsedWordCount parsed correctly (line 1008): parseInt with radix 10, non-digits stripped,
+     NaN→0 fallback. ✓
+   - bookData includes wordCount: parsedWordCount (line 1116). ✓
+   - Full-recrawl path: db.book.update with wordCount: parsedWordCount (line 1123). ✓
+   - BUG FOUND: line 1745 `wordCount: agg._sum.wordCount || 0` unconditionally overwrites
+     parsedWordCount with 0 when no chapters fetched. See bug #3 below.
+
+10) Incremental resume logic (runner.ts:568-601):
+   - Full mode: all Sets/Maps reset to empty. ✓
+   - Incremental mode: Sets loaded from progress JSON with type guards (Array.isArray + typeof
+     string filter). bookLastChapters loaded as Map with key/value type guards. ✓
+   - ongoingBookUrls + bookLastChapters correctly persisted and restored. ✓
+
+11) Memory bounds & race conditions on rt Sets:
+   - completedBookUrls/ongoingBookUrls/failedBookUrls: all use addToResumeSet (cap 50000 FIFO). ✓
+   - bookLastChapters: uses addToBookLastChapters (cap 50000 FIFO). ✓
+   - BUG FOUND: discoveredBookUrls uses raw rt.discoveredBookUrls.add(u) without cap check (line 679).
+     See bug #1 below.
+   - Race conditions: rt Sets are accessed within single executeTask loop (single-threaded JS).
+     No concurrent crawlOneBook calls share the same rt (each task has its own rt). ✓
+
+12) Task status transitions: pending→running→paused→stopped→done→error — all transitions verified
+   correct. pause on non-running returns failure. stop on paused works (sets running=false).
+   start on done/error works (epoch++). Circuit breaker cooldown prevents restart within 60s.
+   No invalid transitions found.
+
+13) Progress JSON atomicity: single db.task.update (line 1867-1870) is atomic in SQLite/Prisma.
+   No write-rename pattern needed. ✓
+
+14) Error categorization: transient (HostGateTimeout, AbortError from stop) not counted as error;
+   source timeout (isFetchTimeout) counted; other errors counted. Reasonable. ✓
+
+15) Cross-source dedup (runner.ts:1098-1103): isDefaultName || isDefaultAuthor → match by sourceUrl
+   only. Empty name → '未知书名' (via fallback chain) → isDefaultName=true → sourceUrl-only match.
+   No cross-contamination of default-named books. ✓
+
+16) Worker exit / maxRequests / recentLogs / snapshot:
+   - Worker exit: executeTask catch handles errors, writes 'error' status. ✓
+   - BUG FOUND: BudgetExceeded caught at book-level catch and treated as regular book error,
+     not terminating task. See bug #2 below.
+   - maxRequests: checked at gateFetch entry (line 893-898). ✓
+   - recentLogs: ring buffer cap 10 (MAX_RECENT_LOGS), pushRecentLog trims via splice. ✓
+   - snapshot(): returns correct shape with all documented fields. ✓
+
+Bugs found + fixed (4):
+
+1) src/lib/crawl/runner.ts:679 — discoveredBookUrls memory leak (HIGH):
+   Original: `rt.discoveredBookUrls.add(u)` without cap check. agent-B-runner introduced
+   addToResumeSet for completedBookUrls/ongoingBookUrls/failedBookUrls but missed discoveredBookUrls.
+   Long-running range tasks on站群 with millions of URLs → rt.discoveredBookUrls Set grows unbounded
+   (saveProgress caps persisted array at 50000 via slice, but in-memory Set is uncapped).
+   Fix: replaced with `addToResumeSet(rt.discoveredBookUrls, u)` — same FIFO cap 50000 + 10%
+   eviction as other resume Sets. Zero behavior change for tasks under 50000 discovered URLs.
+
+2) src/lib/crawl/runner.ts:781-800 — BudgetExceeded not propagated (HIGH):
+   Original: gateFetch throws BudgetExceeded (name='BudgetExceeded') when requestCount > maxRequests.
+   The book-level catch (line 775) has branches for isStale/isCircuitBreak/isFetchTimeout/AbortError/
+   HostGateTimeout, but NO branch for BudgetExceeded. It falls into the `else` branch which logs
+   `书籍采集失败` + stats.errors++ + saveProgress + continues to next book. Next book's gateFetch
+   immediately throws BudgetExceeded again → loop continues until bookQueue exhausted.
+   Result: maxRequests budget protection is ineffective — task continues consuming all books
+   (each adding 1 to errors), never enters 'error' terminal state, user can't see budget exhaustion
+   in UI. errors stat inflated by N (bookQueue.length).
+   Fix: added `else if (e?.name === 'BudgetExceeded') throw e` branch BEFORE the isCircuitBreak
+   branch, re-throwing to executeTask's outer catch → 'error' terminal state + autoRefresh
+   re-schedule. Also added BudgetExceeded-specific log message in outer catch (`⏹ HTTP 请求预算
+   耗尽...` instead of misleading `任务崩溃`). Zero behavior change for non-budget errors.
+
+3) src/lib/crawl/runner.ts:1755-1774 — wordCount overwrite bug (R7-17 follow-up, MEDIUM):
+   Original: `wordCount: agg._sum.wordCount || 0` unconditionally overwrites the parsedWordCount
+   (source-reported wordCount, e.g. 七猫/小雨 API's WordsCount field) written at line 1116/1123.
+   When ALL chapter fetches fail (site down/blocked/captcha cooldown), agg._count=0 and
+   agg._sum.wordCount=null → `null || 0` = 0. The source's reported wordCount (potentially
+   accurate) is lost, replaced with 0.
+   Fix: `const finalWordCount = agg._count > 0 ? (agg._sum.wordCount || 0) : (parsedWordCount || 0)`.
+   When chapters were fetched: use aggregate (actual accumulated words, most accurate).
+   When no chapters fetched: fall back to parsedWordCount (source-reported, closer to truth than 0).
+   Both missing: 0. Behavior change only when no chapters fetched — previously wordCount=0, now
+   wordCount=parsedWordCount (source's value). Fully-fetched books unaffected (aggregate > 0).
+
+4) src/lib/crawl/fetcher.ts:1286-1322 — pickProxyFor double-count (MEDIUM):
+   Original: renderWithBrowser calls `pickProxyFor(url, cfg)` at line 1287 just to check if a
+   proxy is configured (truthy = skip Obscura). If truthy, calls renderWithBrowserRaw which
+   calls `pickProxyFor(url, cfg)` AGAIN at line 1322 to get the actual proxy.
+   Two issues:
+   (a) Double markProxyUsed: first call increments useCount for proxy P1 (never actually used);
+       second call increments useCount for proxy P2 (actually used). P1's useCount is inflated.
+   (b) P1 ≠ P2 possible: random/round-robin/least-used strategies may select different proxies
+       on consecutive calls. The proxy "checked" in renderWithBrowser is NOT the proxy "used"
+       in renderWithBrowserRaw — the check is semantically meaningless.
+   Impact: useCount statistics skewed → least-used/round-robin load balancing degraded (proxy
+   that was never actually used gets higher useCount, pulling future selections away from it
+   unfairly). markProxySucceeded/markProxyFailed also operate on P2, but P1's inflated useCount
+   never gets corrected.
+   Fix: computed proxy ONCE in renderWithBrowser, passed as parameter to renderWithBrowserRaw.
+   New signature: `renderWithBrowserRaw(url, cfg, ua, proxy: string)`. Removed the internal
+   pickProxyFor call. Zero behavior change for Obscura path (no proxy needed). Zero change for
+   no-proxy-configured path (pickProxyFor returns '' both times in original).
+
+Cleanup:
+- No dead code removed (codebase is well-maintained per agent-O audit).
+- loadConfig defensive guard added (runner.ts:529): `if (!task.rule) return null` — schema marks
+  rule relation as required (no `?`), but manual SQL/migration could leave orphan task with
+  ruleId pointing to deleted rule. Prisma include returns null in that case (doesn't throw),
+  and `task.rule.config` would throw TypeError → executeTask outer catch → 'error' terminal
+  state with cryptic message. Guard returns null → executeTask early-exits cleanly.
+- BudgetExceeded log message improved: `⏹ HTTP 请求预算耗尽...` (warn level) instead of
+  `任务崩溃: HTTP 请求预算耗尽...` (error level) — budget exhaustion is deliberate stop, not
+  crash. Status still written as 'error' (task is terminated, autoRefresh may re-schedule).
+
+Quality Gates:
+- `bun run lint`: 0 errors / 0 warnings ✓ (verified on fetcher.ts + runner.ts individually
+  AND full project lint — concurrent agents' component lint errors resolved by end of session)
+- `bunx tsc --noEmit 2>&1 | grep -v "examples\|skills" | wc -l`: 0 ✓
+- Dev server UP: dev.log shows HTTP 401 on /api/admin/health (29ms response, admin auth gate
+  active, server responsive). Note: dev.log contains a PrismaClientValidationError for
+  `chapterPaginationMode` field on /api/public/sites — this is from another concurrent agent's
+  schema migration (prisma/schema.prisma modified, sites route not yet updated). NOT from my
+  changes — my files (fetcher.ts, runner.ts) compile clean and have no runtime errors.
+
+Stage Summary:
+- Bugs fixed: 4
+  · runner.ts:679 discoveredBookUrls memory leak (uncapped Set.add → addToResumeSet with FIFO
+    cap 50000). HIGH severity — OOM risk on long-running站群 tasks.
+  · runner.ts:785 BudgetExceeded not propagated (book-level catch swallowed → task never
+    terminates on budget exhaustion, errors stat inflated N×). HIGH severity — maxRequests
+    budget protection was effectively non-functional.
+  · runner.ts:1763 wordCount overwrite (agg._sum.wordCount || 0 → 0 when no chapters fetched,
+    losing source-reported parsedWordCount). MEDIUM severity — R7-17 follow-up, wordCount=0
+    displayed for failed-fetch books instead of source's value.
+  · fetcher.ts:1292 pickProxyFor double-count (useCount inflated + load balancing skewed by
+    phantom proxy selection). MEDIUM severity — proxy rotation statistics inaccurate.
+- Security notes: R7-16 KNOWN_MINI_SERVICE_PORTS whitelist is SAFE — isLoopbackTarget guard
+  ensures only 127.x/::1/localhost hosts reach port check; mini-services require AUTH_TOKEN env.
+  No security hole. Documented.
+- Defensive guard added: loadConfig null-rule check (runner.ts:529) — prevents TypeError on
+  orphan tasks (rule deleted via manual SQL).
+- Lint: 0/0 ✓ ; TSC: 0 errors ✓ ; Dev server: clean for my files ✓ (concurrent agent's
+  schema migration error in /api/public/sites is out of scope)
+- Zero-regression: all fixes are additive (new branches, new parameters, new fallbacks).
+  No existing behavior changed for non-error paths. BudgetExceeded propagation only activates
+  when maxRequests > 0 AND requestCount exceeds budget (previously broken, now fixed). wordCount
+  fallback only activates when agg._count === 0 (no chapters fetched). pickProxyFor dedup
+  only affects browser-render path with proxy configured.
+
+---
+Task ID: agent-P-chapter-pagination
+Agent: Chapter content pagination + SEO TDK feature
+Task: Site-level pagination config + public API + reader UI
+
+Work Log:
+- Read /home/z/my-project/worklog.md (last ~300 lines) for prior agent context (agent-O-cleanup
+  consolidated sleep + tightened any→unknown; agent-N-parser added JSONPath features + table
+  extraction; baseline dev server UP at port 3000).
+- Inspected all in-scope files before edits:
+  · prisma/schema.prisma — Site model had 17 fields, no pagination config
+  · src/app/api/admin/sites/route.ts (73 lines) — POST builds siteData dict; GET returns all sites
+  · src/app/api/admin/sites/[id]/route.ts (81 lines) — PUT with selective field updates
+  · src/app/api/_lib/http.ts (129 lines) — has clampInt/str/isPlainObject/httpUrl/safeJoin;
+    missing enum-string validator
+  · src/components/admin/SitesSection.tsx (567 lines) — site edit dialog with TDK/GEO/链轮; no
+    pagination UI; SiteForm interface
+  · src/components/public/ReadView.tsx (389 lines) — uses fetchChapter(id) single-arg; useSiteSEO
+    with hardcoded TDK templates
+  · src/app/api/public/chapter/route.ts (55 lines) — returns full content; no pagination
+  · src/components/public/read-layouts/shared.tsx — ReadLayoutProps interface + ChapterDeco/etc
+  · All 4 read layouts (ReadClassic/ReadImmersive/ReadPaginated/ReadPili) — each has its own
+    chapter nav (上一章/下一章/目录/回顶部)
+
+Schema changes (prisma/schema.prisma — Site model):
+- chapterPaginationMode String @default("off") — values: "off" | "byWords" | "byPages"
+- chapterPaginationWords Int @default(3000) — 500-50000 words per page (byWords mode)
+- chapterPaginationPages Int @default(3) — 2-20 pages (byPages mode)
+- chapterSeoAuto Bool @default(true) — auto-generate SEO TDK
+- chapterSeoTitleTemplate String @default("") — max 500 chars, placeholders: {bookName} {chapterTitle} {page} {totalPages} {siteName}
+- chapterSeoDescTemplate String @default("")
+- chapterSeoKeywordsTemplate String @default("")
+- bun run db:push succeeded → Prisma Client v6.19.2 regenerated (190ms), DB synced.
+
+Validation helpers (src/app/api/_lib/http.ts):
+- Added `enumIn<T extends string>(v, allowed: readonly T[], def: T): T` — string enum validator
+  returns def when v not in allowed list; used for chapterPaginationMode.
+
+Admin API changes:
+- src/app/api/admin/sites/route.ts (POST):
+  · Added PAGINATION_MODES const + PaginationMode type
+  · Added paginationFields(body) helper extracting all 7 fields with validation
+    (enumIn + clampInt(500-50000) + clampInt(2-20) + !! + str×3 max 500)
+  · Spread `...paginationFields(body)` into siteData on create
+- src/app/api/admin/sites/[id]/route.ts (PUT):
+  · Added PAGINATION_MODES const (sync with POST)
+  · Conditional field updates: each of 7 fields set on data{} only when body has the key
+    (so partial PUTs don't clobber existing settings)
+- src/app/api/public/sites/route.ts (GET):
+  · Added all 7 new fields to select{} — public side reads them for reader UI
+
+Public chapter API (src/app/api/public/chapter/route.ts):
+- New file structure: keep backward-compat (no ?site= → mode='off', returns full content,
+  totalPages=1, currentPage=1)
+- Accept ?page=N query param; clamped to [1, totalPages]
+- Accept ?site=ID → query Site for chapterPaginationMode/Words/Pages + SEO templates
+- splitParagraphs(html): splits content by </p> tags (or \n\n fallback) into array
+- paginateByWords(paragraphs, wordsPerPage): accumulates paragraphs until >N chars (without
+  breaking paragraphs), then starts new page; word count uses stripped-tag length
+- paginateByPages(paragraphs, totalPages): evenly slices paragraphs into N pages, last page
+  absorbs remainder
+- Returns extended payload: chapter.content (current page only) + book + prev + next +
+  pagination{mode,totalPages,currentPage,wordsPerPage,pagesTarget} + seo{auto,titleTemplate,
+  descTemplate,keywordsTemplate}
+- Cache-Control 60s/120s preserved (withCache)
+
+Admin UI (src/components/admin/SitesSection.tsx):
+- Extended SiteForm interface with 7 new fields + ChapterPaginationMode type
+- Extended emptyForm with defaults (mode='off', words=3000, pages=3, auto=true, templates='')
+- Extended openEdit() to load existing site values (with ?? fallbacks for old data)
+- New "章节内容分页" section in dialog (purple-tinted border to distinguish from main TDK):
+  · RadioGroup with 3 options (关闭/按字数分页/按页数分页)
+  · Conditional number inputs based on mode:
+    - byWords: 字数 (500-50000) with hint "按段落边界切分, 不会破段"
+    - byPages: 强制分页数 (2-20) with hint "将整章按段落数均分为 N 页"
+  · Switch "自动生成 SEO TDK"
+  · When unchecked: 3 textareas (title/desc/keywords templates) with placeholder showing
+    占位符 {bookName} {chapterTitle} {page} {totalPages} {siteName}
+- Site card badge: violet "分页 · N字/页" or "分页 · N页" indicator when mode != 'off'
+- Save flow uses `{ ...form }` spread, so new fields auto-included in PUT/POST body
+
+Public reader UI (src/components/public/ReadView.tsx):
+- Added page state (default 1, reset on chapterId change)
+- fetchChapter(id, page, site.id) — passes ?page=N & ?site= to backend
+- useEffect dep array extended with [page, site.id, site.chapterPaginationMode]
+- After fetch, sync local page state to backend-clamped currentPage (defensive against
+  client-side drift)
+- onChapterPage(p): clamps p to [1, totalPages]; smooth-scrolls to top; sets page state
+- SEO TDK rendering (3 useMemos):
+  · seoTitle: if !seo.auto && titleTemplate → renderSeoTemplate; else auto mode uses
+    `${chapterTitle}_${bookName} - ${siteName}` + (when multi-page) " 第{page}页"
+  · seoDescription: similar pattern with wordCount + page indicator
+  · seoKeywords: template or fall back to book.keywords
+- canonicalPath: when multi-page, appends &page=N (distinct URL per page)
+- JSON-LD Article url: also includes &page when paginated
+- ChapterPaginationBar passed to all 4 read layouts via shared{} object
+
+Read layouts (4 files updated):
+- shared.tsx: extended ReadLayoutProps with chapterPagination + onChapterPage (both optional);
+  added new ChapterPaginationBar component (theme-vars-styled, ellipsis for >7 pages,
+  prev/next + page indicator "第 X / Y 页" + quick-jump number buttons)
+- ReadClassic.tsx: imports ChapterPaginationBar; renders bar after existing 上一章/目录/下一章/
+  回顶部 nav row
+- ReadImmersive.tsx: imports ChapterPaginationBar; renders bar inside fixed footer (below
+  the prev/next chapter buttons); night=true forced (immersive is always dark)
+- ReadPaginated.tsx: imports ChapterPaginationBar; renders bar after bottom nav; coexists
+  with CSS column-based visual pagination (server-side split complements visual paging
+  for very long chapters)
+- ReadPili.tsx: imports ChapterPaginationBar; renders bar inside article (with pb-16 wrapper
+  to clear the fixed bottom chapter-control bar)
+
+Public types & data (src/components/public/types.ts + data.ts):
+- SiteInfo extended with 7 new optional fields (matching public/sites response shape)
+- ChapterData extended with `pagination?: { mode, totalPages, currentPage, wordsPerPage?, pagesTarget? }`
+  and `seo?: { auto, titleTemplate, descTemplate, keywordsTemplate }`
+- fetchChapter signature: (id, page?, siteId?) — backward compatible (page/siteId optional)
+- src/components/admin/helpers.ts SiteRow extended with same 7 fields for admin UI
+
+Quality Gates:
+- bun run lint: 0 errors / 0 warnings ✓
+- bunx tsc --noEmit | grep -v "examples|skills" | wc -l: 0 ✓
+- bun run db:push: succeeded (15ms + generate 190ms) ✓
+- Dev server UP after restart (port 3000): health 200 in 28ms ✓
+- End-to-end test:
+  · byWords mode (500 chars/page) → split 6 pages, different content per page ✓
+  · byPages mode (force 3 pages) → 3 pages with different content ✓
+  · Out-of-range ?page=999 → clamped to last page (currentPage=6) ✓
+  · off mode → full content (3528 chars), totalPages=1 (backward compat) ✓
+  · SEO templates returned intact from API; ReadView renderSeoTemplate substitutes
+    {bookName}={我曝光前世惊炸全网} {chapterTitle}={第1章 时间循环} {page}=2
+    {totalPages}=6 {siteName}=测试站点 → title becomes
+    "我曝光前世惊炸全网 第1章 时间循环 第2页 - 测试站点" ✓
+- Site card pagination badge renders correctly when mode != 'off'
+
+Stage Summary:
+- Schema fields added (7): chapterPaginationMode, chapterPaginationWords,
+  chapterPaginationPages, chapterSeoAuto, chapterSeoTitleTemplate,
+  chapterSeoDescTemplate, chapterSeoKeywordsTemplate
+- API endpoints modified:
+  · POST /api/admin/sites — accepts 7 new fields with validation (enum + clampInt + str)
+  · PUT /api/admin/sites/[id] — accepts 7 new fields (conditional update)
+  · GET /api/public/sites — returns 7 new fields in select{}
+  · GET /api/public/chapter — supports ?page=N & ?site=ID; returns pagination{} + seo{} envelope
+- UI components added/modified:
+  · SitesSection.tsx — "章节内容分页" section with RadioGroup (3 modes) + conditional
+    number inputs + Switch (auto/manual SEO) + 3 template textareas + placeholder hints
+  · ReadView.tsx — page state + per-page fetch + 3 SEO useMemo renderers + canonicalPath
+    with page param + JSON-LD URL with page param
+  · shared.tsx — ChapterPaginationBar component (theme-vars-styled, ellipsis pagination)
+  · All 4 read layouts (Classic/Immersive/Paginated/Pili) — render ChapterPaginationBar
+    when totalPages > 1
+- Lint `bun run lint`: 0/0 ✓
+- TSC `bunx tsc --noEmit` (excl examples/skills): 0 errors ✓
+- Dev server: clean (no errors after hot reload) ✓
+- Backward compatibility:
+  · SiteForm/emptyForm defaults preserve "off" mode → existing sites see zero behavior change
+  · Public chapter API without ?site= → mode='off' (backward compat) → full content + totalPages=1
+  · fetchChapter() signature extends with optional args (existing callers unaffected)
+  · ReadLayoutProps new fields are optional (existing layouts that don't render bar still work)
+  · All 7 schema fields have @default → existing sites in DB get safe defaults

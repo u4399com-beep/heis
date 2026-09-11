@@ -354,6 +354,9 @@ export interface ParsedBook {
   latestChapter?: string
   /** 源站状态字段原文(经 smart.detectCompleteFromText 判定后落 Book.status: unknown|ongoing|completed) */
   status?: string
+  /** R7-17: 源站字数(规则提取的 wordCount 字段, 如七猫/小雨 API 的 WordsCount)
+   *  纯数字字符串, runner 解析为 int 落 Book.wordCount; 未提取时 undefined, runner 走章节累计口径 */
+  wordCount?: string
 }
 
 /** 章节内容解析结果(parseContent 输出) */

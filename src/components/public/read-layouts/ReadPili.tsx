@@ -18,6 +18,7 @@ import {
   BookmarkToggle,
   ChapterDeco,
   ChapterEndDeco,
+  ChapterPaginationBar,
   ReaderSettingsPopover,
   TocDrawer,
   actualFontPx,
@@ -40,6 +41,8 @@ export function ReadPili({
   onLineHeight,
   onLetterSpacing,
   onToggleNight,
+  chapterPagination,
+  onChapterPage,
 }: ReadLayoutProps) {
   const { theme, navigate } = usePublic()
   const v = theme.vars
@@ -267,6 +270,18 @@ export function ReadPili({
                   <ChevronRight className="h-4 w-4" aria-hidden />
                 </button>
               </nav>
+
+              {/* agent-P: 章节内容分页(站点开启且 totalPages>1 时渲染; pb-12 让位固定底栏) */}
+              {chapterPagination && chapterPagination.mode !== 'off' && chapterPagination.totalPages > 1 && onChapterPage && (
+                <div className="pb-16">
+                  <ChapterPaginationBar
+                    pagination={chapterPagination}
+                    onPage={onChapterPage}
+                    theme={theme}
+                    night={night}
+                  />
+                </div>
+              )}
             </>
           )}
         </article>

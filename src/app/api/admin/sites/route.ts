@@ -2,14 +2,43 @@
 import { db } from '@/lib/db'
 import { ok, fail, readBody } from '@/lib/api'
 import { getThemeById } from '@/lib/crawl/themes'
-import { withGuard, str, clampInt } from '../../_lib/http'
+import { withGuard, str, clampInt, enumIn } from '../../_lib/http'
 
 /** 域名格式: 支持多级域名 + 可选端口; 另放行 localhost[:port](种子默认站即此形态, 旧正则误拒致默认站无法回存) */
 const DOMAIN_RE = /^(localhost(:\d{1,5})?|[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\d{1,5})?)$/
 
+/** 章节内容分页模式白名单 */
+const PAGINATION_MODES = ['off', 'byWords', 'byPages'] as const
+type PaginationMode = (typeof PAGINATION_MODES)[number]
+
+/** 章节分页 + SEO 模板字段集合(POST 创建 / PUT 更新共用) */
+interface PaginationFields {
+  chapterPaginationMode: PaginationMode
+  chapterPaginationWords: number
+  chapterPaginationPages: number
+  chapterSeoAuto: boolean
+  chapterSeoTitleTemplate: string
+  chapterSeoDescTemplate: string
+  chapterSeoKeywordsTemplate: string
+}
+
 function validTheme(raw: unknown): string {
   const id = str(raw, 50).trim()
   return getThemeById(id) ? id : 'aurora'
+}
+
+/** 章节分页配置统一抽取(POST 创建 / PUT 更新共用) */
+function paginationFields(body: unknown): PaginationFields {
+  const b = (body ?? {}) as Record<string, unknown>
+  return {
+    chapterPaginationMode: enumIn(b?.chapterPaginationMode, PAGINATION_MODES, 'off'),
+    chapterPaginationWords: clampInt(b?.chapterPaginationWords, 3000, 500, 50_000),
+    chapterPaginationPages: clampInt(b?.chapterPaginationPages, 3, 2, 20),
+    chapterSeoAuto: b?.chapterSeoAuto !== false,
+    chapterSeoTitleTemplate: str(b?.chapterSeoTitleTemplate, 500),
+    chapterSeoDescTemplate: str(b?.chapterSeoDescTemplate, 500),
+    chapterSeoKeywordsTemplate: str(b?.chapterSeoKeywordsTemplate, 500),
+  }
 }
 
 export async function GET() {
@@ -48,6 +77,8 @@ export async function POST(req: Request) {
       status: body?.status !== false,
       // 站群链轮: 缺省参与, 仅显式 false 才退出
       inLinkWheel: body?.inLinkWheel !== false,
+      // 章节内容分页 + SEO 模板
+      ...paginationFields(body),
     }
     let site
     try {

@@ -84,9 +84,13 @@ export function fetchBook(id: string, tocPage = 1, tocSize = 100): Promise<BookD
   return get<BookDetailData>(`/api/public/book?${sp.toString()}`)
 }
 
-/** 章节正文 + 上一章/下一章 */
-export function fetchChapter(id: string): Promise<ChapterData> {
-  return get<ChapterData>(`/api/public/chapter?id=${encodeURIComponent(id)}`)
+/** 章节正文 + 上一章/下一章 + 分页元数据 (agent-P: 支持 ?page=N + ?site=) */
+export function fetchChapter(id: string, page?: number, siteId?: string): Promise<ChapterData> {
+  const sp = new URLSearchParams()
+  sp.set('id', id)
+  if (page && page > 1) sp.set('page', String(page))
+  if (siteId) sp.set('site', siteId)
+  return get<ChapterData>(`/api/public/chapter?${sp.toString()}`)
 }
 
 /** 全站搜索 */
