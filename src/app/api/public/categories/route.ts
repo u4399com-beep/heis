@@ -1,7 +1,7 @@
 // 前台分类图文展示 — 非空分类 + 每分类字数最高带封面书作代表(首页 6 分类封面卡)
 import { db } from '@/lib/db'
 import { ok } from '@/lib/api'
-import { withGuard, clampInt } from '../../_lib/http'
+import { withGuard, clampInt, withCache } from '../../_lib/http'
 
 export async function GET(req: Request) {
   return withGuard(async () => {
@@ -43,6 +43,6 @@ export async function GET(req: Request) {
       }),
     )
 
-    return ok({ items })
+    return withCache(ok({ items }), 300, 600)
   })
 }

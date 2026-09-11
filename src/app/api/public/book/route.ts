@@ -1,7 +1,7 @@
 // 前台书籍详情 + 目录(TDK/SEO数据源)
 import { db } from '@/lib/db'
 import { ok, fail } from '@/lib/api'
-import { withGuard, str, clampInt } from '../../_lib/http'
+import { withGuard, str, clampInt, withCache } from '../../_lib/http'
 
 export async function GET(req: Request) {
   return withGuard(async () => {
@@ -35,7 +35,7 @@ export async function GET(req: Request) {
       }),
     ])
 
-    return ok({
+    return withCache(ok({
       book: {
         id: book.id,
         name: book.name,
@@ -58,6 +58,6 @@ export async function GET(req: Request) {
       tocTotalPages: Math.ceil(total / tocSize) || 1,
       chapters,
       tags,
-    })
+    }))
   })
 }

@@ -2,7 +2,7 @@
 import { db } from '@/lib/db'
 import { ok, fail } from '@/lib/api'
 import { readChapterTxt } from '@/lib/crawl/storage'
-import { withGuard, str } from '../../_lib/http'
+import { withGuard, str, withCache } from '../../_lib/http'
 
 export async function GET(req: Request) {
   return withGuard(async () => {
@@ -38,7 +38,7 @@ export async function GET(req: Request) {
       db.chapter.findFirst({ where: { bookId: ch.bookId, idx: { gt: ch.idx } }, orderBy: { idx: 'asc' }, select: { id: true, title: true } }),
     ])
 
-    return ok({
+    return withCache(ok({
       chapter: {
         id: ch.id,
         idx: ch.idx,
@@ -50,6 +50,6 @@ export async function GET(req: Request) {
       book: ch.book,
       prev,
       next,
-    })
+    }), 60, 120)
   })
 }

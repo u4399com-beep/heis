@@ -72,6 +72,10 @@ interface TaskRuntime {
   /** agent-B-runner(请求预算): 单任务 HTTP 请求预算上限(从 task.fetchConfig.maxRequests 读取)。
    *  0=不限; >0 时 requestCount 超过则中止任务(防失控)。在 executeTask 入口加载 */
   maxRequests: number
+  /** agent-K-crawl-phase2(验证码计数): 本任务累计命中验证码次数(hCaptcha/Turnstile/reCAPTCHA/GeeTest)。
+   *  fetcher 在 FetchResult.captchaDetected=true 时返回, gateFetch 检测后 rt.captchaEncountered++;
+   *  供 snapshot 端点暴露给 UI + 与 fetcher.getCaptchaEncounteredCount() 进程级计数对照 */
+  captchaEncountered: number
 }
 
 interface TaskProgress {
@@ -275,6 +279,8 @@ export class TaskRunner {
     memResumeSetsSize: number
     recentLogs: { level: string; message: string; ts: number }[]
     failedBookUrlsCount: number
+    /** agent-K-crawl-phase2: 本任务累计验证码命中次数(供 UI 实时显示 + 报警阈值) */
+    captchaEncountered: number
   } | null {
     const rt = this.runtimes.get(taskId)
     if (!rt) return null
@@ -291,6 +297,7 @@ export class TaskRunner {
         rt.ongoingBookUrls.size + rt.failedBookUrls.size + rt.bookLastChapters.size,
       recentLogs: rt.recentLogs.slice(-MAX_RECENT_LOGS),
       failedBookUrlsCount: rt.failedBookUrls.size,
+      captchaEncountered: rt.captchaEncountered,
     }
   }
 
@@ -436,6 +443,7 @@ export class TaskRunner {
       runStartedAt: 0,
       currentUrl: '',
       maxRequests: 0,
+      captchaEncountered: 0,
     }
     // R3-10: 每次进入 controlInner 都更新 lastActiveAt, 供 pruneRuntimesIfNeeded 判定
     // "僵尸暂停"(paused + 1h 未活跃); 无 operation 直接 update 触发顺序避免 await 间隙
@@ -884,6 +892,12 @@ export class TaskRunner {
       const res = await fetchPage(url, cfg)
       // agent-B-runner(快照): 累计抓取字节数(响应体长度, 供 snapshot 展示带宽)
       if (rt) rt.bytesFetched += res?.html?.length || 0
+      // agent-K-crawl-phase2(验证码计数): fetcher 检测到验证码时返回 captchaDetected=true;
+      // 此处 ++ 让 snapshot 暴露给 UI(验证码命中报警阈值)
+      if (rt && res?.captchaDetected) {
+        rt.captchaEncountered++
+        await this.log(taskId, 'warn', `验证码命中 ${res.captchaType ?? 'unknown'}: ${url.slice(0, 160)} (host 进入冷却期)`)
+      }
       if (res.blocked && parseJsonBody(res.html) === undefined) {
         // zz-b: 429 特征壳页 → 限流冷却而非连败降额(降额链只对 403/验证码等真拦截特征);
         // ab-b: 壳页路径无响应头可抢救, 维持缺省 → 30s 兜底(精确 Retry-After 走下方抛错路径)

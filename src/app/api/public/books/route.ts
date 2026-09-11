@@ -1,7 +1,7 @@
 // 前台书籍列表 — 支持站群偏移量/分类/搜索/分页
 import { db } from '@/lib/db'
 import { ok } from '@/lib/api'
-import { withGuard, str, likeSafe, clampInt } from '../../_lib/http'
+import { withGuard, str, likeSafe, clampInt, withCache } from '../../_lib/http'
 
 export async function GET(req: Request) {
   return withGuard(async () => {
@@ -54,7 +54,7 @@ export async function GET(req: Request) {
       }),
     ])
 
-    return ok({
+    return withCache(ok({
       total: Math.max(0, total - effectiveOffset),
       page,
       size,
@@ -75,6 +75,6 @@ export async function GET(req: Request) {
             updatedAt: b.updatedAt,
           })),
       note: skipCapped ? '已超出最大可分页深度(10000), 请使用搜索或分类筛选缩小范围' : undefined,
-    })
+    }))
   })
 }

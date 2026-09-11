@@ -10,11 +10,13 @@
 //
 // 协议:
 //   GET  /health → { ok: true, runtime: 'bun' }
-//   POST /fetch   body: { url, headers: Record<string,string>, proxy?, timeoutMs? }
+//   POST /fetch   body: { url, headers: Record<string,string>, proxy?, timeoutMs?, method? }
 //                 → 200 { status, headers: [k,v][], setCookie: string[], bodyB64 }
 //                    (目标侧所有响应 —— 含 3xx/4xx/5xx —— 均忠实转发为 200 信封,
 //                     redirect:'manual' 不跟随, 引擎逐跳循环全权处理)
 //                 → 502 { relayError } 仅中继层失败(不可达目标/代理协议不支持/超时)
+//   POST /fetch   body: { ..., method: 'HEAD' }  (agent-L: HEAD 廉价存在性检查,
+//                 仅返回 status + headers, 不下载 body, bodyB64='' 节省带宽)
 //
 // 安全: hostname 钉 127.0.0.1(不对外); url 仅 http/https; 请求头键经安全名单过滤;
 //       请求体/响应体均流式限量读(1MB/20MB, ss-d: 超限即取消不全量缓冲);
@@ -40,7 +42,7 @@ import {
   sanitizeError,
 } from '../_shared/server'
 
-const PORT = 3011
+const PORT = Number(process.env.PORT || 3011)
 const RELAY_MAX_BODY_BYTES = 20 * 1024 * 1024
 const RELAY_MAX_REQUEST_BYTES = 1024 * 1024
 // agent-F: 任务硬要求 30s 上限(原 120s)。慢站场景由引擎侧重试承担, 桥内不再长等待。
@@ -110,6 +112,10 @@ interface FetchBody {
   headers?: unknown
   proxy?: unknown
   timeoutMs?: unknown
+  /** agent-L: 上游 HTTP 方法支持。默认 GET。
+   *  支持 'HEAD' 用于廉价 URL 存在性检查(只回 status+headers, 不下载 body)。
+   *  其他非 GET/HEAD 值一律归 GET(中继桥语义: 不暴露写方法给上游)。 */
+  method?: unknown
 }
 
 /** 日志脱钉: 仅 host+path(查询串可能含 token, 不落日志) */
@@ -174,6 +180,9 @@ createBridgeServer({
       Math.max(typeof body.timeoutMs === 'number' && body.timeoutMs > 0 ? body.timeoutMs : 20_000, 1000),
       RELAY_MAX_TIMEOUT_MS,
     )
+    // agent-L: HEAD 方法支持(廉价 URL 存在性检查; 其他非 GET/HEAD 归 GET)
+    const rawMethod = typeof body.method === 'string' ? body.method.toUpperCase() : 'GET'
+    const upstreamMethod: string = rawMethod === 'HEAD' ? 'HEAD' : 'GET'
 
     const headers: Record<string, string> = {}
     if (body.headers && typeof body.headers === 'object' && !Array.isArray(body.headers)) {
@@ -186,12 +195,35 @@ createBridgeServer({
     const startedAt = Date.now()
     try {
       const init: RequestInit & { proxy?: string } = {
+        method: upstreamMethod,
         headers,
         redirect: 'manual',
         signal: AbortSignal.timeout(timeoutMs),
       }
       if (proxy) init.proxy = proxy
       const res = await fetch(url, init)
+
+      // agent-L: HEAD 方法只回 status+headers, 不下载 body(节省带宽)
+      if (upstreamMethod === 'HEAD') {
+        const hdrs: [string, string][] = []
+        res.headers.forEach((v, k) => {
+          if (k.toLowerCase() === 'set-cookie') return
+          hdrs.push([k, v])
+        })
+        const setCookie: string[] =
+          typeof (res.headers as unknown as { getSetCookie?: () => string[] }).getSetCookie === 'function'
+            ? (res.headers as unknown as { getSetCookie: () => string[] }).getSetCookie().map(safeHeaderValue)
+            : []
+        console.log(`[fetch-relay] HEAD ${res.status} ${safeHostPath(url)} (${Date.now() - startedAt}ms)`)
+        return Response.json({
+          method: 'HEAD',
+          status: res.status,
+          headers: hdrs,
+          setCookie,
+          bodyB64: '',  // HEAD 无 body
+        })
+      }
+
       // ss-d: 流式限量读响应体(超限即 cancel, 不再全量缓冲后才查上限)
       const upBody = await readBodyCapped(res.body, RELAY_MAX_BODY_BYTES)
       if (!upBody.ok) {
@@ -218,7 +250,7 @@ createBridgeServer({
     } catch (e) {
       const msg = sanitizeError(e)
       // ss-d: 中继层失败留档(仅 host+path, 不落全 URL —— 目标 URL 查询串可能含 token)
-      console.log(`[fetch-relay] FAIL ${safeHostPath(url)} (${Date.now() - startedAt}ms): ${msg}`)
+      console.log(`[fetch-relay] FAIL ${upstreamMethod} ${safeHostPath(url)} (${Date.now() - startedAt}ms): ${msg}`)
       return Response.json({ relayError: msg }, { status: 502 })
     }
   },

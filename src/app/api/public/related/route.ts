@@ -3,7 +3,7 @@
 // 不修改 /api/public/book (约束); 独立端点供 BookView "相关推荐" 区块消费
 import { db } from '@/lib/db'
 import { ok, fail } from '@/lib/api'
-import { withGuard, str, clampInt } from '../../_lib/http'
+import { withGuard, str, clampInt, withCache } from '../../_lib/http'
 
 export async function GET(req: Request) {
   return withGuard(async () => {
@@ -75,6 +75,6 @@ export async function GET(req: Request) {
       }
     }
 
-    return ok({ books: out })
+    return withCache(ok({ books: out }))
   })
 }

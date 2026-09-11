@@ -226,6 +226,43 @@ export interface FetchConfig {
    *  作为 bookQueue 直接使用, 跳过 list 发现阶段。仅 sanitizeFetchConfig 钳长 + 钳条数,
    *  非法 URL 整字段丢弃; 普通任务不带此字段(零回归)。条数硬上限 1000(防止过大 JSON) */
   urls?: string[]
+  // ---------- agent-K-crawl-phase2: 深层反反爬能力(均可选, 缺省零回归) ----------
+  /** TLS 指纹配置(agent-K): 'chrome120' / 'firefox121' / 'safari17' / undefined。
+   *  Node.js fetch(undici/BoringSSL)无法定制 TLS 握手(ClientHello/JA3), 仅作为"期望指纹"
+   *  记录与运行时 JA3 校验对照用; 真正改变 TLS 指纹需走 CloakBrowser(浏览器真实 TLS 栈) ——
+   *  配置后引擎自动把 fetchMode 走 scrapling-stealthy(浏览器级 TLS); 不在则保持原路径, 仅做
+   *  observe-vs-expected 警告。详见 fetcher.ts JA3_PROFILES 段注释 */
+  tlsProfile?: string
+  /** HTTP/2 指纹配置(agent-K): 'chrome120' / 'firefox121' / 'safari17' / undefined。
+   *  与 tlsProfile 同口径, 用于 h2 SETTINGS 帧指纹对照; Node fetch 默认走 HTTP/1.1
+   *  (h2 需 undici Client h2 选项), 故 observe-vs-expected 失配时仅打 warn 日志 */
+  h2Fingerprint?: string
+  /** 头组顺序配置(agent-K): 'chrome' / 'firefox' / 'safari' / 'auto' / undefined。
+   *  'auto' (缺省)=按 UA 家族自动选; 显式指定=覆盖。Chromium 系的真实头组顺序
+   *  与 Firefox/Safari 不同, WAF 据此识别 bot —— buildHeaders 按此 profile 重排头组。
+   *  Object spread/assign 在 ES2015+ 保留字符串键插入序, undici fetch 透传 */
+  headerOrderProfile?: string
+  /** 思考时间上界 ms(agent-K 行为指纹防御): 0=关闭(零回归); >0 时 fetchPage 入口前
+   *  sleep random(0, thinkTimeMs), 模拟人类"读完上页再请求下页"的节奏不规则性。
+   *  与 runner 层 jitterMs(批次间抖动)正交: jitterMs 控制同批次间, thinkTimeMs 控制
+   *  单请求前。两者叠加形成多层防节奏检测。上限 60s 钳制(超过即偏离人类阅读节奏) */
+  thinkTimeMs?: number
+  /** 单 host 并发硬上限(agent-K 请求节奏): 1~10 钳制; 缺省=沿用 hostGateLimit(零回归)。
+   *  独立于 hostGateLimit 的"绝对天花板", 即使 hostGate 因连续成功回升到更高, 也以本字段为准;
+   *  用于 ops 严格限制单站并发(过盾站点对并发敏感, 高并发触发 WAF) */
+  perHostConcurrency?: number
+  /** 全局速率上限 req/min(agent-K): 0=不限(零回归); >0 时所有 host 合计不得超过本值,
+   *  超出请求在 fetchPage 入口 sleep 节流。滑窗 60s 计数, 防采集洪水打爆出口 IP */
+  globalRateLimitPerMin?: number
+  /** 验证码冷却时长 ms(agent-K): 检测到 hCaptcha/Turnstile/reCAPTCHA 后, 该 URL/host
+   *  在冷却期内不再重试(避免反复撞盾); 缺省 600_000(10min), 钳 [60_000, 3_600_000] */
+  captchaCooldownMs?: number
+  /** 代理健康检查开关(agent-K): true 时每 5min 主动 ping 每条代理 /health(仅 http(s)
+   *  代理; socks5 跳过), 失败标记 unhealthy, 轮换时跳过; 缺省 false(零回归) */
+  proxyHealthCheck?: boolean
+  /** 代理级联熔断时长 ms(agent-K): 10s 窗口内 ≥3 条代理失败 → 暂停轮换 + 冷却本时长,
+   *  防整批代理同时被风控(出口 IP 池被关联识别); 缺省 60_000, 钳 [10_000, 300_000] */
+  proxyCascadePauseMs?: number
 }
 
 /**
@@ -657,6 +694,37 @@ export function sanitizeFetchConfig(v: unknown): Partial<FetchConfig> {
     }
     if (valid.length) out.urls = valid
   }
+  // ---------- agent-K-crawl-phase2: 新增可选字段白名单(均缺省零回归) ----------
+  // TLS / HTTP2 指纹 profile: 枚举白名单(chrome120/firefox121/safari17); 非法值丢弃
+  if (r.tlsProfile === 'chrome120' || r.tlsProfile === 'firefox121' || r.tlsProfile === 'safari17') {
+    out.tlsProfile = r.tlsProfile
+  }
+  if (r.h2Fingerprint === 'chrome120' || r.h2Fingerprint === 'firefox121' || r.h2Fingerprint === 'safari17') {
+    out.h2Fingerprint = r.h2Fingerprint
+  }
+  // 头组顺序 profile: 枚举白名单(chrome/firefox/safari/auto)
+  if (
+    r.headerOrderProfile === 'chrome' || r.headerOrderProfile === 'firefox' ||
+    r.headerOrderProfile === 'safari' || r.headerOrderProfile === 'auto'
+  ) out.headerOrderProfile = r.headerOrderProfile
+  // 思考时间上界 ms: 0~60_000 钳制(超过 60s 偏离人类阅读节奏)
+  const thinkTimeMs = safeNum(r.thinkTimeMs, 0, 60_000)
+  if (thinkTimeMs !== undefined) out.thinkTimeMs = thinkTimeMs
+  // 单 host 并发硬上限: 1~10 钳制(与 hostGateLimit 同口径)
+  const perHostConcurrency = safeNum(r.perHostConcurrency, 1, 10)
+  if (perHostConcurrency !== undefined) out.perHostConcurrency = perHostConcurrency
+  // 全局速率上限 req/min: 0=不限; >0 时钳 [10, 100_000] 防误填过大或过小
+  const globalRateLimitPerMin = safeNum(r.globalRateLimitPerMin, 0, 100_000)
+  if (globalRateLimitPerMin !== undefined) out.globalRateLimitPerMin = globalRateLimitPerMin
+  // 验证码冷却 ms: 缺省 600_000(10min), 钳 [60_000, 3_600_000]
+  const captchaCooldownMs = safeNum(r.captchaCooldownMs, 60_000, 3_600_000)
+  if (captchaCooldownMs !== undefined) out.captchaCooldownMs = captchaCooldownMs
+  // 代理健康检查: 布尔白名单(缺省 false=零回归)
+  const proxyHealthCheck = safeBool(r.proxyHealthCheck)
+  if (proxyHealthCheck !== undefined) out.proxyHealthCheck = proxyHealthCheck
+  // 代理级联熔断 ms: 缺省 60_000, 钳 [10_000, 300_000]
+  const proxyCascadePauseMs = safeNum(r.proxyCascadePauseMs, 10_000, 300_000)
+  if (proxyCascadePauseMs !== undefined) out.proxyCascadePauseMs = proxyCascadePauseMs
   return out
 }
 

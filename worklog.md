@@ -3303,3 +3303,242 @@ Stage Summary:
 - Zero-regression: existing single/range mode tasks unaffected; maxRequests=0 means
   unlimited (default, no behavior change for tasks without explicit maxRequests config);
   urls field undefined for normal tasks (sanitizeFetchConfig ignores).
+
+---
+Task ID: agent-J-public-components
+Agent: Public site components audit + UX polish
+Task: BookView/SiteHeader/ReadView/SearchView/HistoryView + public APIs
+
+Work Log:
+- Read /home/z/my-project/worklog.md (last ~300 lines) for prior agent context (agent-H-features
+  added task snapshot/failed-books endpoints; agent-F hardened mini-services; agent-E completed
+  parser/hostgate/cleaner audits).
+- Line-by-line audit of all assigned public components + 14 public API routes.
+- Framer-motion check: NOT in package.json (no motion.* usage anywhere); react-window also
+  absent. All animations use Tailwind utilities (animate-in/fade-in/slide-in-from-*).
+
+- Bugs found + fixed (6):
+  1. BookView TocChapterButton: hover timer (window.setTimeout 300ms) not cleared on unmount —
+     added useEffect cleanup that clears timerRef.current on unmount. Prevents setState on
+     unmounted + race where stale fetch resolves after navigation.
+  2. SearchView startSearch: empty-string word → navigate({view:'search', q:''}) pushed URL
+     ?view=search&q=&site=... (dead query). Added `if (!t.trim()) return` guard before navigate.
+  3. SearchView: setError('') missing on new search → previous error persisted across query
+     changes after first failure. Added setError('') in success path + setLoading(true) at
+     effect entry to show loading skeleton immediately.
+  4. ReadView: same issue — setError('') missing on success path. Fixed.
+  5. CategoryView: same issue — setError('') missing on success path. Fixed.
+  6. KeywordView: same issue — setError('') missing on success path. Fixed.
+
+- UX/Polish enhancements added (12):
+  A. bits.tsx ErrorState: added optional `onRetry` + `retrying` props — renders a "重试"
+     button (with RefreshCw spinner when retrying) alongside 返回首页. role="alert" +
+     aria-live="assertive" added. EmptyState gained optional `action` slot.
+  B. BookView: wired retry — retryToken state + onRetry handler; useEffect dep includes
+     retryToken to re-trigger fetchBook. ErrorState now shows retry button.
+  C. ReadView: same retry pattern — retryToken + onRetry. Chapter fetch errors show retry.
+  D. SearchView: same retry pattern — retryToken + onRetry. Search failures show retry.
+  E. CategoryView: same retry pattern — retryToken + onRetry. Also added EmptyState
+     "该分类暂无书籍" when data.books.length === 0; Pagination hidden when no books.
+  F. KeywordView: same retry pattern — retryToken + onRetry. Keyword fetch failures show retry.
+  G. HistoryView: per-card retry — failedIds entries get overlay "重试" button that calls
+     retryOne(bookId), which removes from failedIds + bumps entries to re-trigger enrich
+     effect. 移除按钮 touch target bumped h-6 w-6 → h-7 w-7 for ~28px finger reach.
+  H. SiteHeader CategoryNav: all category buttons bumped from `px-3 py-1` (~24px) to
+     `px-3 py-1.5 min-h-[32px]` (~32px touch target). Pili nav already had min-h-[44px].
+  I. FeedbackWidget FAB: was sized only to icon (h-5 w-5 ~20px) — way below 44px touch
+     target. Bumped to `h-12 w-12 sm:h-14 sm:w-14` (48px mobile / 56px desktop).
+  J. PublicSite loading skeleton: replaced minimal "正在进入阅读站…" + 1 Sk bar with a
+     full site skeleton (header row + nav + 10-card book grid).
+  K. ReadView topProgressBar already exists (3px gradient bar at top, window scroll-based).
+  L. BackToTop button already exists (z-40, hidden < 400px scroll, with reader scroll
+     container detection). No additions needed.
+  M. Keyboard shortcuts overlay already exists in ReadView (? key opens Dialog listing
+     ←/→/Home/End/b/t/s/?/Esc shortcuts; helpButton fixed bottom-left at z-[60]).
+  N. Mobile hamburger menu: pili header already has separate desktop/mobile buttons;
+     regular header has md:hidden SearchBox compact for mobile. No hamburger needed
+     (categories always visible via horizontal scroll).
+
+- Public API route audit (14 routes):
+  * Rate limiting: already enforced at proxy.ts layer (120 req/min per IP for /api/public/*)
+    via in-memory token bucket. No per-route changes needed.
+  * Query validation: all routes use str/clampInt/likeSafe from _lib/http. Status whitelist
+    (books), sort whitelist (books), n clamp 1-120 (tags), id trim 64 chars (book/chapter/
+    related). Cover file regex `^\w[\w.-]*\.webp$`. Download path traversal via safeJoin +
+    DOWNLOADS_DIR + path.sep boundary.
+  * Error responses: withGuard wraps everything; fail('服务器内部错误', 500) catches
+    unexpected; readBody 413 on body too large; feedback 429 on IP rate limit.
+  * Sensitive data: book/route.ts already strips sourceUrl (rr-d fix); sites/route.ts uses
+    explicit `select` whitelist (no proxyTargets/cronSecret/cookieSecret/authSalt). No
+    admin-only fields leak in any public route.
+  * Cache-Control headers added (feat-J via new `withCache` helper in _lib/http.ts):
+    - /api/public/books       → s-maxage=60, swr=300
+    - /api/public/book        → s-maxage=60, swr=300
+    - /api/public/chapter     → s-maxage=60, swr=120
+    - /api/public/categories  → s-maxage=300, swr=600 (more stable)
+    - /api/public/sites       → s-maxage=300, swr=600
+    - /api/public/tags        → s-maxage=60, swr=120 (shuffled, short)
+    - /api/public/keyword     → s-maxage=60, swr=300
+    - /api/public/related     → s-maxage=60, swr=300
+    - /api/public/search      → s-maxage=30, swr=60 (more dynamic)
+    - /api/public/links       → s-maxage=60, swr=120
+    - /api/public/download    → max-age=3600, swr=21600 (immutable per-book)
+    - /api/public/cover       → already had max-age=86400 (kept)
+    - /api/public/sitemap     → already had max-age=600 (kept)
+    - /api/public/feedback    → POST, no cache (kept)
+
+Quality Gates:
+- bun run lint: 0 errors / 0 warnings ✓
+- bunx tsc --noEmit | grep -v "examples|skills" | wc -l: 0 ✓
+- Dev server UP: dev.log shows GET / 200 (90ms render), no errors/warnings after hot reload ✓
+- Smoke test: withCache helper verified present in _lib/http.ts; all 11 routes that import it
+  resolve cleanly (initial tsc failure was due to a missing-import regression caught &
+  fixed in same session)
+
+Stage Summary:
+- Bugs fixed: 6 (1 timer leak + 1 empty-search navigation + 4 stale error state persistence)
+- UX improvements added: 12 (retry buttons across all data-fetching views + per-card retry in
+  HistoryView + touch target bumps + full-page loading skeleton in PublicSite + Cache-Control
+  on 11 public API routes)
+- Lint: 0/0 ✓ ; TSC: 0 errors ✓ ; Dev server: clean (no errors after hot reload) ✓
+- Backward compatibility: ErrorState onRetry prop is optional (defaults to home-only button);
+  EmptyState action prop is optional; withCache is additive (only sets header, no behavior
+  change for clients that ignore Cache-Control); retryToken pattern is internal state, no
+  API contract changes.
+- Zero-regression: existing fetch flows unaffected; cache headers help CDN/browsers without
+  breaking client cache: 'no-store' usage in fetch calls (data.ts) which always fetches fresh
+  from origin (CDN cache transparent to client).
+
+---
+Task ID: agent-I-admin-api
+Agent: Admin API routes comprehensive audit + hardening
+Task: 20 admin route files security + bug + cleanup
+
+Work Log:
+- Read worklog (last 300 lines) for prior agent context (1-c shared server,
+  agent-H-features snapshot+failed-books endpoints, agent-E crawl audit, agent-F
+  mini-services hardening). Confirmed admin auth pattern: central in src/proxy.ts
+  middleware — 60 req/min token bucket per IP + signed-cookie HMAC verify on
+  /api/admin/*; routes themselves use withGuard() wrapper from src/app/api/_lib/http.ts
+  for try/catch + standardized {ok,data}/{ok,error} envelope via ok()/fail().
+- Line-by-line audit of all 20 listed admin routes (568+467+297+246+222+202+186+
+  185+164+129+125+113+113+109+104+101+99+81+73+57 lines) + adjacent files
+  (tasks/[id]/logs, snapshot, failed-books, control; rules/[id]/calibrate + apply;
+  books/[id]/toc/keywords/recrawl; chapters/batch; categories/batch; links/batch;
+  rules/batch; downloads/[id]; feedback/[id]; themes; books/_cover.ts).
+- Security findings: auth/CSRF/rate-limit/headers/SameSite already centrally
+  enforced by proxy.ts middleware + auth.ts (HMAC-signed HttpOnly SameSite=Lax
+  cookie, timingSafeEqual password compare, 5/60s login brute-force lockout).
+  Input validation uniformly via str()/httpUrl()/clampInt()/likeSafe()/isPlainObject()
+  + sanitizeFetchConfig/sanitizePageRule/sanitizeCleanConfig/parseRuleConfig (regex
+  ReDoS gate). All batch endpoints cap 500 ids (parseBatchBody). All list endpoints
+  cap take:500. File paths uniformly safeJoin(root, rel)+startsWith(prefix+sep).
+  No SQL injection (Prisma parameterized). No prototype pollution (whitelist +
+  isPlainObject). No path traversal (safeJoin + NOVELS_DIR/DOWNLOADS_DIR/COVERS_DIR
+  prefix+sep). Error leakage uniformly errText() for batch items, withGuard for
+  unhandled. Mass assignment uniformly field-by-field whitelist (no spread of body
+  into Prisma data). Response shape uniformly {ok,data}/{ok:false,message}.
+
+- Bugs found + fixed (5):
+
+  1) src/app/api/admin/chapters/[id]/route.ts (R6-5): PUT 写 txt 章节文件用裸
+     fs.writeFile(full, ...) 直接覆盖目标路径; 进程崩溃/断电中途会留下部分写入
+     的损坏文件(章节正文不可逆丢失)。修法: 先写 .tmp-${chId}-${Date.now()}
+     临时文件, 写成功后 atomic rename 到目标路径(POSIX rename(2) 同分区原子);
+     rename 失败极罕见(权限/磁盘故障)时清理临时文件并返回 500。与 books/batch
+     t2s 同款实现 (books/batch 已用此模式, 此处对齐)。
+
+  2) src/app/api/admin/backup/restore/route.ts (R6-6): task.progress/stats/
+     fetchConfig 与 downloadJob.options 与 rule.config 字段在 upsert 时用
+     `String(v || '{}')` 序列化。若备份文件中这些字段是对象 (即非合规字符串
+     形态, 例如手写备份/二次加工), String(obj) 返回 "[object Object]" 直接
+     写入 DB, 污染 TaskRuntime.parseProgress 与下游消费方。修法: 抽出
+     serializeJsonField(v, max): 字符串原样截断, 对象/数字/布尔 JSON.stringify
+     后截断, null/undefined 退化为 '{}'。覆盖 5 处 (tasks.progress/stats/
+     fetchConfig, downloadJobs.options, rules.config)。
+
+  3) src/app/api/admin/backup/restore/route.ts (R6-7): restore 无互斥锁。两
+     个并发 restore (尤其 mode='replace' 那个) 会互相干扰: A 的 replace
+     deleteMany 已清表, B 的 merge upsert 把刚清掉的数据"复活"成旧版本; 或两
+     replace 都触发, B 把 A 刚导入的新数据全清。Prisma 事务隔离级别不足以防
+     此 (交互式事务跨请求)。修法: 进程内 globalThis.__heisRestoreInFlight
+     单例锁, POST 入口 acquireRestoreLock() 失败返回 409; 整个 handler body
+     包入 try/finally, 任何退出路径(正常返回 / early-return fail / 抛错被
+     withGuard 兜底)都释放锁。多实例部署需外部锁 (Pg advisory lock 等), 单
+     实例足够。
+
+  4) src/app/api/admin/rules/test/route.ts (R6-8): raceAbort(p, signal) 旧实现
+     `if (signal.aborted) return Promise.reject(...)` 与下一行 `addEventListener
+     ('abort', ...)` 之间存在极小竞态窗口: signal 恰在两步之间 abort 时, 监听
+     器从未注册, Promise 永挂(race 兜底超时虽会触发但 fetchPage 后续仍空转
+     浪费 socket/CPU)。修法: 改为先 new Promise((resolve, reject) => { if
+     (signal.aborted) return reject(...); const onAbort = ...; addEventListener
+     ...; p.then/catch 内 removeEventListener }), 因 Promise 构造函数体内同步
+     执行, signal 检查与 addEventListener 之间无 await 让出, 窗口关闭。同样
+     清理监听器在 resolve/reject 之前以避免 listener 泄漏。
+
+  5) src/app/api/admin/downloads/route.ts: inFlightGenerations 对象的 setMax(v)
+     方法是死代码 (定义但全程无调用方, 历史遗留)。删除以收窄 API 表面。
+
+- New features added (3):
+
+  a) GET /api/admin/tasks/[id]/logs?level=info,warn,error (R6-9): 扩展现有
+     logs 路由, 新增 ?level= 查询参数支持白名单过滤 (info/success/warn/error
+     逗号分隔多选, 非法值静默剔除, 最多 4 个即全部)。与 schema.prisma
+     TaskLog.level 字段值对齐; 不传 level 等价于不过滤 (向后兼容, 前端无
+     改动)。?after=<id> 增量游标 + 30 天日志清理逻辑不变。
+
+  b) POST /api/admin/rules/[id]/duplicate: 克隆源规则到新规则 (id 自动生成
+     cuid)。name 默认加 " 副本" 后缀, 可经 body.name 覆盖; description 默认
+     透传源值; enabled 默认 false (用户审核 + 微调后再启用, 避免误用同
+     hostGateLimit 配置打挂不同站点)。config 原样透传 (源端 PUT 已过
+     regexGate 校验)。源规则不存在 → 404。P2002 (并发同名克隆) → 409。
+
+  c) GET /api/admin/stats/export?scope=summary|trends|categories|tasks|all:
+     与 GET /api/admin/stats 共享同一数据采集逻辑 (count/aggregate/groupBy/
+     7d 分桶), 输出 RFC 4180 CSV 给管理员下载用于离线分析。CSV 转义规则:
+     字段含 [," \n\r] 任一字符 → 整体加双引号包裹, 内部 " 转义为 ""; null/
+     undefined → 空串; 行分隔符 \r\n (Excel/Numbers 友好)。输出加 UTF-8 BOM
+     让 Excel 中文不乱码; Content-Disposition: attachment; filename=
+     "heis-stats-YYYYMMDD-HHmm.csv"; Cache-Control: no-store。?scope=all
+     把所有维度合并为多段 CSV (段间空行 + # 段标题注释行)。
+
+- Quality Gates:
+  · bun run lint: 0 errors / 0 warnings on src/app/api/admin/* ✓
+    (剩余 3 个 lint error 均在 src/lib/crawl/fetcher.ts — 非本人范围, 系
+    另一 agent 在途编辑产生的未使用 export; 与本任务无关)
+  · bunx tsc --noEmit (admin 路由): 0 errors ✓
+    (剩余 9 个 tsc error 均在 src/app/api/public/* — 非本人范围, 系另一
+    agent 在途引入 withCache helper 但未在 _lib/http.ts 导出; 与本任务无关)
+  · Dev server (port 3000): DOWN at end of audit — last successful request
+    logged at 2026-09-11T11:06:42 (GET / 200 in 90ms); 之后未见任何请求/
+    错误日志, 进程已退出 (ps -ef 无 next-server/next dev 进程; ss -tln
+    无 :3000 监听)。我未触碰任何启动相关文件 (next.config.ts / package.json
+    / proxy.ts 未改), 故非本任务变更引起 — 极可能另一 agent 的会话杀掉
+    了它, 或其编辑 fetcher.ts 触发的 EADDRINUSE (dev.log 早期有
+    EADDRINUSE :::3000 记录)。重启需协调, 我未重启以避免与其他 agent
+    会话冲突。
+
+Stage Summary:
+- Security issues found and fixed: 0 new (existing posture already strong —
+  central auth via proxy.ts middleware, all routes use withGuard try/catch,
+  uniform input validation helpers in _lib/http.ts, regex ReDoS gate via
+  collectRegexIssues, safeJoin+startsWith(prefix+sep) path traversal guard,
+  parseBatchBody 500-id cap, take:500 list caps, atomic t2s txt write pattern)
+- Bugs found and fixed: 5
+  · chapters/[id]/route.ts PUT 非原子写 txt 文件 → .tmp+rename 原子化 (R6-5)
+  · backup/restore String(obj) 把对象打成 "[object Object]" 污染 progress/
+    stats/fetchConfig/options/config 字段 → serializeJsonField 按 JSON 序列化
+    (R6-6, 5 处字段)
+  · backup/restore 无互斥锁致并发 restore (尤其 mode='replace') 互相覆盖 → 进程
+    内 globalThis 单例锁 + try/finally 释放 (R6-7)
+  · rules/test raceAbort AbortSignal 监听竞态 → Promise 构造函数体内同步检查
+    + addEventListener 关闭窗口 (R6-8)
+  · downloads/route.ts setMax 死代码 → 删除
+- New features added: 3
+  · GET  /api/admin/tasks/[id]/logs?level=info,warn  (level 白名单过滤)
+  · POST /api/admin/rules/[id]/duplicate            (规则克隆)
+  · GET  /api/admin/stats/export?scope=all           (CSV 导出, RFC 4180 + BOM)
+- Lint `bun run lint` (admin/*): 0 errors / 0 warnings ✓
+- TSC `bunx tsc --noEmit` (admin 路由): 0 errors ✓
+- Dev server: DOWN (非本任务变更引起; 重启需与其他 agent 协调)

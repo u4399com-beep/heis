@@ -2,7 +2,7 @@
 // (修复 feat-round-4 回归: 公开站点前端原调用 /api/admin/sites, auth 加固后被 401 拦截)
 import { db } from '@/lib/db'
 import { ok } from '@/lib/api'
-import { withGuard } from '../../_lib/http'
+import { withGuard, withCache } from '../../_lib/http'
 
 export const dynamic = 'force-dynamic'
 
@@ -28,6 +28,6 @@ export function GET() {
         inLinkWheel: true,
       },
     })
-    return ok(sites)
+    return withCache(ok(sites), 300, 600)
   })
 }

@@ -1,7 +1,7 @@
 // 关键词独立访问页 — 下拉关键词作为关联词, 页面均指向主书籍信息页
 import { db } from '@/lib/db'
 import { ok } from '@/lib/api'
-import { withGuard, str } from '../../_lib/http'
+import { withGuard, str, withCache } from '../../_lib/http'
 
 export async function GET(req: Request) {
   return withGuard(async () => {
@@ -31,7 +31,7 @@ export async function GET(req: Request) {
       related = tags.map((t) => t.tag)
     }
 
-    return ok({
+    return withCache(ok({
       tag,
       book: mainBook
         ? {
@@ -47,6 +47,6 @@ export async function GET(req: Request) {
         : null,
       otherBooks: hits.slice(1).map((h) => ({ id: h.book.id, name: h.book.name, author: h.book.author })),
       related,
-    })
+    }))
   })
 }

@@ -17,13 +17,23 @@
  *   - 引擎声明式六段不可表达此解密(需 atob+切片+标记膨胀) → 外置转换代理
  *     mini-services/xjp-proxy(端口 3015, deqixs-proxy 同形态)承载全链路。
  *
- * 与采集引擎的对接面(规则六段: list/book/toc 直连, content 指本代理):
+ * agent-L: 章节分页支持
+ *   - 部分长章节在 xinjianpan 上跨多页(每页 ~3KB 正文), 页脚有"下一页"链接指向
+ *     `_{N}.html` 后缀的续页(如 /txt/abc/123.html → /txt/abc/123_2.html)。
+ *   - 本代理自动检测续页链接并迭代抓取, 合并所有页的 #chaptercontent + var c 解密结果。
+ *   - 上限 XJP_MAX_PAGES(默认 10, env 可调)防失控; 超出截断并附 pagesTruncated=true。
+ *
+ * 与采集引擎的对接面(规则六段: list/book/toc 直连, content 指向本代理):
  *   toc url 字段: attr=onclick, replaceFrom ^location\.href='(.+)'$ →
  *     http://127.0.0.1:3015/content?u=https://www.xinjianpan.com$1
  *
  * 接口:
  *   GET /health                → {ok,service,port,selfTestOk,selfTestDetail,upstreamReachable,upstream,ts}
- *   GET /content?u={章节URL}   → {ok,len,content}  (content=UTF-8 纯文本 \n 分段)
+ *   GET /info                  → {service,version,uptime,config,...}
+ *   GET /metrics               → Prometheus 文本
+ *   GET /content?u={章节URL}   → {ok,len,content,pages,pagesTruncated?}
+ *                                 (content=UTF-8 纯文本 \n 分段; pages=实际抓取页数;
+ *                                  pagesTruncated=true 表示触及 XJP_MAX_PAGES 上限被截断)
  *
  * 启动: cd mini-services/xjp-proxy && bun run start   (bun --hot 热更, 端口固定 3015)
  */
@@ -35,6 +45,8 @@ const UPSTREAM_TIMEOUT_MS = 15000
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 /** ss-d 实证: Bun.serve 缺省 idleTimeout ~10s 会杀在途无出字请求(上游 fetch 最长 15s×2) */
 const IDLE_TIMEOUT_S = 120
+/** agent-L: 章节分页上限(防失控; env XJP_MAX_PAGES 可调, 上限 50) */
+const MAX_PAGES = Math.min(Math.max(Number(process.env.XJP_MAX_PAGES) || 10, 1), 50)
 
 // ---------- 启动自检(离线确定性: 合成 c 全链路回环) ----------
 function selfTest(): { ok: boolean; detail: string } {
@@ -133,16 +145,54 @@ function htmlToText(html: string): string {
 }
 
 // ---------- 工具 ----------
-/** 章节 URL → 校验(仅接受 xinjianpan.com /txt/{code}/{page}.html 形态, 防开放代理滥用) */
-function parseChapterUrl(u: string): { ok: boolean; norm: string } {
+/** 章节 URL → 校验(仅接受 xinjianpan.com /txt/{code}/{page}[_N].html 形态, 防开放代理滥用)
+ *  agent-L: 接受分页形态 {page}_{N}.html(如 123_2.html)。返回归一化后的 URL(去 query/fragment)。 */
+function parseChapterUrl(u: string): { ok: boolean; norm: string; pathOnly: string } {
   try {
     const url = new URL(u)
-    if (url.hostname !== 'www.xinjianpan.com' && url.hostname !== 'xinjianpan.com') return { ok: false, norm: '' }
-    if (!/^\/txt\/[A-Za-z0-9]+\/[A-Za-z0-9]+\.html$/.test(url.pathname)) return { ok: false, norm: '' }
-    return { ok: true, norm: `${UPSTREAM}${url.pathname}` }
+    if (url.hostname !== 'www.xinjianpan.com' && url.hostname !== 'xinjianpan.com') return { ok: false, norm: '', pathOnly: '' }
+    // 接受 /txt/{code}/{page}.html 或 /txt/{code}/{page}_{N}.html
+    if (!/^\/txt\/[A-Za-z0-9]+\/[A-Za-z0-9]+(?:_\d+)?\.html$/.test(url.pathname)) return { ok: false, norm: '', pathOnly: '' }
+    return { ok: true, norm: `${UPSTREAM}${url.pathname}`, pathOnly: url.pathname }
   } catch {
-    return { ok: false, norm: '' }
+    return { ok: false, norm: '', pathOnly: '' }
   }
+}
+
+/** 从章节页 HTML 提取"下一页"链接(agent-L)。
+ *  候选选择:
+ *    1. <a href="...">下一页</a> / <a href="...">下页</a> / <a href="...">下一章</a>(非下一章链接)
+ *    2. .page-next / .nextpage / #nexturl 等常见 class
+ *  返回绝对 URL(若相对则按 UPSTREAM 解析); 未找到返回 null。 */
+function findNextPageUrl(html: string, currentPagePath: string): string | null {
+  // 候选模式: 文本"下一页"/"下页" 的 <a> 标签 href
+  // 注意 "下一章" 是不同的语义(下一章节), 不应跟随
+  const candidates: RegExp[] = [
+    /<a[^>]+href=["']([^"']+)["'][^>]*>\s*(?:下一页|下页|下壹頁|下一頁)\s*<\/a>/i,
+    /<a[^>]+class=["'][^"']*(?:nextpage|page-next|next-page|nexturl)[^"']*["'][^>]*href=["']([^"']+)["']/i,
+  ]
+  for (const re of candidates) {
+    const m = re.exec(html)
+    if (m && m[1]) {
+      const href = m[1]
+      // 排除 "javascript:" / "#" 等无效链接
+      if (/^(?:javascript|#|void)/i.test(href)) continue
+      try {
+        // 相对 URL → 基于 UPSTREAM 解析为绝对
+        const abs = new URL(href, UPSTREAM).toString()
+        // 必须仍在 xinjianpan 域内, 且仍是 /txt/ 路径
+        const u = new URL(abs)
+        if (u.hostname !== 'www.xinjianpan.com' && u.hostname !== 'xinjianpan.com') continue
+        if (!/^\/txt\/[A-Za-z0-9]+\/[A-Za-z0-9]+(?:_\d+)?\.html$/.test(u.pathname)) continue
+        // 避免回环: 下一页路径不能等于当前页路径
+        if (u.pathname === currentPagePath) continue
+        return abs
+      } catch {
+        continue
+      }
+    }
+  }
+  return null
 }
 
 /** 带超时+瞬态重试1次的 GET(全态返回, 不抛) */
@@ -169,12 +219,16 @@ function chapterHeaders(): Record<string, string> {
 }
 
 // ---------- 核心链路: 章节 URL → 章节页 → 前半SSR + var c 解密后半 → 纯文本 ----------
-type ContentResult = { ok: true; content: string } | { ok: false; error: string }
+type ContentResult =
+  | { ok: true; content: string; pages: number; pagesTruncated: boolean }
+  | { ok: false; error: string }
 
-async function fetchContent(chapterUrl: string): Promise<ContentResult> {
-  const pc = parseChapterUrl(chapterUrl)
-  if (!pc.ok) return { ok: false, error: `u 必须为 xinjianpan 章节页 URL(/txt/{code}/{page}.html), 收到: ${chapterUrl.slice(0, 120)}` }
-  const res = await getRes(pc.norm, chapterHeaders())
+/** 抓取单页并提取其前半+var c 后半(agent-L: 抽取自原 fetchContent, 供分页循环复用) */
+async function fetchOnePage(pageUrl: string, pagePath: string): Promise<
+  | { ok: true; content: string; nextUrl: string | null }
+  | { ok: false; error: string }
+> {
+  const res = await getRes(pageUrl, chapterHeaders())
   if (!res.ok) return { ok: false, error: `章节页上游失败(${res.status}${res.error ? ' ' + res.error : ''})` }
   const html = new TextDecoder('utf-8', { fatal: false }).decode(res.buf)
 
@@ -189,7 +243,51 @@ async function fetchContent(chapterUrl: string): Promise<ContentResult> {
   if (!part2) return { ok: false, error: 'var c 解密失败(算法失配/样本异常)' }
 
   // ③ 合并 → 纯文本(站点头尾广告行由规则 clean.adPatterns 过滤)
-  return { ok: true, content: htmlToText(got.inner + part2) }
+  const content = htmlToText(got.inner + part2)
+
+  // ④ 探测下一页链接(agent-L: 分页支持)
+  const nextUrl = findNextPageUrl(html, pagePath)
+  return { ok: true, content, nextUrl }
+}
+
+/** 主链路: 抓取章节首页, 若有下一页则迭代抓取并合并, 最多 MAX_PAGES 页(agent-L) */
+async function fetchContent(chapterUrl: string): Promise<ContentResult> {
+  const pc = parseChapterUrl(chapterUrl)
+  if (!pc.ok) return { ok: false, error: `u 必须为 xinjianpan 章节页 URL(/txt/{code}/{page}.html), 收到: ${chapterUrl.slice(0, 120)}` }
+
+  const allParts: string[] = []
+  let pages = 0
+  let pagesTruncated = false
+  let currentUrl: string | null = pc.norm
+  let currentPath: string = pc.pathOnly
+  const visited = new Set<string>([currentPath])
+
+  while (currentUrl && pages < MAX_PAGES) {
+    const r = await fetchOnePage(currentUrl, currentPath)
+    if (!r.ok) {
+      // 首页失败直接返回错误; 续页失败返回已合并的部分内容 + 错误标注
+      if (pages === 0) return { ok: false, error: r.error }
+      // 续页失败: 截断但保留已抓取内容
+      pagesTruncated = true
+      break
+    }
+    allParts.push(r.content)
+    pages++
+
+    if (!r.nextUrl) break
+    // 解析下一页 path 并检查是否回环
+    const nextPath = (() => {
+      try { return new URL(r.nextUrl).pathname } catch { return '' }
+    })()
+    if (!nextPath || visited.has(nextPath)) break
+    visited.add(nextPath)
+    currentUrl = r.nextUrl
+    currentPath = nextPath
+  }
+  if (pages >= MAX_PAGES && currentUrl) pagesTruncated = true
+
+  const merged = allParts.join('\n\n').replace(/\n{3,}/g, '\n\n').trim()
+  return { ok: true, content: merged, pages, pagesTruncated }
 }
 
 // ---------- 路由 ----------
@@ -221,22 +319,28 @@ async function handle(req: Request): Promise<Response> {
     try {
       const r = await fetchContent(target)
       if (!r.ok) return json(r, 502)
-      return json({ ok: true, len: r.content.length, content: r.content })
+      return json({ ok: true, len: r.content.length, content: r.content, pages: r.pages, pagesTruncated: r.pagesTruncated })
     } catch (e) {
       return json({ ok: false, error: `代理内部错误: ${String(e).slice(0, 160)}` }, 500)
     }
   }
 
-  return json({ ok: false, error: `未知路径 ${p}(可用: /health /content?u=)` }, 404)
+  return json({ ok: false, error: `未知路径 ${p}(可用: /health /info /metrics /content?u=)` }, 404)
 }
 
 // 1-c 重构: 改用 _shared/server 的 createBridgeServer, 始终绑定 127.0.0.1(H4 修复)
 createBridgeServer({
   name: 'xjp-proxy',
   port: PORT,
+  version: '1.1.0',
   idleTimeoutS: IDLE_TIMEOUT_S,
   selfTest: () => st.ok,
   healthCheck,
+  extraInfo: () => ({
+    upstream: UPSTREAM,
+    maxPages: MAX_PAGES,
+    endpoints: ['/health', '/info', '/metrics', '/content?u='],
+  }),
   fetch: (req) => handle(req),
 })
-console.log(`[xjp-proxy] upstream: ${UPSTREAM}  selfTestDetail: ${st.detail}`)
+console.log(`[xjp-proxy] upstream: ${UPSTREAM}  selfTestDetail: ${st.detail}  maxPages: ${MAX_PAGES}`)

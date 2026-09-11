@@ -1,37 +1,41 @@
 /**
- * heis-mini-shared — 5 个 Bun 采集代理共用的样板(v2: agent-F 安全加固轮)
+ * heis-mini-shared — 6 个 Bun 采集代理共用的样板(v3: agent-L 运行时加固轮)
  * ============================================================
  * 背景:
  *   - 1-c 轮: 统一 json()/Bun.serve()//health 三件套 + BRIDGE_KEY 共享密钥 + 127.0.0.1 绑定
- *   - agent-F 轮(本版): 任务要求补齐 7 项安全加固
- *       · AUTH_TOKEN 环境变量(与 BRIDGE_KEY 互为别名, 优先 AUTH_TOKEN)
- *       · 每 IP 速率限制(缺省 60 req/min, RATE_LIMIT_PER_MIN 可调)
- *       · 安全响应头(X-Content-Type-Options / X-Frame-Options / Referrer-Policy)
- *       · SSRF 校验助手 assertSafeSsrfTarget(供 fetch-relay / scrapling-bridge 等开放代理用)
- *       · 请求总时长 30s 硬帽(BRIDGE_REQUEST_TIMEOUT_MS 可调, 但上限 30s)
- *       · POST 请求体 10MB 硬帽(MAX_POST_BODY_BYTES 可调)
- *       · 错误响应统一脱敏(sanitizeError 助手)
+ *   - agent-F 轮: AUTH_TOKEN 环境变量 / 每 IP 速率限制 / 安全响应头 / SSRF 校验 / 30s 超时 /
+ *                10MB POST 体 / sanitizeError 脱敏
+ *   - agent-L 轮(本版): 新增可观测性 + 运维端点
+ *       · Metrics 类: requests_total / errors_total / in_flight / avg_response_ms / uptime_seconds
+ *       · /metrics 端点: Prometheus 文本格式(鉴权闸同主路径, 免限速)
+ *       · /info 端点: version + uptime + config(脱敏) + 依赖版本
+ *       · 进程 SIGTERM/SIGINT 优雅关闭钩子(unref)
+ *       · userFetch 包装: 自动计时 + 计数 + 错误统计
  *
  * 本模块导出:
  *   - json(data, status?)                  JSON 响应助手(自带安全头)
  *   - text(data, status?, contentType?)     文本响应助手(自带安全头, 供 /token 等纯文本端点)
  *   - safeHeaderKey(k) / safeHeaderValue(v)
  *   - constantTimeEqual(a, b)              字符串常量时间比较
- *   - assertSafeSsrfTarget(url, opts)       SSRF 校验(默认拒绝 localhost/私网/链路本地/元数据端点)
- *   - sanitizeError(e)                      错误对象 → 安全字符串(剥路径/堆栈, 限长 200)
- *   - RateLimiter                           每 IP 滑窗限速器(默认 60/min)
- *   - createBridgeServer(opts)              Bun.serve 工厂(见下)
+ *   - assertSafeSsrfTarget(url, opts)      SSRF 校验(默认拒绝 localhost/私网/链路本地/元数据端点)
+ *   - sanitizeError(e)                     错误对象 → 安全字符串(剥路径/堆栈, 限长 200)
+ *   - RateLimiter                          每 IP 滑窗限速器(默认 60/min)
+ *   - Metrics                              请求计数/错误/在途/平均时延 + Prometheus 文本格式
+ *   - createBridgeServer(opts)             Bun.serve 工厂(见下)
  *
- * createBridgeServer 行为(在 1-c 基础上叠加 agent-F 加固):
+ * createBridgeServer 行为(在 1-c + agent-F 基础上叠加 agent-L 可观测性):
  *   · hostname: '127.0.0.1'(HARD — 修复 H4)
  *   · idleTimeout 默认 120s(可被 opts.idleTimeoutS 覆盖)
  *   · /health 自动挂载(免鉴权/免限速 — 健康探针不应被自身闸门拦)
+ *   · /metrics 自动挂载(Prometheus 文本格式; 鉴权闸同主路径; 免限速; 含 in_flight 实时态)
+ *   · /info   自动挂载(version + uptime + 配置脱敏 + bun 版本; 鉴权闸同主路径; 免限速)
  *   · 鉴权: AUTH_TOKEN(优先) 或 BRIDGE_KEY(别名); 任一非空时, 非 /health 请求必须带
  *     X-Auth-Token / X-Bridge-Key / Authorization: Bearer 之一(常量时间比较, 失败 401)
  *   · 限速: 每 IP 60 req/min(RATE_LIMIT_PER_MIN 可调); 超限 429 + Retry-After
  *   · 安全头: 所有响应(含 /health / 4xx / 5xx)统一附 X-Content-Type-Options:nosniff 等
  *   · 请求总时长: 30s 硬帽(BRIDGE_REQUEST_TIMEOUT_MS 可调, 上限 30s); 超时 504
  *   · POST 体: 10MB 硬帽(由各服务自行读体时检查, _shared 提供助手法 readBodyCapped)
+ *   · SIGTERM/SIGINT: 优雅关闭(停止接受新连接, 等 ≤5s 在途完成, 强制退出)
  *
  * 不引入任何第三方依赖: 仅 node:crypto + node:net(纯 IP 解析, 免 DNS) + Bun 内置。
  */
@@ -236,6 +240,70 @@ export class RateLimiter {
   }
 }
 
+// ---------- 指标收集(agent-L) ----------
+/**
+ * 运行时指标收集器: 请求计数 / 错误计数 / 在途请求数 / 平均响应时延 / uptime。
+ * 所有计数器在同一进程内累加; 单进程 Bun 单实例模型。
+ * toPrometheus() 输出 Prometheus 文本 0.0.4 格式(每行一个样本; # HELP / # TYPE 注释)。
+ */
+export class Metrics {
+  private requestsTotal = 0
+  private errorsTotal = 0
+  private inFlight = 0
+  private responseTimeSumMs = 0
+  private responseTimeCount = 0
+  private readonly startedAt = Date.now()
+
+  constructor(private readonly serviceName: string) {}
+
+  /** 请求开始时调用(在 try 之前); 配合 endRequest() 在 finally 中调用 */
+  startRequest(): void {
+    this.inFlight++
+  }
+
+  /** 请求结束时调用; ok=true 计入成功, ok=false 计入 errors_total */
+  endRequest(durationMs: number, ok: boolean): void {
+    this.inFlight = Math.max(0, this.inFlight - 1)
+    this.requestsTotal++
+    if (!ok) this.errorsTotal++
+    this.responseTimeSumMs += Math.max(0, Math.min(60_000, durationMs))
+    this.responseTimeCount++
+  }
+
+  /** 进程内快照(JSON 友好; 供 /info 端点复用) */
+  snapshot(): Record<string, number> {
+    return {
+      requests_total: this.requestsTotal,
+      errors_total: this.errorsTotal,
+      in_flight: this.inFlight,
+      avg_response_ms: this.responseTimeCount > 0
+        ? Math.round(this.responseTimeSumMs / this.responseTimeCount)
+        : 0,
+      uptime_seconds: Math.floor((Date.now() - this.startedAt) / 1000),
+    }
+  }
+
+  /** Prometheus 文本 0.0.4 格式 */
+  toPrometheus(): string {
+    const snap = this.snapshot()
+    const name = this.serviceName.replace(/[^a-zA-Z0-9_]/g, '_')
+    const lines: string[] = []
+    const samples: Array<[string, string, string]> = [
+      ['requests_total', 'counter', 'Total HTTP requests processed'],
+      ['errors_total', 'counter', 'Total failed HTTP requests (4xx/5xx/timeout)'],
+      ['in_flight', 'gauge', 'Current in-flight requests'],
+      ['avg_response_ms', 'gauge', 'Average response time in milliseconds'],
+      ['uptime_seconds', 'gauge', 'Process uptime in seconds'],
+    ]
+    for (const [metric, type, help] of samples) {
+      lines.push(`# HELP ${name}_${metric} ${help}`)
+      lines.push(`# TYPE ${name}_${metric} ${type}`)
+      lines.push(`${name}_${metric} ${snap[metric]}`)
+    }
+    return lines.join('\n') + '\n'
+  }
+}
+
 // ---------- POST 体限量读(供 fetch-relay 用; 10MB 默认硬帽) ----------
 export async function readBodyCapped(
   body: ReadableStream<Uint8Array> | null,
@@ -288,11 +356,21 @@ export interface BridgeServerOptions {
    * 开放代理(fetch-relay/scrapling-bridge)应显式设 true。
    */
   enableSsrfCheck?: boolean
+  /**
+   * 服务版本号(agent-L: 供 /info 端点展示)。默认 '1.0.0'。
+   */
+  version?: string
+  /**
+   * 业务侧补充 /info 字段(agent-L)。返回的对象合并到 /info.config 之外的字段。
+   * 用于暴露业务特有信息(如 upstream host / API 版本 / 自检结果)。
+   * 不应返回敏感数据(AUTH_TOKEN 等不在此函数返回值中)。
+   */
+  extraInfo?: () => Record<string, unknown> | Promise<Record<string, unknown>>
 }
 
 /**
  * 创建并启动一个绑定 127.0.0.1 的 Bun.serve 实例。
- * 自动挂载 /health / 鉴权 / 限速 / 安全头 / 30s 请求超时。
+ * 自动挂载 /health /metrics /info / 鉴权 / 限速 / 安全头 / 30s 请求超时 / SIGTERM 优雅关闭。
  */
 export function createBridgeServer(opts: BridgeServerOptions) {
   const {
@@ -305,6 +383,8 @@ export function createBridgeServer(opts: BridgeServerOptions) {
     requestTimeoutMs = Number(process.env.BRIDGE_REQUEST_TIMEOUT_MS) || REQUEST_TIMEOUT_HARD_CAP_MS,
     rateLimitPerMin = DEFAULT_RATE_LIMIT_PER_MIN,
     enableSsrfCheck = false,
+    version = '1.0.0',
+    extraInfo,
   } = opts
 
   // 鉴权密钥: AUTH_TOKEN(优先) → BRIDGE_KEY(别名); 均为空则不鉴权(dev 模式)
@@ -315,6 +395,9 @@ export function createBridgeServer(opts: BridgeServerOptions) {
 
   // 限速器(0=禁用)
   const limiter = rateLimitPerMin > 0 ? new RateLimiter(rateLimitPerMin) : null
+
+  // 指标收集器(agent-L: /metrics + /info 共用)
+  const metrics = new Metrics(name)
 
   /** /health 响应: 不鉴权/不限速(健康探针不应被自身闸门拦) */
   async function healthHandler(): Promise<Response> {
@@ -343,6 +426,51 @@ export function createBridgeServer(opts: BridgeServerOptions) {
     }
     if (upstreamProbe !== undefined) payload.upstreamProbe = upstreamProbe
     return json(payload)
+  }
+
+  /** /metrics 响应: Prometheus 文本格式(agent-L) */
+  function metricsHandler(): Response {
+    return new Response(metrics.toPrometheus(), {
+      status: 200,
+      headers: securityHeaders({ 'content-type': 'text/plain; version=0.0.4; charset=utf-8' }),
+    })
+  }
+
+  /** /info 响应: 版本/uptime/配置(脱敏)/依赖(agent-L) */
+  async function infoHandler(): Promise<Response> {
+    const snap = metrics.snapshot()
+    const info: Record<string, unknown> = {
+      service: name,
+      version,
+      uptimeSeconds: snap.uptime_seconds,
+      bun: typeof Bun !== 'undefined' ? Bun.version : 'unknown',
+      config: {
+        // 脱敏: 仅暴露布尔/数值, 不暴露实际 token 值
+        authEnabled: !!authToken,
+        authSource: process.env.AUTH_TOKEN ? 'AUTH_TOKEN' : process.env.BRIDGE_KEY ? 'BRIDGE_KEY' : null,
+        rateLimitPerMin: rateLimitPerMin > 0 ? rateLimitPerMin : null,
+        requestTimeoutMs: requestTimeoutClamped,
+        ssrfCheckEnabled: !!enableSsrfCheck,
+        maxPostBodyBytes: MAX_POST_BODY_BYTES,
+        hostname: '127.0.0.1',
+      },
+      metrics: snap,
+      endpoints: ['/health', '/metrics', '/info'],
+    }
+    if (extraInfo) {
+      try {
+        const extra = await extraInfo()
+        if (extra && typeof extra === 'object') {
+          // 合并业务侧补充字段(不覆盖顶层保留字段)
+          for (const [k, v] of Object.entries(extra)) {
+            if (!(k in info)) info[k] = v
+          }
+        }
+      } catch (e) {
+        info.extraInfoError = sanitizeError(e)
+      }
+    }
+    return json(info)
   }
 
   function unauthorized(): Response {
@@ -384,20 +512,37 @@ export function createBridgeServer(opts: BridgeServerOptions) {
     return ''
   }
 
+  /** 鉴权闸: AUTH_TOKEN 非空时校验令牌(常量时间比较)。/health 豁免由调用方负责。 */
+  function checkAuth(req: Request): boolean {
+    if (!authToken) return true // dev: 未配置则放行
+    const got = extractToken(req)
+    return !!got && constantTimeEqual(got, authToken)
+  }
+
   const server = Bun.serve({
     port,
     hostname: '127.0.0.1',
     idleTimeout: idleTimeoutS,
     async fetch(req, srv): Promise<Response> {
       const u = new URL(req.url)
-      // /health: 免鉴权/免限速(健康探针豁免)
-      if (u.pathname === '/health') return healthHandler()
+      const path = u.pathname
 
-      // 鉴权
-      if (authToken) {
-        const got = extractToken(req)
-        if (!got || !constantTimeEqual(got, authToken)) return unauthorized()
+      // /health: 免鉴权/免限速/免指标计数(健康探针不应被自身闸门拦, 也不应污染业务指标)
+      if (path === '/health') return healthHandler()
+
+      // /metrics + /info: 走鉴权闸(若 AUTH_TOKEN 配置), 但免限速(监控不应被自身闸门拦)
+      // 指标计数: /metrics 自身不计入 in_flight(避免循环依赖), /info 同理
+      if (path === '/metrics') {
+        if (!checkAuth(req)) return unauthorized()
+        return metricsHandler()
       }
+      if (path === '/info') {
+        if (!checkAuth(req)) return unauthorized()
+        return infoHandler()
+      }
+
+      // 主路径: 鉴权
+      if (!checkAuth(req)) return unauthorized()
 
       // 限速(按 client IP; 取不到 IP 时按 'unknown' 聚合, 仍受限速保护)
       let ip = 'unknown'
@@ -414,24 +559,48 @@ export function createBridgeServer(opts: BridgeServerOptions) {
         // POST 体未解析前的早拒)。enableSsrfCheck 实际语义 = "服务已自带 SSRF 守卫"。
       }
 
-      // 30s 请求超时硬帽: Promise.race
+      // agent-L: 指标包装 — 计时 + 计数 + 错误统计
+      const startedAt = Date.now()
+      metrics.startRequest()
+      let ok = true
       try {
+        // 30s 请求超时硬帽: Promise.race
         const result = await Promise.race([
           Promise.resolve(userFetch(req)),
           new Promise<Response>((resolve) => setTimeout(() => resolve(gatewayTimeout()), requestTimeoutClamped)),
         ])
+        // 4xx/5xx 视为错误计入 errors_total(健康统计口径)
+        if (result.status >= 400) ok = false
         return withSecurityHeaders(result)
       } catch (e) {
+        ok = false
         const safe = sanitizeError(e)
         if (process.env.BRIDGE_DEBUG === '1') console.error(`[${name}] handler error:`, e)
         return withSecurityHeaders(json({ ok: false, error: safe, code: 'INTERNAL' }, 500))
+      } finally {
+        metrics.endRequest(Date.now() - startedAt, ok)
       }
     },
   })
 
+  // agent-L: SIGTERM/SIGINT 优雅关闭(stop-all.sh 杀进程时给在途请求 ≤5s 完成)
+  const shutdown = (sig: string) => {
+    console.log(`[${name}] ${sig} received, shutting down gracefully (5s grace)`)
+    server.stop(true, () => {
+      process.exit(0)
+    })
+    // 兜底: 5s 后强退(防 server.stop 卡死)
+    setTimeout(() => {
+      console.error(`[${name}] graceful shutdown timed out, force exit`)
+      process.exit(1)
+    }, 5000).unref()
+  }
+  process.on('SIGTERM', () => shutdown('SIGTERM'))
+  process.on('SIGINT', () => shutdown('SIGINT'))
+
   const authMode = authToken ? `AUTH${process.env.AUTH_TOKEN ? '(AUTH_TOKEN)' : '(BRIDGE_KEY)'}` : 'NO_AUTH(dev)'
   console.log(
-    `[${name}] listening on http://127.0.0.1:${port} (/health + ${authMode} + ratelimit:${rateLimitPerMin}/min + timeout:${requestTimeoutClamped}ms + sec-headers)`,
+    `[${name}] listening on http://127.0.0.1:${port} (/health /metrics /info + ${authMode} + ratelimit:${rateLimitPerMin}/min + timeout:${requestTimeoutClamped}ms + sec-headers)`,
   )
   return server
 }

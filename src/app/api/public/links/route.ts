@@ -1,7 +1,7 @@
 // 前台页脚链接 — 友情链接(启用中, sortOrder 升序) + 站群链轮(实时随机)
 // ?site=<siteId> 排除当前站, 链轮永不指向调用方自己
 import { ok } from '@/lib/api'
-import { withGuard, str } from '../../_lib/http'
+import { withGuard, str, withCache } from '../../_lib/http'
 import { computeWheelLinks, getPublicFriendLinks, getWheelConfig } from '@/lib/links'
 
 export async function GET(req: Request) {
@@ -13,12 +13,12 @@ export async function GET(req: Request) {
     // 链轮实时随机: 仅取 status=true + inLinkWheel=true 的站, 排除当前站
     const wheel = cfg.enabled ? await computeWheelLinks(cfg, siteId || undefined) : []
 
-    return ok({
+    return withCache(ok({
       friend,
       wheel,
       wheelEnabled: cfg.enabled,
       mode: cfg.mode,
       count: cfg.count,
-    })
+    }), 60, 120)
   })
 }

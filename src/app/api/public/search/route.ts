@@ -1,7 +1,7 @@
 // 前台搜索
 import { db } from '@/lib/db'
 import { ok } from '@/lib/api'
-import { withGuard, likeSafe, clampInt } from '../../_lib/http'
+import { withGuard, likeSafe, clampInt, withCache } from '../../_lib/http'
 
 export async function GET(req: Request) {
   return withGuard(async () => {
@@ -30,7 +30,7 @@ export async function GET(req: Request) {
       take: 12,
       include: { book: { select: { id: true, name: true } } },
     })
-    return ok({
+    return withCache(ok({
       q,
       books: books.map((b) => ({
         id: b.id, name: b.name, author: b.author, intro: (b.intro || '').slice(0, 150),
@@ -38,6 +38,6 @@ export async function GET(req: Request) {
         category: b.category?.name || '未分类',
       })),
       relatedTags: relatedTags.map((t) => ({ tag: t.tag, bookId: t.book.id, bookName: t.book.name })),
-    })
+    }), 30, 60)
   })
 }

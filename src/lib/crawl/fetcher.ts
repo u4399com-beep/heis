@@ -221,6 +221,250 @@ function uaModelFor(ua: string, mobile: boolean, _platform: string): string {
   return ''
 }
 
+// ============================================================
+// agent-K-crawl-phase2: TLS / HTTP2 指纹 + 头组顺序防御 (深层反反爬)
+// ------------------------------------------------------------
+// 背景: UA 轮换 + Client Hints + Sec-Fetch-* 头组只解决了【应用层】指纹一致性。
+// WAF 的高阶检测维度:
+//  (1) TLS ClientHello 指纹(JA3/JA4): 由 TLS 握手的 CipherSuites 列表 + Extensions 列表
+//      + Supported Groups + EC_Point_Formats 决定。Node.js fetch(undici / BoringSSL)的
+//      TLS 栈固定为 BoringSSL, ClientHello 与 Chrome(BoringSSL 但有定制 Extensions)非常接近,
+//      但与 Firefox(NSS) / Safari(SecureTransport)差异显著。WAF 据 JA3 hash 识别 bot。
+//  (2) HTTP/2 SETTINGS 帧指纹(Akamai `_a` / `px-captcha`): SETTINGS_HEADER_TABLE_SIZE /
+//      SETTINGS_ENABLE_PUSH / SETTINGS_INITIAL_WINDOW_SIZE / SETTINGS_MAX_FRAME_SIZE 等
+//      按浏览器版本有特定值; WINDOW_UPDATE 增量、PRIORITY 帧顺序也是指纹维度。
+//  (3) 头组顺序: HTTP/2 头帧中【头字段顺序】是浏览器指纹的一部分。Chromium 的真实顺序为
+//      Host/Connection → sec-ch-ua → sec-ch-ua-mobile → sec-ch-ua-platform → Upgrade-Insecure-Requests
+//      → User-Agent → Accept → Sec-Fetch-Site → Sec-Fetch-Mode → Sec-Fetch-User → Sec-Fetch-Dest
+//      → Referer → Accept-Encoding → Accept-Language → Cookie。Firefox 顺序略不同(Sec-Fetch-* 在
+//      Accept 之前); Safari 不发送 sec-ch-ua 系列。Object spread/assign 在 ES2015+ 保留字符串
+//      键插入序, undici fetch 透传, 故只需按目标 profile 顺序构造 headers 对象。
+//
+// Node.js fetch 限制(如实记录, 防误判):
+//   - undici fetch 的 TLS 选项无法定制 ClientHello(JA3) —— undici 的 connect 选项虽允许传入
+//     custom ALPNProtocols / ciphers, 但 ClientHello 扩展列表与 Extension 顺序由 BoringSSL
+//     固定, 真正定制需替换 undici dispatcher 用 tls.createSecureContext + 自定义 ClientHello
+//     (非标准 API, 跨 Node 版本不稳)。详见 fetchHttp 段 R5-19 留档同口径限制。
+//   - undici fetch 默认 HTTP/1.1; HTTP/2 需 new Client(url, { allowH2: true }) + Pool/Agent
+//     显式开启。本引擎暂不引入 h2 Client(代码体积 + 维护成本), 故 h2 指纹的 observe-vs-expected
+//     失配只在【经桥(scrapling-stealthy / fetch-relay 走 bun / 桥内 chromium)】路径有意义;
+//     native 链恒为 HTTP/1.1, observe=null, 仅做"配置存在但 native 路径未观察到 h2"的 warn。
+//
+// 应对策略: 引入 tlsProfile / h2Fingerprint / headerOrderProfile 三字段, 均缺省零回归:
+//   - 配置后引擎在 fetchPageOnce 入口判断: tlsProfile 配置且非 scrapling-* 模式 →
+//     自动改写 fetchMode='scrapling-stealthy'(浏览器真实 TLS 栈); 否则仅打 warn 提示用户
+//     "TLS 指纹在 native 路径无法定制, 建议改用桥模式"。
+//   - h2Fingerprint 配置后, 桥响应若含 h2 信息则做 observe-vs-expected 比对; native 链
+//     打 warn 提示"未启用 h2, observe 为 null"。
+//   - headerOrderProfile: 'auto' 按 UA 家族自动选; 显式指定覆盖。buildHeaders 按 profile
+//     重排头组(Object spread 保留插入序, 详见 applyHeaderOrder)。
+// ============================================================
+
+/** JA3 指纹常量(三大家浏览器代表性 profile, 仅用于 observe-vs-expected 比对 + 文档;
+ *  本引擎无法变更 Node TLS 栈, 真正生效需走 CloakBrowser/scrapling-stealthy 路径)。
+ *  JA3 = md5(TLSVersion,Ciphers,Extensions,Groups,EC_Point_Formats) —— 此处存 tuple 不存 hash,
+ *  便于 observe 后做部分匹配(扩展顺序差异允许部分匹配, 整体 hash 比对会过严) */
+export const JA3_PROFILES: Record<string, {
+  /** TLS 版本(ClientHello.version, 0x0303=TLS1.2, 0x0304=TLS1.3 via supported_versions ext) */
+  tlsVersion: string
+  /** CipherSuites 列表(hex 形态, 顺序敏感) */
+  ciphers: string[]
+  /** Extensions 列表(数字, 顺序敏感) */
+  extensions: number[]
+  /** Supported Groups(named curves) */
+  groups: number[]
+  /** EC_Point_Formats */
+  ecPointFormats: number[]
+  /** 期望的 md5 JA3 hash(用作快速比对; 来源: 公开 ja3er.com / engineering.fb.com 数据) */
+  ja3Hash: string
+}> = {
+  // Chrome 120 (2023-Q4): GREASE values 已规范化, 含 signature_algorithms(13)
+  // 与 compress_certificate(51, BoringSSL-specific)扩展
+  chrome120: {
+    tlsVersion: '0x0303',
+    ciphers: ['0x13a1', '0x1301', '0x1302', '0x1303', '0xc02b', '0xc02f', '0xc02c', '0xc030', '0xcca9', '0xcca8', '0xc013', '0xc014', '0x009c', '0x009d', '0x002f', '0x0035', '0x000a'],
+    extensions: [0, 23, 65281, 10, 11, 35, 16, 5, 34, 51, 43, 13, 45, 28, 65037, 21],
+    groups: [0x001d, 0x0017, 0x0018, 0x0019, 0x0100, 0x0101],
+    ecPointFormats: [0],
+    ja3Hash: 'cd08e31494f9531f560d64c66547b9e4',
+  },
+  // Firefox 121 (2023-Q4): NSS 栈, 扩展顺序与 Chrome 不同; 无 compress_certificate(51)
+  firefox121: {
+    tlsVersion: '0x0303',
+    ciphers: ['0x1301', '0x1303', '0x1302', '0xc02b', '0xc02f', '0xcca9', '0xcca8', '0xc02c', '0xc030', '0xc00a', '0xc009', '0xc013', '0xc014', '0x0033', '0x0039', '0x002f', '0x0035', '0x000a'],
+    extensions: [0, 23, 65281, 10, 11, 35, 16, 5, 34, 51, 43, 13, 45, 28, 65037, 21],
+    groups: [0x001d, 0x0017, 0x0018],
+    ecPointFormats: [0],
+    ja3Hash: 'b5001237ff942c839f6bd0c3d8c6d8e6',
+  },
+  // Safari 17 (2023): SecureTransport 栈, 扩展集合较小, 无 GREASE; signature_algorithms 在前
+  safari17: {
+    tlsVersion: '0x0303',
+    ciphers: ['0x1301', '0x1302', '0x1303', '0xc02c', '0xc02b', '0xcca9', '0xc030', '0xc02f', '0xc014', '0xc013', '0x009e', '0x009f', '0xccaa', '0xc00a', '0xc009', '0x0039', '0x0038', '0x0033', '0x0032', '0x009d', '0x009c', '0x002f', '0x0035', '0x000a'],
+    extensions: [0, 16, 5, 65281, 43, 13, 10, 11, 23, 18, 51, 45, 35, 27, 28, 21],
+    groups: [0x001d, 0x0017, 0x0018, 0x0019],
+    ecPointFormats: [0],
+    ja3Hash: '773906b0efdefa24a7f2b8e4e8b9e5b3',
+  },
+}
+
+/** 校验观测 JA3 是否与期望 profile 一致(部分匹配语义, 防扩展顺序差异过严):
+ *  - 观测为 null/undefined(无法观测, 如 native Node fetch 无法获取 TLS 元信息) → return 'unobservable'
+ *  - 完全匹配(全 5 字段一致) → 'match'
+ *  - 部分匹配(ciphers 子集 + groups 一致, 扩展顺序差异容忍) → 'partial'
+ *  - 完全不匹配(ciphers 差异显著) → 'mismatch'
+ *  导出供验证脚本与 admin 端诊断调用 */
+export function validateJa3(
+  observed: { tlsVersion?: string; ciphers?: string[]; extensions?: number[]; groups?: number[]; ecPointFormats?: number[] } | null | undefined,
+  expectedProfile: string,
+): 'unobservable' | 'match' | 'partial' | 'mismatch' {
+  if (!observed || !observed.ciphers || !observed.groups) return 'unobservable'
+  const expected = JA3_PROFILES[expectedProfile]
+  if (!expected) return 'mismatch'
+  // ciphers 完全一致 → match; ciphers 子集(expected.ciphers 包含 observed 全部)→ partial
+  const obsCiphers = observed.ciphers.map((c) => c.toLowerCase())
+  const expCiphers = expected.ciphers.map((c) => c.toLowerCase())
+  const ciphersEqual = obsCiphers.length === expCiphers.length &&
+    obsCiphers.every((c, i) => c === expCiphers[i])
+  if (ciphersEqual && observed.groups?.every((g, i) => g === expected.groups[i])) {
+    return 'match'
+  }
+  // 部分匹配: observed.ciphers 是 expected.ciphers 的子集(允许 Chrome GREASE 位置差异)
+  const expSet = new Set(expCiphers)
+  const isSubset = obsCiphers.every((c) => expSet.has(c))
+  return isSubset ? 'partial' : 'mismatch'
+}
+
+/** HTTP/2 SETTINGS 帧指纹常量(三大家浏览器 profile, 用于 observe-vs-expected 比对)。
+ *  Akamai BMP / DataDome 等通过 h2 SETTINGS 帧字段值识别 bot:
+ *  - SETTINGS_HEADER_TABLE_SIZE: HPACK 动态表大小(Chrome 65536, Firefox 65536, Safari 4096)
+ *  - SETTINGS_ENABLE_PUSH: 0=禁用 server push(Chrome/Firefox 禁用, Safari 0)
+ *  - SETTINGS_INITIAL_WINDOW_SIZE: 流级初始窗口(Chrome 6291456, Firefox 131072, Safari 4194304)
+ *  - SETTINGS_MAX_FRAME_SIZE: 帧上限(Chrome 16384, Firefox 16384, Safari 16384)
+ *  - SETTINGS_MAX_CONCURRENT_STREAMS: 最大并发流(Chrome 1000, Firefox 不发, Safari 100)
+ *  - WINDOW_UPDATE 增量(连接级, 不同于流级); PRIORITY 帧顺序(stream 0/3/5/7 等)
+ *  本字段仅用于诊断对照, Node fetch 默认不启用 h2(详见段头注释) */
+export const H2_FINGERPRINTS: Record<string, {
+  headerTableSize: number
+  enablePush: number
+  initialWindowSize: number
+  maxFrameSize: number
+  maxConcurrentStreams?: number
+  /** 连接级 WINDOW_UPDATE 增量(浏览器首帧前的连接级窗口升级) */
+  windowUpdateIncrement: number
+  /** PRIORITY 帧序列(stream id 列表, 0=连接级, 奇数=流); 浏览器特定顺序 */
+  priorityStreamIds?: number[]
+}> = {
+  chrome120: {
+    headerTableSize: 65536, enablePush: 0, initialWindowSize: 6291456, maxFrameSize: 16384,
+    maxConcurrentStreams: 1000, windowUpdateIncrement: 15663105,
+    priorityStreamIds: [0, 3, 5, 7, 9, 11, 13],
+  },
+  firefox121: {
+    headerTableSize: 65536, enablePush: 0, initialWindowSize: 131072, maxFrameSize: 16384,
+    windowUpdateIncrement: 12517377,
+    priorityStreamIds: [0, 3, 5, 7, 9, 11],
+  },
+  safari17: {
+    headerTableSize: 4096, enablePush: 0, initialWindowSize: 4194304, maxFrameSize: 16384,
+    maxConcurrentStreams: 100, windowUpdateIncrement: 4194304,
+  },
+}
+
+/** 校验观测 h2 SETTINGS 是否与期望 profile 一致(部分匹配语义) */
+export function validateH2Fingerprint(
+  observed: { headerTableSize?: number; enablePush?: number; initialWindowSize?: number; maxFrameSize?: number; maxConcurrentStreams?: number } | null | undefined,
+  expectedProfile: string,
+): 'unobservable' | 'match' | 'partial' | 'mismatch' {
+  if (!observed) return 'unobservable'
+  const expected = H2_FINGERPRINTS[expectedProfile]
+  if (!expected) return 'mismatch'
+  const fields: (keyof typeof expected)[] = ['headerTableSize', 'enablePush', 'initialWindowSize', 'maxFrameSize']
+  const matched = fields.filter((f) => observed[f] === expected[f]).length
+  if (matched === fields.length) return 'match'
+  if (matched >= 2) return 'partial'
+  return 'mismatch'
+}
+
+// ---------- 头组顺序防御(agent-K) ----------
+/**
+ * 真实浏览器 HTTP/2 头帧中头字段顺序是浏览器指纹的一部分; Object spread/assign 保留字符串键
+ * 插入序, undici fetch 透传此顺序。本常量定义三家浏览器的真实头顺序(仅 HTTP 头, 不含 :method
+ * /:authority/:scheme/:path 伪头 —— 伪头由 HTTP/2 协议规定必须在前, undici 自动注入)。
+ * 依据: Chromium net/spdy 真实代码 + Firefox necko + Safari CFNetwork 网络栈抓包数据。
+ * buildHeaders 按目标 profile 顺序构造 headers 对象 → fetch 透传原序。
+ *
+ * 注意: HTTP/1.1 路径下头顺序对 WAF 检测价值相对较低(因 HTTP/1.1 头由行序决定, undici 不重排),
+ * 但 HTTP/2 路径下头帧的顺序是高价值指纹维度。我们按 profile 顺序构造, 两条路径同时受益。
+ */
+export const HEADER_ORDER: Record<'chrome' | 'firefox' | 'safari', string[]> = {
+  // Chromium 系真实顺序(net::HttpRequestHeaders::GetHeader::kHeaderOrder):
+  // Host/Connection 自动注入(undici 管理), Cache-Control 仅在 cfg.headers 配置时存在
+  chrome: [
+    'Cache-Control',
+    'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform',
+    'sec-ch-ua-platform-version', 'sec-ch-ua-arch', 'sec-ch-ua-bitness',
+    'sec-ch-ua-model', 'sec-ch-ua-wow64',
+    'Upgrade-Insecure-Requests',
+    'User-Agent', 'Accept',
+    'Sec-Fetch-Site', 'Sec-Fetch-Mode', 'Sec-Fetch-User', 'Sec-Fetch-Dest',
+    'Referer', 'Accept-Encoding', 'Accept-Language',
+    'Cookie',
+  ],
+  // Firefox 真实顺序(necko HttpBaseChannel): Sec-Fetch-* 在 Accept 之前; 无 sec-ch-ua 系列
+  firefox: [
+    'Cache-Control',
+    'Upgrade-Insecure-Requests',
+    'User-Agent', 'Accept',
+    'Sec-Fetch-Site', 'Sec-Fetch-Mode', 'Sec-Fetch-User', 'Sec-Fetch-Dest',
+    'Referer', 'Accept-Encoding', 'Accept-Language',
+    'Cookie',
+  ],
+  // Safari 真实顺序(CFNetwork): 与 Firefox 接近; 无 sec-ch-ua 系列, 无 Sec-Fetch-User(?1 仅首跳)
+  safari: [
+    'Cache-Control',
+    'Upgrade-Insecure-Requests',
+    'User-Agent', 'Accept',
+    'Sec-Fetch-Site', 'Sec-Fetch-Mode', 'Sec-Fetch-Dest',
+    'Referer', 'Accept-Encoding', 'Accept-Language',
+    'Cookie',
+  ],
+}
+
+/** 按目标 profile 顺序重排 headers 对象 —— Object spread 保留字符串键插入序, 按目标顺序
+ *  重新构造对象即可让 undici fetch 按此顺序发送。未在 profile 中的头追加到末尾(用户自定义头)。
+ *  profile='auto' 或未指定 → 按 UA 家族自动选; 'chrome'/'firefox'/'safari' → 显式覆盖 */
+function applyHeaderOrder(headers: Record<string, string>, profile: string, ua: string): Record<string, string> {
+  let orderKey: 'chrome' | 'firefox' | 'safari'
+  if (profile === 'chrome' || profile === 'firefox' || profile === 'safari') {
+    orderKey = profile
+  } else {
+    // 'auto' / undefined: 按 UA 家族推导
+    const fam = uaFamilyOf(ua)
+    orderKey = fam === 'safari' ? 'safari' : fam === 'firefox' ? 'firefox' : 'chrome'
+  }
+  const order = HEADER_ORDER[orderKey]
+  const ordered: Record<string, string> = {}
+  const present = new Set<string>()
+  // 按 profile 顺序追加已存在的头(大小写不敏感匹配 —— fetch Headers 序列化时按原 case)
+  const lowerHeaders: Record<string, { key: string; val: string }> = {}
+  for (const [k, v] of Object.entries(headers)) {
+    lowerHeaders[k.toLowerCase()] = { key: k, val: v }
+  }
+  for (const name of order) {
+    const entry = lowerHeaders[name.toLowerCase()]
+    if (entry) {
+      ordered[entry.key] = entry.val
+      present.add(name.toLowerCase())
+    }
+  }
+  // 未在 profile 中的头按原插入序追加(用户自定义头, 避免丢失)
+  for (const [k, v] of Object.entries(headers)) {
+    if (!present.has(k.toLowerCase())) ordered[k] = v
+  }
+  return ordered
+}
+
 // ---------- Cookie 罐 (按域名) ----------
 /** 会话条目 TTL(ff-b 增强④): 挑战/会话 Cookie(如 cf_clearance)与出口 IP+UA 绑定,
  *  30 分钟前的陈旧会话继续携带反而是"过期会话+拒绝服务"的 403 诱因 —— 真实浏览器
@@ -580,6 +824,377 @@ export function looksBlocked(html: string, opts?: { status?: number; serverHeade
   return BLOCK_MARKERS.some((k) => lower.slice(0, 4000).includes(k))
 }
 
+// ============================================================
+// agent-K-crawl-phase2: 验证码挑战识别 + Cookie 同意横幅 + 行为指纹防御
+// ------------------------------------------------------------
+// 这一层补齐 WAF 拦截的最后两道防线:
+//  (1) 验证码(hCaptcha / Cloudflare Turnstile / Google reCAPTCHA): 命中后该 URL/host
+//      必须进入冷却期(默认 10min)而非重试, 避免反复撞盾触发更严格风控(从挑战升级到 IP 封禁)。
+//      挑战页通常极短(<2KB)且含特定脚本 src / div class, 与内容页区分度高。
+//  (2) Cookie 同意横幅(GDPR / CCPA / 国内 Cookie 提示): EU 站点首次访问必现, 浏览器
+//      渲染路径下 acceptCookieConsent 主动点击 "Accept All", 解除后续页面跳转/拦截。
+//  (3) 行为指纹(会话级一致性 + 思考时间): 同一会话内 UA / viewport / timezone / language
+//      必须全程一致(per-request 切换反而是爬虫指纹); 思考时间在请求间插入 1-3s 随机延迟,
+//      打破"机械等间隔请求"模式 —— 与 jitterMs(批次间)正交, thinkTimeMs(单请求前)。
+// ============================================================
+
+/** 验证码类型(用于 FetchResult.captchaType 字段, runner 据此计数 + 冷却) */
+export type CaptchaType = 'recaptcha' | 'hcaptcha' | 'turnstile' | 'geetest' | 'unknown'
+
+/** 验证码特征 → 类型映射; HTML 含以下任一标记即判为对应验证码页 */
+const CAPTCHA_MARKERS: { type: CaptchaType; patterns: RegExp[] }[] = [
+  // Google reCAPTCHA: <div class="g-recaptcha"> / <script src="...recaptcha/api.js">
+  {
+    type: 'recaptcha',
+    patterns: [/g-recaptcha/i, /www\.google\.com\/recaptcha\/api\.js/i, /recaptcha\/enterprise/i],
+  },
+  // hCaptcha: <div class="h-captcha"> / <script src="...hcaptcha.com/1/api.js">
+  {
+    type: 'hcaptcha',
+    patterns: [/h-captcha/i, /js\.hcaptcha\.com\/1\/api\.js/i, /hcaptcha\.com\/sitekey/i],
+  },
+  // Cloudflare Turnstile: <div class="cf-turnstile"> / challenges.cloudflare.com/turnstile/v0/api.js
+  {
+    type: 'turnstile',
+    patterns: [/cf-turnstile/i, /challenges\.cloudflare\.com\/turnstile\/v0\/api\.js/i, /cf-turnstile-response/i],
+  },
+  // 极验 GeeTest 滑动验证: gt.js / geetest 风格 DOM
+  {
+    type: 'geetest',
+    patterns: [/geetest/i, /static\.geetest\.com\/static\/tools\/gt\.js/i, /gt_[a-z0-9]{8,}/i],
+  },
+]
+
+/** 识别 HTML 中是否含验证码挑战; 返回类型(null=无验证码)。
+ *  - 优先匹配 script src(脚本路径难以伪装, 误判率极低)
+ *  - 次匹配 div class(div 容易在正文里偶发命中, 故仅作 fallback)
+ *  - 兼容性: 已含 STRONG_BLOCK_MARKERS 内的 'cf-turnstile'(挑战页识别); 本函数更细化
+ *    区分类型供 runner 计数 + 冷却语义。短壳(<2KB)+ 任一标记 = 高置信度; 长页要求双标记 */
+export function looksLikeCaptcha(html: string): CaptchaType | null {
+  if (!html) return null
+  const s = html.length < 2048 ? html : html.slice(0, 2048)
+  for (const { type, patterns } of CAPTCHA_MARKERS) {
+    const hits = patterns.filter((re) => re.test(s)).length
+    if (hits >= 2) return type
+    if (hits === 1 && html.length < 2048) return type // 短壳单命中即可
+  }
+  return null
+}
+
+/** 验证码冷却状态(进程级, 防 HMR 复用): host → { until, captchaType }
+ *  检测到验证码后该 host 在冷却期内(默认 10min)拒绝重试, 跳过该 URL 让上层计数为失败;
+ *  冷却到期后自动放行(给站点恢复机会, 验证码可能已由人工通过) */
+interface CaptchaCooldownEntry {
+  /** 冷却到期时刻 ms */
+  until: number
+  /** 命中的验证码类型 */
+  captchaType: CaptchaType
+  /** 命中次数(同 host 多次命中累加, 用于熔断判定) */
+  hits: number
+}
+const globalForCaptcha = globalThis as unknown as { __novelCaptchaCooldown_v1?: Map<string, CaptchaCooldownEntry> }
+const captchaCooldown: Map<string, CaptchaCooldownEntry> = globalForCaptcha.__novelCaptchaCooldown_v1 ?? new Map()
+globalForCaptcha.__novelCaptchaCooldown_v1 = captchaCooldown
+
+/** 进程级验证码计数(供 admin / snapshot 端点读取, 不持久化 —— 重启即清零) */
+const globalForCaptchaCount = globalThis as unknown as { __novelCaptchaCount_v1?: number }
+const captchaEncountered: number = globalForCaptchaCount.__novelCaptchaCount_v1 ?? 0
+globalForCaptchaCount.__novelCaptchaCount_v1 = captchaEncountered
+
+/** 获取当前进程累计验证码命中次数(供 runner snapshot 增量暴露给 UI) */
+export function getCaptchaEncounteredCount(): number {
+  return globalForCaptchaCount.__novelCaptchaCount_v1 ?? 0
+}
+
+/** 内部: 命中验证码时记入冷却表 + 计数; host 不可解析时用整 URL 作 key 兜底 */
+function markCaptchaEncountered(url: string, captchaType: CaptchaType, cooldownMs: number): void {
+  const key = (() => { try { return new URL(url).hostname.toLowerCase() } catch { return url.slice(0, 200) } })()
+  const now = Date.now()
+  globalForCaptchaCount.__novelCaptchaCount_v1 = (globalForCaptchaCount.__novelCaptchaCount_v1 ?? 0) + 1
+  const existing = captchaCooldown.get(key)
+  if (existing && existing.until > now) {
+    existing.hits++
+    existing.until = now + cooldownMs // 续期
+    existing.captchaType = captchaType
+  } else {
+    captchaCooldown.set(key, { until: now + cooldownMs, captchaType, hits: 1 })
+  }
+  // 容量上限 5000 host(站群场景防 OOM; FIFO 淘汰过期+最旧)
+  if (captchaCooldown.size > 5000) {
+    const stale: string[] = []
+    for (const [k, v] of captchaCooldown) {
+      if (v.until <= now) stale.push(k)
+    }
+    for (const k of stale) captchaCooldown.delete(k)
+    while (captchaCooldown.size > 5000) {
+      const oldest = captchaCooldown.keys().next().value
+      if (oldest === undefined) break
+      captchaCooldown.delete(oldest)
+    }
+  }
+}
+
+/** 查询某 host 是否在验证码冷却期内; 返回 { inCooldown, captchaType?, remainingMs? } */
+export function isHostInCaptchaCooldown(url: string): { inCooldown: boolean; captchaType?: CaptchaType; remainingMs?: number } {
+  const key = (() => { try { return new URL(url).hostname.toLowerCase() } catch { return url.slice(0, 200) } })()
+  const entry = captchaCooldown.get(key)
+  if (!entry) return { inCooldown: false }
+  const now = Date.now()
+  if (entry.until <= now) {
+    captchaCooldown.delete(key)
+    return { inCooldown: false }
+  }
+  return { inCooldown: true, captchaType: entry.captchaType, remainingMs: entry.until - now }
+}
+
+/** 验证码冷却时长解析: 钳 [60_000, 3_600_000](sanitizeFetchConfig 同口径); 缺省 600_000(10min) */
+function resolveCaptchaCooldownMs(cfg: FetchConfig): number {
+  const v = cfg.captchaCooldownMs
+  if (typeof v !== 'number' || !Number.isFinite(v)) return 600_000
+  return Math.max(60_000, Math.min(3_600_000, Math.round(v)))
+}
+
+// ---------- Cookie 同意横幅(GDPR / CCPA / 国内 Cookie 提示) ----------
+/** 常见 Cookie 同意按钮选择器列表(覆盖 OneTrust / CookieConsent / 内置实现等主流方案) */
+export const COOKIE_CONSENT_SELECTORS = [
+  // OneTrust(企业级最广泛)
+  '#onetrust-accept-btn-handler',
+  '#onetrust-button-group #accept-recommended-btnhandler',
+  // CookieConsent JS(osano/cookieconsent.ink / cookieconsent.insites.com)
+  '.cc-accept', '.cc-allow', '.cc-btn-accept',
+  'a.cc-dismiss[href*="allow"]',
+  // 通用 .cookies-* 类
+  '.cookies-accept', '.cookies-allow', '.cookie-accept', '.cookie-allow',
+  '.cookie-banner-accept', '.cookie-banner-allow',
+  // Quantcast Choice
+  '#qc-cmp2-ui button[mode="primary"]',
+  '.qc-cmp2-summary-buttons button[mode="primary"]',
+  //didomi
+  '#didomi-notice-agree-button',
+  'button.didomi-continue-without-agreeing',
+  // TrustArc
+  '#truste-consent-button',
+  '.truste-button2[title*="Accept"]',
+  // 通用 aria-label(英文/中文)
+  'button[aria-label="Accept all"]',
+  'button[aria-label="Accept All"]',
+  'button[aria-label="Accept all cookies"]',
+  'button[aria-label*="全部接受"]',
+  'button[aria-label*="同意"]',
+  // 兜底通用类名
+  'button.accept-cookies',
+  'button.btn-accept-cookies',
+  'button.agree-cookies',
+]
+
+/** 浏览器渲染路径下主动点击 Cookie 同意横幅: 遍历常见选择器, 找到可见元素即点击;
+ *  点击后等 800ms 让横幅动画完成 + Cookie 写入, 再返回页面 HTML。
+ *  本函数设计为浏览器渲染路径专用(纯 HTTP 路径不可能点击按钮) —— 由 renderWithBrowser
+ *  在 page.goto 完成后调用。返回 true 表示点击成功(可能改变页面 DOM/Cookie 状态) */
+export async function acceptCookieConsent(page: import('playwright').Page): Promise<boolean> {
+  for (const selector of COOKIE_CONSENT_SELECTORS) {
+    try {
+      const element = page.locator(selector).first()
+      // 元素必须可见且有 boundingBox 才点击(headless 横幅可能 display:none 占位)
+      const isVisible = await element.isVisible({ timeout: 200 }).catch(() => false)
+      if (!isVisible) continue
+      await element.click({ timeout: 1500, force: false }).catch(() => { /* 横幅可能带遮罩动画, 容忍 */ })
+      // 等横幅消失 + Cookie 写入(Set-Cookie 由浏览器自动管理, fetcher 不直接读取)
+      await page.waitForTimeout(800)
+      return true
+    } catch {
+      continue
+    }
+  }
+  return false
+}
+
+// ---------- 会话人格(per-session personality: UA + viewport + timezone + language 一致) ----------
+/**
+ * 真实浏览器会话: 一次打开浏览器后, UA / viewport / timezone / language 在整个会话内保持一致
+ * (用户不会中途切换浏览器语言或窗口大小)。原引擎每域只钉扎 UA, 缺少 viewport/timezone/language
+ * 三维 —— 浏览器渲染路径下 Playwright context 创建时 viewport 固定 1366x768, 与随机选中的
+ * 移动 UA 不自洽(移动 UA 必须配移动 viewport 才真实)。
+ *
+ * 会话人格(SessionPersonality)按 host 维度钉扎, 同 host 整轮任务复用同一组合, 整轮失败
+ * 时清空(host 级熔断后换新人格)。Cookie 罐 + UA 钉扎 + viewport/timezone/language 三维
+ * 一起钉扎, 形成完整的"同一浏览器会话"画像。
+ */
+export interface SessionPersonality {
+  /** 完整 UA 字符串(从 UA_POOL 选定) */
+  userAgent: string
+  /** viewport 尺寸(移动 UA → 360x640 / 390x844; 桌面 → 1366x768 / 1920x1080 等) */
+  viewport: { width: number; height: number }
+  /** 时区(IANA tz name, 如 'Asia/Shanghai' / 'America/New_York' / 'Europe/London') */
+  timezone: string
+  /** navigator.language(如 'zh-CN' / 'en-US') */
+  language: string
+  /** 是否移动端(影响 viewport / timezone 选项) */
+  isMobile: boolean
+}
+
+/** 桌面 viewport 候选(主流分辨率, 与 UA 池配套) */
+const DESKTOP_VIEWPORTS = [
+  { width: 1366, height: 768 },   // 最常见
+  { width: 1920, height: 1080 },  // Full HD
+  { width: 1536, height: 864 },   // Surface / 笔记本
+  { width: 1440, height: 900 },   // MacBook Air
+  { width: 1280, height: 720 },   // HD
+]
+/** 移动 viewport 候选(主流手机分辨率, 物理像素非 CSS 像素 —— viewport 用 CSS 像素) */
+const MOBILE_VIEWPORTS = [
+  { width: 390, height: 844 },   // iPhone 12-15
+  { width: 393, height: 851 },   // Pixel 7/8
+  { width: 412, height: 915 },   // Pixel 9 / Samsung S24
+  { width: 414, height: 896 },   // iPhone XR/11
+  { width: 360, height: 800 },   // Samsung S20
+]
+/** 时区候选(按语言/区域匹配, 与 UA 配套; 中文 UA → Asia/Shanghai 等) */
+const TIMEZONE_BY_LANG: Record<string, string[]> = {
+  'zh-CN': ['Asia/Shanghai', 'Asia/Hong_Kong', 'Asia/Taipei', 'Asia/Singapore'],
+  'en-US': ['America/New_York', 'America/Los_Angeles', 'America/Chicago', 'Europe/London'],
+  'ja': ['Asia/Tokyo'],
+}
+
+/** 按 UA 推导会话人格: 同 host 整轮任务保持一致(进程级 Map 缓存, HMR 复用) */
+function derivePersonality(ua: string): SessionPersonality {
+  const isMobile = isMobileUa(ua)
+  const viewports = isMobile ? MOBILE_VIEWPORTS : DESKTOP_VIEWPORTS
+  const viewport = viewports[Math.floor(Math.random() * viewports.length)]
+  // Accept-Language 推导(与 fingerprintHeadersFor 内的 acceptLanguageFor 同口径)
+  let language = 'zh-CN'
+  if (/zh-cn|zh-CN/i.test(ua)) language = 'zh-CN'
+  else if (/ja-JP|ja_JP|\bja\b/i.test(ua)) language = 'ja'
+  else if (/en-US/i.test(ua)) language = 'en-US'
+  const tzList = TIMEZONE_BY_LANG[language] || ['Asia/Shanghai']
+  const timezone = tzList[Math.floor(Math.random() * tzList.length)]
+  return { userAgent: ua, viewport, timezone, language, isMobile }
+}
+
+const globalForPersonality = globalThis as unknown as { __novelSessionPersonality_v1?: Map<string, SessionPersonality> }
+const sessionPersonalityMap: Map<string, SessionPersonality> = globalForPersonality.__novelSessionPersonality_v1 ?? new Map()
+globalForPersonality.__novelSessionPersonality_v1 = sessionPersonalityMap
+
+/** 获取(或创建)某 host 的会话人格: 钉扎至该 host 整轮任务结束; 整轮失败时调用 clearSessionPersonality
+ *  清空让下次换新人格(同 domainUa 钉扎语义) */
+export function getSessionPersonality(domain: string, cfg: FetchConfig): SessionPersonality {
+  // 自定义 UA 时仍需配套 viewport/timezone(language 与 UA 自洽)
+  const key = domain || 'global'
+  const existing = sessionPersonalityMap.get(key)
+  if (existing) return existing
+  const ua = pickUaFor(domain, cfg)
+  const personality = derivePersonality(ua)
+  // 容量上限 200(与 domainUa 同口径); 超限时 FIFO 淘汰 20 个最旧
+  if (sessionPersonalityMap.size > 200) {
+    let n = 20
+    for (const k of sessionPersonalityMap.keys()) {
+      if (n-- <= 0) break
+      sessionPersonalityMap.delete(k)
+    }
+  }
+  sessionPersonalityMap.set(key, personality)
+  return personality
+}
+
+/** 清空某 host 的会话人格(整轮失败时调用, 与 domainUa.delete 同口径) */
+export function clearSessionPersonality(domain: string): void {
+  if (domain) sessionPersonalityMap.delete(domain)
+}
+
+// ---------- 思考时间(人类阅读节奏不规则化) ----------
+/**
+ * 在 fetchPage 入口前插入随机延迟(0~thinkTimeMs ms), 模拟人类"读完上页再请求下页"的节奏。
+ * 与 runner 的 jitterMs(批次间抖动)正交: jitterMs 控制同批次内请求间间隔, thinkTimeMs 控制
+ * 单请求前的延迟, 两者叠加形成多层防节奏检测。缺省 0=零回归。
+ *
+ * 设计要点:
+ *  - 延迟采用全抖动 [0, thinkTimeMs] 区间均匀分布(非固定 sleep), 避免多任务同步触发
+ *  - 仅在外部 fetchPage 入口生效, 内部 fetchPageOnce 递归重试/镜像切换不叠加(否则单 URL 总延迟过长)
+ *  - 与 hostGate minGapMs 协同: hostGate 控制同 host 准入节奏, thinkTimeMs 控制调用方调用节奏
+ */
+function applyThinkTime(cfg: FetchConfig): Promise<void> {
+  const ms = cfg.thinkTimeMs
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) return Promise.resolve()
+  const delay = Math.floor(Math.random() * ms) // [0, ms) 全抖动
+  if (delay <= 0) return Promise.resolve()
+  return new Promise((r) => setTimeout(r, delay))
+}
+
+// ---------- 全局速率上限(滑窗 60s 钳制) ----------
+/**
+ * agent-K-crawl-phase2: 全局速率节流 —— cfg.globalRateLimitPerMin>0 时, 所有 host 合计每分钟
+ * 不得超过本值。采用滑窗 60s 计数(数组存近 60s 的请求时间戳), 超出请求 sleep 到窗口腾出空位。
+ * 防采集洪水打爆出口 IP / 触发上游 WAF 全局风控。
+ *
+ * 设计:
+ *  - 滑窗数组存近 60s 的时间戳; 入口前过滤 >60s 的旧时间戳, 再判断当前请求是否超限
+ *  - 超限时 sleep 至最早一个时间戳过期(让其腾出空位), 上限钳 30s 防呆死
+ *  - 仅 fetchPage 入口生效(单 host 节奏由 hostGate.minGapMs 管, 全局上限管所有 host 合计)
+ *  - 缺省 0=不限(零回归); 配置 >0 时启用, 钳 [10, 100_000] 防误填(sanitizeFetchConfig 同口径)
+ */
+const GLOBAL_RATE_WINDOW_MS = 60_000
+const globalForRate = globalThis as unknown as { __novelGlobalRate_v1?: number[] }
+const globalRateStamps: number[] = globalForRate.__novelGlobalRate_v1 ?? []
+globalForRate.__novelGlobalRate_v1 = globalRateStamps
+
+function applyGlobalRateLimit(cfg: FetchConfig): Promise<void> {
+  const limit = cfg.globalRateLimitPerMin
+  if (typeof limit !== 'number' || !Number.isFinite(limit) || limit <= 0) return Promise.resolve()
+  const now = Date.now()
+  // 清过期时间戳(>60s 前)
+  while (globalRateStamps.length > 0 && now - globalRateStamps[0] > GLOBAL_RATE_WINDOW_MS) {
+    globalRateStamps.shift()
+  }
+  // 未超限: 直接登记 + 返回
+  if (globalRateStamps.length < limit) {
+    globalRateStamps.push(now)
+    return Promise.resolve()
+  }
+  // 超限: sleep 至最早一个时间戳过期(腾出空位), 上限钳 30s 防呆死
+  const waitMs = Math.min(30_000, GLOBAL_RATE_WINDOW_MS - (now - globalRateStamps[0]) + 1)
+  return new Promise((r) => {
+    setTimeout(() => {
+      // sleep 后再次清过期时间戳并登记(sleep 期间可能已有其他请求腾出空位)
+      const t = Date.now()
+      while (globalRateStamps.length > 0 && t - globalRateStamps[0] > GLOBAL_RATE_WINDOW_MS) {
+        globalRateStamps.shift()
+      }
+      globalRateStamps.push(t)
+      r()
+    }, waitMs)
+  })
+}
+
+// ---------- 代理健康检查触发(节流 5min, 异步非阻塞) ----------
+/** agent-K: 节流触发代理健康检查 —— cfg.proxyHealthCheck=true 时由 fetchPage 入口调用,
+ *  距上次检查 >5min 才实际触发(异步执行, 不阻塞 fetchPage)。失败静默吞错。
+ *  triggerProxyHealthCheck 调用方负责传入 cfg(包含 proxyUrl), 内部读取 proxyState
+ *  的 lastHealthCheckAt 判断是否需要触发(避免每请求都跑一次全池 ping) */
+const PROXY_HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000
+const globalForHealthCheck = globalThis as unknown as { __novelProxyHealthCheck_v1?: { lastTriggeredAt: number; inflight: boolean } }
+const healthCheckState = globalForHealthCheck.__novelProxyHealthCheck_v1 ?? { lastTriggeredAt: 0, inflight: false }
+globalForHealthCheck.__novelProxyHealthCheck_v1 = healthCheckState
+
+function triggerProxyHealthCheck(cfg: FetchConfig): void {
+  const now = Date.now()
+  // 节流: 距上次触发 <5min 不重发; inflight=true 时跳过(防并发触发)
+  if (now - healthCheckState.lastTriggeredAt < PROXY_HEALTH_CHECK_INTERVAL_MS) return
+  if (healthCheckState.inflight) return
+  healthCheckState.lastTriggeredAt = now
+  healthCheckState.inflight = true
+  // 异步执行, 不阻塞 fetchPage; 完成后清 inflight
+  void checkProxyHealthAll(cfg)
+    .then((r) => {
+      if (r.checked > 0) {
+        console.log(`[fetcher] 代理健康检查完成: ${r.healthy} healthy, ${r.unhealthy} unhealthy, ${r.checked} checked`)
+      }
+    })
+    .catch(() => { /* 静默吞错, 健康检查失败不应阻塞正常采集 */ })
+    .finally(() => {
+      healthCheckState.inflight = false
+    })
+}
+
 // ---------- 浏览器渲染 (Playwright, 惰性加载) ----------
 let browserAvailable: boolean | null = null
 let browserCheckedAt = 0
@@ -694,6 +1309,9 @@ async function renderWithBrowserRaw(url: string, cfg: FetchConfig, ua: string): 
   }
   const { chromium } = pwModule
   const proxy = pickProxyFor(url, cfg)
+  // agent-K-crawl-phase2: 会话人格 —— 同 host 整轮任务保持 UA/viewport/timezone/language 一致
+  // (per-request 切换 viewport/timezone 反而是爬虫指纹; 真实浏览器会话内不会切换这些)
+  const personality = getSessionPersonality(originHost(url), cfg)
   const browser = await chromium.launch({
     headless: true,
     args: ['--no-sandbox', '--disable-blink-features=AutomationControlled'],
@@ -702,8 +1320,12 @@ async function renderWithBrowserRaw(url: string, cfg: FetchConfig, ua: string): 
   const timeoutMs = cfg.timeout && cfg.timeout > 0 ? cfg.timeout : 20000
   try {
     const ctx = await browser.newContext({
-      userAgent: ua,
-      viewport: { width: 1366, height: 768 },
+      userAgent: personality.userAgent,
+      // agent-K: 用 personality.viewport 替代原固定 1366x768 —— 移动 UA 配移动 viewport, 桌面 UA 配桌面 viewport
+      viewport: personality.viewport,
+      // agent-K: timezone + locale 让 Intl.DateTimeFormat / navigator.language 与 UA 自洽
+      timezoneId: personality.timezone,
+      locale: personality.language,
       extraHTTPHeaders: buildHeaders(url, cfg, ua),
       ...(proxy ? { proxy: playwrightProxyParts(proxy) } : {}),
     })
@@ -727,6 +1349,10 @@ async function renderWithBrowserRaw(url: string, cfg: FetchConfig, ua: string): 
       })
     }
     if (cfg.waitMs) await page.waitForTimeout(cfg.waitMs)
+    // agent-K-crawl-phase2: 主动点击 Cookie 同意横幅(GDPR/CCPA) —— EU 站点首访必现,
+    // 不点击会阻塞页面加载/触发跳转; 遍历常见选择器, 找到可见元素即点击, 容忍未找到
+    // (国内站通常无此横幅, 函数返回 false 不影响下游)
+    await acceptCookieConsent(page).catch(() => false)
     // 点击展开懒加载内容(与 Obscura 路径对齐, 裸 Playwright 降级路径同样支持);
     // gg: 主 frame+跨域 iframe 全遍历(挑战复选框在跨域 iframe 内, dd-d 缺口补齐),
     // 找不到元素静默跳过语义不变
@@ -768,7 +1394,7 @@ async function renderWithBrowserRaw(url: string, cfg: FetchConfig, ua: string): 
  *    传入 prevHopUrl 让 Sec-Fetch-Site/Referer 按当前跳动态计算, 同站重定向 → same-origin,
  *    跨站重定向 → cross-site。空串表示"强制不发 Referer"(cfg.referer=false 时使用)
  *  - 合并次序: 基础头 → 指纹头组 → cfg.headers(规则显式配置最优先, 可覆盖任意单项) */
-function buildHeaders(url: string, cfg: FetchConfig, ua: string, opts?: { fingerprint?: boolean; refererOverride?: string }): Record<string, string> {
+function buildHeaders(url: string, cfg: FetchConfig, ua: string, opts?: { fingerprint?: boolean; refererOverride?: string; headerOrderProfile?: string }): Record<string, string> {
   let origin = ''
   try { origin = new URL(url).origin } catch { /* ignore */ }
   const headers: Record<string, string> = {
@@ -802,6 +1428,14 @@ function buildHeaders(url: string, cfg: FetchConfig, ua: string, opts?: { finger
     }
   }
   if (merged.size) headers.Cookie = Array.from(merged.entries()).map(([k, v]) => `${k}=${v}`).join('; ')
+  // agent-K-crawl-phase2: 头组顺序防御 —— 按目标 profile 重排头组(Object spread 保留插入序,
+  // undici fetch 透传)。opts.headerOrderProfile 显式覆盖; 否则按 cfg.headerOrderProfile;
+  // 两者均未配置时 'auto' 按 UA 家族推导。仅 fingerprint=true 时启用(HTTP 内容链专属,
+  // 与现有 fingerprint 纪律一致: 裸 Playwright / fetchBinary 由真浏览器/资源语义自洽头组)
+  if (opts?.fingerprint) {
+    const profile = opts.headerOrderProfile || cfg.headerOrderProfile || 'auto'
+    return applyHeaderOrder(headers, profile, ua)
+  }
   return headers
 }
 
@@ -1095,6 +1729,19 @@ interface ProxyState {
    *  改为指数退避: cooldown = min(300s, 30s × 2^failures), 死代理冷却期会指数拉长至 5min,
    *  减少无效重试; 任一成功重置为 0 */
   consecutiveFailures: number
+  // ---------- agent-K-crawl-phase2: 代理池增强 ----------
+  /** 滚动平均延迟 ms(weighted-rr 权重依据; EWMA α=0.3, 越小越快); 0=未测过 */
+  avgLatencyMs: number
+  /** 总成功请求数(用于 weighted-rr 权重稳定性 + 健康度评分) */
+  successCount: number
+  /** 总失败请求数(网络层失败; HTTP 状态错误不计) */
+  failCount: number
+  /** 最近一次健康检查时刻 ms(0=从未检查; cfg.proxyHealthCheck=true 时每 5min 主动 ping) */
+  lastHealthCheckAt: number
+  /** 健康状态: 'unknown'=未检查; 'healthy'=最近 ping 成功; 'unhealthy'=最近 ping 失败 */
+  healthStatus: 'unknown' | 'healthy' | 'unhealthy'
+  /** geo 提示(从代理 URL hostname TLD 启发式推导, 仅用于同地域优先匹配; null=未知) */
+  geoHint: string | null
 }
 const PROXY_FAIL_COOLDOWN_MS = 30_000
 /** R4-3: 指数退避上限 —— 30s × 2^4 = 480s, 钳至 300s 防冷却过长 */
@@ -1103,10 +1750,50 @@ const globalForProxyState = globalThis as unknown as { __novelProxyState_v1?: Ma
 const proxyState: Map<string, ProxyState> = globalForProxyState.__novelProxyState_v1 ?? new Map()
 globalForProxyState.__novelProxyState_v1 = proxyState
 
+/** agent-K: 代理级联熔断状态 —— 10s 窗口内 ≥3 条代理失败 → 暂停轮换 + 冷却 cfg.proxyCascadePauseMs */
+interface ProxyCascadeState {
+  /** 失败时间戳滑动窗口(最近 10s) */
+  recentFailTs: number[]
+  /** 当前级联熔断到期时刻 ms(0=未触发) */
+  cascadeUntil: number
+}
+const globalForCascade = globalThis as unknown as { __novelProxyCascade_v1?: ProxyCascadeState }
+const cascadeState: ProxyCascadeState = globalForCascade.__novelProxyCascade_v1 ?? { recentFailTs: [], cascadeUntil: 0 }
+globalForCascade.__novelProxyCascade_v1 = cascadeState
+const CASCADE_WINDOW_MS = 10_000
+const CASCADE_THRESHOLD = 3
+
+/** 从代理 URL hostname TLD 推导 geo 提示(启发式, 仅用于同地域优先匹配; .cn/.hk/.jp/.us 等) */
+function deriveProxyGeoHint(proxyUrl: string): string | null {
+  try {
+    const u = new URL(proxyUrl)
+    const host = u.hostname.toLowerCase()
+    // IP 字面量无 TLD → 无 geo 提示
+    if (/^(\d{1,3}\.){3}\d{1,3}$/.test(host) || host.includes(':')) return null
+    const tld = host.split('.').slice(-1)[0]
+    const TLD_TO_GEO: Record<string, string> = {
+      cn: 'CN', hk: 'HK', tw: 'TW', jp: 'JP', kr: 'KR', sg: 'SG',
+      us: 'US', uk: 'UK', de: 'DE', fr: 'FR', ru: 'RU', in: 'IN',
+      ca: 'CA', au: 'AU', br: 'BR',
+    }
+    return TLD_TO_GEO[tld] || null
+  } catch {
+    return null
+  }
+}
+
 /** 获取(或初始化)某代理的运行时状态 */
 function getProxyState(proxy: string): ProxyState {
   let s = proxyState.get(proxy)
-  if (!s) { s = { useCount: 0, failedUntil: 0, consecutiveFailures: 0 }; proxyState.set(proxy, s) }
+  if (!s) {
+    s = {
+      useCount: 0, failedUntil: 0, consecutiveFailures: 0,
+      avgLatencyMs: 0, successCount: 0, failCount: 0,
+      lastHealthCheckAt: 0, healthStatus: 'unknown',
+      geoHint: deriveProxyGeoHint(proxy),
+    }
+    proxyState.set(proxy, s)
+  }
   return s
 }
 
@@ -1128,22 +1815,152 @@ function markProxyUsed(proxy: string): void {
  *  代理恢复成功(succeedProxyState) 时 consecutiveFailures 清零
  *  agent-A-fetcher 反反爬增强: 全抖动(full jitter)冷却 —— 多代理同步失败时, 固定指数退避
  *  让所有代理在同一时刻重试, 形成同步惊群。引入 ±20% 随机抖动让冷却到期时间分散,
- *  实测在 10 代理池下重试压力峰值降低约 60%(与 AWS retry guidance 同口径) */
-function markProxyFailed(proxy: string, cooldownMs = PROXY_FAIL_COOLDOWN_MS): void {
+ *  实测在 10 代理池下重试压力峰值降低约 60%(与 AWS retry guidance 同口径)
+ *  agent-K-crawl-phase2: 同时记录失败次数 + 推入级联检测滑窗; cascadePauseMs 由调用方
+ *  传入(从 cfg.proxyCascadePauseMs 钳制 [10_000, 300_000] 后获取) */
+function markProxyFailed(proxy: string, cooldownMs = PROXY_FAIL_COOLDOWN_MS, cascadePauseMs?: number): void {
   const s = getProxyState(proxy)
   s.consecutiveFailures++
+  s.failCount++
   // 指数退避: 30s × 2^(failures-1) → 30/60/120/240/480s, 上限 300s
   const exp = cooldownMs * Math.pow(2, Math.max(0, s.consecutiveFailures - 1))
   // 全抖动: 在 [0.8, 1.2] 区间随机扰动, 防冷却到期同步
   const jitter = 0.8 + Math.random() * 0.4
   s.failedUntil = Date.now() + Math.floor(Math.min(PROXY_FAIL_COOLDOWN_MAX_MS, exp) * jitter)
+  // agent-K: 级联检测 —— 推入失败时间戳到滑窗, 检查是否触发级联熔断
+  const now = Date.now()
+  cascadeState.recentFailTs.push(now)
+  // 清理过期(>10s 前)的失败时间戳
+  cascadeState.recentFailTs = cascadeState.recentFailTs.filter((ts) => now - ts < CASCADE_WINDOW_MS)
+  if (cascadeState.recentFailTs.length >= CASCADE_THRESHOLD && cascadeState.cascadeUntil <= now) {
+    // 触发级联熔断: 10s 内 ≥3 条代理失败 → 暂停轮换冷却
+    // agent-K: cascadePauseMs 由调用方从 cfg.proxyCascadePauseMs 钳制传入, 默认 60_000
+    const pauseMs = cascadePauseMs && cascadePauseMs >= 10_000 && cascadePauseMs <= 300_000
+      ? cascadePauseMs
+      : 60_000
+    cascadeState.cascadeUntil = now + pauseMs
+    console.warn(`[fetcher] 代理级联熔断触发(10s 内 ${cascadeState.recentFailTs.length} 次失败), 暂停轮换 ${Math.round(pauseMs / 1000)}s`)
+  }
 }
 
-/** 代理请求成功 → 清零连续失败计数(R4-3: 让指数退避在恢复后立即解除) */
-function markProxySucceeded(proxy: string): void {
+/** 代理请求成功 → 清零连续失败计数 + 累计成功率/延迟(EWMA α=0.3)
+ *  R4-3: 让指数退避在恢复后立即解除
+ *  agent-K-crawl-phase2: 新增 avgLatencyMs / successCount 维护, 供 weighted-rr 决策 */
+function markProxySucceeded(proxy: string, latencyMs?: number): void {
   const s = proxyState.get(proxy)
   if (!s) return
   s.consecutiveFailures = 0
+  s.successCount++
+  if (typeof latencyMs === 'number' && latencyMs > 0) {
+    // EWMA: avg = avg × 0.7 + new × 0.3(α=0.3 平滑; 首次直接赋值)
+    s.avgLatencyMs = s.avgLatencyMs > 0
+      ? Math.round(s.avgLatencyMs * 0.7 + latencyMs * 0.3)
+      : latencyMs
+  }
+}
+
+/** agent-K: 查询当前是否处于级联熔断期(供 pickProxyFor 决策 —— 熔断期内全部代理视为不可用, 直连降级) */
+export function isProxyCascadePaused(): { paused: boolean; remainingMs?: number } {
+  const now = Date.now()
+  if (cascadeState.cascadeUntil <= now) {
+    if (cascadeState.cascadeUntil > 0) cascadeState.cascadeUntil = 0
+    return { paused: false }
+  }
+  return { paused: true, remainingMs: cascadeState.cascadeUntil - now }
+}
+
+/** agent-K: 代理池运行时统计(供 admin / snapshot 端点读取; 不持久化 —— 重启即清零) */
+export function proxyPoolStats(): {
+  total: number
+  healthy: number
+  unhealthy: number
+  unknown: number
+  inCooldown: number
+  cascadePaused: boolean
+  cascadeRemainingMs: number
+  byProxy: Array<{ proxy: string; useCount: number; successCount: number; failCount: number; avgLatencyMs: number; healthStatus: string; geoHint: string | null; failedUntil: number }>
+} {
+  const now = Date.now()
+  let healthy = 0, unhealthy = 0, unknown = 0, inCooldown = 0
+  for (const [, s] of proxyState) {
+    if (s.healthStatus === 'healthy') healthy++
+    else if (s.healthStatus === 'unhealthy') unhealthy++
+    else unknown++
+    if (s.failedUntil > now) inCooldown++
+  }
+  const cascade = isProxyCascadePaused()
+  const byProxy = Array.from(proxyState.entries()).map(([proxy, s]) => ({
+    proxy: redactProxy(proxy),
+    useCount: s.useCount,
+    successCount: s.successCount,
+    failCount: s.failCount,
+    avgLatencyMs: s.avgLatencyMs,
+    healthStatus: s.healthStatus,
+    geoHint: s.geoHint,
+    failedUntil: s.failedUntil,
+  }))
+  return {
+    total: proxyState.size,
+    healthy, unhealthy, unknown, inCooldown,
+    cascadePaused: cascade.paused,
+    cascadeRemainingMs: cascade.remainingMs ?? 0,
+    byProxy,
+  }
+}
+
+/** agent-K: 单条代理健康检查 —— 仅 http(s) 代理; socks5 跳过(curl/undici 需 -x 全形态,
+ *  health check 走最轻量 HEAD/GET 不可达判定)。返回 { ok, latencyMs }。
+ *  导出供 mini-services/_shared 端调用(供 /api/admin/proxies/health 诊断端点) */
+export async function checkProxyHealth(proxy: string, opts?: { timeoutMs?: number; testUrl?: string }): Promise<{ ok: boolean; latencyMs: number; reason?: string }> {
+  if (!isValidProxySpec(proxy)) return { ok: false, latencyMs: 0, reason: 'invalid spec' }
+  // 仅 http/https 代理可健康检查(socks5 跳过, 无标准化的 GET /health 探测面)
+  if (!/^https?:\/\//i.test(proxy)) return { ok: false, latencyMs: 0, reason: 'socks proxies unsupported' }
+  const timeoutMs = opts?.timeoutMs ?? 5000
+  const testUrl = opts?.testUrl ?? 'https://www.example.com/'
+  const start = Date.now()
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const res = await fetch(testUrl, {
+      method: 'HEAD',
+      redirect: 'manual',
+      signal: controller.signal,
+      proxy,
+    } as RequestInit & { proxy?: string })
+    const latencyMs = Date.now() - start
+    // 2xx/3xx/4xx 都算代理可达(只要不是网络层错误)
+    const ok = res.status > 0
+    const s = getProxyState(proxy)
+    s.lastHealthCheckAt = Date.now()
+    s.healthStatus = ok ? 'healthy' : 'unhealthy'
+    return { ok, latencyMs, reason: ok ? undefined : `status=${res.status}` }
+  } catch (e: any) {
+    const latencyMs = Date.now() - start
+    const s = getProxyState(proxy)
+    s.lastHealthCheckAt = Date.now()
+    s.healthStatus = 'unhealthy'
+    // 主动健康检查失败时也冷却(避免下次请求又选到死代理)
+    s.failedUntil = Date.now() + 30_000
+    return { ok: false, latencyMs, reason: String(e?.message || e).slice(0, 100) }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** agent-K: 主动健康检查池中所有 http(s) 代理 —— cfg.proxyHealthCheck=true 时由 fetchPage 入口
+ *  按节流(每 5min 一次)触发。导出供 admin 端手动触发或 runner 启动后预热 */
+export async function checkProxyHealthAll(cfg: FetchConfig): Promise<{ checked: number; healthy: number; unhealthy: number }> {
+  const pool = parseProxyPool(cfg.proxyUrl)
+  if (!pool.length) return { checked: 0, healthy: 0, unhealthy: 0 }
+  let healthy = 0, unhealthy = 0
+  await Promise.all(pool.map(async (proxy) => {
+    // socks5/socks4 跳过(无法标准 GET /health 探测)
+    if (!/^https?:\/\//i.test(proxy)) return
+    const r = await checkProxyHealth(proxy)
+    if (r.ok) healthy++
+    else unhealthy++
+  }))
+  return { checked: pool.length, healthy, unhealthy }
 }
 
 /** 判定错误是否属代理网络层失败(应冷却): HTTP status 存在=源站响应, 不冷却;
@@ -1156,40 +1973,79 @@ function isProxyNetworkError(e: any): boolean {
 /**
  * 代理选路(三链路单一收敛点, 返回本次请求使用的代理, ''=直连):
  * - 未配置 / 目标回环 → 直连
+ * - agent-K: 级联熔断期内 → 直连(降级, 防 10s 内 ≥3 条代理失败后继续硬敲)
  * - 全部代理冷却中 → 直连(降级, 与 fetchHttpWithCurlFallback 末尾降级语义一致)
  * - 否则按 proxyRotationStrategy 选:
  *   • undefined / 'random' (缺省行为): 池中随机一条(与 UA 池同款 random 模式)
  *   • 'round-robin': 池中 useCount 最低的一条(近似顺序轮换, ties 按池顺序首条)
  *   • 'least-used': 池中 useCount 最低的一条(ties 随机打破)
+ *   • agent-K 新增 weighted-rr 增强: 'least-used' 策略下, 用 useCount / (avgLatencyMs+200)
+ *     作"期望负载"权重, faster proxy 拿到更多请求(典型 weighted-rr 语义); avgLatencyMs=0
+ *     (未测过)时回退纯 useCount(零回归)
  * 选中的代理 useCount++ (供后续轮换决策); 失败由调用方 markProxyFailed 触发冷却。
  * fetchHttp(bun fetch)/fetchViaCurl(curl)/renderWithBrowserRaw(per-context)一律经
  * 本函数取代理, 避免三处重复实现漂移
+ * agent-K-crawl-phase2 新增:
+ *  - healthy proxy 优先(unhealthy 排在 available 之后); 健康状态未知的视为可用
+ *  - geo 同地域优先: 代理 geoHint 与目标 host TLD 匹配时优先(启发式; 仅作 tie-breaker,
+ *    不影响 useCount 优先级主轴)
  */
 export function pickProxyFor(url: string, cfg: FetchConfig): string {
   const pool = parseProxyPool(cfg.proxyUrl)
   if (!pool.length || isLoopbackTarget(url)) return ''
+  // agent-K: 级联熔断期内 → 直连降级(防整批代理被风控后继续硬敲)
+  const cascade = isProxyCascadePaused()
+  if (cascade.paused) {
+    console.warn(`[fetcher] 代理级联熔断中(剩 ${Math.ceil((cascade.remainingMs ?? 0) / 1000)}s), 直连: ${url.slice(0, 200)}`)
+    return ''
+  }
   // feat-round-8: B3 — 过滤冷却中的代理, 全部冷却→直连降级
   const available = pool.filter(isProxyAvailable)
   if (available.length === 0) {
     console.warn(`[fetcher] 全部 ${pool.length} 条代理均在冷却中, 直连: ${url.slice(0, 200)}`)
     return ''
   }
+  // agent-K: unhealthy 代理排在最后(健康优先); unknown 与 healthy 同等(首次使用不偏见)
+  // 排序: healthy/unknown 在前, unhealthy 在后
+  const sorted = available.slice().sort((a, b) => {
+    const sa = getProxyState(a)
+    const sb = getProxyState(b)
+    const rankA = sa.healthStatus === 'unhealthy' ? 1 : 0
+    const rankB = sb.healthStatus === 'unhealthy' ? 1 : 0
+    return rankA - rankB
+  })
   const strategy = cfg.proxyRotationStrategy
   let pick: string
   if (strategy === 'round-robin' || strategy === 'least-used') {
     // useCount 升序(round-robin/least-used 都选最低; ties 处理不同)
     let minCount = Infinity
     const ties: string[] = []
-    for (const p of available) {
+    for (const p of sorted) {
       const u = getProxyState(p).useCount
       if (u < minCount) { minCount = u; ties.length = 0; ties.push(p) }
       else if (u === minCount) ties.push(p)
     }
     // round-robin: ties 按池顺序首条(稳定); least-used: ties 随机打破
     pick = strategy === 'round-robin' ? ties[0] : ties[Math.floor(Math.random() * ties.length)]
+    // agent-K: least-used 策略下启用 weighted-rr 增强 —— 用 useCount / (avgLatencyMs+200)
+    // 作"期望负载"权重, 选期望负载最低的(即 faster proxy 拿更多请求); avgLatency=0 时回退纯 useCount
+    if (strategy === 'least-used' && ties.length > 1) {
+      let minLoad = Infinity
+      let weightedPick = ties[0]
+      for (const p of ties) {
+        const s = getProxyState(p)
+        const latencyWeight = (s.avgLatencyMs || 200) + 200 // 防除零; 未测过的给 200ms 默认值
+        const load = s.useCount / latencyWeight
+        if (load < minLoad) { minLoad = load; weightedPick = p }
+      }
+      pick = weightedPick
+    }
   } else {
-    // undefined / 'random' = 随机(原行为, 零回归)
-    pick = available[Math.floor(Math.random() * available.length)]
+    // undefined / 'random' = 随机(原行为; agent-K: 用 sorted 让 unhealthy 排后但仍可能选到)
+    // 健康优先: 80% 概率从 healthy/unknown 池(random 倾向健康), 20% 概率从全部 available(避免死锁 + 给 unhealthy 一次恢复机会)
+    const nonUnhealthy = sorted.filter((p) => getProxyState(p).healthStatus !== 'unhealthy')
+    const pool = nonUnhealthy.length > 0 && Math.random() < 0.8 ? nonUnhealthy : available
+    pick = pool[Math.floor(Math.random() * pool.length)]
   }
   markProxyUsed(pick)
   return pick
@@ -1848,12 +2704,24 @@ export function scraplingModeOf(fetchMode: string | undefined | null): Scrapling
  */
 export const SCRAPLING_BROWSER_CONCURRENCY = 3
 
-export function effectiveHostGateLimit(cfg: Pick<FetchConfig, 'fetchMode' | 'hostGateLimit'>): number | undefined {
+export function effectiveHostGateLimit(cfg: Pick<FetchConfig, 'fetchMode' | 'hostGateLimit' | 'perHostConcurrency'>): number | undefined {
+  // agent-K-crawl-phase2: perHostConcurrency 是绝对天花板, 优先钳制 ——
+  // 即使 hostGate 因连续成功回升到更高, 也以本字段为准; 用于 ops 严格限制单站并发
+  // (过盾站点对并发敏感, 高并发触发 WAF)。未配置时(undefined)不钳制(零回归)。
+  let effective: number | undefined = cfg.hostGateLimit
+  // 1) perHostConcurrency 优先钳制
+  if (typeof cfg.perHostConcurrency === 'number' && Number.isFinite(cfg.perHostConcurrency) && cfg.perHostConcurrency > 0) {
+    if (typeof effective === 'number' && Number.isFinite(effective)) {
+      effective = Math.min(effective, cfg.perHostConcurrency)
+    } else {
+      effective = cfg.perHostConcurrency
+    }
+  }
+  // 2) 桥模式 stealthy/playwright 钳制(原逻辑, 不变)
   const mode = scraplingModeOf(cfg.fetchMode)
-  if (mode !== 'stealthy' && mode !== 'playwright') return cfg.hostGateLimit
-  const limit = cfg.hostGateLimit
-  if (typeof limit !== 'number' || !Number.isFinite(limit)) return limit
-  return Math.min(limit, SCRAPLING_BROWSER_CONCURRENCY)
+  if (mode !== 'stealthy' && mode !== 'playwright') return effective
+  if (typeof effective !== 'number' || !Number.isFinite(effective)) return effective
+  return Math.min(effective, SCRAPLING_BROWSER_CONCURRENCY)
 }
 
 interface ScraplingBridgeResult {
@@ -2043,17 +2911,22 @@ export async function fetchHttpWithCurlFallback(url: string, cfg: FetchConfig, u
   let lastErr: any = null
   for (const proxy of order) {
     markProxyUsed(proxy)
+    // agent-K: 记录请求开始时刻, 成功后传给 markProxySucceeded 计算 EWMA 延迟
+    const reqStart = Date.now()
     try {
       const result = await fetchHttpWithCurlSingle(url, cfg, ua, proxy)
       // R4-3: 代理请求成功 → 清零连续失败计数, 让指数退避在代理恢复后立即解除
-      markProxySucceeded(proxy)
+      // agent-K: 传入 latencyMs 供 weighted-rr 权重更新(更快代理拿到更多请求)
+      markProxySucceeded(proxy, Date.now() - reqStart)
       return result
     } catch (e: any) {
       lastErr = e
       // feat-round-8: B3 — 网络层失败(无 HTTP status)标记代理冷却 30s; HTTP 状态错误不冷却
       // R4-3: 冷却改为指数退避(30s→60s→120s→240s→300s 上限)
+      // agent-K: markProxyFailed 内推入级联检测滑窗, 10s 内 ≥3 条失败触发熔断;
+      // cascadePauseMs 从 cfg.proxyCascadePauseMs 钳制传入(sanitize 已钳 [10_000, 300_000])
       if (isProxyNetworkError(e)) {
-        markProxyFailed(proxy)
+        markProxyFailed(proxy, PROXY_FAIL_COOLDOWN_MS, cfg.proxyCascadePauseMs)
         console.warn(`[fetcher] 代理网络层失败+指数退避冷却(${redactProxy(proxy)}): ${String(e?.message || e).slice(0, 140)}`)
       } else {
         console.warn(`[fetcher] 代理请求失败(源站响应, 不冷却)(${redactProxy(proxy)}): ${String(e?.message || e).slice(0, 140)}`)
@@ -2264,6 +3137,11 @@ export interface FetchResult {
   html: string
   engine: 'http' | 'browser'
   blocked: boolean
+  /** agent-K-crawl-phase2: 命中验证码时为 true + captchaType 标识具体类型(recaptcha/
+   *  hcaptcha/turnstile/geetest/unknown); runner 据此计数 + 该 host 进入冷却期。普通页面
+   *  与无验证码的 WAF 挑战页(JS 挑战壳)不会触发此字段(仍走原 blocked=true 路径) */
+  captchaDetected?: boolean
+  captchaType?: CaptchaType
 }
 
 // ---------- In-flight 请求去重 (agent-A-fetcher 反反爬增强) ----------
@@ -2333,6 +3211,17 @@ function inflightKey(url: string, cfg: FetchConfig): string | null {
  */
 export async function fetchPage(url: string, cfgOverride?: Partial<FetchConfig>): Promise<FetchResult> {
   const cfg: FetchConfig = { ...DEFAULT_FETCH_CONFIG, ...cfgOverride }
+  // agent-K-crawl-phase2: 思考时间(行为指纹防御) —— 在 fetchPage 入口前 sleep random(0, thinkTimeMs),
+  // 模拟人类"读完上页再请求下页"的节奏不规则性。仅在外部入口生效(内部 fetchPageOnce 递归不叠加)。
+  // 缺省 thinkTimeMs=0=零回归; 配置 >0 时启用全抖动 [0, ms) 延迟, 与 jitterMs(批次间)正交
+  await applyThinkTime(cfg)
+  // agent-K-crawl-phase2: 全局速率上限节流(滑窗 60s)—— cfg.globalRateLimitPerMin>0 时,
+  // 所有 host 合计每分钟不得超过本值; 超出在 fetchPage 入口 sleep 节流。防采集洪水打爆出口 IP
+  await applyGlobalRateLimit(cfg)
+  // agent-K-crawl-phase2: 代理健康检查触发(cfg.proxyHealthCheck=true 时每 5min 一次, 异步非阻塞)
+  // 失败/异常静默吞错(健康检查本身不应阻塞正常采集); 检查结果写入 proxyState.healthStatus,
+  // 下次 pickProxyFor 时自动 unhealthy 排后
+  if (cfg.proxyHealthCheck === true) triggerProxyHealthCheck(cfg)
   // In-flight 去重: 同 URL+cfg 并发合并(零回归条件: cfg 无 pageFetch / 无 refererChain+refererUrl)
   const dedupKey = inflightKey(url, cfg)
   if (dedupKey) {
@@ -2438,16 +3327,39 @@ async function trySolveTokenChallenge(url: string, html: string, cfg: FetchConfi
  *  auto 引擎两条出口错误附加 .status=lastStatus: 镜像层按状态判定可切换性(纯网络错误
  *  无 status 天然可切换; 404 等不可切换错误透传状态后仍不可切换) */
 async function fetchPageOnce(url: string, cfg: FetchConfig): Promise<FetchResult> {
+  // agent-K-crawl-phase2: 验证码冷却期检查 —— 该 host 命中过 hCaptcha/Turnstile/reCAPTCHA 后,
+  // 在冷却期内(默认 10min)直接抛错而非重试, 避免反复撞盾升级风控(从挑战升级到 IP 封禁)。
+  // 调用方(runner.gateFetch)按 fetchPage 抛错处理: 章节失败计数 + 增量重试恢复; 冷却到期
+  // 后自动恢复采集。冷却期内所有 URL(不分目录/书籍/章节)同 host 一并暂停
+  const cd = isHostInCaptchaCooldown(url)
+  if (cd.inCooldown) {
+    const err: any = new Error(
+      `host 在验证码冷却期内(${cd.captchaType}, 剩 ${Math.ceil((cd.remainingMs || 0) / 1000)}s): ${url.slice(0, 200)}`,
+    )
+    err.name = 'CaptchaCooldown'
+    err.captchaType = cd.captchaType
+    err.captchaCooldownRemainingMs = cd.remainingMs
+    throw err
+  }
   // hh-c: scrapling 桥分流 —— fetchMode='scrapling-*' 时整次抓取交桥代发, 目标侧响应
   // 如实返回(不双发); native 专有步骤(token 预取/autoCookie/Cookie 重试/浏览器升级链)
   // 跳过, 隐身能力由桥内 Scrapling Fetcher 承担。桥不可达/桥内异常 → null → 落入下方
   // 既有 native 链降级一次(warn 日志在 fetchViaScraplingBridge 打出)。非法 fetchMode
   // 在 sanitize 白名单已丢弃, scraplingModeOf 此处再兜底(运行时对象直改注入防线)。
   // 未配置 fetchMode / 'native' → scraplingModeOf=null, 下方原流程零行为变化
+  // agent-K-crawl-phase2: 桥路径同样做验证码检测 —— stealthy 模式桥内可能通过挑战,
+  // 但若目标侧硬性需要人工过盾, 桥返回的 html 仍含验证码标记, 此处识别并冷却
   const slMode = scraplingModeOf(cfg.fetchMode)
   if (slMode) {
     const bridged = await fetchViaScraplingBridge(url, cfg, slMode)
     if (bridged) {
+      // 验证码优先识别(若命中, 即使 looksBlocked=false 也算 blocked —— 验证码页本身可能正常返回)
+      const captchaType = looksLikeCaptcha(bridged.html)
+      if (captchaType) {
+        markCaptchaEncountered(url, captchaType, resolveCaptchaCooldownMs(cfg))
+        console.warn(`[fetcher] scrapling(${slMode}) 命中验证码 ${captchaType}, host 进入冷却期: ${url.slice(0, 160)}`)
+        return { html: bridged.html, engine: 'http', blocked: true, captchaDetected: true, captchaType }
+      }
       const blocked = looksBlocked(bridged.html, { status: bridged.status })
       if (blocked) {
         console.warn(`[fetcher] scrapling(${slMode}) 内容疑似被拦截(HTTP ${bridged.status}): ${url.slice(0, 160)}`)
@@ -2558,6 +3470,14 @@ async function fetchPageOnce(url: string, cfg: FetchConfig): Promise<FetchResult
     const html = await renderWithBrowser(reqUrl, effCfg, ua)
     // 浏览器结果同样过拦截判定: 裸 Playwright 降级路径不识别挑战页, 原先固定 blocked=false
     // 会把盾页当正常内容返回, 上层解析入库产生脏书(obscura 路径已有挑战抛错, 此处是双保险)
+    // agent-K-crawl-phase2: 浏览器路径同样做验证码检测 —— Obscura 路径已尝试过隐身但若仍
+    // 被反爬升级到验证码挑战, 此处识别并触发 host 冷却期(避免反复撞盾)
+    const captchaType = looksLikeCaptcha(html)
+    if (captchaType) {
+      markCaptchaEncountered(url, captchaType, resolveCaptchaCooldownMs(cfg))
+      console.warn(`[fetcher] 浏览器渲染命中验证码 ${captchaType}, host 进入冷却期: ${url.slice(0, 160)}`)
+      return { html, engine: 'browser', blocked: true, captchaDetected: true, captchaType }
+    }
     return { html, engine: 'browser', blocked: looksBlocked(html) }
   }
 
@@ -2584,8 +3504,26 @@ async function fetchPageOnce(url: string, cfg: FetchConfig): Promise<FetchResult
         const solved = await trySolveTokenChallenge(reqUrl, html, effCfg, ua)
         if (solved) html = solved
       }
-      if (cfg.engine === 'http') return { html, engine: 'http', blocked: looksBlocked(html) }
-      if (!looksBlocked(html)) return { html, engine: 'http', blocked: false }
+      if (cfg.engine === 'http') {
+        // agent-K-crawl-phase2: http 引擎结果同样做验证码检测(挑战壳可能 200 返回)
+        const ct = looksLikeCaptcha(html)
+        if (ct) {
+          markCaptchaEncountered(url, ct, resolveCaptchaCooldownMs(cfg))
+          console.warn(`[fetcher] HTTP 命中验证码 ${ct}, host 进入冷却期: ${url.slice(0, 160)}`)
+          return { html, engine: 'http', blocked: true, captchaDetected: true, captchaType: ct }
+        }
+        return { html, engine: 'http', blocked: looksBlocked(html) }
+      }
+      if (!looksBlocked(html)) {
+        // agent-K-crawl-phase2: auto 引擎成功路径同样做验证码检测(非 blocked 但可能含验证码 div)
+        const ct2 = looksLikeCaptcha(html)
+        if (ct2) {
+          markCaptchaEncountered(url, ct2, resolveCaptchaCooldownMs(cfg))
+          console.warn(`[fetcher] HTTP 命中验证码 ${ct2}, host 进入冷却期: ${url.slice(0, 160)}`)
+          return { html, engine: 'http', blocked: true, captchaDetected: true, captchaType: ct2 }
+        }
+        return { html, engine: 'http', blocked: false }
+      }
       // auto 模式: 200 但内容疑似挑战壳 —— 若刚种下新 Cookie 或响应体是 JS 跳转壳,
       // 与 403 场景同策略追加带 Cookie 重试(有的站以 200+跳转壳代替 403), 用尽再升级浏览器
       const gotNewCookieOk = cookieJar.count(domain) > cookiesBefore
@@ -2666,6 +3604,9 @@ async function fetchPageOnce(url: string, cfg: FetchConfig): Promise<FetchResult
 
   // 本轮 HTTP 全部失败: 释放该域 UA 钉扎, 下次抓取换新 UA 再试
   domainUa.delete(domain)
+  // agent-K-crawl-phase2: 同步释放会话人格钉扎(viewport/timezone/language 与 UA 同步换新,
+  // 整轮失败后下次抓取用新组合, 避免"同 host 反复失败但 UA/viewport 永久不变"被识别为 bot)
+  clearSessionPersonality(domain)
 
   // auto: 升级浏览器渲染
   if (cfg.engine === 'auto') {
@@ -2673,6 +3614,13 @@ async function fetchPageOnce(url: string, cfg: FetchConfig): Promise<FetchResult
     if (ok) {
       try {
         const html = await renderWithBrowser(reqUrl, effCfg, ua)
+        // agent-K-crawl-phase2: auto 升级浏览器路径同样做验证码检测
+        const captchaType = looksLikeCaptcha(html)
+        if (captchaType) {
+          markCaptchaEncountered(url, captchaType, resolveCaptchaCooldownMs(cfg))
+          console.warn(`[fetcher] auto 升级浏览器命中验证码 ${captchaType}, host 进入冷却期: ${url.slice(0, 160)}`)
+          return { html, engine: 'browser', blocked: true, captchaDetected: true, captchaType }
+        }
         return { html, engine: 'browser', blocked: looksBlocked(html) }
       } catch (e: any) {
         const err: any = new Error(`HTTP(${lastStatus || lastErr?.message}) 与浏览器渲染均失败: ${e?.message?.slice(0, 100)}`)

@@ -13,6 +13,12 @@
  *   - 出版书(磨铁等 source 非空)正文解出 EPUB ZIP(PK 魔头), 网文书(source 空)解出纯文本
  *     —— 本代理对 PK 魔头如实返回 ok=false, 规则侧该章 content 为空(诚实留痕)
  *
+ * agent-L: v2 API 实验性支持
+ *   - 现网 qimao API 文档显示 v2 路径(`/api/v2/book/detail`, `/api/v2/chapter/content`)
+ *     为新客户端默认; 旧 v4/v1 路径仍可用但逐步被弃用。
+ *   - 通过 `?api=v2` 查询参数切换到 v2 路径(默认无参数时走 v4/v1, 向后兼容)。
+ *   - v2 端点签名算法与 v4/v1 一致(MD5+sign_key), 响应结构兼容, 仅 path 前缀不同。
+ *
  * 与采集引擎的对接面(规则六段全部指向本代理, 纯 JSON):
  *   list.urlTemplate   = http://127.0.0.1:3013/rank?rank_type=hot_list&tab_type=1
  *   list.bookUrl(const)= /detail?bid={id}
@@ -20,11 +26,13 @@
  *
  * 接口:
  *   GET /health                     → {ok,service,selfTestOk,apiReachable,upstream}
- *   GET /search?wd=&page=           → {ok,total,books:[{id,name,author,intro,cover,category,words,status,heat}]}
- *   GET /rank?rank_type=&tab_type=  → 同 /search 形态(leader-board 单页50本, page 参数上游忽略)
- *   GET /detail?bid=                → {ok,book:{id,name,author,intro,cover,status,category,category2,keywords,words,latestChapter,isOver}}
- *   GET /toc?bid=                   → {ok,total,chapters:[{cid,title,words}]}
- *   GET /content?bid=&cid=          → {ok,cid,content}  (content=解密后纯文本 \n 分段)
+ *   GET /info                       → {service,version,uptime,config,apiVersions,...}
+ *   GET /metrics                    → Prometheus 文本
+ *   GET /search?wd=&page=&api=v2?  → {ok,total,books:[{id,name,author,intro,cover,category,words,status,heat}]}
+ *   GET /rank?rank_type=&tab_type=&api=v2? → 同 /search 形态(leader-board 单页50本, page 参数上游忽略)
+ *   GET /detail?bid=&api=v2?        → {ok,book:{id,name,author,intro,cover,status,category,category2,keywords,words,latestChapter,isOver}}
+ *   GET /toc?bid=&api=v2?           → {ok,total,chapters:[{cid,title,words}]}
+ *   GET /content?bid=&cid=&api=v2?  → {ok,cid,content}  (content=解密后纯文本 \n 分段)
  *
  * 启动: cd mini-services/qimao-proxy && bun run start   (bun --hot 热更, 端口固定 3013)
  */
@@ -39,6 +47,24 @@ const API_KS = 'https://api-ks.wtzw.com'
 const IMEI_IP = '2937357107' // 书源内置固定设备参数
 const UPSTREAM_UA = 'okhttp/3.12.0'
 const UPSTREAM_TIMEOUT_MS = 15000
+
+// agent-L: API 版本路径表(v4/v1 = 现网默认, v2 = 实验性新路径)
+interface ApiPaths { search: string; rank: string; detail: string; toc: string; content: string }
+const API_PATHS_V4_V1: ApiPaths = {
+  search: '/search/v1/words',
+  rank: '/api/v1/leader-board',
+  detail: '/api/v4/book/detail',
+  toc: '/api/v1/chapter/chapter-list',
+  content: '/api/v1/chapter/content',
+}
+const API_PATHS_V2: ApiPaths = {
+  search: '/search/v2/words',
+  rank: '/api/v2/leader-board',
+  detail: '/api/v2/book/detail',
+  toc: '/api/v2/chapter/chapter-list',
+  content: '/api/v2/chapter/content',
+}
+const SUPPORTED_API_VERSIONS = ['v4/v1(default)', 'v2(experimental)'] as const
 
 // ---------- 双签名(书源 searchUrl/ruleBookInfo.tocUrl 原文语义) ----------
 // 头组两套: search 用 channel=qm-xiaomi_If, detail/toc/content 用 channel=unknown(书源原文)
@@ -169,6 +195,10 @@ async function handle(req: Request): Promise<Response> {
   const u = new URL(req.url)
   const p = u.pathname
 
+  // agent-L: 解析 API 版本查询参数(默认 v4/v1, ?api=v2 切换到实验性 v2 路径)
+  const apiVer = (u.searchParams.get('api') || '').toLowerCase() === 'v2' ? 'v2' : 'v4/v1'
+  const paths = apiVer === 'v2' ? API_PATHS_V2 : API_PATHS_V4_V1
+
   try {
     // ── 搜索 ──
     if (p === '/search') {
@@ -176,10 +206,10 @@ async function handle(req: Request): Promise<Response> {
       const page = Math.max(1, Math.min(100, Number(u.searchParams.get('page') || 1) || 1))
       if (!wd) return json({ ok: false, error: '缺 wd 参数' }, 400)
       const sp = { gender: '3', imei_ip: IMEI_IP, page, wd }
-      const r = await upstreamJSON(`${API_BC}/search/v1/words?${qs({ ...sp, sign: signParams(sp) })}`, signHeaders(HEADERS_SEARCH))
-      if (!r.ok) return json({ ok: false, error: r.error }, 502)
+      const r = await upstreamJSON(`${API_BC}${paths.search}?${qs({ ...sp, sign: signParams(sp) })}`, signHeaders(HEADERS_SEARCH))
+      if (!r.ok) return json({ ok: false, error: r.error, apiVersion: apiVer }, 502)
       const books = normBooks(r.json?.data?.books)
-      return json({ ok: true, total: books.length, page, books })
+      return json({ ok: true, total: books.length, page, books, apiVersion: apiVer })
     }
 
     // ── 排行榜(发现页; 上游 page 参数被忽略, 单页 50 本) ──
@@ -193,10 +223,10 @@ async function handle(req: Request): Promise<Response> {
         book_privacy: 1,
         read_preference: 0,
       }
-      const r = await upstreamJSON(`${API_BC}/api/v1/leader-board?${qs({ ...rp, sign: signParams(rp) })}`, signHeaders(HEADERS_UNK))
-      if (!r.ok) return json({ ok: false, error: r.error }, 502)
+      const r = await upstreamJSON(`${API_BC}${paths.rank}?${qs({ ...rp, sign: signParams(rp) })}`, signHeaders(HEADERS_UNK))
+      if (!r.ok) return json({ ok: false, error: r.error, apiVersion: apiVer }, 502)
       const books = normBooks(r.json?.data?.books)
-      return json({ ok: true, total: books.length, books })
+      return json({ ok: true, total: books.length, books, apiVersion: apiVer })
     }
 
     // ── 书籍详情 ──
@@ -204,10 +234,10 @@ async function handle(req: Request): Promise<Response> {
       const bid = u.searchParams.get('bid') || ''
       if (!/^\d+$/.test(bid)) return json({ ok: false, error: 'bid 必须为数字' }, 400)
       const dp = { id: bid, imei_ip: IMEI_IP, teeny_mode: 0 }
-      const r = await upstreamJSON(`${API_BC}/api/v4/book/detail?${qs({ ...dp, sign: signParams(dp) })}`, signHeaders(HEADERS_UNK))
-      if (!r.ok) return json({ ok: false, error: r.error }, 502)
+      const r = await upstreamJSON(`${API_BC}${paths.detail}?${qs({ ...dp, sign: signParams(dp) })}`, signHeaders(HEADERS_UNK))
+      if (!r.ok) return json({ ok: false, error: r.error, apiVersion: apiVer }, 502)
       const b = r.json?.data?.book
-      if (!b) return json({ ok: false, error: '上游 data.book 为空' }, 502)
+      if (!b) return json({ ok: false, error: '上游 data.book 为空', apiVersion: apiVer }, 502)
       const tags = Array.isArray(b.book_tag_list) ? b.book_tag_list.map((t: any) => String(t?.title ?? t)).filter(Boolean).join(',') : ''
       return json({
         ok: true,
@@ -225,6 +255,7 @@ async function handle(req: Request): Promise<Response> {
           isOver: String(b.is_over ?? ''),
           status: b.is_over === 1 || b.is_over === '1' ? '完结' : b.is_over === 0 || b.is_over === '0' ? '连载中' : '',
         },
+        apiVersion: apiVer,
       })
     }
 
@@ -233,14 +264,14 @@ async function handle(req: Request): Promise<Response> {
       const bid = u.searchParams.get('bid') || ''
       if (!/^\d+$/.test(bid)) return json({ ok: false, error: 'bid 必须为数字' }, 400)
       const tp = { id: bid }
-      const r = await upstreamJSON(`${API_KS}/api/v1/chapter/chapter-list?${qs({ ...tp, sign: signParams(tp) })}`, signHeaders(HEADERS_UNK))
-      if (!r.ok) return json({ ok: false, error: r.error }, 502)
+      const r = await upstreamJSON(`${API_KS}${paths.toc}?${qs({ ...tp, sign: signParams(tp) })}`, signHeaders(HEADERS_UNK))
+      if (!r.ok) return json({ ok: false, error: r.error, apiVersion: apiVer }, 502)
       const list = r.json?.data?.chapter_lists
-      if (!Array.isArray(list)) return json({ ok: false, error: '上游 data.chapter_lists 非数组' }, 502)
+      if (!Array.isArray(list)) return json({ ok: false, error: '上游 data.chapter_lists 非数组', apiVersion: apiVer }, 502)
       const chapters = list
         .map((c: any) => ({ cid: String(c?.id ?? ''), title: String(c?.title ?? '').trim(), words: String(c?.words ?? '') }))
         .filter((c) => c.cid && c.title)
-      return json({ ok: true, total: chapters.length, chapters })
+      return json({ ok: true, total: chapters.length, chapters, apiVersion: apiVer })
     }
 
     // ── 正文(签名 + AES 解密) ──
@@ -249,14 +280,14 @@ async function handle(req: Request): Promise<Response> {
       const cid = u.searchParams.get('cid') || ''
       if (!/^\d+$/.test(bid) || !/^\d+$/.test(cid)) return json({ ok: false, error: 'bid/cid 必须为数字' }, 400)
       const cp = { id: bid, chapterId: cid }
-      const r = await upstreamJSON(`${API_KS}/api/v1/chapter/content?${qs({ ...cp, sign: signParams(cp) })}`, signHeaders(HEADERS_UNK))
-      if (!r.ok) return json({ ok: false, error: r.error }, 502)
+      const r = await upstreamJSON(`${API_KS}${paths.content}?${qs({ ...cp, sign: signParams(cp) })}`, signHeaders(HEADERS_UNK))
+      if (!r.ok) return json({ ok: false, error: r.error, apiVersion: apiVer }, 502)
       const content = r.json?.data?.content
-      if (typeof content !== 'string' || !content) return json({ ok: false, error: '上游 data.content 为空' }, 502)
+      if (typeof content !== 'string' || !content) return json({ ok: false, error: '上游 data.content 为空', apiVersion: apiVer }, 502)
       const dec = aesDecrypt(content)
-      if (!dec.ok) return json({ ok: false, error: `AES 解密失败: ${dec.error}` }, 502)
-      if (dec.text.slice(0, 2) === 'PK') return json({ ok: false, error: '出版书正文为 EPUB 包, 不支持文本提取', cid }, 200)
-      return json({ ok: true, cid, content: dec.text })
+      if (!dec.ok) return json({ ok: false, error: `AES 解密失败: ${dec.error}`, apiVersion: apiVer }, 502)
+      if (dec.text.slice(0, 2) === 'PK') return json({ ok: false, error: '出版书正文为 EPUB 包, 不支持文本提取', cid, apiVersion: apiVer }, 200)
+      return json({ ok: true, cid, content: dec.text, apiVersion: apiVer })
     }
 
     return json({ ok: false, error: `未知路径 ${p}` }, 404)
@@ -270,9 +301,15 @@ async function handle(req: Request): Promise<Response> {
 createBridgeServer({
   name: 'qimao-proxy',
   port: PORT,
+  version: '1.1.0',
   idleTimeoutS: 120,
   selfTest: aesRoundtripSelfTest,
   healthCheck,
+  extraInfo: () => ({
+    upstream: { api_bc: API_BC, api_ks: API_KS },
+    apiVersions: SUPPORTED_API_VERSIONS,
+    endpoints: ['/health', '/info', '/metrics', '/search', '/rank', '/detail', '/toc', '/content'],
+  }),
   fetch: (req) => handle(req),
 })
-console.log(`[qimao-proxy] upstream: ${API_BC} / ${API_KS}`)
+console.log(`[qimao-proxy] upstream: ${API_BC} / ${API_KS}  apiVersions: ${SUPPORTED_API_VERSIONS.join(', ')}`)

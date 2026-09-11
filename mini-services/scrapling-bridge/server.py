@@ -17,12 +17,20 @@
 #   GET  /health → 200 { ok, selfTestOk, versions: {scrapling, python},
 #                       modes: ['static','stealthy','playwright'], ts }
 #                  (selfTestOk = scrapling.fetchers 三 Fetcher 类可导入)
-#   POST /fetch  body: { url, mode, headless?, proxy?, timeoutMs?, headers? }
+#   GET  /metrics → 200 text/plain  Prometheus 文本 0.0.4 格式(agent-L):
+#                  scrapling_bridge_requests_total / _errors_total / _in_flight /
+#                  _avg_response_ms / _uptime_seconds
+#   GET  /info    → 200 { service, version, uptimeSeconds, config, endpoints, modes, ... }
+#                  (agent-L: 版本/uptime/配置脱敏/依赖版本; 鉴权闸同主路径)
+#   POST /fetch   body: { url, mode, headless?, proxy?, timeoutMs?, headers? }
 #                → 200 { ok: true,  status, html, finalUrl }   目标侧任何响应
 #                  (含 3xx 跟随后终态/4xx/5xx)都算 ok:true 如实透传 —— 仅目标侧
 #                   成功语义; 引擎侧不再对目标双发请求
 #                → 200 { ok: false, error }                    桥内异常(url 非法/
 #                  mode 未知/网络层失败/超时/浏览器启动失败), 引擎侧据此降级 native 链
+#   POST /render  body: { url, headless?, proxy?, timeoutMs?, headers?, mode? }
+#                (agent-L: 强制 JS 渲染模式; mode 缺省='stealthy', 可显式 'playwright';
+#                 返回结构同 /fetch —— 语义快捷入口, 便于引擎 fetchMode='render' 直链)
 #
 # 安全: 仅绑 127.0.0.1(不对局域网暴露); url 仅 http/https 且限长; 请求头键经
 #       RFC 7230 token 白名单过滤、值剥 CR/LF/NUL(与引擎 safeHeaderKey/safeSingleLine
@@ -38,6 +46,7 @@ import math
 import os
 import platform
 import re
+import signal
 import threading
 import time
 import ipaddress
@@ -46,6 +55,7 @@ from urllib.parse import urlparse
 
 PORT = int(os.environ.get('SCRAPLING_BRIDGE_PORT', '3012'))
 HOST = '127.0.0.1'
+VERSION = '1.1.0'
 MAX_BODY_BYTES = 20 * 1024 * 1024          # 目标响应体上限(与 fetch-relay 同量级)
 MAX_REQUEST_BYTES = 1024 * 1024            # 桥请求体上限(JSON 很小, 防滥用)
 # agent-F: 任务硬要求 30s 上限(原 120s)。浏览器类模式(stealthy/playwright)若冷启+
@@ -148,6 +158,67 @@ RATE_LIMITER = RateLimiter(RATE_LIMIT_PER_MIN)
 # 浏览器类模式(stealthy/playwright)每次请求独立 launch 浏览器实例, 内存开销大:
 # 桥内并发闸与引擎 hostGate 缺省上限(3)同向, 超出的请求排队等信号量
 BROWSER_SEM = threading.BoundedSemaphore(3)
+
+
+# ---------- 指标收集(agent-L: /metrics + /info 共用) ----------
+class Metrics:
+    """运行时指标收集器: 请求计数 / 错误计数 / 在途请求数 / 平均响应时延 / uptime。
+    线程安全(ThreadingHTTPServer 多 worker)。to_prometheus() 输出文本 0.0.4 格式。"""
+
+    def __init__(self, service_name: str):
+        self.service_name = service_name.replace('-', '_').replace(r'[^\w]', '_')
+        self._lock = threading.Lock()
+        self._requests_total = 0
+        self._errors_total = 0
+        self._in_flight = 0
+        self._response_time_sum_ms = 0.0
+        self._response_time_count = 0
+        self._started_at = time.time()
+
+    def start_request(self):
+        with self._lock:
+            self._in_flight += 1
+
+    def end_request(self, duration_ms: float, ok: bool):
+        with self._lock:
+            self._in_flight = max(0, self._in_flight - 1)
+            self._requests_total += 1
+            if not ok:
+                self._errors_total += 1
+            self._response_time_sum_ms += max(0.0, min(60_000.0, float(duration_ms)))
+            self._response_time_count += 1
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            avg = (self._response_time_sum_ms / self._response_time_count
+                   if self._response_time_count > 0 else 0.0)
+            return {
+                'requests_total': self._requests_total,
+                'errors_total': self._errors_total,
+                'in_flight': self._in_flight,
+                'avg_response_ms': int(round(avg)),
+                'uptime_seconds': int(time.time() - self._started_at),
+            }
+
+    def to_prometheus(self) -> str:
+        snap = self.snapshot()
+        name = self.service_name
+        lines = []
+        samples = [
+            ('requests_total', 'counter', 'Total HTTP requests processed'),
+            ('errors_total', 'counter', 'Total failed HTTP requests (4xx/5xx/timeout)'),
+            ('in_flight', 'gauge', 'Current in-flight requests'),
+            ('avg_response_ms', 'gauge', 'Average response time in milliseconds'),
+            ('uptime_seconds', 'gauge', 'Process uptime in seconds'),
+        ]
+        for metric, mtype, help_text in samples:
+            lines.append(f'# HELP {name}_{metric} {help_text}')
+            lines.append(f'# TYPE {name}_{metric} {mtype}')
+            lines.append(f'{name}_{metric} {snap[metric]}')
+        return '\n'.join(lines) + '\n'
+
+
+METRICS = Metrics('scrapling_bridge')
 
 # agent-F: 常量时间字符串比较(供 AUTH_TOKEN 校验, 防计时旁路)
 def _constant_time_equal(a: str, b: str) -> bool:
@@ -374,6 +445,23 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # noqa: A003 — 覆写默认逐行 stderr 日志
         print(f'[scrapling-bridge] {self.address_string()} {fmt % args}', flush=True)
 
+    def _send_text(self, text: str, status=200, content_type='text/plain; charset=utf-8', extra_headers=None):
+        """agent-L: 纯文本响应助手(供 /metrics Prometheus 文本端点)"""
+        data = text.encode('utf-8')
+        self.send_response(status)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Content-Length', str(len(data)))
+        for k, v in _SECURITY_HEADERS.items():
+            self.send_header(k, v)
+        if extra_headers:
+            for k, v in extra_headers.items():
+                self.send_header(k, v)
+        self.end_headers()
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def _send_json(self, obj, status=200, extra_headers=None):
         data = json.dumps(obj, ensure_ascii=False).encode('utf-8')
         self.send_response(status)
@@ -437,6 +525,9 @@ class Handler(BaseHTTPRequestHandler):
                 status=401,
             )
             return True
+        # agent-L: /metrics 和 /info 走鉴权闸但免限速(监控不应被自身闸门拦)
+        if path in ('/metrics', '/info'):
+            return False
         ok, retry = self._check_rate_limit()
         if not ok:
             self._send_json(
@@ -455,23 +546,64 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send_json({
                 'ok': True,
+                'service': 'scrapling-bridge',
+                'version': VERSION,
                 'selfTestOk': self_test(),
                 'versions': versions(),
                 'modes': list(MODES),
                 'ts': int(time.time() * 1000),
             })
             return
-        # 非 /health 路径走鉴权+限速闸门
+        # agent-L: /metrics(Prometheus 文本格式) — 走鉴权闸免限速
+        if path == '/metrics':
+            if self._gate(path):
+                return
+            self._send_text(
+                METRICS.to_prometheus(),
+                content_type='text/plain; version=0.0.4; charset=utf-8',
+            )
+            return
+        # agent-L: /info(版本/uptime/配置/依赖) — 走鉴权闸免限速
+        if path == '/info':
+            if self._gate(path):
+                return
+            snap = METRICS.snapshot()
+            info = {
+                'service': 'scrapling-bridge',
+                'version': VERSION,
+                'uptimeSeconds': snap['uptime_seconds'],
+                'python': platform.python_version(),
+                'config': {
+                    'authEnabled': bool(AUTH_TOKEN),
+                    'authSource': ('AUTH_TOKEN' if os.environ.get('AUTH_TOKEN')
+                                   else 'BRIDGE_KEY' if os.environ.get('BRIDGE_KEY') else None),
+                    'rateLimitPerMin': RATE_LIMIT_PER_MIN if RATE_LIMIT_PER_MIN > 0 else None,
+                    'requestTimeoutMs': MAX_TIMEOUT_MS,
+                    'ssrfCheckEnabled': True,
+                    'maxBodyBytes': MAX_BODY_BYTES,
+                    'maxRequestBytes': MAX_REQUEST_BYTES,
+                    'hostname': HOST,
+                    'ssrfAllowLoopback': SSRF_ALLOW_LOOPBACK,
+                    'browserConcurrency': 3,
+                },
+                'versions': versions(),
+                'modes': list(MODES),
+                'metrics': snap,
+                'endpoints': ['/health', '/metrics', '/info', '/fetch', '/render'],
+            }
+            self._send_json(info)
+            return
+        # 非 /health /metrics /info 路径走鉴权+限速闸门
         if self._gate(path):
             return
         self._send_json({'ok': False, 'error': 'not found'}, status=404)
 
     def do_POST(self):  # noqa: N802
         path = self.path.split('?')[0]
-        # 非 /fetch 路径走鉴权+限速闸门(/fetch 也走, 仅 /health 豁免)
+        # /fetch /render 路径走鉴权+限速闸门(/health 豁免)
         if self._gate(path):
             return
-        if path != '/fetch':
+        if path not in ('/fetch', '/render'):
             self._send_json({'ok': False, 'error': 'not found'}, status=404)
             return
         try:
@@ -489,22 +621,36 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:  # noqa: BLE001
             self._send_json({'ok': False, 'error': f'请求体非 JSON 对象: {type(e).__name__}'})
             return
+        # agent-L: /render 强制 JS 渲染模式(默认 stealthy; 若 payload 含 mode 且为
+        # 'playwright' 则用 playwright; 'static' 一律归 'stealthy' — render 语义强制 JS)
+        if path == '/render':
+            requested_mode = str(payload.get('mode') or '').lower()
+            payload['mode'] = 'playwright' if requested_mode == 'playwright' else 'stealthy'
         started = time.time()
-        result = do_fetch(payload)
-        cost = int((time.time() - started) * 1000)
-        if result.get('ok'):
-            print(
-                f"[scrapling-bridge] {result.get('status')} {payload.get('mode')} "
-                f"{str(payload.get('url'))[:120]} ({cost}ms, {len(result.get('html', ''))} chars)",
-                flush=True,
-            )
-        else:
-            print(
-                f"[scrapling-bridge] FAIL {payload.get('mode')} "
-                f"{str(payload.get('url'))[:120]} ({cost}ms): {str(result.get('error'))[:200]}",
-                flush=True,
-            )
-        self._send_json(result)
+        METRICS.start_request()
+        ok_flag = True
+        try:
+            result = do_fetch(payload)
+            # 桥内异常 / 4xx / 5xx 视为错误计入 errors_total(健康统计口径)
+            if not result.get('ok'):
+                ok_flag = False
+            cost = int((time.time() - started) * 1000)
+            if result.get('ok'):
+                print(
+                    f"[scrapling-bridge] {path} {result.get('status')} {payload.get('mode')} "
+                    f"{str(payload.get('url'))[:120]} ({cost}ms, {len(result.get('html', ''))} chars)",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"[scrapling-bridge] FAIL {path} {payload.get('mode')} "
+                    f"{str(payload.get('url'))[:120]} ({cost}ms): {str(result.get('error'))[:200]}",
+                    flush=True,
+                )
+            self._send_json(result)
+        finally:
+            cost_ms = (time.time() - started) * 1000
+            METRICS.end_request(cost_ms, ok_flag)
 
 
 def main():
@@ -514,7 +660,7 @@ def main():
     auth_mode = f'AUTH({("AUTH_TOKEN" if os.environ.get("AUTH_TOKEN") else "BRIDGE_KEY")})' if AUTH_TOKEN else 'NO_AUTH(dev)'
     ssrf_mode = f'SSRF(allow_loopback={SSRF_ALLOW_LOOPBACK})'
     print(
-        f'[scrapling-bridge] 启动 http://{HOST}:{PORT} '
+        f'[scrapling-bridge] 启动 http://{HOST}:{PORT} v{VERSION} '
         f'(selfTest={"ok" if ok else "FAIL: " + str(_FETCHERS_ERR)}) '
         f'{auth_mode} ratelimit:{RATE_LIMIT_PER_MIN}/min timeout:30s {ssrf_mode} '
         f'versions={versions()}',
@@ -522,6 +668,33 @@ def main():
     )
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     server.daemon_threads = True
+
+    # agent-L: SIGTERM/SIGINT 优雅关闭(stop-all.sh 杀进程时给在途请求 ≤5s 完成)
+    shutting_down = threading.Event()
+
+    def shutdown(signum, frame):
+        if shutting_down.is_set():
+            return  # 已收到一次, 避免重入
+        shutting_down.set()
+        sig_name = signal.Signals(signum).name if hasattr(signal, 'Signals') else str(signum)
+        print(f'[scrapling-bridge] {sig_name} received, shutting down gracefully (5s grace)', flush=True)
+        # 在独立线程中关闭, 避免阻塞信号处理器
+        def _stop():
+            server.shutdown()
+            time.sleep(0.1)
+            os._exit(0)
+        t = threading.Thread(target=_stop, daemon=True)
+        t.start()
+        # 兜底: 5s 后强退
+        def _force():
+            time.sleep(5.0)
+            print('[scrapling-bridge] graceful shutdown timed out, force exit', flush=True)
+            os._exit(1)
+        threading.Thread(target=_force, daemon=True).start()
+
+    signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT, shutdown)
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:

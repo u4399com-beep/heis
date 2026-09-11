@@ -83,6 +83,8 @@ export async function GET(req: Request) {
         'Content-Disposition': contentDisposition(fileName),
         'Content-Length': String(stat.size),
         'X-Content-Type-Options': 'nosniff',
+        // feat-J: 成品 TXT 永不变(job 完成即定型), CDN 缓存 1h + SWR 6h 减压
+        'Cache-Control': 'public, max-age=3600, stale-while-revalidate=21600',
       },
     })
   })

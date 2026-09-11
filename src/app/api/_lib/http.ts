@@ -93,3 +93,18 @@ export function safeJoin(root: string, rel: string): string | null {
   if (!resolved.startsWith(prefix + path.sep)) return null
   return resolved
 }
+
+/**
+ * feat-J: 为公共 GET 路由设置 Cache-Control 头。
+ * - sMaxAge: CDN 边缘缓存秒数(默认 60s) — 让 CDN 兜住热点查询, 公共路由 120 req/min 容量上限内
+ *   命中缓存后零 DB 查询
+ * - staleWhileRevalidate: SWR 窗口(默认 300s) — 过期后仍可返回旧响应同时后台重抓
+ * 注: 此函数仅在 Response 已生成后追加头, 不影响 JSON 序列化
+ */
+export function withCache(res: Response, sMaxAge = 60, staleWhileRevalidate = 300): Response {
+  res.headers.set(
+    'Cache-Control',
+    `public, s-maxage=${sMaxAge}, stale-while-revalidate=${staleWhileRevalidate}`,
+  )
+  return res
+}

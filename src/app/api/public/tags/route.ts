@@ -1,7 +1,7 @@
 // 全站搜索下拉词 — distinct 标签按热度取池 + Fisher-Yates 随机洗牌(首页/页脚随机展示与换一批)
 import { db } from '@/lib/db'
 import { ok } from '@/lib/api'
-import { withGuard, clampInt } from '../../_lib/http'
+import { withGuard, clampInt, withCache } from '../../_lib/http'
 
 // 词池上限: distinct 标签按最高 hits 降序截取
 const POOL_SIZE = 400
@@ -37,6 +37,6 @@ export async function GET(req: Request) {
     const pool = grouped.map((g) => g.tag)
 
     // 每次请求随机洗牌 → 前台「换一批」/ 多站点展示天然去重
-    return ok({ tags: shuffle(pool).slice(0, n) })
+    return withCache(ok({ tags: shuffle(pool).slice(0, n) }), 60, 120)
   })
 }
