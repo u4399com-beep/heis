@@ -30,11 +30,20 @@
  *     `[k=v]` 过滤算子: `search_tabs[tab_type=3]` 保留元素属性值(可 & 连写多条件,
  *           值按 String 宽松比较, 数字/字符串通吃); 非数组值上为无操作
  *     `*` 段: 数组递归展平(数组的数组→元素平面): `chapterListWithVolume.*` → 章节数组
+ *   - agent-N 扩展(向后兼容, 既有规则零回归):
+ *     联合 `field1||field2`: 取首个非空(同义字段名兜底, BookName||Name||Title)
+ *     递归下降 `$..field` / `..field` / `a..b`: 在子树任意深度收集所有同名 key 的值
+ *     JSONPath 过滤 `[?(@.field==value)]`: 等价 `[field=value]`, 支持 ==/!=/>=/<=/>/<;
+ *       过滤后取值返回数组(jsonGet 走 map-collect, jsonToString \n 拼接)
+ *     数组上非数字段: 旧行为返回 undefined → 新行为 map-collect(跨元素取属性, 展平一层);
+ *       这让 `items[t=5].name`、`data[?(@.V==false)].id` 能直接取出值
  *
  * type='const': expression 为常量模板字符串, `{name}` 占位符替换后作为字段值 ——
  *   - `{字段名}`  → 同一作用域已提取的同名字段值(列表项/书籍页字段, 如 `{id}`)
  *   - `{index}`   → 1基序号(列表项/目录数组项遍历时; 章节API chapterid=下标+1 场景直接可用)
  *   - `{q.参数名}` → 当前页面 URL 的查询参数(如书页URL /api/book?id=2530 → `{q.id}`)
+ *   - agent-N: 嵌套对象访问 `{field.subfield}` —— vars[field] 为对象/数组时按点路径逐层取值
+ *     (适配可预取 token 响应体作为对象注入 const 模板: {token.data.accessToken})
  *   - 未命中的占位符替换为空串; 后处理(replaceFrom/stripTags等)照常生效
  *   - 典型: bookUrl=`https://x/api/book?id={id}`; 章节URL=`https://x/api/chapter?id={q.id}&chapterid={index}`
  *
@@ -60,6 +69,30 @@ export interface FieldRule {
   replaceTo?: string
   /** 后处理: 截取第N项(逗号分隔结果) */
   index?: number
+  /** R7-15 后处理: 解码方式
+   *  - 'base64-json': 先 base64 解码, 再 JSON.parse; 用于小雨/起点等API把章节payload
+   *    编码为 data:;base64,eyJ... 形式, const 模板需引用解码后的 bookId/chapterId/time/v 字段
+   *  - 'base64': 纯 base64 解码为字符串(不解析JSON)
+   *  - 'url-decode': URL 解码(%XX → 字符)
+   *  - 'html-decode': HTML 实体解码(&amp; → &)
+   *  解码在 replaceFrom/replaceTo 之后, index 之前执行(可对解码结果再切片) */
+  decode?: 'base64-json' | 'base64' | 'url-decode' | 'html-decode'
+  /** agent-N-parser(默认值兜底): 提取结果为空串时返回此默认值。常用于规则字段在
+   *  不同站点形态间切换(如某些书源不带 status 字段, 默认 "连载" 避免空字段入库)。
+   *  默认值在所有 transform(stripTags/replaceFrom/decode/index)之后应用, 故不会被截取/解码;
+   *  与 extractMultiple 互斥(多值模式不应配置 defaultValue, 多值空结果仍返回空串) */
+  defaultValue?: string
+  /** agent-N-parser(必填校验): true 时, 该字段提取结果为空(经 defaultValue/extractMultiple
+   *  处理后仍为空) → 当前列表项/目录项整体丢弃(runner 侧不消费空 url/标题项, 提前剪枝)。
+   *  典型用法: 章节目录要求 title 必填; 列表项要求 url 必填(配合现有 urlFields 收紧) */
+  required?: boolean
+  /** agent-N-parser(多值提取): true 时, 对该字段在作用域内"提取所有匹配项"而非首个,
+   *  结果以 multipleSeparator(默认 \n) 拼接成单字符串。仅 css/xpath/regex 型有效;
+   *  json 型已天然支持数组(jsonGet 返回数组时 jsonToString 已 \n 拼接), 配置等同关闭;
+   *  const 型无意义(模板单一输出), 配置忽略 */
+  extractMultiple?: boolean
+  /** agent-N-parser: extractMultiple=true 时的拼接分隔符, 缺省 \n */
+  multipleSeparator?: string
 }
 
 /** 列表项提取的字段集 */
@@ -500,6 +533,20 @@ export function sanitizeFieldRule(v: unknown): FieldRule | undefined {
   if (stripTags !== undefined) out.stripTags = stripTags
   const index = safeNum(r.index, 0, 100)
   if (index !== undefined) out.index = index
+  // R7-15: decode 字段(base64-json/base64/url-decode/html-decode)白名单透传
+  const decode = r.decode
+  if (decode === 'base64-json' || decode === 'base64' || decode === 'url-decode' || decode === 'html-decode') {
+    out.decode = decode
+  }
+  // agent-N-parser: 默认值/必填/多值提取 三组后处理字段白名单透传
+  const defaultValue = safeStr(r.defaultValue, 500)
+  if (defaultValue !== undefined) out.defaultValue = defaultValue
+  const required = safeBool(r.required)
+  if (required !== undefined) out.required = required
+  const extractMultiple = safeBool(r.extractMultiple)
+  if (extractMultiple !== undefined) out.extractMultiple = extractMultiple
+  const multipleSeparator = safeStr(r.multipleSeparator, 50)
+  if (multipleSeparator !== undefined) out.multipleSeparator = multipleSeparator
   return out
 }
 

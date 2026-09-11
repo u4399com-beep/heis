@@ -36,6 +36,7 @@
 // ============================================================
 import type { RuleConfig } from './types'
 import { parseRetryAfterHeaderMs, assertSafeTarget } from './fetcher'
+import { sleep } from '@/lib/utils'
 
 export type CalibrateProfile = 'lenient' | 'standard' | 'strict'
 
@@ -123,8 +124,6 @@ export class CalibrateAbort extends Error {
     this.name = 'CalibrateAbort'
   }
 }
-
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
 /** 可取消 sleep: 按 200ms 切片检查 shouldAbort, 快速响应取消 */
 async function sleepAbortable(ms: number, shouldAbort?: () => boolean): Promise<void> {

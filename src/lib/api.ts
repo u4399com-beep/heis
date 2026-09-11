@@ -33,7 +33,7 @@ export async function readBody<T = any>(req: Request, maxBytes = 5_000_000): Pro
     // R6-3: Content-Length 缺失(chunked encoding) → 流式读取 + 字节计数 + 超限中止。
     //  body 为 null(Web Response 标准)或无 getReader(非流式)时回退 req.json()(无法防护,
     //  但实测 Next.js Route Handler 的 Request 始终带 body 流)。
-    if (!lenHdr && req.body && typeof (req.body as any).getReader === 'function') {
+    if (!lenHdr && req.body && typeof req.body.getReader === 'function') {
       return await readBodyStreamed<T>(req, maxBytes)
     }
     return (await req.json()) as T
@@ -47,7 +47,8 @@ export async function readBody<T = any>(req: Request, maxBytes = 5_000_000): Pro
  *  逐 chunk 累计字节, 超 maxBytes 即抛 BodyTooLargeError(由 withGuard 转 413)。
  *  读完后 JSON.parse 完整字符串; 解析失败按既有 readBody 语义返回 {}。 */
 async function readBodyStreamed<T>(req: Request, maxBytes: number): Promise<T> {
-  const reader = (req.body as any).getReader()
+  // 控制流已保证 req.body 非 null 且带 getReader(调用前已校验)
+  const reader = req.body!.getReader()
   const dec = new TextDecoder('utf-8')
   let acc = ''
   let total = 0
@@ -90,7 +91,7 @@ export class BodyTooLargeError extends Error {
 }
 
 export function num(v: any, def: number): number {
-  if (v === null || v === undefined || v === '') return def
+  if (v == null || v === '') return def
   const n = Number(v)
   return isNaN(n) ? def : n
 }

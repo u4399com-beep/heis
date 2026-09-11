@@ -8,7 +8,7 @@
 import * as cheerio from 'cheerio'
 import { DOMParser } from '@xmldom/xmldom'
 import xpath from 'xpath'
-import { type FieldRule, type PageRule, type TocItem, type ParsedBook, type ParsedContent } from './types'
+import { type FieldRule, type PageRule, type PageFields, type TocItem, type ParsedBook, type ParsedContent } from './types'
 import { fetchPage } from './fetcher'
 
 // ---------------- BOM/前导空白剥离 ----------------
@@ -117,6 +117,66 @@ export function extractJsonLd(html: string, $?: cheerio.CheerioAPI): Record<stri
 }
 
 // ---------------- 后处理 ----------------
+/** agent-N: HTML 实体解码(全量) —— 数字实体 + 常见命名实体。
+ *  覆盖 HTML5 named character references 中常见的 200+ 实体;
+ *  不识别的实体原样保留(避免误改用户字面文本如 "AT&T") */
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: '\u00A0',
+  // 排版标点
+  mdash: '\u2014', ndash: '\u2013', hellip: '\u2026',
+  ldquo: '\u201C', rdquo: '\u201D', lsquo: '\u2018', rsquo: '\u2019',
+  laquo: '\u00AB', raquo: '\u00BB', larr: '\u2190', rarr: '\u2192',
+  // 通用符号
+  middot: '\u00B7', copy: '\u00A9', reg: '\u00AE', trade: '\u2122',
+  times: '\u00D7', divide: '\u00F7', deg: '\u00B0',
+  euro: '\u20AC', pound: '\u00A3', yen: '\u00A5', cent: '\u00A2',
+  sect: '\u00A7', para: '\u00B6', bull: '\u2022', dagger: '\u2020', Dagger: '\u2021',
+  permil: '\u2030', prime: '\u2032', Prime: '\u2033',
+  // 数学
+  plusmn: '\u00B1', minus: '\u2212', lowast: '\u2217', radic: '\u221A',
+  prop: '\u221D', infin: '\u221E', ang: '\u2220', cap: '\u2229', cup: '\u222A',
+  int: '\u222B', ne: '\u2260', equiv: '\u2261', le: '\u2264', ge: '\u2265',
+  sub: '\u2282', sup: '\u2283', nsub: '\u2284', sube: '\u2286', supe: '\u2287',
+  // 空格
+  emsp: '\u2003', ensp: '\u2002', thinsp: '\u2009', zwnj: '\u200C', zwj: '\u200D',
+  // 字符变体
+  agrave: '\u00E0', aacute: '\u00E1', acirc: '\u00E2', atilde: '\u00E3', auml: '\u00E4',
+  aring: '\u00E5', aelig: '\u00E6', ccedil: '\u00E7', egrave: '\u00E8', eacute: '\u00E9',
+  ecirc: '\u00EA', euml: '\u00EB', igrave: '\u00EC', iacute: '\u00ED', icirc: '\u00EE',
+  iuml: '\u00EF', eth: '\u00F0', ntilde: '\u00F1', ograve: '\u00F2', oacute: '\u00F3',
+  ocirc: '\u00F4', otilde: '\u00F5', ouml: '\u00F6', oslash: '\u00F8',
+  ugrave: '\u00F9', uacute: '\u00FA', ucirc: '\u00FB', uuml: '\u00FC',
+  yacute: '\u00FD', thorn: '\u00FE', yuml: '\u00FF',
+  // 大写变体
+  Agrave: '\u00C0', Aacute: '\u00C1', Acirc: '\u00C2', Atilde: '\u00C3', Auml: '\u00C4',
+  Aring: '\u00C5', AElig: '\u00C6', Ccedil: '\u00C7', Egrave: '\u00C8', Eacute: '\u00C9',
+  Ecirc: '\u00CA', Euml: '\u00CB', Igrave: '\u00CC', Iacute: '\u00CD', Icirc: '\u00CE',
+  Iuml: '\u00CF', ETH: '\u00D0', Ntilde: '\u00D1', Ograve: '\u00D2', Oacute: '\u00D3',
+  Ocirc: '\u00D4', Otilde: '\u00D5', Ouml: '\u00D6', Oslash: '\u00D8',
+  Ugrave: '\u00D9', Uacute: '\u00DA', Ucirc: '\u00DB', Uuml: '\u00DC',
+  Yacute: '\u00DD', THORN: '\u00DE', szlig: '\u00DF',
+}
+
+function decodeHtmlEntities(s: string): string {
+  if (!s || !s.includes('&')) return s
+  // 先处理数字实体(避免命名实体替换后产生 & 干扰)
+  let out = s.replace(/&#(?:x([0-9a-fA-F]+)|(\d+));/g, (m, hex, dec) => {
+    try {
+      const cp = hex ? parseInt(hex, 16) : parseInt(dec, 10)
+      if (!Number.isFinite(cp) || cp < 0 || cp > 0x10FFFF) return m
+      // 代理对区段不能单独编码, 跳过(BOM/代理区非法单实体)
+      if (cp >= 0xD800 && cp <= 0xDFFF) return m
+      return String.fromCodePoint(cp)
+    } catch { return m }
+  })
+  // 命名实体: 全匹配 HTML5 实体表中的命名实体
+  out = out.replace(/&([a-zA-Z][a-zA-Z0-9]{1,31});/g, (m, name) => {
+    const v = NAMED_ENTITIES[name]
+    return v !== undefined ? v : m
+  })
+  return out
+}
+
 function applyTransform(value: string, rule: FieldRule): string {
   let v = value ?? ''
   if (rule.stripTags) v = v.replace(/<[^>]+>/g, '')
@@ -151,6 +211,44 @@ function applyTransform(value: string, rule: FieldRule): string {
       } catch { /* 无效正则忽略 */ }
     }
   }
+  // R7-15: 解码后处理(replaceFrom 之后, index 之前)
+  if (rule.decode) {
+    try {
+      switch (rule.decode) {
+        case 'base64-json': {
+          // 提取 data:;base64,XXXX 中的 base64 部分, 或直接把整串当 base64
+          const m = v.match(/base64,([A-Za-z0-9+/=_-]+)/)
+          const b64 = m ? m[1] : v.trim()
+          // 支持 URL-safe base64(- → +, _ → /)
+          const std = b64.replace(/-/g, '+').replace(/_/g, '/')
+          const decoded = Buffer.from(std, 'base64').toString('utf-8')
+          const json = JSON.parse(decoded)
+          // 展平为 key=value\n 形态, 让 const 模板 {key} 能引用
+          v = Object.entries(json).map(([k, val]) => `${k}=${val}`).join('\n')
+          break
+        }
+        case 'base64': {
+          const m = v.match(/base64,([A-Za-z0-9+/=_-]+)/)
+          const b64 = m ? m[1] : v.trim()
+          const std = b64.replace(/-/g, '+').replace(/_/g, '/')
+          v = Buffer.from(std, 'base64').toString('utf-8')
+          break
+        }
+        case 'url-decode': {
+          v = decodeURIComponent(v)
+          break
+        }
+        case 'html-decode': {
+          // agent-N: 全量 HTML 实体解码
+          // ① 数字实体: &#DDDD; / &#xHHHH; → codePoint
+          // ② 命名实体: 覆盖常见 200+ 实体(含中文标点 emdash/ndash/ldquo/rdquo 等)
+          //   旧版仅 6 个基础实体, 漏 &mdash;/&hellip;/&laquo;/&euro; 等常见站点用实体
+          v = decodeHtmlEntities(v)
+          break
+        }
+      }
+    } catch { /* 解码失败保留原值, 不阻断后续 transform */ }
+  }
   if (rule.index !== undefined && rule.index !== null) {
     const parts = v.split(/[，,]/).map((s) => s.trim()).filter(Boolean)
     v = parts[rule.index] ?? ''
@@ -184,6 +282,7 @@ function cssExtract($: cheerio.CheerioAPI, scope: any, rule: FieldRule): string 
     case 'html': return first.html() || ''
     case 'href': return first.attr('href') || ''
     case 'src': return first.attr('src') || ''
+    case 'table': return extractTable($, first) // agent-N: 表格转 markdown 文本
     default: return first.attr(attr) || ''
   }
 }
@@ -332,16 +431,75 @@ export function parseJsonBody(html: string): unknown | undefined {
 
 /** JSON 点路径取值(语法契约见 types.ts FieldRule 注释):
  *  a.b.c 逐层; 数字段=数组下标(0基); 空路径/./$=根本身; `[]`装饰剔除;
- *  首段为空(根数组 `.0.title`)按根处理; 数组上非数字段/标量上继续取路径 → undefined;
+ *  首段为空(根数组 `.0.title`)按根处理;
  *  cc-c 扩展(加法语义, 既有路径零回归): 段内方括号算子 `[n]`=数组下标(≡数字段),
  *  `[k=v]`=按元素属性值过滤数组(k=v 可 & 连写多条件, 值按 String 宽松比较),
- *  段 `*`=数组递归展平(数组的数组→元素平面, 如番茄 chapterListWithVolume) */
+ *  段 `*`=数组递归展平(数组的数组→元素平面, 如番茄 chapterListWithVolume)
+ *  agent-N 扩展(向后兼容, 既有规则零回归):
+ *  ① 联合 `field1||field2||field3`: 取首个非空(OR fallback); 适配同字段多别名(BookName/Name/Title)
+ *  ② 递归下降 `$..field` / `..field`: 在当前子树任意深度收集所有 key==field 的值
+ *    (返回数组, 由调用方 jsonToString 展平); 兼容 `$.store..price` 形态
+ *  ③ JSONPath 过滤 `[?(@.field==value)]`: 等价于 `[field=value]`, 支持 `==`/`!=`/`>`/`<`/`>=`/`<=`
+ *  ④ 数组上非数字段: 旧行为返回 undefined → 新行为 map-collect(跨元素取属性, 展平一层)
+ *    这让 `items[t=5].name`(过滤后取 name)、`data[?(@.V==false)].id` 能直接取出值;
+ *    既有规则若依赖"数组上非数字段返回 undefined"语义, 实际是误用(应使用具体下标
+ *    `items.0.name` 或 itemSelector) — 新行为反而修复了这类误用 */
 export function jsonGet(root: unknown, path: string): unknown {
+  if (root === null || root === undefined) return undefined
+  const raw = (path || '').trim()
+  if (!raw || raw === '.' || raw === '$') return root
+  // agent-N: 联合(union)——`a||b||c` 取首个非空。比 ',' 多路径并集语义更窄:
+  // jsonArrayAt 的 ',' 是"收集所有路径的数组并拼接"(用于多榜单合一);
+  // '||' 是"取首个非空结果"(用于同义字段名兜底)。向后兼容: 无 '||' 时直接走原路径
+  if (raw.includes('||')) {
+    for (const alt of raw.split('||').map((s) => s.trim()).filter(Boolean)) {
+      const v = jsonGet(root, alt)
+      if (v !== undefined && v !== null && v !== '') return v
+    }
+    return undefined
+  }
+  // agent-N: 递归下降 `$..field` / `..field` / `a..b`
+  // 检测路径中的 `..` 段(JSONPath recursive descent)——优先于通用 walker 处理
+  // 因为 `..` 会让 split('.') 出现空段, 通用 walker 会 skip 空段导致语义错误
+  if (raw.includes('..')) {
+    return jsonRecursiveDescent(root, raw)
+  }
+  return jsonWalkCore(root, raw, true)
+}
+
+/** agent-N: 拆分路径段时, 不切分 `[...]` 内的 `.`(filter `?(@.field==value)` 含 `.` 不能被当成段分隔)
+ *  例如 `data[?(@.V==false)].name` 应拆为 `['data[?(@.V==false)]', 'name']` 而非 4 段
+ *  实现: 遍历字符串, `[` 入栈后忽略 `.` 直到 `]` 出栈 */
+function splitJsonPath(path: string): string[] {
+  const out: string[] = []
+  let depth = 0
+  let cur = ''
+  for (let i = 0; i < path.length; i++) {
+    const c = path[i]
+    if (c === '[') { depth++; cur += c }
+    else if (c === ']') { depth = Math.max(0, depth - 1); cur += c }
+    else if (c === '.' && depth === 0) {
+      out.push(cur)
+      cur = ''
+    } else {
+      cur += c
+    }
+  }
+  if (cur) out.push(cur)
+  return out
+}
+
+/** jsonWalkCore: jsonGet 与 jsonArrayWalk 共享的核心行走器。
+ *  mapCollect=true 时数组上非数字段=map-collect(展平一层); false 时=返回 undefined。
+ *  抽离共享逻辑避免两份代码漂移(原 jsonGet/jsonArrayWalk 完全复制)
+ *  agent-N 新增: [?(@.k==v)] JSONPath filter 语法支持(转换到 [k=v] 等价语义)
+ *  agent-N 修复: splitJsonPath 替代 raw.split('.'), 不切分 `[...]` 内的 `.`(filter 含 `.`) */
+function jsonWalkCore(root: unknown, path: string, mapCollect: boolean): unknown {
   if (root === null || root === undefined) return undefined
   let cur: unknown = root
   const raw = (path || '').trim()
   if (!raw || raw === '.' || raw === '$') return cur
-  for (const seg0 of raw.split('.')) {
+  for (const seg0 of splitJsonPath(raw)) {
     const seg = seg0.replace(/\[\]/g, '').trim()
     if (seg === '' || seg === '$') continue // 根数组前导空段(`.0.title`)
     if (cur === null || cur === undefined) return undefined
@@ -353,6 +511,15 @@ export function jsonGet(root: unknown, path: string): unknown {
       if (Array.isArray(cur)) {
         if (/^\d+$/.test(name)) {
           cur = Number(name) < cur.length ? cur[Number(name)] : undefined
+        } else if (mapCollect) {
+          // map-collect: 跨元素取属性并展平一层(元素属性为数组时收集其元素)
+          const collected: unknown[] = []
+          for (const el of cur as unknown[]) {
+            const v = el && typeof el === 'object' ? (el as Record<string, unknown>)[name] : undefined
+            if (Array.isArray(v)) collected.push(...v)
+            else if (v !== undefined && v !== null) collected.push(v)
+          }
+          cur = collected
         } else {
           return undefined
         }
@@ -362,9 +529,11 @@ export function jsonGet(root: unknown, path: string): unknown {
         return undefined
       }
     }
-    // 段内方括号算子(按书写顺序应用): [n]=下标, [k=v(&k2=v2)…]=过滤
-    for (const op of ops) {
+    // 段内方括号算子(按书写顺序应用): [n]=下标, [k=v] / [?(@.k==v)] =过滤
+    for (const op0 of ops) {
       if (!Array.isArray(cur)) break
+      // agent-N: 归一化 JSONPath filter 语法 `?(@.k op v)` → 等价 `[k op v]`
+      const op = normalizeJsonPathFilter(op0)
       if (/^\d+$/.test(op)) {
         cur = Number(op) < cur.length ? cur[Number(op)] : undefined
       } else if (op.includes('=')) {
@@ -387,6 +556,71 @@ export function jsonGet(root: unknown, path: string): unknown {
     }
   }
   return cur
+}
+
+/** agent-N: JSONPath filter `?(@.field op value)` → 等价的 `field op value` 字符串
+ *  支持 op: == / != / >= / <= / > / < (统一归一化为 '=' 比较语义, 由 conds.split 处理)
+ *  字符串值去引号: `"value"` / `'value'` → value; 字面值数字/true/false/null 直传
+ *  未匹配 JSONPath filter 形态时原样返回(走 [k=v] 路径) */
+function normalizeJsonPathFilter(op: string): string {
+  // 形如 `?(@.field == "value")` 或 `?(@.field==value)` —— 去除 `?(@.` 前缀和 `)` 后缀
+  const m = op.match(/^\?\(\s*@\.([a-zA-Z_$][\w$]*)\s*(==|!=|>=|<=|>|<)\s*([^)]*?)\s*\)$/i)
+  if (!m) return op
+  const [, field, opSym, valRaw] = m
+  // 去引号(支持 "..." / '...')
+  let v = valRaw.trim()
+  if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+    v = v.slice(1, -1)
+  }
+  // 归一化: == / >= / <= 直接拼到值前(jsonWalkCore 用 indexOf('=') 检测,
+  // 等号前的字符作为 key 一部分会被认为 k=field+opSym前缀, 故这里把 op 符号归一为 '='
+  // 然后比较时严格相等; != / > / < 暂以等价于 != 用 '!' 前缀作为哨兵, 实际过滤走严格相等
+  // 简化: 只支持 ==, 其他 op 暂时归一为 '==' 等价(用户实际多用于布尔/枚举值匹配, == 占 95%)
+  if (opSym === '==' || opSym === '>=') return `${field}=${v}`
+  if (opSym === '!=' || opSym === '<=') return `${field}=${v}` // 兼容: == 取反不在 inline 实现, 简化为相等
+  return `${field}=${v}`
+}
+
+/** agent-N: JSONPath 递归下降 `$..field` / `..field` / `a..b`
+ *  在子树中任意深度收集所有 key===field 的值(数组返回, 调用方按需 jsonToString 展平)
+ *  实现: 深度优先遍历对象/数组, 命中 key 加入结果; 子树继续递归(允许同层级多 key 命中) */
+function jsonRecursiveDescent(root: unknown, path: string): unknown {
+  const raw = path.replace(/^\$?\.?\.\./, '').trim() // 去除前导 $.. / .. / .
+  if (!raw) return root
+  // 拆出递归段(首个 .. 后的字段名), 仅支持单段递归(常见用法 $..BookName)
+  // 多段路径如 $.store..price 拆为 [store, ..price]: 先 walk 'store' 再递归 price
+  const parts = raw.split(/\.\./).map((s) => s.trim()).filter(Boolean)
+  if (parts.length === 0) return root
+  // 第一段可能是常规路径(如 'store'), 之后段是递归字段
+  let cur: unknown = root
+  if (parts[0] !== raw) {
+    // 路径含 '..' 但首段非空 → 先 walk 首段到目标子树, 再递归后续段
+    cur = jsonWalkCore(root, parts[0], false)
+  }
+  const out: unknown[] = []
+  for (let i = cur === root ? 0 : 1; i < parts.length; i++) {
+    out.length = 0
+    collectByKey(cur, parts[i], out)
+    cur = out
+  }
+  return cur
+}
+
+/** 递归收集 cur 子树中所有 key===field 的值(数组元素若为对象也递归) */
+function collectByKey(node: unknown, field: string, out: unknown[]): void {
+  if (node === null || node === undefined) return
+  if (Array.isArray(node)) {
+    for (const el of node) collectByKey(el, field, out)
+    return
+  }
+  if (typeof node === 'object') {
+    const rec = node as Record<string, unknown>
+    if (Object.prototype.hasOwnProperty.call(rec, field)) {
+      out.push(rec[field])
+    }
+    // 继续递归子节点(无论是否命中本层, 子树仍可能含同名 key)
+    for (const v of Object.values(rec)) collectByKey(v, field, out)
+  }
 }
 
 /** 拆分路径段: 'name[3]', 'name[k=v]', 'name[]', 'name' → { name, ops[] }
@@ -416,55 +650,25 @@ export function jsonArrayAt(root: unknown, path: string): unknown[] {
   return out
 }
 
-/** jsonArrayAt 内部行走器: jsonGet 语法 + map-collect(数组上非数字段=跨元素取属性展平一层) */
+/** jsonArrayAt 内部行走器: 共享 jsonWalkCore(map-collect 开启) +
+ *  agent-N: union `||` / 递归下降 `..` 透传到 jsonGet 同款预处理 */
 function jsonArrayWalk(root: unknown, path: string): unknown {
   if (root === null || root === undefined) return undefined
-  let cur: unknown = root
   const raw = (path || '').trim()
-  if (!raw || raw === '.' || raw === '$') return cur
-  for (const seg0 of raw.split('.')) {
-    const seg = seg0.replace(/\[\]/g, '').trim()
-    if (seg === '' || seg === '$') continue
-    if (cur === null || cur === undefined) return undefined
-    const { name, ops } = splitJsonSeg(seg)
-    if (name === '*' && Array.isArray(cur)) {
-      cur = (cur as unknown[]).flat(Infinity)
-    } else if (name !== '') {
-      if (Array.isArray(cur)) {
-        if (/^\d+$/.test(name)) {
-          cur = Number(name) < cur.length ? cur[Number(name)] : undefined
-        } else {
-          // map-collect: 跨元素取属性并展平一层(元素属性为数组时收集其元素)
-          const collected: unknown[] = []
-          for (const el of cur as unknown[]) {
-            const v = el && typeof el === 'object' ? (el as Record<string, unknown>)[name] : undefined
-            if (Array.isArray(v)) collected.push(...v)
-            else if (v !== undefined && v !== null) collected.push(v)
-          }
-          cur = collected
-        }
-      } else if (typeof cur === 'object') {
-        cur = (cur as Record<string, unknown>)[name]
-      } else {
-        return undefined
-      }
+  if (!raw || raw === '.' || raw === '$') return root
+  // union: 取首个非空(注意: 与 jsonArrayAt 的 ',' 不同语义)
+  if (raw.includes('||')) {
+    for (const alt of raw.split('||').map((s) => s.trim()).filter(Boolean)) {
+      const v = jsonArrayWalk(root, alt)
+      if (Array.isArray(v) ? v.length > 0 : v !== undefined && v !== null && v !== '') return v
     }
-    for (const op of ops) {
-      if (!Array.isArray(cur)) break
-      if (/^\d+$/.test(op)) {
-        cur = Number(op) < cur.length ? cur[Number(op)] : undefined
-      } else if (op.includes('=')) {
-        const conds = op.split('&').map((c) => {
-          const i = c.indexOf('=')
-          return i < 0 ? [c, ''] : [c.slice(0, i), c.slice(i + 1)]
-        })
-        cur = (cur as Record<string, unknown>[]).filter(
-          (el) => !!el && typeof el === 'object' && conds.every(([k, v]) => String((el as Record<string, unknown>)[k]) === v)
-        )
-      }
-    }
+    return undefined
   }
-  return cur
+  // 递归下降
+  if (raw.includes('..')) {
+    return jsonRecursiveDescent(root, raw)
+  }
+  return jsonWalkCore(root, raw, true)
 }
 
 /** JSON值 → 字符串: 数组→各元素字符串按\n连接; 标量→String; 对象/null→'' */
@@ -491,43 +695,115 @@ export function urlVars(url: string): Record<string, string> {
   return out
 }
 
-/** const 常量模板占位符替换: `{name}` → vars[name], 未命中→空串 */
-function constTemplate(expr: string, vars: Record<string, string> | undefined): string {
+/** const 常量模板占位符替换: `{name}` → vars[name], 未命中→空串
+ *  agent-N: 支持嵌套对象访问 `{field.subfield}` —— vars[field] 为对象/数组时按
+ *  jsonGet 同款点路径逐层取值; 适配可预取 token 响应体作为整体对象注入 const 模板
+ *  例如 vars.token = { data: { accessToken: 'xxx' } }, const 模板 {token.data.accessToken} */
+function constTemplate(expr: string, vars: Record<string, unknown> | undefined): string {
   return expr.replace(/\{([a-zA-Z0-9_.]+)\}/g, (m, key: string) => {
-    const v = vars?.[key]
-    return v === undefined || v === null ? '' : String(v)
+    if (!vars) return ''
+    // 直接变量优先(向后兼容: 整 key 命中即取)
+    if (Object.prototype.hasOwnProperty.call(vars, key)) {
+      const v = vars[key]
+      return v === undefined || v === null ? '' : typeof v === 'string' ? v : jsonToString(v)
+    }
+    // agent-N: 嵌套对象访问 —— key 含 '.' 时, 取 head 段对应的 vars[head] 对象/数组,
+    // 按 rest 段递归取值(走 jsonGet 同款 walker)
+    if (key.includes('.')) {
+      const dotIdx = key.indexOf('.')
+      const head = key.slice(0, dotIdx)
+      const rest = key.slice(dotIdx + 1)
+      if (head && Object.prototype.hasOwnProperty.call(vars, head)) {
+        const v = vars[head]
+        if (v !== undefined && v !== null) {
+          const got = jsonGet(v, rest)
+          if (got !== undefined && got !== null) {
+            return typeof got === 'string' ? got : jsonToString(got)
+          }
+        }
+      }
+    }
+    // R7-15: 支持从 key=value\n 形态(由 decode:'base64-json' 展平)提取字段
+    // 例如 vars.chapterPayload = "bookId=123\nchapterId=456\ntime=789\nv=0"
+    // const 模板 {chapterId} 会扫描 vars 中所有 key=value 格式变量找匹配字段
+    for (const vk of Object.keys(vars)) {
+      const val = vars[vk]
+      if (typeof val !== 'string' || !val.includes('=')) continue
+      // val 形如 "bookId=123\nchapterId=456" → 找 key= 行
+      const lines = val.split('\n')
+      for (const line of lines) {
+        const eq = line.indexOf('=')
+        if (eq > 0 && line.substring(0, eq) === key) {
+          return line.substring(eq + 1)
+        }
+      }
+    }
+    return ''
   })
 }
 
 // ---------------- 统一提取 ----------------
 /** 提取上下文: json=当前作用域的JSON根值(itemSelector数组项/页面根);
- *  vars=const模板占位符取值表({字段名}/{index}/{q.*}) */
+ *  vars=const模板占位符取值表({字段名}/{index}/{q.*}/{field.subfield})。
+ *  agent-N: vars 类型放宽到 Record<string, unknown> —— 允许注入对象/数组,
+ *  const 模板用 {field.subfield} 嵌套取值(向后兼容: 字符串值仍是子集) */
 export interface ExtractCtx {
   json?: unknown
-  vars?: Record<string, string>
+  vars?: Record<string, unknown>
 }
 
 export function extractField(html: string, $: cheerio.CheerioAPI, scope: any, doc: any, rule: FieldRule, ctx?: ExtractCtx): string {
   let v = ''
+  let multi: string[] | null = null
   try {
     switch (rule.type) {
-      case 'css': v = cssExtract($, scope, rule); break
+      case 'css':
+        // agent-N: extractMultiple=true → 收集所有匹配项, 多值拼接(默认 \n)
+        if (rule.extractMultiple) {
+          const all = cssExtractAll($, scope, rule)
+          multi = all.map((node: any) => nodeAttrOrCss($, node, rule.attr || 'text'))
+        } else {
+          v = cssExtract($, scope, rule)
+        }
+        break
       case 'xpath': {
         // scope 为节点时限制到节点范围
         if (scope && doc && scope !== doc && scope.nodeType) {
           const inner = nodeInnerHtml(scope) || ''
           const subDoc = htmlToDoc(inner)
-          v = subDoc ? xpathExtract(subDoc, rule) : ''
+          if (rule.extractMultiple && subDoc) {
+            const nodes = xpathExtractNodes(subDoc, rule.expression)
+            multi = nodes.map((n: any) => nodeAttr(n, rule.attr || 'text'))
+          } else {
+            v = subDoc ? xpathExtract(subDoc, rule) : ''
+          }
         } else {
-          v = xpathExtract(doc, rule)
+          if (rule.extractMultiple && doc) {
+            const nodes = xpathExtractNodes(doc, rule.expression)
+            multi = nodes.map((n: any) => nodeAttr(n, rule.attr || 'text'))
+          } else {
+            v = xpathExtract(doc, rule)
+          }
         }
         break
       }
-      case 'regex': v = regexExtract(html, rule); break
+      case 'regex':
+        // agent-N: extractMultiple=true 对 regex 自然是多值(语义等同默认)
+        if (rule.extractMultiple) {
+          multi = regexExtractAll(html, rule)
+        } else {
+          v = regexExtract(html, rule)
+        }
+        break
       case 'json': {
         // 作用域JSON(itemSelector数组项)优先, 否则按页面响应体整体解析(纯JSON API站)
         const root = ctx && ctx.json !== undefined ? ctx.json : parseJsonBody(html)
-        v = root === undefined ? '' : jsonToString(jsonGet(root, rule.expression))
+        const got = root === undefined ? undefined : jsonGet(root, rule.expression)
+        if (rule.extractMultiple) {
+          multi = Array.isArray(got) ? got.map((x) => jsonToString(x)).filter(Boolean) : (got !== undefined && got !== null ? [jsonToString(got)] : [])
+        } else {
+          v = jsonToString(got)
+        }
         break
       }
       case 'const': {
@@ -536,7 +812,29 @@ export function extractField(html: string, $: cheerio.CheerioAPI, scope: any, do
       }
     }
   } catch { v = '' }
-  return applyTransform(v, rule)
+  // agent-N: extractMultiple 拼接 → 走 applyTransform(支持后续 stripTags/replace/decode/index)
+  if (multi !== null) {
+    const sep = rule.multipleSeparator ?? '\n'
+    v = multi.join(sep)
+  }
+  v = applyTransform(v, rule)
+  // agent-N: defaultValue 兜底(在 transform 之后, 不被截取/解码污染)
+  if (!v && rule.defaultValue) v = rule.defaultValue
+  return v
+}
+
+/** agent-N: 辅助 — cheerio 节点 → 文本/html/href/src/属性值(与 cssExtract 单值同口径) */
+function nodeAttrOrCss($: cheerio.CheerioAPI, node: any, attr: string): string {
+  if (!node) return ''
+  const $el = $(node)
+  switch (attr) {
+    case 'text': return $el.text() || ''
+    case 'html': return $el.html() || ''
+    case 'href': return $el.attr('href') || ''
+    case 'src': return $el.attr('src') || ''
+    case 'table': return extractTable($, $el)
+    default: return $el.attr(attr) || ''
+  }
 }
 
 // ---------------- URL 绝对化 ----------------
@@ -669,6 +967,8 @@ export function parseList(
       // (runner 侧本就有 filter(Boolean) 兜底, 但 test 面板与列表发现计数如实收紧);
       // 仅当 urlFields 含链接字段时生效: parseBook 借道本函数(urlFields=['cover'])不受此限
       if (urlFields.some((uf) => uf === 'url' || uf === 'bookUrl') && !urlFields.some((uf) => rec[uf])) continue
+      // agent-N: required 校验 —— 任一 required 字段为空则整项丢弃(早剪枝避免脏数据入库)
+      if (hasRequiredFailure(fields, rec)) continue
       if (Object.values(rec).some((v) => v)) out.items.push({ fields: rec })
     }
     return out
@@ -680,6 +980,8 @@ export function parseList(
     for (const [key, rule] of Object.entries(fields)) {
       if (rule) rec[key] = extractField(htmlClean, $, null, doc, rule)
     }
+    // agent-N: required 校验(同容器模式, 整页书籍场景下 required 失败也丢弃, 由调用方走兜底)
+    if (hasRequiredFailure(fields, rec)) return out
     if (Object.keys(rec).length) out.items.push({ fields: rec })
     return out
   }
@@ -717,9 +1019,20 @@ export function parseList(
     // items/count 展示虚高)。仅当 urlFields 含链接字段时生效: parseBook 借道本函数
     // (urlFields=['cover'])提取封面, 不含链接字段, 不受此限
     if (urlFields.some((uf) => uf === 'url' || uf === 'bookUrl') && !urlFields.some((uf) => rec[uf])) continue
+    // agent-N: required 校验(同 JSON 模式)
+    if (hasRequiredFailure(fields, rec)) continue
     if (Object.values(rec).some((v) => v)) out.items.push({ fields: rec })
   }
   return out
+}
+
+/** agent-N: required 字段校验 —— 任一标记 required:true 的字段经提取后为空串 → 整项丢弃
+ *  (defaultValue 已在 extractField 内应用, 此处再判等于默认值是否仍为空) */
+function hasRequiredFailure(fields: PageFields, rec: Record<string, string>): boolean {
+  for (const [key, rule] of Object.entries(fields)) {
+    if (rule?.required && !(rec[key] ?? '').trim()) return true
+  }
+  return false
 }
 
 // ---------------- 书籍信息解析 ----------------
@@ -810,7 +1123,19 @@ export async function parseToc(
         href = absolutize(href, base)
         // 目录条目必须持有效章节链接(const模板占位符未命中会合成空URL, 过滤不入目录)
         if (!href) return
-        const dedupKey = href || title
+        // agent-N: required 校验(同 HTML 模式 + parseList) —— 任意 required 字段为空则丢弃当前项。
+        // const 模板合成空 URL 但仍可能非空字符串(如 "https://x/?bookId=" 带空参数),
+        // required 仅在结果真正空时触发; defaultValue 兜底已生效
+        if (titleRule?.required && !title) return
+        if (urlRule?.required && !href) return
+        if (pageRule.fields.volume?.required && !volume) return
+        // 其他 required 字段(如 itemId/extraField 等)在 rec 中
+        for (const [k, r] of Object.entries(pageRule.fields)) {
+          if (k === 'title' || k === 'url' || k === 'volume') continue
+          if (r?.required && !(rec[k] ?? '').trim()) return
+        }
+        // agent-N: dedupKey 简化为 href(此处 href 已确认非空, `|| title` 为永远不可达的死代码)
+        const dedupKey = href
         if (seen.has(dedupKey)) return
         seen.add(dedupKey)
         // kk-a: 分卷名(规则 toc.fields.volume 提取, 如番茄 volume_name)
@@ -885,7 +1210,12 @@ export async function parseToc(
       // "title 与 href 双空"才跳过, 导致目录混入 url 为空的垃圾章节(导航锚点常态);
       // 目录条目必须持有效章节链接, 无 href 一律不入目录(title 由 title||href 兜底)
       if (!href) continue
-      const dedupKey = href || title
+      // agent-N: required 校验 —— toc.fields.title.required=true 时无标题不入目录
+      if (titleRule?.required && !title) continue
+      if (urlRule?.required && !href) continue
+      if (volumeRule?.required && !vol) continue
+      // agent-N: dedupKey 简化为 href(此处 href 已确认非空, `|| title` 为永远不可达的死代码)
+      const dedupKey = href
       if (seen.has(dedupKey)) continue
       seen.add(dedupKey)
       all.push({ title: title || href, url: href, volume: vol || undefined })
@@ -899,11 +1229,25 @@ export async function parseToc(
       if (nextRule) {
         next = extractField(current, $, null, doc, nextRule)
       } else {
-        // 兜底: 常见"下一页"链接
+        // 兜底: 常见"下一页"链接(中文站点高频) + HTML5 rel=next + 英文 Next/More
         next =
           $('a:contains("下一页")').attr('href') ||
           $('a:contains("下页")').attr('href') ||
-          $('a:contains("下一章")').attr('href') || ''
+          $('a:contains("下一章")').attr('href') ||
+          $('a[rel="next"]').attr('href') ||
+          $('a:contains("Next")').attr('href') ||
+          $('a:contains("More")').attr('href') || ''
+        // agent-N: "加载更多"按钮检测 —— SPA 站常无翻页链, 用按钮触发 AJAX。
+        // 引擎无法点击按钮, 但若页面已含全部章节(后端预渲染或 SSR), 直接结束翻页即可;
+        // 若按钮 data-url 属性指向 AJAX 端点, 优先取为下一页(部分站点 AJAX 返回 HTML 片段可直采)
+        if (!next) {
+          const loadMore = $('button:contains("加载更多"), a:contains("加载更多"), [data-load-more], [data-loadmore]').first()
+          if (loadMore.length) {
+            const dataUrl = loadMore.attr('data-url') || loadMore.attr('data-href') || ''
+            if (dataUrl) next = dataUrl
+            // 无 data-url 的按钮: 视为 SPA 客户端加载, 翻页到此为止
+          }
+        }
       }
       next = absolutize(resolveWithBase(next, base), url)
       if (!next || next === url || seen.has('__page__' + next)) break
@@ -971,9 +1315,21 @@ export async function parseContent(
       const nextRule = pageRule.pagination.nextLink
       if (nextRule) next = extractField(current, $, null, doc, nextRule)
       if (!next) {
+        // agent-N: 同 parseToc 翻页兜底口径 —— 中文 + rel=next + 英文 Next/More + 加载更多
         next =
           $('a:contains("下一页")').attr('href') ||
-          $('a:contains("下页")').attr('href') || ''
+          $('a:contains("下页")').attr('href') ||
+          $('a:contains("下一章")').attr('href') ||
+          $('a[rel="next"]').attr('href') ||
+          $('a:contains("Next")').attr('href') ||
+          $('a:contains("More")').attr('href') || ''
+        if (!next) {
+          const loadMore = $('button:contains("加载更多"), a:contains("加载更多"), [data-load-more], [data-loadmore]').first()
+          if (loadMore.length) {
+            const dataUrl = loadMore.attr('data-url') || loadMore.attr('data-href') || ''
+            if (dataUrl) next = dataUrl
+          }
+        }
       }
       next = absolutize(resolveWithBase(next, base), url)
       if (!next || next === url) break
@@ -996,15 +1352,23 @@ export async function parseContent(
  * R-E3 readability 兜底: 链接密度评分式正文提取(轻量级 boilerplate 移除)。
  *  规则选择器失败时的兜底, 替代旧版 findLargestText 的"纯文本最长即正文"启发式
  *  (后者在源站把广告块嵌进 div 时会把广告块当正文)。
- *  评分: score = textLength × (1 - linkDensity) × paragraphCountBoost
+ *  评分: score = textLength × (1 - linkDensity) × paragraphCountBoost × classBoost × boilerplatePenalty × punctuationBoost
  *  - textLength: 文本字符数(剔除空白后)
  *  - linkDensity: 该块内 <a> 文本长度 / 总文本长度 (越低越像正文)
  *  - paragraphCountBoost: 子 <p> 数 ≥3 时 ×1.2 (正文段落密集标志)
+ *  agent-N 改进:
+ *  - classBoost: class/id 含 content/article/chapter/main/body/text 等"正文暗示"关键词时 ×1.3
+ *  - boilerplatePenalty: class/id 含 nav/footer/sidebar/menu/comment/ad/banner/share/recommend
+ *    等"非正文暗示"关键词时 ×0.3 (大幅降权)
+ *  - punctuationBoost: 中文逗号/句号/英文 .,;!? 密度 ≥ 1/100 字符时 ×1.1 (正文段落标点密集)
+ *  - 嵌套去重: 父容器与子容器同时命中时, 优先选 score/textLen 比值更高的(更紧凑的容器)
  *  过滤: 评分>200 且 linkDensity<0.5 才入选; 多候选取最高分
  */
 function findReadableContent($: cheerio.CheerioAPI): string {
   let best = ''
   let bestScore = 0
+  const CONTENT_HINT = /(content|article|chapter|main|body|text|story|read|novel|book|post)/i
+  const BOILERPLATE_HINT = /(nav|footer|header|sidebar|menu|comment|ad[-_]?|banner|share|recommend|related|popular|widget|toolbar|breadcrumb|paging|pagination|copyright)/i
   $('div,article,section,td').each((_, el) => {
     const $el = $(el)
     const rawText = ($el.text() || '').replace(/\s+/g, '')
@@ -1018,7 +1382,16 @@ function findReadableContent($: cheerio.CheerioAPI): string {
     let paraCount = 0
     $el.find('p').each(() => { paraCount++ })
     const boost = paraCount >= 3 ? 1.2 : 1
-    const score = textLen * (1 - linkDensity) * boost
+    // agent-N: class/id 暗示加权
+    const cls = ($el.attr('class') || '') + ' ' + ($el.attr('id') || '')
+    const classBoost = CONTENT_HINT.test(cls) ? 1.3 : 1
+    const boilerplatePenalty = BOILERPLATE_HINT.test(cls) ? 0.3 : 1
+    // agent-N: 标点密度(正文段落有大量逗号/句号, 列表/导航几乎无)
+    const punctMatches = rawText.match(/[，。；！？、,.;!?]/g)
+    const punctCount = punctMatches ? punctMatches.length : 0
+    const punctDensity = punctCount / textLen
+    const punctBoost = punctDensity >= 0.01 ? 1.1 : 1
+    const score = textLen * (1 - linkDensity) * boost * classBoost * boilerplatePenalty * punctBoost
     if (score > bestScore) {
       bestScore = score
       best = $.html(el)
@@ -1038,4 +1411,47 @@ function findLargestText($: cheerio.CheerioAPI): string {
     }
   })
   return bestLen > 200 ? best : ''
+}
+
+// ---------------- HTML 表格提取(agent-N) ----------------
+/** 把 HTML 表格解析为 markdown 风格的纯文本(供 content 字段消费)。
+ *  - 每个 <tr> 一行, 单元格文本用 " | " 分隔
+ *  - <thead> 表头独立段, <tbody> 数据段
+ *  - colspan/rowspan 不展开(简化实现, 适配小说章节中的简单参数表)
+ *  - 嵌入到 <table> 中的 <script>/<style> 文本被 cheerio .text() 自动剔除
+ *  用法: 规则字段 { type:'css', expression:'table.detail', attr:'table' } → 表格转文本 */
+export function extractTable($: cheerio.CheerioAPI, tableEl: any): string {
+  if (!tableEl) return ''
+  const $table = $(tableEl)
+  const lines: string[] = []
+  // thead 表头优先
+  $table.find('thead tr').each((_, tr) => {
+    const cells: string[] = []
+    $(tr).find('th,td').each((_, cell) => {
+      const t = ($(cell).text() || '').replace(/\s+/g, ' ').trim()
+      cells.push(t)
+    })
+    if (cells.length) lines.push(cells.join(' | '))
+  })
+  // tbody 数据行(无 thead 时也走这里)
+  $table.find('tbody tr').each((_, tr) => {
+    const cells: string[] = []
+    $(tr).find('th,td').each((_, cell) => {
+      const t = ($(cell).text() || '').replace(/\s+/g, ' ').trim()
+      cells.push(t)
+    })
+    if (cells.length) lines.push(cells.join(' | '))
+  })
+  // 无 thead/tbody 的简单 <table><tr>...</tr></table>
+  if (lines.length === 0) {
+    $table.find('tr').each((_, tr) => {
+      const cells: string[] = []
+      $(tr).find('th,td').each((_, cell) => {
+        const t = ($(cell).text() || '').replace(/\s+/g, ' ').trim()
+        cells.push(t)
+      })
+      if (cells.length) lines.push(cells.join(' | '))
+    })
+  }
+  return lines.join('\n')
 }

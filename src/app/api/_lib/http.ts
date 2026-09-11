@@ -11,16 +11,17 @@ import path from 'path'
 export async function withGuard(fn: () => Promise<Response>): Promise<Response> {
   try {
     return await fn()
-  } catch (e: any) {
+  } catch (e) {
     // R5-5: readBody 超限 → 413 Payload Too Large (而非 500)
     if (e instanceof BodyTooLargeError) {
       return fail(`请求体过大(超过 ${(e.maxBytes / 1024 / 1024).toFixed(1)}MB 上限)`, 413)
     }
     // 5-a: 结构化日志 — err/stack/code 字段, 敏感字段自动脱敏
+    const errObj = e as { message?: string; stack?: string; code?: string }
     logger.error('api unhandled error', {
-      err: e?.message,
-      stack: e?.stack?.slice(0, 500),
-      code: e?.code,
+      err: errObj?.message,
+      stack: errObj?.stack?.slice(0, 500),
+      code: errObj?.code,
     })
     return fail('服务器内部错误', 500)
   }
@@ -33,19 +34,20 @@ export async function withGuard(fn: () => Promise<Response>): Promise<Response> 
  * "操作失败"并在服务端 logger.warn 留 err/code (5-a: 结构化日志, 敏感字段自动脱敏)。
  */
 export function errText(e: unknown): string {
-  const code = (e as any)?.code
+  const errObj = e as { code?: string; message?: string } | null | undefined
+  const code = errObj?.code
   if (code === 'P2025') return '记录已被删除(并发变更), 请刷新后重试'
   if (code === 'P2003') return '关联数据不存在(并发变更), 请刷新后重试'
   if (code === 'P2002') return '唯一约束冲突(数据已存在)'
   // 5-a: 结构化日志 — err/code 字段, 敏感字段自动脱敏
-  logger.warn('batch item error', { err: (e as any)?.message, code: (e as any)?.code })
+  logger.warn('batch item error', { err: errObj?.message, code })
   return '操作失败(内部错误), 请重试'
 }
 
 /** 整数钳制: 缺失(null/undefined/'')→默认值; NaN/Infinity/越界→边界内安全值 */
 export function clampInt(v: unknown, def: number, min: number, max: number): number {
   // 注意: Number(null)===0, 必须先短路缺失场景, 否则未传的分页参数会被钳成 min(如 size 变 1)
-  if (v === null || v === undefined || v === '') return def
+  if (v == null || v === '') return def
   const n = typeof v === 'number' ? v : Number(v)
   if (!Number.isFinite(n)) return def
   return Math.min(max, Math.max(min, Math.trunc(n)))
@@ -53,7 +55,7 @@ export function clampInt(v: unknown, def: number, min: number, max: number): num
 
 /** 字符串安全化: 非字符串→'', 超长截断 */
 export function str(v: unknown, maxLen: number): string {
-  if (typeof v !== 'string') return v === null || v === undefined ? '' : String(v).slice(0, maxLen)
+  if (typeof v !== 'string') return v == null ? '' : String(v).slice(0, maxLen)
   return v.slice(0, maxLen)
 }
 

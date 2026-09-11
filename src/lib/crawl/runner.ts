@@ -7,6 +7,7 @@
 // - 存储模式: 数据库 | TXT文件
 // ============================================================
 import { db } from '@/lib/db'
+import { sleep } from '@/lib/utils'
 import { type RuleConfig, type TocItem, type FetchConfig, parseRuleConfig, sanitizeFetchConfig } from './types'
 import { fetchPage, fetchBinary, checkBrowser, type FetchResult, effectiveHostGateLimit } from './fetcher'
 import { acquireHostGate, releaseHostGate, reportHostSuccess, reportHostFailure, reportHostRateLimited, hostGateSnapshot, hostGateKeyOf } from './hostgate'
@@ -1878,9 +1879,6 @@ function randInt(min: number, max: number): number {
 function clampMin(a: number, b: number): number {
   return Math.min(a || 1, b || 1)
 }
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms))
-}
 /** jj-d: 可中断批次间隔睡眠 — 停止/暂停/换代不再睡满 interval(修前 stop/pause 要等
  *  intervalMax 全额到点才在下一检查点生效, 长间隔配置下响应时延线性于 interval)。
  *  happy path(无控制信号)仍睡满原时长, 采集节奏零变化; 每 600ms 切片探测一次,
@@ -1932,8 +1930,10 @@ function buildFetch(rule: RuleConfig, override: Partial<FetchConfig>): Partial<F
  *    - P2025: 记录已不存在(任务/书籍/章节被并发删除)——重排的幂等语义, 正常
  *    - P2002: 唯一约束冲突(@@unique([bookId,idx]))——重排中转瞬态撞位, 正常
  *  其余(连接断/P2003 外键/P2014 无效关系/磁盘故障等)上抛, 中止本书重排走书籍级 error */
-function swallowExpectedDb(e: any): void {
-  if (e?.code === 'P2025' || e?.code === 'P2002') return // 预期: 记录已删/瞬态唯一冲突
+function swallowExpectedDb(e: unknown): void {
+  // 预期: P2025=记录已删, P2002=瞬态唯一冲突 —— 重排幂等场景下静默吞掉
+  const code = (e as { code?: string } | null | undefined)?.code
+  if (code === 'P2025' || code === 'P2002') return
   throw e // 真 DB 故障: 上抛中止本次重排(走 crawlOneBook catch → 书籍级 error)
 }
 

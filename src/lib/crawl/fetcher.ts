@@ -1140,28 +1140,39 @@ globalForRate.__novelGlobalRate_v1 = globalRateStamps
 function applyGlobalRateLimit(cfg: FetchConfig): Promise<void> {
   const limit = cfg.globalRateLimitPerMin
   if (typeof limit !== 'number' || !Number.isFinite(limit) || limit <= 0) return Promise.resolve()
-  const now = Date.now()
-  // 清过期时间戳(>60s 前)
-  while (globalRateStamps.length > 0 && now - globalRateStamps[0] > GLOBAL_RATE_WINDOW_MS) {
-    globalRateStamps.shift()
+  // agent-M-fetcher-phase3: 抽出"尝试获取一个槽位"同步逻辑 —— 修复原实现的两个问题:
+  //  (1) 过冲: sleep 后无条件 push, N 个 waiter 同时唤醒会全部 push, 瞬时超 limit + (N-1)
+  //      (典型 batch 并发 10 → 限流窗口瞬时 10 个 stamp 过冲); 改为 push 前再校验 length<limit,
+  //      仍超限则递归 setTimeout 再等一跳, 真正严格守 limit/min 上限
+  //  (2) 惊群: 多 waiter 计算同一 waitMs(基于同一 globalRateStamps[0]), 同步唤醒同时 push;
+  //      加 0~200ms jitter 让唤醒时间分散, 单次 push 不再瞬时叠 N 份
+  const tryAcquire = (): { acquired: boolean; waitMs: number } => {
+    const now = Date.now()
+    while (globalRateStamps.length > 0 && now - globalRateStamps[0] > GLOBAL_RATE_WINDOW_MS) {
+      globalRateStamps.shift()
+    }
+    if (globalRateStamps.length < limit) {
+      globalRateStamps.push(now)
+      return { acquired: true, waitMs: 0 }
+    }
+    // 超限: sleep 至最早一个时间戳过期(腾出空位), 上限钳 30s 防呆死
+    const waitMs = Math.min(30_000, GLOBAL_RATE_WINDOW_MS - (now - globalRateStamps[0]) + 1)
+    return { acquired: false, waitMs }
   }
-  // 未超限: 直接登记 + 返回
-  if (globalRateStamps.length < limit) {
-    globalRateStamps.push(now)
-    return Promise.resolve()
-  }
-  // 超限: sleep 至最早一个时间戳过期(腾出空位), 上限钳 30s 防呆死
-  const waitMs = Math.min(30_000, GLOBAL_RATE_WINDOW_MS - (now - globalRateStamps[0]) + 1)
-  return new Promise((r) => {
-    setTimeout(() => {
-      // sleep 后再次清过期时间戳并登记(sleep 期间可能已有其他请求腾出空位)
-      const t = Date.now()
-      while (globalRateStamps.length > 0 && t - globalRateStamps[0] > GLOBAL_RATE_WINDOW_MS) {
-        globalRateStamps.shift()
+  const first = tryAcquire()
+  if (first.acquired) return Promise.resolve()
+  return new Promise<void>((resolve) => {
+    const attempt = () => {
+      const r = tryAcquire()
+      if (r.acquired) {
+        resolve()
+        return
       }
-      globalRateStamps.push(t)
-      r()
-    }, waitMs)
+      // 加 0~200ms jitter 防多 waiter 同步惊群(同时唤醒同时 push, 瞬时过冲)
+      const jitter = Math.floor(Math.random() * 200)
+      setTimeout(attempt, r.waitMs + jitter)
+    }
+    attempt()
   })
 }
 
