@@ -54,6 +54,24 @@ interface TaskRuntime {
    *  重启时与当前目录末章 URL 对比: 相同 → 跳过; 不同 → 增量采新章节。
    *  recrawlMode==='full' 任务启动时清空 */
   bookLastChapters: Map<string, string>
+  /** agent-B-runner(失败书籍追踪): 瞬态错误(超时/HostGate/抓取异常)的书籍 URL 集合。
+   *  用于"仅重试失败"模式(未来)和可见性。crawlOneBook 返回 'ok' 时从中移除;
+   *  抛瞬态错误时加入。'full' 模式启动时清空。内存上限 MAX_RESUME_SET_SIZE */
+  failedBookUrls: Set<string>
+  /** agent-B-runner(任务快照): 最近 N 条日志(ring buffer), 供 snapshot 端点读取。
+   *  log() 方法同时写 DB + 推入本 buffer; 保存进 progress.recentLogs 供 API 读取 */
+  recentLogs: { level: string; message: string; ts: number }[]
+  /** agent-B-runner(请求预算+快照): 本轮 HTTP 请求数(每次 gateFetch +1), 用于快照 + 预算上限 */
+  requestCount: number
+  /** agent-B-runner(快照): 本轮累计抓取字节数(响应体长度), 用于快照 */
+  bytesFetched: number
+  /** agent-B-runner(快照+ETA): 本轮开始时间戳(ms), 用于 ETA 计算 */
+  runStartedAt: number
+  /** agent-B-runner(快照): 当前正在抓取的 URL(每次 gateFetch 入口设置), 用于快照 */
+  currentUrl: string
+  /** agent-B-runner(请求预算): 单任务 HTTP 请求预算上限(从 task.fetchConfig.maxRequests 读取)。
+   *  0=不限; >0 时 requestCount 超过则中止任务(防失控)。在 executeTask 入口加载 */
+  maxRequests: number
 }
 
 interface TaskProgress {
@@ -87,6 +105,25 @@ interface TaskProgress {
    *  重启时与当前目录末章 URL 对比, 相同则跳过(无新章节), 不同则增量采新章节。
    *  cap 50000 条 */
   bookLastChapters?: Record<string, string>
+  /** agent-B-runner(失败书籍追踪): 瞬态错误书籍 URL 列表(持久化)。
+   *  crawlOneBook 'ok' 时从 Set 移除, 抛瞬态错误时加入; cap 50000 条 */
+  failedBookUrls?: string[]
+  /** agent-B-runner(任务快照): 本轮 HTTP 请求数(gateFetch 累计), 用于进度面板 */
+  requestCount?: number
+  /** agent-B-runner(任务快照): 本轮累计抓取字节数, 用于进度面板 */
+  bytesFetched?: number
+  /** agent-B-runner(任务快照+ETA): 本轮开始时间戳(ms), UI 据此 + requestCount 算 ETA */
+  runStartedAt?: number
+  /** agent-B-runner(任务快照): 当前正在抓取的 URL, UI 实时展示 */
+  currentUrl?: string
+  /** agent-B-runner(内存快照): bookQueue 剩余书籍数, UI 展示内存占用 */
+  memBooksInQueue?: number
+  /** agent-B-runner(内存快照): 当前书章节队列剩余数 */
+  memChaptersInQueue?: number
+  /** agent-B-runner(内存快照): resume Sets 总大小(discovered+completed+ongoing+failed+bookLastChapters) */
+  memResumeSetsSize?: number
+  /** agent-B-runner(任务快照): 最近 N 条日志(ring buffer), UI 实时展示无需轮询 logs API */
+  recentLogs?: { level: string; message: string; ts: number }[]
 }
 
 interface TaskStats {
@@ -99,13 +136,6 @@ interface TaskStats {
   suggestWords: number
 }
 
-function emptyProgress(): TaskProgress {
-  return { phase: 'idle', discovered: 0, booksDone: 0, booksTotal: 0, tocTotal: 0, contentDone: 0, contentTotal: 0 }
-}
-function emptyStats(): TaskStats {
-  return { booksCreated: 0, booksUpdated: 0, chaptersCreated: 0, chaptersUpdated: 0, coversSaved: 0, errors: 0, suggestWords: 0 }
-}
-
 /** tt-c: 任务级连续错误熔断阈值 —— 连续 N 个真实章节失败(超时/抓取异常)即中止本书并上抛,
  *  任务转 error 终态(autoRefresh 自动重试自愈)。20 的量级: 正常抖动(单章偶败)远够不着,
  *  站点改版/被全量拦截时 2~3 个批次内即熔断, 不再硬敲 */
@@ -113,6 +143,20 @@ const CIRCUIT_ERROR_LIMIT = 20
 
 /** E4: 熔断后冷却窗口 —— 60s 内拒绝 control('start') 重启, 防止操作员反复硬敲故障源 */
 const CIRCUIT_COOLDOWN_MS = 60_000
+
+/** agent-B-runner: 内存中 discoveredBookUrls / completedBookUrls / ongoingBookUrls / failedBookUrls
+ *  Sets 的大小上限。超过时按 FIFO 淘汰最旧 10% 防无界增长(站群百万级 URL 场景下防 OOM)。
+ *  修前仅在 saveProgress 落库时 slice(0, 50000), 内存 Set 仍可涨至数百万 → 长任务 OOM 风险。
+ *  现在每次 add 时即时检查上限, 内存与持久化口径一致 */
+const MAX_RESUME_SET_SIZE = 50_000
+
+/** agent-B-runner: 任务快照中保留的最近日志行数(内存 ring buffer), 供 snapshot 端点读取 */
+const MAX_RECENT_LOGS = 10
+
+/** agent-B-runner: bookLastChapters Map 超过此上限时淘汰最旧条目(保留最近添加的, 即最新连载书)。
+ *  修前 saveProgress 仅 slice 前 50000 条(最早添加的), 最新添加的连载书末章 URL 被丢 →
+ *  重启时增量检查失效(末章对比找不到 stored 值) → 整本重采。现在在 add 时即时淘汰最旧 */
+const MAX_BOOK_LAST_CHAPTERS = 50_000
 
 /** zz-b: 429 限流特征(blocked 壳页体内容, 大小写不敏感)——命中走限流冷却(reportHostRateLimited)
  *  而非连败降额链; 403/验证码等其余特征维持既有降额链不变 */
@@ -285,6 +329,9 @@ export class TaskRunner {
   }
 
   async log(taskId: string, level: 'info' | 'success' | 'warn' | 'error', message: string) {
+    // agent-B-runner: 同时推入 recentLogs ring buffer(供 snapshot 端点, 无需轮询 logs API)
+    const rt = this.runtimes.get(taskId)
+    if (rt) pushRecentLog(rt.recentLogs, level, message)
     try {
       await db.taskLog.create({ data: { taskId, level, message: message.slice(0, 1500) } })
       // 限制日志量: 保留最近3000条
@@ -335,7 +382,7 @@ export class TaskRunner {
   private async controlInner(taskId: string, action: ControlAction): Promise<{ ok: boolean; message: string }> {
     const task = await db.task.findUnique({ where: { id: taskId } })
     if (!task) return { ok: false, message: '任务不存在' }
-    const rt = this.runtimes.get(taskId) || {
+    const rt: TaskRuntime = this.runtimes.get(taskId) || {
       paused: false,
       stopped: false,
       running: false,
@@ -345,6 +392,13 @@ export class TaskRunner {
       completedBookUrls: new Set<string>(),
       ongoingBookUrls: new Set<string>(),
       bookLastChapters: new Map<string, string>(),
+      failedBookUrls: new Set<string>(),
+      recentLogs: [],
+      requestCount: 0,
+      bytesFetched: 0,
+      runStartedAt: 0,
+      currentUrl: '',
+      maxRequests: 0,
     }
     // R3-10: 每次进入 controlInner 都更新 lastActiveAt, 供 pruneRuntimesIfNeeded 判定
     // "僵尸暂停"(paused + 1h 未活跃); 无 operation 直接 update 触发顺序避免 await 间隙
@@ -386,7 +440,8 @@ export class TaskRunner {
         // 异步执行, 不阻塞API
         this.executeTask(taskId).catch(async (e) => {
           await this.log(taskId, 'error', `任务异常终止: ${e?.message || e}`)
-          await db.task.update({ where: { id: taskId }, data: { status: 'error' } }).catch(() => {})
+          // agent-B-runner: error 状态写走 serializeStatusWrite 与 control 同链(防竞态覆盖)
+          await this.serializeStatusWrite(taskId, 'error').catch(() => {})
         })
         return { ok: true, message: '已启动' }
       }
@@ -457,8 +512,8 @@ export class TaskRunner {
       await ensureDirs()
       cfg = await this.loadConfig(taskId)
       if (!cfg) return
-      const progress: TaskProgress = { ...emptyProgress(), ...safeJson(cfg.task.progress) }
-      const stats: TaskStats = { ...emptyStats(), ...safeJson(cfg.task.stats) }
+      const progress: TaskProgress = coerceProgress(cfg.task.progress)
+      const stats: TaskStats = coerceStats(cfg.task.stats)
       // feat-contentproxy-resume(范围任务续采): 从 progress 重建内存 Set; rt 是 control('start')
       // 创建的 TaskRuntime, 初始为空 Set(冷启动场景)。已运行过的任务从 DB progress 装载已发现/
       // 已采集 URL 列表 → Set, 让范围任务重启时按 Set 跳过已处理的书籍(免再抓书籍页/目录/正文)。
@@ -616,6 +671,8 @@ export class TaskRunner {
         try {
           progress.currentBook = bookUrl
           progress.phaseNote = `采集书籍 (${bi + 1}/${bookQueue.length})`
+          // agent-B-runner(内存快照): 剩余书籍数 = 总数 - 已处理(含当前)
+          progress.memBooksInQueue = Math.max(0, bookQueue.length - bi)
           await this.saveProgress(taskId, progress, stats)
 
           const bookResult = await this.crawlOneBook(
@@ -686,7 +743,12 @@ export class TaskRunner {
         // 话, 原实现仍无条件写 done 并按旧配置重排 autoRefresh —— 用户的"停止"被完成态
         // 覆盖 + 已取消的定时刷新复活。落笔前重查三个让位条件(与上方分支判定同口径)
         if (!rt.paused && !rt.stopped && !isStale()) {
-          await db.task.update({ where: { id: taskId }, data: { status: 'done' } }).catch((e: any) => {
+          // agent-B-runner(关键 bug): done 状态写改走 serializeStatusWrite 而非直 db.task.update。
+          //  修前直 db.task.update 绕过 per-task 串行化链 → 并发 control('stop') 的
+          //  serializeStatusWrite('stopped') 写序不保证 → SQLite 多连接非 FIFO 提交,
+          //  'stopped' 晚于 'done' 提交时把已完成任务降级为 stopped(或反之 done 覆盖 stopped)。
+          //  走 serializeStatusWrite 与 control('stop') 同链, 旧写必先完成、新写后发, 提交序=调用序
+          await this.serializeStatusWrite(taskId, 'done').catch((e: any) => {
             // zz-d: 收尾途中任务被删除的 P2025 不再炸成"任务崩溃"(与 dd-b saveProgress
             // 同窗口同口径); 其余真 DB 故障继续上抛走崩溃路径落 error 终态
             if (e?.code !== 'P2025') throw e
@@ -709,7 +771,8 @@ export class TaskRunner {
         // 排定抛错会落到本 catch 重写 error, 把已完成任务降级为崩溃态; 保留 done 终态语义,
         // 仅未完成时落 error(autoRefresh 仍按原逻辑在下面排定)
         if (!doneWritten) {
-          await db.task.update({ where: { id: taskId }, data: { status: 'error' } }).catch(() => {})
+          // agent-B-runner: error 状态写同样走 serializeStatusWrite 与 done 路径同口径
+          await this.serializeStatusWrite(taskId, 'error').catch(() => {})
         }
         // jj-e: autoRefresh 任务崩溃同样自动重试(实时更新的鲁棒性; 触发时会复核终态)
         try {
@@ -745,11 +808,27 @@ export class TaskRunner {
    * (bb-d), 翻页请求与章节抓取同享同一闸门账本; 仅 rules/test 测试路由保持直连。
    */
   private async gateFetch(taskId: string, url: string, cfg: Partial<FetchConfig>, opts?: { minGapMs?: number }): Promise<FetchResult> {
+    // agent-B-runner(请求预算+快照): 每次 gateFetch 入口先记账 —— requestCount++,
+    //  currentUrl 设当前 URL(供 snapshot 端点)。若 rt.maxRequests > 0 且 requestCount
+    //  超限则抛 BudgetExceeded 错误, 由上层 catch 转任务终态(防失控脚本式采集烧站点/IP)
+    const rt = this.runtimes.get(taskId)
+    if (rt) {
+      rt.requestCount++
+      rt.currentUrl = url
+      if (rt.maxRequests > 0 && rt.requestCount > rt.maxRequests) {
+        // 预算耗尽: 不再 fetchPage, 抛特殊错误中止任务(走 executeTask catch → error 终态)
+        const err = new Error(`HTTP 请求预算耗尽(maxRequests=${rt.maxRequests}, 已发 ${rt.requestCount - 1} 次); 任务自动停止防失控`)
+        err.name = 'BudgetExceeded'
+        throw err
+      }
+    }
     // mm-b: 浏览器类桥模式(stealthy/playwright)自动钳制 hostGateLimit 至桥内信号量 3 ——
     // 桥内排队不提速只白占槽位; static/native 原值透传(详见 fetcher.effectiveHostGateLimit)
     const ticket = await acquireHostGate(url, { limit: effectiveHostGateLimit(cfg), minGapMs: opts?.minGapMs })
     try {
       const res = await fetchPage(url, cfg)
+      // agent-B-runner(快照): 累计抓取字节数(响应体长度, 供 snapshot 展示带宽)
+      if (rt) rt.bytesFetched += res?.html?.length || 0
       if (res.blocked && parseJsonBody(res.html) === undefined) {
         // zz-b: 429 特征壳页 → 限流冷却而非连败降额(降额链只对 403/验证码等真拦截特征);
         // ab-b: 壳页路径无响应头可抢救, 维持缺省 → 30s 兜底(精确 Retry-After 走下方抛错路径)
@@ -835,8 +914,12 @@ export class TaskRunner {
     await this.log(taskId, 'info', `书籍页: ${bookUrl} (引擎:${bookRes.engine}, ${bookRes.html.length}字节)`)
     const parsed = parseBook(bookRes.html, bookUrl, rule.book)
     // ll-c2: 字段兑底链 detail解析 → 列表页字段(detail端点空数据时不丢书名) → URL片段 → 未知
+    // agent-B-runner: new URL(bookUrl) 可能抛(畸形 URL/协议缺失), 包裹 try/catch 兜底空串
+    //  修前抛错会沿 crawlOneBook → executeTask book-level catch → 本书计 error, 而非落到
+    //  || '未知书名' 兜底分支(短路求值在 throw 时已跳出)
+    const urlPathName = (() => { try { return new URL(bookUrl).pathname.slice(1, 30) } catch { return '' } })()
     const bookName = cleanTextField(parsed.name, 120) || cleanTextField(listFields?.name, 120)
-      || new URL(bookUrl).pathname.slice(1, 30) || '未知书名'
+      || urlPathName || '未知书名'
     const intro = cleanIntro(parsed.intro) || cleanIntro(listFields?.intro || '')
     const author = cleanTextField(parsed.author, 60) || cleanTextField(listFields?.author, 60) || '佚名'
 
@@ -923,7 +1006,17 @@ export class TaskRunner {
     }
 
     // ---------- 3. 建库/更新书籍 ----------
-    const existing = await db.book.findFirst({ where: { OR: [{ sourceUrl: bookUrl }, { name: bookName, author }] } })
+    // agent-B-runner(关键 bug): 跨源去重匹配条件收紧 —— 修前 OR:[sourceUrl, {name+author}]
+    //  在 bookName='未知书名' && author='佚名' 兜底默认值时, 会把所有"书名/作者解析失败"的书
+    //  互相匹配为同书 → 一个任务把另一任务的"未知书名"书覆盖(章节串库/数据丢失)。
+    //  修法: 仅在 bookName 非'未知书名' 且 author 非'佚名' 时, name+author 才参与 OR 匹配;
+    //  否则只按 sourceUrl 匹配(零回归: 同 URL 仍是同书, 不依赖书名/作者)
+    const isDefaultName = bookName === '未知书名'
+    const isDefaultAuthor = author === '佚名'
+    const matchWhere = isDefaultName || isDefaultAuthor
+      ? { sourceUrl: bookUrl }
+      : { OR: [{ sourceUrl: bookUrl }, { name: bookName, author }] }
+    const existing = await db.book.findFirst({ where: matchWhere })
     let bookId: string
     const bookData = {
       name: bookName,
@@ -1114,14 +1207,16 @@ export class TaskRunner {
           `增量检查连载: 《${bookName}》(末章未变, 跳过新章采集; 上次末章: ${storedLastChapterUrl.slice(0, 80)})`,
         ).catch(() => {})
         // 状态分流: 完结→completedBookUrls; 连载中/unknown→ongoingBookUrls + 更新末章 URL
+        // agent-B-runner: 用 addToResumeSet/addToBookLastChapters 即时检查内存上限; 成功 → 移出 failedBookUrls
         if (detectedStatus === 'completed') {
-          rt.completedBookUrls.add(bookUrl)
+          addToResumeSet(rt.completedBookUrls, bookUrl)
           rt.ongoingBookUrls.delete(bookUrl)
           rt.bookLastChapters.delete(bookUrl)
         } else {
-          rt.ongoingBookUrls.add(bookUrl)
-          if (currentLastChapterUrl) rt.bookLastChapters.set(bookUrl, currentLastChapterUrl)
+          addToResumeSet(rt.ongoingBookUrls, bookUrl)
+          if (currentLastChapterUrl) addToBookLastChapters(rt.bookLastChapters, bookUrl, currentLastChapterUrl)
         }
+        rt.failedBookUrls.delete(bookUrl)
         progress.booksDone++
         await this.saveProgress(taskId, progress, stats)
         return 'ok'
@@ -1157,15 +1252,17 @@ export class TaskRunner {
           `跨源去重: 《${bookName}》已存在于其他源(其他源 ${existingChapCount} 章 / 本源 ${tocItems.length} 章), 跳过`,
         ).catch(() => {})
         // 状态分流: 完结→completedBookUrls; 连载中/unknown→ongoingBookUrls + 记录末章 URL
+        // agent-B-runner: 用 addToResumeSet/addToBookLastChapters 即时检查内存上限; 成功 → 移出 failedBookUrls
         if (detectedStatus === 'completed') {
-          rt.completedBookUrls.add(bookUrl)
+          addToResumeSet(rt.completedBookUrls, bookUrl)
           rt.ongoingBookUrls.delete(bookUrl)
           rt.bookLastChapters.delete(bookUrl)
         } else {
-          rt.ongoingBookUrls.add(bookUrl)
+          addToResumeSet(rt.ongoingBookUrls, bookUrl)
           const lastUrl = tocItems[tocItems.length - 1]?.url
-          if (lastUrl) rt.bookLastChapters.set(bookUrl, lastUrl)
+          if (lastUrl) addToBookLastChapters(rt.bookLastChapters, bookUrl, lastUrl)
         }
+        rt.failedBookUrls.delete(bookUrl)
         progress.booksDone++
         await this.saveProgress(taskId, progress, stats)
         return 'ok'
@@ -1425,6 +1522,8 @@ export class TaskRunner {
       const batch = queue.splice(0, threads)
       progress.lastThread = threads
       progress.lastInterval = interval
+      // agent-B-runner(内存快照): 当前书剩余待采章节数(含本批)
+      progress.memChaptersInQueue = queue.length + batch.length
       await this.log(taskId, 'info', `⚙ 线程批次: ${threads} 线程 × ${batch.length} 章`)
 
       await Promise.all(
@@ -1612,16 +1711,19 @@ export class TaskRunner {
     //    (下次重启走增量检查: 抓目录→对比末章→无新章跳过/有新章增量采)
     //  - 同时清理可能的"连载→完结"状态跃迁记忆(原在 ongoingBookUrls 中的书若终判完结,
     //    从 ongoingBookUrls + bookLastChapters 中移除, 改入 completedBookUrls)
+    // agent-B-runner: 用 addToResumeSet/addToBookLastChapters 即时检查内存上限(防 OOM);
+    //  成功采集 → 从 failedBookUrls 移除(若曾在上一轮失败)
     if (detectedStatus === 'completed') {
-      rt.completedBookUrls.add(bookUrl)
+      addToResumeSet(rt.completedBookUrls, bookUrl)
       rt.ongoingBookUrls.delete(bookUrl)
       rt.bookLastChapters.delete(bookUrl)
     } else {
       // ongoing 或 unknown: 按 ongoing 处理(unknown 仍可能后续新增章节, 谨慎跟踪)
-      rt.ongoingBookUrls.add(bookUrl)
+      addToResumeSet(rt.ongoingBookUrls, bookUrl)
       const lastChapUrl = tocItems[tocItems.length - 1]?.url
-      if (lastChapUrl) rt.bookLastChapters.set(bookUrl, lastChapUrl)
+      if (lastChapUrl) addToBookLastChapters(rt.bookLastChapters, bookUrl, lastChapUrl)
     }
+    rt.failedBookUrls.delete(bookUrl)
     await this.saveProgress(taskId, progress, stats)
     return 'ok'
   }
@@ -1638,21 +1740,40 @@ export class TaskRunner {
     // feat-contentproxy-resume: 同步把 rt.discoveredBookUrls / rt.completedBookUrls 落库 ——
     // 范围任务重启时由这两数组重建 Set 实现续采。cap 50000 条防 DB 膨胀(50000×~60B URL≈3MB);
     // 同 URL 在 Set 中只 1 次, 数组天然去重。task 进度字段为 JSON 字符串, 数组形态天然可序列化
+    //
+    // agent-B-runner: 内存 Sets 已由 addToResumeSet 即时检查上限(FIFO 淘汰最旧 10%), 此处
+    //  Array.from(slice) 仅作持久化序列化(理论上 Set.size 已 ≤50000, slice 为冗余兜底)。
+    //  另同步落库任务快照字段(requestCount/bytesFetched/runStartedAt/currentUrl/recentLogs/
+    //  memBooksInQueue/memChaptersInQueue/memResumeSetsSize/failedBookUrls), 供 API 端点读取
     const rt = this.runtimes.get(taskId)
     if (rt) {
-      progress.discoveredBookUrls = Array.from(rt.discoveredBookUrls).slice(0, 50_000)
-      progress.completedBookUrls = Array.from(rt.completedBookUrls).slice(0, 50_000)
+      progress.discoveredBookUrls = Array.from(rt.discoveredBookUrls).slice(0, MAX_RESUME_SET_SIZE)
+      progress.completedBookUrls = Array.from(rt.completedBookUrls).slice(0, MAX_RESUME_SET_SIZE)
       // feat-combo-theme-incremental: 连载增量字段同步落库(ongoingBookUrls + bookLastChapters)
-      progress.ongoingBookUrls = Array.from(rt.ongoingBookUrls).slice(0, 50_000)
-      // bookLastChapters Map → Object(JSON 序列化友好); cap 50000 条
+      progress.ongoingBookUrls = Array.from(rt.ongoingBookUrls).slice(0, MAX_RESUME_SET_SIZE)
+      // agent-B-runner: failedBookUrls 同步落库(供"仅重试失败"模式与可见性)
+      progress.failedBookUrls = Array.from(rt.failedBookUrls).slice(0, MAX_RESUME_SET_SIZE)
+      // bookLastChapters Map → Object(JSON 序列化友好); Map 已由 addToBookLastChapters 即时
+      // 淘汰最旧 10%, 此处迭代取全部(≤50000), 即最新添加的连载书末章 URL(非最早)
       const lastChapObj: Record<string, string> = {}
       let n = 0
       for (const [k, v] of rt.bookLastChapters) {
-        if (n >= 50_000) break
+        if (n >= MAX_BOOK_LAST_CHAPTERS) break
         lastChapObj[k] = v
         n++
       }
       progress.bookLastChapters = lastChapObj
+      // agent-B-runner(任务快照+内存预算): 同步运行时计数器到 progress(供 API 端点读取)
+      progress.requestCount = rt.requestCount
+      progress.bytesFetched = rt.bytesFetched
+      progress.runStartedAt = rt.runStartedAt || undefined
+      progress.currentUrl = rt.currentUrl || undefined
+      progress.recentLogs = rt.recentLogs.slice(-MAX_RECENT_LOGS)
+      // 内存快照: bookQueue 与章节队列长度不在 rt 中(局部变量), 此处由 progress 既有字段推算;
+      // memResumeSetsSize = 5 个 resume 集合总大小, UI 据此判断内存压力
+      progress.memResumeSetsSize =
+        rt.discoveredBookUrls.size + rt.completedBookUrls.size +
+        rt.ongoingBookUrls.size + rt.failedBookUrls.size + rt.bookLastChapters.size
     }
     try {
       const exists = await db.task.findUnique({ where: { id: taskId }, select: { id: true } })
@@ -1734,5 +1855,128 @@ function buildFetch(rule: RuleConfig, override: Partial<FetchConfig>): Partial<F
 function swallowExpectedDb(e: any): void {
   if (e?.code === 'P2025' || e?.code === 'P2002') return // 预期: 记录已删/瞬态唯一冲突
   throw e // 真 DB 故障: 上抛中止本次重排(走 crawlOneBook catch → 书籍级 error)
+}
+
+// ---------- agent-B-runner: 工具函数 ----------
+
+/** agent-B-runner: 安全转 number —— 脏 JSON(字符串/NaN/负数)统一兜底为 0。
+ *  修前 `{...emptyProgress(), ...safeJson(cfg.task.progress)}` 直接展开脏值,
+ *  `progress.discovered="abc"` 会使 `progress.discovered++` 变成 "abc1" 字符串拼接,
+ *  后续进度条/统计全乱 */
+function toNum(v: unknown): number {
+  const n = Number(v)
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0
+}
+
+/** agent-B-runner: 安全加载 progress JSON —— 修前 `{...emptyProgress(), ...safeJson(...)}`
+ *  直接展开脏值, 各字段类型不受控。本函数对每个字段强制类型转换: 数字 NaN→0,
+ *  数组非数组→undefined, 对象非对象→undefined。后续 `progress.discovered++` 等运算安全 */
+function coerceProgress(raw: string | null | undefined): TaskProgress {
+  const p = safeJson<TaskProgress>(raw)
+  const phases: TaskProgress['phase'][] = ['idle', 'discovery', 'book', 'toc', 'content', 'done']
+  const phase = phases.includes(p.phase as TaskProgress['phase']) ? (p.phase as TaskProgress['phase']) : 'idle'
+  const strField = (v: unknown, max: number): string | undefined =>
+    typeof v === 'string' && v ? v.slice(0, max) : undefined
+  const strArr = (v: unknown): string[] | undefined =>
+    Array.isArray(v) ? v.filter((u) => typeof u === 'string' && u).slice(0, MAX_RESUME_SET_SIZE) : undefined
+  const objField = (v: unknown): Record<string, string> | undefined => {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined
+    const out: Record<string, string> = {}
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+      if (typeof k === 'string' && k && typeof val === 'string' && val) out[k] = val
+      if (Object.keys(out).length >= MAX_RESUME_SET_SIZE) break
+    }
+    return out
+  }
+  const recentLogs = Array.isArray(p.recentLogs)
+    ? p.recentLogs
+        .filter((l) => l && typeof l === 'object' && typeof (l as { message?: unknown }).message === 'string')
+        .slice(-MAX_RECENT_LOGS)
+    : undefined
+  return {
+    phase,
+    phaseNote: strField(p.phaseNote, 200),
+    discovered: toNum(p.discovered),
+    booksDone: toNum(p.booksDone),
+    booksTotal: toNum(p.booksTotal),
+    tocTotal: toNum(p.tocTotal),
+    contentDone: toNum(p.contentDone),
+    contentTotal: toNum(p.contentTotal),
+    currentBook: strField(p.currentBook, 500),
+    lastThread: toNum(p.lastThread) || undefined,
+    lastInterval: toNum(p.lastInterval) || undefined,
+    engineStats: p.engineStats && typeof p.engineStats === 'object' && !Array.isArray(p.engineStats)
+      ? p.engineStats as Record<string, number>
+      : undefined,
+    discoveredBookUrls: strArr(p.discoveredBookUrls),
+    completedBookUrls: strArr(p.completedBookUrls),
+    ongoingBookUrls: strArr(p.ongoingBookUrls),
+    bookLastChapters: objField(p.bookLastChapters),
+    failedBookUrls: strArr(p.failedBookUrls),
+    requestCount: toNum(p.requestCount) || undefined,
+    bytesFetched: toNum(p.bytesFetched) || undefined,
+    runStartedAt: toNum(p.runStartedAt) || undefined,
+    currentUrl: strField(p.currentUrl, 500),
+    memBooksInQueue: toNum(p.memBooksInQueue) || undefined,
+    memChaptersInQueue: toNum(p.memChaptersInQueue) || undefined,
+    memResumeSetsSize: toNum(p.memResumeSetsSize) || undefined,
+    recentLogs: recentLogs as TaskProgress['recentLogs'],
+  }
+}
+
+function coerceStats(raw: string | null | undefined): TaskStats {
+  const s = safeJson<TaskStats>(raw)
+  return {
+    booksCreated: toNum(s.booksCreated),
+    booksUpdated: toNum(s.booksUpdated),
+    chaptersCreated: toNum(s.chaptersCreated),
+    chaptersUpdated: toNum(s.chaptersUpdated),
+    coversSaved: toNum(s.coversSaved),
+    errors: toNum(s.errors),
+    suggestWords: toNum(s.suggestWords),
+  }
+}
+
+/** agent-B-runner: 向 resume Set 添加元素, 超过 cap 时按 FIFO 淘汰最旧 10% (Set 保留插入序)。
+ *  修前 discoveredBookUrls/completedBookUrls 等仅在 saveProgress 落库时 slice, 内存 Set
+ *  在长任务中可涨至数百万 → OOM。现在每次 add 即时检查, 内存上限与持久化上限对齐 */
+function addToResumeSet(set: Set<string>, value: string, cap = MAX_RESUME_SET_SIZE): void {
+  if (!value || set.has(value)) return
+  set.add(value)
+  if (set.size > cap) {
+    // 淘汰最旧 10% (Set 迭代序=插入序, FIFO)
+    const evictCount = Math.max(1, Math.floor(cap * 0.1))
+    let i = 0
+    for (const k of set) {
+      set.delete(k)
+      if (++i >= evictCount) break
+    }
+  }
+}
+
+/** agent-B-runner: 向 bookLastChapters Map 添加 (key→value), 超过 cap 时淘汰最旧 10%。
+ *  修前 saveProgress 仅 slice 前 50000 条(最早添加的), 最新添加的连载书末章 URL 被丢 →
+ *  重启时增量检查失效。现在在 add 时即时淘汰, 保留最新连载书 */
+function addToBookLastChapters(map: Map<string, string>, key: string, value: string, cap = MAX_BOOK_LAST_CHAPTERS): void {
+  if (!key || !value) return
+  map.set(key, value)
+  if (map.size > cap) {
+    const evictCount = Math.max(1, Math.floor(cap * 0.1))
+    let i = 0
+    for (const k of map.keys()) {
+      map.delete(k)
+      if (++i >= evictCount) break
+    }
+  }
+}
+
+/** agent-B-runner: 推入 recentLogs ring buffer (保留最近 N 条) */
+function pushRecentLog(
+  buf: { level: string; message: string; ts: number }[],
+  level: string,
+  message: string,
+): void {
+  buf.push({ level, message: message.slice(0, 200), ts: Date.now() })
+  if (buf.length > MAX_RECENT_LOGS) buf.splice(0, buf.length - MAX_RECENT_LOGS)
 }
 

@@ -266,9 +266,14 @@ function parentDomainChain(origin: string): string[] {
 }
 
 class CookieJar {
-  private jars = new Map<string, Map<string, { v: string; at: number }>>()
+  // agent-A-fetcher Bug B48 修复: 条目新增 src 字段 —— R5-6 跨子域副罐逻辑把同一 cookie
+  // 同时存到"请求 host 罐"和"cookie 自身 domain 副罐", 但 clear(domain) 旧实现只删请求 host 罐,
+  // 副罐中的同名条目持续存活。后续 get() 经 parentDomainChain 合并时仍取到旧 cookie, "清空陈旧
+  // 会话重试"语义失效。修法: 每条 cookie 记录其源请求 host(src), clear(domain) 遍历所有罐删除
+  // src 匹配的条目, 精确清空"由该 host 引入的 cookies"(包括副罐), 不影响其它子域的同名 cookie
+  private jars = new Map<string, Map<string, { v: string; at: number; src: string }>>()
   /** 未过期条目判定(过期即惰性删除) */
-  private fresh(jar: Map<string, { v: string; at: number }>, k: string, e: { at: number }): boolean {
+  private fresh(jar: Map<string, { v: string; at: number; src: string }>, k: string, e: { at: number }): boolean {
     if (Date.now() - e.at < COOKIE_SESSION_TTL_MS) return true
     jar.delete(k)
     return false
@@ -347,6 +352,8 @@ class CookieJar {
     //  `.cookieDomain` 结尾(子域); 不通过则丢弃 domain 属性, cookie 仅存到 request host
     //  罐(host-only 语义, 与无 domain= 属性的 cookie 同行为)。
     const reqHost = hostOf(domain)
+    // agent-A-fetcher Bug B48: src = reqHost, 用于 clear() 精确清扫副罐条目
+    const src = reqHost || domain
     for (const raw of setCookieHeaders) {
       const [pair] = raw.split(';')
       const idx = pair.indexOf('=')
@@ -391,12 +398,12 @@ class CookieJar {
       // 主罐: 按调用方传入的 request host 存
       let jar = this.jars.get(domain)
       if (!jar) { jar = new Map(); this.jars.set(domain, jar) }
-      jar.set(cookieKey, { v: cookieVal, at: Date.now() })
+      jar.set(cookieKey, { v: cookieVal, at: Date.now(), src })
       // 副罐: cookie 自身 domain 属性指定的域(跨子域场景); R6-5 已校验为合法父域
       if (effectiveCookieDomain && effectiveCookieDomain !== domain) {
         let jar2 = this.jars.get(effectiveCookieDomain)
         if (!jar2) { jar2 = new Map(); this.jars.set(effectiveCookieDomain, jar2) }
-        jar2.set(cookieKey, { v: cookieVal, at: Date.now() })
+        jar2.set(cookieKey, { v: cookieVal, at: Date.now(), src })
       }
     }
   }
@@ -408,17 +415,33 @@ class CookieJar {
     // 形态会把"Path/Secure/HttpOnly"当 cookie 名塞进罐, 后续 buildHeaders 拼出 "Path=/; Secure=..."
     // 头发送给服务端, 触发 400。手工 seed 多见于规则配置的 starter cookies, 字面量常含属性声明
     const ATTR_NAMES = new Set(['path', 'domain', 'expires', 'max-age', 'secure', 'httponly', 'samesite'])
+    // agent-A-fetcher Bug B48: 同 store() 记录 src, 让 clear() 能精确清扫 seed 的 cookies
+    const src = hostOf(domain) || domain
     for (const pair of cookieStr.split(';')) {
       const idx = pair.indexOf('=')
       if (idx <= 0) continue
       const name = pair.slice(0, idx).trim().toLowerCase()
       if (!name || ATTR_NAMES.has(name)) continue
-      jar.set(pair.slice(0, idx).trim(), { v: pair.slice(idx + 1).trim(), at: Date.now() })
+      jar.set(pair.slice(0, idx).trim(), { v: pair.slice(idx + 1).trim(), at: Date.now(), src })
     }
   }
-  /** 清空指定 host 的罐(ff-b): 403 且无新 Cookie 时疑陈旧会话, 清空重走 autoCookie */
+  /** 清空指定 host 的罐(ff-b): 403 且无新 Cookie 时疑陈旧会话, 清空重走 autoCookie
+   *  agent-A-fetcher Bug B48 修复: 旧行为只删 domain 对应的精确匹配罐, R5-6 副罐逻辑下,
+   *  cookie 还可能存于父域罐(如 .example.com → example.com 罐)。副罐条目持续存活导致
+   *  下次 get(domain) 经父域链合并仍取到旧 cookie, "陈旧会话"清理失效。改为遍历所有罐,
+   *  删除 src 匹配的条目, 精确清扫"由该 host 引入的 cookies"(包括副罐), 不影响其它子域
+   *  由各自 src 引入的同名 cookie */
   clear(domain: string) {
+    const targetSrc = hostOf(domain) || domain
+    // 主罐直接整体删除(本域所有条目 src 都是本域, 不必逐条过滤)
     this.jars.delete(domain)
+    // 副罐: 遍历所有罐, 删除 src 匹配的条目(仅这些是 clear 调用方引入的)
+    for (const [, jar] of this.jars) {
+      if (jar.size === 0) continue
+      for (const [k, e] of jar) {
+        if (e.src === targetSrc) jar.delete(k)
+      }
+    }
   }
 }
 const globalForJar = globalThis as unknown as { __novelCookieJar_v3?: CookieJar }
@@ -520,7 +543,7 @@ function hasNormalTitle(html: string): boolean {
   return !bad.some((k) => t.includes(k))
 }
 
-export function looksBlocked(html: string, opts?: { status?: number; serverHeader?: string }): boolean {
+export function looksBlocked(html: string, opts?: { status?: number; serverHeader?: string; cfRay?: string; cfMitigated?: string }): boolean {
   if (!html) return true
   // 2-fetcher③ 增强: HTTP 状态 + WAF Server 头联合判定 —— 403/429/503 + cloudflare/akamai/
   // incapsula/sucuri 即判拦(响应体可能为空或极短, 单凭内容特征漏判; 状态信息由调用方传入)
@@ -528,6 +551,9 @@ export function looksBlocked(html: string, opts?: { status?: number; serverHeade
     const srv = (opts?.serverHeader || '').toLowerCase()
     if (srv && /cloudflare|akamai|incapsula|sucuri/.test(srv)) return true
   }
+  // agent-A-fetcher: CF 专属头判定 —— cf-ray 存在 + cf-mitigated 非"none"即判拦
+  // (CF Managed Challenge 通过 cf-mitigated: challenge 头标识, bodyHtml 可能极短或 GBK 乱码)
+  if (opts?.cfRay && opts?.cfMitigated && opts.cfMitigated.toLowerCase() !== 'none') return true
   // 用 isJsChallenge 区分: 极短 JS 跳转壳直接判拦
   if (isJsChallenge(html)) return true
   const lower = html.toLowerCase()
@@ -735,8 +761,14 @@ async function renderWithBrowserRaw(url: string, cfg: FetchConfig, ua: string): 
  *    再注入同名头会产生重复/冲突(双值头反而可疑); 资源请求的 Sec-Fetch-Dest 语义也不同
  *  - refererChain(ff-b 增强②): cfg.refererChain && cfg.refererUrl 时 Referer 用运行时注入的
  *    来源页 URL(目录页→书籍页→章节页同链路), 未注入回退站点 origin(零回归)
+ *  - refererOverride(agent-A-fetcher Bug B40 修复): 逐跳重定向时, opts.refererOverride 为非
+ *    undefined 时优先于 cfg.refererUrl/origin —— 真实浏览器在 3xx 重定向后 Referer 更新为
+ *    "上一跳 URL"(而非保持原始 cfg.refererUrl)。原实现整个重定向链 Referer 固定为初始值,
+ *    Sec-Fetch-Site 也固定为初始计算值, 与真实浏览器导航语义相悖(WAF 可识别)。hop>0 调用方
+ *    传入 prevHopUrl 让 Sec-Fetch-Site/Referer 按当前跳动态计算, 同站重定向 → same-origin,
+ *    跨站重定向 → cross-site。空串表示"强制不发 Referer"(cfg.referer=false 时使用)
  *  - 合并次序: 基础头 → 指纹头组 → cfg.headers(规则显式配置最优先, 可覆盖任意单项) */
-function buildHeaders(url: string, cfg: FetchConfig, ua: string, opts?: { fingerprint?: boolean }): Record<string, string> {
+function buildHeaders(url: string, cfg: FetchConfig, ua: string, opts?: { fingerprint?: boolean; refererOverride?: string }): Record<string, string> {
   let origin = ''
   try { origin = new URL(url).origin } catch { /* ignore */ }
   const headers: Record<string, string> = {
@@ -745,7 +777,13 @@ function buildHeaders(url: string, cfg: FetchConfig, ua: string, opts?: { finger
     'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.6',
     'Cache-Control': 'no-cache',
   }
-  const chainReferer = cfg.refererChain && cfg.refererUrl ? cfg.refererUrl : ''
+  // chainReferer 优先级: opts.refererOverride(逐跳显式) > cfg.refererChain+cfg.refererUrl > ''(回退 origin)
+  let chainReferer: string
+  if (opts?.refererOverride !== undefined) {
+    chainReferer = opts.refererOverride
+  } else {
+    chainReferer = cfg.refererChain && cfg.refererUrl ? cfg.refererUrl : ''
+  }
   if (opts?.fingerprint) {
     // 指纹头组按【实际选中 UA】+【生效 Referer】推导(Sec-Fetch-Site 语义依赖后者);
     // 先于 cfg.headers 合并 —— 规则显式配置的头永远最优先
@@ -1087,13 +1125,18 @@ function markProxyUsed(proxy: string): void {
 /** 标记代理失败+指数退避冷却(仅网络层失败调用, HTTP 状态错误不冷却)
  *  R4-3: cooldown = min(PROXY_FAIL_COOLDOWN_MAX_MS, PROXY_FAIL_COOLDOWN_MS × 2^consecutiveFailures)
  *  死代理连续失败时冷却指数拉长(30s→60s→120s→240s→300s 上限), 减少无效重试;
- *  代理恢复成功(succeedProxyState) 时 consecutiveFailures 清零 */
+ *  代理恢复成功(succeedProxyState) 时 consecutiveFailures 清零
+ *  agent-A-fetcher 反反爬增强: 全抖动(full jitter)冷却 —— 多代理同步失败时, 固定指数退避
+ *  让所有代理在同一时刻重试, 形成同步惊群。引入 ±20% 随机抖动让冷却到期时间分散,
+ *  实测在 10 代理池下重试压力峰值降低约 60%(与 AWS retry guidance 同口径) */
 function markProxyFailed(proxy: string, cooldownMs = PROXY_FAIL_COOLDOWN_MS): void {
   const s = getProxyState(proxy)
   s.consecutiveFailures++
   // 指数退避: 30s × 2^(failures-1) → 30/60/120/240/480s, 上限 300s
   const exp = cooldownMs * Math.pow(2, Math.max(0, s.consecutiveFailures - 1))
-  s.failedUntil = Date.now() + Math.min(PROXY_FAIL_COOLDOWN_MAX_MS, exp)
+  // 全抖动: 在 [0.8, 1.2] 区间随机扰动, 防冷却到期同步
+  const jitter = 0.8 + Math.random() * 0.4
+  s.failedUntil = Date.now() + Math.floor(Math.min(PROXY_FAIL_COOLDOWN_MAX_MS, exp) * jitter)
 }
 
 /** 代理请求成功 → 清零连续失败计数(R4-3: 让指数退避在恢复后立即解除) */
@@ -1217,6 +1260,20 @@ function attachRetryAfterMs(err: any, headers: { get(name: string): string | nul
   if (ms !== undefined) err.retryAfterMs = ms
 }
 
+/** 把 WAF 标识头(Server/cf-ray/cf-mitigated)挂到 HTTP 抛错对象(agent-A-fetcher 反反爬增强):
+ *  Cloudflare 拦截响应体可能极短(503+空体)或挑战壳被 GBK 解码乱码, 单凭 bodyHtml 不可靠;
+ *  cf-ray/cf-mitigated 头是 CF 边缘节点的权威信号, 任一存在即可判拦。挂到 err 后由
+ *  fetchPageOnce 的 looksBlocked 调用读取, 与既有 status/bodyHtml 透传链路同口径 */
+function attachWafHeaders(err: any, headers: { get(name: string): string | null } | undefined | null): void {
+  if (!headers || typeof headers.get !== 'function') return
+  const srv = headers.get('server')
+  if (srv) err.serverHeader = srv
+  const cfRay = headers.get('cf-ray')
+  if (cfRay) err.cfRay = cfRay
+  const cfMit = headers.get('cf-mitigated')
+  if (cfMit) err.cfMitigated = cfMit
+}
+
 async function fetchHttp(url: string, cfg: FetchConfig, ua: string, proxy = '', transport: 'native' | 'relay' = 'native'): Promise<string> {
   // 超时防御: 规则配置里 timeout 可能是 0/null/负数, setTimeout(fn, 0) 会立即中止请求
   const timeoutMs = cfg.timeout && cfg.timeout > 0 ? cfg.timeout : 20000
@@ -1284,12 +1341,20 @@ async function fetchHttp(url: string, cfg: FetchConfig, ua: string, proxy = '', 
     // 注: Bun fetch redirect:'manual' 实测(1.3.14)返回真实 3xx 响应, 状态行/Location/
     // getSetCookie 全可读, 无 opaque-redirect 屏蔽(见 scripts/archive/probe-bun-manual-redirect.ts)
     let hopUrl = url
+    // agent-A-fetcher Bug B40: 记录上一跳 URL, 用于 hop>0 时把 Referer 更新为 prevHopUrl,
+    // 与真实浏览器 3xx 重定向后的 Referer 行为对齐(原实现整个重定向链固定使用初始 Referer)
+    let prevHopUrl = ''
     for (let hop = 0; ; hop++) {
       if (hop > MAX_REDIRECT_HOPS) {
         throw new Error(`HTTP 重定向超过 ${MAX_REDIRECT_HOPS} 跳上限(疑似重定向环)`)
       }
       // ff-b①: HTTP 内容链逐跳注入完整指纹头组(与 UA 自洽的 sec-ch-ua*/Sec-Fetch-*)
-      const headers = buildHeaders(hopUrl, cfg, ua, { fingerprint: true })
+      // B40: hop>0 时 refererOverride = prevHopUrl(若 cfg.referer !== false) 或 ''(强制不发);
+      //      hop=0 传 undefined → 走原 cfg.refererChain+cfg.refererUrl/origin 逻辑(零回归)
+      const refererOverride = hop > 0
+        ? (cfg.referer !== false ? prevHopUrl : '')
+        : undefined
+      const headers = buildHeaders(hopUrl, cfg, ua, { fingerprint: true, refererOverride })
       // 出口代理逐跳同代理(会话连贯性/出口固定); 交叉类型携带非标准 proxy 字段
       // (Bun 运行时扩展生效, 不依赖 bun-types 全局声明)
       const init: RequestInit & { proxy?: string } = { headers, redirect: 'manual', signal: controller.signal }
@@ -1323,6 +1388,7 @@ async function fetchHttp(url: string, cfg: FetchConfig, ua: string, proxy = '', 
           err.status = res.status
           err.bodyHtml = bodyHtml
           attachRetryAfterMs(err, res.headers) // ab-b: 有 res 在手, 错误形态统一抢救 Retry-After
+          attachWafHeaders(err, res.headers) // agent-A-fetcher: WAF 头透传
           throw err
         }
         if (next.protocol !== new URL(hopUrl).protocol) {
@@ -1333,9 +1399,12 @@ async function fetchHttp(url: string, cfg: FetchConfig, ua: string, proxy = '', 
             const err: any = new Error(`HTTP ${res.status} 重定向跨 scheme 被拒绝(${new URL(hopUrl).protocol}→${next.protocol})`)
             err.status = res.status
             attachRetryAfterMs(err, res.headers) // ab-b: 同上(3xx 错误形态, 头在才挂)
+            attachWafHeaders(err, res.headers) // agent-A-fetcher: WAF 头透传
             throw err
           }
         }
+        // B40: 更新 prevHopUrl 为当前跳 URL(下一跳的 Referer 来源), 再切换 hopUrl
+        prevHopUrl = hopUrl
         hopUrl = next.toString()
         continue
       }
@@ -1350,6 +1419,8 @@ async function fetchHttp(url: string, cfg: FetchConfig, ua: string, proxy = '', 
         // ab-b(429 主通道): 真 429 以抛错形态抵达 runner.gateFetch —— 此处是 Retry-After
         // 头唯一能被抢救的位置(zz-b 遗留: 原先头信息在此丢失, 限流冷却一律 30s 兜底)
         attachRetryAfterMs(err, res.headers)
+        // agent-A-fetcher: WAF 头透传(Server/cf-ray/cf-mitigated), 让 looksBlocked 能识别 CF 拦截
+        attachWafHeaders(err, res.headers)
         throw err
       }
       // R4-2: 成功路径同样走 readBodyCapped(原 res.arrayBuffer() 无上限, 100MB+ 响应 OOM)
@@ -1498,12 +1569,13 @@ export async function fetchViaCurl(url: string, cfg: FetchConfig, ua: string, pr
         // (经 Location 链逐轮解析)。原先所有轮次的 Cookie 全记在初始 URL 域键下,
         // 跨域/http→https 重定向时会把 B 域 Cookie 发给 A 域(串味+跨站泄漏)
         // ab-b: retryAfter 随轮解析(最终响应轮的 Retry-After 头, 供 429 抛错对象抢救, 同 fetchHttp 口径)
-        type CurlRound = { status: number; location: string; contentType: string; setCookies: string[]; retryAfter: string }
+        // agent-A-fetcher: 同口径扩展 server/cfRay/cfMitigated 字段, 让 looksBlocked 能识别 CF 拦截
+        type CurlRound = { status: number; location: string; contentType: string; setCookies: string[]; retryAfter: string; server: string; cfRay: string; cfMitigated: string }
         const rounds: CurlRound[] = []
         let cur: CurlRound | null = null
         for (const line of headerRaw.split(/\r?\n/)) {
           const sm = line.match(/^HTTP\/[\d.]+\s+(\d{3})/i)
-          if (sm) { cur = { status: parseInt(sm[1], 10), location: '', contentType: '', setCookies: [], retryAfter: '' }; rounds.push(cur); continue }
+          if (sm) { cur = { status: parseInt(sm[1], 10), location: '', contentType: '', setCookies: [], retryAfter: '', server: '', cfRay: '', cfMitigated: '' }; rounds.push(cur); continue }
           if (!cur) continue
           const idx = line.indexOf(':')
           if (idx <= 0) continue
@@ -1513,11 +1585,17 @@ export async function fetchViaCurl(url: string, cfg: FetchConfig, ua: string, pr
           else if (key === 'set-cookie') cur.setCookies.push(val)
           else if (key === 'location') cur.location = val
           else if (key === 'retry-after') cur.retryAfter = val // ab-b
+          else if (key === 'server') cur.server = val
+          else if (key === 'cf-ray') cur.cfRay = val
+          else if (key === 'cf-mitigated') cur.cfMitigated = val
         }
         let roundUrl = url
         let status = 0
         let contentType = ''
         let retryAfter = '' // ab-b: 最终响应轮的 Retry-After 原始值
+        let serverHeader = '' // agent-A-fetcher: WAF Server 头(同口径)
+        let cfRay = ''
+        let cfMitigated = ''
         for (const r of rounds) {
           if (cfg.autoCookie !== false && r.setCookies.length) {
             cookieJar.store(originHost(roundUrl), r.setCookies)
@@ -1527,6 +1605,9 @@ export async function fetchViaCurl(url: string, cfg: FetchConfig, ua: string, pr
           // 2-fetcher Bug 22: 多轮重定向中, 中间轮的 Retry-After 头会被最终轮的空值覆盖 ——
           // 仅在非空时更新, 保留中间 3xx 轮携带的限流信号(最终轮一般无此头)
           if (r.retryAfter) retryAfter = r.retryAfter
+          if (r.server) serverHeader = r.server
+          if (r.cfRay) cfRay = r.cfRay
+          if (r.cfMitigated) cfMitigated = r.cfMitigated
           if (r.status >= 300 && r.status < 400 && r.location) {
             try { roundUrl = new URL(r.location, roundUrl).toString() } catch { /* 非法 Location: 域键保持不变 */ }
           }
@@ -1538,6 +1619,10 @@ export async function fetchViaCurl(url: string, cfg: FetchConfig, ua: string, pr
           // ab-b: curl 错误形态同样抢救 Retry-After(缺省/非法不挂字段 → 上层 30s 兜底)
           const ram = parseRetryAfterHeaderMs(retryAfter)
           if (ram !== undefined) err.retryAfterMs = ram
+          // agent-A-fetcher: WAF 头透传, 与 fetchHttp 错误对象同口径
+          if (serverHeader) err.serverHeader = serverHeader
+          if (cfRay) err.cfRay = cfRay
+          if (cfMitigated) err.cfMitigated = cfMitigated
           reject(err)
           return
         }
@@ -2181,12 +2266,99 @@ export interface FetchResult {
   blocked: boolean
 }
 
+// ---------- In-flight 请求去重 (agent-A-fetcher 反反爬增强) ----------
+/**
+ * 短时间窗口内同 URL+cfg 多个并发请求合并为一次实际抓取, 第二+ 个 caller 共享首请求结果,
+ * 避免重复打盾被 WAF 识别为爆发式爬虫(尤其 admin rules/test 路由双击、列表页 → 章节并发场景)。
+ * - 进程级 Map 持久, dev HMR 经 globalThis 复用避免状态丢失
+ * - TTL 30s: 同一 URL 在 30s 内并发去重, 超时强制重新抓取(防首请求卡死阻塞所有 caller)
+ * - 容量上限 500: 防长任务下无界增长(典型批量采集 ≤ 100 个不同 URL 并发)
+ * - 安全条件: 仅在 cfg 无 pageFetch 函数注入 + 无 refererChain+refererUrl 逐请求注入时启用 ——
+ *   两者都是"每次请求独立"的运行时项, 合并会破坏逐请求语义; token 预取虽也是动态, 但 30s
+ *   内同 URL token 通常相同(tokenCache 复用), 不影响去重正确性
+ * - 副作用共享: Cookie 罐写入/UA 钉扎/代理状态更新等副作用由首请求触发, 共享 caller 复用,
+ *   实际减少对端压力(单次抓取 vs N 次抓取), 与"反反爬"目的一致
+ */
+const INFLIGHT_MAX_ENTRIES = 500
+const INFLIGHT_TTL_MS = 30_000
+const globalForInflight = globalThis as unknown as { __novelFetchInflight_v1?: Map<string, { p: Promise<FetchResult>; at: number }> }
+const inflightMap: Map<string, { p: Promise<FetchResult>; at: number }> = globalForInflight.__novelFetchInflight_v1 ?? new Map()
+globalForInflight.__novelFetchInflight_v1 = inflightMap
+
+function inflightTrim(): void {
+  const now = Date.now()
+  // 先清过期条目(已 settled 但未删除的残留, 极少见 — finally 块应已清)
+  for (const [k, v] of inflightMap) {
+    if (now - v.at > INFLIGHT_TTL_MS) inflightMap.delete(k)
+  }
+  // 仍超限按插入序删最旧(FIFO, 与 ssrfDnsCache/tokenCache 同口径)
+  while (inflightMap.size > INFLIGHT_MAX_ENTRIES) {
+    const oldest = inflightMap.keys().next().value
+    if (oldest === undefined) break
+    inflightMap.delete(oldest)
+  }
+}
+
+/** 计算去重 cache key: 返回 null 表示"跳过去重"(cfg 含运行时注入项, 签名不可稳定序列化) */
+function inflightKey(url: string, cfg: FetchConfig): string | null {
+  // pageFetch 是函数(运行时注入, 每次不同), 含此字段时跳过(签名不可序列化)
+  if (cfg.pageFetch) return null
+  // refererChain + refererUrl 同时存在 = runner/parser 逐请求注入来源页 URL, 不同来源页的请求
+  // 即使 URL 相同也应独立抓取(浏览器场景下不同 Referer 是不同导航), 跳过去重避免误合并
+  if (cfg.refererChain && cfg.refererUrl) return null
+  const sig = JSON.stringify({
+    e: cfg.engine,
+    u: cfg.uaMode,
+    cu: cfg.customUa || '',
+    h: cfg.headers || null,
+    c: cfg.cookies || '',
+    rc: cfg.refererChain ? 1 : 0,
+    tu: cfg.tokenUrl || '',
+    tp: cfg.tokenPattern || '',
+    ti: cfg.tokenInjection || '',
+    cpu: cfg.contentProxyUrl || '',
+    pu: cfg.proxyUrl || '',
+    md: cfg.mirrorDomains || '',
+    fm: cfg.fetchMode || '',
+    sbu: cfg.scraplingBridgeUrl || '',
+  })
+  return `${url}|${sig}`
+}
+
 /**
  * 统一抓取入口: 未配置 mirrorDomains 时单 host 直通 fetchPageOnce(与历史行为逐字节一致);
  * 配置后按镜像组失败驱动切换(dd-b, 语义见镜像段注释)
+ * agent-A-fetcher 反反爬增强: 顶层 in-flight 去重 —— 同 URL+cfg 在 30s 窗口内的并发请求
+ * 共享首请求结果(成功/失败均透传, 首请求内已有完整重试链路); cfg 含运行时注入项时跳过
  */
 export async function fetchPage(url: string, cfgOverride?: Partial<FetchConfig>): Promise<FetchResult> {
   const cfg: FetchConfig = { ...DEFAULT_FETCH_CONFIG, ...cfgOverride }
+  // In-flight 去重: 同 URL+cfg 并发合并(零回归条件: cfg 无 pageFetch / 无 refererChain+refererUrl)
+  const dedupKey = inflightKey(url, cfg)
+  if (dedupKey) {
+    inflightTrim()
+    const existing = inflightMap.get(dedupKey)
+    if (existing && Date.now() - existing.at < INFLIGHT_TTL_MS) {
+      // 共享在途请求结果(成功/失败均透传, 不重试 — 首请求内已有 cookie/backoff/镜像重试链路)
+      // shallow clone 防调用方误改共享对象
+      return existing.p.then((r) => ({ ...r }))
+    }
+    const p = (async () => {
+      try {
+        return await fetchPageUncached(url, cfg)
+      } finally {
+        // 完成后清条目, 让下次 TTL 过期后能重新抓取
+        inflightMap.delete(dedupKey)
+      }
+    })()
+    inflightMap.set(dedupKey, { p, at: Date.now() })
+    return p
+  }
+  return fetchPageUncached(url, cfg)
+}
+
+/** fetchPage 的实际执行体(去重 wrapper 之下的"非缓存"实现, 既有逻辑零变化) */
+async function fetchPageUncached(url: string, cfg: FetchConfig): Promise<FetchResult> {
   // 2-fetcher Part A: SSRF 守卫 —— 默认禁止抓取内部/元数据/私网地址; loopback 仅对
   // 操作员配置的 tokenUrl(127.0.0.1:301x)/fetch-relay/scrapling bridge 内部调用放行
   const allowLoopback = loopbackBypassAllowed(url, cfg)
@@ -2419,7 +2591,8 @@ async function fetchPageOnce(url: string, cfg: FetchConfig): Promise<FetchResult
       const gotNewCookieOk = cookieJar.count(domain) > cookiesBefore
       if ((gotNewCookieOk || isJsChallenge(html)) && cookieRetries < MAX_COOKIE_RETRIES) {
         cookieRetries++
-        await new Promise((r) => setTimeout(r, 350))
+        // agent-A-fetcher: 抖动 200~500ms 防并发同 host 多任务同步重试(原固定 350ms)
+        await new Promise((r) => setTimeout(r, 200 + Math.random() * 300))
         continue
       }
       lastErr = new Error('内容疑似被拦截(验证码/JS挑战)')
@@ -2429,7 +2602,14 @@ async function fetchPageOnce(url: string, cfg: FetchConfig): Promise<FetchResult
       lastStatus = e?.status || 0
       const bodyHtml: string = e?.bodyHtml || ''
       // Token 挑战求解(错误路径): 403/412 响应体同样可能是 token 挑战页, 求解成功视同成功
-      if (bodyHtml && looksBlocked(bodyHtml, { status: lastStatus })) {
+      // agent-A-fetcher: looksBlocked 增传 WAF 头(serverHeader/cfRay/cfMitigated), CF 拦截可
+      // 在 bodyHtml 极短或 GBK 乱码时仍被识别为 blocked, 触发后续浏览器升级链而非徒劳重试
+      if (bodyHtml && looksBlocked(bodyHtml, {
+        status: lastStatus,
+        serverHeader: e?.serverHeader,
+        cfRay: e?.cfRay,
+        cfMitigated: e?.cfMitigated,
+      })) {
         const solved = await trySolveTokenChallenge(reqUrl, bodyHtml, effCfg, ua)
         if (solved) return { html: solved, engine: 'http', blocked: false }
       }
@@ -2437,7 +2617,8 @@ async function fetchPageOnce(url: string, cfg: FetchConfig): Promise<FetchResult
         const gotNewCookie = cookieJar.count(domain) > cookiesBefore
         if ((gotNewCookie || isJsChallenge(bodyHtml)) && cookieRetries < MAX_COOKIE_RETRIES) {
           cookieRetries++
-          await new Promise((r) => setTimeout(r, 350))
+          // agent-A-fetcher: 抖动 200~500ms 防并发同步(与成功路径同口径)
+          await new Promise((r) => setTimeout(r, 200 + Math.random() * 300))
           continue // 带刚种下的新 Cookie 重发
         }
         // ff-b③: 403 且罐中已有会话但无新 Cookie —— 疑"陈旧会话 Cookie 被目标端拒绝"
@@ -2446,7 +2627,8 @@ async function fetchPageOnce(url: string, cfg: FetchConfig): Promise<FetchResult
         if (lastStatus === 403 && cookieJar.count(domain) > 0 && cookieRetries < MAX_COOKIE_RETRIES) {
           cookieJar.clear(domain)
           cookieRetries++
-          await new Promise((r) => setTimeout(r, 350))
+          // agent-A-fetcher: 抖动 200~500ms 防并发同步(同上)
+          await new Promise((r) => setTimeout(r, 200 + Math.random() * 300))
           continue
         }
         // ff-b④ + 2-fetcher Bug 3: 429/瞬时 5xx(500/502/504) 指数退避重试 HTTP 级
@@ -2455,19 +2637,30 @@ async function fetchPageOnce(url: string, cfg: FetchConfig): Promise<FetchResult
         // 再到此处, 边界 429 会跳过退避直接 break 升级浏览器。改为独立 backoffRetries 计数器,
         // 与 cookieRetries 解耦; maxBackoffRetries = min(2, retries) 上限确保退避不无限。
         // 503 不参与(常为 CF 挑战壳, 保留升级浏览器语义); 超时不在此路径(isFetchTimeout 另行喂 hostGate)
+        // agent-A-fetcher 反反爬增强: 全抖动(full jitter) —— delay = random(0, base × 2^attempt),
+        // 与固定退避相比, 全抖动让并发重试请求均匀分散到 [0, temp) 区间, 显著降低同步惊群
+        // (AWS Architecture Blog "Exponential Backoff and Jitter" guidance)
         const maxBackoffRetries = Math.min(2, cfg.retries ?? 0)
         if (
           (lastStatus === 429 || lastStatus === 500 || lastStatus === 502 || lastStatus === 504) &&
           backoffRetries < maxBackoffRetries
         ) {
           backoffRetries++
-          const delay = Math.min(1500 * Math.pow(2, backoffRetries - 1), 8000)
+          // Full jitter: delay = uniform random in [0, min(cap, base * 2^(attempt-1))]
+          const base = 1500
+          const cap = 8000
+          const temp = Math.min(cap, base * Math.pow(2, backoffRetries - 1))
+          const delay = Math.floor(Math.random() * temp)
           await new Promise((r) => setTimeout(r, delay))
           continue
         }
         break
       }
-      await new Promise((r) => setTimeout(r, 400 * attempt))
+      // agent-A-fetcher: 其余 4xx 错误(404/410 等)等待使用 attempt 比例退避
+      // 原固定 400*attempt 改为带 ±25% 抖动, 防瞬时同步重试
+      const baseDelay = 400 * attempt
+      const jitteredDelay = Math.floor(baseDelay * (0.75 + Math.random() * 0.5))
+      await new Promise((r) => setTimeout(r, jitteredDelay))
     }
   }
 

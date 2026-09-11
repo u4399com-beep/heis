@@ -24,6 +24,13 @@
 import type { Browser, BrowserContext, CDPSession, Page } from 'playwright'
 
 // ---------- 类型定义 ----------
+/** Stealth level: 控制注入哪些抹平脚本 + 噪声强度
+ *  - lite: 仅基础抹平(webdriver/chrome/language/headless 修正) —— 低指纹站点加速
+ *  - standard: 全维度(默认) —— 通用反检测
+ *  - maximum: standard + OfflineAudioContext 噪声 —— 强指纹检测站点
+ *  注: identity 脚本与 per-context 动态脚本(语言/硬件/屏幕)在所有 level 下都注入(一致性必备) */
+export type StealthLevel = 'lite' | 'standard' | 'maximum'
+
 /** Obscura 渲染选项(全部可选) */
 export interface ObscuraFetchOptions {
   /** 覆盖 UA(默认用随机指纹自带 UA); 传入后本次槽位使用该 UA */
@@ -44,6 +51,8 @@ export interface ObscuraFetchOptions {
   clickSelector?: string
   /** goto 时携带的 Referer */
   referer?: string
+  /** 隐身级别(默认 standard); lite=少量脚本更快, maximum=额外噪声维度 */
+  stealthLevel?: StealthLevel
 }
 
 /** Obscura 抓取结果 */
@@ -553,20 +562,36 @@ export const STEALTH_INIT_SCRIPTS: string[] = [
       if (window.WebGL2RenderingContext) patch(window.WebGL2RenderingContext.prototype);
     } catch (e) {} })();`,
 
-  // 7. canvas 指纹噪声 (toDataURL/toBlob/getImageData 注入不可见微扰动; 不破坏正常渲染)
+  // 7. canvas 指纹噪声 (R7-4: 重做 —— 原实现仅 alpha 通道 + 固定步长 4*128/4*257,
+  //    ① 仅 alpha 通道被扰, RGB 不变 → 真实 canvas 哈希(fingerprintjs 等)仍可能稳定;
+  //    ② 固定步长(4*128=每 128 像素)在双调用差分检测下暴露周期性扰动模式;
+  //    ③ getImageData 永远只减 1(deterministic), 双调用差分恒为 -1 即检测面。
+  //    改为: 随机位置(0.05% 像素) + 全通道(RGB+alpha) ±1 非确定性扰动, 视觉不可见
+  //    但每次调用产生不同噪声 → 哈希不稳定, 差分无周期性规律)
   `(() => { try {
       const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
       const origToBlob = HTMLCanvasElement.prototype.toBlob;
       const origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
+      const perturb = function (d) {
+        try {
+          var total = d.length / 4;
+          if (total < 1) return;
+          var count = Math.max(1, Math.floor(total * 0.0005));
+          for (var k = 0; k < count; k++) {
+            var pos = (Math.random() * total) | 0;
+            var i = pos * 4;
+            d[i]   = Math.max(0, Math.min(255, d[i]   + (Math.random() < 0.5 ? 1 : -1)));
+            d[i+1] = Math.max(0, Math.min(255, d[i+1] + (Math.random() < 0.5 ? 1 : -1)));
+            d[i+2] = Math.max(0, Math.min(255, d[i+2] + (Math.random() < 0.5 ? 1 : -1)));
+            d[i+3] = Math.max(0, Math.min(255, d[i+3] + (Math.random() < 0.5 ? 1 : -1)));
+          }
+        } catch (e) {}
+      };
       const addNoise = function (ctx, w, h) {
         try {
           if (!ctx || !w || !h || w * h > 4000000) return;
           const img = origGetImageData.call(ctx, 0, 0, w, h);
-          const d = img.data;
-          // 仅对 <0.1% 像素的 alpha 做 ±1 微扰, 视觉不可见但足以打乱哈希
-          for (let i = 3; i < d.length; i += 4 * 128) {
-            if (Math.random() < 0.35) d[i] = Math.max(0, Math.min(255, d[i] + (Math.random() < 0.5 ? 1 : -1)));
-          }
+          perturb(img.data);
           ctx.putImageData(img, 0, 0);
         } catch (e) {}
       };
@@ -581,10 +606,7 @@ export const STEALTH_INIT_SCRIPTS: string[] = [
       };
       CanvasRenderingContext2D.prototype.getImageData = function () {
         const img = origGetImageData.apply(this, arguments);
-        try {
-          const d = img.data;
-          for (let i = 3; i < d.length; i += 4 * 257) { if (d[i] > 0) d[i] = d[i] - 1; }
-        } catch (e) {}
+        try { perturb(img.data); } catch (e) {}
         return img;
       };
     } catch (e) {} })();`,
@@ -668,6 +690,8 @@ export const STEALTH_INIT_SCRIPTS: string[] = [
 
   // 12. window.screenX / screenY / screenLeft / screenTop (E1) —— 真浏览器窗口位置非零
   //     (用户拖动过), headless 默认 0,0 是特征面; 随机 0-100 模拟常规窗口位置
+  //     R7-5: 注 —— 本脚本每 document 各 random 一次, 同 context 跨 iframe 值不一致
+  //     (被 per-context 动态脚本 newStealthContext 内覆盖为同值, 见 buildPerContextScript)
   `(() => { try {
       const x = Math.floor(Math.random() * 101);
       const y = Math.floor(Math.random() * 101);
@@ -676,7 +700,193 @@ export const STEALTH_INIT_SCRIPTS: string[] = [
       try { Object.defineProperty(window, 'screenLeft', { get: function () { return x; }, configurable: true }); } catch (e) {}
       try { Object.defineProperty(window, 'screenTop', { get: function () { return y; }, configurable: true }); } catch (e) {}
     } catch (e) {} })();`,
+
+  // 13. (R7-6) Audio context 频域噪声 —— AnalyserNode.getFloatFrequencyData /
+  //     getByteFrequencyData / getByteTimeDomainData 是 creepjs/audio-fingerprint 常用检测面,
+  //     注入 ±1/±0.001 微扰打乱哈希(不影响音频分析可视化); 3% 采样率平衡噪声强度与稳定性
+  //     注: OfflineAudioContext.startRendering 的渲染缓冲区噪声属 maximum 级别增强(见
+  //     buildOfflineAudioNoiseScript), standard 级不注入(避免破坏合法音频解码场景)
+  `(() => { try {
+      if (!window.AnalyserNode || !AnalyserNode.prototype) return;
+      var origGetByte = AnalyserNode.prototype.getByteFrequencyData;
+      if (origGetByte) {
+        AnalyserNode.prototype.getByteFrequencyData = function (array) {
+          origGetByte.apply(this, arguments);
+          try {
+            for (var i = 0; i < array.length; i++) {
+              if (Math.random() < 0.03) {
+                array[i] = Math.max(0, Math.min(255, array[i] + (Math.random() < 0.5 ? 1 : -1)));
+              }
+            }
+          } catch (e) {}
+        };
+      }
+      var origGetFloat = AnalyserNode.prototype.getFloatFrequencyData;
+      if (origGetFloat) {
+        AnalyserNode.prototype.getFloatFrequencyData = function (array) {
+          origGetFloat.apply(this, arguments);
+          try {
+            for (var i = 0; i < array.length; i++) {
+              if (Math.random() < 0.03) {
+                array[i] = array[i] + (Math.random() - 0.5) * 0.001;
+              }
+            }
+          } catch (e) {}
+        };
+      }
+      var origGetTime = AnalyserNode.prototype.getByteTimeDomainData;
+      if (origGetTime) {
+        AnalyserNode.prototype.getByteTimeDomainData = function (array) {
+          origGetTime.apply(this, arguments);
+          try {
+            for (var i = 0; i < array.length; i++) {
+              if (Math.random() < 0.03) {
+                array[i] = Math.max(0, Math.min(255, array[i] + (Math.random() < 0.5 ? 1 : -1)));
+              }
+            }
+          } catch (e) {}
+        };
+      }
+    } catch (e) {} })();`,
+
+  // 14. (R7-7) SpeechSynthesis stub —— headless Chromium 默认无 window.speechSynthesis,
+  //     真实 Chrome 普遍存在; 缺失即指纹面(creepjs 检测 missing speechSynthesis)。
+  //     注入最小可用 stub(getVoices 返回 3 个常见语音, speak/cancel/pause/resume 空操作)
+  `(() => { try {
+      if (!window.speechSynthesis) {
+        var voices = [
+          { name: 'Microsoft David - English (United States)', lang: 'en-US', localService: true, default: true, voiceURI: 'Microsoft David - English (United States)' },
+          { name: 'Microsoft Zira - English (United States)', lang: 'en-US', localService: true, default: false, voiceURI: 'Microsoft Zira - English (United States)' },
+          { name: 'Google 普通话（中国大陆）', lang: 'zh-CN', localService: false, default: false, voiceURI: 'Google 普通话（中国大陆）' },
+        ];
+        var synth = {
+          pending: false, speaking: false, paused: false, onvoiceschanged: null,
+          getVoices: function () { return voices; },
+          speak: function () {}, cancel: function () {}, pause: function () {}, resume: function () {},
+          addEventListener: function () {}, removeEventListener: function () {},
+          dispatchEvent: function () { return true; },
+        };
+        try { Object.defineProperty(window, 'speechSynthesis', { get: function () { return synth; }, configurable: true }); } catch (e) {}
+      }
+      if (!window.SpeechSynthesisUtterance) {
+        try {
+          window.SpeechSynthesisUtterance = function (text) {
+            this.text = String(text || '');
+            this.lang = ''; this.voice = null; this.volume = 1; this.rate = 1; this.pitch = 1;
+            this.onstart = null; this.onend = null; this.onerror = null;
+            this.onpause = null; this.onresume = null; this.onmark = null; this.onboundary = null;
+          };
+        } catch (e) {}
+      }
+    } catch (e) {} })();`,
+
+  // 15. (R7-8) MediaDevices.enumerateDevices stub —— headless 默认缺失/返回空,
+  //     真浏览器返回 audioinput/videoinput/audiooutput 设备列表; 缺失即指纹面。
+  //     注入 3 个 default 设备(无 label, 与未授权状态一致; getUserMedia 拒绝)
+  `(() => { try {
+      var makeDevices = function () {
+        return [
+          { kind: 'audioinput', deviceId: 'default', groupId: 'default-group', label: '' },
+          { kind: 'videoinput', deviceId: 'default', groupId: 'default-group', label: '' },
+          { kind: 'audiooutput', deviceId: 'default', groupId: 'default-group', label: '' },
+        ];
+      };
+      if (!navigator.mediaDevices) {
+        try {
+          Object.defineProperty(navigator, 'mediaDevices', {
+            get: function () {
+              return {
+                enumerateDevices: function () { return Promise.resolve(makeDevices()); },
+                getUserMedia: function () { return Promise.reject(new DOMException('Permission denied', 'NotAllowedError')); },
+                getDisplayMedia: function () { return Promise.reject(new DOMException('Permission denied', 'NotAllowedError')); },
+                addEventListener: function () {}, removeEventListener: function () {},
+                dispatchEvent: function () { return true; }, ondevicechange: null,
+              };
+            },
+            configurable: true,
+          });
+        } catch (e) {}
+      } else if (!navigator.mediaDevices.enumerateDevices) {
+        try { navigator.mediaDevices.enumerateDevices = function () { return Promise.resolve(makeDevices()); }; } catch (e) {}
+      }
+    } catch (e) {} })();`,
 ]
+
+// ---------- Stealth level script selection ----------
+/** lite 模式仅注入的静态脚本索引(0-indexed): 1=webdriver, 2=chrome, 4=languages, 10=HeadlessChrome 修正
+ *  其余(plugins/WebGL/canvas/permissions/battery/screenPos/audio/speech/mediaDevices)在 lite 下跳过 */
+const LITE_SCRIPT_INDICES: ReadonlySet<number> = new Set([0, 1, 3, 9])
+
+/** maximum 级别额外注入的 OfflineAudioContext 噪声脚本 —— standard 级不注入(避免破坏合法音频解码)
+ *  对 AudioBuffer.getChannelData 的返回值做 ±1e-7 微扰(人耳不可闻, 但改变哈希);
+ *  使用 per-buffer 标记 __obscuraPerturbed 防止重复扰动(同一 buffer 多次 getChannelData 仅扰一次) */
+const OFFLINE_AUDIO_NOISE_SCRIPT = `(() => { try {
+    if (!window.AudioBuffer || !AudioBuffer.prototype) return;
+    var origGetChannel = AudioBuffer.prototype.getChannelData;
+    if (!origGetChannel) return;
+    AudioBuffer.prototype.getChannelData = function () {
+      var data = origGetChannel.apply(this, arguments);
+      try {
+        if (!this.__obscuraPerturbed) {
+          this.__obscuraPerturbed = true;
+          var seed = ((Math.random() * 65536) | 0) + 1;
+          for (var i = 0; i < data.length; i += 4410) {
+            var noise = (((seed + i) * 9301 + 49297) % 233280) / 233280 - 0.5;
+            data[i] = data[i] + noise * 1e-7;
+          }
+        }
+      } catch (e) {}
+      return data;
+    };
+  } catch (e) {} })();`
+
+/** 按 stealth level 选择要注入的静态脚本集合
+ *  - lite: 仅 4 个基础脚本(webdriver/chrome/language/headless 修正)
+ *  - standard: 全部 15 个静态脚本
+ *  - maximum: standard + OfflineAudioContext 噪声 */
+function selectStealthScripts(level: StealthLevel): string[] {
+  if (level === 'lite') {
+    return STEALTH_INIT_SCRIPTS.filter((_, i) => LITE_SCRIPT_INDICES.has(i))
+  }
+  if (level === 'maximum') {
+    return [...STEALTH_INIT_SCRIPTS, OFFLINE_AUDIO_NOISE_SCRIPT]
+  }
+  return [...STEALTH_INIT_SCRIPTS]
+}
+
+/** R7-9: per-context 屏幕/硬件/窗口位置脚本 —— 静态脚本 5(hardwareConcurrency)与
+ *  12(screenX/Y)每 document 各 random 一次, 同 context 跨 iframe 值不一致即指纹面
+ *  (creepjs 跨 iframe 一致性检测会标 mismatched)。改为 per-context 注入: 在
+ *  newStealthContext 内一次性 random 出 cores/mem/sx/sy/screen, 作为字面量注入脚本,
+ *  所有 frame 拿到同一组值。脚本在静态脚本之后注册(覆盖 5/12 的 per-document random 值),
+ *  在 identity 脚本之前注册(identity 不碰这些属性) */
+function buildPerContextScript(fp: ObscuraFingerprint): string {
+  const sw = fp.viewport.width
+  const sh = fp.viewport.height
+  const dpr = fp.deviceScaleFactor
+  const cores = [4, 6, 8, 8, 10, 12, 16][Math.floor(Math.random() * 7)]
+  const mem = [4, 8, 8, 8, 16][Math.floor(Math.random() * 5)]
+  const sx = Math.floor(Math.random() * 101)
+  const sy = Math.floor(Math.random() * 101)
+  return `(() => { try {
+      var w = ${sw}, h = ${sh}, dpr = ${dpr}, cores = ${cores}, mem = ${mem}, sx = ${sx}, sy = ${sy};
+      try { Object.defineProperty(screen, 'width', { get: function () { return w; }, configurable: true }); } catch (e) {}
+      try { Object.defineProperty(screen, 'height', { get: function () { return h; }, configurable: true }); } catch (e) {}
+      try { Object.defineProperty(screen, 'availWidth', { get: function () { return w; }, configurable: true }); } catch (e) {}
+      try { Object.defineProperty(screen, 'availHeight', { get: function () { return h - 40; }, configurable: true }); } catch (e) {}
+      try { Object.defineProperty(screen, 'colorDepth', { get: function () { return 24; }, configurable: true }); } catch (e) {}
+      try { Object.defineProperty(screen, 'pixelDepth', { get: function () { return 24; }, configurable: true }); } catch (e) {}
+      try { Object.defineProperty(window, 'devicePixelRatio', { get: function () { return dpr; }, configurable: true }); } catch (e) {}
+      try { Object.defineProperty(window, 'outerWidth', { get: function () { return w; }, configurable: true }); } catch (e) {}
+      try { Object.defineProperty(window, 'outerHeight', { get: function () { return h; }, configurable: true }); } catch (e) {}
+      try { Object.defineProperty(navigator, 'hardwareConcurrency', { get: function () { return cores; }, configurable: true }); } catch (e) {}
+      try { Object.defineProperty(navigator, 'deviceMemory', { get: function () { return mem; }, configurable: true }); } catch (e) {}
+      try { Object.defineProperty(window, 'screenX', { get: function () { return sx; }, configurable: true }); } catch (e) {}
+      try { Object.defineProperty(window, 'screenY', { get: function () { return sy; }, configurable: true }); } catch (e) {}
+      try { Object.defineProperty(window, 'screenLeft', { get: function () { return sx; }, configurable: true }); } catch (e) {}
+      try { Object.defineProperty(window, 'screenTop', { get: function () { return sy; }, configurable: true }); } catch (e) {}
+    } catch (e) {} })();`
+}
 
 // ---------- 挑战特征识别 ----------
 /** 强挑战特征(结构化标记, 一旦命中基本必是挑战页) */
@@ -765,10 +975,13 @@ const LAUNCH_ARGS = [
   '--lang=zh-CN',
 ]
 
-/** 页面池并发上限(可用 OBSCURA_CONCURRENCY 环境变量覆盖) */
+/** 页面池并发上限(可用 OBSCURA_CONCURRENCY 环境变量覆盖)
+ *  R7-3: clamp 到 [1, 8] —— 过高(如 100)会撑爆 fd/内存(每 context 持独立进程内堆+CDP 会话+至少 1 page),
+ *  实测 >8 时 chromium 主进程 RSS 增长不可控; 默认 2 平衡吞吐与资源 */
 const MAX_CONCURRENCY = (() => {
   const n = Number(process.env.OBSCURA_CONCURRENCY || '')
-  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 2
+  if (Number.isFinite(n) && n >= 1) return Math.min(8, Math.floor(n))
+  return 2
 })()
 /** 空闲自动回收: 5 分钟无活动页面则关闭整个浏览器 */
 const IDLE_CLOSE_MS = 5 * 60 * 1000
@@ -843,6 +1056,11 @@ export async function applyUaCdpOverride(page: Page, ua: string): Promise<CDPSes
 }
 
 async function ensureBrowser(): Promise<Browser> {
+  // R7-1: shutdownObscura 进行中时不再拉新浏览器 —— 原实现仅检查 S.browser 状态,
+  //  shutdownObscura 在 "S.browser=null → await b.close()" 窗口内时, 本函数会看到 S.browser=null
+  //  并启动新 launch, 新 browser 写回 S.browser 后被 shutdownObscura 的 b.close() 误杀, 或反之
+  //  产生双活实例。加 shuttingDown 守卫缩小竞态窗(非完全消除, 但足够覆盖典型路径)
+  if (S.shuttingDown) throw new Error('Obscura: 浏览器正在关闭')
   if (S.browser && S.browser.isConnected()) return S.browser
   if (S.launchPromise) return S.launchPromise
   S.launchPromise = (async () => {
@@ -869,7 +1087,7 @@ async function ensureBrowser(): Promise<Browser> {
   }
 }
 
-async function newStealthContext(fp: ObscuraFingerprint): Promise<BrowserContext> {
+async function newStealthContext(fp: ObscuraFingerprint, level: StealthLevel = 'standard'): Promise<BrowserContext> {
   const browser = await ensureBrowser()
   const ctx = await browser.newContext({
     userAgent: fp.userAgent,
@@ -883,7 +1101,9 @@ async function newStealthContext(fp: ObscuraFingerprint): Promise<BrowserContext
     // E3: Accept-Language 头按 fp.locale 动态构造(原硬编码 zh-CN 与随机 locale 池冲突)
     extraHTTPHeaders: { 'Accept-Language': acceptLanguageFor(fp.locale) },
   })
-  for (const script of STEALTH_INIT_SCRIPTS) {
+  // R7: 按 stealth level 过滤静态脚本(lite=4 个基础, standard=全部, maximum=全部+OfflineAudio)
+  const scripts = selectStealthScripts(level)
+  for (const script of scripts) {
     await ctx.addInitScript(script)
   }
   // E3: per-context 动态 init 脚本 —— 静态脚本 4 硬编码 navigator.language='zh-CN' / languages=
@@ -898,14 +1118,17 @@ async function newStealthContext(fp: ObscuraFingerprint): Promise<BrowserContext
       Object.defineProperty(navigator, 'languages', { get: function () { return ${JSON.stringify(langs)}; }, configurable: true });
     } catch (e) {} })();`,
   )
+  // R7-9: per-context 屏幕/硬件/窗口位置脚本 —— 覆盖静态脚本 5/12 的 per-document random 值,
+  // 确保同 context 全 frame 拿到同一组值(跨 iframe 一致性). 在 identity 脚本之前注册
+  await ctx.addInitScript(buildPerContextScript(fp))
   // hh-d2: 按 UA 参数化的身份脚本 —— 必须在静态脚本之后注册(覆盖其 UA/platform/vendor/
   // maxTouchPoints/WebGL 定义), 使 JS 面与 UA 身份(含移动分支/Safari·Firefox 语义)逐 frame 自洽
   await ctx.addInitScript(buildIdentityInitScript(fp.userAgent))
   return ctx
 }
 
-async function createSlot(domain: string, fp: ObscuraFingerprint): Promise<PoolSlot> {
-  const ctx = await newStealthContext(fp)
+async function createSlot(domain: string, fp: ObscuraFingerprint, level: StealthLevel = 'standard'): Promise<PoolSlot> {
+  const ctx = await newStealthContext(fp, level)
   try {
     const page = await ctx.newPage()
     const cdp = await applyUaCdpOverride(page, fp.userAgent)
@@ -931,9 +1154,9 @@ async function createSlot(domain: string, fp: ObscuraFingerprint): Promise<PoolS
  *  系统资源耗尽/page 损坏持续态), 把槽位从 S.slots 移除以缩减池容量, 避免持续重试占用
  *  MAX_CONCURRENCY 名额。同时触发 checkObscuraAvailable() 重探测: 若 chromium 整体不可用,
  *  probeOk 立即转 false, 后续请求直接走裸 Playwright 降级路径不再卡 obscura */
-async function recreateSlot(slot: PoolSlot, domain: string, fp: ObscuraFingerprint): Promise<void> {
+async function recreateSlot(slot: PoolSlot, domain: string, fp: ObscuraFingerprint, level: StealthLevel = 'standard'): Promise<void> {
   try { await slot.ctx.close().catch(() => {}) } catch { /* ignore */ }
-  const ctx = await newStealthContext(fp)
+  const ctx = await newStealthContext(fp, level)
   try {
     const page = await ctx.newPage()
     const cdp = await applyUaCdpOverride(page, fp.userAgent)
@@ -1058,10 +1281,11 @@ export async function clickSelectorAnywhere(page: Page, selector: string, perFra
 export async function withObscuraPage<T>(
   url: string,
   fn: (page: Page, ctx: BrowserContext) => Promise<T>,
-  opts: { userAgent?: string } = {}
+  opts: { userAgent?: string; stealthLevel?: StealthLevel } = {}
 ): Promise<T> {
   const domain = originOf(url)
   if (!domain) throw new Error(`Obscura: 无效 URL: ${url}`)
+  const level: StealthLevel = opts.stealthLevel ?? 'standard'
   let slot: PoolSlot | null = null
   try {
     // 信号量获取
@@ -1082,7 +1306,7 @@ export async function withObscuraPage<T>(
         }
         if (free.domain !== domain || free.page.isClosed()) {
           try {
-            await recreateSlot(free, domain, randomFingerprint({ userAgent: opts.userAgent }))
+            await recreateSlot(free, domain, randomFingerprint({ userAgent: opts.userAgent }), level)
           } catch (e) {
             free.busy = false // 重建失败归还槽位(旧 ctx 已关, 下次获取时会再次重建)
             // 修复: 失败路径也必须唤醒一个等待者, 否则排队的请求会永久饥饿挂起
@@ -1096,7 +1320,7 @@ export async function withObscuraPage<T>(
       if (S.slots.length + S.pendingCreates < MAX_CONCURRENCY) {
         S.pendingCreates++
         try {
-          slot = await createSlot(domain, randomFingerprint({ userAgent: opts.userAgent }))
+          slot = await createSlot(domain, randomFingerprint({ userAgent: opts.userAgent }), level)
         } finally {
           S.pendingCreates--
           // 建槽失败时容量已释放, 唤醒一个等待者去重试(否则等待队列可能永久挂起)
@@ -1105,8 +1329,14 @@ export async function withObscuraPage<T>(
         // R4-12: createSlot 完成后再次检查 shuttingDown —— shutdownObscura 在 createSlot
         //  期间(splice 全部槽位)刚发生时, 新建的 slot 已不在 S.slots 中(被 splice 清掉),
         //  ctx/page 即将 orphan。手动关闭 ctx 并抛错, 不让 fn 在已关 ctx 上跑
+        //  R7-2: createSlot 已把 slot push 到 S.slots; shutdownObscura 可能尚未 splice(此
+        //  时 slot 仍在 S.slots, 需手动移除防 orphan 残留). 双路径都做 indexOf+splice 兜底
         if (S.shuttingDown) {
-          try { await slot.ctx.close().catch(() => {}) } catch { /* ignore */ }
+          try {
+            const idx = S.slots.indexOf(slot)
+            if (idx >= 0) S.slots.splice(idx, 1)
+            await slot.ctx.close().catch(() => {})
+          } catch { /* ignore */ }
           slot = null
           throw new Error('Obscura: 浏览器正在关闭, 请稍后重试')
         }
@@ -1379,7 +1609,7 @@ export async function renderStealth(url: string, opts: ObscuraFetchOptions = {})
       finalUrl: page.url(),
       challengeWaited,
     }
-  }, { userAgent: opts.userAgent })
+  }, { userAgent: opts.userAgent, stealthLevel: opts.stealthLevel })
 }
 
 // ---------- 统一入口 ----------
@@ -1388,6 +1618,113 @@ export async function obscuraFetch(url: string, opts: ObscuraFetchOptions = {}):
   const ok = await checkObscuraAvailable()
   if (!ok) throw new Error('Obscura 不可用: chromium 未安装或启动失败')
   return renderStealth(url, opts)
+}
+
+// ---------- R7-10: 人类化鼠标移动(贝塞尔曲线) ----------
+/** 人类化鼠标移动 + 点击: 用三次贝塞尔曲线从随机起点平滑移动到目标元素中心,
+ *  模拟真人鼠标轨迹(防 mousemove 事件间隔均匀/轨迹直线等机器行为检测)。
+ *  - 起点: 元素附近 ±100px 随机偏移(模拟从页面其他位置移过来)
+ *  - 控制点: 2 个随机偏移点(曲线弯度随机)
+ *  - 步数: 15-25 步, 每步 16-46ms 间隔(60fps 人类鼠标节奏)
+ *  - 点击延迟: 50-150ms(按下到松开, 模拟真实点击时长)
+ *  注: 调用方需保证元素可见(locator.first() + boundingBox), 失败时抛错 */
+export async function humanMoveAndClick(page: Page, selector: string, opts: { timeoutMs?: number } = {}): Promise<void> {
+  const timeoutMs = opts.timeoutMs ?? 5000
+  const element = page.locator(selector).first()
+  await element.waitFor({ state: 'visible', timeout: timeoutMs })
+  const box = await element.boundingBox()
+  if (!box) throw new Error(`humanMoveAndClick: 元素 ${selector} 无 boundingBox(可能不可见)`)
+
+  const targetX = box.x + box.width / 2
+  const targetY = box.y + box.height / 2
+
+  // 起点: 元素左上方 ±100px 随机(模拟鼠标从页面其他位置移过来)
+  const startX = Math.max(0, box.x - 50 - Math.random() * 100)
+  const startY = Math.max(0, box.y - 50 - Math.random() * 100)
+
+  // 贝塞尔控制点: 2 个随机偏移(曲线弯度随机, 非直线)
+  const cp1x = startX + (targetX - startX) * 0.33 + (Math.random() - 0.5) * 80
+  const cp1y = startY + (targetY - startY) * 0.33 + (Math.random() - 0.5) * 80
+  const cp2x = startX + (targetX - startX) * 0.66 + (Math.random() - 0.5) * 80
+  const cp2y = startY + (targetY - startY) * 0.66 + (Math.random() - 0.5) * 80
+
+  const steps = 15 + Math.floor(Math.random() * 11) // 15-25 步
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps
+    const it = 1 - t
+    // 三次贝塞尔: B(t) = (1-t)³P₀ + 3(1-t)²tP₁ + 3(1-t)t²P₂ + t³P₃
+    const x = it * it * it * startX + 3 * it * it * t * cp1x + 3 * it * t * t * cp2x + t * t * t * targetX
+    const y = it * it * it * startY + 3 * it * it * t * cp1y + 3 * it * t * t * cp2y + t * t * t * targetY
+    await page.mouse.move(x, y)
+    // 每步 16-46ms 间隔(模拟 60fps 人类鼠标节奏, 非匀速)
+    await page.waitForTimeout(16 + Math.floor(Math.random() * 31))
+  }
+
+  // 点击: 按下到松开 50-150ms(真实点击时长, 非瞬时)
+  await page.mouse.click(targetX, targetY, { delay: 50 + Math.floor(Math.random() * 101) })
+}
+
+// ---------- R7-11: 隐身有效性自检 ----------
+/** 隐身自检结果 */
+export interface StealthValidationResult {
+  /** 检测页 URL */
+  url: string
+  /** 通过率 0-100 */
+  score: number
+  /** 各检测项是否通过(label → passed) */
+  checks: Record<string, boolean>
+  /** 原始 HTML(供调试) */
+  htmlLength: number
+  /** 检测耗时 ms */
+  elapsedMs: number
+}
+
+/** 访问 bot.sannysoft.com 等检测页解析通过率 —— 用于验证 stealth 脚本有效性。
+ *  默认访问 https://bot.sannysoft.com/, 解析表格行中 "passed/failed" 标记。
+ *  检测页结构可能变化, 解析失败时返回 score=0 但不抛错(调用方按需处理) */
+export async function validateStealth(
+  targetUrl = 'https://bot.sannysoft.com/',
+  opts: { timeoutMs?: number; stealthLevel?: StealthLevel } = {}
+): Promise<StealthValidationResult> {
+  const start = Date.now()
+  const timeoutMs = opts.timeoutMs ?? 30000
+  return withObscuraPage(
+    targetUrl,
+    async (page) => {
+      await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: timeoutMs }).catch(() => {})
+      // 检测页常需 2-3s 完成 JS 探针渲染
+      await page.waitForTimeout(3000)
+      const html = await page.content()
+
+      // 解析表格行: bot.sannysoft.com 用 <tr><td>Label</td><td class="passed|failed">Value</td></tr>
+      const checks: Record<string, boolean> = {}
+      const rowRe = /<tr[^>]*>[\s\S]*?<\/tr>/gi
+      const cellRe = /<td[^>]*class=["']?(passed|failed)["']?[^>]*>([\s\S]*?)<\/td>/i
+      const rows = html.match(rowRe) || []
+      for (const row of rows) {
+        const labelMatch = row.match(/<td[^>]*>([\s\S]*?)<\/td>/i)
+        const valueMatch = row.match(cellRe)
+        if (labelMatch && valueMatch) {
+          const label = labelMatch[1].replace(/<[^>]+>/g, '').trim()
+          if (label && label.length < 50) {
+            checks[label] = valueMatch[1] === 'passed'
+          }
+        }
+      }
+
+      const total = Object.keys(checks).length
+      const passed = Object.values(checks).filter(Boolean).length
+      const score = total > 0 ? Math.round((passed / total) * 100) : 0
+      return {
+        url: page.url(),
+        score,
+        checks,
+        htmlLength: html.length,
+        elapsedMs: Date.now() - start,
+      }
+    },
+    { stealthLevel: opts.stealthLevel ?? 'standard' }
+  )
 }
 
 /** 主动关闭浏览器与页面池(空闲回收/进程退出/测试收尾时调用) */

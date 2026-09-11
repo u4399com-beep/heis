@@ -34,23 +34,149 @@
 # ============================================================
 
 import json
+import math
 import os
 import platform
 import re
 import threading
 import time
+import ipaddress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse
 
 PORT = int(os.environ.get('SCRAPLING_BRIDGE_PORT', '3012'))
 HOST = '127.0.0.1'
 MAX_BODY_BYTES = 20 * 1024 * 1024          # 目标响应体上限(与 fetch-relay 同量级)
 MAX_REQUEST_BYTES = 1024 * 1024            # 桥请求体上限(JSON 很小, 防滥用)
-MAX_TIMEOUT_MS = 120_000
+# agent-F: 任务硬要求 30s 上限(原 120s)。浏览器类模式(stealthy/playwright)若冷启+
+# CF 挑战求解超 30s 会超时降级 native, 引擎侧重试承担恢复语义。
+MAX_TIMEOUT_MS = 30_000
 MODES = ('static', 'stealthy', 'playwright')
+
+# agent-F: 鉴权(AUTH_TOKEN 优先, BRIDGE_KEY 别名); 任一非空时, 非 /health 请求须带
+# X-Auth-Token / X-Bridge-Key / Authorization: Bearer 之一(常量时间比较, 失败 401)。
+AUTH_TOKEN = os.environ.get('AUTH_TOKEN') or os.environ.get('BRIDGE_KEY') or ''
+
+# agent-F: 每 IP 限速(60/min, RATE_LIMIT_PER_MIN 可调); 0=禁用(dev)
+RATE_LIMIT_PER_MIN = int(os.environ.get('RATE_LIMIT_PER_MIN', '60'))
+
+# agent-F: SSRF 守卫(与引擎侧 assertSafeTarget 双重防线)。默认拒绝 localhost/私网/
+# 链路本地/元数据端点; BRIDGE_SSRF_ALLOW_LOOPBACK=1 放行 127.0.0.1/::1(回环测试场景)。
+SSRF_ALLOW_LOOPBACK = os.environ.get('BRIDGE_SSRF_ALLOW_LOOPBACK') == '1'
+
+# ---------- SSRF 守卫(agent-F) ----------
+def _is_private_ip(ip_str: str) -> bool:
+    """判断 IP 字面量是否为私网/回环/链路本地/元数据端点。
+    涵盖 IPv4(10/8, 172.16/12, 192.168/16, 127/8, 169.254/16, 100.64/10, 0/8) +
+    IPv6(::1, fe80::/10, fc00::/7)。"""
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False  # 非 IP 字面量(域名交调用方/DNS 逻辑处理)
+    if ip.is_loopback or ip.is_link_local or ip.is_private or ip.is_unspecified:
+        return True
+    # CGNAT 100.64/10(ipaddress.is_private 在某些 Python 版本不含此段, 手动补)
+    if isinstance(ip, ipaddress.IPv4Address):
+        if 100 <= ip.packed[0] <= 100 and 64 <= ip.packed[1] <= 127:
+            return True
+    return False
+
+
+def assert_safe_ssrf_target(raw_url: str, allow_loopback: bool = False) -> tuple:
+    """返回 (ok: bool, reason: str)。ok=True 表示目标安全可抓。"""
+    try:
+        from urllib.parse import urlparse
+        u = urlparse(raw_url)
+    except Exception:
+        return (False, 'URL 解析失败')
+    if u.scheme not in ('http', 'https'):
+        return (False, f'非 http/https 协议: {u.scheme}')
+    host = (u.hostname or '').lower()
+    if not host:
+        return (False, 'URL 缺少 hostname')
+    if host == 'localhost' or host.endswith('.localhost'):
+        return (True, '') if allow_loopback else (False, f'localhost 域名 ({host})')
+    # IP 字面量判断(含 IPv6 方括号已被 urllib 剥)
+    if _is_private_ip(host):
+        if allow_loopback and (host == '127.0.0.1' or host == '::1' or host == '::'):
+            return (True, '')
+        return (False, f'私网/回环/链路本地地址 {host}')
+    # 普通域名: 不做 DNS 解析(防 DNS rebinding 复杂度; 引擎侧 hostGate 已带 DNS 全地址判)
+    return (True, '')
+
+
+# ---------- 限速器(agent-F: 每 IP 60/min) ----------
+class RateLimiter:
+    """每 IP 滑窗限速。线程安全(单进程 ThreadingHTTPServer 多 worker)。"""
+    def __init__(self, max_per_window: int, window_s: float = 60.0):
+        self.max_per_window = max_per_window if max_per_window > 0 else 60
+        self.window_s = window_s
+        self._lock = threading.Lock()
+        self._map = {}  # ip → [count, reset_at]
+        self._cleanup_at = 0.0
+
+    def allow(self, ip: str) -> bool:
+        if self.max_per_window <= 0:
+            return True  # 禁用
+        now = time.time()
+        with self._lock:
+            entry = self._map.get(ip)
+            if not entry or entry[1] <= now:
+                self._map[ip] = [1, now + self.window_s]
+                ok = True
+            else:
+                entry[0] += 1
+                ok = entry[0] <= self.max_per_window
+            # 5min 周期清理过期项
+            if now > self._cleanup_at:
+                self._cleanup_at = now + 5 * 60
+                expired = [k for k, v in self._map.items() if v[1] <= now]
+                for k in expired:
+                    self._map.pop(k, None)
+            return ok
+
+    def retry_after(self, ip: str) -> int:
+        with self._lock:
+            entry = self._map.get(ip)
+            if not entry:
+                return 1
+            return max(1, int(math.ceil(entry[1] - time.time())))
+
+
+RATE_LIMITER = RateLimiter(RATE_LIMIT_PER_MIN)
 
 # 浏览器类模式(stealthy/playwright)每次请求独立 launch 浏览器实例, 内存开销大:
 # 桥内并发闸与引擎 hostGate 缺省上限(3)同向, 超出的请求排队等信号量
 BROWSER_SEM = threading.BoundedSemaphore(3)
+
+# agent-F: 常量时间字符串比较(供 AUTH_TOKEN 校验, 防计时旁路)
+def _constant_time_equal(a: str, b: str) -> bool:
+    """Python hmac.compare_digest 等价; 长度不等时仍走完一遍比较防长度短路泄密。"""
+    try:
+        import hmac
+        return hmac.compare_digest(a.encode('utf-8'), b.encode('utf-8'))
+    except Exception:
+        return a == b
+
+
+# agent-F: 错误脱敏(剥文件路径/堆栈, 限长 200)
+def sanitize_error(e) -> str:
+    if isinstance(e, BaseException):
+        msg = f'{type(e).__name__}: {e}'
+    else:
+        msg = str(e)
+    msg = re.sub(r'(?:/[\w.-]+){2,}', '<path>', msg)
+    msg = re.sub(r'[A-Z]:\\[^\s]+', '<path>', msg)
+    return msg[:200]
+
+
+# agent-F: 安全响应头(注入到所有响应)
+_SECURITY_HEADERS = {
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'no-referrer',
+    # CORS: 故意不设 Access-Control-Allow-Origin —— 服务仅 API, 浏览器跨源无需消费
+}
 
 _FETCHERS = None
 _FETCHERS_ERR = None
@@ -189,6 +315,11 @@ def do_fetch(payload) -> dict:
     url = payload.get('url')
     if not isinstance(url, str) or not re.match(r'^https?://', url, re.I) or len(url) > 2048:
         return {'ok': False, 'error': 'url 非法(仅 http/https, ≤2048 字符)'}
+    # agent-F: 桥内 SSRF 守卫(与引擎侧 assertSafeTarget 双重防线)
+    ssrf_ok, ssrf_reason = assert_safe_ssrf_target(url, allow_loopback=SSRF_ALLOW_LOOPBACK)
+    if not ssrf_ok:
+        print(f'[scrapling-bridge] SSRF 拒绝 {url[:120]}: {ssrf_reason}', flush=True)
+        return {'ok': False, 'error': f'SSRF 拒绝: {ssrf_reason}'}
     mode = payload.get('mode')
     if mode not in IMPLS:
         return {'ok': False, 'error': f'mode 非法(应为 {"/".join(MODES)}): {str(mode)[:60]}'}
@@ -224,8 +355,8 @@ def do_fetch(payload) -> dict:
             'finalUrl': final_url if isinstance(final_url, str) and final_url else url,
         }
     except Exception as e:  # noqa: BLE001 — 桥内任何异常都以 ok:false 信封 200 返回
-        msg = f'{type(e).__name__}: {e}'
-        return {'ok': False, 'error': msg[:600]}
+        msg = sanitize_error(e)
+        return {'ok': False, 'error': msg}
     finally:
         if acquired:
             try:
@@ -237,24 +368,91 @@ def do_fetch(payload) -> dict:
 class Handler(BaseHTTPRequestHandler):
     server_version = 'scrapling-bridge/1.0'
     protocol_version = 'HTTP/1.1'
+    # agent-F: 30s 请求总时长硬帽(任务要求, 与 MAX_TIMEOUT_MS 同口径)
+    timeout = 30
 
     def log_message(self, fmt, *args):  # noqa: A003 — 覆写默认逐行 stderr 日志
         print(f'[scrapling-bridge] {self.address_string()} {fmt % args}', flush=True)
 
-    def _send_json(self, obj, status=200):
+    def _send_json(self, obj, status=200, extra_headers=None):
         data = json.dumps(obj, ensure_ascii=False).encode('utf-8')
         self.send_response(status)
         self.send_header('Content-Type', 'application/json; charset=utf-8')
         self.send_header('Content-Length', str(len(data)))
+        # agent-F: 安全响应头(注入到所有响应, 含错误)
+        for k, v in _SECURITY_HEADERS.items():
+            self.send_header(k, v)
+        if extra_headers:
+            for k, v in extra_headers.items():
+                self.send_header(k, v)
         self.end_headers()
         try:
             self.wfile.write(data)
         except (BrokenPipeError, ConnectionResetError):
             pass
 
+    def _client_ip(self) -> str:
+        """提取 client IP(ThreadingHTTPServer 不带 X-Forwarded-For 解析, 直取 socket)。"""
+        try:
+            return self.client_address[0] if self.client_address else 'unknown'
+        except Exception:
+            return 'unknown'
+
+    def _extract_token(self) -> str:
+        """三选一: X-Auth-Token / X-Bridge-Key / Authorization: Bearer。"""
+        v = self.headers.get('X-Auth-Token')
+        if v:
+            return v
+        v = self.headers.get('X-Bridge-Key')
+        if v:
+            return v
+        authz = self.headers.get('Authorization') or ''
+        if authz.lower().startswith('bearer '):
+            return authz[7:].strip()
+        return ''
+
+    def _check_auth(self) -> bool:
+        """AUTH_TOKEN 非空时, 请求必须带正确令牌; 否则放行(dev 模式)。"""
+        if not AUTH_TOKEN:
+            return True  # dev: 未配置鉴权
+        return _constant_time_equal(self._extract_token(), AUTH_TOKEN)
+
+    def _check_rate_limit(self) -> tuple:
+        """返回 (ok: bool, retry_after: int)。"""
+        if not RATE_LIMITER or RATE_LIMIT_PER_MIN <= 0:
+            return (True, 0)
+        ip = self._client_ip()
+        if RATE_LIMITER.allow(ip):
+            return (True, 0)
+        return (False, RATE_LIMITER.retry_after(ip))
+
+    def _gate(self, path: str) -> bool:
+        """统一闸门: /health 豁免; 其余路径走 鉴权 + 限速。
+        返回 True=已发响应(调用方应 return), False=放行(调用方继续处理)。"""
+        if path == '/health':
+            return False  # 健康探针豁免
+        if not self._check_auth():
+            self._send_json(
+                {'ok': False, 'error': 'missing or invalid auth token', 'code': 'AUTH_REQUIRED'},
+                status=401,
+            )
+            return True
+        ok, retry = self._check_rate_limit()
+        if not ok:
+            self._send_json(
+                {'ok': False, 'error': f'rate limit exceeded ({RATE_LIMIT_PER_MIN}/min)',
+                 'code': 'RATE_LIMITED'},
+                status=429,
+                extra_headers={'Retry-After': str(retry)},
+            )
+            return True
+        return False
+
     def do_GET(self):  # noqa: N802 — BaseHTTPRequestHandler 命名约定
         path = self.path.split('?')[0]
         if path == '/health':
+            if self._gate(path):
+                return
             self._send_json({
                 'ok': True,
                 'selfTestOk': self_test(),
@@ -263,10 +461,16 @@ class Handler(BaseHTTPRequestHandler):
                 'ts': int(time.time() * 1000),
             })
             return
+        # 非 /health 路径走鉴权+限速闸门
+        if self._gate(path):
+            return
         self._send_json({'ok': False, 'error': 'not found'}, status=404)
 
     def do_POST(self):  # noqa: N802
         path = self.path.split('?')[0]
+        # 非 /fetch 路径走鉴权+限速闸门(/fetch 也走, 仅 /health 豁免)
+        if self._gate(path):
+            return
         if path != '/fetch':
             self._send_json({'ok': False, 'error': 'not found'}, status=404)
             return
@@ -307,9 +511,13 @@ def main():
     # 启动即预热 fetchers 导入(首个 /fetch 不吃冷启动 import 开销; 失败留档,
     # /health selfTestOk=false 让引擎/运维可感知)
     ok = self_test()
+    auth_mode = f'AUTH({("AUTH_TOKEN" if os.environ.get("AUTH_TOKEN") else "BRIDGE_KEY")})' if AUTH_TOKEN else 'NO_AUTH(dev)'
+    ssrf_mode = f'SSRF(allow_loopback={SSRF_ALLOW_LOOPBACK})'
     print(
-        f'[scrapling-bridge] 启动 http://{HOST}:{PORT} (selfTest={"ok" if ok else "FAIL: " + str(_FETCHERS_ERR)})'
-        f' versions={versions()}',
+        f'[scrapling-bridge] 启动 http://{HOST}:{PORT} '
+        f'(selfTest={"ok" if ok else "FAIL: " + str(_FETCHERS_ERR)}) '
+        f'{auth_mode} ratelimit:{RATE_LIMIT_PER_MIN}/min timeout:30s {ssrf_mode} '
+        f'versions={versions()}',
         flush=True,
     )
     server = ThreadingHTTPServer((HOST, PORT), Handler)

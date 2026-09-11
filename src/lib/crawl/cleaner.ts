@@ -194,8 +194,14 @@ export function cleanContentHtml(raw: string, cfgOverride?: Partial<CleanConfig>
   // 0. 硬移除脚本/样式类标签: 修复 —— 自定义清洗配置可能不带 removeSelectors(或遗漏),
   //    白名单剥壳时 script/style 的内部代码会以"纯文本"形式漏进正文
   $(`#__clean_root script, #__clean_root style, #__clean_root noscript, #__clean_root iframe, #__clean_root object, #__clean_root embed`).remove()
-  // 1. 移除指定选择器(广告/脚本)
-  for (const sel of cfg.removeSelectors) {
+  // 1. 移除指定选择器(广告/脚本) + R-E5 合并内置常见广告/弹窗/友链选择器
+  //    用户配置优先跑(命中后内置模式跑在已剥离的剩余 DOM 上, 减少误伤); 内置选择器
+  //    仅当未在 cfg.removeSelectors 中(去重避免重复 querySelector)
+  const mergedSelectors = [...cfg.removeSelectors]
+  for (const extra of EXTRA_AD_SELECTORS) {
+    if (!mergedSelectors.includes(extra)) mergedSelectors.push(extra)
+  }
+  for (const sel of mergedSelectors) {
     try { $(`#__clean_root ${sel}`).remove() } catch { /* 无效选择器 */ }
   }
   // 1.5 移除分页/导航链接(下一页/上一页/目录等)
@@ -341,13 +347,68 @@ export function cleanContentHtml(raw: string, cfgOverride?: Partial<CleanConfig>
 // 裸域名灌水(www.xxx.com 无 scheme, 广告常态)不受保护, 照常剥除。
 // 占位符损坏容忍: 若某条广告正则恰好吃掉占位符一半(如含 \d 的模式), 还原失败
 // 的残留 \u0000 序列由末尾 scrub 兜底清掉, 不留控制字符进库
+
+/**
+ * R-E5 反反爬增强: 内置额外广告/导航/弹窗文案模式, 与 cfg.adPatterns 合并使用。
+ *  这些模式覆盖近年常见源站推广/弹窗/页脚导航/友链段落, 命中面广且与正文无关,
+ *  走非贪婪匹配防误伤正文; ReDoS 闸门同 removeAdLines 主链(长度+嵌套量词)。
+ *  - 选择器型: 直接 strip DOM 节点(common ad class/id 名)
+ *  - 文案型: 站点尾巴/弹窗/章节来源页/友链/搜索推荐等
+ */
+const EXTRA_AD_SELECTORS = [
+  // 常见广告/弹窗容器 class/id(中英站常见)
+  '.ad-container', '.ad-wrap', '.ad-wrapper', '.adbox', '.ad-banner', '.advertisement',
+  '.adsbygoogle', '.google-ad', '.ad-slot', '.ad-zone', '.ad-area',
+  '#ad', '#ads', '#advertisement', '#banner_ad', '#popup', '#popup-ad',
+  '.popup', '.modal-ad', '.modal-advertisement',
+  // 弹窗式阅读引导/扫码下载/APP 推广
+  '.download-app', '.app-promo', '.qrcode', '.qr-code', '.scan-download',
+  // 友情链接/导航条/底部导航
+  '.friend-link', '.friendlink', '.link-list', '.footer-link', '.nav-bottom',
+  // 评分/举报/反馈悬浮按钮
+  '.float-btn', '.float-banner', '.float-toolbar',
+  // 章节来源页/章节末尾"返回目录"
+  '.chapter-navigate', '.chapter-nav', '.page-navigate',
+  // 部分中文站的"百度推广"/"百度联盟"段
+  '.baidu-ad', '.baidu-promo', '[class*="baidu_promote"]',
+  // 弹窗广告/插屏广告
+  '.interstitial', '.interstitial-ad', '.splash-ad',
+]
+
+/** 内置额外广告正则文案(与 cfg.adPatterns 合并, 后于用户配置跑——用户配置更具体优先) */
+const EXTRA_AD_PATTERNS = [
+  // 站点推广尾巴(中文常见)
+  '本章未完.{0,8}点击下一页继续阅读',
+  '请记住本书.{0,12}域名',
+  '最新章节请到.{0,30}查看',
+  '一秒记住.{0,12}免费读',
+  '为您提供.{0,16}精彩小说',
+  '本站(?:首发|更新最快|最新章节).{0,30}《',
+  // 弹窗/广告文案
+  '下载(?:APP|客户端|手机版).{0,20}看',
+  '扫码(?:关注|下载|领取).{0,20}',
+  '关注(?:微信公众号|公众号).{0,20}',
+  '加入书签.{0,15}继续阅读',
+  '为了方便下次阅读.{0,30}',
+  '推荐阅读.{0,20}本书',
+  // 章节来源页
+  '本章(?:未完|未完待续|继续阅读).{0,8}',
+  '第[一二三四五六七八九十百千万0-9]+(?:章|节|回|话|集).{0,4}(?:未完|继续|下一页)',
+  // 友情链接段
+  '友情链接[:：].{0,200}',
+  // 站点尾巴"www.xxx.com 首发"等
+  '(?:www\\.)?[a-z0-9-]+\\.(?:com|net|cc|org|info|top|xyz|vip|site)(?:首发|更新|整理|出品)',
+]
+
 function removeAdLines(text: string, patterns: string[]): string {
   const urls: string[] = []
   let out = text.replace(/https?:\/\/[^\s"'<>]+/gi, (m) => {
     urls.push(m)
     return `\u0000${urls.length - 1}\u0000`
   })
-  for (const p of patterns) {
+  // R-E5: 合并内置额外广告正则; 用户配置更具体优先跑(命中后内置模式跑在剩余文本上)
+  const merged = [...patterns, ...EXTRA_AD_PATTERNS]
+  for (const p of merged) {
     if (!p) continue
     // 基础 ReDoS 闸门: 超长/超复杂模式直接跳过(用户自配正则在单线程服务里跑飞会拖垮整个采集;
     // 完整防护需 re2, 这里做低成本上限控制)

@@ -11,6 +11,111 @@ import xpath from 'xpath'
 import { type FieldRule, type PageRule, type TocItem, type ParsedBook, type ParsedContent } from './types'
 import { fetchPage } from './fetcher'
 
+// ---------------- BOM/前导空白剥离 ----------------
+// R-E1: 部分 .NET/Java 后端在 HTML 响应体前注入 UTF-8 BOM(\uFEFF) 或前导空白;
+//  cheerio.load 会把 BOM 当作文本节点保留, 后续 CSS 选择器:first-child 偏移、文本提取
+//  起头混入 \uFEFF 字面量入库。统一切除响应体前导 BOM/空白(中间 BOM 保留——可能为
+//  正文零宽字符; 仅剥响应体最前的 BOM 才安全, 不破坏正文)
+function stripLeadingBom(html: string): string {
+  if (!html) return html
+  // \uFEFF = UTF-8/16 BOM; \uFFFE = 字节序反; 两者在合法 UTF-8 文本中不应作为首字符
+  let i = 0
+  while (i < html.length) {
+    const ch = html.charCodeAt(i)
+    if (ch === 0xFEFF || ch === 0xFFFE) { i++; continue }
+    if (ch === 0x20 || ch === 0x09 || ch === 0x0A || ch === 0x0D) { i++; continue }
+    break
+  }
+  return i > 0 ? html.slice(i) : html
+}
+
+// ---------------- 结构化数据提取(反反爬增强) ----------------
+// R-E2: 现代 SPA 站常把关键字段(书名/作者/简介/章节列表/正文)只暴露在 JSON-LD
+//  (schema.org) 或 og:* / article:* meta 标签里, DOM 无可见 CSS 选择器(防爬).
+//  下方两个提取器作为 parseBook/parseContent 的字段兜底 —— 主规则提取失败时自动
+//  调用, 命中即填充对应字段. 不替代 FieldRule, 仅作"主提取返回空"的回退.
+
+/** 提取 og:* / article:* / twitter:* meta 标签 → 字段映射表
+ *  返回键名归一化为小写(含 'og:title' / 'article:author' 等原前缀) */
+export function extractMetaTags(html: string, $?: cheerio.CheerioAPI): Record<string, string> {
+  if (!html) return {}
+  const $c = $ ?? cheerio.load(html)
+  const out: Record<string, string> = {}
+  try {
+    $c('meta[property], meta[name]').each((_, el) => {
+      const $el = $c(el)
+      const key = ($el.attr('property') || $el.attr('name') || '').trim().toLowerCase()
+      const val = ($el.attr('content') || '').trim()
+      // 仅收录已知结构化前缀, 防止 meta[name=csrf-token] 之类噪音灌入
+      if (!key || !val) return
+      if (
+        key.startsWith('og:') ||
+        key.startsWith('article:') ||
+        key.startsWith('book:') ||
+        key.startsWith('twitter:')
+      ) {
+        if (!out[key]) out[key] = val // 首个命中胜出(同键多值取首, 与浏览器 og 解析语义一致)
+      }
+    })
+  } catch { /* 解析失败: 返回空表 */ }
+  return out
+}
+
+/** 提取 JSON-LD(schema.org)块: 优先 Article/Book/CreativeWork 类型;
+ *  返回扁平字段映射(title/name/description/author/articleBody 等), 多块时按优先级合并 */
+export function extractJsonLd(html: string, $?: cheerio.CheerioAPI): Record<string, string> {
+  if (!html) return {}
+  const $c = $ ?? cheerio.load(html)
+  const out: Record<string, string> = {}
+  try {
+    $c('script[type="application/ld+json"]').each((_, el) => {
+      const raw = $c(el).text() || ''
+      if (!raw) return
+      let doc: any
+      try { doc = JSON.parse(raw) } catch { return /* 单块 JSON 解析失败: 跳过 */ }
+      // @graph 多块容器解构
+      const items: any[] = Array.isArray(doc) ? doc : Array.isArray(doc?.['@graph']) ? doc['@graph'] : [doc]
+      for (const it of items) {
+        if (!it || typeof it !== 'object') continue
+        const type = (it['@type'] || it['type'] || '').toString()
+        // 仅采信内容性 schema 类型, 防 BreadcrumbList/SiteNavigationElement 等结构性块污染
+        if (!/(Article|Book|CreativeWork|Chapter|WebPage|PublicationIssue)/i.test(type)) continue
+        // 标量字段直采信; 数组取首项(常见 author:[{name:...}] 形态)
+        const pick = (k: string): string => {
+          const v = it[k]
+          if (v == null) return ''
+          if (typeof v === 'string' || typeof v === 'number') return String(v)
+          if (Array.isArray(v)) {
+            const first = v[0]
+            if (typeof first === 'string') return first
+            if (first && typeof first === 'object') return String(first.name || first['@value'] || '')
+          }
+          if (typeof v === 'object') return String(v.name || v['@value'] || '')
+          return ''
+        }
+        const fields: Array<[string, string[]]> = [
+          ['title', ['headline', 'name', 'title']],
+          ['description', ['description', 'abstract', 'about']],
+          ['author', ['author', 'creator', 'publisher']],
+          ['content', ['articleBody', 'text']],
+          ['keywords', ['keywords']],
+          ['category', ['genre', 'category']],
+          ['cover', ['image', 'thumbnailUrl']],
+          ['latestChapter', ['datePublished', 'dateModified']],
+        ]
+        for (const [target, sources] of fields) {
+          if (out[target]) continue // 已命中不覆盖
+          for (const src of sources) {
+            const v = pick(src)
+            if (v) { out[target] = v; break }
+          }
+        }
+      }
+    })
+  } catch { /* 解析失败: 返回空表 */ }
+  return out
+}
+
 // ---------------- 后处理 ----------------
 function applyTransform(value: string, rule: FieldRule): string {
   let v = value ?? ''
@@ -523,8 +628,10 @@ export function parseList(
   pageRule: PageRule,
   urlFields: string[] = ['url']
 ): ListResult {
-  const $ = cheerio.load(html)
-  const doc = getDoc(html)
+  // R-E1: 剥前导 BOM/空白 —— 防首字符 \uFEFF 让 :first-child 偏移、文本提取起头混入字面量
+  const htmlClean = stripLeadingBom(html)
+  const $ = cheerio.load(htmlClean)
+  const doc = getDoc(htmlClean)
   const out: ListResult = { items: [] }
   const { itemSelector, fields } = pageRule
   const hasJsonConstFields = Object.values(fields).some((r) => r && (r.type === 'json' || r.type === 'const'))
@@ -532,7 +639,7 @@ export function parseList(
   // ---- JSON 模式: itemSelector.expression=数组路径(列表发现), 或无容器+json/const字段(书籍页JSON) ----
   // 规则为json/const型时不回退HTML提取(JSON解析失败直接空结果, 避免cheerio对JSON串的垃圾提取)
   if (itemSelector?.type === 'json' || (!itemSelector && hasJsonConstFields)) {
-    const root = parseJsonBody(html)
+    const root = parseJsonBody(htmlClean)
     if (root === undefined) return out
     const varsBase = urlVars(baseUrl)
     const scopes: { json: unknown; index: number }[] = itemSelector
@@ -571,7 +678,7 @@ export function parseList(
     // 无容器: 直接对整页提取字段(单值型), 如书籍页
     const rec: Record<string, string> = {}
     for (const [key, rule] of Object.entries(fields)) {
-      if (rule) rec[key] = extractField(html, $, null, doc, rule)
+      if (rule) rec[key] = extractField(htmlClean, $, null, doc, rule)
     }
     if (Object.keys(rec).length) out.items.push({ fields: rec })
     return out
@@ -588,7 +695,7 @@ export function parseList(
         node,
       }))
     } else {
-      scopes = regexExtractAll(html, itemSelector).map((h) => ({ html: h, node: null }))
+      scopes = regexExtractAll(htmlClean, itemSelector).map((h) => ({ html: h, node: null }))
     }
   } catch { scopes = [] } // 非法容器选择器: 空结果而非整体抛错
 
@@ -617,16 +724,31 @@ export function parseList(
 
 // ---------------- 书籍信息解析 ----------------
 export function parseBook(html: string, baseUrl: string, pageRule: PageRule): ParsedBook {
-  const res = parseList(html, baseUrl, pageRule, ['cover'])
+  const htmlClean = stripLeadingBom(html)
+  const res = parseList(htmlClean, baseUrl, pageRule, ['cover'])
   const f = res.items[0]?.fields || {}
+  // R-E2 反反爬兜底: 主规则未提取到 name/author/intro/cover 时, 从 og:* / article:* meta
+  // 与 JSON-LD(schema.org Book/Article) 兜底取值。SPA 壳站点 DOM 常无可见 CSS 选择器,
+  // 但 SEO 必然把结构化数据暴露在 meta / script[type=application/ld+json] —— 反反爬命中面极高
+  const $ = cheerio.load(htmlClean)
+  const meta = extractMetaTags(htmlClean, $)
+  const ld = extractJsonLd(htmlClean, $)
+  const og = (k: string) => meta[k] || meta['og:' + k] || meta['article:' + k] || meta['book:' + k] || ''
+  const name = f.name || ld.title || og('title') || undefined
+  const author = f.author || ld.author || og('author') || undefined
+  const intro = f.intro || ld.description || og('description') || undefined
+  const keywords = f.keywords || ld.keywords || og('keywords') || undefined
+  const category = f.category || ld.category || undefined
+  const cover = f.cover || ld.cover || og('image') || ''
+  const latestChapter = f.latestChapter || ld.latestChapter || undefined
   return {
-    name: f.name || undefined,
-    author: f.author || undefined,
-    category: f.category || undefined,
-    keywords: f.keywords || undefined,
-    intro: f.intro || undefined,
-    cover: f.cover ? absolutize(f.cover, baseUrl) : undefined,
-    latestChapter: f.latestChapter || undefined,
+    name,
+    author,
+    category,
+    keywords,
+    intro,
+    cover: cover ? absolutize(cover, baseUrl) : undefined,
+    latestChapter,
     status: f.status || undefined,
   }
 }
@@ -640,12 +762,14 @@ export async function parseToc(
   onProgress?: (page: number, found: number) => Promise<void> | void
 ): Promise<{ items: TocItem[]; pages: number }> {
   const all: TocItem[] = []
+  // R-E1: 剥前导 BOM/空白(与 parseList/parseContent 同口径)
+  const html0 = stripLeadingBom(html)
 
   // ---- JSON 目录模式: itemSelector.expression=数组路径(如 bqg713 的纯章节名数组 list) ----
   // 数组项可为对象(字段按路径取)或纯字符串(title 用 '.' 取根本身); 章节URL用 const 模板
   // 合成(`{q.id}`=目录页URL查询参数 + `{index}`=1基序号)。JSON目录API单次返回全量, 无HTML翻页。
   if (pageRule.itemSelector?.type === 'json') {
-    const root = parseJsonBody(html)
+    const root = parseJsonBody(html0)
     if (root !== undefined) {
       const base = firstUrl
       const varsBase = urlVars(firstUrl)
@@ -698,7 +822,7 @@ export async function parseToc(
   }
 
   let url = firstUrl
-  let current = html
+  let current = html0
   const maxPages = pageRule.pagination?.enabled ? (pageRule.pagination.maxPages || 20) : 1
   const seen = new Set<string>()
   // R3-24: 同 path 不同 query 的"伪翻页"计数器 —— 部分站点把"下一页"链 query 改个时间戳/
@@ -812,7 +936,8 @@ export async function parseContent(
   const joinWith = pageRule.pagination?.joinWith ?? '<br/>'
   const parts: string[] = []
   let url = firstUrl
-  let current = html
+  // R-E1: 剥前导 BOM/空白(与 parseList/parseToc 同口径)
+  let current = stripLeadingBom(html)
   const maxPages = pageRule.pagination?.enabled ? (pageRule.pagination.maxPages || 10) : 1
   const visited = new Set<string>()
 
@@ -826,8 +951,18 @@ export async function parseContent(
     const base = docBase($, url || firstUrl)
     let part = extractField(current, $, null, doc, contentRule)
     if (!part && contentRule.type === 'css') {
-      // 兜底: 取最长文本容器
+      // 兜底1: 链接密度评分 readability 算法(boilerplate 移除)
+      part = findReadableContent($)
+    }
+    if (!part) {
+      // 兜底2: 取最长文本容器(原 findLargestText 语义保留, 作为 readability 失败回退)
       part = findLargestText($)
+    }
+    if (!part) {
+      // 兜底3(R-E2 反反爬): 主规则+ readability 都失败时, 从 JSON-LD articleBody 取正文
+      // (现代 SPA 站常把 chapter 文本只暴露在 schema.org Article.articleBody 里防爬)
+      const ld = extractJsonLd(current, $)
+      if (ld.content) part = `<p>${ld.content.replace(/\n+/g, '</p><p>')}</p>`
     }
     if (part) parts.push(part)
 
@@ -855,6 +990,41 @@ export async function parseContent(
     }
   }
   return { content: parts.filter(Boolean).join(joinWith), pages: Math.max(1, visited.size) }
+}
+
+/**
+ * R-E3 readability 兜底: 链接密度评分式正文提取(轻量级 boilerplate 移除)。
+ *  规则选择器失败时的兜底, 替代旧版 findLargestText 的"纯文本最长即正文"启发式
+ *  (后者在源站把广告块嵌进 div 时会把广告块当正文)。
+ *  评分: score = textLength × (1 - linkDensity) × paragraphCountBoost
+ *  - textLength: 文本字符数(剔除空白后)
+ *  - linkDensity: 该块内 <a> 文本长度 / 总文本长度 (越低越像正文)
+ *  - paragraphCountBoost: 子 <p> 数 ≥3 时 ×1.2 (正文段落密集标志)
+ *  过滤: 评分>200 且 linkDensity<0.5 才入选; 多候选取最高分
+ */
+function findReadableContent($: cheerio.CheerioAPI): string {
+  let best = ''
+  let bestScore = 0
+  $('div,article,section,td').each((_, el) => {
+    const $el = $(el)
+    const rawText = ($el.text() || '').replace(/\s+/g, '')
+    const textLen = rawText.length
+    if (textLen < 100) return // 短文本不入选(导航栏/页脚常态)
+    // 链接文本量(用于算 linkDensity)
+    let linkText = ''
+    $el.find('a').each((_, a) => { linkText += $(a).text() || '' })
+    const linkDensity = textLen > 0 ? linkText.replace(/\s+/g, '').length / textLen : 1
+    if (linkDensity >= 0.5) return // 链接占主导: 视为导航/列表, 跳过
+    let paraCount = 0
+    $el.find('p').each(() => { paraCount++ })
+    const boost = paraCount >= 3 ? 1.2 : 1
+    const score = textLen * (1 - linkDensity) * boost
+    if (score > bestScore) {
+      bestScore = score
+      best = $.html(el)
+    }
+  })
+  return bestScore > 200 ? best : ''
 }
 
 function findLargestText($: cheerio.CheerioAPI): string {

@@ -536,3 +536,198 @@ export function hostGateReset(): void {
   }
   gates().clear()
 }
+
+// ============================================================
+// SSRF 辅助工具(R-E4 增量, 反反爬增强):
+// 本模块不持有 SSRF 拒绝责任(fetcher.ts assertSafeTarget 是唯一准入闸门),
+// 此处导出的纯函数供 fetcher.ts 未来增强 IP 字面量归一化时调用, 收口当前
+// 已知 SSRF 绕过向量(十进制/八进制/十六进制 IP 编码、IPv4-mapped IPv6、
+// 0.0.0.0 等)。当前为预置工具集, 无运行时调用方, 零回归。
+// ============================================================
+
+/**
+ * 解析十进制/八进制/十六进制 IPv4 字面量 → 标准点分十进制。
+ *  覆盖 SSRF 绕过向量:
+ *   - 十进制整数: 2130706433 (= 127.0.0.1)
+ *   - 八进制: 0177.0.0.1 / 017700000001 (单段八进制)
+ *   - 十六进制: 0x7f.0.0.1 / 0x7f000001
+ *   - 混合编码: 0x7f.0.0.1 (各段独立编码)
+ *  返回标准 'a.b.c.d' 形态; 任一段非法/超 255 返回 null。
+ *  非数字开头(域名形态)直接返回 null, 由调用方走 DNS 路径。
+ */
+export function normalizeIpLiteral(s: string): string | null {
+  if (!s) return null
+  const raw = s.trim().toLowerCase()
+  // IPv6 (含 [::1] / [::ffff:1.2.3.4] 形态) → 不在 IPv4 归一化范围, 直接返回 null
+  // (IPv6 范围判定在 assertSafeIp 已实现; 本函数只处理 IPv4 编码变体)
+  if (raw.includes(':')) return null
+
+  // 整段十进制整数(单一数字无点): 解析为 32 位整数再拆 4 段
+  // 0 开头的纯数字串按八进制优先解析(0177 = 127, 017700000001 = 2130706433 = 127.0.0.1)
+  // R-E4 修正: 早期版本把 Number('017700000001')=17700000001 当十进制判定超 0xFFFFFFFF 返回 null,
+  // 丢了八进制形态的 SSRF 绕过检测。先按八进制解析, 失败再退回十进制
+  if (/^\d+$/.test(raw) && !raw.includes('.')) {
+    // 0 开头纯数字: 八进制优先(parseInt(radix=8) 在含 8/9 的串会失败, 失败则不是八进制)
+    if (raw.length > 1 && raw[0] === '0' && /^[0-7]+$/.test(raw)) {
+      const oct = parseInt(raw, 8)
+      if (Number.isFinite(oct) && oct >= 0 && oct <= 0xFFFFFFFF) {
+        return [(oct >>> 24) & 0xFF, (oct >>> 16) & 0xFF, (oct >>> 8) & 0xFF, oct & 0xFF].join('.')
+      }
+    }
+    const n = Number(raw)
+    if (!Number.isFinite(n) || n < 0 || n > 0xFFFFFFFF) return null
+    return [(n >>> 24) & 0xFF, (n >>> 16) & 0xFF, (n >>> 8) & 0xFF, n & 0xFF].join('.')
+  }
+
+  // 单段 0x 十六进制(无点): 0x7f000001
+  if (/^0x[0-9a-f]+$/.test(raw) && !raw.includes('.')) {
+    const n = parseInt(raw, 16)
+    if (!Number.isFinite(n) || n > 0xFFFFFFFF) return null
+    return [(n >>> 24) & 0xFF, (n >>> 16) & 0xFF, (n >>> 8) & 0xFF, n & 0xFF].join('.')
+  }
+
+  // 点分形态: 每段独立解析(允许混编: 0x7f.0.0.1 / 0177.0.0.1 / 127.0.0.1)
+  const parts = raw.split('.')
+  if (parts.length !== 4) return null
+  const bytes: number[] = []
+  for (const p of parts) {
+    if (!p) return null
+    let n: number
+    if (/^0x[0-9a-f]+$/.test(p)) n = parseInt(p, 16)
+    else if (/^0[0-7]+$/.test(p) && p.length > 1) n = parseInt(p, 8)
+    else if (/^\d+$/.test(p)) n = parseInt(p, 10)
+    else if (/^[0-9a-f]+$/.test(p) && p.length <= 8) n = parseInt(p, 16) // 无前缀十六进制段(罕见, 但浏览器接受)
+    else return null
+    if (!Number.isFinite(n) || n < 0 || n > 255) return null
+    bytes.push(n)
+  }
+  return bytes.join('.')
+}
+
+/**
+ * IP 字面量安全判定(R-E4 同步版, 无 DNS 解析):
+ *  - 先归一化(覆盖十进制/八进制/十六进制 IPv4 编码绕过)
+ *  - 再判范围(私网/回环/链路本地/CGNAT/云元数据/0.0.0.0)
+ *  - IPv6 解析(展开 16 字节, 含 v4-mapped 嵌入兜底)
+ *  allowLoopback=true 时放行 127.0.0.0/8 / ::1 / localhost 等回环
+ *  与 fetcher.ts assertSafeIp 同口径, 但接受非十进制编码 IP 输入
+ */
+export function isPrivateIp(ip: string, allowLoopback = false): boolean {
+  if (!ip) return false
+  const normalized = normalizeIpLiteral(ip)
+  if (normalized) {
+    // 命中 IPv4 黑名单(与 fetcher.ts assertSafeIp 同口径, 含 0.0.0.0/8)
+    if (normalized === '169.254.169.254' || normalized === '169.254.169.253') return true
+    if (/^169\.254\./.test(normalized)) return true // 链路本地
+    if (/^100\.(6[4-9]|[7-9]\d|1[0-1]\d|12[0-7])\./.test(normalized)) return true // CGNAT
+    if (/^10\./.test(normalized)) return true // 私网
+    if (/^192\.168\./.test(normalized)) return true
+    if (/^172\.(1[6-9]|2\d|3[01])\./.test(normalized)) return true
+    if (/^0\./.test(normalized)) return true // 0.0.0.0/8 不可路由
+    if (/^127\./.test(normalized)) return !allowLoopback
+    return false
+  }
+  // IPv6 解析(简化版: 仅判定常见私网形态, 复杂展开与 fetcher.ts assertSafeIp 一致由调用方决策)
+  const addr = ip.replace(/^\[|\]$/g, '').split('%')[0]
+  if (!addr || !addr.includes(':')) return false
+  // ::1 / ::ffff:127.0.0.1 等回环形态
+  if (addr === '::1') return !allowLoopback
+  if (/^::ffff:/.test(addr.toLowerCase())) {
+    const v4 = addr.toLowerCase().replace(/^::ffff:/, '')
+    return isPrivateIp(v4, allowLoopback)
+  }
+  if (/^fe[89ab][0-9a-f]:/i.test(addr)) return true // fe80::/10 链路本地
+  if (/^f[cd][0-9a-f]{2}:/i.test(addr)) return true // fc00::/7 ULA
+  return false
+}
+
+/**
+ * DNS 重新绑定检测辅助(R-E4): 对 hostname 做多次 lookup, 验证返回 IP 集合稳定。
+ *  TOCTOU 攻击场景: 守卫校验通过 → fetch 再发起 → DNS 被重绑 → fetch 实际连到内网。
+ *  本工具做"快照一致性"检查(非彻底修复, 真正修复需 fetch 注入 lookup 选项, 见 fetcher.ts
+ *  R5-19 已知限制), 供 fetcher.ts 未来在 fetch 前后调用比对 IP 集合。
+ *  返回 { stable, ips, history }, stable=true 表示多次解析结果一致(攻击窗口未触发)
+ */
+export interface DnsStabilityResult {
+  stable: boolean
+  /** 首次解析的 IP 列表(若任一 IP 是私网, 调用方应判 SSRF 拒绝) */
+  ips: string[]
+  /** 各轮解析结果, 供审计 */
+  history: string[][]
+  /** 命中私网 IP 时给出原因(供 SSRF 拒绝日志) */
+  privateHit?: { ip: string; reason: string }
+}
+
+export async function verifyDnsStability(
+  hostname: string,
+  opts?: { rounds?: number; intervalMs?: number; allowLoopback?: boolean }
+): Promise<DnsStabilityResult> {
+  const rounds = Math.min(5, Math.max(2, opts?.rounds ?? 3))
+  const intervalMs = Math.min(1000, Math.max(0, opts?.intervalMs ?? 50))
+  const allowLoopback = opts?.allowLoopback === true
+  const history: string[][] = []
+  let firstIps: string[] = []
+  let privateHit: { ip: string; reason: string } | undefined
+  try {
+    const { promises: dnsPromises } = await import('node:dns')
+    for (let i = 0; i < rounds; i++) {
+      try {
+        const results = await dnsPromises.lookup(hostname, { all: true, family: 0 })
+        const ips = results.map((r) => r.address).sort()
+        history.push(ips)
+        if (i === 0) {
+          firstIps = ips
+          // 首轮检查: 任一 IP 命中私网即记 privateHit
+          for (const ip of ips) {
+            if (isPrivateIp(ip, allowLoopback)) {
+              privateHit = { ip, reason: `hostname ${hostname} → ${ip} 命中私网/保留段` }
+              break
+            }
+          }
+        }
+        // 后续轮次比对: IP 集合不同即视为不稳定(可能 DNS rebinding)
+        if (i > 0 && JSON.stringify(ips) !== JSON.stringify(firstIps)) {
+          return { stable: false, ips: firstIps, history, privateHit }
+        }
+      } catch {
+        // 单轮解析失败: 视为不稳定(可能是攻击者故意触发 ENOTFOUND 让守卫误判)
+        history.push([])
+        return { stable: false, ips: firstIps, history, privateHit }
+      }
+      if (i < rounds - 1 && intervalMs > 0) {
+        await new Promise((r) => setTimeout(r, intervalMs))
+      }
+    }
+    return { stable: true, ips: firstIps, history, privateHit }
+  } catch {
+    return { stable: false, ips: [], history }
+  }
+}
+
+/**
+ * URL hostname 安全归一化(R-E4): 从 URL 提取 hostname, 若为非十进制 IP 编码
+ * (十进制/八进制/十六进制) → 归一化为标准点分十进制; 域名原样返回。
+ *  供 fetcher.ts 未来在 assertSafeTarget 入口预归一化, 收口 SSRF 绕过向量
+ */
+export function normalizeUrlHostname(url: string): string {
+  if (!url) return ''
+  try {
+    const u = new URL(url)
+    const h = u.hostname.toLowerCase().replace(/^\[|\]$/g, '')
+    // IPv6 字面量: 直接返回(由 isPrivateIp v6 分支处理)
+    if (h.includes(':')) return h
+    // 形如 '2130706433' / '0x7f000001' / '017700000001' 等单段 IP 编码
+    if (/^[0-9a-f]+$/.test(h) && !h.includes('.') && h.length >= 2) {
+      const normalized = normalizeIpLiteral(h)
+      if (normalized) return normalized
+    }
+    // 形如 '0x7f.0.0.1' / '0177.0.0.1' 等点分编码
+    if (h.includes('.') && /[^\d.]/.test(h)) {
+      const normalized = normalizeIpLiteral(h)
+      if (normalized) return normalized
+    }
+    return h
+  } catch {
+    return ''
+  }
+}

@@ -17,23 +17,39 @@
 //                 → 502 { relayError } 仅中继层失败(不可达目标/代理协议不支持/超时)
 //
 // 安全: hostname 钉 127.0.0.1(不对外); url 仅 http/https; 请求头键经安全名单过滤;
-//       请求体/响应体均流式限量读(1MB/20MB, ss-d: 超限即取消不全量缓冲); 超时上限 RELAY_MAX_TIMEOUT_MS;
+//       请求体/响应体均流式限量读(1MB/20MB, ss-d: 超限即取消不全量缓冲);
+//       超时上限 30s(agent-F: 任务硬要求, 原 120s);
 //       redirect:'manual' 不跟随(引擎逐跳全权处理, 无跟随后复检面)。
-//       SSRF 面裁(ss-d 留档): 本桥是引擎专属传输介质而非代理 —— 目标 host 由引擎侧
-//       hostGate/isLoopbackTarget 把关, 且 verify-gg-d-relay-token C 段依赖回环目标可达,
-//       桥内私网段拦截会破坏既有断言资产与回环豁免语义, 故不加(记录不修)。
+//       SSRF(agent-F, 替代 ss-d 留档): 桥内 assertSafeSsrfTarget 守卫(与引擎侧
+//       assertSafeTarget 双重防线)—— 默认拒绝 localhost/私网/链路本地/元数据端点;
+//       BRIDGE_SSRF_ALLOW_LOOPBACK=1 时放行 127.0.0.1/::1(供 archived 回环测试场景,
+//       生产不应设)。原 ss-d "故不加(记录不修)" 决策已被 agent-F 安全任务覆盖。
+//       AUTH_TOKEN/BRIDGE_KEY 鉴权 + 60/min/IP 限速 + 30s 请求总超时 + 安全响应头
+//       (X-Content-Type-Options/X-Frame-Options/Referrer-Policy)由 _shared 统一注入。
 // ============================================================
 
-import { createBridgeServer, json, safeHeaderKey, safeHeaderValue } from '../_shared/server'
+// agent-F: 改用 _shared/server 的 assertSafeSsrfTarget 做桥内 SSRF 守卫
+// (与引擎侧 assertSafeTarget 双重防线)。默认拒绝 localhost/私网/链路本地/元数据端点;
+// BRIDGE_SSRF_ALLOW_LOOPBACK=1 时放行 127.0.0.1/::1(供 scripts/archive/verify-gg-d-relay-token
+// 等回环测试场景, 生产部署不应设此环境变量)。
+import {
+  assertSafeSsrfTarget,
+  createBridgeServer,
+  safeHeaderKey,
+  safeHeaderValue,
+  sanitizeError,
+} from '../_shared/server'
 
 const PORT = 3011
 const RELAY_MAX_BODY_BYTES = 20 * 1024 * 1024
 const RELAY_MAX_REQUEST_BYTES = 1024 * 1024
-const RELAY_MAX_TIMEOUT_MS = 120_000
-// ss-d: 显式 idleTimeout(秒)。Bun 缺省 idleTimeout 对 GET 在途请求 ~12s 即杀(ss-d 三档实测),
-// 本桥全 POST 契约实测 130s 在途存活 —— 显式化 200s 覆盖 RELAY_MAX_TIMEOUT_MS=120s +
-// 20MB 响应 base64 重组开销, 防未来 Bun 阈值变化静默破坏慢站中继(中继桥存在的意义)。
+// agent-F: 任务硬要求 30s 上限(原 120s)。慢站场景由引擎侧重试承担, 桥内不再长等待。
+const RELAY_MAX_TIMEOUT_MS = 30_000
+// ss-d: 显式 idleTimeout(秒)。Bun 缺省 idleTimeout 对 GET 在途请求 ~12s 即杀;
+// 200s 覆盖 30s 上游超时 + 20MB 响应 base64 重组开销 + keep-alive 排空窗口。
 const RELAY_IDLE_TIMEOUT_S = 200
+// SSRF 守卫: 默认严格(拒绝回环); BRIDGE_SSRF_ALLOW_LOOPBACK=1 放行(回环测试场景)
+const SSRF_ALLOW_LOOPBACK = process.env.BRIDGE_SSRF_ALLOW_LOOPBACK === '1'
 
 /** 流式限量读 body(请求/响应两用): 超限立即取消返回超限标记, 防全量缓冲内存炸面(ss-d) */
 async function readBodyCapped(body: ReadableStream<Uint8Array> | null, cap: number): Promise<{ ok: true; buf: Buffer } | { ok: false; size: number }> {
@@ -110,6 +126,11 @@ createBridgeServer({
   name: 'fetch-relay',
   port: PORT,
   idleTimeoutS: RELAY_IDLE_TIMEOUT_S,
+  // agent-F: 30s 请求总时长硬帽(任务要求)。上游 fetch 自带 RELAY_MAX_TIMEOUT_MS=30s AbortSignal,
+  // 此 race 是第二道兜底(防 userFetch 内未设超时的路径)。
+  requestTimeoutMs: 30_000,
+  rateLimitPerMin: Number(process.env.RATE_LIMIT_PER_MIN || 60),
+  enableSsrfCheck: true, // 文档标记: handler 内已自带 assertSafeSsrfTarget
   async fetch(req) {
     const u = new URL(req.url)
     if (u.pathname !== '/fetch' || req.method !== 'POST') {
@@ -138,6 +159,12 @@ createBridgeServer({
     const url = typeof body.url === 'string' ? body.url : ''
     if (!/^https?:\/\//i.test(url) || url.length > 2048) {
       return Response.json({ relayError: 'url 非法(仅 http/https)' }, { status: 502 })
+    }
+    // agent-F: 桥内 SSRF 守卫(任务硬要求; 引擎侧 assertSafeTarget 是第一道, 此为第二道)
+    const ssrf = assertSafeSsrfTarget(url, { allowLoopback: SSRF_ALLOW_LOOPBACK })
+    if (!ssrf.ok) {
+      console.log(`[fetch-relay] SSRF 拒绝 ${safeHostPath(url)}: ${ssrf.reason}`)
+      return Response.json({ relayError: `SSRF 拒绝: ${ssrf.reason}` }, { status: 502 })
     }
     const proxy = typeof body.proxy === 'string' && body.proxy ? body.proxy : undefined
     if (proxy && (!/^(https?|socks5h?|socks4a?):\/\/[^\s,]+$/.test(proxy) || proxy.length > 500)) {
@@ -189,10 +216,10 @@ createBridgeServer({
         bodyB64: Buffer.from(buf).toString('base64'),
       })
     } catch (e) {
-      const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e)
+      const msg = sanitizeError(e)
       // ss-d: 中继层失败留档(仅 host+path, 不落全 URL —— 目标 URL 查询串可能含 token)
-      console.log(`[fetch-relay] FAIL ${safeHostPath(url)} (${Date.now() - startedAt}ms): ${msg.slice(0, 200)}`)
-      return Response.json({ relayError: msg.slice(0, 300) }, { status: 502 })
+      console.log(`[fetch-relay] FAIL ${safeHostPath(url)} (${Date.now() - startedAt}ms): ${msg}`)
+      return Response.json({ relayError: msg }, { status: 502 })
     }
   },
 })

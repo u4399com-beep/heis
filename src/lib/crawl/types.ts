@@ -2,6 +2,16 @@
 // 小说采集系统 — 核心类型定义
 // 规则同时支持 CSS选择器 / XPath / 正则表达式 / JSON点路径(json) / 常量模板(const)
 // (json/const 适配纯JSON API站: SPA壳+hash路由无SSR, 页面即JSON响应)
+//
+// 文件结构(TOC):
+//   §1  字段/页面/规则类型 ........ FieldRule / PageFields / PageRule / FetchConfig / CleanConfig / RuleConfig
+//   §2  解析结果类型 ............... TocItem / ParsedBook / ParsedContent
+//   §3  默认常量 .................. DEFAULT_FETCH_CONFIG / DEFAULT_CLEAN_CONFIG / defaultRuleConfig / parseRuleConfig
+//   §4  深消毒白名单重建 ........... safeNum/safeBool/safeStr/safeSingleLine/safeHeaderKey/safeStrArr
+//                              + sanitizeFieldRule/sanitizePageRule/sanitizeFetchConfig/sanitizeCleanConfig
+//   §5  代理/镜像形态校验 ........... isValidMirrorHost / isValidProxySpec
+//   §6  正则安全审查 ............... RegexSafetyResult / RegexIssue / validateRegexSafety / hasNestedQuantifier
+//                              + collectFieldRuleIssues/collectPageRuleIssues/collectRegexIssues
 // ============================================================
 
 /**
@@ -127,19 +137,18 @@ export interface FetchConfig {
   /** 同站并发闸门(hostGate)在飞上限, 缺省 3; 1~10 钳制(sanitizeFetchConfig 同步);
    *  同 host 连续失败自动降额(最低1)/连续成功回升(不超过此基准) */
   hostGateLimit?: number
-  /** 翻页请求传输回调(可选, 运行时注入): parseToc/parseContent 内部"下一页"抓取的传输实现。
+  /** 翻页请求注入回调(运行时项, sanitize 白名单不透传):
    *  runner 注入过闸版 gateFetch(翻页请求与章节抓取同享同站并发闸, aa-f 已知边界闭环);
    *  未注入时 parser 直连 fetchPage —— rules/test 测试路由保持直连语义不变。
-   *  注: 仅运行时注入项, sanitizeFetchConfig 白名单不透传(函数无法 JSON 序列化,
-   *  规则 JSON 中的同名键会被白名单自然丢弃, 无注入面) */
-  /** 翻页请求注入回调(bb-d, 运行时项): runner 侧过闸抓取。ll-c 扩展可选第二参 refererUrl
-   *  —— parseToc/parseContent 翻页第2页起回传上一页 URL, 启用 refererChain 的调用方可把
-   *  Referer 从"恒书籍页"升级为"翻页链逐页回溯"(真实浏览器翻页导航语义) */
+   *  bb-d / ll-c: 可选第二参 refererUrl —— parseToc/parseContent 翻页第2页起回传【上一页
+   *  URL】, 启用 refererChain 的调用方可把 Referer 从「恒书籍页」升级为「翻页链逐页回溯」
+   *  (真实浏览器翻页导航语义)。函数无法 JSON 序列化, 规则 JSON 同名键自然丢弃, 无注入面 */
   pageFetch?: (url: string, refererUrl?: string) => Promise<{ html: string }>
-  /** 通用 token 预取钩子(bb-d): 请求前先从 tokenUrl 预取动态 token 再注入请求。
-   *  面向"可预取 token"形态(会话级/短时级); 按章变化的加密参数型(如 bqg713 AES)
-   *  不属此形态, 需站点专属解密或外置转换代理(tokenUrl 可用 {url} 占位符对接) */
-  /** 预取地址: 响应体含 token 的任意端点(通常 JSON API); 支持 {url} 占位符=
+  /** 通用 token 预取钩子(bb-d): 面向「可预取 token」形态(会话级/短时级), 请求前先从
+   *  tokenUrl 预取动态 token 再注入请求; 按章变化的加密参数型(如 bqg713 AES)不属此形态,
+   *  需站点专属解密或外置转换代理(tokenUrl 可用 {url} 占位符对接)。
+   *
+   *  预取地址: 响应体含 token 的任意端点(通常 JSON API); 支持 {url} 占位符=
    *  当前请求 URL 的 encodeURIComponent(外部转换代理形态) */
   tokenUrl?: string
   /** 提取表达式: 'regex:' 前缀=正则(取第一捕获组, 无捕获组取全匹配), 否则按 JSON 点路径
@@ -188,11 +197,17 @@ export interface FetchConfig {
    *  jitterMs(随机 0~jitterMs); 缺省 0=关闭(零回归); 引擎层不直接消费此字段,
    *  由 runner 读 cfg.fetch.jitterMs 在批次循环前 sleep */
   jitterMs?: number
-  /** 采集传输模式(hh-c, 第三方抓取工具接入): 'native'(缺省)=既有引擎链路(bun
-   *  fetch/curl/Obscura 全家桶, 零回归); 'scrapling-static'=经 scrapling-bridge 静态
-   *  传输(curl_cffi TLS 指纹伪装+浏览器头组); 'scrapling-stealthy'=经 scrapling-bridge
-   *  隐身浏览器(patchright 反检测+CF 挑战自动求解); 'scrapling-playwright'=经
-   *  scrapling-bridge 裸 Playwright chromium JS 渲染。
+  /** 采集传输模式(hh-c, 第三方抓取工具接入):
+   *  - 'native' (缺省)=既有引擎链路(bun fetch/curl/Obscura 全家桶, 零回归)
+   *  - 'scrapling-static'=经 scrapling-bridge 静态传输(curl_cffi TLS 指纹伪装+浏览器头组)
+   *  - 'scrapling-stealthy'=经 scrapling-bridge 隐身浏览器(patchright 反检测+CF 挑战自动求解)
+   *  - 'scrapling-playwright'=经 scrapling-bridge 裸 Playwright chromium JS 渲染
+   *
+   *  类型注: 接口字段以 `string` 暴露而非严格联合, 兼容前端 Select 组件 onValueChange 的
+   *  任意 string 形态(sanitizeFetchConfig 白名单 + fetcher.scraplingModeOf 双重防线已对非法
+   *  值兜底回退 native, 运行时类型宽松不影响实际安全)。`FetchMode` 联合类型供下游
+   *  窄化场景按需 import 使用。
+   *
    *  scrapling-* 语义: 整次抓取交本机桥服务代发, 目标侧响应(含 4xx/5xx)如实返回 ——
    *  token 预取/autoCookie/Cookie 挑战重试/浏览器升级链等 native 专有步骤跳过(隐身能力
    *  由桥内 Scrapling Fetcher 自身承担); 桥不可达或桥内异常时降级既有 native 链一次。
@@ -203,6 +218,17 @@ export interface FetchConfig {
    *  (可用环境变量 SCRAPLING_BRIDGE_URL 改全局缺省); 桥服务见 mini-services/scrapling-bridge */
   scraplingBridgeUrl?: string
 }
+
+/**
+ * 采集传输模式联合(供下游窄化场景按需 import, 见 FetchConfig.fetchMode 注释)。
+ * FetchConfig.fetchMode 字段以 `string` 暴露以兼容前端 Select 任意 string, 此处仅作
+ * 类型导出 —— 实际运行时由 sanitizeFetchConfig 白名单 + fetcher.scraplingModeOf 双重防线兜底。
+ */
+export type FetchMode =
+  | 'native'
+  | 'scrapling-static'
+  | 'scrapling-stealthy'
+  | 'scrapling-playwright'
 
 /** 内容清洗配置 */
 export interface CleanConfig {
@@ -228,15 +254,17 @@ export interface RuleConfig {
   clean: CleanConfig
 }
 
-/** 目录项 */
+/** 目录项(单章节) */
 export interface TocItem {
+  /** 章节标题(清洗后) */
   title: string
+  /** 章节绝对 URL(已 parser.absolutize 规范化) */
   url: string
   /** 分卷名(kk-a): 规则 toc.fields.volume 提取(如番茄 API volume_name); 重排/落库/UI 分组用 */
   volume?: string
 }
 
-/** 书籍解析结果 */
+/** 书籍解析结果(parseBook 输出; 字段全可选 —— 解析失败/规则未配置某字段时缺失) */
 export interface ParsedBook {
   name?: string
   author?: string
@@ -245,12 +273,15 @@ export interface ParsedBook {
   intro?: string
   cover?: string
   latestChapter?: string
+  /** 源站状态字段原文(经 smart.detectCompleteFromText 判定后落 Book.status: unknown|ongoing|completed) */
   status?: string
 }
 
-/** 章节内容解析结果 */
+/** 章节内容解析结果(parseContent 输出) */
 export interface ParsedContent {
+  /** 清洗后正文 HTML / 纯文本(取决于 CleanConfig.plainText) */
   content: string
+  /** 翻页合并后总页数(1=单页无翻页; >1=分页合并) */
   pages: number
 }
 
@@ -354,8 +385,7 @@ function safeBool(v: unknown): boolean | undefined {
 /** 安全字符串: 非字符串丢弃, 钳长度 */
 function safeStr(v: unknown, max: number): string | undefined {
   if (typeof v !== 'string') return undefined
-  const s = v.slice(0, max)
-  return s
+  return v.slice(0, max)
 }
 
 /**
@@ -620,8 +650,11 @@ export function isValidMirrorHost(s: string): boolean {
 // 零误伤要求: 规则库全部存量规则的正则字段必须全数通过(verify-gg-a-regex 实证)
 // ============================================================
 
+/** 正则安全审查结果(validateRegexSafety 的返回类型) */
 export interface RegexSafetyResult {
+  /** true=正则安全可编译且无灾难回溯形态; false=拒绝并附 reason */
   ok: boolean
+  /** 拒绝原因(ok=false 时填写, 供 API 400 响应体直传) */
   reason?: string
 }
 
@@ -817,9 +850,11 @@ export function validateRegexSafety(pattern: string, flags?: string): RegexSafet
   return { ok: true }
 }
 
-/** 正则命中面描述(rules API 400 信息用) */
+/** 正则命中面描述(collectRegexIssues 返回数组元素, rules API 400 信息用) */
 export interface RegexIssue {
+  /** 问题字段点路径, 如 'toc.fields.url.expression' / 'clean.adPatterns[2]' */
   field: string
+  /** 拒绝原因(供前端按字段定位提示) */
   reason: string
 }
 
