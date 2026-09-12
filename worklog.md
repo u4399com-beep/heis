@@ -6255,3 +6255,157 @@ Stage Summary:
   13/14, R5-2/4/5/12/22, R6-3, R7-12) verified solid. Defense-in-depth observations
   documented but not actioned (out of scope or low-priority).
 - Lint: 0/0 ✓; TSC: 0 errors (excl examples/skills) ✓; Dev server: clean ✓.
+
+---
+Task ID: agent-probe-1
+Agent: Probe batch 1 sites for latest-update rules
+Task: 15 sites homepage analysis + rule creation
+
+Work Log:
+- 用 `curl -s -m 15 --compressed -A "<桌面 Chrome UA>"` 探针 15 站首页。
+  14 站 HTTP 200; 8kana.com 首次超时(HTTP=000), 重试 www.8kana.com → HTTP 200 但首页内容仅
+  "indexMain_Recommend"推荐位, 无"最近更新/最新更新/最新小说"标题板块。
+- 对每站 HTML 做关键字定位 + 选择器推断:
+  * 101kks: 首页仅"热门書單推薦"用户书单卡片(booklist-card), "最新更新"是页脚导航链指向
+    /last 子页, 首页本体无 latest-update 板块 → SKIP
+  * 69shuba (GBK): 首页仅"新书推荐"板块(indextj > ranking > h3.ranktit), 无"最近更新" → SKIP
+  * 8kana: 首页仅"indexMain_Recommend" 推荐位(Black_update/updateCover_Name 均为策展推荐),
+    无显式 latest-update 标题 → SKIP
+  * uukanshu (UTF-8 繁体): div#content-left#gengxin > h2"最近更新" + ul > li
+    (s1 分类 / s2 a 书名+bookUrl / s3 a 最新章节+章节链 / s4 作者 / s5 时间) → ✅ count=30
+  * ttkan (AMP): 首页 ul.update_chapter_list 由 amp-list 动态渲染(JSON 模板 amp-mustache),
+    HTML 仅有空模板; 但 amp-list src 暴露公开 JSON API
+    /api/nq/amp_last_serial_novel_updates?page=N&limit=50&language=cn(items 数组含
+    novel_id/novel_name/author/view_type/chapter_name) → ✅ JSON 型规则 count=50
+  * aijjxs (UTF-8): article.latest-upload > h3"最新上传" + ul.lines-books > li
+    (span.line-main 内: span.cat / a 书名+bookUrl / span.author; span.date span.new 时间) → ✅ count=86
+  * 80ge (UTF-8): dl#tab > dt"最新TXT电子书" + dd#Tabs > li
+    ([类别 a[href*=sort]] + 书名 a[href*=txtxz] + 时间 em.newDate) → ✅ count=20
+  * kanunu8 (GBK): div.box:has(h2.box-title a[href*="/book7/"]) > div.box-list > li
+    (仅 a 书名+bookUrl, 无作者/最新章节) → ✅ count=12
+  * yybsw: 首页仅"最新入库"面板(panel-info col-right2), 仅 13 本仅含 name+author 无 latestChapter,
+    与"最近更新/最新更新/最新小说"语义不同 → SKIP (价值低)
+  * hodei (UTF-8): div#newscontent > .l > h2"最近更新小说列表" + ul > li
+    (s1 / s2 a / s3 a / s4 a 作者 / s5 时间) → ✅ count=25
+  * wanben: HTTP 200 但返回 GoEdge WAF "Verify Yourself" 图形验证码页 → 需浏览器引擎 → SKIP
+  * deqixs (UTF-8): div#content > div#content-left#gengxin > h2"最近更新" + ul > li
+    (s1 / s2 a / s3 a / s4 / s5 时间) → ✅ count=30
+  * xjp (UTF-8): div.rank > .left > h4.title-84c1078c"最近更新" + ul.update.list-84c1078c >
+    li.list-item-84c1078c (5 个 span: 分类 / 书名+bookUrl / 最新章节+章节链 / 作者 / 相对时间) → ✅ count=20
+  * gegedang (UTF-8): div.layout.layout2.layout-col2 > h2.layout-tit"最近更新小说列表" +
+    ul.txt-list.txt-list-row5 > li (s1 / s2 a / s3 a / s4 / s5 时间) → ✅ count=30
+  * jhsssd (UTF-8): div.block4 > div.right > h2"最新小说" (旁附"最近更新小说列表"更多链) +
+    div.block4_list > ul > li (p1 分类 / p2 a 书名+bookUrl / p3 a 最新章节+章节链 / p4 作者 / p5 时间) → ✅ count=24
+
+- 规则创建: scripts/seed-rule-homepage-latest-batch1.ts (list-only, book/toc/content 全闭,
+  fetch.engine=auto + uaMode=desktop, 既有 mini-services/代理规则完全不动)
+  使用 prisma 直接 upsert, 同名规则先删后建(idempotent)。
+  共创建 10 条新规则:
+  1. UU看书(uukanshu.cc)·首页最近更新 (id=cmtxzridr0000sn4smc0irdzu, count=30)
+  2. 得奇小说网(deqixs.cc)·首页最近更新 (id=cmtxzrinj0001sn4snthitpce, count=30)
+  3. 好读小说网(hodei.net)·首页最近更新小说列表 (id=cmtxzriwt0002sn4sp1cx2fs1, count=25)
+  4. 格格党(gegedangbook.com)·首页最近更新小说列表 (id=cmtxzrkj90003sn4s9dz7sk9e, count=30)
+  5. 江湖神算(jhsssd.com)·首页最新小说 (id=cmtxzrlnt0004sn4sh9ey99wi, count=24)
+  6. 新键盘小说网(xinjianpan.com)·首页最近更新 (id=cmtxzrm720005sn4sq1lpsjle, count=20)
+  7. 努努书坊(kanunu8.com)·首页最新更新 (id=cmtxzrmgc0006sn4s0ues6928, count=12, GBK)
+  8. 八零电子书(80ge.info)·首页最新TXT电子书 (id=cmtxzrmz80007sn4s7321gb1w, count=20)
+  9. 久久小说网(aijjxs.com)·首页最新上传 (id=cmtxzrnjl0008sn4swtdvg4jm, count=86)
+  10. ttkan中文(cn.ttkan.co)·首页最近更新 (id=cmtxzrnvv0009sn4s0gxqfq37, count=50, JSON API)
+
+- 测试方法: 直接 import fetchPage + parseList(绕过 admin auth), 对每规则 list URL 抓取并解析,
+  确认 items.length > 0 + 抽样首项字段完整。10/10 全部测试通过(engine=http)。
+
+Stage Summary:
+- 规则创建: 10 条新规则全 enabled=true(测试通过)
+- 规则测试 OK: 10/10 (100%)
+- 跳过站点: 5 站
+  · 101kks / 69shuba / 8kana / yybsw: 首页无"最近更新/最新更新/最新小说"语义板块
+  · wanben: GoEdge WAF 图形验证码 → 需浏览器引擎(needs browser)
+- 需浏览器引擎: 1 站(wanben, GoEdge WAF captcha)
+- 既有代码零修改(只创建 DB 规则 + scripts/seed-rule-homepage-latest-batch1.ts 种子脚本)
+- 已存在 3 条首页 latest-update 规则(黄金屋/二三阅读/零点看书)未动; 加上本次 10 条,
+  系统 now 共 13 条首页 latest-update 规则
+
+---
+Task ID: agent-probe-2
+Agent: Probe batch 2 sites for latest-update rules
+Task: 16 sites homepage analysis + rule creation
+
+Work Log:
+- 探测前 dev server 状态: 健康运行(http://localhost:3000), 已有 49 条规则, 含 8 条首页
+  最近更新规则(batch1 agent 创建)。本次扫描 batch2 16 站点, 用 curl -s -m 15 --compressed
+  + 桌面 Chrome UA 取首页 HTML, 解析后定位"最近更新"区块选择器与字段。
+
+- 1. full.hnxianxin.cn/qd/ (小雨的世界): 首页 SPA 壳无 SSR(只渲染"加载中..."), 
+  无 HTML 最近更新段。/qd/ranking.php?action=square 返 JSON 但 ItemName/AuthorName
+  均空, 仅 BookId+ItemImageUrl+JumpActionUrl(QDReader://app/BookDetail?query={bookId:N}
+  原生 app deeplink, 非可采 URL)。/qd/ranking.php?action=ranking 返 Books[]20项含
+  BookName/AuthorName/CategoryName/Description/WordsCount 全字段(但 LastUpdateTime=0,
+  非"最近更新"排序而是首页 ranking)。现有"起点API采集"规则覆盖 search.php?keyword=;
+  跳过(无清晰"最近更新"段, ranking JSON 字段非按更新排序)。
+- 2. ixdzs8.com (爱下电子书): ✅ CREATE — 首页 9 个 .panel 区块, 最后一块标题
+  <h2><a href="/new/">最近更新</a></h2>, 内嵌全页唯一 ul.u-line li (15 本)。每项:
+  .l-name h3.bname a(书名+链), .l-author .bauthor a(作者), .l-sort a(类别),
+  .l-nchapter a(最新章+链), .l-ntime(更新时间)。rule: ul.u-line li → 15 items ✓
+- 3. www.biquge.tw (笔趣阁tw): ✅ CREATE — 首页 6 区块, div.list-index-3 含
+  h2"最近更新", 6 项 .item。每项: dt a(书名+链), dd.author/.intro, .cover img
+  data-src(懒加载封面), .cover span("/ 全本|连载"状态原文), dd.more span(字数+日期)。
+  rule: .list-index-3 .item → 6 items ✓ (现有主规则用 /sort/{page}.html 列表页)
+- 4. www.bqg713.cc (笔趣阁bqg713): ✅ CREATE — JSON API /api/index?sort=all 顶层
+  uplist[]30 项, 字段 id/title/author/sortname/lastchapter/lastchapterid/uptime;
+  bookUrl 用 const 模板 /api/book?id={id} 复用主规则同款书籍 API URL。rule:
+  json:uplist → 30 items ✓ (主规则 itemSelector=hotlist,sort1~6 不含 uplist)
+- 5. jpxs123.com (精品小说): ⚠ SKIP — 现有"繁体站直连采集"规则 urlTemplate=
+  https://jpxs123.com/ + selector div.bk 已覆盖首页"最新小說"段(每页 10+ 项含
+  title/bookUrl/author/intro/cover)。无需新建。
+- 6. www.shudugu.org (速读谷): ✅ CREATE — 首页 div.container > div.item (11 本,
+  含 1 个置顶 h1"捞尸人" + 10 常规 h3)。同分类页 .itemtxt 结构: h3/h1 a(书名+链),
+  p a"作者：xxx"(剥前缀), p span(状态+类别), ul li a(最新三章), img 绝对地址封面。
+  rule: div.item → 11 items ✓ (现有主规则用 /xuanhuan/{page}.html 分类页)
+- 7. www.23qb.net (铅笔小说): ⚠ SKIP — 首页仅有 1 个 .module 含 16 .module-item
+  无明确"最近更新"标题(无 h2/h3 section label), 系通用推荐位; 现有规则
+  /book/lastupdate_*.html 才是真"最近更新"列表页(/book/lastupdate_0_1_0_0_0_0_0_0_1_0.html
+  nav 链接即此)。不新建。
+- 8. www.pilishuwu.com (霹雳书屋): ❌ SKIP — Cloudflare 防护(裸 curl 403 +
+  /cdn-cgi/challenge-platform 挑战页)。已有"CF防护隐身采集"规则用 engine=auto+
+  browserFallbackStatus[403,412,429,503] 自动降级浏览器; 不新建(站点已覆盖)。
+- 9. www.piaotia.com (飘天文学): ✅ CREATE — 首页"最近更新"段(全页唯一 ul.ulmul,
+  .blocktitle 标题"最近更新"), li.fl.lm 项内 3 个 a 顺序: 1.a.poptext 书名+bookinfo 链,
+  2.a 目录链接, 3.a 最新章+正文链; 类别用 regex 提取 li 文本起始 [xxx] 括号内字符
+  (cheerio 序列化含 <li> 标签故 ^ 锚失效, 用无锚 \[([^\]]+)\] 取首个方括号即类别)。
+  rule: ul.ulmul li.fl.lm → 30 items ✓ (现有主规则用 /booksort1/0/{page}.html 表格分类页)
+- 10. guichuideng.info (鬼吹灯): ❌ SKIP — 首页 301→www. 后 403(裸 curl 0 字节 +
+  重定向后 403)。需浏览器引擎; 已有"专站403采集"规则覆盖; 不新建。
+- 11. dongliuxiaoshuo.com (东流小说): ❌ SKIP — Cloudflare 防护(裸 curl 403 +
+  "Access denied | dongliuxiaoshuo.com used Cloudflare to restrict access")。
+  已有"403站采集"规则覆盖; 不新建。
+- 12. libahao2.com (丽芭号): ❌ SKIP — Cloudflare 防护(裸 curl 403, 响应体为
+  base64 编码的 anti-bot 挑战图像数据)。已有"笔趣阁系采集"规则覆盖; 不新建。
+- 13. shucong.com (书丛): ❌ SKIP — nginx 403 直拒(非 CF, 响应 246 字节标准 nginx
+  403 页)。已有"GBK编码403站采集"规则覆盖; 不新建。
+- 14. hetushu.com (和图书): ❌ SKIP — Cloudflare 防护(裸 curl 403 +
+  "Attention Required! | Cloudflare" 挑战页)。已有"403站采集"规则覆盖; 不新建。
+- 15. www.dafengdagengren.com (大奉打更人): ⚠ SKIP — 首页 403(双 Set-Cookie
+  挑战)。现有"大奉打更人"主规则 urlTemplate=/xuanhuanxiaoshuo/ 已覆盖"最近更新
+  小说列表"(分类页 30 本/页; 主列表区 ul.txt-list-row5 li), 钉第 1 页翻页关闭。
+  等价覆盖首页 latest, 不新建。
+- 16. www.daweixs.com (大微小说网): ⚠ SKIP — 同 dafengdagengren, 现有主规则
+  /xuanhuanxiaoshuo/ 等价覆盖 latest; 不新建。
+
+Stage Summary:
+- 探测结论: 16 站中 5 站新建规则(ixdzs8/biquge.tw/bqg713/shudugu/piaotia),
+  4 站已有等价覆盖 SKIP(jpxs123/dafengdagengren/daweixs + 23qb 现有 lastupdate 规则),
+  6 站需浏览器引擎 SKIP(pilishuwu/guichuideng/dongliuxiaoshuo/libahao2/shucong/hetushu
+  含 5 CF 挑战 + 1 nginx 403), 1 站无清晰 latest 段 SKIP(hnxianxin SPA+ranking 非
+  时间排序)。
+- 规则创建: 5 条入库(全部 enabled=true) —
+  · 爱下电子书(ixdzs8.com)·首页最近更新 → 15 items (HTTP 711ms)
+  · 笔趣阁(www.biquge.tw)·首页最近更新 → 6 items (HTTP 205ms)
+  · 笔趣阁bqg713(www.bqg713.cc)·首页最近更新 → 30 items (JSON uplist 144ms)
+  · 速读谷(shudugu.org)·首页最近更新 → 11 items (HTTP 797ms)
+  · 飘天文学(www.piaotia.com)·首页最近更新 → 30 items (HTTP 339ms)
+- 测试通过率: 5/5 = 100%(fetchPage+parseList 实测 count>0 全 OK)
+- 需浏览器引擎: 6 站(pilishuwu/guichuideng/dongliuxiaoshuo/libahao2/shucong/hetushu)
+  — 已有"403站采集"/"CF防护"系列规则覆盖, 不在本批次新建
+- 系统 now 共 13 条首页 latest-update 规则(8 条 batch1 + 5 条 batch2)
+- 既有代码零修改(只创建 DB 规则 + scripts/seed-batch2-latest-rules.ts 种子脚本)
