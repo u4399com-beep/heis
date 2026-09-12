@@ -5,12 +5,13 @@
 // - 卡片: 封面 + 标题/作者 + 阅读进度条 + 已读时长 + 相对时间 + 继续阅读/移除
 // - 清空历史: AlertDialog 二次确认
 // - 空态: BookMarked 大图标 + 文案 + 去书城入口
+// - agent-W: 顶部"继续阅读"快捷入口 (最近一本书) + HistoryCard memo
 // ============================================================
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
-import { BookMarked, BookOpen, Clock, Library, Trash2, X } from 'lucide-react'
+import { BookMarked, BookOpen, ChevronRight, Clock, Library, PlayCircle, Trash2, X } from 'lucide-react'
 import { fetchBook } from './data'
 import type { BookDetail } from './types'
 import { usePublic } from './ctx'
@@ -91,10 +92,10 @@ export function HistoryView() {
 
   const loading = entries === null
 
-  const removeOne = (bookId: string) => {
+  const removeOne = useCallback((bookId: string) => {
     clearReadPos(bookId)
     setEntries((prev) => (prev ? prev.filter((e) => e.bookId !== bookId) : prev))
-  }
+  }, [])
 
   const clearAll = () => {
     if (!entries) return
@@ -102,6 +103,18 @@ export function HistoryView() {
     setEntries([])
     setConfirmOpen(false)
   }
+
+  // agent-W: 顶部"继续阅读"快捷入口 — 取最近一本有 chapterId 的书, 一键直跳阅读页
+  const latestEntry = entries && entries.length > 0 ? entries[0] : null
+
+  const onContinueLatest = useCallback(() => {
+    if (!latestEntry?.chapterId) return
+    navigate({ view: 'read', chapterId: latestEntry.chapterId })
+  }, [latestEntry?.chapterId, navigate])
+
+  const onContinueBook = useCallback((chapterId: string) => {
+    navigate({ view: 'read', chapterId })
+  }, [navigate])
 
   useSiteSEO({
     title: `我的书架 - ${site.name}`,
@@ -204,6 +217,44 @@ export function HistoryView() {
         </button>
       </header>
 
+      {/* agent-W: 继续阅读快捷入口 (最近一本书) — 仅当最近一本有 chapterId 时显示 */}
+      {latestEntry?.chapterId && (
+        <button
+          type="button"
+          onClick={onContinueLatest}
+          className="group mb-6 flex w-full items-center gap-4 overflow-hidden rounded-xl p-4 text-left transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg sm:p-5"
+          style={{
+            background: `linear-gradient(120deg, ${withAlpha(v.primary, theme.dark ? 0.18 : 0.1)}, ${withAlpha(v.accent, theme.dark ? 0.12 : 0.06)})`,
+            border: `1px solid ${withAlpha(v.primary, 0.4)}`,
+            borderRadius: v.radius,
+          }}
+          aria-label={`继续阅读 ${latestEntry.title || '最近章节'}`}
+        >
+          <span
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full"
+            style={{ background: v.primary, color: v.primaryText }}
+            aria-hidden
+          >
+            <PlayCircle className="h-6 w-6" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] font-medium tracking-wider" style={{ color: v.textMuted }}>
+              继续阅读 · 上次 {formatRelativeTime(latestEntry.ts)}
+            </p>
+            <p className="mt-0.5 line-clamp-1 text-sm font-semibold" style={{ color: v.text }}>
+              {latestEntry.title || '点击继续阅读'}
+            </p>
+            {latestEntry.readTimeMs && latestEntry.readTimeMs > 0 && (
+              <p className="mt-0.5 inline-flex items-center gap-1 text-[11px] tabular-nums" style={{ color: v.textMuted }}>
+                <Clock className="h-2.5 w-2.5" aria-hidden />
+                已读 {formatReadTime(latestEntry.readTimeMs)}
+              </p>
+            )}
+          </div>
+          <ChevronRight className="h-5 w-5 shrink-0 transition-transform group-hover:translate-x-1" style={{ color: v.primary }} aria-hidden />
+        </button>
+      )}
+
       {/* 卡片网格 */}
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
         {list.map((e) => (
@@ -211,7 +262,7 @@ export function HistoryView() {
             key={e.bookId}
             entry={e}
             onRemove={() => removeOne(e.bookId)}
-            onContinue={() => navigate({ view: 'read', chapterId: e.chapterId })}
+            onContinue={() => onContinueBook(e.chapterId)}
           />
         ))}
       </div>
@@ -242,8 +293,8 @@ export function HistoryView() {
   )
 }
 
-/** 单本历史卡片 */
-function HistoryCard({
+/** 单本历史卡片 — agent-W: memo 化, 避免 entries/enriched 状态变化时全量重渲染 */
+const HistoryCard = memo(function HistoryCard({
   entry,
   onRemove,
   onContinue,
@@ -348,4 +399,4 @@ function HistoryCard({
       </div>
     </article>
   )
-}
+})

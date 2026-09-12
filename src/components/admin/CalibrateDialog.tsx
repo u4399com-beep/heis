@@ -66,6 +66,7 @@ import {
   CheckCircle2,
   ChevronDown,
   Copy,
+  Download,
   Gauge,
   Loader2,
   RefreshCw,
@@ -827,6 +828,28 @@ export function CalibrateDialog({ open, onOpenChange, rule }: CalibrateDialogPro
                   )}
                   {applied ? '已写入规则' : '应用推荐并发上限到规则'}
                 </Button>
+                {/* agent-X-rule-test: 一键自动应用推荐 — 跳过手动 review 直接写回
+                  (内部调 applyRecommended, 仅 UI 上让用户少点一次"应用推荐..."的二次确认) */}
+                <Button
+                  onClick={applyRecommended}
+                  disabled={applying || applied}
+                  variant="secondary"
+                  className="gap-1.5 border-zinc-700 bg-zinc-800 text-zinc-100 hover:bg-zinc-700"
+                  aria-label="一键应用所有推荐参数"
+                >
+                  <CheckCircle2 className="h-4 w-4" />
+                  一键应用推荐
+                </Button>
+                {/* agent-X-rule-test: 导出校准报告 JSON — 含规则信息+结果+trace+时间戳 */}
+                <Button
+                  onClick={() => exportCalibrationReport(rule, result)}
+                  variant="outline"
+                  className="gap-1.5 border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800"
+                  aria-label="导出本次校准报告为 JSON 文件"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  导出报告
+                </Button>
                 <Button
                   variant="outline"
                   className="gap-1.5 border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800"
@@ -1239,4 +1262,38 @@ export function CalibrateAllDialog({ open, onOpenChange }: CalibrateAllDialogPro
       </DialogContent>
     </Dialog>
   )
+}
+
+// ============================================================
+// agent-X-rule-test: 导出校准报告 JSON — 含规则信息 + 结果 + trace + 时间戳
+// 文件名 calibrate-{ruleId-or-name}-{timestamp}.json
+// 报告结构符合 zz-a 契约(CalibrateResult + 上下文), 可作为审计/对比基准
+// ============================================================
+function exportCalibrationReport(rule: RuleRow | null, result: CalibrateResult): void {
+  try {
+    const report = {
+      schemaVersion: '1.0',
+      exportedAt: new Date().toISOString(),
+      rule: rule
+        ? {
+            id: rule.id,
+            name: rule.name,
+            description: rule.description,
+            enabled: rule.enabled,
+          }
+        : null,
+      result,
+    }
+    const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    const safeName = (rule?.name || 'rule').replace(/[^\w-]+/g, '_').slice(0, 40)
+    a.download = `calibrate-${safeName}-${Date.now()}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+    toast.success('校准报告已导出')
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : '导出失败')
+  }
 }

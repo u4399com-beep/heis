@@ -6,7 +6,7 @@
 // ============================================================
 'use client'
 
-import { useEffect, useState } from 'react'
+import { memo, useEffect, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { ChevronLeft, ChevronRight, ListTree } from 'lucide-react'
 import { readOf } from '@/lib/crawl/themes'
@@ -30,7 +30,7 @@ import {
   type ReadLayoutProps,
 } from './shared'
 
-export function ReadPili({
+export const ReadPili = memo(function ReadPili({
   data,
   loading,
   fontSize,
@@ -334,4 +334,4 @@ export function ReadPili({
       <TocDrawer open={drawer} onClose={() => setDrawer(false)} bookId={bk?.id} activeChapterId={ch?.id} variant="classic" />
     </div>
   )
-}
+})

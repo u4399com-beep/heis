@@ -11,8 +11,12 @@
 //   "查看高亮" 按钮内联展开 DebugHtmlViewer 聚焦本字段(mark 闪烁)。
 // feat-round-11 A3: 未配置态的"添加"按钮升级为模板下拉
 //   8 种常见字段模板(书名/作者/简介/封面/章节标题/章节链接/正文/最新章节)一键预填。
+// agent-X-rule-test 增强:
+//   - regex 型字段下方常驻"实时正则测试器": 输入待测文本 + 300ms 防抖,
+//     展示所有捕获组与匹配位置; 用户在写规则时即时反馈而无需走完整测试面板
+//   - 表达式输入框旁边增加"常用选择器片段"快捷按钮(og:title meta / .chapter-list a 等)
 // ============================================================
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -237,6 +241,22 @@ export function FieldRuleEditor({ label, value, onChange, placeholder, fieldKey,
         />
       </div>
       {expressionEmpty && <div className="mt-1 text-[11px] text-red-400/80">表达式为空, 该字段将被忽略</div>}
+
+      {/* agent-X-rule-test: 常用选择器片段 — 单击直接覆盖表达式; 仅 css/xpath 型显示 */}
+      {(value.type === 'css' || value.type === 'xpath') && (
+        <SelectorSnippets type={value.type} onPick={(expr, attr) => patch({ expression: expr, ...(attr ? { attr } : {}) })} />
+      )}
+
+      {/* agent-X-rule-test: 实时正则测试器 — 仅 regex 型字段显示; 300ms 防抖 */}
+      {isRegex && (
+        <RegexTester
+          expression={value.expression}
+          flags={value.flags || 'gis'}
+          groupIdx={value.attr || '0'}
+          onGroupChange={(g) => patch({ attr: g })}
+          onFlagsChange={(f) => patch({ flags: f })}
+        />
+      )}
 
       <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
         <div className="flex items-center gap-2">
@@ -574,5 +594,198 @@ function FieldTestButton({ label, fieldKey, testContext }: FieldTestButtonProps)
         )}
       </PopoverContent>
     </Popover>
+  )
+}
+
+// ============================================================
+// agent-X-rule-test: SelectorSnippets — 常用 CSS / XPath 选择器片段
+// 单击直接覆盖表达式 + 自动设置 attr(如 og:title meta 自动取 content 属性)
+// 让用户无需记忆"meta[property=og:title] @content"这类细节
+// ============================================================
+interface SelectorSnippetsProps {
+  type: 'css' | 'xpath'
+  onPick: (expression: string, attr?: string) => void
+}
+
+const CSS_SNIPPETS: { label: string; expr: string; attr?: string; tip: string }[] = [
+  { label: 'og:title', expr: 'meta[property="og:title"]', attr: 'content', tip: 'OpenGraph 协议标题' },
+  { label: 'og:image', expr: 'meta[property="og:image"]', attr: 'content', tip: 'OpenGraph 协议封面' },
+  { label: 'og:description', expr: 'meta[property="og:description"]', attr: 'content', tip: 'OpenGraph 协议简介' },
+  { label: 'meta description', expr: 'meta[name="description"]', attr: 'content', tip: 'SEO meta description' },
+  { label: 'meta keywords', expr: 'meta[name="keywords"]', attr: 'content', tip: 'SEO meta keywords' },
+  { label: 'h1', expr: 'h1', attr: 'text', tip: '一级标题(书名常用)' },
+  { label: '.chapter-list a', expr: '.chapter-list a', attr: 'text', tip: '章节列表项(笔趣阁系常见)' },
+  { label: '#chapter-list a', expr: '#chapter-list a', attr: 'href', tip: '章节链接' },
+  { label: '.book-info h1', expr: '.book-info h1', attr: 'text', tip: '书籍信息块内的一级标题' },
+  { label: '#content', expr: '#content', attr: 'html', tip: '章节正文容器(笔趣阁系常见)' },
+  { label: '.content', expr: '.content', attr: 'html', tip: '章节正文容器(通用)' },
+  { label: '[itemprop=name]', expr: '[itemprop="name"]', attr: 'text', tip: '微数据 itemprop=name' },
+  { label: 'img.cover', expr: 'img.cover', attr: 'src', tip: '封面图(class 含 cover)' },
+  { label: 'script[type=application/ld+json]', expr: 'script[type="application/ld+json"]', attr: 'html', tip: 'JSON-LD 结构化数据' },
+]
+
+const XPATH_SNIPPETS: { label: string; expr: string; attr?: string; tip: string }[] = [
+  { label: '//h1/text()', expr: '//h1', attr: 'text', tip: '一级标题文本' },
+  { label: '//meta[@name=description]/@content', expr: '//meta[@name="description"]', attr: 'content', tip: 'SEO description' },
+  { label: '//a[contains(@class,chapter)]', expr: '//a[contains(@class, "chapter")]', attr: 'text', tip: '含 chapter class 的链接' },
+  { label: '//div[@id=content]', expr: '//div[@id="content"]', attr: 'html', tip: 'id=content 的正文容器' },
+  { label: '//ul[@class=chapter-list]//a', expr: '//ul[contains(@class,"chapter-list")]//a', attr: 'href', tip: '章节列表所有链接' },
+  { label: '//img[@class=cover]/@src', expr: '//img[contains(@class,"cover")]', attr: 'src', tip: '封面图 src' },
+]
+
+function SelectorSnippets({ type, onPick }: SelectorSnippetsProps) {
+  const snippets = type === 'css' ? CSS_SNIPPETS : XPATH_SNIPPETS
+  return (
+    <div className="mt-1.5 flex flex-wrap items-center gap-1">
+      <span className="text-[10px] text-zinc-600">常用:</span>
+      {snippets.map((s) => (
+        <button
+          key={s.label}
+          type="button"
+          onClick={() => onPick(s.expr, s.attr)}
+          title={`${s.tip}\n${s.expr}${s.attr ? ` · @${s.attr}` : ''}`}
+          className="inline-flex items-center rounded border border-zinc-700 bg-zinc-800/40 px-1.5 py-0.5 font-mono text-[10px] text-zinc-400 transition hover:border-violet-500/50 hover:bg-violet-500/10 hover:text-violet-200"
+        >
+          {s.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+// ============================================================
+// agent-X-rule-test: RegexTester — 实时正则测试器
+// 输入待测文本 → 300ms 防抖 → 用当前 expression+flags 跑匹配 → 展示:
+//   · 命中总数 + 各捕获组内容(高亮匹配区间)
+//   · 错误(非法正则) 直接展示 error.message
+//   · flags 输入框(g/i/s/m/u/y 任意组合, 默认 gis)
+//   · 捕获组序号选择(决定 attr 字段值, attr=0 取全匹配, 1 取第一捕获组, 类推)
+// ============================================================
+interface RegexTesterProps {
+  expression: string
+  flags: string
+  groupIdx: string
+  onGroupChange: (g: string) => void
+  onFlagsChange: (f: string) => void
+}
+
+interface RegexMatch {
+  match: string
+  start: number
+  end: number
+  groups: string[]
+}
+
+function RegexTester({ expression, flags, groupIdx, onGroupChange, onFlagsChange }: RegexTesterProps) {
+  const [sampleText, setSampleText] = useState('')
+  // 防抖后的 sampleText(避免每次按键都跑 RegExp.exec 全量迭代)
+  const [debouncedText, setDebouncedText] = useState('')
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedText(sampleText), 300)
+    return () => clearTimeout(t)
+  }, [sampleText])
+
+  const { matches, error } = useMemo<{ matches: RegexMatch[]; error: string }>(() => {
+    if (!expression.trim() || !debouncedText) return { matches: [], error: '' }
+    let re: RegExp
+    try {
+      re = new RegExp(expression, flags || 'gis')
+    } catch (e) {
+      return { matches: [], error: e instanceof Error ? e.message : '正则编译失败' }
+    }
+    const out: RegexMatch[] = []
+    // 防御 RE DoS: 仅 g/Global 模式迭代; 非 g 模式仅取首条
+    const global = re.global
+    let m: RegExpExecArray | null
+    let safetyCounter = 0
+    do {
+      m = re.exec(debouncedText)
+      if (m) {
+        out.push({
+          match: m[0],
+          start: m.index,
+          end: m.index + m[0].length,
+          groups: m.slice(1).map((g) => (g === undefined ? '' : String(g))),
+        })
+      }
+      safetyCounter++
+      if (safetyCounter > 1000) break // 上限保护, 防止恶意 .* 等无穷匹配
+    } while (global && m && safetyCounter < 1000)
+    return { matches: out, error: '' }
+  }, [expression, flags, debouncedText])
+
+  const groupIdxNum = Math.max(0, parseInt(groupIdx, 10) || 0)
+
+  return (
+    <div className="mt-2 space-y-1.5 rounded border border-amber-700/40 bg-amber-950/10 p-2">
+      <div className="flex items-center gap-1.5 text-[10px] text-amber-300">
+        <span className="font-semibold">实时正则测试器</span>
+        <span className="text-amber-500/70">· 300ms 防抖</span>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Label className="text-[10px] text-zinc-500">flags</Label>
+        <Input
+          className="h-7 w-20 border-zinc-700 bg-zinc-950 font-mono text-[11px]"
+          placeholder="gis"
+          value={flags}
+          onChange={(e) => onFlagsChange(e.target.value)}
+        />
+        <Label className="text-[10px] text-zinc-500">取捕获组</Label>
+        <Input
+          className="h-7 w-16 border-zinc-700 bg-zinc-950 font-mono text-[11px]"
+          type="number"
+          min={0}
+          placeholder="0"
+          value={groupIdx}
+          onChange={(e) => onGroupChange(e.target.value || '0')}
+        />
+        <span className="text-[10px] text-zinc-600">0=全匹配, 1=第一组…</span>
+      </div>
+      <textarea
+        className="admin-scroll h-16 w-full resize-y rounded border border-zinc-700 bg-zinc-950 px-2 py-1 font-mono text-[11px] text-zinc-200 placeholder:text-zinc-600"
+        placeholder="粘贴待测文本, 300ms 后自动匹配…"
+        value={sampleText}
+        onChange={(e) => setSampleText(e.target.value)}
+      />
+      {error && (
+        <div className="rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-[11px] text-red-400">
+          正则错误: {error}
+        </div>
+      )}
+      {!error && debouncedText && (
+        <div className="space-y-1">
+          <div className="flex items-center gap-2 text-[10px] text-zinc-500">
+            <span>命中 {matches.length} 处</span>
+            {matches.length > 0 && groupIdxNum > 0 && groupIdxNum <= (matches[0]?.groups.length || 0) && (
+              <span className="text-emerald-400">
+                第 {groupIdxNum} 组: {matches[0].groups[groupIdxNum - 1] || '(空)'}
+              </span>
+            )}
+            {matches.length > 0 && groupIdxNum === 0 && (
+              <span className="text-emerald-400">
+                全匹配: {matches[0].match.slice(0, 40)}{matches[0].match.length > 40 ? '…' : ''}
+              </span>
+            )}
+          </div>
+          {matches.length > 0 && (
+            <div className="admin-scroll max-h-24 overflow-y-auto rounded border border-zinc-800 bg-zinc-950 p-1.5">
+              {matches.slice(0, 50).map((m, i) => (
+                <div key={i} className="font-mono text-[10px] text-zinc-400">
+                  <span className="text-zinc-600">#{i + 1} @{m.start}-{m.end}:</span>{' '}
+                  <span className="text-zinc-200">{m.match.slice(0, 60)}{m.match.length > 60 ? '…' : ''}</span>
+                  {m.groups.length > 0 && (
+                    <span className="text-violet-400"> [组: {m.groups.map((g) => g || '∅').join(' | ')}]</span>
+                  )}
+                </div>
+              ))}
+              {matches.length > 50 && (
+                <div className="text-[10px] text-zinc-600">… 共 {matches.length} 处, 仅显示前 50</div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   )
 }

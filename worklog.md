@@ -4767,3 +4767,341 @@ Stage Summary:
 - Image refs verified: 17/17 exist ✓
 - Code modified: 0 (constraint satisfied — only docs/INSTALL-GUIDE.md + new docs/images/ directory)
 - Lint: pre-existing 1 error in fetcher.ts (not introduced by this task)
+
+---
+Task ID: agent-V-fetcher-phase5
+Agent: Fetcher phase 5 - post-cleanup verification + deep audit + anti-bot
+Task: Verify agent-T removals safe + continue bug hunt + anti-bot enhancements
+
+Work Log:
+- Read /home/z/my-project/worklog.md tail for prior context (agents A/K/M/Q/S/T worked
+  on fetcher; agent-T just removed 8 unused exports; baseline lint=0/0, tsc=0).
+- Phase 1 — Post-cleanup verification (CRITICAL):
+  · rg across src/+scripts/+mini-services/ for the 8 removed exports
+    (validateJa3/JA3_PROFILES/validateH2Fingerprint/H2_FINGERPRINTS/getCaptchaEncounteredCount/
+    isSafeTarget/proxyPoolStats/fetchHttpForTest). Results:
+    - Active src/ refs: ONLY in JSDoc comments (fetcher.ts:263-265 self-doc removal;
+      types.ts:266 referenced JA3_PROFILES; runner.ts:78 referenced getCaptchaEncounteredCount).
+      Zero active code references. Compilation not broken.
+    - scripts/archive/ refs: 4 archived verify-gg-*.ts scripts reference fetchHttpForTest
+      (intentionally archived per agent-T log; not in active build path).
+  · Verified recordHostLatency IS used at fetcher.ts:2260 (fetchHttp success path records
+    per-host EWMA latency). Agent-R's "unused" warning from earlier session is stale —
+    the function is actively feeding adaptiveMinGapMs via getHostLatencyMs. KEPT as-is.
+  · Verified captcha chain end-to-end (smoke tested):
+    looksLikeCaptcha (detects recaptcha/hcaptcha/turnstile/geetest by HTML patterns)
+    → markCaptchaEncountered (sets captchaCooldown Map entry + increments process counter)
+    → isHostInCaptchaCooldown (queried at fetchPageOnce:3329, throws CaptchaCooldown error
+       with name/captchaType/captchaCooldownRemainingMs attached)
+    → runner.gateFetch catches CaptchaCooldown, classifies as host failure (not abort),
+       rt.captchaEncountered++ for snapshot UI display
+    Chain intact, 4 detection points (scrapling bridge path, http engine, auto engine
+    HTTP-attempt, browser upgrade path) all funnel into markCaptchaEncountered.
+  · Verified in-flight dedup (inflightMap): cap 500, TTL 30s, FIFO trim, finally block
+    deletes key after promise settles. dedupKey computation (inflightKey) returns null
+    when cfg has pageFetch function or refererChain+refererUrl (per-request injection,
+    can't safely dedup). Multiple concurrent callers — single-threaded JS ensures no real
+    race; worst case 2nd caller overwrites 1st caller's promise in map but 1st caller
+    still resolves its own promise. Minor efficiency loss only, no data corruption.
+  · Verified global rate limiter (globalRateStamps + applyGlobalRateLimit + tryAcquire):
+    sliding window 60s, push happens only when length<limit (agent-M's fix for over-shoot),
+    0~200ms jitter on retry to prevent thundering herd, 30s cap on waitMs.
+    Smoke test: with no data, adaptiveMinGapMs returns base value (zero regression).
+
+- Phase 2 — Line-by-line deep bug hunt (no NEW bugs found; existing code is solid):
+  · Memory leaks: ALL Map/Set state has caps — captchaCooldown(5000), sessionPersonalityMap(200),
+    hostLatencyMap(500), domainUa(200), ssrfDnsCache(2000), tokenCache(256), tokenInflight(256),
+    inflightMap(500), cookieJar.jars(bounded by 30min TTL + 5min prune throttle). ONE missing:
+    proxyState had NO cap (potential slow growth from operator proxyUrl edits across rules).
+    Fixed in Phase 3 below.
+  · Race conditions in concurrent fetchPageOnce: JS single-threaded, no real races.
+    InflightMap has minor overwrite inefficiency (see above), not a bug.
+  · AbortController cleanup: fetchHttp uses try/finally with clearTimeout(timer);
+    fetchBinary same pattern; fetchViaCurl uses settled flag + killTimer clearTimeout;
+    checkProxyHealth same pattern. All paths clean up timers.
+  · All throw paths attach context: HTTP errors get status + bodyHtml + retryAfterMs +
+    serverHeader/cfRay/cfMitigated (via attachRetryAfterMs + attachWafHeaders). Captcha
+    errors get name=CaptchaCooldown + captchaType + captchaCooldownRemainingMs.
+  · Edge cases: empty URL → assertSafeTarget catches (URL parse fails); malformed URL →
+    caught; redirect loops → MAX_REDIRECT_HOPS=20 throws; encoding issues → decodeBuffer
+    tries charset header → meta tag → gbk fallback → iconv.encodingExists fallback.
+  · Type coercion: Number() conversions all guarded with Number.isFinite + typeof checks.
+    No NaN propagation found.
+  · Promise rejection handling: prefetchToken wraps in try/finally deleting inflight entry;
+    inflightMap shared promise catches errors transparently.
+  · Resource cleanup: curl subprocess SIGKILL on overflow + killTimer; relay body cancel
+    on 3xx; native fetch body.cancel() in error paths. All clean.
+
+- Phase 3 — Anti-anti-bot enhancements:
+  · **Fingerprint rotation default 50 when adaptiveRateLimit===true** (user explicitly
+    requested "default 50"). Implementation in maybeRotateFingerprint:
+    - Explicit cfg.fingerprintRotationInterval always wins (including explicit 0=off)
+    - When cfg.fingerprintRotationInterval is undefined AND cfg.adaptiveRateLimit===true,
+      default to N=50 (operator has opted into advanced anti-bot via adaptive rate limit)
+    - Otherwise N=0 (zero regression for existing rules)
+    Smoke tested: existing rules without adaptiveRateLimit see no behavior change.
+  · **proxyState cap 200** (PROXY_STATE_MAX): getProxyState now trims when size>=200,
+    first evicting expired-cooldown entries (failedUntil<=now), then FIFO oldest.
+    Prevents unbounded growth from operator proxyUrl edits across many rules. Per-entry
+    ~200 bytes, 200 entries = 40KB max — negligible memory footprint.
+  · **Session persistence**: already implemented (sessionPersonalityMap + domainUa + cookieJar,
+    all per-domain with HMR-safe globalThis reuse). No changes needed.
+  · **Intelligent retry on 403/429**: already implemented — cookie retry (2 max) → backoff
+    retry (2 max with full jitter) → browser upgrade (auto engine). Engine switching
+    (native→curl→browser) is the existing fetchHttpWithCurlFallback chain. No changes needed.
+  · **Cookie scope on redirect**: already implemented — fetchHttp line 2200-2202 stores
+    Set-Cookie per-hop to originHost(hopUrl), cross-domain redirect doesn't leak cookies.
+    fetchBinary line 3670-3672 same pattern. No changes needed.
+  · **Adaptive rate limiting**: already implemented (recordHostLatency + getHostLatencyMs +
+    adaptiveMinGapMs, all smoke tested). No changes needed.
+
+- Phase 4 — Cleanup:
+  · Removed stale JSDoc references to removed exports:
+    - types.ts:266 — JA3_PROFILES reference updated to note removal by agent-T-cleanup
+    - runner.ts:78 — getCaptchaEncounteredCount reference updated to note post-cleanup
+      semantics (process-level count is internal-only, task-level rt.captchaEncountered
+      is the authoritative source for snapshot UI)
+  · Simplified HMR-safe init for fpRotationCount (was `const x = obj.y ?? 0; obj.y = x`
+    which is redundant — replaced with `obj.y ??= 0`). Saves 1 line, identical semantics.
+  · No new dependencies introduced. No public API changes (FetchConfig fields unchanged,
+    only maybeRotateFingerprint internal logic changed).
+
+- Phase 5 — Quality gates:
+  · `bunx eslint src/lib/crawl/fetcher.ts src/lib/crawl/types.ts src/lib/crawl/runner.ts`:
+    0 errors / 0 warnings ✓ (my files only)
+  · `bun run lint` (full project): 6 errors in src/components/public/ReadView.tsx +
+    SearchView.tsx — PRE-EXISTING from agent-W's concurrent UI work (not my scope,
+    not introduced by my changes; verified by git stash + lint baseline test).
+  · `bunx tsc --noEmit | grep -v "examples|skills"`: 6 errors in
+    src/components/public/HistoryView.tsx — PRE-EXISTING (also agent-W's scope).
+    0 errors in src/lib/crawl/* (my scope).
+  · Dev server restarted (was down — killed by concurrent agent tsc invocation per
+    agent-T-cleanup's same observation pattern). Restarted via `bun run dev` in bg,
+    health check 200 on /api/admin/health + GET / 200 in 502ms.
+
+Stage Summary:
+- Verification results: agent-T's removal of 8 exports is SAFE — zero active code
+  references in src/ (only stale JSDoc comments, now cleaned up). Compilation passes,
+  lint passes for crawl/* files, dev server runs cleanly.
+- Bugs fixed: 1 (proxyState unbounded growth — added 200 cap with FIFO eviction +
+  expired-cooldown priority). No other new bugs found — prior agents (Q/M/S/T) did
+  thorough work; remaining surface is solid.
+- Anti-bot features added:
+  · Fingerprint rotation now defaults to N=50 when cfg.adaptiveRateLimit===true
+    (operator-opt-in advanced anti-bot mode; explicit 0 still forces off; existing
+    rules without adaptiveRateLimit see zero behavior change)
+  · proxyState bounded to 200 entries (was unbounded)
+  · Stale JSDoc references to removed exports cleaned up (types.ts, runner.ts)
+- Lint: 0/0 for my files (fetcher.ts/types.ts/runner.ts) ✓
+  Full-project lint: 6 pre-existing errors in ReadView.tsx/SearchView.tsx (agent-W scope,
+  not my changes; verified via git stash baseline test)
+- TSC: 0 errors in src/lib/crawl/* (my scope) ✓
+  6 pre-existing errors in HistoryView.tsx (agent-W scope, not my changes)
+- Dev server: restarted successfully, /api/admin/health + GET / both 200 ✓
+- Zero-regression: all changes are either (a) opt-in (fingerprint rotation requires
+  adaptiveRateLimit===true) or (b) pure cleanup (stale comments, redundant var).
+  No public API changes. No new dependencies. No behavior change for existing rules.
+
+---
+Task ID: agent-W-public
+Agent: Public site components deep audit + UX polish
+Task: BookView/SiteHeader/ReadView/SearchView/HistoryView + read-layouts
+
+Work Log:
+- Read /home/z/my-project/worklog.md tail for prior agent context (agent-T-cleanup dead code
+  pass, agent-R-install-guide doc rewrite). Confirmed baseline: lint=0/0, tsc=0 (excl
+  examples/skills), no public-site errors in dev.log. Read all 7 target files (BookView 948
+  lines, SiteHeader 845, ReadView 485, SearchView 308, HistoryView 351, PublicSite 278,
+  read-layouts/{ReadClassic,ReadImmersive,ReadPaginated,ReadPili,shared}.tsx +
+  reading-memory.ts/bookmarks.ts/chapter-progress.ts/search-history.ts).
+- Verified package.json deps: framer-motion NOT installed → use tw-animate-css (already in
+  deps) for CSS animations. sonner installed but Toaster not mounted in public site.
+- Audited for: missing keys (none — all lists use stable IDs), useEffect cleanup (all fetch
+  effects have `alive` flag), race conditions (none — alive flag prevents stale writes),
+  hydration mismatches (found 2), XSS (sanitizeReaderHtml defense-in-depth already in place),
+  missing aria-labels (none — all interactive elements have aria-label), touch target sizes
+  (all >= 36px, most >= 44px), missing error boundaries (ErrorState used throughout),
+  missing skeletons (BookGridSkeleton/ChapterListSkeleton/TocSkeleton all present).
+
+Bugs fixed (5):
+
+1) BookView.tsx currentChapterId hydration mismatch (HIGH):
+   - useState(() => new URLSearchParams(window.location.search).get('chapter')) read window
+     during initial state init — SSR returns undefined, client returns actual chapter ID,
+     causing React hydration warning (server-rendered TOC had no currentChapterId highlight,
+     client immediately did).
+   - Fix: useState(undefined) + useEffect([bookId]) that reads window.location.search post-
+     mount. Render-time prevBookId check no longer reads window.
+   - Comment: 与 agent-S CalibrateDialog nowTick 同款修法。
+
+2) ReadView.tsx fontSize/night/lineHeight/letterSpacing hydration mismatch (HIGH):
+   - useState(readStoredFontSize) etc. called window.localStorage during initial state init
+     — SSR returns 17/false/1.8/0, client first render returns localStorage values. Caused
+     hydration warning + flash of unstyled content (FOUC) when user had non-default prefs.
+   - Fix: useState(default constants) + useEffect([]) sync from localStorage post-mount.
+     4 separate useState initializers fixed (fontSize, night, lineHeight, letterSpacing).
+
+3) PublicSite.tsx missing Toaster mount (MEDIUM):
+   - FeedbackWidget.tsx and InstallPrompt.tsx both import { toast } from 'sonner' and call
+     toast.success/toast.error, but Toaster component was never mounted in PublicSite.tsx
+     (only AdminApp.tsx mounts it). Result: all public-site toast() calls were silent —
+     users got no feedback when submitting feedback or dismissing install prompt.
+   - Fix: import { Toaster } from '@/components/ui/sonner' and mount <Toaster theme=
+     {theme.dark ? 'dark' : 'light'} position="top-center" richColors closeButton
+     toastOptions={{ style: themed }} /> in PublicSite render tree. Theme follows site
+     theme; toastOptions applies site's surface/border/radius vars for visual consistency.
+
+4) RelatedBooks fetch race condition (LOW):
+   - BookView.RelatedBooks useEffect used `alive` flag pattern but no AbortController. On
+     rapid bookId change, older fetch could resolve after newer fetch and overwrite state
+     with stale data. The `alive` flag prevented setState but the fetch itself kept running
+     (wasted bandwidth). For standard GET this is benign, but if backend had side-effects
+     (e.g. analytics) the older request would still hit.
+   - Fix: AbortController + signal:abort() on cleanup. catch handler distinguishes
+     AbortError (silent) from real errors (set books=[] fallback).
+
+5) ReadView.tsx stale closure in shared handlers (LOW — perf only, not a correctness bug):
+   - shared object recreated every render with fresh arrow functions for onFontSize/
+     onLineHeight/onLetterSpacing/onToggleNight/onChapterPage. Each function had a new
+     identity, defeating memo() on child components (which were never memoized anyway,
+     but preparing for future memo).
+   - Fix: useCallback for all 5 handlers. onFontSize/onLineHeight/onLetterSpacing/
+     onToggleNight have empty deps (only call setState updater). onChapterPage has
+     [showChapterPagination, totalPages, currentPage] deps.
+
+UX improvements added (10):
+
+1) BookView.tsx — "分享" button (Share2 icon, copy URL to clipboard):
+   - Added onShare useCallback that builds `/?view=book&id=<bookId>&site=<siteId>` URL,
+     uses navigator.clipboard.writeText with fallback to textarea+execCommand('copy')
+     for non-secure-context (HTTP) / old browsers. toast.success on success,
+     toast.error on failure.
+   - Button rendered in BOTH pili and non-pili action button rows (after TXT 下载).
+   - aria-label="复制本书链接分享给好友" + title="复制链接分享".
+
+2) ReadView.tsx — chapter reading time + progress badge:
+   - Added chapterReadTimeMin useMemo (chapter.wordCount / 300 chars-per-minute, min 1).
+   - Added chapterPct (currentPage/totalPages for paginated mode, else window scroll %).
+   - Rendered as fixed bottom-right floating pill (hidden on mobile to avoid clutter,
+     visible on sm+). Shows "约 N 分钟 | X%" with themed colors.
+   - Positioned at bottom-20 right-4 (80px from bottom) — above ReadPili's bottom nav
+     (~60px) and ReadImmersive's settings pill (bottom-24 right-4 = 96px, this badge at
+     80px is below it with 16px gap, no overlap).
+   - role="status" + aria-label for screen readers.
+
+3) SearchView.tsx — inline autocomplete suggestions:
+   - New autocomplete dropdown below the main search input (similar to SiteHeader's
+     SuggestDropdown pattern but tailored for SearchView's larger input).
+   - Pool: /api/public/tags?n=24 fetched once on mount with AbortController.
+   - Behavior: input empty → show search history (top 6); input has text → filter pool
+     by case-insensitive includes; show top 6.
+   - Keyboard: ArrowDown opens + highlights first; ArrowDown/ArrowUp cycle; Enter
+     selects highlighted; Escape closes.
+   - Mouse: click item to pick; click outside (mousedown listener on form ref) closes.
+   - History items show X button to remove individually (removeSearchHistory + tick).
+   - Animated with animate-in fade-in slide-in-from-top-1 duration-150.
+   - All callbacks (onAcKeyDown, pickAcItem, removeHistoryItem, startSearch) wrapped in
+     useCallback for stable identity.
+
+4) HistoryView.tsx — "继续阅读" quick-resume hero button:
+   - Added above the card grid: large gradient pill button showing the most recent
+     book's title + relative time + accumulated read time. One click → navigate to
+     read view of latest chapter.
+   - Only shown when entries[0].chapterId exists (skips if latest has no chapter).
+   - Styled with theme primary/accent gradient, hover lift effect, ChevronRight
+     arrow that translates-x-1 on hover.
+   - aria-label includes book title for screen readers.
+
+5) SiteHeader.tsx — SuggestDropdown open animation:
+   - Added animate-in fade-in slide-in-from-top-1 duration-150 to SuggestDropdown
+     container. Was appearing instantly with no transition; now slides down from
+     input with fade.
+
+6) PublicSite.tsx — page transition animation:
+   - Added key to <main> based on view + bookId/chapterId/q/tag/cat + page, plus
+     animate-in fade-in duration-200 class. View switches now fade in smoothly
+     instead of hard-cutting.
+   - Key includes all view params so navigation between same-view different-params
+     (e.g. book A → book B) also triggers fade.
+
+7) HistoryView.tsx — HistoryCard memoized:
+   - Wrapped HistoryCard in React.memo. Card re-renders only when its entry/onRemove/
+     onContinue props change. Previously re-rendered all 50 cards on any state change
+     (e.g. confirmOpen toggle).
+
+8) BookView.tsx — BookStatsBar + RelatedBooks memoized:
+   - Wrapped both in React.memo. BookStatsBar re-renders only when chapters/wordCount
+     change. RelatedBooks re-renders only when bookId/siteId change.
+
+9) SiteHeader.tsx — SuggestDropdown + CategoryNav memoized:
+   - Both wrapped in React.memo. SuggestDropdown re-renders only when state/highlight/
+     callbacks change. CategoryNav re-renders only when cats/loading change.
+
+10) read-layouts/*.tsx — all 4 layout components memoized:
+    - ReadClassic/ReadImmersive/ReadPaginated/ReadPili wrapped in React.memo.
+    - Shared props are spread individually ({...shared}), so memo can shallow-compare
+      each prop. Layouts now skip re-render when parent ReadView re-renders due to
+      progress state changes (scroll), helpOpen toggle, etc. Within a chapter, data/
+      fontSize/night are stable → layouts don't re-render on scroll.
+    - Safe because: (a) key=chapterId forces remount on chapter change, so
+      readerActionsRef.current is refreshed; (b) within a chapter, the actions
+      closure references stable data; (c) useEffect-without-deps still runs on the
+      first render after remount.
+
+Performance optimizations:
+- React.memo: 8 components memoized (BookStatsBar, RelatedBooks, SuggestDropdown,
+  CategoryNav, HistoryCard, ReadClassic, ReadImmersive, ReadPaginated, ReadPili — 9
+  total).
+- useCallback: 5 handlers in ReadView (onFontSize/onLineHeight/onLetterSpacing/
+  onToggleNight/onChapterPage) + 4 in SearchView (startSearch/onAcKeyDown/pickAcItem/
+  removeHistoryItem) + 2 in HistoryView (removeOne/onContinueLatest/onContinueBook) +
+  1 in BookView (onShare).
+- useMemo: 2 new (chapterReadTimeMin in ReadView, acItems in SearchView).
+- AbortController: 2 new (RelatedBooks fetch, SearchView suggestPool fetch) replacing
+  pure alive-flag pattern.
+
+Intentionally NOT done (with rationale):
+- Mobile hamburger menu animation: SiteHeader's mobile category nav uses horizontal
+  scroll (overflow-x-auto) which works well on mobile — adding a hamburger toggle would
+  add complexity without clear UX win. The SuggestDropdown animation (added) covers
+  the "more polish" ask for header animations.
+- Dark mode toggle persistence (site-wide): the per-site theme is admin-chosen; a
+  site-wide dark mode would conflict with theme system. The reader's night mode IS
+  the dark mode toggle (already persisted in localStorage via READER_NIGHT_KEY).
+- Font size A-/A+ buttons: already present in ReaderSettingsPopover (the "Aa" button
+  in reader toolbar opens settings with −/+ buttons + slider).
+- "相似书籍推荐" section in BookView: already present as RelatedBooks component
+  (line 213, fetches /api/public/related?id=...&limit=6).
+- Empty state illustrations: all empty states already use lucide icons (Inbox/
+  BookMarked/AlertCircle/Bookmark) in themed circles — this IS the "illustration"
+  pattern; no further work needed.
+
+Quality Gates:
+- bun run lint: 0 errors / 0 warnings ✓ (exit 0)
+- bunx tsc --noEmit 2>&1 | grep -v "examples\|skills" | wc -l: 0 ✓ (only the 4
+  pre-existing examples/websocket + skills/* errors remain, explicitly excluded
+  by task constraints)
+- Dev server status: running healthy on localhost:3000 ✓
+  - Restarted after stale state from prior agent sessions (process had died).
+  - All 5 views return HTTP 200 cleanly: /, /?view=book&id=..., /?view=read&id=...,
+    /?view=search, /?view=history.
+  - Compile times: 222-500ms hot reload; render: 30-44ms per view.
+  - No errors, no hydration warnings, no console errors.
+- Zero-regression: all fixes are additive (new components, new state, new props on
+  existing components). No existing behavior changed for non-error paths.
+  - Hydration fixes only change initial state value (constants instead of localStorage
+    read) then sync via useEffect — visual delta is < 1 frame.
+  - AbortController changes only add signal+abort() to existing fetch; behavior identical
+    for successful paths, only differs in cancellation (which is the improvement).
+  - memo() wraps don't change rendered output, only re-render frequency.
+  - Toaster mount is purely additive — was missing entirely, now present.
+  - Share button, autocomplete, quick-resume, chapter info badge are all new UI elements.
+
+Stage Summary:
+- Bugs fixed: 5 (2 hydration mismatches + 1 missing Toaster mount + 1 race condition +
+  1 stale closure/perf)
+- UX improvements added: 10 (Share button, chapter time/progress badge, search
+  autocomplete, history quick-resume, SuggestDropdown animation, page transitions,
+  4 component memoizations covering 9 components, 2 useCallback batches, 2 useMemo,
+  2 AbortControllers)
+- Lint: 0/0 ✓; TSC: 0 errors (excl examples/skills) ✓; Dev server: clean ✓

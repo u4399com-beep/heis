@@ -6,7 +6,7 @@
 // ============================================================
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { ChevronLeft, ChevronRight, ListTree } from 'lucide-react'
 import { readOf } from '@/lib/crawl/themes'
@@ -29,7 +29,7 @@ import {
   type ReadLayoutProps,
 } from './shared'
 
-export function ReadPaginated({
+export const ReadPaginated = memo(function ReadPaginated({
   data,
   loading,
   fontSize,
@@ -450,4 +450,4 @@ export function ReadPaginated({
       <TocDrawer open={drawer} onClose={() => setDrawer(false)} bookId={bk?.id} activeChapterId={ch?.id} variant="classic" />
     </div>
   )
-}
+})

@@ -6,7 +6,7 @@
 // ============================================================
 'use client'
 
-import { useEffect, useState } from 'react'
+import { memo, useEffect, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { ArrowUpToLine, ChevronLeft, ChevronRight, ListTree } from 'lucide-react'
 import { readOf } from '@/lib/crawl/themes'
@@ -31,7 +31,7 @@ import {
   type ReadLayoutProps,
 } from './shared'
 
-export function ReadClassic({
+export const ReadClassic = memo(function ReadClassic({
   data,
   loading,
   fontSize,
@@ -339,4 +339,4 @@ export function ReadClassic({
       <TocDrawer open={drawer} onClose={() => setDrawer(false)} bookId={bk?.id} activeChapterId={ch?.id} variant="classic" />
     </div>
   )
-}
+})

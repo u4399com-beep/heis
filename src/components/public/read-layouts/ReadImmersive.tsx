@@ -6,7 +6,7 @@
 // ============================================================
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import { ArrowUpToLine, ChevronLeft, ChevronRight, ListTree } from 'lucide-react'
 import { readOf } from '@/lib/crawl/themes'
 import { usePublic } from '../ctx'
@@ -28,7 +28,7 @@ import {
   type ReadLayoutProps,
 } from './shared'
 
-export function ReadImmersive({
+export const ReadImmersive = memo(function ReadImmersive({
   data,
   loading,
   fontSize,
@@ -356,4 +356,4 @@ export function ReadImmersive({
       <TocDrawer open={drawer} onClose={() => setDrawer(false)} bookId={bk?.id} activeChapterId={ch?.id} variant="immersive" />
     </div>
   )
-}
+})

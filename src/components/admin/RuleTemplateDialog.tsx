@@ -14,8 +14,14 @@
 //   - 分类徽章颜色: biquge=violet / api=sky / forum=amber / wiki=emerald / custom=zinc;
 //   - 难度徽章颜色: easy=emerald / medium=amber / hard=red;
 //   - 桌面 2 列 / 移动 1 列网格, gap-4。
+//
+// agent-X-rule-test 增强:
+//   - 关键字搜索加 300ms 防抖(避免大模板列表逐键全量过滤)
+//   - 新增"难度"筛选下拉(easy/medium/hard/全部)
+//   - 卡片名称/描述中匹配关键字的文字高亮(emerald), 让用户看到为何被命中
+//   - 模板卡片包 React.memo, 关键字/分类切换时仅重渲染过滤变化的卡片
 // ============================================================
-import { useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -44,6 +50,7 @@ import {
   TEMPLATE_DIFFICULTY_COLORS,
   type RuleTemplate,
   type RuleTemplateCategory,
+  type RuleTemplateDifficulty,
 } from '@/lib/crawl/rule-templates'
 
 interface RuleTemplateDialogProps {
@@ -53,15 +60,30 @@ interface RuleTemplateDialogProps {
   onCreated?: (rule: RuleRow) => void
 }
 
+type DifficultyFilter = RuleTemplateDifficulty | 'all'
+
 export function RuleTemplateDialog({ open, onOpenChange, onCreated }: RuleTemplateDialogProps) {
   const [category, setCategory] = useState<RuleTemplateCategory | 'all'>('all')
+  const [difficulty, setDifficulty] = useState<DifficultyFilter>('all')
   const [keyword, setKeyword] = useState('')
+  // agent-X: 防抖 — 让用户输入流畅, 不每次按键都全量过滤 8 条记录
+  const [debouncedKw, setDebouncedKw] = useState('')
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedKw(keyword.trim()), 300)
+    return () => clearTimeout(t)
+  }, [keyword])
+
   const [previewing, setPreviewing] = useState<RuleTemplate | null>(null)
   const [creating, setCreating] = useState<string | null>(null) // 正在创建的模板 id (用于按钮 loading)
 
   const filtered = useMemo(
-    () => filterTemplates(RULE_TEMPLATES, { category, keyword }),
-    [category, keyword],
+    () => {
+      // 复用 filterTemplates 但叠加 difficulty 过滤; keyword 用防抖后的版本
+      const base = filterTemplates(RULE_TEMPLATES, { category, keyword: debouncedKw })
+      if (difficulty === 'all') return base
+      return base.filter((t) => t.difficulty === difficulty)
+    },
+    [category, difficulty, debouncedKw],
   )
 
   const handleUseTemplate = async (tpl: RuleTemplate) => {
@@ -109,7 +131,7 @@ export function RuleTemplateDialog({ open, onOpenChange, onCreated }: RuleTempla
             >
               <SelectTrigger
                 size="sm"
-                className="h-9 w-[160px] border-zinc-700 bg-zinc-900 text-sm text-zinc-300"
+                className="h-9 w-[140px] border-zinc-700 bg-zinc-900 text-sm text-zinc-300"
                 aria-label="按分类筛选模板"
               >
                 <SelectValue placeholder="全部分类" />
@@ -123,9 +145,28 @@ export function RuleTemplateDialog({ open, onOpenChange, onCreated }: RuleTempla
                 <SelectItem value="custom">通用</SelectItem>
               </SelectContent>
             </Select>
+            {/* agent-X-rule-test: 难度筛选下拉 — easy/medium/hard/全部 */}
+            <Select
+              value={difficulty}
+              onValueChange={(v) => setDifficulty(v as DifficultyFilter)}
+            >
+              <SelectTrigger
+                size="sm"
+                className="h-9 w-[120px] border-zinc-700 bg-zinc-900 text-sm text-zinc-300"
+                aria-label="按难度筛选模板"
+              >
+                <SelectValue placeholder="全部难度" />
+              </SelectTrigger>
+              <SelectContent className="border-zinc-700 bg-zinc-900 text-zinc-200">
+                <SelectItem value="all">全部难度</SelectItem>
+                <SelectItem value="easy">简单</SelectItem>
+                <SelectItem value="medium">中等</SelectItem>
+                <SelectItem value="hard">困难</SelectItem>
+              </SelectContent>
+            </Select>
             <Input
               className="h-9 w-full flex-1 border-zinc-700 bg-zinc-900 text-sm text-zinc-200 placeholder:text-zinc-600"
-              placeholder="按名称 / 描述 / 标签搜索…"
+              placeholder="按名称 / 描述 / 标签搜索… (300ms 防抖)"
               value={keyword}
               onChange={(e) => setKeyword(e.target.value)}
               aria-label="搜索模板"
@@ -140,7 +181,22 @@ export function RuleTemplateDialog({ open, onOpenChange, onCreated }: RuleTempla
             {filtered.length === 0 ? (
               <div className="flex flex-col items-center justify-center gap-2 py-16 text-sm text-zinc-500">
                 <Sparkles className="h-8 w-8 text-zinc-700" />
-                <p>没有匹配的模板, 换个关键字试试。</p>
+                <p>没有匹配的模板, 换个关键字或难度试试。</p>
+                {/* agent-X: 一键复位筛选条件 */}
+                {(category !== 'all' || difficulty !== 'all' || keyword) && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 text-xs text-zinc-400 hover:text-zinc-200"
+                    onClick={() => {
+                      setCategory('all')
+                      setDifficulty('all')
+                      setKeyword('')
+                    }}
+                  >
+                    重置筛选
+                  </Button>
+                )}
               </div>
             ) : (
               <div className="grid gap-4 md:grid-cols-2">
@@ -148,6 +204,7 @@ export function RuleTemplateDialog({ open, onOpenChange, onCreated }: RuleTempla
                   <TemplateCard
                     key={tpl.id}
                     template={tpl}
+                    keyword={debouncedKw}
                     creating={creating === tpl.id}
                     onUse={() => handleUseTemplate(tpl)}
                     onPreview={() => setPreviewing(tpl)}
@@ -218,15 +275,46 @@ export function RuleTemplateDialog({ open, onOpenChange, onCreated }: RuleTempla
 
 // ============================================================
 // 模板卡片 — 网格单元 (feat-round-8 S1)
+// agent-X: memo + keyword 高亮; 名称/描述中匹配关键字的文字加 emerald 高亮
 // ============================================================
 interface TemplateCardProps {
   template: RuleTemplate
+  /** 当前搜索关键字(已防抖); 用于在名称/描述里高亮命中片段 */
+  keyword?: string
   creating: boolean
   onUse: () => void
   onPreview: () => void
 }
 
-function TemplateCard({ template, creating, onUse, onPreview }: TemplateCardProps) {
+function highlightMatch(text: string, kw: string): React.ReactNode {
+  if (!kw) return text
+  const lower = text.toLowerCase()
+  const kwl = kw.toLowerCase()
+  const parts: React.ReactNode[] = []
+  let i = 0
+  let idx = lower.indexOf(kwl, i)
+  let partKey = 0
+  while (idx >= 0) {
+    if (idx > i) parts.push(<span key={partKey++}>{text.slice(i, idx)}</span>)
+    parts.push(
+      <mark key={partKey++} className="rounded bg-emerald-500/30 px-0.5 text-emerald-200">
+        {text.slice(idx, idx + kwl.length)}
+      </mark>,
+    )
+    i = idx + kwl.length
+    idx = lower.indexOf(kwl, i)
+  }
+  if (i < text.length) parts.push(<span key={partKey++}>{text.slice(i)}</span>)
+  return parts
+}
+
+const TemplateCard = memo(function TemplateCard({
+  template,
+  keyword,
+  creating,
+  onUse,
+  onPreview,
+}: TemplateCardProps) {
   const catColor = TEMPLATE_CATEGORY_COLORS[template.category]
   const diffColor = TEMPLATE_DIFFICULTY_COLORS[template.difficulty]
   return (
@@ -248,14 +336,14 @@ function TemplateCard({ template, creating, onUse, onPreview }: TemplateCardProp
         </Badge>
       </div>
 
-      {/* 名称 */}
+      {/* 名称 — 高亮匹配关键字 */}
       <div>
-        <h3 className="text-sm font-semibold text-zinc-100">{template.name}</h3>
+        <h3 className="text-sm font-semibold text-zinc-100">{highlightMatch(template.name, keyword || '')}</h3>
       </div>
 
-      {/* 描述 (2 行省略) */}
+      {/* 描述 (2 行省略, 高亮匹配) */}
       <p className="line-clamp-2 text-xs leading-relaxed text-zinc-400">
-        {template.description}
+        {highlightMatch(template.description, keyword || '')}
       </p>
 
       {/* 标签 chips */}
@@ -311,4 +399,4 @@ function TemplateCard({ template, creating, onUse, onPreview }: TemplateCardProp
       </div>
     </Card>
   )
-}
+})

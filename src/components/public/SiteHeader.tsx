@@ -4,7 +4,7 @@
 // ============================================================
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, KeyboardEvent } from 'react'
 import { ChevronDown, Compass, Library, Search, TrendingUp, X, Clock } from 'lucide-react'
 import {
@@ -103,7 +103,7 @@ function computeSuggest(input: string, pool: string[] | null): Omit<SuggestState
   return { history, hot: (pool || []).slice(0, SUGGEST_LIMIT), matched: [] }
 }
 
-function SuggestDropdown({
+const SuggestDropdown = memo(function SuggestDropdown({
   state,
   highlight,
   onPick,
@@ -246,7 +246,7 @@ function SuggestDropdown({
       )}
     </div>
   )
-}
+})
 
 function useSearchBoxLogic(
   initialQ: string,
@@ -449,7 +449,7 @@ function SearchBox({ compact }: { compact?: boolean }) {
   )
 }
 
-function CategoryNav({ cats, loading }: { cats: CategoryItem[]; loading: boolean }) {
+const CategoryNav = memo(function CategoryNav({ cats, loading }: { cats: CategoryItem[]; loading: boolean }) {
   const { theme, navigate } = usePublic()
   const v = theme.vars
   if (loading) {
@@ -490,7 +490,7 @@ function CategoryNav({ cats, loading }: { cats: CategoryItem[]; loading: boolean
       ))}
     </nav>
   )
-}
+})
 
 /** 站点切换器（仅 embedMode 显示） */
 function SiteSwitcher() {

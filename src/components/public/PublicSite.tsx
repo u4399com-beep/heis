@@ -12,6 +12,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ArrowLeftCircle, Eye } from 'lucide-react'
+import { Toaster } from '@/components/ui/sonner'
 import { getThemeById as getTheme, THEMES } from '@/lib/crawl/themes'
 import { fetchSites } from './data'
 import { parseView, PublicProvider, viewToUrl, type PublicCtxValue, type ViewParams } from './ctx'
@@ -236,8 +237,29 @@ export default function PublicSite({
         }}
       >
         <SiteHeader />
-        <main className="w-full flex-1">{renderView()}</main>
+        {/* agent-W: 视图切换淡入动画 — key 变化触发 remount, animate-in fade-in 由 tw-animate-css 提供
+            duration-200 让过渡明显但不拖沓; 仅 main 包裹不影响 header/footer 的稳定性 */}
+        <main className="w-full flex-1 animate-in fade-in duration-200" key={`view-${view.view}-${view.bookId || view.chapterId || view.q || view.tag || view.cat || ''}-${view.page || 1}`}>
+          {renderView()}
+        </main>
         <SiteFooter />
+
+        {/* agent-W: mount Toaster — 之前 FeedbackWidget/InstallPrompt 调 toast() 但前台未挂载 Toaster,
+            导致提示根本不渲染。dark 主题跟随主题色; closeButton + richColors 提升可读性 */}
+        <Toaster
+          theme={theme.dark ? 'dark' : 'light'}
+          position="top-center"
+          richColors
+          closeButton
+          toastOptions={{
+            style: {
+              background: v.surface,
+              color: v.text,
+              border: `1px solid ${v.border}`,
+              borderRadius: v.radius,
+            },
+          }}
+        />
 
         {embedMode && (
           <button
