@@ -1,16 +1,16 @@
 // ============================================================
-// 主题模版注册表 — 9 套完全不同风格的前台主题
+// 主题模版注册表 — 12 套完全不同风格的前台主题 (10 原始 preset + 2 久久 preset)
 // 样式 / 颜色 / 布局 / 阅读版式 全部差异化, 均适配 TDK / SEO / GEO
 //
 // 双布局维度:
-//   layout     → 首页布局 (grid/list/shelf/magazine/minimal/theater/pili)
+//   layout     → 首页布局 (grid/list/shelf/magazine/minimal/theater/pili/biquge)
 //   read       → 阅读页布局与排版参数 (经典典书版 / 沉浸暗色 / 分页横滑 / 书屋版)
 // read 可缺省: readOf() 会按 READ_DEFAULTS 回退, 旧调用点零破坏
 //
 // feat-combo-theme-incremental: 在 THEMES(preset) 之外引入组合主题矩阵
-// (50 配色 × 42 风格 × 24 布局 = 50400 组合)。theme-matrix 仅依赖本模块的
+// (8 配色 × 8 风格 × 8 布局 = 512 组合)。theme-matrix 仅依赖本模块的
 // 类型(type-only import, 编译期擦除无运行时循环依赖); 本模块在 getThemeById
-// 中静态引入组合解析器, preset 命中优先, 未命中回退组合, 全未命中回退 THEMES[0]。
+// 中静态引入组合解析器, preset 命中优先, 未命中回退组合, 全未命中返回 THEMES[0]。
 // ============================================================
 import { getThemeById as resolveComboTheme } from './theme-matrix'
 
@@ -73,7 +73,7 @@ export interface ThemeDef {
   name: string
   desc: string
   /** 首页布局风格 */
-  layout: 'grid' | 'list' | 'shelf' | 'magazine' | 'minimal' | 'theater' | 'pili'
+  layout: 'grid' | 'list' | 'shelf' | 'magazine' | 'minimal' | 'theater' | 'pili' | 'biquge'
   dark: boolean
   /** 阅读页布局与排版（缺省走 readOf 回退值） */
   read?: ThemeReadConfig
@@ -392,6 +392,90 @@ export const THEMES: ThemeDef[] = [
     // 预览三色: [bg(取 --bg-color #f0f4fb), primary(--secondary-color #2563eb), accent(--logo-color #1d4ed8)]
     preview: ['#f0f4fb', '#2563eb', '#1d4ed8'],
   },
+  {
+    // 仿 aijjxs.com (久久小说) — 近似仿制
+    // 数据源: aijjxs.com 首页 :root 变量与 body 样式
+    // 奶油暖背景 + 白卡 + 青绿主色 + 琥珀色点缀 + PingFang 字体栈 + 14px 圆角
+    id: 'aijjxs',
+    name: '久久小说',
+    desc: '仿久久小说·奶油暖背景·青绿主色·琥珀点缀·14px 圆角·近似仿制',
+    layout: 'biquge',
+    dark: false,
+    read: {
+      layout: 'classic', measure: 720, lineHeight: 1.85, fontBase: 17,
+      indent: true, justify: false, toolbar: 'inline', texture: 'none', chapterDeco: 'rule',
+    },
+    vars: {
+      // 主背景奶油色 + 轻量 radial-gradient 氛围层
+      bg: 'radial-gradient(1200px 600px at 10% -10%, #f7f1e3 0%, transparent 50%), radial-gradient(900px 500px at 95% 5%, #eee4ce 0%, transparent 55%), #f3efe7',
+      // 卡片表面 (--card-bg: #fffdf8)
+      surface: '#fffdf8',
+      // alt surface (悬浮/选中填充)
+      surfaceAlt: '#f7f1e3',
+      // 正文文本
+      text: '#1f2937',
+      // 次要文本
+      textMuted: '#6b7280',
+      // 青绿主色 (--primary: #0f766e)
+      primary: '#0f766e',
+      primaryText: '#ffffff',
+      // 琥珀点缀色 (--accent: #b45309)
+      accent: '#b45309',
+      // 边框色 (--border: #e5dccd)
+      border: '#e5dccd',
+      // 圆角 (--radius: 14px)
+      radius: '14px',
+      // 字体栈 (PingFang SC 优先)
+      fontFamily: '"PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif',
+      // 轻量卡片阴影
+      cardShadow: '0 2px 8px rgba(31, 41, 55, 0.06), 0 1px 2px rgba(31, 41, 55, 0.04)',
+      headerStyle: 'solid',
+    },
+    preview: ['#f3efe7', '#0f766e', '#b45309'],
+  },
+  {
+    // 仿 aijjxs.com (久久小说) — 精确仿制 (pixel-perfect)
+    // 直接采用 aijjxs.com 实测的 :root CSS 变量值, 力求视觉一致
+    id: 'aijjxs-exact',
+    name: '久久小说(精确仿制)',
+    desc: '仿久久小说·精确 CSS 变量·奶油背景+白卡+青绿+琥珀+14px圆角·pixel-perfect',
+    layout: 'biquge',
+    dark: false,
+    read: {
+      layout: 'classic', measure: 760, lineHeight: 1.85, fontBase: 17,
+      indent: true, justify: true, toolbar: 'inline', texture: 'none', chapterDeco: 'rule',
+    },
+    vars: {
+      // body 背景: 双层 radial-gradient 氛围层 + 基色 #f3efe7 (实测 aijjxs.com body)
+      bg: 'radial-gradient(1200px 600px at 10% -10%, rgba(247, 241, 227, 0.9) 0%, transparent 50%), radial-gradient(900px 500px at 95% 5%, rgba(238, 228, 206, 0.85) 0%, transparent 55%), #f3efe7',
+      // --card-bg: #fffdf8
+      surface: '#fffdf8',
+      // --card-bg-hover / alt surface
+      surfaceAlt: '#f7f1e3',
+      // --text-color: #1f2937
+      text: '#1f2937',
+      // --text-muted: #6b7280
+      textMuted: '#6b7280',
+      // --primary: #0f766e (青绿)
+      primary: '#0f766e',
+      // --on-primary: #ffffff
+      primaryText: '#ffffff',
+      // --accent: #b45309 (琥珀)
+      accent: '#b45309',
+      // --border: #e5dccd
+      border: '#e5dccd',
+      // --radius: 14px (圆角)
+      radius: '14px',
+      // --font-family (实测 aijjxs.com body font-family)
+      fontFamily: '"PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif',
+      // --shadow (卡片阴影: 实测 0 2px 8px + 0 1px 2px 双层)
+      cardShadow: '0 2px 8px rgba(31, 41, 55, 0.06), 0 1px 2px rgba(31, 41, 55, 0.04)',
+      // 实测 header: surface 底色 + 1px border-bottom + backdrop-blur (solid 风格)
+      headerStyle: 'solid',
+    },
+    // 预览三色: [bg(取基色 #f3efe7), primary(#0f766e), accent(#b45309)]
+    preview: ['#f3efe7', '#0f766e', '#b45309'],
+  },
 ]
 
 export function getTheme(id: string | null | undefined): ThemeDef {
@@ -399,8 +483,8 @@ export function getTheme(id: string | null | undefined): ThemeDef {
 }
 
 /** feat-combo-theme-incremental: 组合主题解析入口
- *  - 先查 10 个手写 preset( THEMES ) —— 命中即返回(向后兼容)
- *  - 否则按 `{colorId}-{styleId}-{layoutId}` 解析组合主题(50×42×24=50400)
+ *  - 先查 12 个手写 preset( THEMES ) —— 命中即返回(向后兼容)
+ *  - 否则按 `{colorId}-{styleId}-{layoutId}` 解析组合主题(8×8×8=512)
  *  - 全部未命中返回 THEMES[0](aurora) 兜底, 保证旧 site.themeId 仍可渲染
  *  本函数是 PublicSite / SiteHeader / admin 校验的唯一入口, 引入组合主题零回归 */
 export function getThemeById(id: string | null | undefined): ThemeDef | undefined {

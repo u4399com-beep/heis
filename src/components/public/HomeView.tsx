@@ -21,6 +21,7 @@ const HomeMinimal = dynamic(() => import('./layouts/HomeMinimal').then((m) => m.
 const HomeMagazine = dynamic(() => import('./layouts/HomeMagazine').then((m) => m.HomeMagazine))
 const HomeTheater = dynamic(() => import('./layouts/HomeTheater').then((m) => m.HomeTheater))
 const HomePili = dynamic(() => import('./layouts/HomePili').then((m) => m.HomePili))
+const HomeBiquge = dynamic(() => import('./layouts/HomeBiquge').then((m) => m.HomeBiquge))
 import type { BookItem } from './types'
 
 interface FetchState {
@@ -168,8 +169,9 @@ export function HomeView({ page, cat }: { page: number; cat?: string }) {
           {theme.layout === 'magazine' && <HomeMagazine books={books} loading={loading} />}
           {theme.layout === 'theater' && <HomeTheater books={books} loading={loading} />}
           {theme.layout === 'pili' && <HomePili books={books} loading={loading} />}
+          {theme.layout === 'biquge' && <HomeBiquge books={books} loading={loading} />}
           {/* feat-round-7 B3: 防御性兜底 — 未知布局/loading 期无任何布局命中时用 BookGridSkeleton */}
-          {!['shelf', 'list', 'grid', 'minimal', 'magazine', 'theater', 'pili'].includes(theme.layout) && loading && (
+          {!['shelf', 'list', 'grid', 'minimal', 'magazine', 'theater', 'pili', 'biquge'].includes(theme.layout) && loading && (
             <BookGridSkeleton count={12} />
           )}
         </>
