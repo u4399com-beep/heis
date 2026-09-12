@@ -34,6 +34,7 @@ export function GET() {
         chapterSeoTitleTemplate: true,
         chapterSeoDescTemplate: true,
         chapterSeoKeywordsTemplate: true,
+        pseudoStaticStyle: true,
       },
     })
     return withCache(ok(sites), 300, 600)

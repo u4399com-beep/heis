@@ -211,6 +211,8 @@ export interface SiteRow {
   chapterSeoDescTemplate?: string
   /** SEO 关键词模板 */
   chapterSeoKeywordsTemplate?: string
+  /** 伪静态 URL 风格: query|numeric|alphanumeric|slug|short|classic|dir */
+  pseudoStaticStyle?: string
   createdAt: string
   updatedAt: string
 }

@@ -5,6 +5,8 @@
 
 import { createContext, useContext } from 'react'
 import type { ThemeDef } from '@/lib/crawl/themes'
+import type { PseudoStaticStyle } from '@/lib/pseudostatic'
+import { buildViewUrl, parseViewPath } from '@/lib/pseudostatic'
 import type { SiteInfo } from './types'
 
 export type PublicView = 'home' | 'book' | 'read' | 'search' | 'keyword' | 'category' | 'history'
@@ -44,25 +46,28 @@ export function usePublicOptional(): PublicCtxValue | null {
   return useContext(PublicCtx)
 }
 
-/** 视图参数 → 查询串（/?view=book&id=xx&site=xx） */
-export function viewToUrl(v: ViewParams, siteId: string): string {
-  const sp = new URLSearchParams()
-  sp.set('view', v.view)
-  if (v.bookId) sp.set('id', v.bookId)
-  if (v.chapterId) sp.set('chapter', v.chapterId)
-  if (v.q) sp.set('q', v.q)
-  if (v.tag) sp.set('tag', v.tag)
-  if (v.cat) sp.set('cat', v.cat)
-  if (v.page && v.page > 1) sp.set('page', String(v.page))
-  if (siteId) sp.set('site', siteId)
-  const qs = sp.toString()
-  return qs ? `/?${qs}` : '/'
+/**
+ * 视图参数 → URL 路径
+ * 根据站点伪静态风格构建 URL; site 参数始终走查询串
+ */
+export function viewToUrl(v: ViewParams, siteId: string, style: PseudoStaticStyle = 'query'): string {
+  return buildViewUrl(v, style, siteId)
 }
 
 const VIEW_LIST: PublicView[] = ['home', 'book', 'read', 'search', 'keyword', 'category', 'history']
 
-/** 查询串 → 视图参数 */
-export function parseView(search: string): ViewParams {
+/**
+ * 查询串/路径 → 视图参数
+ * 优先解析查询串 ?view=xxx; 失败时按伪静态风格解析路径
+ */
+export function parseView(search: string, style: PseudoStaticStyle = 'query', pathname?: string): ViewParams {
+  // 如果提供了 pathname, 尝试伪静态路径解析
+  if (pathname) {
+    const parsed = parseViewPath(pathname, search, style)
+    // parseViewPath 始终返回有效结果(兜底 home), 直接用
+    return parsed as ViewParams
+  }
+  // 仅查询串解析(旧路径, 兼容)
   const sp = new URLSearchParams(search)
   const raw = sp.get('view') || 'home'
   const view: PublicView = (VIEW_LIST as string[]).includes(raw) ? (raw as PublicView) : 'home'

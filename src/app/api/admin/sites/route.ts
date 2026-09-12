@@ -11,6 +11,10 @@ const DOMAIN_RE = /^(localhost(:\d{1,5})?|[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-
 const PAGINATION_MODES = ['off', 'byWords', 'byPages'] as const
 type PaginationMode = (typeof PAGINATION_MODES)[number]
 
+/** 伪静态 URL 风格白名单 */
+const PSEUDO_STYLES = ['query', 'numeric', 'alphanumeric', 'slug', 'short', 'classic', 'dir'] as const
+type PseudoStyle = (typeof PSEUDO_STYLES)[number]
+
 /** 章节分页 + SEO 模板字段集合(POST 创建 / PUT 更新共用) */
 interface PaginationFields {
   chapterPaginationMode: PaginationMode
@@ -20,6 +24,7 @@ interface PaginationFields {
   chapterSeoTitleTemplate: string
   chapterSeoDescTemplate: string
   chapterSeoKeywordsTemplate: string
+  pseudoStaticStyle: PseudoStyle
 }
 
 function validTheme(raw: unknown): string {
@@ -38,6 +43,7 @@ function paginationFields(body: unknown): PaginationFields {
     chapterSeoTitleTemplate: str(b?.chapterSeoTitleTemplate, 500),
     chapterSeoDescTemplate: str(b?.chapterSeoDescTemplate, 500),
     chapterSeoKeywordsTemplate: str(b?.chapterSeoKeywordsTemplate, 500),
+    pseudoStaticStyle: enumIn(b?.pseudoStaticStyle, PSEUDO_STYLES, 'query'),
   }
 }
 

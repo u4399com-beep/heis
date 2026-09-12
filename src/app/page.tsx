@@ -1,10 +1,11 @@
 // ============================================================
 // 小说管理系统 — 主入口 (唯一路由)
-// 通过查询串在 后台管理 / 前台站群站点 之间切换:
-//   /                → 后台管理
-//   /?view=home|book|read|search|keyword|category → 前台站点
-//   /?admin=1        → 强制后台
-// 站群: /?view=...&site=<siteId> 指定站点(或按域名自动匹配)
+// 通过查询串/伪静态路径在 后台管理 / 前台站群站点 之间切换:
+//   /                          → 后台管理
+//   /?view=home|book|read|...  → 前台站点(查询串模式)
+//   /book/123.html             → 前台书籍页(伪静态模式, 需 rewrite 配合)
+//   /?admin=1                  → 强制后台
+// 站群: /?view=...&site=<siteId> 或 /book/123.html?site=<siteId>
 // ============================================================
 'use client'
 
@@ -13,15 +14,34 @@ import { Suspense } from 'react'
 import AdminApp from '@/components/admin/AdminApp'
 import PublicSite from '@/components/public/PublicSite'
 import { LoginGate } from '@/components/admin/LoginGate'
+import { parseViewPath, PSEUDO_PRESETS, type PseudoStaticStyle } from '@/lib/pseudostatic'
+
+type PublicViewObj = {
+  view: 'home' | 'book' | 'read' | 'search' | 'keyword' | 'category' | 'history'
+  bookId?: string
+  chapterId?: string
+  q?: string
+  tag?: string
+  cat?: string
+  site?: string
+  page?: number
+  theme?: string
+}
 
 function Shell() {
   const searchParams = useSearchParams()
   const view = searchParams.get('view')
   const forceAdmin = searchParams.get('admin') === '1'
-  const isSite = !!view && !forceAdmin
 
-  const publicView = isSite
-    ? {
+  // R7-20: 伪静态路径检测 — 重写后浏览器 URL 仍是伪静态路径(如 /book/123.html),
+  // 但查询串无 ?view=; 此时尝试从 pathname 解析视图参数。
+  // 站点的 pseudoStaticStyle 在 PublicSite 加载后才知, 首载用 'query' 兜底;
+  // parseViewPath 对所有风格都尝试解析(内部有 fallback 链), 命中即用。
+  let publicView: PublicViewObj | undefined = undefined
+  if (!forceAdmin) {
+    if (view) {
+      // 查询串模式(?view=xxx) — 原生支持
+      publicView = {
         view: view as 'home' | 'book' | 'read' | 'search' | 'keyword' | 'category' | 'history',
         bookId: searchParams.get('id') || undefined,
         chapterId: searchParams.get('chapter') || undefined,
@@ -30,15 +50,29 @@ function Shell() {
         cat: searchParams.get('cat') || undefined,
         site: searchParams.get('site') || undefined,
         page: searchParams.get('page') ? Number(searchParams.get('page')) : undefined,
-        // 主题预览覆盖(?theme=): 仅首载入口参数, PublicSite 用后即弃不入持久化路由
         theme: searchParams.get('theme') || undefined,
       }
-    : undefined
+    } else if (typeof window !== 'undefined') {
+      // 伪静态路径模式 — 从 pathname 解析(尝试所有风格, 命中即用)
+      const pathname = window.location.pathname
+      if (pathname && pathname !== '/') {
+        for (const preset of PSEUDO_PRESETS) {
+          const parsed = parseViewPath(pathname, window.location.search, preset.id as PseudoStaticStyle)
+          if (parsed.view !== 'home' || parsed.bookId || parsed.chapterId || parsed.cat || parsed.tag) {
+            publicView = parsed
+            break
+          }
+        }
+      }
+    }
+  }
 
-  if (isSite) {
+  const isSite = !!publicView && !forceAdmin
+
+  if (isSite && publicView) {
     return (
       <PublicSite
-        initialSiteId={publicView?.site}
+        initialSiteId={publicView.site}
         initialView={publicView}
         embedMode
         onBack={() => {
@@ -52,8 +86,6 @@ function Shell() {
     <LoginGate>
       <AdminApp
         onPreviewSite={(themeId) => {
-          // 主题卡片"预览前台"携带 themeId → 前台以 ?theme= 覆盖预览对应主题
-          // (PublicSite 仅首载入口解析该参数, 站内导航/切站后自然还原站点自身主题)
           window.location.href = themeId ? `/?view=home&theme=${encodeURIComponent(themeId)}` : '/?view=home'
         }}
       />

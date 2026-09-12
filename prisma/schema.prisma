@@ -188,6 +188,9 @@ model Site {
   chapterSeoDescTemplate       String @default("")
   // SEO 关键词模板
   chapterSeoKeywordsTemplate   String @default("")
+  // 伪静态 URL 风格: query(查询串,默认) | numeric(纯数字) | alphanumeric(字母+数字) |
+  // slug(尾斜杠) | short(短路径) | classic(连字符.html) | dir(目录分层)
+  pseudoStaticStyle            String @default("query")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }

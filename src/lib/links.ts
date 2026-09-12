@@ -10,7 +10,7 @@
 //   - 宁缺毋滥: 填不满链位数就少给, 任何 URL 不重复
 // ============================================================
 import { db } from '@/lib/db'
-import { buildBookUrl } from '@/lib/pseudostatic'
+import { buildViewUrl, type PseudoStaticStyle } from '@/lib/pseudostatic'
 
 // ---------------- 链轮配置 ----------------
 
@@ -148,7 +148,7 @@ export async function computeWheelLinks(cfg: WheelConfig, excludeSiteId?: string
       inLinkWheel: true,
       ...(excludeSiteId ? { id: { not: excludeSiteId } } : {}),
     },
-    select: { id: true, name: true, title: true, domain: true },
+    select: { id: true, name: true, title: true, domain: true, pseudoStaticStyle: true },
   })
   if (!sites.length) return []
   const order = shuffled(sites)
@@ -196,7 +196,7 @@ export async function computeWheelLinks(cfg: WheelConfig, excludeSiteId?: string
       const s = bookSites[bi % bookSites.length]
       const dom = normalizeSiteDomain(s.domain)
       if (!dom) continue
-      const url = `https://${dom}${buildBookUrl(b.id)}`
+      const url = `https://${dom}${buildViewUrl({ view: 'book', bookId: b.id }, (s.pseudoStaticStyle as PseudoStaticStyle) || 'query')}`
       if (seenUrls.has(url)) continue
       seenUrls.add(url)
       result[bookSlotIdx[bi]] = { text: (b.name || '未知书籍').trim().slice(0, 60), url }

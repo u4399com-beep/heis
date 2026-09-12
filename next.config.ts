@@ -1,14 +1,13 @@
 import type { NextConfig } from "next";
+import { pseudoStaticRewrites } from "./src/lib/pseudostatic";
 
 const nextConfig: NextConfig = {
   output: "standalone",
   /* 关闭 X-Powered-By 响应头 (middleware 也会兜底删除) */
   poweredByHeader: false,
-  /* SEO: /sitemap.xml 与 /robots.txt 直接可用 */
+  /* SEO: 伪静态路径 + /sitemap.xml 转发到查询串风格, 由 PublicSite.parseViewPath 解析 */
   async rewrites() {
-    return [
-      { source: "/sitemap.xml", destination: "/api/public/sitemap" },
-    ];
+    return pseudoStaticRewrites();
   },
   /* 强制类型检查 (Task 2-a: 重新启用生产构建类型门禁) */
   typescript: {

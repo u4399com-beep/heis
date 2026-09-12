@@ -29,7 +29,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Check, Globe, Loader2, Pencil, Plus, RefreshCw, Star, Trash2 } from 'lucide-react'
+import { Check, Globe, Loader2, Pencil, Plus, RefreshCw, Star, Trash2, Link2 } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   BatchActionButton,
@@ -73,6 +73,8 @@ interface SiteForm {
   chapterSeoTitleTemplate: string
   chapterSeoDescTemplate: string
   chapterSeoKeywordsTemplate: string
+  // 伪静态 URL 风格 (R7-20)
+  pseudoStaticStyle: string
 }
 
 const emptyForm: SiteForm = {
@@ -97,6 +99,7 @@ const emptyForm: SiteForm = {
   chapterSeoTitleTemplate: '',
   chapterSeoDescTemplate: '',
   chapterSeoKeywordsTemplate: '',
+  pseudoStaticStyle: 'query',
 }
 
 export function SitesSection() {
@@ -171,6 +174,7 @@ export function SitesSection() {
       chapterSeoTitleTemplate: s.chapterSeoTitleTemplate ?? '',
       chapterSeoDescTemplate: s.chapterSeoDescTemplate ?? '',
       chapterSeoKeywordsTemplate: s.chapterSeoKeywordsTemplate ?? '',
+      pseudoStaticStyle: s.pseudoStaticStyle ?? 'query',
     })
     setDialogOpen(true)
   }
@@ -673,6 +677,48 @@ export function SitesSection() {
                     </div>
                   </div>
                 )}
+              </div>
+            )}
+          </div>
+
+          {/* 伪静态 URL 设置 (R7-20) */}
+          <div className="space-y-3 rounded-md border border-zinc-800 bg-zinc-950/60 p-3">
+            <div className="flex items-center gap-2">
+              <Link2 className="h-3.5 w-3.5 text-cyan-400" />
+              <span className="text-xs font-semibold text-cyan-300">伪静态 URL 设置</span>
+            </div>
+            <p className="text-[10px] text-zinc-500 leading-relaxed">
+              选择 URL 风格。查询串模式兼容所有环境(无需 rewrite); 其他模式生成 SEO 友好的伪静态路径,
+              需 Next.js rewrites 支持(已内置)。site 参数始终走查询串。
+            </p>
+            <Select
+              value={form.pseudoStaticStyle}
+              onValueChange={(v) => setForm({ ...form, pseudoStaticStyle: v })}
+            >
+              <SelectTrigger className="h-9 border-zinc-700 bg-zinc-950 text-sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="query">查询串模式 — /?view=book&id=xxx (默认兼容)</SelectItem>
+                <SelectItem value="numeric">纯数字模式 — /book/123.html</SelectItem>
+                <SelectItem value="alphanumeric">字母+数字 — /book/b123.html</SelectItem>
+                <SelectItem value="slug">别名尾斜杠 — /book/123/</SelectItem>
+                <SelectItem value="short">短路径模式 — /b/123</SelectItem>
+                <SelectItem value="classic">经典连字符 — /book-123.html</SelectItem>
+                <SelectItem value="dir">目录分层模式 — /book/123/456.html</SelectItem>
+              </SelectContent>
+            </Select>
+            {form.pseudoStaticStyle !== 'query' && (
+              <div className="rounded-md border border-cyan-900/40 bg-cyan-950/20 p-2 text-[10px] leading-relaxed text-cyan-200/80">
+                <strong>URL 示例:</strong>
+                <div className="mt-1 font-mono text-cyan-300">
+                  {form.pseudoStaticStyle === 'numeric' && '/book/123456.html  /read/123456/789.html  /category/2/1.html'}
+                  {form.pseudoStaticStyle === 'alphanumeric' && '/book/b123456.html  /read/r123456/c789.html  /category/c2/p1.html'}
+                  {form.pseudoStaticStyle === 'slug' && '/book/123456/  /read/123456/789/  /category/2/'}
+                  {form.pseudoStaticStyle === 'short' && '/b/123456  /r/123456/789  /c/2  /s?q=xxx'}
+                  {form.pseudoStaticStyle === 'classic' && '/book-123456.html  /read-123456-789.html  /category-2-1.html'}
+                  {form.pseudoStaticStyle === 'dir' && '/book/123/456.html  /read/123/456/789.html  /category/2/1.html'}
+                </div>
               </div>
             )}
           </div>

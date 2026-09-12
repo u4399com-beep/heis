@@ -16,6 +16,7 @@ import { Toaster } from '@/components/ui/sonner'
 import { getThemeById as getTheme, THEMES } from '@/lib/crawl/themes'
 import { fetchSites } from './data'
 import { parseView, PublicProvider, viewToUrl, type PublicCtxValue, type ViewParams } from './ctx'
+import type { PseudoStaticStyle } from '@/lib/pseudostatic'
 import { useSiteSEO, withAlpha } from './seo'
 import { SiteHeader } from './SiteHeader'
 import { SiteFooter } from './SiteFooter'
@@ -98,25 +99,28 @@ export default function PublicSite({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // site 必须在 popstate/navigate effect 之前定义(它们引用 site?.pseudoStaticStyle)
+  const site = useMemo(() => sites.find((s) => s.id === siteId) || null, [sites, siteId])
+
   // 浏览器前进/后退：同步 URL → 内部 state（pushState 写入的历史可回退恢复）
   useEffect(() => {
     const onPop = () => {
-      const p = parseView(window.location.search)
+      const p = parseView(window.location.search, (site?.pseudoStaticStyle as PseudoStaticStyle) || 'query', window.location.pathname)
       setView(p)
       if (p.site && sites.some((s) => s.id === p.site)) setSiteId(p.site)
     }
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)
-  }, [sites])
+  }, [sites, site])
 
   // 站内导航：setState + pushState（保留历史，后退可回上一视图）+ 回顶
   const navigate = useCallback(
     (p: ViewParams) => {
       setView(p)
-      window.history.pushState(null, '', viewToUrl(p, siteId))
+      window.history.pushState(null, '', viewToUrl(p, siteId, (site?.pseudoStaticStyle as PseudoStaticStyle) || 'query'))
       window.scrollTo({ top: 0 })
     },
-    [siteId],
+    [siteId, site],
   )
 
   // embedMode 站点切换：切站点回首页并带 site 参数；同时解除主题预览覆盖(还原站点自身主题)
@@ -124,15 +128,15 @@ export default function PublicSite({
     (id: string) => {
       setSiteId(id)
       setThemeOverride(null)
+      const target = sites.find((s) => s.id === id)
       const p: ViewParams = { view: 'home', site: id }
       setView(p)
-      window.history.pushState(null, '', viewToUrl(p, id))
+      window.history.pushState(null, '', viewToUrl(p, id, (target?.pseudoStaticStyle as PseudoStaticStyle) || 'query'))
       window.scrollTo({ top: 0 })
     },
-    [],
+    [sites],
   )
 
-  const site = useMemo(() => sites.find((s) => s.id === siteId) || null, [sites, siteId])
   // 主题解析: 预览覆盖(?theme=)优先于站点自身主题; getTheme 对非法 id 自带回退
   const theme = useMemo(() => getTheme(themeOverride || site?.themeId) || THEMES[0], [themeOverride, site?.themeId])
 

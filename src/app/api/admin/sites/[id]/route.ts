@@ -10,6 +10,9 @@ const DOMAIN_RE = /^(localhost(:\d{1,5})?|[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-
 /** 章节内容分页模式白名单(与 POST 同步) */
 const PAGINATION_MODES = ['off', 'byWords', 'byPages'] as const
 
+/** 伪静态 URL 风格白名单(与 POST 同步) */
+const PSEUDO_STYLES = ['query', 'numeric', 'alphanumeric', 'slug', 'short', 'classic', 'dir'] as const
+
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   return withGuard(async () => {
     const { id } = await params
@@ -62,6 +65,10 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     }
     if (body?.chapterSeoKeywordsTemplate !== undefined) {
       data.chapterSeoKeywordsTemplate = str(body.chapterSeoKeywordsTemplate, 500)
+    }
+    // 伪静态 URL 风格(显式传入才更新)
+    if (body?.pseudoStaticStyle !== undefined) {
+      data.pseudoStaticStyle = enumIn(body.pseudoStaticStyle, PSEUDO_STYLES, 'query')
     }
 
     try {
