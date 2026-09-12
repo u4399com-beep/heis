@@ -23,7 +23,7 @@ const DEFAULT_SCOPE = 'summary'
 
 /** RFC 4180 CSV 字段转义: 含 [, "\n\r] 任一字符 → 整体加双引号, 内部 " 转 "" */
 function csvEscape(v: unknown): string {
-  if (v === null || v === undefined) return ''
+  if (v == null) return ''
   const s = typeof v === 'string' ? v : String(v)
   if (/["\n\r,]/.test(s)) {
     return `"${s.replace(/"/g, '""')}"`

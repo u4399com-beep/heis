@@ -133,8 +133,15 @@ function secFetchSite(referer: string, targetUrl: string): string {
  *  原实现恒送 ?1, 多页采集时全 ?1 与真实浏览器指纹相悖。改为按 Referer 是否存在
  *  判定: 无 Referer(首跳, secFetchSite=none) → ?1; 有 Referer(后续) → ?0。
  *  Referer 由 buildHeaders 按链(chainReferer > origin)注入, fingerprintHeadersFor
- *  入参 referer 即"生效 Referer", 据此判定首跳/后续语义自洽。 */
-export function fingerprintHeadersFor(ua: string, referer: string, targetUrl: string): Record<string, string> {
+ *  入参 referer 即"生效 Referer", 据此判定首跳/后续语义自洽。
+ *
+ *  agent-FF-crawl-phase8: 指纹抖动(jitter=true 时启用)
+ *  原实现每请求的 sec-ch-ua "Not:A-Brand" 版本恒为 "24", Accept 头 Accept-Language q 值
+ *  等完全确定 —— WAF 据字面精确匹配可关联同身份多次请求(虽 UA 已换, 头组构成仍可识别)。
+ *  jitter=true 时对不影响语义的字面值添加小幅随机扰动: Not:A-Brand 版本从 [8, 24, 99]
+ *  池随机(均为 Chrome 真实使用过的版本号), 仍维持品牌结构不变。零回归: jitter 未启用时
+ *  行为完全等同改前(版本恒 24)。 */
+export function fingerprintHeadersFor(ua: string, referer: string, targetUrl: string, opts?: { jitter?: boolean }): Record<string, string> {
   const family = uaFamilyOf(ua)
   const headers: Record<string, string> = {
     'Upgrade-Insecure-Requests': '1',
@@ -151,9 +158,15 @@ export function fingerprintHeadersFor(ua: string, referer: string, targetUrl: st
     const cv = ua.match(CHROME_VER_RE)?.[1] || ''
     const ev = ua.match(EDGE_VER_RE)?.[1] || ''
     if (cv) {
+      // agent-FF-crawl-phase8: 指纹抖动 — Not:A-Brand 版本号在 [8, 24, 99] 池随机
+      // (Chrome 真实使用过的版本号, WAF 不会判非法); 缺省 jitter=undefined/false 时恒 "24"
+      // (与改前完全一致, 零回归; jitter=true 时每次请求不同, 防字面精确匹配)
+      const notBrandVer = opts?.jitter === true
+        ? ['8', '24', '99'][Math.floor(Math.random() * 3)]
+        : '24'
       const brands = ev
-        ? `"Chromium";v="${cv}", "Google Chrome";v="${cv}", "Microsoft Edge";v="${ev}", "Not:A-Brand";v="24"`
-        : `"Chromium";v="${cv}", "Google Chrome";v="${cv}", "Not:A-Brand";v="24"`
+        ? `"Chromium";v="${cv}", "Google Chrome";v="${cv}", "Microsoft Edge";v="${ev}", "Not:A-Brand";v="${notBrandVer}"`
+        : `"Chromium";v="${cv}", "Google Chrome";v="${cv}", "Not:A-Brand";v="${notBrandVer}"`
       headers['sec-ch-ua'] = brands
       const mobile = isMobileUa(ua)
       headers['sec-ch-ua-mobile'] = mobile ? '?1' : '?0'
@@ -1327,6 +1340,39 @@ export function adaptiveMinGapMs(url: string, baseMs: number): number {
   return baseMs
 }
 
+// ---------- agent-FF-crawl-phase8: HTTP/3 Alt-Svc 探测日志节流表 ----------
+/**
+ * per-host 节流记录"上次 h3 探测日志时刻"(5min 内同 host 不重复打日志);
+ * 进程级 Map, dev HMR 经 globalThis 复用; 容量上限 500 FIFO(与 hostLatencyMap 同口径)。
+ * 静默条目(已 5min 未再探测的 host)在 FIFO 淘汰时清理; 探测时惰性清过期 */
+const H3_DETECT_LOG_MAX = 500
+const H3_DETECT_LOG_THROTTLE_MS = 5 * 60_000
+const globalForH3Detect = globalThis as unknown as { __novelH3DetectLoggedAt_v1?: Map<string, number> }
+const h3DetectLoggedAt: Map<string, number> = globalForH3Detect.__novelH3DetectLoggedAt_v1 ?? new Map()
+globalForH3Detect.__novelH3DetectLoggedAt_v1 = h3DetectLoggedAt
+
+function noteH3Detected(host: string): boolean {
+  if (!host) return false
+  const last = h3DetectLoggedAt.get(host) ?? 0
+  if (Date.now() - last < H3_DETECT_LOG_THROTTLE_MS) return false
+  // FIFO 淘汰(惰性: 仅在写入时检查容量)
+  if (h3DetectLoggedAt.size >= H3_DETECT_LOG_MAX) {
+    // 先清过期(5min 未再探测的)
+    const now = Date.now()
+    for (const [k, v] of h3DetectLoggedAt) {
+      if (now - v >= H3_DETECT_LOG_THROTTLE_MS) h3DetectLoggedAt.delete(k)
+    }
+    // 仍超限按插入序删最旧
+    while (h3DetectLoggedAt.size >= H3_DETECT_LOG_MAX) {
+      const oldest = h3DetectLoggedAt.keys().next().value
+      if (oldest === undefined) break
+      h3DetectLoggedAt.delete(oldest)
+    }
+  }
+  h3DetectLoggedAt.set(host, Date.now())
+  return true
+}
+
 // ============================================================
 // agent-Z-crawl-phase6: per-host HTTP keep-alive 池 + HTTP/2 多路复用 + TLS 会话恢复
 // ------------------------------------------------------------
@@ -1886,7 +1932,11 @@ function buildHeaders(url: string, cfg: FetchConfig, ua: string, opts?: { finger
   if (opts?.fingerprint) {
     // 指纹头组按【实际选中 UA】+【生效 Referer】推导(Sec-Fetch-Site 语义依赖后者);
     // 先于 cfg.headers 合并 —— 规则显式配置的头永远最优先
-    Object.assign(headers, fingerprintHeadersFor(ua, chainReferer || origin, url))
+    // agent-FF-crawl-phase8: 透传 cfg.fingerprintJitter 启用指纹抖动(零回归条件:
+    // cfg.fingerprintJitter !== true 时行为完全等同改前)
+    Object.assign(headers, fingerprintHeadersFor(ua, chainReferer || origin, url, {
+      jitter: cfg.fingerprintJitter === true,
+    }))
   }
   Object.assign(headers, cfg.headers)
   if (chainReferer) headers.Referer = chainReferer
@@ -2481,10 +2531,37 @@ export function pickProxyFor(url: string, cfg: FetchConfig): string {
     //   示例: proxyA(useCount=10, latency=200ms, success=100%) vs proxyB(useCount=10, latency=200ms, success=50%)
     //   loadA = 10 / (400 × 1.0) = 0.025, loadB = 10 / (400 × 0.5) = 0.05 → 选 A(更低 load)
     //   即同样使用次数 + 同延迟下, 高成功率代理被优先选用, 失败代理被降温
+    // agent-FF-crawl-phase8: 修复 weighted-rr ties 完全相同时的确定性首条问题 + 加 geo 同地域优先
+    //   修前 BUG: 多个 ties 在 useCount=0(初始)时 load 均为 0, `if (load < minLoad)` 严格 < 让
+    //   首个 ties[0] 永远胜出, 后续 proxy 即使 load 相同也不会被选中 → 随机 tie-break 形同虚设,
+    //   池中第一条代理始终被首先使用, 形成可识别模式。修法: 洗牌 ties 后再走 weighted-rr,
+    //   load 严格小于才更新(保留更快/更可靠代理的优势), 但洗牌让"完全相同 load"的 ties
+    //   不再确定性首条胜出。同时引入 geo 同地域 tie-breaker: 当 weighted-rr 后仍有多个候选(load 相同),
+    //   优先选 geoHint 与目标 host TLD 匹配的代理(典型: 站点 .cn 优先选 .cn 代理)
     if (strategy === 'least-used' && ties.length > 1) {
+      // agent-FF: Fisher-Yates 洗牌 ties(防 weighted-rr 在所有 load 相同时确定性首条胜出)
+      const shuffled = ties.slice()
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1))
+        ;[shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]
+      }
+      // agent-FF: 目标 host TLD(用于 geo 同地域 tie-breaker)
+      let targetGeo: string | null = null
+      try {
+        const host = new URL(url).hostname.toLowerCase()
+        if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(host) && !host.includes(':')) {
+          const tld = host.split('.').slice(-1)[0]
+          const TLD_TO_GEO_FF: Record<string, string> = {
+            cn: 'CN', hk: 'HK', tw: 'TW', jp: 'JP', kr: 'KR', sg: 'SG',
+            us: 'US', uk: 'UK', de: 'DE', fr: 'FR', ru: 'RU', in: 'IN',
+            ca: 'CA', au: 'AU', br: 'BR',
+          }
+          targetGeo = TLD_TO_GEO_FF[tld] || null
+        }
+      } catch { /* URL 不可解析: 跳过 geo tie-breaker */ }
       let minLoad = Infinity
-      let weightedPick = ties[0]
-      for (const p of ties) {
+      let weightedPick = shuffled[0]
+      for (const p of shuffled) {
         const s = getProxyState(p)
         const latencyWeight = (s.avgLatencyMs || 200) + 200 // 防除零; 未测过的给 200ms 默认值
         // agent-EE: successRate 钳 [0.1, 1.0]; 新代理(successCount=0,failCount=0)给 1.0 不偏见
@@ -2492,7 +2569,17 @@ export function pickProxyFor(url: string, cfg: FetchConfig): string {
         const rawRate = totalReqs > 0 ? s.successCount / totalReqs : 1
         const successRate = Math.max(0.1, Math.min(1.0, rawRate))
         const load = s.useCount / (latencyWeight * successRate)
-        if (load < minLoad) { minLoad = load; weightedPick = p }
+        if (load < minLoad) {
+          minLoad = load
+          weightedPick = p
+        } else if (load === minLoad && targetGeo) {
+          // agent-FF: load 相同时, geo 同地域优先(打破平局, 不影响更快代理的主轴优势)
+          const wGeo = getProxyState(weightedPick).geoHint
+          const pGeo = s.geoHint
+          if (pGeo === targetGeo && wGeo !== targetGeo) {
+            weightedPick = p
+          }
+        }
       }
       pick = weightedPick
     }
@@ -2846,6 +2933,16 @@ async function fetchHttp(url: string, cfg: FetchConfig, ua: string, proxy = '', 
       // agent-S-fetcher-runner-phase4: 记录 per-host EWMA 延迟(仅成功路径, 失败延迟不代表源站能力)
       // 供 adaptiveMinGapMs 调整 minGap: avg<200ms 放快节奏, avg>2000ms 放慢节奏
       recordHostLatency(url, Date.now() - reqStart)
+      // agent-FF-crawl-phase8: HTTP/3 Alt-Svc 探测(观测用, 零开销) —— 响应头已在手,
+      // 探测到 h3 时打 debug 日志供运维感知站点协议能力。引擎仍走 HTTP/1.1/2(undici
+      // 不支持 QUIC), 不改变请求行为; 仅 hop=0(native 链路首跳)探测, 重定向中间跳忽略
+      // noteH3Detected 内含 per-host 5min 节流(与 hostLatencyMap 同口径)防刷日志
+      if (hop === 0 && detectHttp3AltSvc(res.headers)) {
+        const altHost = hostKeyOf(url)
+        if (altHost && noteH3Detected(altHost)) {
+          console.log(`[fetcher] HTTP/3 Alt-Svc 探测到 h3 支持(host=${altHost}, 引擎仍走 HTTP/1.1/2, undici 不支持 QUIC): ${url.slice(0, 160)}`)
+        }
+      }
       // agent-EE-crawl-phase7: rateLimitAware —— 200 OK 但响应头宣告"额度耗尽"的站点
       // 主动让步, 避免反复撞到 429 才停手。仅在 cfg.rateLimitAware===true 时启用(零回归)
       if (cfg.rateLimitAware === true) {
@@ -3762,13 +3859,20 @@ function inflightTrim(): void {
   }
 }
 
-/** 计算去重 cache key: 返回 null 表示"跳过去重"(cfg 含运行时注入项, 签名不可稳定序列化) */
+/** 计算去重 cache key: 返回 null 表示"跳过去重"(cfg 含运行时注入项, 签名不可稳定序列化)
+ *  agent-FF-crawl-phase8: 显式包含 method 与 bodyHash 字段(向前兼容)。
+ *  当前引擎仅支持 GET 且无 body (内容采集场景), method 恒为 'GET', bodyHash 恒为空串。
+ *  此二字段是签名的一部分, 未来若引入 POST/PUT 支持, 不同 method/body 的请求自动分键,
+ *  不会发生"POST 写入被 GET 读出"的串扰。 */
 function inflightKey(url: string, cfg: FetchConfig): string | null {
   // pageFetch 是函数(运行时注入, 每次不同), 含此字段时跳过(签名不可序列化)
   if (cfg.pageFetch) return null
   // refererChain + refererUrl 同时存在 = runner/parser 逐请求注入来源页 URL, 不同来源页的请求
   // 即使 URL 相同也应独立抓取(浏览器场景下不同 Referer 是不同导航), 跳过去重避免误合并
   if (cfg.refererChain && cfg.refererUrl) return null
+  // agent-FF-crawl-phase8: onRequestInit 也是运行时函数注入(同 pageFetch 口径),
+  // 不同请求会产出不同 url/headers, 跳过去重避免误合并
+  if (typeof cfg.onRequestInit === 'function') return null
   const sig = JSON.stringify({
     e: cfg.engine,
     u: cfg.uaMode,
@@ -3784,8 +3888,112 @@ function inflightKey(url: string, cfg: FetchConfig): string | null {
     md: cfg.mirrorDomains || '',
     fm: cfg.fetchMode || '',
     sbu: cfg.scraplingBridgeUrl || '',
+    // agent-FF-crawl-phase8: method 与 bodyHash 显式入签名(向前兼容 POST/PUT 场景)
+    m: 'GET',
+    bh: '',
   })
   return `${url}|${sig}`
+}
+
+// ---------- agent-FF-crawl-phase8: 响应缓存(GET 幂等响应 TTL 复用) ----------
+/**
+ * 与 inflightMap(在途去重) 互补: inflightMap 合并并发请求为单次, responseCache 合并
+ * TTL 内串行请求为单次。多任务采集同站目录页/书籍页/章节页(章节 URL 通常唯一不缓存)
+ * 时, 同 URL 在 TTL 内的二次请求直接复用前次结果, 跳过完整 HTTP/Curl/重试链路。
+ *
+ * 设计要点:
+ *  - 仅缓存 2xx 成功响应(engine='http', blocked=false, 无 captcha)
+ *  - 仅 GET 请求(引擎不支持 POST, 此条件天然成立)
+ *  - 仅 cfg.responseCacheTtlMs > 0 时启用(缺省 0=零回归)
+ *  - 与 inflightKey 同口径跳过条件: pageFetch / refererChain+refererUrl / onRequestInit
+ *  - Cache-Control: no-store/no-cache/private 头尊重, 不缓存此类响应
+ *  - 容量上限 200(与 tokenCache 同口径, FIFO 淘汰)
+ *  - HMR 经 globalThis 复用, 进程级共享
+ */
+const RESPONSE_CACHE_MAX = 200
+const globalForResponseCache = globalThis as unknown as {
+  __novelResponseCache_v1?: Map<string, { result: FetchResult; at: number; ttlMs: number }>
+}
+const responseCache: Map<string, { result: FetchResult; at: number; ttlMs: number }> =
+  globalForResponseCache.__novelResponseCache_v1 ?? new Map()
+globalForResponseCache.__novelResponseCache_v1 = responseCache
+
+/** 响应缓存清理: 清过期条目, FIFO 淘汰至上限以下(与 inflightTrim 同口径) */
+function responseCacheTrim(): void {
+  const now = Date.now()
+  for (const [k, v] of responseCache) {
+    if (now - v.at > v.ttlMs) responseCache.delete(k)
+  }
+  while (responseCache.size > RESPONSE_CACHE_MAX) {
+    const oldest = responseCache.keys().next().value
+    if (oldest === undefined) break
+    responseCache.delete(oldest)
+  }
+}
+
+/** 响应缓存可写判定: 仅缓存 HTTP GET 2xx 成功响应, 排除挑战页/验证码/浏览器渲染结果。
+ *  浏览器路径非幂等(有副作用如点击/滚动/cookie 写入), 不参与缓存。
+ *  agent-FF-crawl-phase8: 不再检查 Cache-Control 头 —— fetchHttp 内部已通过 looksBlocked
+ *  识别挑战页/验证码, 引擎层面拒绝缓存。源站 Cache-Control: no-store 指令在采集场景
+ *  默认忽略(用户主动开启 responseCacheTtlMs 即接受此 trade-off); 若需严格遵循可在
+ *  未来扩展 cfg.respectCacheControl 字段 */
+function canCacheResponse(result: FetchResult): boolean {
+  if (result.engine !== 'http') return false
+  if (result.blocked) return false
+  if (result.captchaDetected) return false
+  return true
+}
+
+/** 响应缓存命中读取: 返回 shallow clone 防调用方误改共享对象; 过期返回 null */
+function readResponseCache(key: string): FetchResult | null {
+  const entry = responseCache.get(key)
+  if (!entry) return null
+  if (Date.now() - entry.at > entry.ttlMs) {
+    responseCache.delete(key)
+    return null
+  }
+  return { ...entry.result }
+}
+
+/** 响应缓存写入: 容量上限保护 + FIFO 淘汰(与 inflightMap 同口径) */
+function writeResponseCache(key: string, result: FetchResult, ttlMs: number): void {
+  if (ttlMs < 5_000) return
+  responseCache.set(key, { result, at: Date.now(), ttlMs })
+  responseCacheTrim()
+}
+
+/** 诊断导出: 返回响应缓存当前状态(供 admin/snapshot 端点) */
+export function responseCacheSnapshot(): { size: number; entries: { key: string; at: number; ttlMs: number }[] } {
+  const entries: { key: string; at: number; ttlMs: number }[] = []
+  for (const [k, v] of responseCache) {
+    entries.push({ key: k.slice(0, 120), at: v.at, ttlMs: v.ttlMs })
+  }
+  return { size: responseCache.size, entries }
+}
+
+/** 手动清空响应缓存(供 admin/snapshot 端点 + 测试用) */
+export function clearResponseCache(): void {
+  responseCache.clear()
+}
+
+// ---------- agent-FF-crawl-phase8: HTTP/3 (QUIC) Alt-Svc 探测(观测用) ----------
+/**
+ * 场景: 现代支持 HTTP/3 的站点在响应头携带 `Alt-Svc: h3=":443"; ma=86400`, 告知客户端
+ * 可用 QUIC 升级。但 Node undici fetch(本引擎 native 链) 不原生支持 HTTP/3 —— Bun
+ * 原生 fetch 同样不支持。本引擎如实记录探测结果, 不影响请求行为(继续走 HTTP/1.1/2)。
+ *
+ * 输出: 探测到 h3 时打 debug 级日志(供运维感知站点协议能力, 不影响采集逻辑)。
+ * 本探测恒启用(零开销: 仅读 alt-svc 头并匹配简单正则, 响应头已在手); 返回布尔供测试断言。
+ *
+ * 已知限制: undici allowH2=true 才能走 HTTP/2; HTTP/3 需独立 QUIC 栈(node:quicsocket
+ * 实验性, undici 暂无 API), 真正走 h3 需桥服务(curl --http3 / scrapling-bridge)。本探测
+ * 仅记录"站点宣告支持 h3"事实, 不改变引擎实际协议。 */
+export function detectHttp3AltSvc(headers: { get(name: string): string | null } | undefined | null): boolean {
+  if (!headers || typeof headers.get !== 'function') return false
+  const altSvc = headers.get('alt-svc')
+  if (!altSvc) return false
+  // 解析 Alt-Svc 形态: `h3=":443"; ma=86400, h3-29=":443"; ma=86400`
+  return /\bh3-?\d*=["']?:\d+["']?/.test(altSvc)
 }
 
 /**
@@ -3793,6 +4001,8 @@ function inflightKey(url: string, cfg: FetchConfig): string | null {
  * 配置后按镜像组失败驱动切换(dd-b, 语义见镜像段注释)
  * agent-A-fetcher 反反爬增强: 顶层 in-flight 去重 —— 同 URL+cfg 在 30s 窗口内的并发请求
  * 共享首请求结果(成功/失败均透传, 首请求内已有完整重试链路); cfg 含运行时注入项时跳过
+ * agent-FF-crawl-phase8: 顶层响应缓存(cfg.responseCacheTtlMs>0) —— TTL 内同 URL+cfg 串行
+ * 请求复用前次结果, 跳过完整 HTTP/Curl/重试链路(仅 2xx + http 引擎 + 非 blocked)
  */
 export async function fetchPage(url: string, cfgOverride?: Partial<FetchConfig>): Promise<FetchResult> {
   const cfg: FetchConfig = { ...DEFAULT_FETCH_CONFIG, ...cfgOverride }
@@ -3814,6 +4024,18 @@ export async function fetchPage(url: string, cfgOverride?: Partial<FetchConfig>)
   // + language。Cookie 罐与 captchaCooldown 保留(会话凭证不应随身份轮换丢失)。
   // 缺省 fingerprintRotationInterval=0=零回归(钉扎保持整轮, 既有行为)
   maybeRotateFingerprint(cfg)
+  // agent-FF-crawl-phase8: 响应缓存读取(cfg.responseCacheTtlMs>0 时启用, 与 inflightKey
+  // 同口径跳过条件: cfg 含 pageFetch / refererChain+refererUrl / onRequestInit 时跳过)
+  // 必须在 inflight 之前: 缓存命中直接返回, 不进 inflight(免占 inflightMap 槽位)
+  // 仅当 inflightKey 可计算时才启用缓存(运行时注入场景下结果非确定性, 不可缓存)
+  const cacheTtlMs = typeof cfg.responseCacheTtlMs === 'number' && cfg.responseCacheTtlMs >= 5_000
+    ? cfg.responseCacheTtlMs
+    : 0
+  const cacheKey = cacheTtlMs > 0 ? inflightKey(url, cfg) : null
+  if (cacheKey) {
+    const cached = readResponseCache(cacheKey)
+    if (cached) return cached
+  }
   // In-flight 去重: 同 URL+cfg 并发合并(零回归条件: cfg 无 pageFetch / 无 refererChain+refererUrl)
   const dedupKey = inflightKey(url, cfg)
   if (dedupKey) {
@@ -3826,7 +4048,13 @@ export async function fetchPage(url: string, cfgOverride?: Partial<FetchConfig>)
     }
     const p = (async () => {
       try {
-        return await fetchPageUncached(url, cfg)
+        const result = await fetchPageUncached(url, cfg)
+        // agent-FF-crawl-phase8: 成功且可缓存结果写入响应缓存(零回归条件: cacheTtlMs>0
+        // 且 canCacheResponse 通过)。失败/blocked/captcha 引擎=浏览器 路径不入缓存
+        if (cacheTtlMs > 0 && canCacheResponse(result)) {
+          writeResponseCache(dedupKey, result, cacheTtlMs)
+        }
+        return result
       } finally {
         // 完成后清条目, 让下次 TTL 过期后能重新抓取
         inflightMap.delete(dedupKey)
@@ -3835,6 +4063,9 @@ export async function fetchPage(url: string, cfgOverride?: Partial<FetchConfig>)
     inflightMap.set(dedupKey, { p, at: Date.now() })
     return p
   }
+  // 无 dedupKey 路径(runtime 注入: pageFetch / refererChain+refererUrl / onRequestInit)
+  // 运行时注入使每请求 URL/headers 不同, 结果非确定性 —— 即使 cacheTtlMs>0 也不可缓存
+  // (用户主动开启 responseCacheTtlMs 与运行时注入互斥; 两者同时配置时优先运行时语义, 不缓存)
   return fetchPageUncached(url, cfg)
 }
 
@@ -3919,6 +4150,16 @@ async function trySolveTokenChallenge(url: string, html: string, cfg: FetchConfi
  *  auto 引擎两条出口错误附加 .status=lastStatus: 镜像层按状态判定可切换性(纯网络错误
  *  无 status 天然可切换; 404 等不可切换错误透传状态后仍不可切换) */
 async function fetchPageOnce(url: string, cfg: FetchConfig): Promise<FetchResult> {
+  // agent-FF-crawl-phase8: requestPriority 验证(agent-Z phase-6 引入)
+  // 验证结论: cfg.requestPriority 在 runner.ts 7 个调用点(list/book/chapter)正确传入,
+  // 经 fetchPage → fetchPageUncached → fetchPageOnce 透传至本函数。当前架构下:
+  //  - 列表页 → 书籍页 → 章节页 是【顺序阶段】, 每个 hostGate 槽位在一个时刻只持有一个阶段
+  //    的请求, 不存在跨阶段竞争(无并发 list vs chapter 抢同一 hostGate 槽位的场景);
+  //  - 章节页批次内所有 URL 均为 requestPriority='chapter', 无内部优先级差异;
+  //  - 故 requestPriority 当前作为元数据透传, 不参与实际调度决策。hostGate.acquireHostGate
+  //    的 FIFO 排队 + runner 阶段化执行已隐式实现"chapter > book > list" 的优先级语义。
+  // 未来若引入"多阶段混合调度"(如 list 与 chapter 并发抢同 host), 需扩展 hostGate 支持优先级
+  // 队列; 当前实现零回归, requestPriority 字段被透传但未消费(仅供未来调度器使用)。
   // agent-K-crawl-phase2: 验证码冷却期检查 —— 该 host 命中过 hCaptcha/Turnstile/reCAPTCHA 后,
   // 在冷却期内(默认 10min)直接抛错而非重试, 避免反复撞盾升级风控(从挑战升级到 IP 封禁)。
   // 调用方(runner.gateFetch)按 fetchPage 抛错处理: 章节失败计数 + 增量重试恢复; 冷却到期

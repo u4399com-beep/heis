@@ -109,11 +109,11 @@ export function HistoryView() {
 
   const onContinueLatest = useCallback(() => {
     if (!latestEntry?.chapterId) return
-    navigate({ view: 'read', chapterId: latestEntry.chapterId })
-  }, [latestEntry?.chapterId, navigate])
+    navigate({ view: 'read', bookId: latestEntry.bookId, chapterId: latestEntry.chapterId })
+  }, [latestEntry?.chapterId, latestEntry?.bookId, navigate])
 
-  const onContinueBook = useCallback((chapterId: string) => {
-    navigate({ view: 'read', chapterId })
+  const onContinueBook = useCallback((bookId: string, chapterId: string) => {
+    navigate({ view: 'read', bookId, chapterId })
   }, [navigate])
 
   useSiteSEO({
@@ -262,7 +262,7 @@ export function HistoryView() {
             key={e.bookId}
             entry={e}
             onRemove={() => removeOne(e.bookId)}
-            onContinue={() => onContinueBook(e.chapterId)}
+            onContinue={() => onContinueBook(e.bookId, e.chapterId)}
           />
         ))}
       </div>

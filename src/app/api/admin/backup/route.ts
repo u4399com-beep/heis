@@ -116,7 +116,19 @@ export async function GET() {
           title: s.title, description: s.description, keywords: s.keywords,
           icbm: s.icbm, geoRegion: s.geoRegion, geoPlacename: s.geoPlacename,
           offset: s.offset, isDefault: s.isDefault, status: s.status,
-          inLinkWheel: s.inLinkWheel, createdAt: s.createdAt, updatedAt: s.updatedAt,
+          inLinkWheel: s.inLinkWheel,
+          // 章节分页 + SEO 模板 + 伪静态风格(R7-19/R7-20) — 缺失则 restore 后站点配置
+          // 静默回退到 schema 默认值(pagination='off' / pseudoStatic='query' / 模板空),
+          // 用户备份→还原后所有站点的分页/SEO/伪静态配置全部丢失, 链轮 URL 也回退到查询串
+          chapterPaginationMode: s.chapterPaginationMode,
+          chapterPaginationWords: s.chapterPaginationWords,
+          chapterPaginationPages: s.chapterPaginationPages,
+          chapterSeoAuto: s.chapterSeoAuto,
+          chapterSeoTitleTemplate: s.chapterSeoTitleTemplate,
+          chapterSeoDescTemplate: s.chapterSeoDescTemplate,
+          chapterSeoKeywordsTemplate: s.chapterSeoKeywordsTemplate,
+          pseudoStaticStyle: s.pseudoStaticStyle,
+          createdAt: s.createdAt, updatedAt: s.updatedAt,
         })),
         friendLinks: friendLinks.map((l) => ({
           id: l.id, name: l.name, url: l.url, logo: l.logo,

@@ -359,6 +359,20 @@ export interface FetchConfig {
    *  注意: 回调内不得发阻塞 IO(会拖慢请求链路), 不得抛错(异常被 catch 静默降级原请求) */
   onRequestInit?: (url: string, headers: Record<string, string>) =>
     { url?: string; headers?: Record<string, string> } | void
+  // ---------- agent-FF-crawl-phase8: 反反爬增强(指纹抖动 + HTTP/3 检测 + 响应缓存) ----------
+  /** 指纹抖动(agent-FF): true=对每请求的指纹头组添加小幅随机变化, 防精确匹配检测。
+   *  典型变化: sec-ch-ua 末位 "Not:A-Brand" 版本在 [8, 24, 99] 池随机;
+   *  Accept 偏好排序小幅抖动(q=0.9 vs q=0.8 等); 不影响语义仅改字面值。
+   *  缺省 false=零回归(头组完全确定, 便于复现测试)。仅 native HTTP 链生效,
+   *  浏览器路径自有真实浏览器原生头组, 重复注入会冲突。 */
+  fingerprintJitter?: boolean
+  /** 响应缓存 TTL ms(agent-FF): >0 时启用 GET 2xx 响应的进程内缓存, 同 URL+cfg
+   *  在 TTL 内复用结果, 跳过实际网络请求。仅幂等 GET 请求缓存; 4xx/5xx/挑战页/含
+   *  动态 token 的请求不缓存。Cache-Control: no-store/no-cache 与 Vary 头被尊重。
+   *  缺省 0=关闭(零回归, 同 URL 始终重新抓取); 钳 [5000, 300_000](5s~5min)。
+   *  与 inflightMap(在途去重) 互补: inflightMap 合并并发请求为单次, responseCache
+   *  合并 TTL 内串行请求为单次。多任务采集同站目录页/书籍页时显著降负载。 */
+  responseCacheTtlMs?: number
 }
 
 /**
@@ -862,6 +876,17 @@ export function sanitizeFetchConfig(v: unknown): Partial<FetchConfig> {
   }
   // onRequestInit 为运行时注入函数(同 pageFetch 口径)刻意不进白名单
   // (函数不可 JSON 序列化, 规则 JSON 同名键自然丢弃, 仅运行时构造 cfg 时设置)
+  // ---------- agent-FF-crawl-phase8: 新增可选字段白名单(均缺省零回归) ----------
+  // 指纹抖动: 布尔白名单(缺省 false=零回归, 与既有 fingerprintHeadersFor 输出完全一致)
+  const fingerprintJitter = safeBool(r.fingerprintJitter)
+  if (fingerprintJitter !== undefined) out.fingerprintJitter = fingerprintJitter
+  // 响应缓存 TTL ms: 缺省 0=关闭; >0 时启用 GET 2xx 响应缓存, 钳 [5_000, 300_000]
+  // (5s~5min, 低于 5s 缓存价值低于开销, 高于 5min 站点内容可能已变)
+  // safeNum 仅在 r.responseCacheTtlMs 为有效数字时返回(0~300000); 0 表示关闭, 不写入 out
+  const responseCacheTtlMs = safeNum(r.responseCacheTtlMs, 0, 300_000)
+  if (responseCacheTtlMs !== undefined && responseCacheTtlMs >= 5_000) {
+    out.responseCacheTtlMs = responseCacheTtlMs
+  }
   return out
 }
 

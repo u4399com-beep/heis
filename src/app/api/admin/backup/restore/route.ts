@@ -14,6 +14,30 @@ import { logger } from '@/lib/logger'
 import { cleanContentHtml } from '@/lib/crawl/cleaner'
 
 const BACKUP_VERSION = 1
+// R7-19/R7-20: 站点章节分页 + SEO 模板 + 伪静态风格白名单(与 admin/sites/route.ts 同步)
+const PAGINATION_MODES = ['off', 'byWords', 'byPages'] as const
+const PSEUDO_STYLES = ['query', 'numeric', 'alphanumeric', 'slug', 'short', 'classic', 'dir'] as const
+
+/** 恢复站点分页/SEO/伪静态字段: 备份值缺失或非法 → schema 默认值(与 admin/sites POST 同口径) */
+function siteChapterFields(s: Record<string, unknown>) {
+  const mode = typeof s.chapterPaginationMode === 'string' && (PAGINATION_MODES as readonly string[]).includes(s.chapterPaginationMode)
+    ? s.chapterPaginationMode
+    : 'off'
+  const pseudo = typeof s.pseudoStaticStyle === 'string' && (PSEUDO_STYLES as readonly string[]).includes(s.pseudoStaticStyle)
+    ? s.pseudoStaticStyle
+    : 'query'
+  return {
+    chapterPaginationMode: mode,
+    chapterPaginationWords: Math.min(50_000, Math.max(500, Number(s.chapterPaginationWords) || 3000)),
+    chapterPaginationPages: Math.min(20, Math.max(2, Number(s.chapterPaginationPages) || 3)),
+    chapterSeoAuto: s.chapterSeoAuto !== false,
+    chapterSeoTitleTemplate: String(s.chapterSeoTitleTemplate || '').slice(0, 500),
+    chapterSeoDescTemplate: String(s.chapterSeoDescTemplate || '').slice(0, 500),
+    chapterSeoKeywordsTemplate: String(s.chapterSeoKeywordsTemplate || '').slice(0, 500),
+    pseudoStaticStyle: pseudo,
+  }
+}
+
 // R4A-9: restore 请求体大小上限 200MB —— 与客户端 BackupSection 的 200MB 上限对齐,
 // 防 5GB body 通过 req.json() 一次性读入 OOM 服务进程
 const RESTORE_MAX_BODY_BYTES = 200 * 1024 * 1024
@@ -171,6 +195,8 @@ export async function POST(req: Request) {
               isDefault: !!s.isDefault,
               status: s.status !== false,
               inLinkWheel: s.inLinkWheel !== false,
+              // R7-19/R7-20: 备份缺失字段时由 siteChapterFields 兜底为 schema 默认值
+              ...siteChapterFields(s),
             },
             update: {
               name: String(s.name || '').slice(0, 100),
@@ -184,6 +210,9 @@ export async function POST(req: Request) {
               offset: Number(s.offset) || 0,
               status: s.status !== false,
               inLinkWheel: s.inLinkWheel !== false,
+              // R7-19/R7-20: 同 create, 缺失字段回退默认值(与单条 PUT "显式传入才更新"语义有差异:
+              // 备份还原场景下应整体覆盖, 不保留旧值以防配置漂移)
+              ...siteChapterFields(s),
             },
           })
           imported.sites++

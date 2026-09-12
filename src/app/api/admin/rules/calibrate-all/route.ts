@@ -104,10 +104,11 @@ async function runBatch(job: BatchJob): Promise<void> {
     }
     job.status = 'done'
     job.endedAtMs = Date.now() // ab-c: elapsedMs 冻结基准
-  } catch (e: any) {
+  } catch (e) {
+    const err = e as { name?: string; message?: string } | null | undefined
     job.status = 'error'
     job.endedAtMs = Date.now() // ab-c: elapsedMs 冻结基准
-    job.error = e?.name === 'CalibrateAbort' ? '校准已取消' : String(e?.message || e)
+    job.error = err?.name === 'CalibrateAbort' ? '校准已取消' : String(err?.message || e)
   }
 }
 

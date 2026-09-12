@@ -35,7 +35,7 @@ const HOST_GATE_CLAMP_MAX = 8
 
 /** 从未知值提取可钳制数值(数字/数字串均可); 非有限数返回 null */
 function numOrNull(v: unknown): number | null {
-  if (v === null || v === undefined || v === '') return null
+  if (v == null || v === '') return null
   const n = typeof v === 'number' ? v : Number(v)
   return Number.isFinite(n) ? n : null
 }

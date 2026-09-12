@@ -171,14 +171,22 @@ export function ThemeBookList({ books, loading }: { books: BookItem[]; loading?:
 }
 
 /** 开始阅读入口按钮（跳第一章） */
-export function ReadFirstButton({ firstChapterId, label = '开始阅读' }: { firstChapterId?: string; label?: string }) {
+export function ReadFirstButton({
+  firstChapterId,
+  bookId,
+  label = '开始阅读',
+}: {
+  firstChapterId?: string
+  bookId?: string
+  label?: string
+}) {
   const { theme, navigate } = usePublic()
   const v = theme.vars
   return (
     <button
       type="button"
       disabled={!firstChapterId}
-      onClick={() => firstChapterId && navigate({ view: 'read', chapterId: firstChapterId })}
+      onClick={() => firstChapterId && navigate({ view: 'read', bookId, chapterId: firstChapterId })}
       className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium transition-opacity hover:opacity-85 disabled:cursor-not-allowed disabled:opacity-50"
       style={{ background: v.primary, color: v.primaryText, borderRadius: v.radius }}
       aria-label={label}

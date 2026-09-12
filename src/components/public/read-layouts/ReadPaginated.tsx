@@ -40,6 +40,11 @@ export const ReadPaginated = memo(function ReadPaginated({
   onLineHeight,
   onLetterSpacing,
   onToggleNight,
+  fontFamily,
+  bgTheme,
+  bgColorOverride,
+  onSetFontFamily,
+  onSetBgTheme,
   chapterPagination,
   onChapterPage,
 }: ReadLayoutProps) {
@@ -89,8 +94,8 @@ export const ReadPaginated = memo(function ReadPaginated({
   // feat-round-5 B1: 注册全局阅读器动作 (分页式使用横向滚动, top/bottom = 首末页)
   useEffect(() => {
     const actions = {
-      onPrev: () => data?.prev && navigate({ view: 'read', chapterId: data.prev.id }),
-      onNext: () => data?.next && navigate({ view: 'read', chapterId: data.next.id }),
+      onPrev: () => data?.prev && navigate({ view: 'read', bookId: data?.book?.id, chapterId: data.prev.id }),
+      onNext: () => data?.next && navigate({ view: 'read', bookId: data?.book?.id, chapterId: data.next.id }),
       onScrollTop: () => stageRef.current?.scrollTo({ left: 0, behavior: 'smooth' }),
       onScrollBottom: () => stageRef.current?.scrollTo({ left: stageRef.current.scrollWidth, behavior: 'smooth' }),
     }
@@ -101,7 +106,8 @@ export const ReadPaginated = memo(function ReadPaginated({
   })
 
   // 夜间调色（与旧版语义一致）
-  const stageBg = night ? (theme.dark ? 'rgba(0,0,0,0.45)' : '#15171c') : v.surface
+  // R7-20 GG: bgColorOverride 优先
+  const stageBg = bgColorOverride || (night ? (theme.dark ? 'rgba(0,0,0,0.45)' : '#15171c') : v.surface)
   const textColor = night ? '#c9cdd4' : v.text
   const titleColor = night ? '#e6e9ee' : v.text
   const metaColor = night ? '#8b929e' : v.textMuted
@@ -184,11 +190,11 @@ export const ReadPaginated = memo(function ReadPaginated({
     if (!el) return
     const idx = Math.round(el.scrollLeft / el.clientWidth)
     if (dir === 1 && idx >= pageCount - 1) {
-      if (data?.next) navigate({ view: 'read', chapterId: data.next.id })
+      if (data?.next) navigate({ view: 'read', bookId: data?.book?.id, chapterId: data.next.id })
       return
     }
     if (dir === -1 && idx <= 0) {
-      if (data?.prev) navigate({ view: 'read', chapterId: data.prev.id })
+      if (data?.prev) navigate({ view: 'read', bookId: data?.book?.id, chapterId: data.prev.id })
       return
     }
     goPage(dir)
@@ -238,6 +244,10 @@ export const ReadPaginated = memo(function ReadPaginated({
             onLineHeight={onLineHeight}
             onLetterSpacing={onLetterSpacing}
             onToggleNight={onToggleNight}
+            fontFamily={fontFamily}
+            onSetFontFamily={onSetFontFamily}
+            bgTheme={bgTheme}
+            onSetBgTheme={onSetBgTheme}
             dark={night || theme.dark}
             triggerClassName={iconPill}
             triggerStyle={{
@@ -391,7 +401,7 @@ export const ReadPaginated = memo(function ReadPaginated({
         <button
           type="button"
           disabled={!data?.prev}
-          onClick={() => data?.prev && navigate({ view: 'read', chapterId: data.prev.id })}
+          onClick={() => data?.prev && navigate({ view: 'read', bookId: data?.book?.id, chapterId: data.prev.id })}
           className={pill}
           style={{ border: `1px solid ${lineColor}`, borderRadius: v.radius, color: data?.prev ? v.text : metaColor, background: withAlpha(v.surfaceAlt, night ? 0.15 : 0.6) }}
           aria-label="上一章"
@@ -427,7 +437,7 @@ export const ReadPaginated = memo(function ReadPaginated({
         <button
           type="button"
           disabled={!data?.next}
-          onClick={() => data?.next && navigate({ view: 'read', chapterId: data.next.id })}
+          onClick={() => data?.next && navigate({ view: 'read', bookId: data?.book?.id, chapterId: data.next.id })}
           className={pill}
           style={{ border: `1px solid ${lineColor}`, borderRadius: v.radius, color: data?.next ? v.text : metaColor, background: withAlpha(v.surfaceAlt, night ? 0.15 : 0.6) }}
           aria-label="下一章"

@@ -462,7 +462,7 @@ export function safeJsonParse<T>(raw: string | null | undefined, fallback: T): T
   if (!raw) return fallback
   try {
     const v = JSON.parse(raw) as T
-    if (v === null || v === undefined) return fallback
+    if (v == null) return fallback
     return v
   } catch {
     return fallback

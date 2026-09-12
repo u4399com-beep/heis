@@ -51,7 +51,7 @@ export async function POST(req: Request) {
         try {
           await db.downloadJob.delete({ where: { id } })
           affected++
-        } catch (e: any) {
+        } catch (e) {
           // tt-b: e.message 含 Prisma 查询原文/路径, 不得入信封 → errText 消毒
           skipped.push(skipItem(errText(e), label))
         }
@@ -94,7 +94,7 @@ export async function POST(req: Request) {
         }
         // 旧记录保留(旧成品文件在新任务完成前仍可下载), 新任务在列表中自行推进
         affected++
-      } catch (e: any) {
+      } catch (e) {
         skipped.push(skipItem(errText(e), label))
       }
     }

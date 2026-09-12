@@ -128,7 +128,7 @@ export async function POST(req: Request) {
               continue
             }
             affected++
-          } catch (e: any) {
+          } catch (e) {
             // tt-b: e.message 含 Prisma 查询原文/路径, 不得入信封 → errText 消毒
             skipped.push(skipItem(errText(e), b.name))
           }
@@ -233,8 +233,9 @@ export async function POST(req: Request) {
                     // 被级联删, 原会留下孤儿文件且未被回滚; 捕获后回滚临时文件, 再重抛转换失败
                     try {
                       await db.chapter.update({ where: { id: ch.id }, data: { title: dbTitle } })
-                    } catch (e: any) {
-                      if (e?.code === 'P2025') {
+                    } catch (e) {
+                      const code = (e as { code?: string })?.code
+                      if (code === 'P2025') {
                         try { await fs.rm(tmp, { force: true }) } catch { /* ignore */ }
                         txtFailed++
                         continue
@@ -273,7 +274,7 @@ export async function POST(req: Request) {
               // 批间让出事件循环, 避免长请求饿死其它并发处理
               await new Promise((r) => setImmediate(r))
             }
-          } catch (e: any) {
+          } catch (e) {
             skipped.push(skipItem(`转换失败: ${errText(e)}`, b.name))
           }
           // 书间让出: 逐本处理期间让其它请求有机会插队

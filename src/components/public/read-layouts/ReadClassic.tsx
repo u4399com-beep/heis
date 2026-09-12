@@ -42,6 +42,12 @@ export const ReadClassic = memo(function ReadClassic({
   onLineHeight,
   onLetterSpacing,
   onToggleNight,
+  fontFamily,
+  fontFamilyStack,
+  bgTheme,
+  bgColorOverride,
+  onSetFontFamily,
+  onSetBgTheme,
   chapterPagination,
   onChapterPage,
 }: ReadLayoutProps) {
@@ -79,8 +85,8 @@ export const ReadClassic = memo(function ReadClassic({
   // useEffect 无 deps — 每次 render 后写入最新闭包, 卸载时清空 (避免读到陈旧 data)
   useEffect(() => {
     const actions = {
-      onPrev: () => data?.prev && navigate({ view: 'read', chapterId: data.prev.id }),
-      onNext: () => data?.next && navigate({ view: 'read', chapterId: data.next.id }),
+      onPrev: () => data?.prev && navigate({ view: 'read', bookId: data?.book?.id, chapterId: data.prev.id }),
+      onNext: () => data?.next && navigate({ view: 'read', bookId: data?.book?.id, chapterId: data.next.id }),
       onScrollTop: () => window.scrollTo({ top: 0, behavior: 'smooth' }),
       onScrollBottom: () => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' }),
     }
@@ -91,11 +97,12 @@ export const ReadClassic = memo(function ReadClassic({
   })
 
   // 夜间调色（与旧版语义一致：暗主题更沉, 浅主题切深底）
-  const panelBg = night
+  // R7-20 GG: bgColorOverride 优先于 night 主题默认色 (用户显式选择背景色时覆盖)
+  const panelBg = bgColorOverride || (night
     ? theme.dark
       ? 'rgba(0,0,0,0.45)'
       : '#15171c'
-    : v.surface
+    : v.surface)
   const textColor = night ? '#c9cdd4' : v.text
   const titleColor = night ? '#e6e9ee' : v.text
   const metaColor = night ? '#8b929e' : v.textMuted
@@ -146,6 +153,10 @@ export const ReadClassic = memo(function ReadClassic({
             onLineHeight={onLineHeight}
             onLetterSpacing={onLetterSpacing}
             onToggleNight={onToggleNight}
+            fontFamily={fontFamily}
+            onSetFontFamily={onSetFontFamily}
+            bgTheme={bgTheme}
+            onSetBgTheme={onSetBgTheme}
             dark={night || theme.dark}
             triggerClassName={toolBtn}
             triggerStyle={{
@@ -252,7 +263,7 @@ export const ReadClassic = memo(function ReadClassic({
               className="text-justify"
               style={{
                 color: textColor,
-                fontFamily: v.fontFamily,
+                fontFamily: fontFamilyStack || v.fontFamily,
                 fontSize: fontPx,
                 lineHeight,
                 letterSpacing: `${letterSpacing}px`,
@@ -282,7 +293,7 @@ export const ReadClassic = memo(function ReadClassic({
               <button
                 type="button"
                 disabled={!data?.prev}
-                onClick={() => data?.prev && navigate({ view: 'read', chapterId: data.prev.id })}
+                onClick={() => data?.prev && navigate({ view: 'read', bookId: data?.book?.id, chapterId: data.prev.id })}
                 className={navBtn}
                 style={{ border: `1px solid ${lineColor}`, borderRadius: v.radius, color: data?.prev ? v.primary : metaColor, background: withAlpha(v.surfaceAlt, night ? 0.15 : 0.55) }}
                 aria-label="上一章"
@@ -303,7 +314,7 @@ export const ReadClassic = memo(function ReadClassic({
               <button
                 type="button"
                 disabled={!data?.next}
-                onClick={() => data?.next && navigate({ view: 'read', chapterId: data.next.id })}
+                onClick={() => data?.next && navigate({ view: 'read', bookId: data?.book?.id, chapterId: data.next.id })}
                 className={navBtn}
                 style={{ border: `1px solid ${lineColor}`, borderRadius: v.radius, color: data?.next ? v.primary : metaColor, background: withAlpha(v.surfaceAlt, night ? 0.15 : 0.55) }}
                 aria-label="下一章"

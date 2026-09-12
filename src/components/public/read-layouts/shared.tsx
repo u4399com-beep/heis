@@ -60,6 +60,18 @@ export interface ReadLayoutProps {
   /** delta 调整字距, 调用方钳制到 [-0.5, 2] */
   onLetterSpacing: (delta: number) => void
   onToggleNight: () => void
+  /** R7-20 GG: 字体族选择 (serif / sans / mono) */
+  fontFamily?: 'serif' | 'sans' | 'mono'
+  /** 解析后的 CSS font-family 字符串 (供 read-layouts 直接 inline 应用) */
+  fontFamilyStack?: string
+  /** R7-20 GG: 背景色选择 (auto / white / sepia / dark / black) */
+  bgTheme?: 'auto' | 'white' | 'sepia' | 'dark' | 'black'
+  /** 解析后的实际背景色 (auto 模式返回 undefined, 由主题决定; 其他模式返回十六进制色) */
+  bgColorOverride?: string
+  /** 切换字体族 */
+  onSetFontFamily?: (f: 'serif' | 'sans' | 'mono') => void
+  /** 切换背景色主题 */
+  onSetBgTheme?: (b: 'auto' | 'white' | 'sepia' | 'dark' | 'black') => void
   /** agent-P: 章节内容分页元数据(后端返回; off 模式 totalPages=1, currentPage=1) */
   chapterPagination?: ChapterData['pagination']
   /** agent-P: 切换章节内分页(仅 chapterPagination.totalPages > 1 时调用) */
@@ -503,6 +515,11 @@ interface ReaderSettingsPopoverProps {
   onLineHeight: (delta: number) => void
   onLetterSpacing: (delta: number) => void
   onToggleNight: () => void
+  /** R7-20 GG: 字体族 / 背景色 (新增可选 props; 不传则不渲染该控件) */
+  fontFamily?: 'serif' | 'sans' | 'mono'
+  onSetFontFamily?: (f: 'serif' | 'sans' | 'mono') => void
+  bgTheme?: 'auto' | 'white' | 'sepia' | 'dark' | 'black'
+  onSetBgTheme?: (b: 'auto' | 'white' | 'sepia' | 'dark' | 'black') => void
   /** 触发按钮的样式 (不同布局颜色/边框不同, 由调用方传入) */
   triggerClassName?: string
   triggerStyle?: CSSProperties
@@ -526,6 +543,10 @@ export function ReaderSettingsPopover({
   onLineHeight,
   onLetterSpacing,
   onToggleNight,
+  fontFamily,
+  onSetFontFamily,
+  bgTheme,
+  onSetBgTheme,
   triggerClassName,
   triggerStyle,
   dark,
@@ -690,6 +711,91 @@ export function ReaderSettingsPopover({
             })}
           </div>
         </div>
+
+        {/* R7-20 GG: 字体族 (serif / sans / mono) */}
+        {fontFamily && onSetFontFamily && (
+          <div className="mb-4">
+            <div className="mb-2 flex items-center justify-between text-xs" style={{ color: textMuted }}>
+              <span>字体</span>
+              <span style={{ color: textPrimary }}>
+                {fontFamily === 'serif' ? '衬线' : fontFamily === 'sans' ? '无衬线' : '等宽'}
+              </span>
+            </div>
+            <div className="grid grid-cols-3 gap-1.5">
+              {([
+                { label: '衬线', value: 'serif', sample: '永' },
+                { label: '无衬线', value: 'sans', sample: '永' },
+                { label: '等宽', value: 'mono', sample: 'Aa' },
+              ] as const).map((p) => {
+                const active = fontFamily === p.value
+                return (
+                  <button
+                    key={p.label}
+                    type="button"
+                    onClick={() => onSetFontFamily(p.value)}
+                    className="flex flex-col items-center gap-0.5 rounded px-2 py-2 text-xs transition-colors"
+                    style={{
+                      border: `1px solid ${active ? accentPrimary : panelBorder}`,
+                      background: active ? (dark ? 'rgba(167,139,250,0.18)' : 'rgba(124,58,237,0.12)') : 'transparent',
+                      color: active ? accentPrimary : textPrimary,
+                      fontFamily:
+                        p.value === 'serif'
+                          ? '"Source Han Serif SC","Songti SC","SimSun",serif'
+                          : p.value === 'sans'
+                            ? '"PingFang SC","Microsoft YaHei",sans-serif'
+                            : '"JetBrains Mono","Consolas","Courier New",monospace',
+                    }}
+                    aria-pressed={active}
+                    aria-label={`字体 ${p.label}`}
+                  >
+                    <span className="text-base font-bold leading-none">{p.sample}</span>
+                    <span className="text-[10px]">{p.label}</span>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* R7-20 GG: 背景色 (auto / white / sepia / dark / black) */}
+        {bgTheme && onSetBgTheme && (
+          <div className="mb-4">
+            <div className="mb-2 flex items-center justify-between text-xs" style={{ color: textMuted }}>
+              <span>背景</span>
+              <span style={{ color: textPrimary }}>
+                {bgTheme === 'auto' ? '跟随系统' : bgTheme === 'white' ? '白' : bgTheme === 'sepia' ? '羊皮纸' : bgTheme === 'dark' ? '深灰' : '纯黑'}
+              </span>
+            </div>
+            <div className="grid grid-cols-5 gap-1.5">
+              {([
+                { label: '自动', value: 'auto', bg: 'linear-gradient(135deg, #fff 50%, #1a1a1a 50%)' },
+                { label: '白', value: 'white', bg: '#ffffff' },
+                { label: '黄', value: 'sepia', bg: '#f5ecd9' },
+                { label: '灰', value: 'dark', bg: '#1a1a1a' },
+                { label: '黑', value: 'black', bg: '#000000' },
+              ] as const).map((p) => {
+                const active = bgTheme === p.value
+                return (
+                  <button
+                    key={p.label}
+                    type="button"
+                    onClick={() => onSetBgTheme(p.value)}
+                    className="flex h-9 items-center justify-center rounded text-[10px] transition-transform"
+                    style={{
+                      background: p.bg,
+                      border: `2px solid ${active ? accentPrimary : panelBorder}`,
+                      color: p.value === 'white' || p.value === 'sepia' ? '#666' : '#fff',
+                    }}
+                    aria-pressed={active}
+                    aria-label={`背景 ${p.label}`}
+                  >
+                    {p.label}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )}
 
         {/* 夜间开关 */}
         <div className="flex items-center justify-between border-t pt-3" style={{ borderColor: panelBorder }}>
@@ -900,9 +1006,9 @@ export function TocDrawer({
   const goChapter = useCallback(
     (id: string) => {
       onClose()
-      navigate({ view: 'read', chapterId: id })
+      navigate({ view: 'read', bookId, chapterId: id })
     },
-    [navigate, onClose],
+    [navigate, onClose, bookId],
   )
 
   // feat-a B: 移除单个书签 (TocDrawer 内自带, 不影响父组件 bookmarked state)

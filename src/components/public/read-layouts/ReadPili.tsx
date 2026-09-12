@@ -41,6 +41,12 @@ export const ReadPili = memo(function ReadPili({
   onLineHeight,
   onLetterSpacing,
   onToggleNight,
+  fontFamily,
+  fontFamilyStack,
+  bgTheme,
+  bgColorOverride,
+  onSetFontFamily,
+  onSetBgTheme,
   chapterPagination,
   onChapterPage,
 }: ReadLayoutProps) {
@@ -73,8 +79,8 @@ export const ReadPili = memo(function ReadPili({
   // feat-round-5 B1: 注册全局阅读器动作 (供 ReadView 键盘快捷键派发)
   useEffect(() => {
     const actions = {
-      onPrev: () => data?.prev && navigate({ view: 'read', chapterId: data.prev.id }),
-      onNext: () => data?.next && navigate({ view: 'read', chapterId: data.next.id }),
+      onPrev: () => data?.prev && navigate({ view: 'read', bookId: data?.book?.id, chapterId: data.prev.id }),
+      onNext: () => data?.next && navigate({ view: 'read', bookId: data?.book?.id, chapterId: data.next.id }),
       onScrollTop: () => window.scrollTo({ top: 0, behavior: 'smooth' }),
       onScrollBottom: () => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' }),
     }
@@ -85,11 +91,13 @@ export const ReadPili = memo(function ReadPili({
   })
 
   // 夜间调色: 日间=原站暖纸画布 #ede7da, 夜间=沉稳暗底
-  const canvasBg = night ? '#15171c' : '#ede7da'
+  // R7-20 GG: bgColorOverride 优先 (用户显式选择背景色时覆盖 canvas + card)
+  const canvasBg = bgColorOverride || (night ? '#15171c' : '#ede7da')
   const barBg = night ? '#1c2026' : '#f4f0e9'
   const lineColor = night ? 'rgba(255,255,255,0.1)' : '#ddd5c4'
   // 正文大栏纸面(原站 .text-wrap basic_bg DNA): 暖白卡 + 细边框浮在米色画布上
-  const cardBg = night ? '#1e232b' : '#faf5eb'
+  // 当 bgColorOverride 生效时, 卡片背景与画布同色 (避免双层覆盖)
+  const cardBg = bgColorOverride || (night ? '#1e232b' : '#faf5eb')
   const cardBorder = night ? 'rgba(255,255,255,0.12)' : '#d8d8d8'
   const textColor = night ? '#c9cdd4' : '#262626'
   const metaColor = night ? '#8b929e' : '#8c8577'
@@ -149,6 +157,10 @@ export const ReadPili = memo(function ReadPili({
               onLineHeight={onLineHeight}
               onLetterSpacing={onLetterSpacing}
               onToggleNight={onToggleNight}
+              fontFamily={fontFamily}
+              onSetFontFamily={onSetFontFamily}
+              bgTheme={bgTheme}
+              onSetBgTheme={onSetBgTheme}
               dark={night}
               triggerClassName={toolBtn}
               triggerStyle={{ color: textColor }}
@@ -209,6 +221,7 @@ export const ReadPili = memo(function ReadPili({
               {/* 正文: 段首缩进 + 主题行高/字号, 内容来自后端清洗白名单 */}
               <div
                 style={{
+                  fontFamily: fontFamilyStack || v.fontFamily,
                   fontSize: fontPx,
                   lineHeight,
                   letterSpacing: `${letterSpacing}px`,
@@ -240,7 +253,7 @@ export const ReadPili = memo(function ReadPili({
                 <button
                   type="button"
                   disabled={!data?.prev}
-                  onClick={() => data?.prev && navigate({ view: 'read', chapterId: data.prev.id })}
+                  onClick={() => data?.prev && navigate({ view: 'read', bookId: data?.book?.id, chapterId: data.prev.id })}
                   className={ctrlBtn}
                   style={{ border: `1px solid ${lineColor}`, borderRadius: v.radius, color: data?.prev ? v.primary : metaColor }}
                   aria-label="上一章"
@@ -261,7 +274,7 @@ export const ReadPili = memo(function ReadPili({
                 <button
                   type="button"
                   disabled={!data?.next}
-                  onClick={() => data?.next && navigate({ view: 'read', chapterId: data.next.id })}
+                  onClick={() => data?.next && navigate({ view: 'read', bookId: data?.book?.id, chapterId: data.next.id })}
                   className={ctrlBtn}
                   style={{ border: `1px solid ${lineColor}`, borderRadius: v.radius, color: data?.next ? v.primary : metaColor }}
                   aria-label="下一章"
@@ -298,7 +311,7 @@ export const ReadPili = memo(function ReadPili({
           <button
             type="button"
             disabled={!data?.prev}
-            onClick={() => data?.prev && navigate({ view: 'read', chapterId: data.prev.id })}
+            onClick={() => data?.prev && navigate({ view: 'read', bookId: data?.book?.id, chapterId: data.prev.id })}
             className={ctrlBtn}
             style={{ border: `1px solid ${withAlpha(v.primary, 0.5)}`, borderRadius: v.radius, color: data?.prev ? v.primary : metaColor, background: v.surface }}
             aria-label="上一章"
@@ -320,7 +333,7 @@ export const ReadPili = memo(function ReadPili({
           <button
             type="button"
             disabled={!data?.next}
-            onClick={() => data?.next && navigate({ view: 'read', chapterId: data.next.id })}
+            onClick={() => data?.next && navigate({ view: 'read', bookId: data?.book?.id, chapterId: data.next.id })}
             className={ctrlBtn}
             style={{ background: v.primary, borderRadius: v.radius, color: v.primaryText, boxShadow: '0 1px 4px rgba(253,137,41,0.4)' }}
             aria-label="下一章"

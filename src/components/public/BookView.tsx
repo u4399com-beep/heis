@@ -13,6 +13,7 @@ import { fetchBook, fetchChapter, type BookDetailData } from './data'
 import { usePublic } from './ctx'
 import { coverSrc, fmtDate, formatWords, statusLabel, useSiteSEO, withAlpha } from './seo'
 import { BookCover } from './BookCover'
+import { ShareMenu } from './ShareMenu'
 import { EmptyState, ErrorState, SecTitle, Sk, StatusBadge, TagCloud, ChapterListSkeleton } from './bits'
 import { ReadFirstButton } from './BookCard'
 import type { BookItem, BookTagHit, TocChapter } from './types'
@@ -424,7 +425,9 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
   const renderToc = () => {
     if (loading) return <TocSkeleton themeId={theme.id} />
     if (!chapters.length) return <EmptyState text="暂无章节" />
-    const go = (ch: TocChapter) => navigate({ view: 'read', chapterId: ch.id })
+    // R7-20 GG: pass bookId so pseudostatic read URLs (/read/{bid}/{cid}.html etc.) build correctly;
+    //   without bookId, buildViewUrl falls back to /book/.html (broken) for non-query styles.
+    const go = (ch: TocChapter) => navigate({ view: 'read', bookId: book?.id || bookId, chapterId: ch.id })
 
     /** 主题差异化章节列表渲染(list 入参: 分卷模式下按组传入, 无卷整页传入 — 与改前逐节点一致)
      *  所有主题统一使用 3 列网格布局(grid-cols-3), 移动端 1 列, 平板 2 列, 桌面 3 列 */
@@ -691,12 +694,12 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
                     </p>
                   )}
                   <div className="flex flex-wrap items-center gap-3 pt-1">
-                    <ReadFirstButton firstChapterId={chapters[0]?.id} label="开始阅读" />
+                    <ReadFirstButton firstChapterId={chapters[0]?.id} bookId={book.id} label="开始阅读" />
                     {/* feat-a D: 上次阅读徽章 (有 saved 位置时显示) */}
                     {savedPos?.chapterId && (
                       <button
                         type="button"
-                        onClick={() => savedPos.chapterId && navigate({ view: 'read', chapterId: savedPos.chapterId })}
+                        onClick={() => savedPos.chapterId && navigate({ view: 'read', bookId: book.id, chapterId: savedPos.chapterId })}
                         className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium transition-opacity hover:opacity-85"
                         style={{
                           border: `1px solid ${withAlpha(v.primary, 0.45)}`,
@@ -728,9 +731,11 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
                       className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium transition-opacity hover:opacity-85"
                       style={{ border: `1px solid ${withAlpha(v.primary, 0.5)}`, color: v.primary, borderRadius: v.radius }}
                     >
-                      <Download className="h-4 w-4" aria-hidden />
-                      TXT 下载
+                    <Download className="h-4 w-4" aria-hidden />
+                    TXT 下载
                     </a>
+                    {/* R7-20 GG: 分享菜单 (复制链接 + 微信/QQ/微博) */}
+                    <ShareMenu title={book.name} desc={book.intro?.slice(0, 80)} />
                   </div>
                   {/* 统计行 */}
                   <p
@@ -804,12 +809,12 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
                   最新章节：<span style={{ color: v.primary }}>{book.latestChapter || '暂无'}</span>
                 </p>
                 <div className="flex flex-wrap items-center gap-3 pt-1">
-                  <ReadFirstButton firstChapterId={chapters[0]?.id} label="开始阅读" />
+                  <ReadFirstButton firstChapterId={chapters[0]?.id} bookId={book.id} label="开始阅读" />
                   {/* feat-a D: 上次阅读徽章 (有 saved 位置时显示) */}
                   {savedPos?.chapterId && (
                     <button
                       type="button"
-                      onClick={() => savedPos.chapterId && navigate({ view: 'read', chapterId: savedPos.chapterId })}
+                      onClick={() => savedPos.chapterId && navigate({ view: 'read', bookId: book.id, chapterId: savedPos.chapterId })}
                       className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium transition-opacity hover:opacity-85"
                       style={{
                         border: `1px solid ${withAlpha(v.primary, 0.45)}`,
@@ -846,6 +851,8 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
                     <Download className="h-4 w-4" aria-hidden />
                     TXT 下载
                   </a>
+                  {/* R7-20 GG: 分享菜单 (复制链接 + 微信/QQ/微博) */}
+                  <ShareMenu title={book.name} desc={book.intro?.slice(0, 80)} />
                 </div>
               </div>
             </div>

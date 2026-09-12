@@ -41,7 +41,7 @@ export async function POST(req: Request) {
           TaskRunner.instance.cancelAutoRefresh(id)
           await db.task.delete({ where: { id } })
           affected++
-        } catch (e: any) {
+        } catch (e) {
           // tt-b: e.message 含 Prisma 查询原文/路径, 不得入信封 → errText 消毒
           skipped.push(skipItem(errText(e), t.name))
         }
@@ -76,7 +76,7 @@ export async function POST(req: Request) {
           continue
         }
         affected++
-      } catch (e: any) {
+      } catch (e) {
         skipped.push(skipItem(errText(e), t.name))
       }
     }

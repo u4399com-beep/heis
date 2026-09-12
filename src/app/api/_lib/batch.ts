@@ -44,7 +44,7 @@ export function parseBatchBody(body: unknown, actions: readonly string[]): Batch
   const ids: string[] = []
   const seen = new Set<string>()
   for (const raw of body.ids) {
-    if (raw === null || raw === undefined) continue
+    if (raw == null) continue
     const id = String(raw).trim().slice(0, BATCH_ID_MAX_LEN)
     if (!id || seen.has(id)) continue
     seen.add(id)

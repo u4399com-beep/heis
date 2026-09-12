@@ -86,10 +86,11 @@ async function runCalibration(jobId: string, ruleConfigRaw: string, opts: { prof
     job.endedAtMs = Date.now() // ab-c: elapsedMs 冻结基准
     const value = JSON.stringify({ result, profile: opts.profile, finishedAt: result.finishedAt })
     await db.setting.upsert({ where: { key: `calibration:${jobId}` }, update: { value }, create: { key: `calibration:${jobId}`, value } })
-  } catch (e: any) {
+  } catch (e) {
+    const err = e as { name?: string; message?: string } | null | undefined
     job.status = 'error'
     job.endedAtMs = Date.now() // ab-c: elapsedMs 冻结基准
-    job.error = e?.name === 'CalibrateAbort' ? '校准已取消' : String(e?.message || e)
+    job.error = err?.name === 'CalibrateAbort' ? '校准已取消' : String(err?.message || e)
   }
 }
 

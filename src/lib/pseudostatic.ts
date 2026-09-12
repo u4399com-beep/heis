@@ -117,7 +117,13 @@ export function buildViewUrl(v: ViewPathParams, style: PseudoStaticStyle = 'quer
       path = buildBookPath(bookId, style)
       break
     case 'read':
-      if (!bookId || !chapterId) { path = buildBookPath(bookId, style); break }
+      // R7-20 GG: when chapterId is missing, fall back to book path (as before);
+      // when bookId is missing but chapterId is present, fall back to query-string URL
+      // (pseudostatic /read/{bid}/{cid}.html requires bookId — building with empty
+      // bookId produces /read//{cid}.html which is invalid). Defensive: callers should
+      // always pass bookId for read navigation; this catches edge cases without crashing.
+      if (!chapterId) { path = buildBookPath(bookId, style); break }
+      if (!bookId) { path = buildQueryUrl(v, siteId); break }
       path = buildReadPath(bookId, chapterId, style)
       break
     case 'category':
@@ -442,15 +448,22 @@ export function pseudoStaticRewrites() {
     // alphanumeric: /category/c{cat}/p{page}.html → /
     { source: '/category/c:cat/p:page.html', destination: '/' },
     // slug: /book/{id}/ → /
-    { source: '/book/:id/', destination: '/' },
+    // R7-20 GG: Next.js strips trailing slash BEFORE applying rewrites
+    // (308 redirect /book/X/ → /book/X happens at routing layer, prior to rewrites).
+    // Original `/book/:id/` source never fires. Slug URLs need the no-slash form
+    // to catch the post-redirect path. Placed AFTER .html-patterns so they don't
+    // shadow numeric/alphanumeric.
+    { source: '/book/:id', destination: '/' },
     // slug: /read/{bid}/{cid}/ → /
-    { source: '/read/:bid/:cid/', destination: '/' },
-    // slug: /category/{cat}/ → /
-    { source: '/category/:cat/', destination: '/' },
+    { source: '/read/:bid/:cid', destination: '/' },
+    // slug: /category/{cat}/ → /  (page 1, no explicit page segment)
+    { source: '/category/:cat', destination: '/' },
     // slug: /category/{cat}/{page}/ → /
-    { source: '/category/:cat/:page/', destination: '/' },
+    { source: '/category/:cat/:page', destination: '/' },
     // slug: /tag/{tag}/ → /
-    { source: '/tag/:tag/', destination: '/' },
+    { source: '/tag/:tag', destination: '/' },
+    // slug: /tag/{tag}/{page}/ → /
+    { source: '/tag/:tag/:page', destination: '/' },
     // short: /b/{id} → /
     { source: '/b/:id', destination: '/' },
     // short: /r/{bid}/{cid} → /

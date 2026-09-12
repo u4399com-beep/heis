@@ -39,6 +39,12 @@ export const ReadImmersive = memo(function ReadImmersive({
   onLineHeight,
   onLetterSpacing,
   onToggleNight,
+  fontFamily,
+  fontFamilyStack,
+  bgTheme,
+  bgColorOverride,
+  onSetFontFamily,
+  onSetBgTheme,
   chapterPagination,
   onChapterPage,
 }: ReadLayoutProps) {
@@ -75,8 +81,8 @@ export const ReadImmersive = memo(function ReadImmersive({
   // feat-round-5 B1: 注册全局阅读器动作 (沉浸式使用内部滚动容器)
   useEffect(() => {
     const actions = {
-      onPrev: () => data?.prev && navigate({ view: 'read', chapterId: data.prev.id }),
-      onNext: () => data?.next && navigate({ view: 'read', chapterId: data.next.id }),
+      onPrev: () => data?.prev && navigate({ view: 'read', bookId: data?.book?.id, chapterId: data.prev.id }),
+      onNext: () => data?.next && navigate({ view: 'read', bookId: data?.book?.id, chapterId: data.next.id }),
       onScrollTop: () => scrollerRef.current?.scrollTo({ top: 0, behavior: 'smooth' }),
       onScrollBottom: () => scrollerRef.current?.scrollTo({ top: scrollerRef.current.scrollHeight, behavior: 'smooth' }),
     }
@@ -87,7 +93,8 @@ export const ReadImmersive = memo(function ReadImmersive({
   })
 
   // 沉浸画布配色：始终暗底（浅色主题也转入暗色画布）; night = 墨黑加深
-  const canvas = night ? '#000000' : theme.dark ? undefined : '#14171c'
+  // R7-20 GG: bgColorOverride 优先 (用户显式选黑/纯黑时覆盖 canvas)
+  const canvas = bgColorOverride || (night ? '#000000' : theme.dark ? undefined : '#14171c')
   const textColor = night ? '#b9bfc7' : theme.dark ? v.text : '#d7dade'
   const metaColor = night ? '#767d87' : theme.dark ? v.textMuted : '#8a919c'
   const hairline = night ? 'rgba(255,255,255,0.07)' : 'rgba(255,255,255,0.12)'
@@ -205,6 +212,7 @@ export const ReadImmersive = memo(function ReadImmersive({
               <div
                 style={{
                   color: textColor,
+                  fontFamily: fontFamilyStack || v.fontFamily,
                   fontSize: fontPx,
                   lineHeight,
                   letterSpacing: `${letterSpacing}px`,
@@ -223,7 +231,7 @@ export const ReadImmersive = memo(function ReadImmersive({
                 <button
                   type="button"
                   disabled={!data?.prev}
-                  onClick={() => data?.prev && navigate({ view: 'read', chapterId: data.prev.id })}
+                  onClick={() => data?.prev && navigate({ view: 'read', bookId: data?.book?.id, chapterId: data.prev.id })}
                   className={navBtn}
                   style={{ background: pillBg, color: textColor, border: `1px solid ${hairline}` }}
                   aria-label="上一章"
@@ -234,7 +242,7 @@ export const ReadImmersive = memo(function ReadImmersive({
                 <button
                   type="button"
                   disabled={!data?.next}
-                  onClick={() => data?.next && navigate({ view: 'read', chapterId: data.next.id })}
+                  onClick={() => data?.next && navigate({ view: 'read', bookId: data?.book?.id, chapterId: data.next.id })}
                   className={navBtn}
                   style={{ background: `linear-gradient(120deg, ${v.primary}, ${v.accent})`, color: v.primaryText, border: 'none' }}
                   aria-label="下一章"
@@ -270,7 +278,7 @@ export const ReadImmersive = memo(function ReadImmersive({
           <button
             type="button"
             disabled={!data?.prev}
-            onClick={() => data?.prev && navigate({ view: 'read', chapterId: data.prev.id })}
+            onClick={() => data?.prev && navigate({ view: 'read', bookId: data?.book?.id, chapterId: data.prev.id })}
             className={navBtn}
             style={{ background: pillBg, color: textColor, border: `1px solid ${hairline}` }}
             aria-label="上一章"
@@ -285,7 +293,7 @@ export const ReadImmersive = memo(function ReadImmersive({
           <button
             type="button"
             disabled={!data?.next}
-            onClick={() => data?.next && navigate({ view: 'read', chapterId: data.next.id })}
+            onClick={() => data?.next && navigate({ view: 'read', bookId: data?.book?.id, chapterId: data.next.id })}
             className={navBtn}
             style={{ background: pillBg, color: textColor, border: `1px solid ${hairline}` }}
             aria-label="下一章"
@@ -322,6 +330,10 @@ export const ReadImmersive = memo(function ReadImmersive({
           onLineHeight={onLineHeight}
           onLetterSpacing={onLetterSpacing}
           onToggleNight={onToggleNight}
+          fontFamily={fontFamily}
+          onSetFontFamily={onSetFontFamily}
+          bgTheme={bgTheme}
+          onSetBgTheme={onSetBgTheme}
           dark
           triggerClassName={toolBtn}
           triggerStyle={{ color: textColor }}

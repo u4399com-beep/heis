@@ -38,7 +38,7 @@ export async function POST(req: Request) {
     const name = str(body?.name, 100).trim()
     if (!name) return fail('规则名称必填')
     let config: string
-    if (body?.config === undefined || body?.config === null || body?.config === '') {
+    if (body?.config == null || body?.config === '') {
       config = JSON.stringify(defaultRuleConfig())
     } else {
       const regexError = regexGate(body.config)

@@ -27,16 +27,40 @@ import { ReadClassic } from './read-layouts/ReadClassic'
 import { ReadImmersive } from './read-layouts/ReadImmersive'
 import { ReadPaginated } from './read-layouts/ReadPaginated'
 import { ReadPili } from './read-layouts/ReadPili'
-import { readerActionsRef, useReadingProgress } from './read-layouts/shared'
+import { readerActionsRef, useReadingProgress, type ReadLayoutProps } from './read-layouts/shared'
 
 const READER_FONT_KEY = 'public_reader_fontSize'
 const READER_NIGHT_KEY = 'public_reader_night'
 // feat-a C: 行距 / 字距持久化
 const READER_LINE_HEIGHT_KEY = 'public_reader_lineHeight'
 const READER_LETTER_SPACING_KEY = 'public_reader_letterSpacing'
+// R7-20 GG: 字体族 / 背景色持久化
+const READER_FONT_FAMILY_KEY = 'public_reader_fontFamily'
+const READER_BG_THEME_KEY = 'public_reader_bgTheme'
 
 const DEFAULT_LINE_HEIGHT = 1.8
 const DEFAULT_LETTER_SPACING = 0
+
+export type ReaderFontFamily = 'serif' | 'sans' | 'mono'
+export type ReaderBgTheme = 'auto' | 'white' | 'sepia' | 'dark' | 'black'
+
+/** 字体族 → CSS font-family 值 (回退到主题默认字体) */
+const FONT_FAMILY_STACK: Record<ReaderFontFamily, string> = {
+  // 衬线 (中文小说默认): 思源宋体回退到系统宋体
+  serif: '"Source Han Serif SC", "Noto Serif SC", "Songti SC", "SimSun", "STSong", "PingFang SC", serif',
+  // 无衬线: 苹方 / 思源黑体
+  sans: '"Source Han Sans SC", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", "Helvetica Neue", sans-serif',
+  // 等宽 (代码风格, 趣味阅读): JetBrains Mono / SF Mono / Consolas
+  mono: '"JetBrains Mono", "SF Mono", "Cascadia Code", "Consolas", "Courier New", monospace',
+}
+
+/** 背景色 → 实际颜色 (覆盖主题 surface; auto 跟随 prefers-color-scheme) */
+const BG_THEME_COLORS: Record<Exclude<ReaderBgTheme, 'auto'>, string> = {
+  white: '#ffffff',
+  sepia: '#f5ecd9',
+  dark: '#1a1a1a',
+  black: '#000000',
+}
 
 /**
  * agent-P: SEO 模板占位符替换。
@@ -69,9 +93,39 @@ function readStoredFontSize(): number {
 function readStoredNight(): boolean {
   if (typeof window === 'undefined') return false
   try {
-    return window.localStorage.getItem(READER_NIGHT_KEY) === '1'
+    // R7-20 GG: auto-detect prefers-color-scheme when user has no saved preference
+    const saved = window.localStorage.getItem(READER_NIGHT_KEY)
+    if (saved === '1') return true
+    if (saved === '0') return false
+    // Saved preference absent → fall back to OS preference (only on first visit)
+    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+      return true
+    }
+    return false
   } catch {
     return false
+  }
+}
+
+function readStoredFontFamily(): ReaderFontFamily {
+  if (typeof window === 'undefined') return 'serif'
+  try {
+    const v = window.localStorage.getItem(READER_FONT_FAMILY_KEY)
+    if (v === 'serif' || v === 'sans' || v === 'mono') return v
+    return 'serif'
+  } catch {
+    return 'serif'
+  }
+}
+
+function readStoredBgTheme(): ReaderBgTheme {
+  if (typeof window === 'undefined') return 'auto'
+  try {
+    const v = window.localStorage.getItem(READER_BG_THEME_KEY)
+    if (v === 'auto' || v === 'white' || v === 'sepia' || v === 'dark' || v === 'black') return v
+    return 'auto'
+  } catch {
+    return 'auto'
   }
 }
 
@@ -122,6 +176,9 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
   const [night, setNight] = useState(readStoredNight)
   const [lineHeight, setLineHeight] = useState(readStoredLineHeight)
   const [letterSpacing, setLetterSpacing] = useState(readStoredLetterSpacing)
+  // R7-20 GG: 字体族 / 背景色 持久化
+  const [fontFamily, setFontFamily] = useState<ReaderFontFamily>(readStoredFontFamily)
+  const [bgTheme, setBgTheme] = useState<ReaderBgTheme>(readStoredBgTheme)
   const [prevCh, setPrevCh] = useState(chapterId)
   // feat-round-5 B1: 帮助对话框
   const [helpOpen, setHelpOpen] = useState(false)
@@ -209,6 +266,54 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
       /* 隐私模式等场景忽略 */
     }
   }, [letterSpacing])
+  // R7-20 GG: 字体族 / 背景色 持久化
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(READER_FONT_FAMILY_KEY, String(fontFamily))
+    } catch {
+      /* 隐私模式等场景忽略 */
+    }
+  }, [fontFamily])
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(READER_BG_THEME_KEY, String(bgTheme))
+    } catch {
+      /* 隐私模式等场景忽略 */
+    }
+  }, [bgTheme])
+  // R7-20 GG: 当 bgTheme 改变时, 同步 night 状态 (dark/black = night=true, white/sepia = night=false, auto 跟随 OS)
+  // 用派生值替代 useEffect+setState, 避免 react-hooks/set-state-in-effect 警告
+  // bgTheme 非 auto 时直接覆盖 night; auto 时保留用户手动 toggle 的 night 值
+  const effectiveNight = bgTheme === 'dark' || bgTheme === 'black' ? true
+    : bgTheme === 'white' || bgTheme === 'sepia' ? false
+    : night // 'auto' → 保留用户/OS 检测的 night 值
+  // 监听 OS prefers-color-scheme 变化 (仅当 bgTheme === 'auto' 且用户未手动 toggle 过 night 时跟随)
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    const handler = (e: MediaQueryListEvent) => {
+      if (bgTheme !== 'auto') return // 用户已手动选择背景, 不跟随 OS
+      // 仅当用户从未手动 toggle 过 night 时跟随
+      try {
+        const hasManual = window.localStorage.getItem(READER_NIGHT_KEY)
+        if (hasManual !== null) return
+      } catch {
+        /* ignore */
+      }
+      setNight(e.matches)
+    }
+    // addEventListener 在旧 Safari 是 addListener; 优先标准 API
+    if (mq.addEventListener) mq.addEventListener('change', handler)
+    else if (mq.addListener) mq.addListener(handler as (e: MediaQueryListEvent) => void)
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener('change', handler)
+      else if (mq.removeListener) mq.removeListener(handler as (e: MediaQueryListEvent) => void)
+    }
+  }, [bgTheme])
+
+  // R7-20 GG: 计算实际渲染用的字体族 + 背景色 (供 read-layouts 通过 props 读取)
+  const resolvedFontFamily = FONT_FAMILY_STACK[fontFamily]
+  const resolvedBgColor: string | undefined = bgTheme === 'auto' ? undefined : BG_THEME_COLORS[bgTheme]
 
   // feat-round-5 B1: 键盘快捷键
   useEffect(() => {
@@ -342,11 +447,11 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
 
   // 按主题阅读布局原型分发（缺省回退 classic）
   const layout = readOf(theme).layout
-  const shared = {
+  const shared: ReadLayoutProps = {
     data,
     loading,
     fontSize,
-    night,
+    night: effectiveNight,
     lineHeight,
     letterSpacing,
     onFontSize: (delta: number) => setFontSize((s) => Math.min(24, Math.max(14, s + delta))),
@@ -354,6 +459,13 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
     onLetterSpacing: (delta: number) =>
       setLetterSpacing((s) => Math.min(2, Math.max(-0.5, Math.round((s + delta) * 100) / 100))),
     onToggleNight: () => setNight((n) => !n),
+    // R7-20 GG: 字体族 / 背景色 (新增 props, 透传给所有 read-layouts)
+    fontFamily,
+    fontFamilyStack: resolvedFontFamily,
+    bgTheme,
+    bgColorOverride: resolvedBgColor,
+    onSetFontFamily: (f: ReaderFontFamily) => setFontFamily(f),
+    onSetBgTheme: (b: ReaderBgTheme) => setBgTheme(b),
     // agent-P: 章节内容分页 — 透传给所有 read-layouts, 仅当 totalPages>1 时由布局渲染 ChapterPaginationBar
     chapterPagination: pagination,
     onChapterPage: (p: number) => {
@@ -368,7 +480,9 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
       }
       setPage(target)
       // agent-DD: 同步 URL ?page=N 让深链/分享/刷新保持页码, 浏览器前进后退也能恢复位置
-      if (chapterId) navigate({ view: 'read', chapterId, page: target, site: site.id })
+      // R7-20 GG: pass bookId (from chapterData) so pseudostatic read URL builds correctly;
+      //   query-style would work without it, but non-query styles require bookId
+      if (chapterId) navigate({ view: 'read', bookId: data?.book?.id, chapterId, page: target, site: site.id })
     },
   }
 

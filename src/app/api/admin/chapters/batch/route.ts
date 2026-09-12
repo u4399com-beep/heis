@@ -68,7 +68,7 @@ export async function POST(req: Request) {
               data: { fetched: false, content: null, filePath: null, wordCount: 0 },
             })
             affected++
-          } catch (e: any) {
+          } catch (e) {
             // tt-b(同 oo 轮番茄 chapter.update P2025 型): 预检与 update 间章节被并发级联删除
             // (书籍删除/采集引擎重建)原会裸 500 且中断整批 → 单项降级 skipped, 批内其余继续
             skipped.push(skipItem(errText(e)))
