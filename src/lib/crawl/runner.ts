@@ -679,7 +679,7 @@ export class TaskRunner {
             // zz-b: 当页间隔取值同时作为同 host 准入最小间隔(逐页重新随机, 取值时机在请求前);
             // 列表页之间的既有 sleepGap(cfg.interval()) 保持每页独立随机, 节奏语义不变
             const pageGapMs = cfg.interval()
-            const res = await this.gateFetch(taskId, url, buildFetch(cfg.rule, cfg.fetchOverride), { minGapMs: pageGapMs })
+            const res = await this.gateFetch(taskId, url, { ...buildFetch(cfg.rule, cfg.fetchOverride), requestPriority: 'list' }, { minGapMs: pageGapMs })
             await this.log(taskId, 'info', `列表页 P${p}: ${url} (引擎:${res.engine})`)
             // 修复: 真实站点规则(101kks/uukanshu/23qb/ixdzs8/5165)的列表书籍链接字段均命名
             // bookUrl 而非 url —— 原 ['url'] 单字段取法使列表页整库采集模式对全部真实规则
@@ -1027,7 +1027,7 @@ export class TaskRunner {
     if (rt.stopped || rt.epoch !== myEpoch) return 'stopped'
     // ab-b: 书籍页同为采集目标站请求, 同款传当次随机 interval 作同 host 准入最小间隔
     // (逐次重新取值, 在线调参语义与章节批次/列表页一致; 关闭 zz-b 遗留"不传=0 瞬时解除节流"缺口)
-    const bookRes = await this.gateFetch(taskId, bookUrl, { ...buildFetch(rule, fetchOverride) }, { minGapMs: nextInterval() })
+    const bookRes = await this.gateFetch(taskId, bookUrl, { ...buildFetch(rule, fetchOverride), requestPriority: 'book' }, { minGapMs: nextInterval() })
     // 纯JSON API站适配: fetcher 的"极短内容判拦"是 HTML 挑战壳启发式, 会把百来字节的
     // 书籍API JSON(bqg713 /api/book ≈150字符)误判为 blocked —— 响应体是合法JSON时
     // 必然是API数据而非挑战页(挑战页永远是HTML), JSON有效即放行
@@ -1235,11 +1235,11 @@ export class TaskRunner {
             // 瞬态韧性: 目录页抓取失败(限流/瞬时 403)退避后重试一次
             let page: Awaited<ReturnType<typeof fetchPage>>
             try {
-              page = await this.gateFetch(taskId, abs, fetchCfg, { minGapMs: nextInterval() }) // ab-b
+              page = await this.gateFetch(taskId, abs, { ...fetchCfg, requestPriority: 'book' }, { minGapMs: nextInterval() }) // ab-b
             } catch (_firstErr) {
               await new Promise((r) => setTimeout(r, 800))
               // 二次仍失败则向上抛, 走书籍页回退; ab-b: 重试同样逐次取随机 interval 作 minGapMs
-              page = await this.gateFetch(taskId, abs, fetchCfg, { minGapMs: nextInterval() })
+              page = await this.gateFetch(taskId, abs, { ...fetchCfg, requestPriority: 'book' }, { minGapMs: nextInterval() })
             }
             await this.log(taskId, 'info', `目录页(tocLink): ${abs} (${page.html.length}字节)`)
             const r1 = await parseToc(abs, page.html, rule.toc, tocFetchCfg)
@@ -1268,7 +1268,7 @@ export class TaskRunner {
         })
         const abs = absolutize(guess, baseUrl)
         if (abs && /^https?:\/\//.test(abs) && abs !== baseUrl) {
-          const page = await this.gateFetch(taskId, abs, fetchCfg, { minGapMs: nextInterval() }) // ab-b
+          const page = await this.gateFetch(taskId, abs, { ...fetchCfg, requestPriority: 'book' }, { minGapMs: nextInterval() }) // ab-b
           await this.log(taskId, 'info', `目录链接自动嗅探: ${abs}`)
           return await parseToc(abs, page.html, rule.toc, tocFetchCfg)
         }
@@ -1295,7 +1295,7 @@ export class TaskRunner {
       await this.log(taskId, 'warn', `目录仅${httpTocCount}章(疑似AJAX异步加载/瞬时拦截), 浏览器渲染重取书籍页…`)
       try {
         // ab-b: 浏览器重取书籍页同款传当次随机 interval 作 minGapMs(语义同书籍页首取)
-        const bPage = await this.gateFetch(taskId, bookUrl, { ...fetchCfg, engine: 'browser', waitMs: Math.max(fetchCfg.waitMs || 0, 2500) }, { minGapMs: nextInterval() })
+        const bPage = await this.gateFetch(taskId, bookUrl, { ...fetchCfg, engine: 'browser', waitMs: Math.max(fetchCfg.waitMs || 0, 2500), requestPriority: 'book' }, { minGapMs: nextInterval() })
         const bToc = await extractToc(bPage.html, bookUrl)
         if (bToc.items.length > httpTocCount) {
           tocItems = reorderToc(bToc.items)
@@ -1684,7 +1684,7 @@ export class TaskRunner {
             // 每章节奏独立不规则, 击败简单 rate-pattern 检测(固定 interval 配置下也变化)。
             // 该抖动 IN ADDITION TO hostGate 的 minGapMs 闸门(hostGate 实际执行 jitteredMinGap)
             const jitteredMinGap = jitteredInterval(interval, fetchCfg.jitterMs)
-            const pageRes = await this.gateFetch(taskId, q.url, fetchCfg, { minGapMs: jitteredMinGap })
+            const pageRes = await this.gateFetch(taskId, q.url, { ...fetchCfg, requestPriority: 'chapter' }, { minGapMs: jitteredMinGap })
             // 疑似被拦不入库: 保持 fetched=false, 下次增量自动重试; 合法JSON体是API数据非挑战页, 放行
             if (pageRes.blocked && parseJsonBody(pageRes.html) === undefined) throw new Error('章节页疑似被拦截(验证码/JS挑战)')
             const parsedC = await parseContent(q.url, pageRes.html, rule.content, contentFetchCfg)

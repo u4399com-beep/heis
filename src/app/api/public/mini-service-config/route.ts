@@ -13,6 +13,7 @@
 // }
 //
 // 缓存: 60s in-memory(配置变更后最多 60s 生效), 避免每次 mini-service 请求都打 DB
+import { timingSafeEqual } from 'node:crypto'
 import { db } from '@/lib/db'
 import { ok, fail } from '@/lib/api'
 import { withGuard } from '../../_lib/http'
@@ -40,6 +41,21 @@ export function invalidateMiniServiceConfigCache() {
   cachedAt = 0
 }
 
+/**
+ * 常量时间字符串比较(供 BRIDGE_KEY 校验用, 防 timing side-channel)。
+ * 长度不等时仍走完一遍 dummy 比较防长度短路泄密 —— 与 mini-services
+ * _shared/server.ts constantTimeEqual 同口径。
+ */
+function constantTimeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a, 'utf8')
+  const bb = Buffer.from(b, 'utf8')
+  if (ab.length !== bb.length) {
+    timingSafeEqual(ab, ab) // dummy compare 防长度差形成计时旁路
+    return false
+  }
+  return timingSafeEqual(ab, bb)
+}
+
 /** 校验 BRIDGE_KEY: 与 mini-services _shared/server.ts 同口径, 留空=dev 模式不校验 */
 function checkBridgeKey(req: Request): boolean {
   const expected = process.env.BRIDGE_KEY || ''
@@ -47,14 +63,10 @@ function checkBridgeKey(req: Request): boolean {
   // 支持 3 种头形式: X-Bridge-Key / X-Auth-Token / Authorization: Bearer
   const fromHeader = req.headers.get('x-bridge-key') || req.headers.get('x-auth-token') || ''
   const fromAuth = req.headers.get('authorization') || ''
-  const bearer = fromAuth.startsWith('Bearer ') ? fromAuth.slice(7) : ''
+  const bearer = fromAuth.toLowerCase().startsWith('bearer ') ? fromAuth.slice(7).trim() : ''
   const provided = fromHeader || bearer
   if (!provided) return false
-  // 常量时间比较防时序攻击
-  if (provided.length !== expected.length) return false
-  let diff = 0
-  for (let i = 0; i < expected.length; i++) diff |= provided.charCodeAt(i) ^ expected.charCodeAt(i)
-  return diff === 0
+  return constantTimeEqual(provided, expected)
 }
 
 export async function GET(req: Request) {

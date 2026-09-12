@@ -45,6 +45,7 @@ import {
   Inbox,
   Loader2,
   MessageSquare,
+  MessageSquareReply,
   RefreshCw,
   Save,
   Trash2,
@@ -78,10 +79,36 @@ const TYPE_OPTIONS = [
 
 const CONTENT_PREVIEW_LEN = 80
 const PAGE_SIZE = 20
+// feat-bb-2: 本地缓存「已回复」反馈 ID (adminNote 非空), 列表行显示「已回复」徽章
+// localStorage 仅存 ID 集合, 丢失不严重影响业务; 调大反馈成功后同步更新
+const REPLIED_KEY = 'heis-feedback-replied'
+const REPLIED_MAX = 500 // 上限防 localStorage 膨胀
 
 function truncate(s: string, n: number): string {
   if (s.length <= n) return s
   return s.slice(0, n) + '…'
+}
+
+function loadRepliedCache(): Set<string> {
+  try {
+    const raw = localStorage.getItem(REPLIED_KEY)
+    if (!raw) return new Set()
+    const arr = JSON.parse(raw)
+    return Array.isArray(arr) ? new Set(arr.filter((x) => typeof x === 'string')) : new Set()
+  } catch {
+    return new Set()
+  }
+}
+
+function saveRepliedCache(s: Set<string>): void {
+  try {
+    // 超过上限时保留最新的 REPLIED_MAX 个 (FIFO 丢最早进入的, 但 Set 不保序→转为数组仅截裁)
+    const arr = [...s]
+    const trimmed = arr.length > REPLIED_MAX ? arr.slice(arr.length - REPLIED_MAX) : arr
+    localStorage.setItem(REPLIED_KEY, JSON.stringify(trimmed))
+  } catch {
+    /* 静默 */
+  }
 }
 
 export function FeedbackSection() {
@@ -106,6 +133,14 @@ export function FeedbackSection() {
 
   const [deleting, setDeleting] = useState<FeedbackRow | null>(null)
   const [deleteLoading, setDeleteLoading] = useState(false)
+
+  // feat-bb-2: 本地「已回复」ID 缓存 (adminNote 非空的反馈)
+  const [repliedCache, setRepliedCache] = useState<Set<string>>(() => new Set())
+
+  // 初始挂载加载本地缓存 (仅在客户端, 避免 SSR 不匹配)
+  useEffect(() => {
+    setRepliedCache(loadRepliedCache())
+  }, [])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -143,6 +178,25 @@ export function FeedbackSection() {
       setDetail(d)
       setEditStatus(d.status)
       setEditNote(d.adminNote || '')
+      // feat-bb-2: 同步「已回复」缓存 — 如果 adminNote 非空, 记入 localStorage
+      if (d.adminNote && d.adminNote.trim()) {
+        setRepliedCache((prev) => {
+          if (prev.has(d.id)) return prev
+          const n = new Set(prev)
+          n.add(d.id)
+          saveRepliedCache(n)
+          return n
+        })
+      } else {
+        // adminNote 为空 → 从缓存中移除 (以防之前被错误记入)
+        setRepliedCache((prev) => {
+          if (!prev.has(d.id)) return prev
+          const n = new Set(prev)
+          n.delete(d.id)
+          saveRepliedCache(n)
+          return n
+        })
+      }
       // 首次查看(new)自动置 read; 其它情况静默 PATCH 不破坏管理员已设的状态
       if (d.status === 'new') {
         try {
@@ -170,6 +224,16 @@ export function FeedbackSection() {
         adminNote: editNote,
       })
       toast.success('反馈已更新')
+      // feat-bb-2: 同步「已回复」缓存 — 保存后根据 editNote 判定
+      const hasNote = !!(editNote && editNote.trim())
+      setRepliedCache((prev) => {
+        if (hasNote === prev.has(detail.id)) return prev
+        const n = new Set(prev)
+        if (hasNote) n.add(detail.id)
+        else n.delete(detail.id)
+        saveRepliedCache(n)
+        return n
+      })
       setDetailOpen(false)
       load()
     } catch (e) {
@@ -306,6 +370,34 @@ export function FeedbackSection() {
         )}
       </div>
 
+      {/* feat-bb-2: 状态快捷筛选条 (一键过滤状态) */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-[11px] text-zinc-500">快捷筛选:</span>
+        {STATUS_OPTIONS.filter((o) => o.value !== 'all').map((o) => {
+          const active = statusFilter === o.value
+          const meta = FEEDBACK_STATUS_META[o.value]
+          const dot = meta?.dot || 'bg-zinc-500'
+          const count = o.value === 'new' ? stats.new : o.value === 'resolved' ? stats.resolved : null
+          return (
+            <button
+              key={o.value}
+              type="button"
+              onClick={() => { setPage(1); setStatusFilter(active ? 'all' : o.value) }}
+              className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] transition-colors ${
+                active
+                  ? 'border-violet-500/60 bg-violet-500/15 text-violet-200'
+                  : 'border-zinc-700 bg-zinc-900/40 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
+              }`}
+              aria-pressed={active}
+            >
+              <span className={`inline-block h-1.5 w-1.5 rounded-full ${dot}`} aria-hidden />
+              {o.label}
+              {count !== null && <span className="ml-0.5 font-mono tabular-nums opacity-70">{count}</span>}
+            </button>
+          )
+        })}
+      </div>
+
       {/* 表格 */}
       {loading ? (
         <div className="flex items-center justify-center py-16 text-sm text-zinc-500">
@@ -368,10 +460,27 @@ export function FeedbackSection() {
                       )}
                     </TableCell>
                     <TableCell>
-                      <Badge className={`border ${sm.className}`}>
-                        <span className={`mr-1 inline-block h-1.5 w-1.5 rounded-full ${sm.dot}`} aria-hidden />
-                        {sm.label}
-                      </Badge>
+                      <div className="flex flex-col gap-1">
+                        <Badge className={`border ${sm.className}`}>
+                          <span className={`mr-1 inline-block h-1.5 w-1.5 rounded-full ${sm.dot}`} aria-hidden />
+                          {sm.label}
+                        </Badge>
+                        {/* feat-bb-2: 「已回复」徽章 (adminNote 非空, 本地缓存) */}
+                        {repliedCache.has(r.id) && (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Badge variant="outline" className="border-violet-500/40 bg-violet-500/10 text-[10px] text-violet-300">
+                                <MessageSquareReply className="h-2.5 w-2.5" />
+                                已回复
+                              </Badge>
+                            </TooltipTrigger>
+                            <TooltipContent side="bottom" className="text-xs">
+                              <div>管理员已添加备注</div>
+                              <div className="text-zinc-400">基于本机记录, 打开详情可查看完整备注</div>
+                            </TooltipContent>
+                          </Tooltip>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell className="whitespace-nowrap text-xs text-zinc-400" title={r.createdAt}>
                       {fmtDateTime(r.createdAt)}

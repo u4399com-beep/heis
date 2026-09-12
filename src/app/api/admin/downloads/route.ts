@@ -19,11 +19,12 @@ const MAX_CONCURRENT_DOWNLOAD_JOBS = 3
  *  现挂到 globalThis 单例(HMR 复用同一引用), 计数跨模块版本持久化。 */
 const gInFlight = globalThis as unknown as { __heisDownloadInFlight?: number }
 gInFlight.__heisDownloadInFlight ??= 0
+// agent-AA: 删除已死代码 setMax —— 全代码库 0 引用, 仅供历史诊断设想保留, 与 R5-8 同款
+// HMR 单例语义冲突(可被外部强制覆盖 inFlight 状态), 收编后维持只读计数语义
 const inFlightGenerations = {
   get(): number { return gInFlight.__heisDownloadInFlight! },
   incr(): number { return (gInFlight.__heisDownloadInFlight = (gInFlight.__heisDownloadInFlight || 0) + 1) },
   decr(): number { return (gInFlight.__heisDownloadInFlight = Math.max(0, (gInFlight.__heisDownloadInFlight || 0) - 1)) },
-  setMax(v: number): number { return (gInFlight.__heisDownloadInFlight = Math.max(0, Math.round(v))) },
 }
 /** 陈旧在途任务判定: 生成循环与 POST 同进程, 服务重启会遗留永久 pending 的孤儿任务 ——
  *  不自愈会把并发额度永久占满。1h 未见终态(正常 41 章书生成秒级/万章书分钟级)视为孤儿,

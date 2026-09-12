@@ -617,13 +617,24 @@ export function createBridgeServer(opts: BridgeServerOptions) {
       let ok = true
       try {
         // 30s 请求超时硬帽: Promise.race
-        const result = await Promise.race([
-          Promise.resolve(userFetch(req)),
-          new Promise<Response>((resolve) => setTimeout(() => resolve(gatewayTimeout()), requestTimeoutClamped)),
-        ])
-        // 4xx/5xx 视为错误计入 errors_total(健康统计口径)
-        if (result.status >= 400) ok = false
-        return withSecurityHeaders(result)
+        // agent-AA: 修前 setTimeout 在 userFetch 提前返回后仍占着 timer 槽位最长 30s,
+        // 长跑进程的每请求都会留下一个 pending timer (即使被 GC, 也保活事件循环 30s),
+        // 形同事件循环 keep-alive 泄漏; 改为显式 clearTimeout 在 finally 中无条件清理
+        // (timer 已 fire 后 clearTimeout 是 no-op, 安全)
+        let timeoutTimer: ReturnType<typeof setTimeout> | undefined
+        try {
+          const result = await Promise.race([
+            Promise.resolve(userFetch(req)),
+            new Promise<Response>((resolve) => {
+              timeoutTimer = setTimeout(() => resolve(gatewayTimeout()), requestTimeoutClamped)
+            }),
+          ])
+          // 4xx/5xx 视为错误计入 errors_total(健康统计口径)
+          if (result.status >= 400) ok = false
+          return withSecurityHeaders(result)
+        } finally {
+          if (timeoutTimer) clearTimeout(timeoutTimer)
+        }
       } catch (e) {
         ok = false
         const safe = sanitizeError(e)

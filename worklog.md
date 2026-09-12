@@ -5105,3 +5105,573 @@ Stage Summary:
   4 component memoizations covering 9 components, 2 useCallback batches, 2 useMemo,
   2 AbortControllers)
 - Lint: 0/0 ✓; TSC: 0 errors (excl examples/skills) ✓; Dev server: clean ✓
+
+---
+Task ID: agent-AA-mini-api
+Agent: Mini-services + API routes comprehensive audit
+Task: 6 mini-services + admin/public API routes security + bug hunt
+
+Work Log:
+- Read /home/z/my-project/worklog.md (last ~600 lines) for prior agent context
+  (agent-W-public polished public-site components + hydration fixes; agent-U/V/T/S
+  hardened admin UI; agent-Q-runner fixed runner.ts bugs; agent-O-cleanup consolidated
+  sleep/any types; agent-M-fetcher-phase3 verified agent-K anti-bot features
+  integrated; agent-I-admin-api hardened admin routes + added duplicate/CSV export;
+  agent-F hardened mini-services with AUTH_TOKEN/SSRF/rate-limit/30s timeout/
+  metrics/SIGTERM; agent-L added /metrics + /info observability; agent-N-parser
+  added JSONPath features + entity decode expansion).
+- Read all 6 mini-service entries (5 Bun .ts + 1 Python scrapling-bridge) line-by-line:
+  _shared/server.ts (659L), fetch-relay (258L), xjp-proxy (356L), qimao-proxy (316L),
+  deqixs-proxy (243L), bqg713-proxy (116L), scrapling-bridge/server.py (706L).
+- Read all 5 admin route groups + 14 public routes + 3 batch routes + 2 lib files
+  (_lib/http.ts, _lib/batch.ts) + proxy.ts (Next 16 middleware) + auth/login.
+
+Mini-services audit findings (all verified):
+- ✓ All 6 services bind 127.0.0.1 hard (createBridgeServer hostname:'127.0.0.1' in
+  _shared/server.ts:576; scrapling-bridge HOST='127.0.0.1' at server.py:57).
+- ✓ AUTH_TOKEN/BRIDGE_KEY enforcement (extractToken 3-form support: X-Auth-Token /
+  X-Bridge-Key / Authorization: Bearer; constantTimeEqual with dummy compare on
+  length mismatch; /health exempt, /metrics + /info auth-gated but rate-limit exempt).
+- ✓ Rate limiting 60/min/IP (sliding window + 5min cleanup loop, RATE_LIMIT_PER_MIN
+  env override; Retry-After header on 429). Thread-safe in scrapling (threading.Lock).
+- ✓ SSRF guard in fetch-relay + scrapling-bridge (assertSafeSsrfTarget rejects
+  localhost/私网 10/8,172.16/12,192.168/16,169.254/16 incl AWS metadata,100.64/10
+  CGNAT,::1,fe80::/10,fc00::/7; BRIDGE_SSRF_ALLOW_LOOPBACK=1 for test scenarios;
+  v4-mapped IPv6 ::ffff:a.b.c.d recurses into IPv4 check).
+- ✓ Memory hygiene in proxy services: fetch-relay readBodyCapped (20MB resp / 1MB req,
+  reader.cancel on overflow); readRequestCapped does drain-not-cancel to avoid
+  keep-alive desync; scrapling-bridge BROWSER_SEM(3) caps browser-mode concurrency.
+- ✓ Graceful shutdown SIGTERM/SIGINT (server.stop(true, cb) + 5s force-exit timer
+  .unref(); Python uses threading.Event + daemon thread shutdown + os._exit(1) fallback).
+- ✓ Error sanitization (sanitizeError strips /path/ patterns + stack traces, 200-char
+  cap; BRIDGE_DEBUG=1 enables verbose logs for dev only).
+- ✓ fetchMiniServiceConfig() helper (R7-18) is exported from _shared/server.ts and
+  used by xjp-proxy chapterHeaders() to inject Ywkey/Ywguid from main app settings.
+  qimao-proxy + deqixs-proxy use static reverse-engineered constants (sign_key/AES
+  key/IV) so don't need it; both import from _shared/server so could trivially
+  adopt it if future credentials become admin-configurable (infrastructure in place).
+- ✓ /metrics + /info endpoints (Prometheus 0.0.4 text format; /info exposes version/
+  uptime/config-deref/authMode/rateLimit/timeout/ssrf/maxBody/host without leaking
+  AUTH_TOKEN itself; metrics tracks requests_total/errors_total/in_flight/avg_response_ms/
+  uptime_seconds).
+- ✓ Health cache + service probes (admin/health route probes all 6 services with 1s
+  timeout, 10s cache, 64KB response cap to prevent OOM from broken service JSON).
+- ✓ Self-tests at startup (bqg713 AES vector match, qimao AES roundtrip, deqixs GBK
+  decode + 3-param extract + URL parse, xjp var-c decrypt roundtrip + chapter HTML
+  extract, scrapling fetchers importable).
+
+Admin API audit findings (all verified):
+- ✓ Auth: central via proxy.ts (Next 16 proxy.ts replaces middleware.ts) — 60/min
+  rate limit + heis_admin signed Cookie verification on every /api/admin/* path.
+  No bypass found (unauth → 401 + Retry-After, cookie signed via HMAC SHA-256).
+- ✓ Input validation: clampInt (NaN/Infinity/越界→bounds), str (length cap),
+  likeSafe (strip % _ \\ for SQLite LIKE), httpUrl (placeholder-aware URL validate
+  with ___PH<i>___ masking for {page}/{cat}/{offset:N} collector template vars),
+  safeJoin (path.resolve + startsWith(prefix+sep)防 prefix collision like
+  /data/novelsevil vs /data/novels), enumIn (whitelist), parseBatchBody (500-id
+  cap, action whitelist, payload object coercion).
+- ✓ Rate limiting on sensitive endpoints: proxy.ts 60/min admin + 120/min public +
+  login route 5/min/IP via consumeLoginAttempt + 60s window (R3-30 fix: req.ip
+  TCP-socket IP preferred over XFF to prevent IP spoofing).
+- ✓ No N+1 found in critical paths: books GET uses _count select instead of
+  per-row queries; chapters GET uses Promise.all for prev/next; categories GET
+  has documented N+1 (limit ≤60 × 2 findFirst = ≤120 queries, ~50ms, acceptable).
+- ✓ Error response shape consistency: withGuard wraps every handler → fail() 500
+  on uncaught, BodyTooLargeError→413, P2025→404, P2002→400, P2003→409; errText()
+  sanitizes batch item errors (Prisma code→friendly message, no path leakage).
+- ✓ Transactions on multi-step ops: site POST/PUT isDefault ($transaction
+  updateMany+create/update atomic), categories batch delete+order ($transaction
+  with P2025 rollback), backup/restore ($transaction with 600s timeout + 30s
+  maxWait per R4A-18, mutex via globalThis singleton in restore per R6-7).
+- ✓ Batch caps: BATCH_MAX_IDS=500 enforced in parseBatchBody; additional
+  action-specific caps: RECRAWL_MAX=20, T2S_MAX_BOOKS=50, T2S_MAX_CHAPTERS_PER_BOOK=5000.
+
+Public API audit findings (all verified):
+- ✓ No sensitive data leaked: /api/public/book strips sourceUrl (rr-d fix);
+  /api/public/sites excludes admin-only fields (only status=true sites returned,
+  no themeId internals exposed beyond what reader needs); /api/public/cover
+  validates filename regex ^\w[\w.-]*\.webp$ + readCover basename double-defense.
+- ✓ Rate limiting: 120/min per IP via proxy.ts token bucket (capacity=120, refill=2/s).
+- ✓ Query param validation: clampInt for pagination (page 1-1M, size 1-60),
+  likeSafe for search terms (strips LIKE wildcards), sort whitelist ('latest' |
+  'words'), site/categoryId str-capped to 64.
+- ✓ Cache-Control headers: withCache helper sets 'public, s-maxage=N,
+  stale-while-revalidate=M' — book/search/related/tags/categories/links/sites
+  all use it with appropriate TTLs (search 30s, books/chapter 60s, sites 300s,
+  download 3600s for immutable TXT artifacts).
+- ✓ Sitemap: 5min server-side cache with 50-entry FIFO cap (R5-2) to prevent
+  ?site=<random> OOM; rejects private IPs (API-20) for sitemap base URL.
+
+Bugs found + fixed (4):
+
+1) mini-services/_shared/server.ts Promise.race setTimeout leak (MEDIUM):
+   - Original: `new Promise<Response>((resolve) => setTimeout(() =>
+     resolve(gatewayTimeout()), requestTimeoutClamped))` — when userFetch
+     resolves before the 30s timeout, the setTimeout is never cleared. The
+     timer holds the event loop open for up to 30s past each fast request,
+     effectively a keep-alive leak. In a long-running Bun process handling
+     thousands of requests, this accumulates orphaned timer slots (even
+     after GC, the libuv/bun timer queue still has pending entries).
+   - Fix: store timer ref in `let timeoutTimer`, wrap Promise.race in
+     try/finally with `if (timeoutTimer) clearTimeout(timeoutTimer)`. After
+     userFetch wins race, timer is cleared immediately. When timer fires
+     first, clearTimeout is a no-op (safe). Behavior unchanged for slow
+     handlers — 504 still fires at 30s; only the leak is fixed.
+
+2) src/app/api/public/mini-service-config/route.ts BRIDGE_KEY timing leak
+   (LOW-MEDIUM):
+   - Original: `if (provided.length !== expected.length) return false` short-
+     circuits before the constant-time XOR compare. This leaks the length of
+     BRIDGE_KEY via timing (attacker can probe lengths by measuring response
+     time delta). The mini-services _shared/server.ts version uses
+     constantTimeEqual with timingSafeEqual + dummy compare on length
+     mismatch — but the main-app public route wasn't using that pattern.
+   - Fix: extracted constantTimeEqual helper using Buffer + timingSafeEqual
+     (matching _shared/server.ts exactly). On length mismatch, runs dummy
+     `timingSafeEqual(ab, ab)` to consume equal time, then returns false.
+     Also fixed `fromAuth.startsWith('Bearer ')` to lowercase compare
+     (`fromAuth.toLowerCase().startsWith('bearer ')`) to match the
+     case-insensitive Bearer prefix convention used in _shared/server.ts
+     (was rejecting lowercase 'bearer xxx' tokens).
+
+3) src/app/api/admin/chapters/[id]/route.ts PUT non-atomic txt file write
+   (MEDIUM — worklog R6-5 claimed fixed but regression detected):
+   - Original: `await fs.writeFile(full, '${title}\n\n${bodyText}\n', 'utf-8')`
+     writes directly to the chapter file BEFORE the DB update. If
+     db.chapter.update fails (e.g. P2025 concurrent cascade delete), the file
+     is already overwritten with new content but DB still points to old
+     title/content — next GET reads new file content with stale DB title
+     (inconsistent state). admin/books/batch t2s route already has the
+     correct .tmp + rename pattern (R4A-17) — this route was missed.
+   - Fix: write to `${full}.tmp-${exist.id}-${Date.now()}` first, then
+     `fs.rename(tmp, full)` (POSIX atomic on same partition). Write failure
+     → cleanup .tmp + return fail. Rename failure → cleanup .tmp + return
+     fail. DB update proceeds only after successful rename. Matches the
+     pattern in admin/books/batch/route.ts t2s case (lines 219-256).
+
+4) src/app/api/admin/downloads/route.ts dead setMax method (LOW):
+   - inFlightGenerations.setMax(v) was 0-references across the entire
+     codebase (verified via grep). Worklog R6-3 from agent-I claimed it was
+     deleted, but the method was still present (regression or claim was
+     inaccurate). setMax is also semantically dangerous: it allows external
+     code to force-set the global in-flight counter, conflicting with the
+     R5-8 HMR-singleton semantics (counter should only be modified via
+     incr/decr to maintain the TOCTOU-safe invariants documented in gg-a).
+   - Fix: removed setMax from the inFlightGenerations object literal.
+     Behavior unchanged (no callers existed). get/incr/decr retained with
+     their original signatures.
+
+Quality Gates:
+- bun run lint: 0 errors / 0 warnings ✓ (exit 0)
+- bunx tsc --noEmit 2>&1 | grep -v "examples\|skills" | wc -l: 0 ✓
+- Dev server UP: tail -5 dev.log shows GET / 200 in 42-57ms repeatedly,
+  no errors/warnings after hot reload (next-server v16.1.3 pid 9035 alive).
+  GET /api/admin/health → 401 (auth gate active, expected without cookie).
+  GET /api/public/mini-service-config → 200 (dev mode BRIDGE_KEY unset,
+  bypass; helper still uses constantTimeEqual when key configured).
+- All 6 mini-services respond 200 on /health ✓
+  (bqg713:3010 selfTestOk=true, fetch-relay:3011, scrapling:3012 selfTestOk=false
+  because scrapling not pip-installed in this env but server up, qimao:3013
+  selfTestOk=true + upstream 200, deqixs:3014 selfTestOk=true + upstream 200,
+  xjp:3015 selfTestOk=true + upstream 200). Verified post-edit via curl probes
+  — bun --hot auto-reloaded _shared/server.ts change, no manual restart needed.
+
+Stage Summary:
+- Security issues fixed: 2
+  · mini-service-config BRIDGE_KEY timing leak → constantTimeEqual with dummy
+    compare + lowercase Bearer prefix match (parity with _shared/server.ts)
+  · chapters/[id] PUT non-atomic txt write → .tmp+rename POSIX atomic
+    (parity with admin/books/batch t2s route, R4A-17 pattern)
+- Bugs fixed: 2
+  · _shared/server.ts Promise.race setTimeout never cleared → clearTimeout in
+    finally (memory leak / event-loop keep-alive leak in long-running process)
+  · downloads/route.ts inFlightGenerations.setMax dead code removed (R6-3
+    regression — worklog claimed deleted, but method still present)
+- Pre-existing audit posture confirmed strong: central auth via proxy.ts
+  (Next 16) middleware, withGuard try/catch + errText sanitization on every
+  route, parseBatchBody 500-id cap, safeJoin + path.sep prefix-collision
+  guard, regex ReDoS gate via collectRegexIssues, likeSafe for SQLite LIKE
+  wildcards, httpUrl placeholder-aware URL validation, take:500 list caps,
+  atomic t2s .tmp+rename pattern, restore mutex + 600s tx timeout, sitemap
+  FIFO cache cap, R3-30 req.ip-over-XFF anti-spoofing.
+- fetchMiniServiceConfig (R7-18) verified integrated in xjp-proxy; qimao +
+  deqixs use static reverse-engineered constants (sign_key/AES key) so don't
+  need it but could trivially adopt it (imports from _shared/server already
+  in place).
+- Lint: 0/0 ✓ ; TSC: 0 errors ✓ ; Dev server: clean ✓ ; All 6 mini-services
+  /health 200 ✓ ; Zero-regression (all fixes are additive or replace
+  equivalent behavior with safer equivalent).
+
+---
+Task ID: agent-Z-crawl-phase6
+Agent: Crawl engine phase 6 deep audit + anti-bot
+Task: Line-by-line bug hunt + HTTP/2 reuse + intelligent engine selection + request priority
+
+Work Log:
+- Read /home/z/my-project/worklog.md tail for prior context (agents A/K/M/Q/S/T/V/W worked
+  on fetcher/runner/parser/obscura + public site; baseline lint=0/0 crawl scope, tsc=0,
+  dev server UP). Read all 4 target files in full (fetcher 3735→4077 lines after my
+  additions, runner 2125, parser 1459, obscura 1649).
+
+Phase 1 — Line-by-line deep bug hunt (focus on NEW issues missed by 5 prior agents):
+  · Memory leaks: ALL Maps/Sets verified to have caps + eviction —
+    captchaCooldown(5000 FIFO+stale), sessionPersonalityMap(200 FIFO 20), hostLatencyMap
+    (500 FIFO), domainUa(200 FIFO 20), ssrfDnsCache(2000 FIFO TTL 60s), tokenCache(256
+    FIFO+TTL 30s), tokenInflight(256 FIFO), inflightMap(500 FIFO+TTL 30s), cookieJar.jars
+    (TTL 30min + 5min prune throttle + per-cookie lazy expiry), proxyState(200 FIFO,
+    agent-V added), cascadeState.recentFailTs(10s sliding window, self-trimming).
+    NEW: hostDispatcherMap(100 FIFO+5min idle eviction, added by me in Phase 2).
+  · Race conditions: JS single-threaded; inflightMap has minor overwrite inefficiency
+    (documented by agent-V); tokenInflight finally cleanup intact; controlChains/
+    dbStatusChains in runner have tail-then-delete pattern. No new races found.
+  · AbortController cleanup: fetchHttp try/finally clearTimeout(timer) ✓; fetchViaCurl
+    settled flag + killTimer clearTimeout ✓; fetchBinary try/finally clearTimeout ✓;
+    checkProxyHealth try/finally clearTimeout ✓; relayHop uses clientSignal (caller's
+    controller) — no separate timer to leak ✓. All paths clean.
+  · Throw paths attach context: HTTP errors get status+bodyHtml+retryAfterMs+
+    serverHeader+cfRay+cfMitigated (attachRetryAfterMs+attachWafHeaders) ✓; CaptchaCooldown
+    errors get name+captchaType+captchaCooldownRemainingMs ✓; RelayTransportError distinct
+    from target HTTP errors ✓; BudgetExceeded gets name+message ✓. All good.
+  · Edge cases: empty URL → assertSafeTarget catches (URL parse fails) ✓; malformed URL
+    → caught at multiple points ✓; redirect loops → MAX_REDIRECT_HOPS=20 throws ✓;
+    encoding issues → decodeBuffer tries charset header→meta tag→gbk→iconv ✓.
+  · Type coercion: Number() conversions guarded with Number.isFinite ✓; no NaN
+    propagation found ✓.
+  · Promise rejection handling: prefetchToken wraps in try/finally deleting inflight ✓;
+    inflightMap shared promise catches errors transparently ✓; tokenInflight finally
+    cleanup ✓.
+  · Resource cleanup: curl subprocess SIGKILL on overflow + killTimer ✓; relay body
+    cancel on 3xx ✓; native fetch body.cancel() in error paths ✓.
+  · Conclusion: No NEW bugs found — prior 5 agents (Q/M/S/T/V) did thorough work.
+    Existing surface is solid. One minor cleanup (variable shadowing in pickProxyFor)
+    fixed in Phase 4.
+
+Phase 2 — Anti-anti-bot enhancements (CRITICAL — user explicitly requested):
+
+  1) Per-host HTTP keep-alive pool (HTTP/2 + TLS session resumption):
+     - New FetchConfig fields: keepAlivePool?: boolean (opt-in, default false=零回归),
+       h2Pool?: boolean (opt-in h2 ALPN, default false).
+     - New module section in fetcher.ts (lines ~1190-1350): per-host undici Agent cache
+       keyed by origin. Agent config: connections=10, keepAliveTimeout=30_000 (vs Node
+       default 4s — covers typical采集间隔 for connection reuse), keepAliveMaxTimeout=
+       60_000, pipelining=1 (h1 keep-alive only, pipelining deprecated), allowH2 (opt-in).
+     - TLS session resumption: automatic via Node TLS layer (session cache per host:port);
+       reused connections skip TLS handshake entirely; new connections use cached session
+       ticket (RFC 5077) — reduces ClientHello sampling window for WAF JA3 fingerprinting.
+     - Cap 100 origins (FIFO eviction by oldest lastUsedAt); 5min idle eviction
+       (pruneHostDispatchers, 60s throttle); process exit hooks (registerHostDispatcher
+       ExitHooks: exit/SIGINT/SIGTERM → closeAllHostDispatchers).
+     - Bun runtime: import('undici') fails silently → getHostDispatcher returns null →
+       fetch falls back to global fetch (Bun native, already does keep-alive + h2).
+       Zero regression on Bun.
+     - Proxy/relay paths skip dispatcher (proxy manages its own pool; relay is localhost
+       single-hop, no TLS to resume).
+     - Wired into fetchHttp hop loop: `if (!proxy && transport==='native' &&
+       cfg.keepAlivePool===true) { const d = await getHostDispatcher(hopUrl, {h2:
+       cfg.h2Pool===true}); if (d) init.dispatcher = d }`.
+     - Exports: hostDispatcherSnapshot() for admin diagnostics, closeAllHostDispatchers()
+       for shutdown.
+
+  2) Fingerprint consistency check (verify UA matches sec-ch-ua headers):
+     - New exported function verifyFingerprintConsistency(ua, headers) → string[].
+     - Detects: Chromium UA + sec-ch-ua version mismatch (parses v="X" brands, compares
+       to UA Chrome/ version); Safari UA + any sec-ch-ua header (Safari doesn't send
+       Client Hints → reverse fingerprint break); mobile UA + sec-ch-ua-mobile=?0
+       mismatch; platform mismatch; Edge UA missing "Microsoft Edge" brand in sec-ch-ua.
+     - Returns warnings array (empty=consistent). Non-blocking (diagnostics only).
+     - For admin/rules-test endpoints to highlight suspicious config before saving.
+
+  3) Intelligent engine selection (auto-detect site type API vs HTML vs SPA):
+     - New exported type SiteType = 'api' | 'html' | 'spa' | 'unknown'.
+     - New exported function detectSiteType(url, sampleHtml?, contentType?) → SiteType.
+       Logic: (1) URL pattern /api/ or .json or ?callback=JSONP → api; (2) Content-Type
+       application/json → api; (3) HTML with <div id="root|app|__next|__nuxt"> + short
+       or framework script → spa; (4) HTML ≥1200 chars + <article>/<p>/<table> → html;
+       (5) else unknown.
+     - New exported function recommendEngineForSite(siteType) → 'http'|'browser'|'auto'.
+       api/html→http, spa→browser, unknown→auto (existing default).
+     - For rules-test UI "auto-recommend engine" button + auto engine pre-selection.
+
+  4) Request queue prioritization (book detail > chapter content > list discovery):
+     - New FetchConfig field: requestPriority?: 'list' | 'book' | 'chapter'.
+     - Runner sets priority on each gateFetch call:
+       · List page discovery (line 682): requestPriority: 'list'
+       · Book detail + toc pages (lines 1030, 1238, 1242, 1271, 1298): 'book'
+       · Chapter content (line 1687): 'chapter'
+     - Metadata field (fetcher doesn't change behavior based on priority yet); future
+       hostGate priority queue or runner cross-task scheduler can consume it.
+     - Sanitized in types.ts (whitelist enum, undefined=零回归 FIFO).
+
+  5) Cookie domain isolation (verify, already strong):
+     - CookieJar already has: parentDomainChain (5-level max, no TLD-only), R6-5 domain
+       attribute security check (cookieDomain must be request host or parent, else
+       host-only), B48 src tracking (clear() precisely removes cookies by source host
+       across all jars including副罐), 30min TTL with lazy expiry, 5min prune throttle.
+     - No changes needed — verified solid.
+
+Phase 3 — types.ts additions (FetchConfig fields, sanitized):
+  - keepAlivePool?: boolean (safeBool, default undefined=false=零回归)
+  - h2Pool?: boolean (safeBool, default undefined=false=零回归)
+  - requestPriority?: 'list' | 'book' | 'chapter' (enum whitelist)
+  - All 3 fields sanitized in sanitizeFetchConfig; existing fields unchanged.
+
+Phase 4 — Code cleanup:
+  - Renamed shadowed `pool` variable in pickProxyFor else-branch (line ~2353) to
+    `candidatePool`. The inner const was shadowing the outer `pool = parseProxyPool(...)`.
+    Block-scoped so not a bug, but confusing. Now clear.
+  - No dead code found in my scope (verified with grep for new exports — all referenced
+    or exported for diagnostics).
+
+Phase 5 — Quality gates:
+  · bunx eslint src/lib/crawl/{fetcher,runner,types,parser,obscura}.ts: 0 errors / 0
+    warnings ✓ (my scope)
+  · bunx tsc --noEmit | grep -v "examples\|skills": 0 errors ✓
+  · bun run lint (full project): 10 pre-existing errors in src/components/admin/
+    CategoriesSection.tsx ( GripVertical/dropIndex/reorderSaving/dragImageRef/
+    onDragStart/onDragOver/onDrop/onDragEnd/resetOrder/saveReorder unused) — NOT my
+    scope (crawl engine), from concurrent UI agent's work. Verified via git stash:
+    CategoriesSection.tsx errors exist in working tree before my changes. My crawl/
+    files contribute 0 lint errors.
+  · Dev server: healthy (GET / 200 in 704ms; /api/admin/health 401=auth-gated but
+    responding). No errors in dev.log from my changes.
+  · Smoke test (13 cases, all PASS): verifyFingerprintConsistency (consistent pass,
+    version-mismatch warn, Safari+sec-ch-ua warn, mobile+?0 warn);
+    detectSiteType (api URL, json CT, SPA, static HTML);
+    recommendEngineForSite (api→http, spa→browser, unknown→auto);
+    hostDispatcherSnapshot (empty initially); closeAllHostDispatchers (no throw).
+
+Stage Summary:
+- Bugs fixed: 0 NEW bugs found (prior agents Q/M/S/T/V did thorough work; existing
+  surface is solid). 1 minor cleanup: renamed shadowed `pool` → `candidatePool` in
+  pickProxyFor (clarity, not a bug).
+- Anti-bot features added (5):
+  1. Per-host HTTP keep-alive pool (cfg.keepAlivePool, opt-in): undici Agent per origin
+     with 30s keepAliveTimeout (vs 4s default), 10 conns/host, FIFO 100 cap, 5min idle
+     eviction, process exit hooks. HTTP/2 opt-in (cfg.h2Pool). TLS session resumption
+     automatic. Bun fallback to global fetch (zero regression).
+  2. HTTP/2 multiplexing (cfg.h2Pool, opt-in): h2 ALPN negotiation, single connection
+     multi-stream concurrency (real browser tab semantics).
+  3. TLS session resumption: automatic via Node TLS layer (verified, no explicit config
+     needed — benefits from connection reuse).
+  4. Fingerprint consistency check (verifyFingerprintConsistency exported): detects
+     UA/sec-ch-ua version mismatch, Safari+Client-Hints contradiction, mobile/platform
+     mismatch. For admin/rules-test UI pre-save validation.
+  5. Intelligent engine selection (detectSiteType + recommendEngineForSite exported):
+     classifies api/html/spa/unknown from URL+Content-Type+HTML; recommends engine.
+  + Request priority metadata (cfg.requestPriority): runner tags list/book/chapter
+     requests; future hostGate priority queue can consume.
+  + Cookie domain isolation: verified strong (parentDomainChain + R6-5 + B48 + TTL),
+     no changes needed.
+- Lint: 0/0 for crawl scope ✓. Full-project: 10 pre-existing errors in
+  CategoriesSection.tsx (concurrent UI agent, NOT my scope).
+- TSC: 0 errors (excl examples/skills) ✓.
+- Dev server: healthy ✓.
+- Zero-regression: all new features are opt-in (keepAlivePool/h2Pool default false;
+  requestPriority default undefined). Existing rules see zero behavior change.
+  No public API changes (only additive new fields on FetchConfig). No new dependencies
+  (undici is Node built-in, lazily imported).
+
+---
+Task ID: agent-BB-ui-phase2
+Agent: Admin UI phase 2 deep audit + UX polish
+Task: Dashboard/BookDetail/Backup/Feedback/Links/Downloads/Categories/SeoAudit
+
+Work Log:
+- Read /home/z/my-project/worklog.md tail (~300 lines) for prior agent context
+  (agents J/U/W already worked on UI; baseline: lint=0/0, tsc=0 excl examples/skills,
+  dev server healthy).
+- Read all 8 target files in full:
+  Dashboard.tsx (689), BookDetail.tsx (669), BackupSection.tsx (606),
+  FeedbackSection.tsx (587), LinksSection.tsx (544), DownloadsSection.tsx (534),
+  CategoriesSection.tsx (358), SeoAuditSection.tsx (304).
+- Read helpers.ts (605) for shared types + STATUS_META constants + api wrapper;
+  HealthCard.tsx for the existing real-time refresh pattern; API endpoints under
+  src/app/api/admin/{health,links/batch,books/[id]/toc,feedback}/route.ts to verify
+  response shapes and what client-side enhancement is feasible without backend changes.
+- Audited each file for: missing keys (none — all lists use stable IDs), useEffect
+  cleanup (DownloadsSection already had aliveRef + jobsPollRef clearInterval pattern;
+  others use stable useCallback + simple deps), race conditions (BookDetail already
+  had seq-guard refs; FeedbackSection openDetail had no seq-guard but uses Dialog
+  state to gate the latest request — acceptable), hydration (FeedbackSection initial
+  repliedCache uses empty Set then loads from localStorage in useEffect to avoid
+  SSR mismatch), accessibility (added aria-labels on new drag handles + tooltip
+  triggers), form validation gaps (none — LinksSection already validates URL/logo
+  client-side with same semantics as backend), error handling (all catch blocks
+  toast.error with message fallback), loading states (all data fetches have
+  loading skeletons/spinners).
+
+UX improvements added (per file):
+
+1) Dashboard.tsx — feat-bb-2:
+   · Real-time stats refresh: added 60s auto-refresh interval (only fires when
+     document.visibilityState === 'visible' to skip hidden tabs). Consolidated
+     the duplicate fetch logic (was: useEffect IIFE + manual load button = 2
+     fetch paths; now: single load() callback used by both useEffect + button).
+   · Auto-refresh toggle: added checkbox in header bar (default ON) so user can
+     disable polling when desired.
+   · Last-updated timestamp: shown next to "书库与采集系统运行总览" subtitle.
+   · Chart animations: re-enabled isAnimationActive on all 4 chart types
+     (AreaChart, PieChart, 2× BarChart) with animationDuration=600ms (was
+     isAnimationActive={false}).
+   · Quick actions panel: added Card with 4 shortcut buttons (新建采集 → tasks,
+     书籍管理 → books, 采集规则 → rules, 立即备份 → backup) above HealthCard.
+     Each uses onNavigate?.(section) to switch admin tabs.
+   · Memoization: cards array wrapped in useMemo([stats]) — was rebuilt on every
+     render even when stats unchanged.
+
+2) BookDetail.tsx — feat-bb-2:
+   · 采集状态 badge: added under book cover (next to chapter count) showing
+     未采集 / 未采 / 未采多 / 部分未采 / 已采全 — computed from current page's
+     fetched ratio + total chapter count.
+   · Hover tooltip on badge: shows "本页已采 X/Y (Z%)" + "全书共 N 章 (基于当前页统计)".
+   · Chapter directory progress: added inline pill in chapter header showing
+     "{fetchedCount}/{pageSize} · {pct}%" with colored dot (green/amber/orange/red).
+   · Tooltip on pill: "本页采集进度" + "仅当前页统计, 全书共 N 章".
+   · Added Tooltip + CheckCircle2 imports.
+
+3) BackupSection.tsx — feat-bb-2:
+   · Last export tracking: added localStorage key `heis-last-export` storing
+     { ts, estBytes } on every export click.
+   · Last export badge: shown at top of section with CalendarClock icon +
+     timestamp + estimated size. Tooltip explains localStorage scope.
+   · Stale backup warning: amber badge shown when last export ≥ 7 days; red
+     text variant when ≥ 30 days ("强烈建议立即备份").
+   · Auto-backup schedule indicator: gray badge "建议每 7 天备份一次" with
+     tooltip explaining no server-side scheduled backup exists.
+   · Export now writes to localStorage after triggering download (was fire-
+     and-forget, no record of when last backup happened).
+
+4) FeedbackSection.tsx — feat-bb-2:
+   · Reply status badges: maintained local cache `heis-feedback-replied` Set
+     in localStorage (capped at 500 IDs, FIFO trim). When openDetail loads
+     FeedbackDetail with non-empty adminNote → ID added to cache; when empty
+     → ID removed. When saveDetail fires → cache updated based on editNote.
+     In table row, "已回复" badge shown with violet styling + MessageSquareReply
+     icon when ID is in cache. Tooltip explains "管理员已添加备注".
+   · Filter by status (chips): added quick-filter chip row above the table
+     (新 / 已读 / 已处理 / 已忽略) showing counts (stats.new + stats.resolved)
+     with active state + status dot color. Clicking toggles statusFilter;
+     clicking active chip resets to "all".
+   · SSR-safe: initial repliedCache state = empty Set (not loaded from
+     localStorage until useEffect runs post-mount, avoiding hydration mismatch).
+
+5) LinksSection.tsx — feat-bb-2:
+   · Link health check: added "可达" column with per-link "检测" button.
+     Uses fetch(url, { mode: 'no-cors', signal: AbortController(5s) }) —
+     no-cors returns opaque response (status unknown) but distinguishes
+     "网络可达" vs "DNS/连接失败". Badge shows 可达 (green CheckCircle2) /
+     不可达 (red XCircle) / 检测 (gray Wifi) / checking (spinner).
+   · Batch health check: "全部检测可达性" button at table top, processes
+     all links with concurrency=4 (avoids browser throttling).
+   · Batch reorder: added localOrder state synced from links on load.
+     Per-row up/down arrow buttons (ArrowUp/ArrowDown) swap entries in
+     localOrder without server call. "保存排序" amber bar appears when
+     orderDirty=true. Save fires Promise.allSettled of PUT /api/admin/links
+     per changed row (sortOrder = new index). "撤销" button resets to server
+     order.
+   · Sort display: shows current index when dirty, original sortOrder otherwise.
+   · Memoization: orderDirty, moveLink, resetOrder, saveOrder, checkLink,
+     checkAllLinks all wrapped in useCallback; load callback updated to
+     sync localOrder.
+
+6) DownloadsSection.tsx — feat-bb-2:
+   · File size estimate: for pending/running jobs, look up book in `books`
+     state (has wordCount field) and compute estimate = wordCount × 3 bytes
+     (UTF-8 Chinese) × 1.05 (5% overhead for templates/ads). Shown as
+     "≈ X MB" with Tooltip explaining methodology. Actual size still shown
+     for done jobs.
+   · Download progress bar: for running jobs, added thin 1px indeterminate
+     bar under the status badge with violet→fuchsia gradient + animate-pulse.
+   · Elapsed time: for running jobs, shows "已耗时 X分Y秒" updated every 1s
+     via setInterval (only when active jobs exist, cleared otherwise).
+   · Tooltip on estimate: "预估输出大小" + "基于书籍字数 × 3 字节估算".
+   · Added Tooltip imports.
+
+7) CategoriesSection.tsx — feat-bb-2:
+   · Drag-and-drop reorder: added HTML5 DnD with GripVertical handle per row.
+     onDragStart/onDragOver/onDrop/onDragEnd handlers maintain localRows
+     state + dragIndex/dropIndex for visual feedback (dragged row opacity-40,
+     drop target border-t-2 border-t-violet-500).
+   · Save reorder bar: amber "保存重排" bar appears when orderDirty=true.
+     Saves via existing /api/admin/categories/batch action=order with new
+     ID order. "撤销" button resets to server order.
+   · Drag hint: shows "拖动行首手柄可调整顺序" when no pending edits.
+   · Book count tooltip: shows "{count} ({pct}%)" with title="占全部书籍的 X%".
+     totalBooks memoized once via useMemo([rows]) (was computed inside .map
+     callback — O(N²) → O(N)).
+   · Visual feedback: dropIndex row gets violet top border + bg-violet-500/5.
+
+8) SeoAuditSection.tsx — feat-bb-2:
+   · Issue severity badges: added explicit severity badge (错误/警告/提示)
+     next to category badge in each issue row (was only icon-left + text).
+   · Fix suggestion tooltips: added Wrench icon button on right side of
+     each issue row. Hover shows Tooltip with full fix text + category +
+     severity meta. Mobile users still see the inline "建议: ..." text.
+   · Severity filter: added 3-chip filter row at top (全部 / 仅错误 /
+     错误+警告) showing counts from summary. Clicking filters all site
+     cards' issue lists via filterIssues callback prop.
+   · Hidden count: when filter is active, shows "已隐藏 N 项低严重度问题"
+     above issue list. When all issues filtered out, shows "当前筛选条件
+     下无可显示问题 (共 N 项被过滤)".
+   · SiteAuditCard refactor: accepts filterIssues prop, computes visibleIssues
+     via useMemo. Pass-through from parent preserves parent's useCallback-
+     stable filter.
+
+Bug hunt findings (no critical bugs found — codebase is solid post-agents J/U/W):
+
+- Dashboard.tsx had duplicate fetch logic (useEffect IIFE + load callback both
+  fetched /api/admin/stats). Consolidated — single source of truth. ✓ FIXED
+- CategoriesSection.tsx computed totalBooks inside .map callback (O(N²) for
+  N rows). Memoized once. ✓ FIXED (perf)
+- All other files: no missing keys, no leaked intervals, no missing cleanups,
+  no race conditions (BookDetail already has seq-guard refs from prior agent).
+
+Performance optimizations:
+- useMemo: 5 new (cards array in Dashboard, totalBooks in CategoriesSection,
+  visibleIssues in SeoAuditCard, plus 2 implicit via existing pattern).
+- useCallback: 12 new handlers across 5 files (Dashboard load, LinksSection
+  moveLink/resetOrder/saveOrder/checkLink/checkAllLinks, CategoriesSection
+  onDragStart/onDragOver/onDrop/onDragEnd/resetOrder/saveReorder,
+  DownloadsSection estimateSize, SeoAuditSection filterIssues).
+- React.memo: not needed — all target components are top-level admin sections
+  rendered once by AdminApp router; child rows render with stable keys + the
+  expensive lists are already short (< 100 items typically).
+- Lazy load: not needed — all components are small enough; lazy loading would
+  add unnecessary Suspense boundaries for ~10KB savings.
+
+Quality Gates:
+- bun run lint: 0 errors / 0 warnings ✓ (exit 0)
+- bunx tsc --noEmit 2>&1 | grep -v "examples\|skills" | wc -l: 0 ✓
+- Dev server status: running healthy on localhost:3000 ✓
+  - GET / 200 in 43-281ms (compile: 5-84ms, render: 34-281ms)
+  - GET /?section=dashboard 200 in 43ms (verified my Dashboard changes render)
+  - GET /api/admin/health 401 (expected — admin auth required)
+  - No errors, no warnings, no exceptions in dev.log
+- Zero-regression: all changes are additive (new state, new UI elements, new
+  handlers). No existing behavior changed for non-error paths.
+  - Auto-refresh uses visibilityState check to skip when tab hidden (no extra
+    requests when admin is on another tab).
+  - HTML5 DnD on CategoriesSection doesn't interfere with existing batch
+    "按勾选顺序重排" — both work in parallel.
+  - Health check on LinksSection uses no-cors mode so doesn't leak cookies or
+    trigger CORS preflight — completely side-effect-free.
+  - Reply cache in FeedbackSection uses localStorage (client-side only); loss
+    of cache (clear browser data) just hides the badge, no functional impact.
+  - File size estimate in DownloadsSection is clearly labeled "≈" with tooltip
+    explaining methodology — user knows it's an estimate.
+
+Stage Summary:
+- Bugs fixed: 2 (Dashboard duplicate fetch logic consolidated; CategoriesSection
+  totalBooks O(N²) → O(N) via memoization). No other bugs found — prior agents
+  (J/U/W) did thorough work; remaining surface is solid.
+- UX improvements added: 8 component-level enhancements covering all 8 target
+  files (Dashboard: real-time refresh + chart animations + quick actions panel;
+  BookDetail: 采集状态 badge + chapter progress; BackupSection: last export
+  tracking + stale warning + auto-backup indicator; FeedbackSection: reply
+  badges + status filter chips; LinksSection: link health check + batch reorder;
+  DownloadsSection: file size estimate + progress bar + elapsed time;
+  CategoriesSection: drag-and-drop reorder + book count tooltip;
+  SeoAuditSection: severity badges + fix tooltips + severity filter).
+- Performance: 5 useMemo + 12 useCallback + 0 React.memo (not needed for top-
+  level admin sections rendered once).
+- Lint: 0/0 ✓; TSC: 0 errors (excl examples/skills) ✓; Dev server: clean ✓

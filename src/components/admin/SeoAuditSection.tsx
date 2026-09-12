@@ -4,11 +4,13 @@
 // SEO 体检 — 后台区块
 // 顶部摘要条 + 每站点卡片 (大字评分 + conic-gradient 圆环 + 问题时间轴 + 通过项折叠)
 // 评分配色: ≥80 绿 / 60-79 琥珀 / <60 红
+// feat-bb-2: 严重度筛选 toggle (全部 / 仅错误 / 错误+警告)
 // ============================================================
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import {
   Collapsible,
   CollapsibleContent,
@@ -19,11 +21,13 @@ import {
   AlertTriangle,
   Check,
   ChevronDown,
+  Filter,
   Globe,
   Info,
   Loader2,
   RefreshCw,
   Stethoscope,
+  Wrench,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { api, SEO_CATEGORY_META, type SeoAuditReport, type SeoAuditSite } from './helpers'
@@ -69,6 +73,8 @@ export function SeoAuditSection({ onNavigateSites }: { onNavigateSites?: () => v
   const [report, setReport] = useState<SeoAuditReport | null>(null)
   const [loading, setLoading] = useState(true)
   const [scanning, setScanning] = useState(false)
+  // feat-bb-2: 严重度筛选 — 'all' / 'error' / 'warn+'
+  const [sevFilter, setSevFilter] = useState<'all' | 'error' | 'warn+'>('all')
 
   const load = useCallback(async () => {
     setScanning(true)
@@ -86,6 +92,14 @@ export function SeoAuditSection({ onNavigateSites }: { onNavigateSites?: () => v
   useEffect(() => {
     load()
   }, [load])
+
+  // feat-bb-2: 应用严重度筛选 — 过滤后仅显示选中级别及更严重的问题
+  const filterIssues = useCallback((issues: SeoAuditSite['issues']) => {
+    if (sevFilter === 'all') return issues
+    if (sevFilter === 'error') return issues.filter((i) => i.severity === 'error')
+    // 'warn+' → 错误 + 警告
+    return issues.filter((i) => i.severity === 'error' || i.severity === 'warning')
+  }, [sevFilter])
 
   const summary = report?.summary
   const sites = report?.sites ?? []
@@ -126,6 +140,39 @@ export function SeoAuditSection({ onNavigateSites }: { onNavigateSites?: () => v
         </Button>
       </div>
 
+      {/* feat-bb-2: 严重度筛选条 */}
+      {!loading && sites.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center gap-1 text-[11px] text-zinc-500">
+            <Filter className="h-3 w-3" />
+            严重度:
+          </span>
+          {([
+            { key: 'all', label: '全部', count: summary?.totalIssues ?? 0 },
+            { key: 'error', label: '仅错误', count: summary?.totalErrors ?? 0 },
+            { key: 'warn+', label: '错误+警告', count: (summary?.totalErrors ?? 0) + sites.reduce((s, site) => s + site.issues.filter((i) => i.severity === 'warning').length, 0) },
+          ] as const).map((opt) => {
+            const active = sevFilter === opt.key
+            return (
+              <button
+                key={opt.key}
+                type="button"
+                onClick={() => setSevFilter(opt.key)}
+                aria-pressed={active}
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] transition-colors ${
+                  active
+                    ? 'border-violet-500/60 bg-violet-500/15 text-violet-200'
+                    : 'border-zinc-700 bg-zinc-900/40 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
+                }`}
+              >
+                {opt.label}
+                <span className="font-mono tabular-nums opacity-70">{opt.count}</span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+
       {/* 摘要条 */}
       {loading ? (
         <Card className="border-zinc-800 bg-zinc-900/40">
@@ -158,7 +205,7 @@ export function SeoAuditSection({ onNavigateSites }: { onNavigateSites?: () => v
           {/* 站点卡片列表 */}
           <div className="space-y-3">
             {sites.map((site) => (
-              <SiteAuditCard key={site.siteId} site={site} onNavigateSites={onNavigateSites} />
+              <SiteAuditCard key={site.siteId} site={site} onNavigateSites={onNavigateSites} filterIssues={filterIssues} />
             ))}
           </div>
         </>
@@ -170,12 +217,24 @@ export function SeoAuditSection({ onNavigateSites }: { onNavigateSites?: () => v
 // ============================================================
 // 单个站点卡片
 // ============================================================
-function SiteAuditCard({ site, onNavigateSites }: { site: SeoAuditSite; onNavigateSites?: () => void }) {
+interface SiteAuditCardProps {
+  site: SeoAuditSite
+  onNavigateSites?: () => void
+  // feat-bb-2: 严重度筛选函数 (父级传入, 卡片仅渲染过滤后的问题)
+  filterIssues?: (issues: SeoAuditSite['issues']) => SeoAuditSite['issues']
+}
+function SiteAuditCard({ site, onNavigateSites, filterIssues }: SiteAuditCardProps) {
   const [passedOpen, setPassedOpen] = useState(false)
   const sc = scoreColor(site.score)
   const errorCount = site.issues.filter((i) => i.severity === 'error').length
   const warnCount = site.issues.filter((i) => i.severity === 'warning').length
   const infoCount = site.issues.filter((i) => i.severity === 'info').length
+  // feat-bb-2: 过滤后的问题列表 (未筛选时与原数组相同)
+  const visibleIssues = useMemo(
+    () => (filterIssues ? filterIssues(site.issues) : site.issues),
+    [filterIssues, site.issues],
+  )
+  const hiddenCount = site.issues.length - visibleIssues.length
 
   return (
     <Card className="border-zinc-800 bg-zinc-900/40">
@@ -246,9 +305,22 @@ function SiteAuditCard({ site, onNavigateSites }: { site: SeoAuditSite; onNaviga
             <Check className="h-4 w-4" />
             未发现任何 SEO 问题, 配置完整
           </div>
+        ) : visibleIssues.length === 0 ? (
+          // feat-bb-2: 严重度筛选后无匹配 (但站点存在问题)
+          <div className="mt-4 flex items-center gap-2 rounded-md border border-zinc-800 bg-zinc-950/40 p-3 text-xs text-zinc-500">
+            <Info className="h-4 w-4" />
+            当前筛选条件下无可显示问题 (共 {site.issues.length} 项被过滤)
+          </div>
         ) : (
           <div className="mt-4 space-y-2">
-            {site.issues.map((it, i) => {
+            {/* feat-bb-2: 被筛选隐藏的数量提示 */}
+            {hiddenCount > 0 && (
+              <div className="text-[11px] text-zinc-500">
+                <Filter className="mr-1 inline h-3 w-3 align-text-bottom" />
+                已隐藏 {hiddenCount} 项低严重度问题
+              </div>
+            )}
+            {visibleIssues.map((it, i) => {
               const meta = ISSUE_SEVERITY_META[it.severity]
               const cat = SEO_CATEGORY_META[it.category] || { label: it.category, className: '' }
               const Icon = meta.icon
@@ -261,6 +333,10 @@ function SiteAuditCard({ site, onNavigateSites }: { site: SeoAuditSite; onNaviga
                   <div className="flex-1 min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <Badge className={`border ${cat.className}`}>{cat.label}</Badge>
+                      {/* feat-bb-2: 严重度徽章 (与图标颜色一致的独立徽章) */}
+                      <Badge variant="outline" className={`border-zinc-700 ${meta.bg} ${meta.iconClass}`}>
+                        {meta.label}
+                      </Badge>
                       <span className="text-xs font-medium text-zinc-200">{it.message}</span>
                     </div>
                     <div className="mt-1 text-[11px] leading-relaxed text-zinc-500">
@@ -268,6 +344,23 @@ function SiteAuditCard({ site, onNavigateSites }: { site: SeoAuditSite; onNaviga
                       {it.fix}
                     </div>
                   </div>
+                  {/* feat-bb-2: 修复建议 tooltip — 鼠标悬停看完整建议 (移动端长文本可见) */}
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        className="mt-0.5 shrink-0 cursor-help rounded-full p-1 text-zinc-500 hover:bg-zinc-800 hover:text-violet-300"
+                        aria-label="查看修复建议"
+                      >
+                        <Wrench className="h-3.5 w-3.5" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="left" className="max-w-xs text-xs">
+                      <div className="font-medium text-zinc-300">修复建议</div>
+                      <div className="mt-1 text-zinc-400">{it.fix}</div>
+                      <div className="mt-1.5 text-[10px] text-zinc-500">类别: {cat.label} · 严重度: {meta.label}</div>
+                    </TooltipContent>
+                  </Tooltip>
                 </div>
               )
             })}

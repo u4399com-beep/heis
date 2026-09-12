@@ -5,7 +5,7 @@
 // 布局: 系统健康 → 统计卡片 → 采集活动(面积) + 状态分布(饼)
 //       → 分类字数排行(条) + 任务状态分布(条) → 最近任务 + 最近入库 + 分类分布
 // ============================================================
-import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   Area,
   AreaChart,
@@ -36,9 +36,11 @@ import {
   ListTodo,
   Loader2,
   PieChart as PieIcon,
+  Plus,
   RefreshCw,
   ScrollText,
   Tag,
+  Zap,
 } from 'lucide-react'
 import { HealthCard } from './HealthCard'
 import {
@@ -55,6 +57,17 @@ import {
   type TaskProgress,
   type TaskStatus,
 } from './helpers'
+
+// 自动刷新间隔 (仅在 tab 可见时实际触发 fetch, 不可见时跳过以省请求)
+const AUTO_REFRESH_MS = 60_000
+
+// 快捷操作项 (feat-bb-2: 一键跳转高频路径)
+const QUICK_ACTIONS: { key: string; label: string; icon: typeof Zap; section: string; tone: string }[] = [
+  { key: 'task', label: '新建采集', icon: Plus, section: 'tasks', tone: 'text-emerald-400' },
+  { key: 'book', label: '书籍管理', icon: BookOpen, section: 'books', tone: 'text-violet-400' },
+  { key: 'rule', label: '采集规则', icon: ScrollText, section: 'rules', tone: 'text-amber-400' },
+  { key: 'backup', label: '立即备份', icon: Download, section: 'backup', tone: 'text-sky-400' },
+]
 
 // ---------------- 图表主题色 ----------------
 const CHART_COLORS = {
@@ -206,39 +219,35 @@ function renderStatusLegend(value: string, entry: { payload?: unknown }) {
 export function Dashboard({ onNavigate }: DashboardProps) {
   const [stats, setStats] = useState<StatsData | null>(null)
   const [loading, setLoading] = useState(true)
+  const [lastUpdated, setLastUpdated] = useState<number | null>(null)
+  const [autoRefresh, setAutoRefresh] = useState(true)
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const load = useCallback(async (opts: { isFirst: boolean }) => {
+    if (opts.isFirst) setLoading(true)
     try {
       const data = await api.get<StatsData>('/api/admin/stats')
       setStats(data)
+      setLastUpdated(Date.now())
     } catch {
       // 静默失败, 卡片显示 0
     } finally {
-      setLoading(false)
+      if (opts.isFirst) setLoading(false)
     }
   }, [])
 
-  // 首次挂载拉取 (StrictMode 双挂载也安全: 不依赖外部 ref, 仅响应最新一次 setState)
+  // 首次挂载拉取 + 60s 自动刷新 (仅 tab 可见时触发, 不可见时跳过)
   useEffect(() => {
-    let cancelled = false
-    ;(async () => {
-      try {
-        const data = await api.get<StatsData>('/api/admin/stats')
-        if (!cancelled) setStats(data)
-      } catch {
-        // 静默失败
-      } finally {
-        if (!cancelled) setLoading(false)
+    load({ isFirst: true })
+    if (!autoRefresh) return
+    const t = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        load({ isFirst: false })
       }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [])
+    }, AUTO_REFRESH_MS)
+    return () => clearInterval(t)
+  }, [load, autoRefresh])
 
-  // tone=图标色 + glow=渐变光晕色(卡片右上角微光, feat-round-3 样式细节)
-  const cards = [
+  const cards = useMemo(() => [
     { key: 'books', label: '书籍', value: stats?.books ?? 0, icon: BookOpen, tone: 'text-violet-400', glow: 'from-violet-500/15', section: 'books' },
     {
       key: 'chapters',
@@ -264,7 +273,7 @@ export function Dashboard({ onNavigate }: DashboardProps) {
     { key: 'sites', label: '站点', value: stats?.sites ?? 0, icon: Globe, tone: 'text-teal-400', glow: 'from-teal-500/15', section: 'sites' },
     { key: 'tags', label: '下拉词', value: stats?.tags ?? 0, icon: Tag, tone: 'text-rose-400', glow: 'from-rose-500/15', section: 'books' },
     { key: 'downloads', label: '下载成品', value: stats?.downloads ?? 0, icon: Download, tone: 'text-orange-400', glow: 'from-orange-500/15', section: 'downloads' },
-  ]
+  ], [stats])
 
   // ---- 可视化数据准备 ----
   // 采集活动: 把 chaptersLast7d + booksLast7d 合并为一个数据集 {day, chapters, books}
@@ -328,13 +337,57 @@ export function Dashboard({ onNavigate }: DashboardProps) {
             <LayoutDashboard className="h-5 w-5 text-violet-400" />
             仪表盘
           </h2>
-          <p className="mt-0.5 text-xs text-zinc-500">书库与采集系统运行总览</p>
+          <p className="mt-0.5 text-xs text-zinc-500">
+            书库与采集系统运行总览
+            {lastUpdated && (
+              <span className="ml-2 text-zinc-600">
+                · 最近刷新 {new Date(lastUpdated).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+              </span>
+            )}
+          </p>
         </div>
-        <Button variant="outline" size="sm" className="h-9 gap-1.5 border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800" onClick={load}>
-          {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-          刷新数据
-        </Button>
+        <div className="flex items-center gap-2">
+          {/* 自动刷新开关 (feat-bb-2: 60s 自动轮询, tab 可见时才实际触发) */}
+          <label
+            className="flex cursor-pointer select-none items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"
+            title={autoRefresh ? `每 ${AUTO_REFRESH_MS / 1000}s 自动刷新 (tab 可见时)` : '点击开启自动刷新'}
+          >
+            <input
+              type="checkbox"
+              className="h-3 w-3 cursor-pointer accent-violet-500"
+              checked={autoRefresh}
+              onChange={(e) => setAutoRefresh(e.target.checked)}
+            />
+            自动
+          </label>
+          <Button variant="outline" size="sm" className="h-9 gap-1.5 border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800" onClick={() => load({ isFirst: false })} disabled={loading}>
+            {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+            刷新数据
+          </Button>
+        </div>
       </div>
+
+      {/* 快捷操作面板 (feat-bb-2: 一键跳转高频路径) */}
+      <Card className="border-zinc-800 bg-zinc-900/40">
+        <CardContent className="flex flex-wrap items-center gap-2 p-3">
+          <div className="flex items-center gap-1.5 text-xs font-medium text-zinc-400">
+            <Zap className="h-3.5 w-3.5 text-amber-400" />
+            快捷操作
+          </div>
+          <div className="h-4 w-px bg-zinc-700" />
+          {QUICK_ACTIONS.map((a) => (
+            <button
+              key={a.key}
+              type="button"
+              onClick={() => onNavigate?.(a.section)}
+              className="inline-flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-950/60 px-2.5 py-1 text-xs text-zinc-300 transition-colors hover:border-violet-500/60 hover:bg-zinc-900 hover:text-zinc-100"
+            >
+              <a.icon className={`h-3 w-3 ${a.tone}`} />
+              {a.label}
+            </button>
+          ))}
+        </CardContent>
+      </Card>
 
       {/* 系统健康 (auto-refresh 30s) */}
       <HealthCard onSessionExpired={() => setStats(null)} />
@@ -415,7 +468,8 @@ export function Dashboard({ onNavigate }: DashboardProps) {
                 stroke={CHART_COLORS.violet}
                 strokeWidth={2}
                 fill="url(#gChapters)"
-                isAnimationActive={false}
+                isAnimationActive
+                animationDuration={600}
               />
               <Area
                 type="monotone"
@@ -424,7 +478,8 @@ export function Dashboard({ onNavigate }: DashboardProps) {
                 stroke={CHART_COLORS.sky}
                 strokeWidth={2}
                 fill="url(#gBooks)"
-                isAnimationActive={false}
+                isAnimationActive
+                animationDuration={600}
               />
             </AreaChart>
           </ResponsiveContainer>
@@ -447,7 +502,8 @@ export function Dashboard({ onNavigate }: DashboardProps) {
                 innerRadius={56}
                 outerRadius={86}
                 paddingAngle={2}
-                isAnimationActive={false}
+                isAnimationActive
+                animationDuration={600}
               >
                 {statusDataWithPct.map((d) => (
                   <Cell key={d.status} fill={d.color} stroke="#18181b" strokeWidth={2} />
@@ -509,7 +565,7 @@ export function Dashboard({ onNavigate }: DashboardProps) {
                 formatter={(v: number) => [fmtWords(v), '字数']}
                 labelFormatter={(l: unknown) => `分类: ${String(l)}`}
               />
-              <Bar dataKey="words" fill="url(#gCatWords)" radius={[0, 3, 3, 0]} isAnimationActive={false} />
+              <Bar dataKey="words" fill="url(#gCatWords)" radius={[0, 3, 3, 0]} isAnimationActive animationDuration={600} />
             </BarChart>
           </ResponsiveContainer>
         </ChartCard>
@@ -547,7 +603,7 @@ export function Dashboard({ onNavigate }: DashboardProps) {
                 formatter={(v: number) => [v, '任务数']}
                 labelFormatter={(l: unknown) => `状态: ${String(l)}`}
               />
-              <Bar dataKey="count" radius={[0, 3, 3, 0]} isAnimationActive={false}>
+              <Bar dataKey="count" radius={[0, 3, 3, 0]} isAnimationActive animationDuration={600}>
                 {taskStatusData.map((d) => (
                   <Cell key={d.status} fill={d.color} />
                 ))}

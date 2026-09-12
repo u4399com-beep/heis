@@ -82,10 +82,24 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
         const raw = await readChapterTxt(exist.filePath)
         bodyText = raw ? raw.split('\n').slice(1).join('\n') : ''
       }
+      // agent-AA(R6-5 复检): 原子写 —— 先 .tmp 落盘, rename 到 full, 与 admin/books/batch
+      // t2s 路径同款。修前直接 fs.writeFile(full, ...) 与后续 db.chapter.update 之间存在窗口:
+      // DB update 抛错(并发级联删除 P2025 等)后, 文件已被改写但 DB 还指着旧标题/旧正文,
+      // 下次 GET 读到的就是新正文 + 旧标题(不一致状态)。原子 rename 在同分区是 POSIX 原子操作,
+      // 失败回滚 .tmp 即可。
+      const tmp = `${full}.tmp-${exist.id}-${Date.now()}`
       try {
-        await fs.writeFile(full, `${title}\n\n${bodyText}\n`, 'utf-8')
+        await fs.writeFile(tmp, `${title}\n\n${bodyText}\n`, 'utf-8')
       } catch {
+        try { await fs.rm(tmp, { force: true }) } catch { /* ignore */ }
         return fail('章节文件写入失败', 500)
+      }
+      try {
+        await fs.rename(tmp, full)
+      } catch {
+        // rename 失败极罕见(同分区权限/磁盘故障), 视为本次写失败但 DB 未更新, 清理 .tmp 后报错
+        try { await fs.rm(tmp, { force: true }) } catch { /* ignore */ }
+        return fail('章节文件写入失败(原子改名失败)', 500)
       }
     }
 

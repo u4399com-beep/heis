@@ -15,9 +15,11 @@ import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Label } from '@/components/ui/label'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { ConfirmDialog } from './ConfirmDialog'
 import {
   AlertTriangle,
+  CalendarClock,
   Database,
   Download,
   FileJson,
@@ -39,6 +41,14 @@ interface HistoryEntry {
 
 const HISTORY_KEY = 'heis-backup-history'
 const HISTORY_LIMIT = 5
+const LAST_EXPORT_KEY = 'heis-last-export'
+// 建议备份间隔: 7 天 (超过该阈值在顶部显示提醒)
+const STALE_BACKUP_DAYS = 7
+
+interface LastExport {
+  ts: number
+  estBytes: number
+}
 
 export function BackupSection() {
   const [stats, setStats] = useState<StatsData | null>(null)
@@ -56,6 +66,8 @@ export function BackupSection() {
 
   // ---- import history ----
   const [history, setHistory] = useState<HistoryEntry[]>([])
+  // feat-bb-2: 最近一次导出记录 (localStorage; 用于顶部「上次备份」提醒)
+  const [lastExport, setLastExport] = useState<LastExport | null>(null)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -77,7 +89,19 @@ export function BackupSection() {
     } catch {
       /* 忽略 localStorage 损坏 */
     }
+    try {
+      const raw = localStorage.getItem(LAST_EXPORT_KEY)
+      if (raw) setLastExport(JSON.parse(raw) as LastExport)
+    } catch {
+      /* 忽略 localStorage 损坏 */
+    }
   }, [])
+
+  // feat-bb-2: 备份过期提醒 (上次导出超过 STALE_BACKUP_DAYS 天)
+  const staleBackupDays = lastExport
+    ? Math.floor((Date.now() - lastExport.ts) / (24 * 60 * 60 * 1000))
+    : null
+  const isStale = staleBackupDays !== null && staleBackupDays >= STALE_BACKUP_DAYS
 
   /** 估算备份体积 (书籍 * 1.2 KB + 章节 * 1.5 KB + 其他基础 5 KB) */
   const estimatedBytes = (() => {
@@ -98,6 +122,14 @@ export function BackupSection() {
       // 用 location 触发整页跳转 (带 cookie), 比 fetch + Blob 简单且不占内存
       window.location.href = '/api/admin/backup'
       toast.success('开始导出数据库, 文件将通过浏览器下载')
+      // feat-bb-2: 记录本次导出时间到 localStorage (用于「上次备份」提醒)
+      const entry: LastExport = { ts: Date.now(), estBytes: estimatedBytes }
+      setLastExport(entry)
+      try {
+        localStorage.setItem(LAST_EXPORT_KEY, JSON.stringify(entry))
+      } catch {
+        /* 静默 */
+      }
     } finally {
       // 状态恢复: 等待浏览器开始跳转后清除按钮 loading
       setTimeout(() => setExporting(false), 1500)
@@ -214,6 +246,42 @@ export function BackupSection() {
         <p className="mt-0.5 text-xs text-zinc-500">
           一键导出全库为 JSON, 或从备份文件恢复; 支持合并 (保留现有) / 替换 (覆盖全部) 两种模式
         </p>
+      </div>
+
+      {/* feat-bb-2: 上次备份时间 + 自动提醒 */}
+      <div className="flex flex-wrap items-center gap-2">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Badge variant="outline" className="cursor-help border-zinc-700 bg-zinc-900/60 text-xs text-zinc-300">
+              <CalendarClock className="h-3 w-3 text-violet-400" />
+              {lastExport
+                ? `上次备份: ${new Date(lastExport.ts).toLocaleString('zh-CN')} · 估算 ${formatBytes(lastExport.estBytes)}`
+                : '本地未记录备份历史'}
+            </Badge>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" className="text-xs">
+            <div>记录于浏览器 localStorage, 仅本机可见</div>
+            <div className="text-zinc-400">建议每周备份一次, 重大变更前主动备份</div>
+          </TooltipContent>
+        </Tooltip>
+        {isStale && staleBackupDays !== null && (
+          <Badge variant="outline" className="border-amber-500/40 bg-amber-500/10 text-xs text-amber-300">
+            <AlertTriangle className="h-3 w-3" />
+            {staleBackupDays >= 30 ? `已 ${staleBackupDays} 天未备份, 强烈建议立即备份` : `已 ${staleBackupDays} 天未备份, 建议再次备份`}
+          </Badge>
+        )}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Badge variant="outline" className="cursor-help border-zinc-700 bg-zinc-900/60 text-xs text-zinc-400">
+              <CalendarClock className="h-3 w-3" />
+              建议每 7 天备份一次
+            </Badge>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" className="text-xs">
+            <div>当前未启用服务端定时备份</div>
+            <div className="text-zinc-400">可手动定期访问本页发起导出</div>
+          </TooltipContent>
+        </Tooltip>
       </div>
 
       {/* 顶部统计 + 估算 */}

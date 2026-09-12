@@ -1187,6 +1187,340 @@ export function adaptiveMinGapMs(url: string, baseMs: number): number {
   return baseMs
 }
 
+// ============================================================
+// agent-Z-crawl-phase6: per-host HTTP keep-alive 池 + HTTP/2 多路复用 + TLS 会话恢复
+// ------------------------------------------------------------
+// 背景(反反爬核心): 真实浏览器对同源站点的请求会复用同一 TCP+TLS 连接(keep-alive),
+// 同一 tab 内的所有请求(HTML/CSS/JS/图片/AJAX)共享连接, 并在 h2 站点上多路复用
+// (单连接多 stream 并发)。Node 全局 fetch(undici)默认 keepAliveTimeout=4s, 采集间隔
+// 超过 4s 就被拆成新连接 → 每次都走完整 TLS 握手, 给 WAF 多次 JA3 采样机会 + 显著
+// 增加首字节延迟(TLS 握手 1 RTT + TCP 1 RTT)。本层显式建 per-host undici Agent:
+//  - keepAliveTimeout=30s(覆盖典型采集间隔, 让连接跨请求复用)
+//  - keepAliveMaxTimeout=60s(硬上限, 防僵尸连接长期占资源)
+//  - connections=10 per host(允许 10 并发, 与 hostGateLimit 同量级)
+//  - TLS 会话恢复: Node TLS 层自动缓存 session(按 host:port), 复用连接时无需重握手;
+//    即使新建连接也会用缓存的 session ticket(RFC 5077), 减少 ClientHello 采样窗口
+//  - HTTP/2(h2Pool=true 时): allowH2 让 undici 走 ALPN 协商, h2 站点单连接多 stream 并发
+//    (真实浏览器 tab 同时取多资源的语义); 默认关闭(零回归), 与既有 native 链 h2='off'
+//    设计一致 —— Node undici 的 h2 SETTINGS 帧指纹与 Chrome 不完全一致, JA3-strict WAF
+//    场景应保持 h1-keep-alive
+//
+// 代理/relay 路径不启用: 代理自身管理连接池(本层 Agent 与 proxy 选项叠加会冲突);
+// relay 是 localhost 单跳, 无 TLS 可复用
+//
+// Bun 运行时: undici 模块不可用(全局 fetch 是 Bun 原生), import('undici') 失败 →
+// 静默降级为全局 fetch(Bun 自身已 keep-alive + h2, 无副作用)。零回归
+//
+// 容量与回收:
+//  - 上限 100 origin(站群场景防 OOM; 每 origin 一条 Agent ~KB 级)
+//  - FIFO + 空闲超 5min 主动 close 释放底层 socket(防进程长生命周期内累积僵尸 Agent)
+//  - HMR 经 globalThis 复用, 防模块重载丢失池
+// ============================================================
+const HOST_DISPATCHER_MAX = 100
+const HOST_DISPATCHER_IDLE_MS = 5 * 60_000
+interface HostDispatcherEntry {
+  /** undici Agent/Pool 实例(any 防 type-only import 失败); null=不可用(降级全局 fetch) */
+  dispatcher: any
+  origin: string
+  /** 创建时刻 */
+  at: number
+  /** 最后使用时刻(用于空闲淘汰) */
+  lastUsedAt: number
+}
+const globalForHostDisp = globalThis as unknown as {
+  __novelHostDispatcher_v1?: Map<string, HostDispatcherEntry>
+  __novelHostDispatcherPruneAt_v1?: number
+}
+const hostDispatcherMap: Map<string, HostDispatcherEntry> = globalForHostDisp.__novelHostDispatcher_v1 ?? new Map()
+globalForHostDisp.__novelHostDispatcher_v1 = hostDispatcherMap
+
+/** undici 模块惰性加载缓存: null=未加载/false=加载失败(永久降级)/object=加载成功 */
+let undiciModule: any | null = null
+let undiciModuleLoaded = false
+async function loadUndici(): Promise<any | null> {
+  if (undiciModuleLoaded) return undiciModule
+  undiciModuleLoaded = true
+  try {
+    undiciModule = await import('undici')
+    if (!undiciModule?.Agent) {
+      undiciModule = null
+    }
+  } catch {
+    undiciModule = null
+  }
+  return undiciModule
+}
+
+/** 空闲 Agent 淘汰: 距上次使用 >5min 主动 close 释放底层 socket。
+ *  节流 60s(防高频 getHostDispatcher 调用扫全表); Map size <阈值跳过(单 origin 无回收必要) */
+function pruneHostDispatchers(): void {
+  const now = Date.now()
+  if (now - (globalForHostDisp.__novelHostDispatcherPruneAt_v1 ?? 0) < 60_000) return
+  globalForHostDisp.__novelHostDispatcherPruneAt_v1 = now
+  if (hostDispatcherMap.size < 8) return // 少量 origin 不必回收, 复用价值高于节省
+  const stale: string[] = []
+  for (const [origin, entry] of hostDispatcherMap) {
+    if (now - entry.lastUsedAt > HOST_DISPATCHER_IDLE_MS) stale.push(origin)
+  }
+  for (const origin of stale) {
+    const entry = hostDispatcherMap.get(origin)
+    if (entry) {
+      try { entry.dispatcher?.close?.(() => {}) } catch { /* ignore */ }
+      try { entry.dispatcher?.destroy?.(() => {}) } catch { /* ignore */ }
+    }
+    hostDispatcherMap.delete(origin)
+  }
+}
+
+/** 获取(或创建)某 origin 的 per-host undici Agent。
+ *  返回 null 表示不可用(undici 缺失/URL 解析失败/非 http(s)), 调用方降级为全局 fetch。
+ *  opts.h2=true 时启用 ALPN h2 协商(需 cfg.h2Pool=true, 默认 false) */
+async function getHostDispatcher(url: string, opts?: { h2?: boolean }): Promise<any | null> {
+  let origin = ''
+  try { origin = new URL(url).origin } catch { return null }
+  if (!origin || !/^https?:\/\//.test(origin)) return null
+  const undici = await loadUndici()
+  if (!undici?.Agent) return null
+  const now = Date.now()
+  const existing = hostDispatcherMap.get(origin)
+  if (existing) {
+    existing.lastUsedAt = now
+    return existing.dispatcher
+  }
+  try {
+    // undici Agent 自动 per-origin Pool 管理; keepAliveTimeout 长于默认 4s 让采集间隔内连接复用
+    const dispatcher = new undici.Agent({
+      connections: 10,                 // per-host 并发上限(与 hostGateLimit 同量级)
+      keepAliveTimeout: 30_000,        // 30s 空闲才关(默认 4s 过短, 采集间隔常 >4s)
+      keepAliveMaxTimeout: 60_000,     // 硬上限 60s, 防僵尸连接
+      pipelining: 1,                   // 1=禁用 HTTP/1.1 pipelining(已废弃, 1=纯 keep-alive)
+      // allowH2=true 时 undici 走 ALPN 协商 h2(单连接多 stream 并发, 真实浏览器 tab 语义)
+      // 默认 false(零回归, 与既有 native 链 h2='off' 设计一致; Node h2 SETTINGS 帧指纹与 Chrome 不一致)
+      ...(opts?.h2 === true ? { allowH2: true } : {}),
+      connect: {
+        timeout: 10_000,
+        // TLS 会话恢复: Node TLS 层自动缓存 session(按 host:port), 复用连接无需重握手;
+        // 新建连接也用 session ticket(RFC 5077), 无需在此显式配置
+      },
+    })
+    // FIFO + 空闲淘汰: 上限 100 origin(站群防 OOM)
+    if (hostDispatcherMap.size >= HOST_DISPATCHER_MAX) {
+      let oldestKey: string | null = null
+      let oldestTime = Infinity
+      for (const [k, v] of hostDispatcherMap) {
+        if (v.lastUsedAt < oldestTime) { oldestTime = v.lastUsedAt; oldestKey = k }
+      }
+      if (oldestKey) {
+        const old = hostDispatcherMap.get(oldestKey)
+        if (old) {
+          try { old.dispatcher?.close?.(() => {}) } catch { /* ignore */ }
+          try { old.dispatcher?.destroy?.(() => {}) } catch { /* ignore */ }
+        }
+        hostDispatcherMap.delete(oldestKey)
+      }
+    }
+    hostDispatcherMap.set(origin, { dispatcher, origin, at: now, lastUsedAt: now })
+    pruneHostDispatchers()
+    registerHostDispatcherExitHooks()
+    return dispatcher
+  } catch {
+    return null
+  }
+}
+
+/** 诊断导出: 返回 per-host 池当前状态(供 admin/snapshot 端点 + 测试脚本) */
+export function hostDispatcherSnapshot(): { size: number; origins: { origin: string; lastUsedAt: number }[] } {
+  const origins: { origin: string; lastUsedAt: number }[] = []
+  for (const [origin, entry] of hostDispatcherMap) {
+    origins.push({ origin, lastUsedAt: entry.lastUsedAt })
+  }
+  return { size: hostDispatcherMap.size, origins }
+}
+
+/** 进程退出钩子注册(幂等): 关闭所有 per-host dispatcher 释放底层 socket。
+ *  undici Agent 内部也有 close-on-exit, 但显式 close 更可靠(防 socket 泄漏进 TIME_WAIT) */
+let hostDispatcherHooksRegistered = false
+function registerHostDispatcherExitHooks(): void {
+  if (hostDispatcherHooksRegistered) return
+  hostDispatcherHooksRegistered = true
+  try {
+    process.once('exit', () => { void closeAllHostDispatchers() })
+    process.once('SIGINT', () => { void closeAllHostDispatchers().finally(() => process.exit(0)) })
+    process.once('SIGTERM', () => { void closeAllHostDispatchers().finally(() => process.exit(0)) })
+  } catch { /* 某些运行时只读, 忽略 */ }
+}
+
+/** 测试/运维导出: 关闭所有 dispatcher(进程退出前 / shutdownObscura 同口径调用) */
+export async function closeAllHostDispatchers(): Promise<void> {
+  const entries = Array.from(hostDispatcherMap.values())
+  hostDispatcherMap.clear()
+  await Promise.allSettled(entries.map((e) => {
+    try { return e.dispatcher?.close?.(() => {}) } catch { return Promise.resolve() }
+  }))
+  await Promise.allSettled(entries.map((e) => {
+    try { return e.dispatcher?.destroy?.(() => {}) } catch { return Promise.resolve() }
+  }))
+}
+
+// ============================================================
+// agent-Z-crawl-phase6: 指纹一致性校验(诊断能力)
+// ------------------------------------------------------------
+// 场景: fingerprintHeadersFor 按 UA 推导 sec-ch-ua 系列头组, 但若 cfg.headers 显式
+// 覆盖了 sec-ch-ua(操作员误配/规则迁移残留)而 UA 未相应调整, 会形成"UA 版本与
+// sec-ch-ua 版本不一致"的反向破绽 —— WAF 据此秒判为爬虫。本函数供 admin/rules/test
+// 端点在保存规则前做静态校验, 命中即给出可读警告(不阻断保存, 由操作员决定是否修正)
+// ============================================================
+
+/** 校验 UA 与 headers 中的 Client Hints 头是否自洽(诊断, 不抛错)。
+ *  返回 warnings 数组(空数组=一致)。规则配置端可据此在 UI 高亮可疑配置 */
+export function verifyFingerprintConsistency(
+  ua: string,
+  headers?: Record<string, string>,
+): string[] {
+  const warnings: string[] = []
+  if (!ua) {
+    warnings.push('UA 为空, 无法推导 Client Hints 头组')
+    return warnings
+  }
+  const family = uaFamilyOf(ua)
+  // Safari 不发 Client Hints; 若显式配置了 sec-ch-ua*, 与 Safari UA 自相矛盾
+  if (family === 'safari') {
+    if (headers) {
+      for (const k of Object.keys(headers)) {
+        if (/^sec-ch-ua/i.test(k)) {
+          warnings.push(`UA 为 Safari 系但 headers 配置了 ${k}; Safari 不发送 Client Hints, 此为反向破绽`)
+        }
+      }
+    }
+    return warnings
+  }
+  // Chromium 系: 校验 sec-ch-ua 品牌版本与 UA 版本一致
+  if (family === 'chromium') {
+    const cv = ua.match(CHROME_VER_RE)?.[1] || ''
+    const ev = ua.match(EDGE_VER_RE)?.[1] || ''
+    if (headers) {
+      for (const [k, v] of Object.entries(headers)) {
+        if (/^sec-ch-ua$/i.test(k) && cv) {
+          // 提取所有 v="X" 版本号(如 "Chromium";v="137" 中的 137), 校验主版本与 UA Chrome 版本一致
+          const brandVersions = [...v.matchAll(/v="(\d+)"/g)].map((m) => m[1])
+          if (brandVersions.length && !brandVersions.includes(cv)) {
+            warnings.push(`sec-ch-ua 品牌版本(v=${brandVersions.join(',')}) 与 UA Chrome/${cv} 不一致`)
+          }
+        }
+        if (/^sec-ch-ua-mobile$/i.test(k)) {
+          const expectMobile = isMobileUa(ua) ? '?1' : '?0'
+          if (v.trim() !== expectMobile) {
+            warnings.push(`sec-ch-ua-mobile=${v.trim()} 与 UA 移动性(${expectMobile})不一致`)
+          }
+        }
+        if (/^sec-ch-ua-platform$/i.test(k)) {
+          const expectPlatform = `"${uaPlatformHint(ua)}"`
+          if (v.trim() !== expectPlatform) {
+            warnings.push(`sec-ch-ua-platform=${v.trim()} 与 UA 平台(${expectPlatform})不一致`)
+          }
+        }
+        // Edge UA 应有 sec-ch-ua 含 "Microsoft Edge" 品牌; 非 Edge UA 不应有
+        if (/^sec-ch-ua$/i.test(k) && ev && !/Microsoft Edge/i.test(v)) {
+          warnings.push('UA 为 Edge 系但 sec-ch-ua 缺少 "Microsoft Edge" 品牌')
+        }
+      }
+    }
+  }
+  // Firefox 不发 sec-ch-ua, 但发 Sec-Fetch-*; 校验 Sec-Fetch-* 头值在合法枚举内
+  if (family === 'firefox' && headers) {
+    for (const [k, v] of Object.entries(headers)) {
+      if (/^sec-fetch-mode$/i.test(k) && v.trim() !== 'navigate') {
+        warnings.push(`Firefox Sec-Fetch-Mode=${v.trim()} 非常规值(导航请求=navigate)`)
+      }
+    }
+  }
+  return warnings
+}
+
+// ============================================================
+// agent-Z-crawl-phase6: 智能引擎选择(站点类型自动探测)
+// ------------------------------------------------------------
+// 场景: 规则配置时操作员未必清楚目标站是纯 API(JSON 接口) / 静态 HTML / AJAX SPA。
+// 选错引擎会浪费资源: API 站走 browser=慢且无意义; SPA 走 http=拿不到 JS 渲染后的内容。
+// 本函数据 URL 模式 + 采样响应(Content-Type + body 首段)启发式判断站点类型, 供规则
+// 配置端"自动推荐引擎"或引擎层 auto 模式预选(减少首轮 HTTP 试探)。
+//
+// 判定逻辑(优先级从高到低):
+//  1. URL 模式: /api/ / .json / 含 ?callback= → 倾向 api
+//  2. Content-Type: application/json → api; text/html → html/spa(需进一步判)
+//  3. HTML 首段: 含 <div id="root">/<div id="app">/极短 + 引用 react/vue/angular 框架 → spa
+//  4. HTML 含正常 <article>/<p> 文本且较长 → html(服务端渲染)
+//  5. 无法判定 → unknown(交回 auto 引擎既有探测链)
+// ============================================================
+
+/** 站点类型分类 */
+export type SiteType = 'api' | 'html' | 'spa' | 'unknown'
+
+/** 据 URL 模式 + 采样响应启发式判断站点类型。
+ *  - url: 目标 URL(用于路径模式匹配)
+ *  - sampleHtml: 采样响应体(可选; 首段 4KB 足够判定)
+ *  - contentType: 采样响应 Content-Type 头(可选)
+ *  返回 'api' / 'html' / 'spa' / 'unknown' */
+export function detectSiteType(
+  url: string,
+  sampleHtml?: string,
+  contentType?: string,
+): SiteType {
+  // 1. URL 模式: /api/ / .json / 含 ?callback=JSONP → 倾向 api
+  let path = ''
+  let query = ''
+  try {
+    const u = new URL(url)
+    path = u.pathname.toLowerCase()
+    query = u.search.toLowerCase()
+  } catch {
+    // URL 解析失败: 退回 unknown
+    return 'unknown'
+  }
+  if (/\/api\/|\.json$|\.json[?#]/.test(path)) return 'api'
+  if (/callback=|jsonp=/i.test(query)) return 'api'
+
+  // 2. Content-Type: application/json → api
+  const ct = (contentType || '').toLowerCase()
+  if (ct.includes('application/json')) return 'api'
+  if (ct.includes('text/html') || ct.includes('application/xhtml')) {
+    // 继续 HTML/SPA 判定
+  } else if (ct && !ct.includes('text/html') && !ct.includes('application/xhtml')) {
+    // 非 HTML 非 JSON 的 Content-Type(如 image/): unknown
+    return 'unknown'
+  }
+
+  // 3-4. HTML 内容判定
+  if (!sampleHtml) return 'unknown'
+  const head = sampleHtml.length > 4096 ? sampleHtml.slice(0, 4096) : sampleHtml
+  const headLower = head.toLowerCase()
+
+  // SPA 特征: 极短 HTML + 框架挂载点(典型 React/Vue/Angular CSR 壳)
+  const hasRootMount = /<div[^>]+id=["']?(root|app|__next|__nuxt)["']?/.test(headLower)
+  const hasFrameworkScript = /react|vue|angular|next\.js|nuxt|svelte/.test(headLower)
+  // SPA 壳通常 <2KB(只有 <div id="root"></div> + <script src="bundle.js">)
+  if (hasRootMount && (head.length < 2048 || hasFrameworkScript)) return 'spa'
+
+  // 静态 HTML: 含 <article>/<p>/<table> 等内容标签且长度足够(服务端渲染的章节/列表)
+  const hasContentTags = /<(article|p|table|ul|ol|div class=["']?[^"']*(content|chapter|list|book))/.test(headLower)
+  if (head.length >= 1200 && hasContentTags) return 'html'
+
+  // 短 HTML 且无内容标签: 可能是 SPA 壳或挑战页, 标 unknown 让引擎层进一步判
+  if (head.length < 500) return 'unknown'
+
+  // 中等长度 + 有框架脚本但无 root mount: 不确定, 标 unknown
+  if (hasFrameworkScript && !hasContentTags) return 'unknown'
+
+  return 'html'
+}
+
+/** 据 siteType 推荐引擎: api/html → http; spa → browser; unknown → auto(既有默认) */
+export function recommendEngineForSite(siteType: SiteType): 'auto' | 'http' | 'browser' {
+  if (siteType === 'api' || siteType === 'html') return 'http'
+  if (siteType === 'spa') return 'browser'
+  return 'auto'
+}
+
 // ---------- 浏览器渲染 (Playwright, 惰性加载) ----------
 let browserAvailable: boolean | null = null
 let browserCheckedAt = 0
@@ -2016,8 +2350,9 @@ export function pickProxyFor(url: string, cfg: FetchConfig): string {
     // undefined / 'random' = 随机(原行为; agent-K: 用 sorted 让 unhealthy 排后但仍可能选到)
     // 健康优先: 80% 概率从 healthy/unknown 池(random 倾向健康), 20% 概率从全部 available(避免死锁 + 给 unhealthy 一次恢复机会)
     const nonUnhealthy = sorted.filter((p) => getProxyState(p).healthStatus !== 'unhealthy')
-    const pool = nonUnhealthy.length > 0 && Math.random() < 0.8 ? nonUnhealthy : available
-    pick = pool[Math.floor(Math.random() * pool.length)]
+    // agent-Z: 重命名为 candidatePool 消除与外层 pool(parseProxyPool 结果)的变量遮蔽
+    const candidatePool = nonUnhealthy.length > 0 && Math.random() < 0.8 ? nonUnhealthy : available
+    pick = candidatePool[Math.floor(Math.random() * candidatePool.length)]
   }
   markProxyUsed(pick)
   return pick
@@ -2187,8 +2522,15 @@ async function fetchHttp(url: string, cfg: FetchConfig, ua: string, proxy = '', 
       const headers = buildHeaders(hopUrl, cfg, ua, { fingerprint: true, refererOverride })
       // 出口代理逐跳同代理(会话连贯性/出口固定); 交叉类型携带非标准 proxy 字段
       // (Bun 运行时扩展生效, 不依赖 bun-types 全局声明)
-      const init: RequestInit & { proxy?: string } = { headers, redirect: 'manual', signal: controller.signal }
+      const init: RequestInit & { proxy?: string; dispatcher?: unknown } = { headers, redirect: 'manual', signal: controller.signal }
       if (proxy) init.proxy = proxy
+      // agent-Z-crawl-phase6: per-host keep-alive 池(opt-in, cfg.keepAlivePool=true)。
+      // 代理路径不启用(代理自身管理连接池); relay 路径不启用(localhost 单跳)。
+      // undici 不可用(Bun 运行时)时静默降级为全局 fetch(Bun 自身已 keep-alive + h2)
+      if (!proxy && transport === 'native' && cfg.keepAlivePool === true) {
+        const dispatcher = await getHostDispatcher(hopUrl, { h2: cfg.h2Pool === true })
+        if (dispatcher) init.dispatcher = dispatcher
+      }
       // gg 中继桥: transport='relay' 时逐跳经 bun 中继服务发起(响应重组为 Response 形态,
       // status/location/getSetCookie/arrayBuffer 全保持 —— 逐跳重定向/Cookie 收集/超时/
       // 指纹头组语义全部复用本循环, 与 native 传输唯一差异在底层传输介质)

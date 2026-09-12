@@ -22,6 +22,7 @@ import {
 } from '@/components/ui/select'
 import { ConfirmDialog } from './ConfirmDialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Download, FileDown, Loader2, RefreshCw, Sparkles, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import {
@@ -229,6 +230,24 @@ export function DownloadsSection({ preselectBookId, onConsumedPreselect }: Downl
   }
 
   const selectedBook = useMemo(() => books.find((b) => b.id === bookId), [books, bookId])
+
+  // feat-bb-2: 估算任务输出文件大小 — 根据书籍总字数 × 3 字节(UTF-8 中文)
+  // books state 含 wordCount, 与该任务的 bookId 匹配后估算
+  const estimateSize = useCallback((bookIdLookup: string): number | null => {
+    const b = books.find((x) => x.id === bookIdLookup)
+    if (!b || !b.wordCount) return null
+    // 中文 UTF-8 约 3 字节/字, 额外 5% 余量考虑模板/广告插入
+    return Math.round(b.wordCount * 3 * 1.05)
+  }, [books])
+
+  // feat-bb-2: 运行中任务的已耗时 (基于 createdAt, 实时更新)
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const hasActive = jobs.some((j) => j.status === 'pending' || j.status === 'running')
+    if (!hasActive) return
+    const t = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [jobs])
 
   const JOB_STATUS: Record<string, { label: string; className: string }> = {
     pending: { label: '排队中', className: 'bg-zinc-700/60 text-zinc-300 border-zinc-600' },
@@ -443,6 +462,11 @@ export function DownloadsSection({ preselectBookId, onConsumedPreselect }: Downl
                   {jobs.map((j) => {
                     const meta = JOB_STATUS[j.status] || JOB_STATUS.pending
                     const opts = safeJsonParse<DownloadJobOptions>(j.options, {})
+                    // feat-bb-2: 估算输出大小 (仅 pending/running 时展示)
+                    const estBytes = (j.status === 'pending' || j.status === 'running') ? estimateSize(j.bookId) : null
+                    // feat-bb-2: 已耗时 (仅 running 时展示)
+                    const elapsedMs = j.status === 'running' ? Math.max(0, now - new Date(j.createdAt).getTime()) : 0
+                    const elapsedSec = Math.floor(elapsedMs / 1000)
                     return (
                       <TableRow key={j.id} className="border-zinc-800/70">
                         <TableCell className="pr-0">
@@ -472,8 +496,36 @@ export function DownloadsSection({ preselectBookId, onConsumedPreselect }: Downl
                               {j.error || ''}
                             </div>
                           )}
+                          {/* feat-bb-2: running 状态展示已耗时 */}
+                          {j.status === 'running' && elapsedSec > 0 && (
+                            <div className="mt-1 text-[10px] text-zinc-500" title="任务创建后已耗时, 仅作参考">
+                              已耗时 {elapsedSec >= 60 ? `${Math.floor(elapsedSec / 60)}分` : ''}{elapsedSec % 60}秒
+                            </div>
+                          )}
+                          {/* feat-bb-2: running 状态展示不确定进度条 */}
+                          {j.status === 'running' && (
+                            <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-zinc-800" aria-hidden>
+                              <div className="h-full w-1/3 animate-pulse rounded-full bg-gradient-to-r from-violet-500 to-fuchsia-400" />
+                            </div>
+                          )}
                         </TableCell>
-                        <TableCell className="font-mono text-xs text-zinc-400">{j.size ? fmtBytes(j.size) : '-'}</TableCell>
+                        <TableCell className="font-mono text-xs text-zinc-400">
+                          {j.size ? (
+                            <span title="实际成品文件大小">{fmtBytes(j.size)}</span>
+                          ) : estBytes ? (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span className="cursor-help text-zinc-500">≈ {fmtBytes(estBytes)}</span>
+                              </TooltipTrigger>
+                              <TooltipContent side="top" className="text-xs">
+                                <div>预估输出大小</div>
+                                <div className="text-zinc-400">基于书籍字数 × 3 字节估算, 实际以模板/广告插入为准</div>
+                              </TooltipContent>
+                            </Tooltip>
+                          ) : (
+                            <span className="text-zinc-600">-</span>
+                          )}
+                        </TableCell>
                         <TableCell className="hidden text-xs text-zinc-500 sm:table-cell">{fmtDateTime(j.createdAt)}</TableCell>
                         <TableCell className="text-right">
                           <div className="flex justify-end gap-0.5">

@@ -13,6 +13,7 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import {
   Table,
   TableBody,
@@ -37,7 +38,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { ConfirmDialog } from './ConfirmDialog'
-import { Link2, Loader2, Pencil, Plus, RefreshCw, Save, Trash2 } from 'lucide-react'
+import { ArrowDown, ArrowUp, CheckCircle2, Link2, Loader2, Pencil, Plus, RefreshCw, Save, Trash2, Wifi, XCircle } from 'lucide-react'
 import { toast } from 'sonner'
 import { api, safeJsonParse } from './helpers'
 
@@ -137,6 +138,15 @@ export function LinksSection() {
   const [deleting, setDeleting] = useState<LinkRow | null>(null)
   const [togglingId, setTogglingId] = useState<string | null>(null)
 
+  // feat-bb-2: 本地拖拽重排状态 — localOrder 与 links 同步但允许手动调整; orderDirty=true 时显示「保存排序」
+  const [localOrder, setLocalOrder] = useState<LinkRow[]>([])
+  const [orderSaving, setOrderSaving] = useState(false)
+
+  // feat-bb-2: 链接健康检测 — reachable=可达 / unreachable=不可达 / checking=检测中
+  // (no-cors 模式下拿不到 HTTP 状态, 只能区分网络可达 vs 不可达)
+  const [health, setHealth] = useState<Record<string, 'reachable' | 'unreachable' | 'checking'>>({})
+  const [checkingAll, setCheckingAll] = useState(false)
+
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<LinkRow | null>(null)
   const [form, setForm] = useState<LinkForm>(emptyForm)
@@ -149,7 +159,9 @@ export function LinksSection() {
         api.get<LinkRow[]>('/api/admin/links'),
         api.get<Record<string, unknown>>('/api/admin/settings'),
       ])
-      setLinks(Array.isArray(rows) ? rows : [])
+      const safeRows = Array.isArray(rows) ? rows : []
+      setLinks(safeRows)
+      setLocalOrder(safeRows)
       // settings.linkwheel 可能为字符串(JSON)或对象
       const raw = settings?.linkwheel
       const parsed = typeof raw === 'string' ? safeJsonParse<unknown>(raw, null) : raw
@@ -164,6 +176,86 @@ export function LinksSection() {
   useEffect(() => {
     load()
   }, [load])
+
+  // feat-bb-2: 本地重排后的顺序与原始 links 不同时认为「已修改」
+  const orderDirty = useMemo(() => {
+    if (localOrder.length !== links.length) return false
+    for (let i = 0; i < localOrder.length; i++) {
+      if (localOrder[i].id !== links[i].id) return true
+      if (localOrder[i].sortOrder !== i) return true
+    }
+    return false
+  }, [localOrder, links])
+
+  // feat-bb-2: 上移/下移 — 仅调整本地顺序; 保存时才提交服务端
+  const moveLink = useCallback((index: number, dir: -1 | 1) => {
+    setLocalOrder((prev) => {
+      if (index < 0 || index >= prev.length) return prev
+      const target = index + dir
+      if (target < 0 || target >= prev.length) return prev
+      const next = [...prev]
+      const tmp = next[index]
+      next[index] = next[target]
+      next[target] = tmp
+      return next
+    })
+  }, [])
+
+  const resetOrder = useCallback(() => {
+    setLocalOrder(links)
+  }, [links])
+
+  const saveOrder = useCallback(async () => {
+    setOrderSaving(true)
+    try {
+      // 并发 PUT 每个排序变更项; 失败不阻断其他项, 最后汇总提示
+      const updates = localOrder.map((l, idx) => ({ id: l.id, sortOrder: idx }))
+      const results = await Promise.allSettled(
+        updates.map((u) => api.put('/api/admin/links', u)),
+      )
+      const failed = results.filter((r) => r.status === 'rejected').length
+      if (failed > 0) {
+        toast.warning(`排序保存完成, ${failed} 项失败`)
+      } else {
+        toast.success(`已保存 ${updates.length} 条友链排序`)
+      }
+      await load()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '保存排序失败')
+    } finally {
+      setOrderSaving(false)
+    }
+  }, [localOrder, load])
+
+  // feat-bb-2: 链接健康检测 — no-cors fetch (拿不到 HTTP 状态, 但能区分网络可达 vs DNS/连接失败)
+  const checkLink = useCallback(async (l: LinkRow) => {
+    setHealth((prev) => ({ ...prev, [l.id]: 'checking' }))
+    try {
+      const ctrl = new AbortController()
+      const timer = setTimeout(() => ctrl.abort(), 5_000)
+      try {
+        await fetch(l.url, { mode: 'no-cors', signal: ctrl.signal, cache: 'no-store' })
+        setHealth((prev) => ({ ...prev, [l.id]: 'reachable' }))
+      } finally {
+        clearTimeout(timer)
+      }
+    } catch {
+      setHealth((prev) => ({ ...prev, [l.id]: 'unreachable' }))
+    }
+  }, [])
+
+  const checkAllLinks = useCallback(async () => {
+    if (links.length === 0) return
+    setCheckingAll(true)
+    // 并发上限 4 (避免浏览器同时发起过多请求被节流)
+    const CONCURRENCY = 4
+    for (let i = 0; i < links.length; i += CONCURRENCY) {
+      const batch = links.slice(i, i + CONCURRENCY)
+      await Promise.all(batch.map((l) => checkLink(l)))
+    }
+    setCheckingAll(false)
+    toast.success('已完成可达性检测')
+  }, [links, checkLink])
 
   // ---------------- 链轮设置 ----------------
 
@@ -375,6 +467,21 @@ export function LinksSection() {
         </div>
       )}
 
+      {/* feat-bb-2: 排序保存 + 全部检测条 (仅在本地顺序调整后显示) */}
+      {(orderDirty || orderSaving) && (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+          <span>排序已修改, 未保存</span>
+          <div className="mx-1 h-4 w-px bg-amber-500/40" />
+          <Button size="sm" variant="outline" className="h-7 gap-1 border-amber-500/40 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20" onClick={saveOrder} disabled={orderSaving}>
+            {orderSaving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
+            保存排序
+          </Button>
+          <Button size="sm" variant="ghost" className="h-7 text-amber-200/70 hover:text-amber-200" onClick={resetOrder} disabled={orderSaving}>
+            撤销
+          </Button>
+        </div>
+      )}
+
       {/* 友链表格 */}
       {loading ? (
         <div className="flex items-center justify-center py-16 text-sm text-zinc-500">
@@ -387,6 +494,14 @@ export function LinksSection() {
         </Card>
       ) : (
         <div className="overflow-hidden rounded-lg border border-zinc-800">
+          {/* feat-bb-2: 可达性检测头部条 */}
+          <div className="flex items-center justify-between gap-2 border-b border-zinc-800 bg-zinc-900/40 px-3 py-2">
+            <span className="text-[11px] text-zinc-500">共 {links.length} 条友链</span>
+            <Button size="sm" variant="outline" className="h-7 gap-1 border-zinc-700 bg-zinc-900 text-xs text-zinc-300 hover:bg-zinc-800" onClick={checkAllLinks} disabled={checkingAll || links.length === 0}>
+              {checkingAll ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wifi className="h-3 w-3" />}
+              全部检测可达性
+            </Button>
+          </div>
           <Table>
             <TableHeader>
               <TableRow className="border-zinc-800 bg-zinc-900/80 hover:bg-zinc-900/80">
@@ -399,56 +514,98 @@ export function LinksSection() {
                 </TableHead>
                 <TableHead className="text-zinc-400">名称</TableHead>
                 <TableHead className="text-zinc-400">地址</TableHead>
+                <TableHead className="w-20 text-zinc-400">可达</TableHead>
                 <TableHead className="w-20 text-zinc-400">排序</TableHead>
                 <TableHead className="w-20 text-zinc-400">状态</TableHead>
-                <TableHead className="w-28 text-right text-zinc-400">操作</TableHead>
+                <TableHead className="w-36 text-right text-zinc-400">操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {links.map((l) => (
-                <TableRow key={l.id} className={`border-zinc-800 ${l.enabled ? '' : 'opacity-55'}`}>
-                  <TableCell>
-                    <Checkbox
-                      checked={selected.has(l.id)}
-                      onCheckedChange={(v) =>
-                        setSelected((prev) => {
-                          const n = new Set(prev)
-                          if (v === true) n.add(l.id)
-                          else n.delete(l.id)
-                          return n
-                        })
-                      }
-                      aria-label={`选择 ${l.name}`}
-                    />
-                  </TableCell>
-                  <TableCell className="max-w-40 truncate font-medium text-zinc-100" title={l.name}>
-                    {l.name}
-                  </TableCell>
-                  <TableCell className="max-w-72 truncate font-mono text-xs text-zinc-400" title={l.url}>
-                    {l.url}
-                  </TableCell>
-                  <TableCell className="text-xs text-zinc-400">{l.sortOrder}</TableCell>
-                  <TableCell>
-                    <button type="button" onClick={() => toggleEnabled(l)} disabled={togglingId === l.id} title="点击切换状态" className="cursor-pointer disabled:cursor-wait">
-                      <Badge className={`border ${l.enabled ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-400' : 'border-zinc-600 bg-zinc-700/60 text-zinc-400'}`}>
-                        {togglingId === l.id ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : l.enabled ? '启用' : '停用'}
-                      </Badge>
-                    </button>
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex justify-end gap-0.5">
-                      <Button variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs text-zinc-400 hover:text-zinc-100" onClick={() => openEdit(l)}>
-                        <Pencil className="h-3 w-3" />
-                        编辑
-                      </Button>
-                      <Button variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs text-red-400/80 hover:text-red-400" onClick={() => setDeleting(l)}>
-                        <Trash2 className="h-3 w-3" />
-                        删除
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
+              {localOrder.map((l, idx) => {
+                const hs = health[l.id]
+                return (
+                  <TableRow key={l.id} className={`border-zinc-800 ${l.enabled ? '' : 'opacity-55'}`}>
+                    <TableCell>
+                      <Checkbox
+                        checked={selected.has(l.id)}
+                        onCheckedChange={(v) =>
+                          setSelected((prev) => {
+                            const n = new Set(prev)
+                            if (v === true) n.add(l.id)
+                            else n.delete(l.id)
+                            return n
+                          })
+                        }
+                        aria-label={`选择 ${l.name}`}
+                      />
+                    </TableCell>
+                    <TableCell className="max-w-40 truncate font-medium text-zinc-100" title={l.name}>
+                      {l.name}
+                    </TableCell>
+                    <TableCell className="max-w-72 truncate font-mono text-xs text-zinc-400" title={l.url}>
+                      {l.url}
+                    </TableCell>
+                    <TableCell>
+                      {/* feat-bb-2: 可达性检测 */}
+                      <button
+                        type="button"
+                        onClick={() => checkLink(l)}
+                        disabled={hs === 'checking'}
+                        title={hs === 'reachable' ? '可达, 点击重检' : hs === 'unreachable' ? '不可达, 点击重检' : '点击检测可达性'}
+                        className="cursor-pointer disabled:cursor-wait"
+                      >
+                        <Badge variant="outline" className={
+                          hs === 'reachable'
+                            ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400'
+                            : hs === 'unreachable'
+                              ? 'border-red-500/40 bg-red-500/10 text-red-400'
+                              : 'border-zinc-700 bg-zinc-900 text-zinc-400'
+                        }>
+                          {hs === 'checking' ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : hs === 'reachable' ? <CheckCircle2 className="h-2.5 w-2.5" /> : hs === 'unreachable' ? <XCircle className="h-2.5 w-2.5" /> : <Wifi className="h-2.5 w-2.5" />}
+                          {hs === 'reachable' ? '可达' : hs === 'unreachable' ? '不可达' : '检测'}
+                        </Badge>
+                      </button>
+                    </TableCell>
+                    <TableCell className="font-mono text-xs text-zinc-400">{orderDirty ? idx : l.sortOrder}</TableCell>
+                    <TableCell>
+                      <button type="button" onClick={() => toggleEnabled(l)} disabled={togglingId === l.id} title="点击切换状态" className="cursor-pointer disabled:cursor-wait">
+                        <Badge className={`border ${l.enabled ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-400' : 'border-zinc-600 bg-zinc-700/60 text-zinc-400'}`}>
+                          {togglingId === l.id ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : l.enabled ? '启用' : '停用'}
+                        </Badge>
+                      </button>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex justify-end gap-0.5">
+                        {/* feat-bb-2: 上移/下移 */}
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-zinc-400 hover:text-zinc-100" disabled={idx === 0} onClick={() => moveLink(idx, -1)} aria-label="上移">
+                              <ArrowUp className="h-3 w-3" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent side="top" className="text-xs">上移</TooltipContent>
+                        </Tooltip>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-zinc-400 hover:text-zinc-100" disabled={idx === localOrder.length - 1} onClick={() => moveLink(idx, 1)} aria-label="下移">
+                              <ArrowDown className="h-3 w-3" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent side="top" className="text-xs">下移</TooltipContent>
+                        </Tooltip>
+                        <Button variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs text-zinc-400 hover:text-zinc-100" onClick={() => openEdit(l)}>
+                          <Pencil className="h-3 w-3" />
+                          编辑
+                        </Button>
+                        <Button variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs text-red-400/80 hover:text-red-400" onClick={() => setDeleting(l)}>
+                          <Trash2 className="h-3 w-3" />
+                          删除
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                )
+              })}
             </TableBody>
           </Table>
         </div>

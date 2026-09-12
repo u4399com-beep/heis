@@ -312,6 +312,27 @@ export interface FetchConfig {
    *  fetcher 在 fetchHttp 成功路径记录 per-host EWMA(α=0.3, 500 cap FIFO);
    *  与 globalRateLimitPerMin 正交(全局上限 vs per-host 节奏) */
   adaptiveRateLimit?: boolean
+  // ---------- agent-Z-crawl-phase6: HTTP/2 连接复用 + 指纹一致性 + 智能引擎选择 ----------
+  /** HTTP keep-alive 连接池(agent-Z): true=启用 per-host undici Agent(连接复用 +
+   *  TLS 会话恢复 + 可选 HTTP/2 多路复用); false/未设=沿用全局 fetch 默认行为(零回归)。
+   *  Node 19+ 全局 Agent 默认 keepAlive=true, 但默认 keepAliveTimeout=4s 过短, 长间隔请求
+   *  会被拆成新连接(新 TLS 握手 + JA3 采样机会); 显式 Agent 把 keepAliveTimeout 提到 30s,
+   *  per-host 最多 10 连接, 让采集期间的请求尽量复用同一 TCP+TLS 连接(真实浏览器 tab 语义)。
+   *  Bun 运行时: undici 不存在 → 静默退化为全局 fetch(Bun 自身已 keep-alive + h2), 无副作用。
+   *  代理路径不启用(代理自身管理连接池); relay 路径不启用(localhost 单跳无需) */
+  keepAlivePool?: boolean
+  /** HTTP/2 多路复用(agent-Z): true=在 keepAlivePool 基础上启用 h2 ALPN 协商, 让同 host
+   *  并发请求走单连接多 stream(真实浏览器 tab 同时取 HTML+CSS+JS+图片的语义); false/未设=仅
+   *  HTTP/1.1 keep-alive(零回归, 与既有 native 链 h2='off' 设计一致)。注意: Node undici 的
+   *  h2 SETTINGS 帧指纹与 Chrome 不完全一致(详见 fetcher.ts h2 段注释), 启用后 h2 站点
+   *  会观察到 Node 风格 SETTINGS; 适合内容采集场景(同 Chrome 行为接近), 不适合 JA3-strict WAF。
+   *  仅 keepAlivePool=true 时本字段生效; 否则忽略 */
+  h2Pool?: boolean
+  /** 请求优先级(agent-Z): 'list'(列表发现) / 'book'(书籍详情) / 'chapter'(章节正文)。
+   *  供 runner 在混合批次时排序: book > chapter > list(书籍详情对用户最先可见, 章节正文次之,
+   *  列表发现最后)。未设=normal(不参与排序, 与现有 FIFO 行为一致, 零回归)。
+   *  当前实现为元数据字段(供未来调度器消费), fetcher 不直接改变请求行为 */
+  requestPriority?: 'list' | 'book' | 'chapter'
 }
 
 /**
@@ -794,6 +815,14 @@ export function sanitizeFetchConfig(v: unknown): Partial<FetchConfig> {
   // agent-S-fetcher-runner-phase4: 自适应速率限制(布尔, 缺省 false=零回归)
   const adaptiveRateLimit = safeBool(r.adaptiveRateLimit)
   if (adaptiveRateLimit !== undefined) out.adaptiveRateLimit = adaptiveRateLimit
+  // agent-Z-crawl-phase6: keep-alive 连接池 / h2 多路复用 / 请求优先级(均缺省零回归)
+  const keepAlivePool = safeBool(r.keepAlivePool)
+  if (keepAlivePool !== undefined) out.keepAlivePool = keepAlivePool
+  const h2Pool = safeBool(r.h2Pool)
+  if (h2Pool !== undefined) out.h2Pool = h2Pool
+  if (r.requestPriority === 'list' || r.requestPriority === 'book' || r.requestPriority === 'chapter') {
+    out.requestPriority = r.requestPriority
+  }
   return out
 }
 

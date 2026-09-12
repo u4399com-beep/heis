@@ -21,6 +21,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { ConfirmDialog } from './ConfirmDialog'
 import {
   Select,
@@ -29,7 +30,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { BookOpen, ChevronDown, ChevronLeft, ChevronRight, FileText, ImageOff, Loader2, RefreshCw, Save, Tag, Trash2, X } from 'lucide-react'
+import { BookOpen, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, FileText, ImageOff, Loader2, RefreshCw, Save, Tag, Trash2, X } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   BatchActionButton,
@@ -260,6 +261,18 @@ export function BookDetail({ bookId, onClose, onChanged }: BookDetailProps) {
 
   const tocTotalPages = Math.max(1, Math.ceil(tocTotal / TOC_SIZE))
 
+  // 采集状态指示器 (feat-bb-2): 本页已采/未采计数 + 全量进度估计
+  // 注意: toc 仅含当前页, 不代表全书; 但作为“本页采集状态”有指导价值
+  const tocFetchedCount = useMemo(() => toc.filter((c) => c.fetched).length, [toc])
+  const tocFetchedPct = toc.length > 0 ? Math.round((tocFetchedCount / toc.length) * 100) : 0
+  const collectedStatus = useMemo<{ label: string; tone: string }>(() => {
+    if (tocTotal === 0) return { label: '未采集', tone: 'border-zinc-700 bg-zinc-900 text-zinc-500' }
+    if (tocFetchedPct === 100) return { label: '已采全', tone: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400' }
+    if (tocFetchedPct >= 50) return { label: '部分未采', tone: 'border-amber-500/40 bg-amber-500/10 text-amber-400' }
+    if (tocFetchedPct > 0) return { label: '未采多', tone: 'border-orange-500/40 bg-orange-500/10 text-orange-400' }
+    return { label: '未采', tone: 'border-red-500/40 bg-red-500/10 text-red-400' }
+  }, [tocTotal, tocFetchedPct])
+
   // 章节批量动作: 成功→清选+重拉当前页目录+通知外层刷新字数
   const runChapterBatch = async (action: string, describe: string) => {
     if (!bookId) return
@@ -375,7 +388,21 @@ export function BookDetail({ bookId, onClose, onChanged }: BookDetailProps) {
                     <div className="flex h-full items-center justify-center text-[10px] text-zinc-600">无封面</div>
                   )}
                 </div>
-                <div className="mt-1.5 text-center text-[10px] text-zinc-600">{fmtNum(book._count?.chapters || 0)} 章</div>
+                <div className="mt-1.5 flex flex-col items-center gap-1">
+                  <div className="text-[10px] text-zinc-600">{fmtNum(book._count?.chapters || 0)} 章</div>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button type="button" className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] ${collectedStatus.tone}`} aria-label={`采集状态: ${collectedStatus.label}`}>
+                        {collectedStatus.label === '已采全' ? <CheckCircle2 className="h-2.5 w-2.5" /> : null}
+                        {collectedStatus.label}
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" className="text-xs">
+                      <div>本页已采 {tocFetchedCount}/{toc.length || 0} ({tocFetchedPct}%)</div>
+                      <div className="text-zinc-400">全书共 {fmtNum(tocTotal)} 章 (基于当前页统计)</div>
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
               </div>
               <div className="grid flex-1 grid-cols-1 gap-3 sm:grid-cols-2">
                 <div className="space-y-1.5">
@@ -486,6 +513,23 @@ export function BookDetail({ bookId, onClose, onChanged }: BookDetailProps) {
                   <FileText className="h-4 w-4 text-amber-400" />
                   章节目录
                   <span className="text-xs font-normal text-zinc-500">(共 {fmtNum(tocTotal)} 章)</span>
+                  {/* 采集进度 (feat-bb-2): 本页已采 X/Y · Z% + 细条进度 */}
+                  {toc.length > 0 && (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="inline-flex items-center gap-1.5 rounded-full border border-zinc-700 bg-zinc-950/60 px-2 py-0.5 text-[10px] text-zinc-400" tabIndex={0}>
+                          <span className={`h-1.5 w-1.5 rounded-full ${tocFetchedPct === 100 ? 'bg-emerald-400' : tocFetchedPct >= 50 ? 'bg-amber-400' : tocFetchedPct > 0 ? 'bg-orange-400' : 'bg-red-400'}`} />
+                          <span className="font-mono tabular-nums">{tocFetchedCount}/{toc.length}</span>
+                          <span className="text-zinc-500">·</span>
+                          <span className="font-mono tabular-nums">{tocFetchedPct}%</span>
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom" className="text-xs">
+                        <div>本页采集进度</div>
+                        <div className="text-zinc-400">仅当前页统计, 全书共 {fmtNum(tocTotal)} 章</div>
+                      </TooltipContent>
+                    </Tooltip>
+                  )}
                 </div>
                 <div className="flex items-center gap-1.5">
                   <Button

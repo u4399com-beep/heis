@@ -29,7 +29,7 @@ import {
 } from '@/components/ui/alert-dialog'
 import { ConfirmDialog } from './ConfirmDialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { FolderTree, Loader2, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { FolderTree, GripVertical, Loader2, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   BatchActionButton,
@@ -56,11 +56,19 @@ export function CategoriesSection() {
   const [batchConfirmOpen, setBatchConfirmOpen] = useState(false)
   const [batchForce, setBatchForce] = useState(false)
 
+  // feat-bb-2: 拖拽重排 — localRows 与 rows 同步但允许拖拽调整; dragIndex/dropIndex 用于视觉反馈
+  const [localRows, setLocalRows] = useState<CategoryRow[]>([])
+  const [dragIndex, setDragIndex] = useState<number | null>(null)
+  const [dropIndex, setDropIndex] = useState<number | null>(null)
+  const [reorderSaving, setReorderSaving] = useState(false)
+
   const load = useCallback(async () => {
     setLoading(true)
     try {
       const data = await api.get<CategoryRow[]>('/api/admin/categories')
-      setRows(Array.isArray(data) ? data : [])
+      const safeRows = Array.isArray(data) ? data : []
+      setRows(safeRows)
+      setLocalRows(safeRows)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : '加载分类失败')
     } finally {
@@ -71,6 +79,79 @@ export function CategoriesSection() {
   useEffect(() => {
     load()
   }, [load])
+
+  // feat-bb-2: 拖拽处理函数
+  const onDragStart = useCallback((e: React.DragEvent, idx: number) => {
+    setDragIndex(idx)
+    e.dataTransfer.effectAllowed = 'move'
+    // Firefox 需要设置 data 否则不触发 dragstart; 这里用一个占位
+    try {
+      e.dataTransfer.setData('text/plain', String(idx))
+    } catch { /* 忽略 */ }
+  }, [])
+
+  const onDragOver = useCallback((e: React.DragEvent, idx: number) => {
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    if (dragIndex !== null && dragIndex !== idx) setDropIndex(idx)
+  }, [dragIndex])
+
+  const onDrop = useCallback((idx: number) => {
+    if (dragIndex === null || dragIndex === idx) {
+      setDragIndex(null)
+      setDropIndex(null)
+      return
+    }
+    setLocalRows((prev) => {
+      const next = [...prev]
+      const [moved] = next.splice(dragIndex, 1)
+      next.splice(idx, 0, moved)
+      return next
+    })
+    setDragIndex(null)
+    setDropIndex(null)
+  }, [dragIndex])
+
+  const onDragEnd = useCallback(() => {
+    setDragIndex(null)
+    setDropIndex(null)
+  }, [])
+
+  // feat-bb-2: 检测本地顺序与服务端顺序是否不同 (显示「保存重排」按钮)
+  const orderDirty = useMemo(() => {
+    if (localRows.length !== rows.length) return false
+    for (let i = 0; i < localRows.length; i++) {
+      if (localRows[i].id !== rows[i].id) return true
+      if (localRows[i].sortOrder !== i) return true
+    }
+    return false
+  }, [localRows, rows])
+
+  const resetOrder = useCallback(() => {
+    setLocalRows(rows)
+  }, [rows])
+
+  // feat-bb-2: 拖拽后保存 — 复用已有 /api/admin/categories/batch action=order
+  const saveReorder = useCallback(async () => {
+    if (!orderDirty) return
+    setReorderSaving(true)
+    try {
+      const ids = localRows.map((r) => r.id)
+      const res = await runBatch(
+        '/api/admin/categories/batch',
+        { action: 'order', ids },
+        (r) => `已按拖拽顺序重排 ${r.affected ?? 0} 个分类`,
+      )
+      if (res) {
+        await load()
+      }
+    } finally {
+      setReorderSaving(false)
+    }
+  }, [orderDirty, localRows, load])
+
+  // feat-bb-2: 全分类书籍总数 (用于百分比 tooltip, memo 避免每行重复 reduce)
+  const totalBooks = useMemo(() => rows.reduce((s, r) => s + (r._count?.books || 0), 0), [rows])
 
   const openCreate = () => {
     setEditing(null)
@@ -209,6 +290,27 @@ export function CategoriesSection() {
               按勾选顺序重排
             </BatchActionButton>
           </BatchBar>
+          {/* feat-bb-2: 拖拽重排提示条 (仅本地顺序已修改时出现) */}
+          {(orderDirty || reorderSaving) && (
+            <div className="flex flex-wrap items-center gap-2 border-b border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+              <span>拖拽后顺序已修改, 未保存</span>
+              <div className="mx-1 h-4 w-px bg-amber-500/40" />
+              <Button size="sm" variant="outline" className="h-7 gap-1 border-amber-500/40 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20" onClick={saveReorder} disabled={reorderSaving}>
+                {reorderSaving ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+                保存重排
+              </Button>
+              <Button size="sm" variant="ghost" className="h-7 text-amber-200/70 hover:text-amber-200" onClick={resetOrder} disabled={reorderSaving}>
+                撤销
+              </Button>
+            </div>
+          )}
+          {/* feat-bb-2: 拖拽提示文本 */}
+          {rows.length > 0 && !orderDirty && (
+            <div className="border-b border-zinc-800/60 px-3 py-1.5 text-[11px] text-zinc-600">
+              <GripVertical className="mr-1 inline h-3 w-3 align-text-bottom" />
+              拖动行首手柄可调整顺序
+            </div>
+          )}
           {loading ? (
             <div className="flex items-center justify-center py-16 text-sm text-zinc-500">
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -226,6 +328,7 @@ export function CategoriesSection() {
                       ariaLabel="全选分类"
                     />
                   </TableHead>
+                  <TableHead className="w-8 text-zinc-500" aria-label="拖拽手柄列" />
                   <TableHead className="text-xs text-zinc-500">分类名称</TableHead>
                   <TableHead className="text-xs text-zinc-500">书籍数量</TableHead>
                   <TableHead className="hidden text-xs text-zinc-500 md:table-cell">创建时间</TableHead>
@@ -235,37 +338,74 @@ export function CategoriesSection() {
               <TableBody>
                 {rows.length === 0 ? (
                   <TableRow className="border-zinc-800/70">
-                    <TableCell colSpan={5} className="py-12 text-center text-sm text-zinc-500">
+                    <TableCell colSpan={6} className="py-12 text-center text-sm text-zinc-500">
                       暂无分类, 点击右上角「新建分类」添加
                     </TableCell>
                   </TableRow>
                 ) : (
-                  rows.map((c) => (
-                    <TableRow key={c.id} className="border-zinc-800/70">
-                      <TableCell className="pr-0">
-                        <BatchCheckbox
-                          checked={batch.selected.has(c.id)}
-                          onCheckedChange={() => batch.toggle(c.id)}
-                          ariaLabel={`选择分类「${c.name}」`}
-                        />
-                      </TableCell>
-                      <TableCell className="font-medium text-zinc-200">{c.name}</TableCell>
-                      <TableCell className="font-mono text-xs text-zinc-400">{c._count?.books || 0}</TableCell>
-                      <TableCell className="hidden text-xs text-zinc-500 md:table-cell">{fmtDateTime(c.createdAt)}</TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex justify-end gap-1">
-                          <Button variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs text-zinc-400 hover:text-zinc-100" onClick={() => openEdit(c)}>
-                            <Pencil className="h-3 w-3" />
-                            编辑
-                          </Button>
-                          <Button variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs text-red-400/80 hover:text-red-400" onClick={() => setDeleting(c)}>
-                            <Trash2 className="h-3 w-3" />
-                            删除
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))
+                  localRows.map((c, idx) => {
+                    const bookCount = c._count?.books || 0
+                    const pct = totalBooks > 0 ? Math.round((bookCount / totalBooks) * 100) : 0
+                    return (
+                      <TableRow
+                        key={c.id}
+                        className={`border-zinc-800/70 transition-colors ${
+                          dragIndex === idx ? 'opacity-40' : ''
+                        } ${
+                          dropIndex === idx && dragIndex !== null && dragIndex !== idx
+                            ? 'border-t-2 border-t-violet-500 bg-violet-500/5'
+                            : ''
+                        }`}
+                      >
+                        <TableCell className="pr-0">
+                          <BatchCheckbox
+                            checked={batch.selected.has(c.id)}
+                            onCheckedChange={() => batch.toggle(c.id)}
+                            ariaLabel={`选择分类「${c.name}」`}
+                          />
+                        </TableCell>
+                        <TableCell className="pr-0">
+                          {/* feat-bb-2: 拖拽手柄 */}
+                          <button
+                            type="button"
+                            draggable
+                            onDragStart={(e) => onDragStart(e, idx)}
+                            onDragOver={(e) => onDragOver(e, idx)}
+                            onDrop={() => onDrop(idx)}
+                            onDragEnd={onDragEnd}
+                            aria-label={`拖拽「${c.name}」重排`}
+                            title="拖动调整顺序"
+                            className="cursor-grab text-zinc-600 hover:text-zinc-300 active:cursor-grabbing"
+                          >
+                            <GripVertical className="h-3.5 w-3.5" />
+                          </button>
+                        </TableCell>
+                        <TableCell className="font-medium text-zinc-200">{c.name}</TableCell>
+                        <TableCell className="font-mono text-xs text-zinc-400">
+                          {/* feat-bb-2: 书籍数 + 百分比 tooltip */}
+                          <span title={`占全部书籍的 ${pct}%`} className="cursor-help">
+                            {bookCount}
+                            {bookCount > 0 && totalBooks > 0 && (
+                              <span className="ml-1 text-[10px] text-zinc-600">({pct}%)</span>
+                            )}
+                          </span>
+                        </TableCell>
+                        <TableCell className="hidden text-xs text-zinc-500 md:table-cell">{fmtDateTime(c.createdAt)}</TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex justify-end gap-1">
+                            <Button variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs text-zinc-400 hover:text-zinc-100" onClick={() => openEdit(c)}>
+                              <Pencil className="h-3 w-3" />
+                              编辑
+                            </Button>
+                            <Button variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs text-red-400/80 hover:text-red-400" onClick={() => setDeleting(c)}>
+                              <Trash2 className="h-3 w-3" />
+                              删除
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })
                 )}
               </TableBody>
             </Table>
