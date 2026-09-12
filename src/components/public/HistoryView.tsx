@@ -16,6 +16,7 @@ import { fetchBook } from './data'
 import type { BookDetail } from './types'
 import { usePublic } from './ctx'
 import { useSiteSEO, withAlpha } from './seo'
+import { generateTitle, generateMetaDescription, generateKeywords } from './auto-tdk'
 import { BookCover } from './BookCover'
 import { Sk } from './bits'
 import { clearReadPos, formatReadTime, listReadPos, type ReadPos } from './read-layouts/reading-memory'
@@ -117,8 +118,9 @@ export function HistoryView() {
   }, [navigate])
 
   useSiteSEO({
-    title: `我的书架 - ${site.name}`,
-    description: `${site.name} 我的书架 — 最近阅读过的小说与阅读进度`,
+    title: generateTitle({ siteName: site.name, category: '我的书架' }),
+    description: generateMetaDescription({ siteName: site.name, category: '我的书架', intro: '最近阅读过的小说与阅读进度' }),
+    keywords: generateKeywords({ siteName: site.name, category: '书架' }),
     robots: 'noindex,nofollow',
     canonicalPath: `/?view=history&site=${site.id}`,
     site,

@@ -20,7 +20,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { fetchChapter } from './data'
 import type { ChapterData } from './types'
 import { usePublic } from './ctx'
-import { formatWords, useSiteSEO, withAlpha } from './seo'
+import { useSiteSEO, withAlpha } from './seo'
+import { generateTitle, generateMetaDescription, generateKeywords } from './auto-tdk'
 import { ErrorState } from './bits'
 import { readOf } from '@/lib/crawl/themes'
 import { ReadClassic } from './read-layouts/ReadClassic'
@@ -390,27 +391,54 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
   const seoTitle = useMemo(() => {
     if (!data) return `阅读 - ${site.name}`
     if (data.seo && !data.seo.auto && data.seo.titleTemplate) {
-      return renderSeoTemplate(data.seo.titleTemplate, seoCtx) || `${data.chapter.title}_${data.book.name} - ${site.name}`
+      return renderSeoTemplate(data.seo.titleTemplate, seoCtx)
     }
-    // 自动模式: 仅当多页时附加"第N页"避免标题重复(同章不同页 = 重复内容, 搜索引擎降权)
-    const baseTitle = `${data.chapter.title}_${data.book.name} - ${site.name}`
-    return showChapterPagination ? `${data.chapter.title}_${data.book.name} 第${currentPage}页 - ${site.name}` : baseTitle
-  }, [data, site.name, showChapterPagination, currentPage, seoCtx])
+    // 智能 TDK: 从书名/章节/分类/作者/分页自动构建标题
+    return generateTitle({
+      bookName: data.book.name,
+      chapterTitle: data.chapter.title,
+      author: data.book.author,
+      category: (data.book as any).category,
+      siteName: site.name,
+      page: showChapterPagination ? currentPage : undefined,
+      totalPages: showChapterPagination ? totalPages : undefined,
+    })
+  }, [data, site.name, showChapterPagination, currentPage, totalPages, seoCtx])
   const seoDescription = useMemo(() => {
     if (!data) return undefined
     if (data.seo && !data.seo.auto && data.seo.descTemplate) {
-      return renderSeoTemplate(data.seo.descTemplate, seoCtx) || `${data.book.name} ${data.chapter.title} 在线阅读，${formatWords(data.chapter.wordCount)}。`
+      return renderSeoTemplate(data.seo.descTemplate, seoCtx)
     }
-    const base = `${data.book.name} ${data.chapter.title} 在线阅读，${formatWords(data.chapter.wordCount)}。`
-    return showChapterPagination ? `${base} (第${currentPage}/${totalPages}页)` : base
-  }, [data, showChapterPagination, currentPage, totalPages, seoCtx])
+    // 智能 TDK: 从简介/内容/字数/分页自动生成描述
+    return generateMetaDescription({
+      bookName: data.book.name,
+      author: data.book.author,
+      category: (data.book as any).category,
+      chapterTitle: data.chapter.title,
+      intro: (data.book as any).intro,
+      content: data.chapter.content,
+      wordCount: data.chapter.wordCount,
+      page: showChapterPagination ? currentPage : undefined,
+      totalPages: showChapterPagination ? totalPages : undefined,
+      siteName: site.name,
+    })
+  }, [data, showChapterPagination, currentPage, totalPages, seoCtx, site.name])
   const seoKeywords = useMemo(() => {
     if (!data) return undefined
     if (data.seo && !data.seo.auto && data.seo.keywordsTemplate) {
-      return renderSeoTemplate(data.seo.keywordsTemplate, seoCtx) || data.book.keywords || undefined
+      return renderSeoTemplate(data.seo.keywordsTemplate, seoCtx)
     }
-    return data.book.keywords || undefined
-  }, [data, seoCtx])
+    // 智能 TDK: 从书名/作者/分类/章节标题/内容自动提取关键词
+    return generateKeywords({
+      bookName: data.book.name,
+      author: data.book.author,
+      category: (data.book as any).category,
+      chapterTitle: data.chapter.title,
+      existingKeywords: data.book.keywords,
+      content: data.chapter.content,
+      siteName: site.name,
+    })
+  }, [data, seoCtx, site.name])
 
   const origin = typeof window !== 'undefined' ? window.location.origin : ''
   // 分页 canonical: 不同页应不同 URL(避免重复内容判定)

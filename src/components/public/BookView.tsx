@@ -12,6 +12,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { fetchBook, fetchChapter, type BookDetailData } from './data'
 import { usePublic } from './ctx'
 import { coverSrc, fmtDate, formatWords, statusLabel, useSiteSEO, withAlpha } from './seo'
+import { generateTitle, generateMetaDescription, generateKeywords } from './auto-tdk'
 import { BookCover } from './BookCover'
 import { ShareMenu } from './ShareMenu'
 import { EmptyState, ErrorState, SecTitle, Sk, StatusBadge, TagCloud, ChapterListSkeleton } from './bits'
@@ -391,9 +392,9 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
     })
   }
   useSiteSEO({
-    title: book ? `${book.name} - ${site.name}` : `书籍详情 - ${site.name}`,
-    description: book ? book.intro.slice(0, 150) : undefined,
-    keywords: book ? [book.keywords, ...tags.map((t) => t.tag)].filter(Boolean).join(',') : undefined,
+    title: book ? generateTitle({ bookName: book.name, author: book.author, category: (book as any).category, siteName: site.name }) : `书籍详情 - ${site.name}`,
+    description: book ? generateMetaDescription({ bookName: book.name, author: book.author, category: (book as any).category, intro: book.intro, wordCount: (book as any).wordCount, siteName: site.name }) : undefined,
+    keywords: book ? generateKeywords({ bookName: book.name, author: book.author, category: (book as any).category, existingKeywords: book.keywords, content: book.intro, siteName: site.name }) : undefined,
     canonicalPath: book ? `/?view=book&id=${book.id}&site=${site.id}` : undefined,
     site,
     jsonLd: book

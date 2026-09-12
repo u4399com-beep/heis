@@ -8,6 +8,7 @@ import { FolderOpen } from 'lucide-react'
 import { fetchBooks, fetchCategories, type BooksData } from './data'
 import { usePublic } from './ctx'
 import { useSiteSEO } from './seo'
+import { generateTitle, generateMetaDescription, generateKeywords } from './auto-tdk'
 import { ErrorState, Sk } from './bits'
 import { Pagination } from './Pagination'
 import { ThemeBookList } from './BookCard'
@@ -65,9 +66,9 @@ export function CategoryView({ cat, page }: { cat?: string; page: number }) {
   }, [cat])
 
   useSiteSEO({
-    title: `${label} - ${site.name}`,
-    description: `${site.name}${label}分类下的小说列表，共 ${data?.total ?? 0} 本，支持在线阅读与TXT下载`,
-    keywords: `${label},${label}小说,${site.keywords}`.replace(/,+$/, ''),
+    title: generateTitle({ category: label, siteName: site.name }),
+    description: generateMetaDescription({ category: label, siteName: site.name, chapterTitle: `共${data?.total ?? 0}本`, intro: `${label}分类小说列表` }),
+    keywords: generateKeywords({ category: label, existingKeywords: site.keywords, siteName: site.name }),
     // 首页与 page=1 共享同一 canonical，避免重复收录
     canonicalPath: `/?view=category&cat=${encodeURIComponent(cat || '')}${page > 1 ? `&page=${page}` : ''}&site=${site.id}`,
     site,

@@ -9,6 +9,7 @@ import { fetchSearch } from './data'
 import type { SearchData } from './types'
 import { usePublic } from './ctx'
 import { siteKeywordList, useSiteSEO, withAlpha } from './seo'
+import { generateTitle, generateMetaDescription, generateKeywords } from './auto-tdk'
 import { EmptyState, ErrorState, TagCloud } from './bits'
 import { ThemeBookList } from './BookCard'
 import { addSearchHistory, clearSearchHistory, getSearchHistory } from './search-history'
@@ -93,9 +94,9 @@ export function SearchView({ q }: { q?: string }) {
   const historyList = useMemo(() => getSearchHistory(), [historyTick])
 
   useSiteSEO({
-    title: q ? `“${q}”的搜索结果 - ${site.name}` : `搜索 - ${site.name}`,
-    description: q ? `${site.name}站内搜索“${q}”的结果页面` : `${site.name}站内搜索，支持书名/作者/关键词检索`,
-    keywords: q ? `${q},${site.keywords}`.replace(/,+$/, '') : site.keywords,
+    title: q ? generateTitle({ bookName: `"${q}"搜索结果`, siteName: site.name }) : generateTitle({ siteName: site.name, category: '搜索' }),
+    description: q ? generateMetaDescription({ siteName: site.name, chapterTitle: `"${q}"搜索结果`, intro: `站内搜索${q}的小说` }) : generateMetaDescription({ siteName: site.name, category: '搜索', intro: '站内搜索，支持书名/作者/关键词检索' }),
+    keywords: q ? generateKeywords({ existingKeywords: q, siteName: site.name }) : generateKeywords({ siteName: site.name, category: '搜索' }),
     // 搜索结果页对搜索引擎无独立价值，统一 noindex 防止低质索引
     robots: 'noindex,follow',
     canonicalPath: q ? `/?view=search&q=${encodeURIComponent(q)}&site=${site.id}` : `/?view=search&site=${site.id}`,

@@ -9,6 +9,7 @@ import { fetchKeyword } from './data'
 import type { KeywordData } from './types'
 import { usePublic } from './ctx'
 import { formatWords, useSiteSEO, withAlpha } from './seo'
+import { generateTitle, generateMetaDescription, generateKeywords } from './auto-tdk'
 import { BookCover } from './BookCover'
 import { EmptyState, ErrorState, Sk, StatusBadge, TagCloud } from './bits'
 
@@ -47,13 +48,13 @@ export function KeywordView({ tag }: { tag?: string }) {
   }, [tag])
 
   useSiteSEO({
-    title: tag ? `${tag} - ${site.name}` : `关键词 - ${site.name}`,
+    title: tag ? generateTitle({ bookName: tag, siteName: site.name }) : generateTitle({ siteName: site.name, category: '关键词' }),
     description: tag
       ? data?.book
-        ? `${tag}主题小说推荐：《${data.book.name}》${data.book.author} 著，${formatWords(data.book.wordCount)}，${data.book.intro.slice(0, 80)}`
-        : `${site.name}为您呈现“${tag}”相关的小说专题`
-      : undefined,
-    keywords: tag ? `${tag},${data?.book?.name || ''},${site.keywords}`.replace(/,+$/, '') : site.keywords,
+        ? generateMetaDescription({ bookName: data.book.name, author: data.book.author, category: tag, intro: data.book.intro, wordCount: data.book.wordCount, siteName: site.name })
+        : generateMetaDescription({ siteName: site.name, category: tag, intro: `"${tag}"相关小说专题` })
+      : generateMetaDescription({ siteName: site.name, category: '关键词' }),
+    keywords: tag ? generateKeywords({ existingKeywords: tag, bookName: data?.book?.name, siteName: site.name }) : generateKeywords({ siteName: site.name, category: '关键词' }),
     // 关键词落地页为聚合过渡页，统一 noindex 防止低质索引
     robots: 'noindex,follow',
     canonicalPath: tag ? `/?view=keyword&tag=${encodeURIComponent(tag)}&site=${site.id}` : undefined,

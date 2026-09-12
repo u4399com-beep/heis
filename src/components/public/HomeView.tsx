@@ -9,6 +9,7 @@ import { ArrowDownWideNarrow, Flame, Hash, Home } from 'lucide-react'
 import { fetchBooks, type BooksData } from './data'
 import { usePublic } from './ctx'
 import { siteKeywordList, useSiteSEO, withAlpha } from './seo'
+import { generateTitle, generateMetaDescription, generateKeywords } from './auto-tdk'
 import { EmptyState, ErrorState, SuggestTagCloud, TagCloud, BookGridSkeleton } from './bits'
 import { CategoryShowcase } from './CategoryShowcase'
 // 默认主题 aurora → shelf: 首屏保证, 保持静态 import; 其余 6 布局按需分包(ab-d 懒加载试点)
@@ -62,9 +63,9 @@ export function HomeView({ page, cat }: { page: number; cat?: string }) {
 
   const origin = typeof window !== 'undefined' ? window.location.origin : ''
   useSiteSEO({
-    title: site.title || `${site.name} - 精品小说在线阅读`,
-    description: site.description || `${site.name}提供各类小说在线阅读`,
-    keywords: site.keywords || '小说,在线阅读',
+    title: site.title || generateTitle({ siteName: site.name, category: catName || undefined }),
+    description: site.description || generateMetaDescription({ siteName: site.name, category: catName || undefined, intro: '精品小说在线阅读' }),
+    keywords: site.keywords || generateKeywords({ siteName: site.name, category: catName || undefined }),
     canonicalPath: cat ? `/?cat=${cat}&site=${site.id}` : `/?site=${site.id}`,
     site,
     jsonLd: useMemo(
