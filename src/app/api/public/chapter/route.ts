@@ -143,16 +143,15 @@ export async function GET(req: Request) {
     // 计算分页
     let renderedContent = content
     let totalPages = 1
+    let currentPage = 1
     if (mode === 'byWords' || mode === 'byPages') {
       const paragraphs = splitParagraphs(content)
       const pages = mode === 'byWords' ? paginateByWords(paragraphs, wordsPerPage) : paginateByPages(paragraphs, totalPagesTarget)
       totalPages = Math.max(1, pages.length)
-      // page 钳到 [1, totalPages]; 不传时默认 1
-      const page = clampInt(url.searchParams.get('page'), 1, 1, totalPages)
-      renderedContent = pages[page - 1] || ''
+      // page 钳到 [1, totalPages]; 不传时默认 1(clampInt 已含越界保护, 无需外层 Math.min/max 重复钳制)
+      currentPage = clampInt(url.searchParams.get('page'), 1, 1, totalPages)
+      renderedContent = pages[currentPage - 1] || ''
     }
-
-    const currentPage = mode === 'off' ? 1 : Math.min(Math.max(1, clampInt(url.searchParams.get('page'), 1, 1, totalPages)), totalPages)
 
     return withCache(ok({
       chapter: {

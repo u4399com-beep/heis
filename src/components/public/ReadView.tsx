@@ -109,8 +109,8 @@ const SHORTCUTS_LIST: { keys: string[]; desc: string }[] = [
   { keys: ['Esc'], desc: '关闭弹层' },
 ]
 
-export function ReadView({ chapterId }: { chapterId?: string }) {
-  const { site, theme } = usePublic()
+export function ReadView({ chapterId, initialPage }: { chapterId?: string; initialPage?: number }) {
+  const { site, theme, navigate } = usePublic()
   const v = theme.vars
   const [data, setData] = useState<ChapterData | null>(null)
   const [loading, setLoading] = useState(true)
@@ -126,11 +126,22 @@ export function ReadView({ chapterId }: { chapterId?: string }) {
   // feat-round-5 B1: 帮助对话框
   const [helpOpen, setHelpOpen] = useState(false)
   // agent-P: 章节内容分页状态 — 仅当站点配置 mode !== 'off' 且 totalPages > 1 时启用
-  const [page, setPage] = useState(1)
+  // agent-DD: initialPage 从 URL ?page=N 解析(PublicSite 透传), 让深链/分享链接直达指定页;
+  //   并使浏览器前进/后退按钮同步分页位置(以前忽略 URL page 参数 → 永远从第 1 页开始,
+  //   且分页 UI 点击后 URL 不更新 → 刷新/分享丢失页码、搜索引擎无法索引不同页)
+  const initialPageClamped = initialPage && initialPage > 1 ? Math.floor(initialPage) : 1
+  const [page, setPage] = useState(initialPageClamped)
   const [prevChForPage, setPrevChForPage] = useState<string | undefined>(chapterId)
+  const [prevInitialPage, setPrevInitialPage] = useState<number>(initialPageClamped)
   if (prevChForPage !== chapterId) {
     setPrevChForPage(chapterId)
-    setPage(1)
+    // 切章回到本章节的首页(切章前在其他章节翻过的页码不应带入新章)
+    setPage(initialPageClamped)
+    setPrevInitialPage(initialPageClamped)
+  } else if (prevInitialPage !== initialPageClamped) {
+    // URL page 参数变化(浏览器前进/后退) — 同步内部状态
+    setPrevInitialPage(initialPageClamped)
+    setPage(initialPageClamped)
   }
   if (prevCh !== chapterId) {
     setPrevCh(chapterId)
@@ -356,6 +367,8 @@ export function ReadView({ chapterId }: { chapterId?: string }) {
         /* SSR/隐私模式忽略 */
       }
       setPage(target)
+      // agent-DD: 同步 URL ?page=N 让深链/分享/刷新保持页码, 浏览器前进后退也能恢复位置
+      if (chapterId) navigate({ view: 'read', chapterId, page: target, site: site.id })
     },
   }
 

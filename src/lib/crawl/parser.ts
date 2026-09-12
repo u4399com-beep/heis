@@ -260,6 +260,18 @@ function applyTransform(value: string, rule: FieldRule): string {
 /** 选择器容错执行: 数字开头 id(如 #123box, HTML 合法但 CSS 非法标识符)等非法选择器
  *  自动降级为属性选择器重试, 避免单条规则静默失效 */
 function cssSelect($: cheerio.CheerioAPI, scope: any, expression: string): any {
+  // R7-19: expression='.' 表示取 scope 自身(容器本身有 href/src 等属性的场景)
+  // 如 a.book-card 作为 itemSelector, bookUrl 需取容器自身的 href —— scope.find('a') 找子元素无效
+  // scope 为 null(容器模式 parseList) 时, scope$ 的 root 即容器本身, 用 $.root().children() 取
+  if (expression === '.') {
+    if (scope) return scope
+    // 容器模式: scope$ 是 cheerio.load(scope.html), cheerio 把片段包在 <html><body>...
+    // 容器元素在 body > [容器tag]。用 $('body').children() 取首个顶层元素
+    try {
+      const bodyChildren = $('body').children()
+      if (bodyChildren && bodyChildren.length > 0) return bodyChildren.first()
+    } catch { /* fall through */ }
+  }
   const run = (expr: string) => (scope && (scope as any).find ? (scope as any).find(expr) : $(expr))
   try {
     const el = run(expression)

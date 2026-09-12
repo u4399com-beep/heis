@@ -8,6 +8,7 @@
 import iconv from 'iconv-lite'
 import { type FetchConfig, DEFAULT_FETCH_CONFIG, isValidMirrorHost } from './types'
 import { obscuraFetch, checkObscuraAvailable, clickSelectorAnywhere, buildIdentityInitScript, applyUaCdpOverride } from './obscura'
+import { reportHostRateLimited } from './hostgate'
 
 // ---------- UA 池 ----------
 // C.3(y-a重放): Chrome 系版本升级至当前稳定段 137~140(原池 118~131 过旧, 属明显
@@ -528,6 +529,8 @@ class CookieJar {
         jar2.set(cookieKey, { v: cookieVal, at: Date.now(), src })
       }
     }
+    // agent-EE-crawl-phase7: store 后调度去抖持久化(若 setCookiePersistPath 已设置)
+    scheduleCookiePersist()
   }
   seed(domain: string, cookieStr?: string) {
     if (!cookieStr) return
@@ -546,6 +549,8 @@ class CookieJar {
       if (!name || ATTR_NAMES.has(name)) continue
       jar.set(pair.slice(0, idx).trim(), { v: pair.slice(idx + 1).trim(), at: Date.now(), src })
     }
+    // agent-EE-crawl-phase7: seed 后调度去抖持久化
+    scheduleCookiePersist()
   }
   /** 清空指定 host 的罐(ff-b): 403 且无新 Cookie 时疑陈旧会话, 清空重走 autoCookie
    *  agent-A-fetcher Bug B48 修复: 旧行为只删 domain 对应的精确匹配罐, R5-6 副罐逻辑下,
@@ -564,6 +569,47 @@ class CookieJar {
         if (e.src === targetSrc) jar.delete(k)
       }
     }
+    // agent-EE-crawl-phase7: clear 后也调度持久化(防重启后旧 cookie 复活)
+    scheduleCookiePersist()
+  }
+
+  // ---------- agent-EE-crawl-phase7: Cookie 持久化(跨重启复用 cf_clearance 等) ----------
+  /** 序列化为 JSON 友好形态: 仅未过期条目, { d: 域名, k: cookie名, v: 值, at: 写入时刻, src: 来源 host }
+   *  顶层 { version: 1, savedAt: number, jars: [...] } 便于后续 schema 演进 */
+  serialize(): { version: number; savedAt: number; jars: Array<{ d: string; k: string; v: string; at: number; src: string }> } {
+    const out: Array<{ d: string; k: string; v: string; at: number; src: string }> = []
+    const now = Date.now()
+    for (const [domain, jar] of this.jars) {
+      for (const [k, e] of jar) {
+        // 仅持久化未过期条目(过期条目 fresh() 已惰性删除, 此处兜底过滤)
+        if (now - e.at < COOKIE_SESSION_TTL_MS) {
+          out.push({ d: domain, k, v: e.v, at: e.at, src: e.src })
+        }
+      }
+    }
+    return { version: 1, savedAt: now, jars: out }
+  }
+
+  /** 从快照恢复: 仅在 cookieJar 为空时调用(避免覆盖运行时已累积的新 cookie)。
+   *  快照格式非法或字段缺失时静默跳过(零回归, 不抛错)。at 字段保留绝对时间戳,
+   *  fresh() 跨重启仍按 COOKIE_SESSION_TTL_MS 判过期 */
+  restore(snapshot: unknown): void {
+    if (!snapshot || typeof snapshot !== 'object') return
+    const s = snapshot as { version?: unknown; jars?: unknown }
+    if (s.version !== 1 || !Array.isArray(s.jars)) return
+    // 仅当当前 jars 为空时恢复(避免覆盖运行时累积; 多数场景在模块加载时调用, jars 自然为空)
+    if (this.jars.size > 0) return
+    for (const item of s.jars) {
+      if (!item || typeof item !== 'object') continue
+      const e = item as { d?: unknown; k?: unknown; v?: unknown; at?: unknown; src?: unknown }
+      if (typeof e.d !== 'string' || typeof e.k !== 'string' || typeof e.v !== 'string') continue
+      if (typeof e.at !== 'number' || typeof e.src !== 'string') continue
+      // 跨重启的过期条目跳过(不必恢复又被立刻删除)
+      if (Date.now() - e.at >= COOKIE_SESSION_TTL_MS) continue
+      let jar = this.jars.get(e.d)
+      if (!jar) { jar = new Map(); this.jars.set(e.d, jar) }
+      jar.set(e.k, { v: e.v, at: e.at, src: e.src })
+    }
   }
 }
 const globalForJar = globalThis as unknown as { __novelCookieJar_v3?: CookieJar }
@@ -576,6 +622,100 @@ export const cookieJar = validJar(globalForJar.__novelCookieJar_v3)
   ? globalForJar.__novelCookieJar_v3
   : new CookieJar()
 globalForJar.__novelCookieJar_v3 = cookieJar
+
+// ---------- agent-EE-crawl-phase7: Cookie 持久化到磁盘(可选, 操作员配置) ----------
+// 设计要点:
+//  1. setCookiePersistPath(path) 设置全局持久化路径, 同时触发一次异步加载(从磁盘恢复)
+//  2. cookieJar.store/seed/clear 后调用 scheduleCookiePersist() 触发去抖写入(5s 内多次变更只写一次)
+//  3. 写入走 .tmp + rename 原子替换(POSIX 同分区原子, 防中断时文件半写状态)
+//  4. 仅在 Node 运行时启用(Bun 也可, 但多进程并发写不安全, 操作员需自行确保单进程)
+//  5. 持久化条目仅未过期条目; 加载时按 at 字段跨重启判过期(absolute 时间戳)
+let cookiePersistPath: string | null = null
+let cookiePersistTimer: ReturnType<typeof setTimeout> | null = null
+let cookiePersistInFlight: Promise<void> | null = null
+const COOKIE_PERSIST_DEBOUNCE_MS = 5_000
+
+/** 去抖写入: 5s 内多次变更只触发一次实际写入; 进行中的写入完成后会再调度一次(若期间有变更) */
+function scheduleCookiePersist(): void {
+  if (!cookiePersistPath) return
+  if (cookiePersistTimer) clearTimeout(cookiePersistTimer)
+  cookiePersistTimer = setTimeout(() => {
+    cookiePersistTimer = null
+    void doCookiePersist()
+  }, COOKIE_PERSIST_DEBOUNCE_MS)
+  // 不阻塞进程退出(测试脚本/一次性任务不应被持久化定时器拖住)
+  ;(cookiePersistTimer as unknown as { unref?: () => void }).unref?.()
+}
+
+/** 实际写入: 序列化 → JSON.stringify → .tmp + rename 原子替换。
+ *  进行中的写入串行化(避免并发写覆盖); 写入失败仅 warn 不抛(持久化是 best-effort) */
+async function doCookiePersist(): Promise<void> {
+  if (!cookiePersistPath) return
+  // 进行中的写入未完成 → 跳过本次, 让上一个写入完成后再调度(由 finally 重新触发)
+  if (cookiePersistInFlight) {
+    cookiePersistInFlight.then(() => scheduleCookiePersist(), () => scheduleCookiePersist())
+    return
+  }
+  const p = (async () => {
+    try {
+      const { writeFile, rename } = await import('node:fs/promises')
+      const snapshot = cookieJar.serialize()
+      const json = JSON.stringify(snapshot)
+      // 校验路径仍以 .json 结尾(防 setCookiePersistPath 后被改写)
+      if (!/\.json$/i.test(cookiePersistPath)) return
+      const tmp = `${cookiePersistPath}.tmp-${Date.now()}`
+      await writeFile(tmp, json, 'utf-8')
+      await rename(tmp, cookiePersistPath)
+    } catch (e) {
+      // 持久化失败仅 warn(磁盘满/权限不足不应阻塞采集)
+      console.warn(`[fetcher] cookie 持久化写入失败(忽略, 内存态正常): ${String((e as Error)?.message || e).slice(0, 120)}`)
+    }
+  })()
+  cookiePersistInFlight = p
+  try { await p } finally { cookiePersistInFlight = null }
+}
+
+/** 设置 Cookie 持久化路径(agent-EE 导出, 供操作员启动脚本调用)。
+ *  设置后立即触发一次异步加载(从磁盘恢复 cookie); 之后每次 store/seed/clear 都会去抖写入。
+ *  路径必须以 .json 结尾(否则忽略); 多进程并发写不安全(无文件锁) */
+export function setCookiePersistPath(path: string | null | undefined): void {
+  if (!path || typeof path !== 'string') {
+    // 关闭持久化: 清路径 + 取消待写定时器
+    cookiePersistPath = null
+    if (cookiePersistTimer) { clearTimeout(cookiePersistTimer); cookiePersistTimer = null }
+    return
+  }
+  if (!/\.json$/i.test(path)) {
+    console.warn(`[fetcher] setCookiePersistPath 拒绝非 .json 路径: ${path.slice(0, 200)}`)
+    return
+  }
+  cookiePersistPath = path
+  // 异步加载磁盘快照(不阻塞调用方; 失败静默)
+  void (async () => {
+    try {
+      const { readFile } = await import('node:fs/promises')
+      const text = await readFile(path, 'utf-8')
+      const snapshot = JSON.parse(text)
+      cookieJar.restore(snapshot)
+      console.log(`[fetcher] cookie 持久化加载成功(条目数: ${(snapshot?.jars?.length ?? 0)}): ${path}`)
+    } catch (e) {
+      // 文件不存在(首次启动)或解析失败 → 静默(不阻断采集)
+      const code = (e as { code?: string })?.code
+      if (code !== 'ENOENT') {
+        console.warn(`[fetcher] cookie 持久化加载失败(忽略, 空罐启动): ${String((e as Error)?.message || e).slice(0, 120)}`)
+      }
+    }
+  })()
+}
+
+/** 诊断导出: 返回当前持久化路径 + 待写状态(供 admin/snapshot 端点) */
+export function cookiePersistStatus(): { path: string | null; pending: boolean; inflight: boolean } {
+  return {
+    path: cookiePersistPath,
+    pending: cookiePersistTimer !== null,
+    inflight: cookiePersistInFlight !== null,
+  }
+}
 
 // ---------- 编码识别 ----------
 function stripBom(s: string): string {
@@ -2335,13 +2475,23 @@ export function pickProxyFor(url: string, cfg: FetchConfig): string {
     pick = strategy === 'round-robin' ? ties[0] : ties[Math.floor(Math.random() * ties.length)]
     // agent-K: least-used 策略下启用 weighted-rr 增强 —— 用 useCount / (avgLatencyMs+200)
     // 作"期望负载"权重, 选期望负载最低的(即 faster proxy 拿更多请求); avgLatency=0 时回退纯 useCount
+    // agent-EE-crawl-phase7: 加 successRate 因子 —— 高失败率代理降权(给成功率高的代理更多流量)
+    // successRate = successCount / (successCount + failCount), 钳 [0.1, 1] 防除零 + 防全失败代理死锁
+    // 综合 load = useCount / (latencyWeight × successRate)
+    //   示例: proxyA(useCount=10, latency=200ms, success=100%) vs proxyB(useCount=10, latency=200ms, success=50%)
+    //   loadA = 10 / (400 × 1.0) = 0.025, loadB = 10 / (400 × 0.5) = 0.05 → 选 A(更低 load)
+    //   即同样使用次数 + 同延迟下, 高成功率代理被优先选用, 失败代理被降温
     if (strategy === 'least-used' && ties.length > 1) {
       let minLoad = Infinity
       let weightedPick = ties[0]
       for (const p of ties) {
         const s = getProxyState(p)
         const latencyWeight = (s.avgLatencyMs || 200) + 200 // 防除零; 未测过的给 200ms 默认值
-        const load = s.useCount / latencyWeight
+        // agent-EE: successRate 钳 [0.1, 1.0]; 新代理(successCount=0,failCount=0)给 1.0 不偏见
+        const totalReqs = s.successCount + s.failCount
+        const rawRate = totalReqs > 0 ? s.successCount / totalReqs : 1
+        const successRate = Math.max(0.1, Math.min(1.0, rawRate))
+        const load = s.useCount / (latencyWeight * successRate)
         if (load < minLoad) { minLoad = load; weightedPick = p }
       }
       pick = weightedPick
@@ -2437,6 +2587,79 @@ function attachWafHeaders(err: any, headers: { get(name: string): string | null 
   if (cfMit) err.cfMitigated = cfMit
 }
 
+// ---------- agent-EE-crawl-phase7: 响应头限流感知(rateLimitAware) ----------
+/**
+ * 解析限流相关响应头(agent-EE), 兼容多种限流规范:
+ *   - Retry-After(RFC 7231 §7.1.3): 秒数或 HTTP-date
+ *   - X-RateLimit-Remaining(常见 GitHub/Twitter API 风格): 剩余配额
+ *   - X-RateLimit-Reset(同上): 配额重置时刻(秒级 epoch)
+ *   - X-RateLimit-Reset-Requests / X-RateLimit-Reset-Tokens(个别 API 风格)
+ * 返回 { remaining, retryAfterMs, resetMs }; undefined 字段表示该头缺失/非法。
+ * 由 fetchHttp 成功路径在 rateLimitAware=true 时调用, remaining=0 或 Retry-After 出现
+ * 即触发 hostGate.reportHostRateLimited 主动让步(整队停手到 reset 时刻或 Retry-After 到期)。
+ * 与既有 429 抛错路径 attachRetryAfterMs 互补: 那里仅在 429 时抢救头信息, 此处在 200 OK
+ * 但头宣告"额度耗尽"的站点提前感知, 避免反复撞到 429 才停手。
+ */
+function analyzeRateLimitHeaders(headers: { get(name: string): string | null } | undefined | null): {
+  remaining: number | undefined
+  retryAfterMs: number | undefined
+  resetMs: number | undefined
+} {
+  const out: { remaining: number | undefined; retryAfterMs: number | undefined; resetMs: number | undefined } = {
+    remaining: undefined, retryAfterMs: undefined, resetMs: undefined,
+  }
+  if (!headers || typeof headers.get !== 'function') return out
+  // X-RateLimit-Remaining(整数, ≥0 才采纳; 负数视为非法丢弃)
+  const remRaw = headers.get('x-ratelimit-remaining')
+  if (remRaw) {
+    const n = parseInt(remRaw, 10)
+    if (Number.isFinite(n) && n >= 0) out.remaining = n
+  }
+  // Retry-After(秒数或 HTTP-date) —— 复用既有 parseRetryAfterHeaderMs
+  const raRaw = headers.get('retry-after')
+  if (raRaw) {
+    const ms = parseRetryAfterHeaderMs(raRaw)
+    if (ms !== undefined) out.retryAfterMs = ms
+  }
+  // X-RateLimit-Reset(秒级 epoch); 个别 API 用毫秒, 用合理阈值区分(<1e12 视为秒, ≥1e12 视为毫秒)
+  const resetRaw = headers.get('x-ratelimit-reset')
+  if (resetRaw) {
+    const n = Number(resetRaw)
+    if (Number.isFinite(n) && n > 0) {
+      const ms = n < 1e12 ? n * 1000 : n
+      // 仅采纳未来时刻(过去的 reset 是脏数据, 多见于时钟漂移)
+      if (ms > Date.now()) out.resetMs = ms
+    }
+  }
+  return out
+}
+
+/** 把 analyzeRateLimitHeaders 结果应用到 hostGate 限流冷却(agent-EE):
+ *  remaining=0 或 retryAfterMs 出现时推后 rateLimitedUntil; resetMs 优先作冷却到期目标。
+ *  返回是否实际推后了冷却期(供调用方写观测日志)。冷却时长上限钳制由 hostGate 内部处理 */
+function applyRateLimitAnalysis(url: string, analysis: {
+  remaining: number | undefined
+  retryAfterMs: number | undefined
+  resetMs: number | undefined
+}): boolean {
+  // remaining > 0 且无 retryAfter/reset → 仍有额度, 不让步
+  const hasRemainingBudget =
+    typeof analysis.remaining === 'number' && analysis.remaining > 0
+  const noRateLimitSignal =
+    analysis.retryAfterMs === undefined && analysis.resetMs === undefined
+  if (hasRemainingBudget && noRateLimitSignal) return false
+  // 计算冷却时长: 优先 resetMs(精确到额度恢复时刻), 次选 retryAfterMs, 兜底 30s
+  let cooldownMs = 30_000
+  if (typeof analysis.resetMs === 'number') {
+    cooldownMs = Math.max(1000, analysis.resetMs - Date.now())
+  } else if (typeof analysis.retryAfterMs === 'number') {
+    cooldownMs = analysis.retryAfterMs
+  }
+  // 仅在确有限流信号(remaining=0 / retryAfter 出现)时才让步
+  if (noRateLimitSignal && analysis.remaining !== 0) return false
+  return reportHostRateLimited(url, cooldownMs)
+}
+
 async function fetchHttp(url: string, cfg: FetchConfig, ua: string, proxy = '', transport: 'native' | 'relay' = 'native'): Promise<string> {
   // agent-S-fetcher-runner-phase4: 记录请求开始时刻, 成功时喂 recordHostLatency 供 adaptiveMinGapMs 调整
   const reqStart = Date.now()
@@ -2520,27 +2743,47 @@ async function fetchHttp(url: string, cfg: FetchConfig, ua: string, proxy = '', 
         ? (cfg.referer !== false ? prevHopUrl : '')
         : undefined
       const headers = buildHeaders(hopUrl, cfg, ua, { fingerprint: true, refererOverride })
+      // agent-EE-crawl-phase7: onRequestInit 拦截回调(运行时注入, 零回归条件: cfg.onRequestInit
+      // 为 function 才调用)。允许调用方修改 url / 增删 headers(典型: 站点特定 HMAC 签名、
+      // 动态 bearer token)。回调内异常被 catch 静默降级原 init(不阻断请求链路)。
+      // 修改只在 hop=0 生效(避免重定向中间跳误改 header), relay 路径同样跳过(relayHop
+      // 直接接收 headers 参数, 此处变更对 relay 无效)
+      let effHopUrl = hopUrl
+      let effHeaders = headers
+      if (hop === 0 && typeof cfg.onRequestInit === 'function' && transport === 'native') {
+        try {
+          const ret = cfg.onRequestInit(hopUrl, headers) || {}
+          if (typeof ret.url === 'string' && ret.url) {
+            // 仅采纳 http(s) URL 防注入(避免回调把 url 改成 file:///etc/passwd)
+            if (/^https?:\/\//i.test(ret.url)) effHopUrl = ret.url
+          }
+          if (ret.headers && typeof ret.headers === 'object') {
+            // 合并: 回调 headers 覆盖原 headers(同键以回调值为准)
+            effHeaders = { ...headers, ...ret.headers }
+          }
+        } catch { /* 静默降级: 用原 hopUrl + headers 继续请求 */ }
+      }
       // 出口代理逐跳同代理(会话连贯性/出口固定); 交叉类型携带非标准 proxy 字段
       // (Bun 运行时扩展生效, 不依赖 bun-types 全局声明)
-      const init: RequestInit & { proxy?: string; dispatcher?: unknown } = { headers, redirect: 'manual', signal: controller.signal }
+      const init: RequestInit & { proxy?: string; dispatcher?: unknown } = { headers: effHeaders, redirect: 'manual', signal: controller.signal }
       if (proxy) init.proxy = proxy
       // agent-Z-crawl-phase6: per-host keep-alive 池(opt-in, cfg.keepAlivePool=true)。
       // 代理路径不启用(代理自身管理连接池); relay 路径不启用(localhost 单跳)。
       // undici 不可用(Bun 运行时)时静默降级为全局 fetch(Bun 自身已 keep-alive + h2)
       if (!proxy && transport === 'native' && cfg.keepAlivePool === true) {
-        const dispatcher = await getHostDispatcher(hopUrl, { h2: cfg.h2Pool === true })
+        const dispatcher = await getHostDispatcher(effHopUrl, { h2: cfg.h2Pool === true })
         if (dispatcher) init.dispatcher = dispatcher
       }
       // gg 中继桥: transport='relay' 时逐跳经 bun 中继服务发起(响应重组为 Response 形态,
       // status/location/getSetCookie/arrayBuffer 全保持 —— 逐跳重定向/Cookie 收集/超时/
       // 指纹头组语义全部复用本循环, 与 native 传输唯一差异在底层传输介质)
       const res = transport === 'relay' && proxy
-        ? await relayHop(hopUrl, headers, proxy, controller.signal, timeoutMs)
-        : await fetch(hopUrl, init)
+        ? await relayHop(effHopUrl, effHeaders, proxy, controller.signal, timeoutMs)
+        : await fetch(effHopUrl, init)
       if (cfg.autoCookie !== false) {
         const setCookies = typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : []
         // 每跳 Cookie 记到该跳 URL 的 origin 名下: 跨域重定向不串味, 同站跳转按域聚合
-        cookieJar.store(originHost(hopUrl), setCookies)
+        cookieJar.store(originHost(effHopUrl), setCookies)
       }
       const location = res.headers.get('location')
       if (res.status >= 300 && res.status < 400 && location) {
@@ -2550,7 +2793,9 @@ async function fetchHttp(url: string, cfg: FetchConfig, ua: string, proxy = '', 
         try { void res.body?.cancel().catch(() => {}) } catch { /* ignore */ }
         let next: URL
         try {
-          next = new URL(location, hopUrl) // 相对 Location(./x、/x、//host)按当前跳解析
+          // agent-EE: 相对 Location 按 effHopUrl 解析(若 onRequestInit 改写了首跳 URL,
+          // 后续重定向必须基于实际请求 URL 解析 Location, 否则把相对路径错挂到原 hopUrl)
+          next = new URL(location, effHopUrl)
         } catch {
           // 非法 Location: 视作最终响应走 !res.ok 抛错语义(带 status+bodyHtml)
           // ee-d: 错误体同样走 charset 感知解码(GBK 站挑战壳若按 utf8 读成 FFFD, looksBlocked/isJsChallenge 全部漏判)
@@ -2563,12 +2808,12 @@ async function fetchHttp(url: string, cfg: FetchConfig, ua: string, proxy = '', 
           attachWafHeaders(err, res.headers) // agent-A-fetcher: WAF 头透传
           throw err
         }
-        if (next.protocol !== new URL(hopUrl).protocol) {
+        if (next.protocol !== new URL(effHopUrl).protocol) {
           // 跨 scheme: 仅放行 http→https 升级; 降级(https→http)与其余一律拒绝,
           // 防止降级明文跳转把会话 Cookie 带到不安全上下文
-          const upgrade = new URL(hopUrl).protocol === 'http:' && next.protocol === 'https:'
+          const upgrade = new URL(effHopUrl).protocol === 'http:' && next.protocol === 'https:'
           if (!upgrade) {
-            const err: any = new Error(`HTTP ${res.status} 重定向跨 scheme 被拒绝(${new URL(hopUrl).protocol}→${next.protocol})`)
+            const err: any = new Error(`HTTP ${res.status} 重定向跨 scheme 被拒绝(${new URL(effHopUrl).protocol}→${next.protocol})`)
             err.status = res.status
             attachRetryAfterMs(err, res.headers) // ab-b: 同上(3xx 错误形态, 头在才挂)
             attachWafHeaders(err, res.headers) // agent-A-fetcher: WAF 头透传
@@ -2576,7 +2821,8 @@ async function fetchHttp(url: string, cfg: FetchConfig, ua: string, proxy = '', 
           }
         }
         // B40: 更新 prevHopUrl 为当前跳 URL(下一跳的 Referer 来源), 再切换 hopUrl
-        prevHopUrl = hopUrl
+        // agent-EE: prevHopUrl 用 effHopUrl(实际请求的 URL), 而非原 hopUrl(可能被 onRequestInit 改写)
+        prevHopUrl = effHopUrl
         hopUrl = next.toString()
         continue
       }
@@ -2600,6 +2846,15 @@ async function fetchHttp(url: string, cfg: FetchConfig, ua: string, proxy = '', 
       // agent-S-fetcher-runner-phase4: 记录 per-host EWMA 延迟(仅成功路径, 失败延迟不代表源站能力)
       // 供 adaptiveMinGapMs 调整 minGap: avg<200ms 放快节奏, avg>2000ms 放慢节奏
       recordHostLatency(url, Date.now() - reqStart)
+      // agent-EE-crawl-phase7: rateLimitAware —— 200 OK 但响应头宣告"额度耗尽"的站点
+      // 主动让步, 避免反复撞到 429 才停手。仅在 cfg.rateLimitAware===true 时启用(零回归)
+      if (cfg.rateLimitAware === true) {
+        const analysis = analyzeRateLimitHeaders(res.headers)
+        const throttled = applyRateLimitAnalysis(url, analysis)
+        if (throttled) {
+          console.warn(`[fetcher] rateLimitAware 主动让步(remaining=${analysis.remaining ?? 'n/a'}, resetMs=${analysis.resetMs ?? 'n/a'}, retryAfterMs=${analysis.retryAfterMs ?? 'n/a'}): ${url.slice(0, 160)}`)
+        }
+      }
       return decodeBuffer(buf, res.headers.get("content-type") ?? undefined)
     }
   } catch (e: any) {
@@ -3889,6 +4144,21 @@ async function fetchPageOnce(url: string, cfg: FetchConfig): Promise<FetchResult
         if (solved) return { html: solved, engine: 'http', blocked: false }
       }
       if (fallbackStatus.includes(lastStatus)) {
+        // agent-EE-crawl-phase7: smartBackoff —— 403 且响应已确认 looksBlocked(token 求解失败)
+        // 视为"WAF 硬拦截", 跳过 cookie 重试 + 429/5xx 退避重试, 直接 break 升级浏览器。
+        // 429/412/503 仍走原退避路径(限流/瞬时故障重试有收益); 403 挑战页永远 403, 徒劳重试
+        // 只增加无效请求 + 拉长采集延迟。零回归条件: cfg.smartBackoff === true 才启用
+        const isHardBlocked403 = lastStatus === 403 && !!bodyHtml && looksBlocked(bodyHtml, {
+          status: lastStatus,
+          serverHeader: e?.serverHeader,
+          cfRay: e?.cfRay,
+          cfMitigated: e?.cfMitigated,
+        })
+        if (cfg.smartBackoff === true && isHardBlocked403 && cookieJar.count(domain) === 0) {
+          // 罐为空 → 排除"陈旧会话"路径, 此 403 是 WAF 硬拦, 直接升级浏览器
+          lastErr = e
+          break
+        }
         const gotNewCookie = cookieJar.count(domain) > cookiesBefore
         if ((gotNewCookie || isJsChallenge(bodyHtml)) && cookieRetries < MAX_COOKIE_RETRIES) {
           cookieRetries++

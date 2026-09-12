@@ -211,7 +211,7 @@ export default function PublicSite({
       case 'book':
         return <BookView key={`book-${view.bookId || ''}-${site.id}`} bookId={view.bookId} tocPage={view.page || 1} />
       case 'read':
-        return <ReadView key={`read-${view.chapterId || ''}`} chapterId={view.chapterId} />
+        return <ReadView key={`read-${view.chapterId || ''}`} chapterId={view.chapterId} initialPage={view.page} />
       case 'search':
         return <SearchView key={`search-${view.q || ''}`} q={view.q} />
       case 'history':

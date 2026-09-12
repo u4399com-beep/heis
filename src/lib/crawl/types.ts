@@ -333,6 +333,32 @@ export interface FetchConfig {
    *  列表发现最后)。未设=normal(不参与排序, 与现有 FIFO 行为一致, 零回归)。
    *  当前实现为元数据字段(供未来调度器消费), fetcher 不直接改变请求行为 */
   requestPriority?: 'list' | 'book' | 'chapter'
+  // ---------- agent-EE-crawl-phase7: 反反爬增强(响应头分析 + 智能退避 + Cookie 持久化 + 请求拦截) ----------
+  /** 响应头限流感知(agent-EE): true=在 fetchHttp 成功路径解析 X-RateLimit-Remaining /
+   *  X-RateLimit-Reset / Retry-After 头, 当 remaining=0 或 Retry-After 出现时主动调用
+   *  hostGate.reportHostRateLimited 把该 host 推入限流冷却期(整队停手到 reset 时刻)。
+   *  缺省 false=零回归(仅在 429 抛错路径感知 Retry-After, 与既有行为一致)。
+   *  启用后: 200 OK 但响应头宣告"额度耗尽"的站点(常见 GitHub API/第三方限流代理)不再被
+   *  反复撞到 429 才停手, 而是在额度耗尽那一刻主动让步 */
+  rateLimitAware?: boolean
+  /** 智能退避策略(agent-EE): true=区分 429(源站限流, 走 HTTP 退避重试)与 403(疑似 WAF 拦截,
+   *  跳过 HTTP 重试直接升级浏览器渲染)。缺省 false=零回归(403/429/412/503 统一走 fallbackStatus
+   *  退避重试链, 与既有行为一致)。启用后 403 不再徒劳重试 HTTP(挑战页永远是 403), 直接升级浏览器
+   *  减少无效请求 + 缩短采集延迟。429/412/503 仍走原退避路径 */
+  smartBackoff?: boolean
+  /** Cookie 持久化路径(agent-EE): 设置后 CookieJar 会以 5s 去抖写入该路径(JSON 文件),
+   *  进程重启后自动加载, 让 cf_clearance 等会话凭证跨重启复用(避免每次重启都从首访
+   *  重新过盾)。空字符串/未设=关闭持久化(零回归, 内存态同既有)。路径必须以 .json 结尾,
+   *  由 sanitizeFetchConfig 钳长 ≤1000 字符。注意: 多进程并发写同一文件不安全(无文件锁),
+   *  仅适用于单进程采集场景 */
+  cookiePersistPath?: string
+  /** 请求拦截回调(agent-EE, 运行时注入同 pageFetch, 不进 sanitize 白名单):
+   *  在 fetchHttp 实际发起 fetch() 前调用, 允许调用方修改 url / headers / 增加签名头。
+   *  返回 undefined = 不修改; 返回部分字段 = 合并覆盖。典型用途: 站点特定 HMAC 签名、
+   *  动态 bearer token 注入(比 tokenUrl+tokenPattern 更灵活)、A/B 测试 header 改写。
+   *  注意: 回调内不得发阻塞 IO(会拖慢请求链路), 不得抛错(异常被 catch 静默降级原请求) */
+  onRequestInit?: (url: string, headers: Record<string, string>) =>
+    { url?: string; headers?: Record<string, string> } | void
 }
 
 /**
@@ -823,6 +849,19 @@ export function sanitizeFetchConfig(v: unknown): Partial<FetchConfig> {
   if (r.requestPriority === 'list' || r.requestPriority === 'book' || r.requestPriority === 'chapter') {
     out.requestPriority = r.requestPriority
   }
+  // agent-EE-crawl-phase7: rateLimitAware / smartBackoff(布尔, 缺省零回归)
+  const rateLimitAware = safeBool(r.rateLimitAware)
+  if (rateLimitAware !== undefined) out.rateLimitAware = rateLimitAware
+  const smartBackoff = safeBool(r.smartBackoff)
+  if (smartBackoff !== undefined) out.smartBackoff = smartBackoff
+  // agent-EE-crawl-phase7: cookiePersistPath(字符串路径, 钳长 1000, 必须以 .json 结尾才采纳)
+  // 注意: 该字段持久化跨重启 Cookie, 安全责任在操作员(路径不应可被其他用户读写)
+  const cookiePersistPath = safeStr(r.cookiePersistPath, 1000)
+  if (cookiePersistPath && /\.json$/i.test(cookiePersistPath)) {
+    out.cookiePersistPath = cookiePersistPath
+  }
+  // onRequestInit 为运行时注入函数(同 pageFetch 口径)刻意不进白名单
+  // (函数不可 JSON 序列化, 规则 JSON 同名键自然丢弃, 仅运行时构造 cfg 时设置)
   return out
 }
 

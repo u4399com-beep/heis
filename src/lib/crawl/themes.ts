@@ -345,6 +345,53 @@ export const THEMES: ThemeDef[] = [
     },
     preview: ['#ffffff', '#fd8929', '#d71704'],
   },
+  {
+    // 仿 huangjinwu.org — 浅蓝渐变背景 + 白色卡片 + 蓝色强调 + 系统 UI 字体
+    // 数据源: huangjinwu.org/static/default/style.css :root 与 [data-theme=dark] 变量
+    // 同时支持亮/暗双模式: dark=true 表示该主题在 dark 模式下有调色板 (PublicSite 用
+    // theme.dark 切换 Toaster 配色; 此处保留 false 因为该站本身为亮色基底, 暗色由
+    // [data-theme=dark] CSS 变量提供, 但本主题系统不强制暗色基底)
+    id: 'huangjinwu',
+    name: '黄金屋',
+    desc: '仿黄金屋·浅蓝渐变背景·白色圆角卡片·系统字体·蓝色强调·清新书城',
+    layout: 'grid',
+    dark: false,
+    read: {
+      layout: 'classic', measure: 800, lineHeight: 1.65, fontBase: 18,
+      indent: true, justify: true, toolbar: 'inline', texture: 'none', chapterDeco: 'rule',
+    },
+    vars: {
+      // --bg-gradient: linear-gradient(180deg,#f5f8ff 0%,#eef3fb 100%) / --bg-color:#f0f4fb
+      bg: 'linear-gradient(180deg, #f5f8ff 0%, #eef3fb 100%)',
+      // --card-bg:#fff
+      surface: '#ffffff',
+      // --hover-color:#e8f1ff (alt surface for hover/active secondary fills)
+      surfaceAlt: '#e8f1ff',
+      // --text-color:#1e293b
+      text: '#1e293b',
+      // --text-light:#64748b
+      textMuted: '#64748b',
+      // --secondary-color:#2563eb (蓝色强调, logo/链接/按钮 hover 主色)
+      primary: '#2563eb',
+      // --btn-primary-hover-text:#fff
+      primaryText: '#ffffff',
+      // --logo-color:#1d4ed8 (与 primary 同色系, 用于渐变第二色)
+      accent: '#1d4ed8',
+      // --border-color:#dbe4f0
+      border: '#dbe4f0',
+      // --border-radius:6px (卡片按钮用 6px; --border-radius-lg:10px 由组件层用 1.6× 计算)
+      radius: '6px',
+      // --font-family-ui: 系统 UI 字体栈
+      fontFamily:
+        '-apple-system, BlinkMacSystemFont, "Microsoft YaHei", "PingFang SC", "Segoe UI", "Helvetica Neue", Arial, sans-serif',
+      // --shadow:0 1px 2px rgba(15,23,42,.04),0 4px 16px rgba(37,99,235,.06)
+      cardShadow: '0 1px 2px rgba(15,23,42,0.04), 0 4px 16px rgba(37,99,235,0.06)',
+      // 站点 header 用 --header-bg:rgba(255,255,255,.92) + backdrop-blur, 'solid' 风格渲染 surface
+      headerStyle: 'solid',
+    },
+    // 预览三色: [bg(取 --bg-color #f0f4fb), primary(--secondary-color #2563eb), accent(--logo-color #1d4ed8)]
+    preview: ['#f0f4fb', '#2563eb', '#1d4ed8'],
+  },
 ]
 
 export function getTheme(id: string | null | undefined): ThemeDef {
