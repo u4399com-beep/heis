@@ -392,9 +392,9 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
     })
   }
   useSiteSEO({
-    title: book ? generateTitle({ bookName: book.name, author: book.author, category: (book as any).category, siteName: site.name }) : `书籍详情 - ${site.name}`,
-    description: book ? generateMetaDescription({ bookName: book.name, author: book.author, category: (book as any).category, intro: book.intro, wordCount: (book as any).wordCount, siteName: site.name }) : undefined,
-    keywords: book ? generateKeywords({ bookName: book.name, author: book.author, category: (book as any).category, existingKeywords: book.keywords, content: book.intro, siteName: site.name }) : undefined,
+    title: book ? generateTitle({ bookName: book.name, author: book.author, category: book.category, siteName: site.name }) : `书籍详情 - ${site.name}`,
+    description: book ? generateMetaDescription({ bookName: book.name, author: book.author, category: book.category, intro: book.intro, wordCount: book.wordCount, siteName: site.name }) : undefined,
+    keywords: book ? generateKeywords({ bookName: book.name, author: book.author, category: book.category, existingKeywords: book.keywords, content: book.intro, siteName: site.name }) : undefined,
     canonicalPath: book ? `/?view=book&id=${book.id}&site=${site.id}` : undefined,
     site,
     jsonLd: book

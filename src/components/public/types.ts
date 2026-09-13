@@ -108,6 +108,10 @@ export interface ChapterData {
     author: string
     status: BookStatus | string
     keywords: string
+    // agent-AAA-audit: chapter API 已显式 reshape 返回 category(字符串分类名) + intro
+    // (字符串简介), 供 ReadView 智能 TDK 使用; 旧客户端缓存可能缺此字段, 标 optional 防回归
+    category?: string
+    intro?: string
   }
   prev: { id: string; title: string } | null
   next: { id: string; title: string } | null

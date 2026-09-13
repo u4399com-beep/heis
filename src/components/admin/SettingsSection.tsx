@@ -8,9 +8,10 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { FolderOpen, Loader2, Save, Settings, Server, KeyRound, Eye, EyeOff, Shield } from 'lucide-react'
+import { FolderOpen, Loader2, Save, Settings, Server, KeyRound, Eye, EyeOff, Shield, LayoutDashboard } from 'lucide-react'
 import { toast } from 'sonner'
 import { api, safeJsonParse } from './helpers'
+import { DASHBOARD_CARD_KEYS, DASHBOARD_CARD_META, DASHBOARD_CARDS_DEFAULT, parseDashboardCards, serializeDashboardCards, type DashboardCardKey } from './dashboardCards'
 
 interface DownloadSetting {
   siteName?: string
@@ -76,6 +77,9 @@ export function SettingsSection() {
   // R7-26: 违禁词
   const [bannedWords, setBannedWords] = useState('')
   const [savingBanned, setSavingBanned] = useState(false)
+  // 仪表盘卡片开关
+  const [dashboardCards, setDashboardCards] = useState<Set<DashboardCardKey>>(() => new Set<DashboardCardKey>(DASHBOARD_CARDS_DEFAULT))
+  const [savingCards, setSavingCards] = useState(false)
 
   useEffect(() => {
     ;(async () => {
@@ -99,6 +103,8 @@ export function SettingsSection() {
           [],
         )
         setBannedWords((bw || []).join('\n'))
+        // 仪表盘卡片开关
+        setDashboardCards(parseDashboardCards(settings.dashboardCards))
       } catch (e) {
         toast.error(e instanceof Error ? e.message : '加载设置失败')
       } finally {
@@ -157,6 +163,28 @@ export function SettingsSection() {
     const merged = [...existing, ...PRESET_BANNED_WORDS.filter((w) => !existing.has(w))]
     setBannedWords(merged.join('\n'))
     toast.success(`已加载${PRESET_BANNED_WORDS.length}个预设违禁词`)
+  }
+
+  // 仪表盘卡片开关保存
+  const saveDashboardCards = async () => {
+    setSavingCards(true)
+    try {
+      const arr = serializeDashboardCards(dashboardCards)
+      await api.put('/api/admin/settings', { dashboardCards: arr })
+      toast.success('仪表盘卡片配置已保存, 刷新仪表盘后生效')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '保存失败')
+    } finally {
+      setSavingCards(false)
+    }
+  }
+  const toggleCard = (key: DashboardCardKey) => {
+    setDashboardCards((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
   }
 
   const updateField = (serviceKey: keyof MiniServiceConfig, fieldId: string, value: string) => {
@@ -314,6 +342,49 @@ export function SettingsSection() {
                 {savingMini ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
                 保存 mini-service 配置
               </Button>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* 仪表盘卡片开关 */}
+      <Card className="border-zinc-800 bg-zinc-900/60">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-sm text-zinc-200">
+            <LayoutDashboard className="h-4 w-4 text-violet-400" />
+            仪表盘卡片显示开关
+          </CardTitle>
+          <CardDescription className="text-xs text-zinc-500">勾选要在仪表盘显示的卡片，取消勾选则隐藏</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3 p-4 pt-0">
+          {loading ? (
+            <div className="flex items-center justify-center py-8 text-sm text-zinc-500"><Loader2 className="mr-2 h-4 w-4 animate-spin" />加载中…</div>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 gap-2">
+                {DASHBOARD_CARD_KEYS.map((key) => {
+                  const meta = DASHBOARD_CARD_META[key]
+                  const enabled = dashboardCards.has(key)
+                  return (
+                    <label key={key} className="flex items-center gap-2 rounded-md border border-zinc-800 bg-zinc-950/60 p-2.5 cursor-pointer hover:border-zinc-700 transition-colors">
+                      <input type="checkbox" checked={enabled} onChange={() => toggleCard(key)} className="h-4 w-4 rounded border-zinc-600 bg-zinc-900" />
+                      <div>
+                        <div className="text-xs font-medium text-zinc-200">{meta.label}</div>
+                        <div className="text-[10px] text-zinc-500">{meta.desc}</div>
+                      </div>
+                    </label>
+                  )
+                })}
+              </div>
+              <div className="flex gap-2">
+                <Button size="sm" className="gap-1.5" onClick={saveDashboardCards} disabled={savingCards}>
+                  {savingCards ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                  保存卡片配置
+                </Button>
+                <Button size="sm" variant="outline" className="border-zinc-700 text-zinc-300" onClick={() => setDashboardCards(new Set<DashboardCardKey>(DASHBOARD_CARDS_DEFAULT))} disabled={savingCards}>
+                  恢复默认(全部启用)
+                </Button>
+              </div>
             </>
           )}
         </CardContent>

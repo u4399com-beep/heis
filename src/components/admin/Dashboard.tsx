@@ -57,6 +57,9 @@ import {
   type TaskProgress,
   type TaskStatus,
 } from './helpers'
+// agent-AAA-audit: 仪表盘卡片开关 —— SettingsSection 让用户配置 dashboardCards,
+// Dashboard 必须读取该设置并据此 gate 各 section 的渲染, 否则开关失效(dead config)
+import { DASHBOARD_CARDS_DEFAULT, parseDashboardCards, type DashboardCardKey } from './dashboardCards'
 
 // 自动刷新间隔 (仅在 tab 可见时实际触发 fetch, 不可见时跳过以省请求)
 const AUTO_REFRESH_MS = 60_000
@@ -221,6 +224,21 @@ export function Dashboard({ onNavigate }: DashboardProps) {
   const [loading, setLoading] = useState(true)
   const [lastUpdated, setLastUpdated] = useState<number | null>(null)
   const [autoRefresh, setAutoRefresh] = useState(true)
+  // agent-AAA-audit: 从 /api/admin/settings 读取 dashboardCards 配置, 缺省全开(向后兼容)
+  const [enabledCards, setEnabledCards] = useState<Set<DashboardCardKey>>(() => new Set(DASHBOARD_CARDS_DEFAULT))
+  useEffect(() => {
+    let alive = true
+    api.get<Record<string, unknown>>('/api/admin/settings')
+      .then((settings) => {
+        if (!alive) return
+        setEnabledCards(parseDashboardCards(settings.dashboardCards))
+      })
+      .catch(() => {
+        // 静默失败: 保留默认全开卡片(不阻塞仪表盘渲染)
+      })
+    return () => { alive = false }
+  }, [])
+  const cardEnabled = useCallback((key: DashboardCardKey) => enabledCards.has(key), [enabledCards])
 
   const load = useCallback(async (opts: { isFirst: boolean }) => {
     if (opts.isFirst) setLoading(true)
@@ -390,9 +408,10 @@ export function Dashboard({ onNavigate }: DashboardProps) {
       </Card>
 
       {/* 系统健康 (auto-refresh 30s) */}
-      <HealthCard onSessionExpired={() => setStats(null)} />
+      {cardEnabled('health') && <HealthCard onSessionExpired={() => setStats(null)} showMiniServices={cardEnabled('miniServices')} />}
 
       {/* 统计卡片 */}
+      {cardEnabled('stats') && (
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-7">
         {cards.map((c) => (
           <Card
@@ -432,9 +451,12 @@ export function Dashboard({ onNavigate }: DashboardProps) {
           </Card>
         ))}
       </div>
+      )}
 
       {/* 第二行: 采集活动 + 状态分布 */}
+      {(cardEnabled('trends') || cardEnabled('insights')) && (
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        {cardEnabled('trends') && (
         <ChartCard
           title="近7天采集活动"
           icon={Activity}
@@ -484,7 +506,9 @@ export function Dashboard({ onNavigate }: DashboardProps) {
             </AreaChart>
           </ResponsiveContainer>
         </ChartCard>
+        )}
 
+        {cardEnabled('insights') && (
         <ChartCard
           title="书籍状态分布"
           icon={PieIcon}
@@ -522,10 +546,14 @@ export function Dashboard({ onNavigate }: DashboardProps) {
             </PieChart>
           </ResponsiveContainer>
         </ChartCard>
+        )}
       </div>
+      )}
 
       {/* 第三行: 分类字数排行 + 任务状态分布 */}
+      {(cardEnabled('stats') || cardEnabled('tasks')) && (
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        {cardEnabled('stats') && (
         <ChartCard
           title="分类字数排行 (Top 10)"
           icon={BarChart3}
@@ -569,7 +597,9 @@ export function Dashboard({ onNavigate }: DashboardProps) {
             </BarChart>
           </ResponsiveContainer>
         </ChartCard>
+        )}
 
+        {cardEnabled('tasks') && (
         <ChartCard
           title="任务状态分布"
           icon={ListTodo}
@@ -611,11 +641,15 @@ export function Dashboard({ onNavigate }: DashboardProps) {
             </BarChart>
           </ResponsiveContainer>
         </ChartCard>
+        )}
       </div>
+      )}
 
       {/* 底行: 最近任务 + (最近入库 + 分类分布) */}
+      {(cardEnabled('tasks') || cardEnabled('stats') || cardEnabled('categories')) && (
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         {/* 最近任务 */}
+        {cardEnabled('tasks') && (
         <Card className="border-zinc-800 bg-zinc-900/60">
           <CardHeader className="flex-row items-center justify-between space-y-0 pb-3">
             <CardTitle className="text-sm text-zinc-200">最近任务</CardTitle>
@@ -662,9 +696,12 @@ export function Dashboard({ onNavigate }: DashboardProps) {
             )}
           </CardContent>
         </Card>
+        )}
 
+        {(cardEnabled('stats') || cardEnabled('categories')) && (
         <div className="space-y-4">
           {/* 最近入库 */}
+          {cardEnabled('stats') && (
           <Card className="border-zinc-800 bg-zinc-900/60">
             <CardHeader className="flex-row items-center justify-between space-y-0 pb-3">
               <CardTitle className="text-sm text-zinc-200">最近入库书籍</CardTitle>
@@ -706,8 +743,10 @@ export function Dashboard({ onNavigate }: DashboardProps) {
               )}
             </CardContent>
           </Card>
+          )}
 
           {/* 分类分布 */}
+          {cardEnabled('categories') && (
           <Card className="border-zinc-800 bg-zinc-900/60">
             <CardHeader className="pb-3">
               <CardTitle className="text-sm text-zinc-200">分类分布</CardTitle>
@@ -738,8 +777,11 @@ export function Dashboard({ onNavigate }: DashboardProps) {
               )}
             </CardContent>
           </Card>
+          )}
         </div>
+        )}
       </div>
+      )}
     </div>
   )
 }

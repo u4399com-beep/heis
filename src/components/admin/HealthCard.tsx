@@ -27,6 +27,8 @@ import {
 interface HealthCardProps {
   /** 会话失效时回调, 用于触发父级登录页 (可选) */
   onSessionExpired?: () => void
+  /** agent-AAA-audit: 是否显示 mini-services 6 点状态行 (供 dashboardCards 'miniServices' 开关消费) */
+  showMiniServices?: boolean
 }
 
 const REFRESH_MS = 30_000
@@ -83,7 +85,7 @@ async function fetchHealth(): Promise<HealthResult> {
   return { status: res.status, data: json.data, ok: true }
 }
 
-export function HealthCard({ onSessionExpired }: HealthCardProps) {
+export function HealthCard({ onSessionExpired, showMiniServices = true }: HealthCardProps) {
   const [health, setHealth] = useState<HealthData | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -185,6 +187,7 @@ export function HealthCard({ onSessionExpired }: HealthCardProps) {
         </div>
 
         {/* mini-services 6 点 */}
+        {showMiniServices && (
         <div className="flex items-center gap-2">
           <span className="text-[11px] text-zinc-500">服务</span>
           <div className="flex items-center gap-1.5">
@@ -216,6 +219,7 @@ export function HealthCard({ onSessionExpired }: HealthCardProps) {
             })}
           </div>
         </div>
+        )}
 
         {/* DB 状态 */}
         <div className="flex items-center gap-2 lg:ml-auto">

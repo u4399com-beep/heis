@@ -78,8 +78,13 @@ export async function GET(req: Request) {
 
     const ch = await db.chapter.findUnique({
       where: { id },
+      // agent-AAA-audit: 把 book relation + category relation 一并 include, 供下方
+      // 显式 reshape —— 修前 select 仅含 5 字段(id/name/author/status/keywords),
+      // ReadView.tsx 通过 (data.book as any).category / .intro 访问此二字段恒为
+      // undefined, TDK 生成残缺。改 include 后由 response shape 显式提供 category
+      // (字符串分类名) + intro (字符串简介), 与 /api/public/book 路由对齐口径
       include: {
-        book: { select: { id: true, name: true, author: true, status: true, keywords: true } },
+        book: { include: { category: true } },
       },
     })
     if (!ch) return fail('章节不存在', 404)
@@ -162,7 +167,17 @@ export async function GET(req: Request) {
         wordCount: ch.wordCount,
         storage: ch.storage,
       },
-      book: ch.book,
+      // agent-AAA-audit: 显式 reshape book —— 仅暴露前台需要的标量字段; category 由
+      // relation object 转换为字符串分类名(与 /api/public/book 同口径), 兜底'未分类'
+      book: {
+        id: ch.book.id,
+        name: ch.book.name,
+        author: ch.book.author,
+        status: ch.book.status,
+        keywords: ch.book.keywords,
+        category: ch.book.category?.name || '未分类',
+        intro: ch.book.intro,
+      },
       prev,
       next,
       // 分页元数据(向后兼容: off 模式 totalPages=1, currentPage=1)

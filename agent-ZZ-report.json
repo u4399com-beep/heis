@@ -1,0 +1,559 @@
+{
+  "timestamp": "2026-09-13T14:14:21.151Z",
+  "totalRules": 49,
+  "listPhase": {
+    "pass": 46,
+    "zeroItems": 2,
+    "errorBlocked": 1,
+    "details": [
+      {
+        "id": "cmtq1nhpo000cp2b55e62hml3",
+        "name": "ttkan中文(cn.ttkan.co)·自定义pure-g框架采集",
+        "listUrl": "https://cn.ttkan.co/novel/class/xuanhuan?page=1",
+        "ok": true,
+        "items": 38,
+        "engine": "http"
+      },
+      {
+        "id": "cmtq1nhqh000dp2b5u0mcl9oe",
+        "name": "69书吧(69shuba.com)·cdnshu框架GBK站采集",
+        "listUrl": "https://www.69shuba.com/novels/hot",
+        "ok": true,
+        "items": 50,
+        "engine": "http"
+      },
+      {
+        "id": "cmtq1nhrm000fp2b5m5d3gvjx",
+        "name": "101kks(101kks.com)·cdnshu框架UTF8站采集",
+        "listUrl": "https://101kks.com/novels/hot",
+        "ok": true,
+        "items": 30,
+        "engine": "http"
+      },
+      {
+        "id": "cmtq1nhva000kp2b50ge5l5z7",
+        "name": "UU看书(uukanshu.cc)·自定义框架繁体站采集",
+        "listUrl": "https://uukanshu.cc/class_1_1.html",
+        "ok": true,
+        "items": 30,
+        "engine": "http"
+      },
+      {
+        "id": "cmtqg9yae003fp2b5z0jechsb",
+        "name": "笔趣阁(www.biquge.tw)·直连SSR采集",
+        "listUrl": "https://www.biquge.tw/sort/1.html",
+        "ok": true,
+        "items": 21,
+        "engine": "http"
+      },
+      {
+        "id": "cmtqg9ywt003gp2b5s3zkzca5",
+        "name": "笔趣阁bqg713(www.bqg713.cc)·纯JSON API站采集",
+        "listUrl": "https://www.bqg713.cc/api/index?sort=all",
+        "ok": true,
+        "items": 58,
+        "engine": "http"
+      },
+      {
+        "id": "cmtqg9zkd003hp2b5xz1hgfpp",
+        "name": "努努书坊(www.kanunu8.com)·中文综合书坊采集",
+        "listUrl": "https://www.kanunu8.com/files/chinese/29-1.html",
+        "ok": true,
+        "items": 197,
+        "engine": "http"
+      },
+      {
+        "id": "cmtqga0bs003ip2b56vgql143",
+        "name": "久久小说网 (aijjxs.com)",
+        "listUrl": "https://www.aijjxs.com/txt/xuanhuan/index_1.html",
+        "ok": true,
+        "items": 10,
+        "engine": "http"
+      },
+      {
+        "id": "cmtqga0zq003jp2b5hjxbsdlh",
+        "name": "速读谷 (shudugu.org)",
+        "listUrl": "https://www.shudugu.org/xuanhuan/1.html",
+        "ok": true,
+        "items": 10,
+        "engine": "http"
+      },
+      {
+        "id": "cmtqga1nf003kp2b5ods7l1l6",
+        "name": "夜伴书屋 (yybsw.com)",
+        "listUrl": "https://www.yybsw.com/list/dushi1.html",
+        "ok": true,
+        "items": 10,
+        "engine": "http"
+      },
+      {
+        "id": "cmtqga2bj003lp2b5zzejgil4",
+        "name": "好读小说网(www.hodei.net)·直连SSR采集",
+        "listUrl": "https://www.hodei.net/xuanhuan/1.html",
+        "ok": true,
+        "items": 6,
+        "engine": "http"
+      },
+      {
+        "id": "cmtqga2zx003mp2b5fzs3h4j4",
+        "name": "大微小说网 (daweixs.com)",
+        "listUrl": "https://www.daweixs.com/xuanhuanxiaoshuo/",
+        "ok": true,
+        "items": 30,
+        "engine": "browser"
+      },
+      {
+        "id": "cmtqga3nm003np2b5xo31is4i",
+        "name": "知轩藏书(www.zxcs.click)·TXT资源站采集",
+        "listUrl": "https://www.zxcs.click/dushi/list_1.html",
+        "ok": true,
+        "items": 20,
+        "engine": "http"
+      },
+      {
+        "id": "cmtqga4b9003op2b5e1lcte7s",
+        "name": "稻草人书屋 (iidcr.com)",
+        "listUrl": "https://www.iidcr.com/nav/sublove-1.html",
+        "ok": true,
+        "items": 10,
+        "engine": "http"
+      },
+      {
+        "id": "cmtqga4ym003pp2b5ziz51wxt",
+        "name": "大奉打更人 (dafengdagengren.com)",
+        "listUrl": "https://www.dafengdagengren.com/xuanhuanxiaoshuo/",
+        "ok": true,
+        "items": 30,
+        "engine": "browser"
+      },
+      {
+        "id": "cmtqga6ac003rp2b5rfxa8eo4",
+        "name": "飘天文学(www.piaotia.com)·直连GBK采集",
+        "listUrl": "https://www.piaotia.com/booksort1/0/1.html",
+        "ok": true,
+        "items": 30,
+        "engine": "http"
+      },
+      {
+        "id": "cmtqga6y8003sp2b54jegzhdt",
+        "name": "精品小说(jpxs123.com)·繁体站直连采集",
+        "listUrl": "https://jpxs123.com/",
+        "ok": true,
+        "items": 20,
+        "engine": "http"
+      },
+      {
+        "id": "cmtqga89o003up2b5ketolp26",
+        "name": "八零电子书 (80ge.info)·wap正文·直连",
+        "listUrl": "http://www.80ge.info/top/lastupdate/1.html",
+        "ok": true,
+        "items": 20,
+        "engine": "http"
+      },
+      {
+        "id": "cmtqgaa8o003xp2b5qqi1lcic",
+        "name": "铅笔小说(23qb.net)·真实站点采集",
+        "listUrl": "https://www.23qb.net/book/lastupdate_1_0_0_0_0_0_0_0_0.html",
+        "ok": true,
+        "items": 30,
+        "engine": "http"
+      },
+      {
+        "id": "cmtqgaaw8003yp2b5pn0064fm",
+        "name": "爱下电子书(ixdzs8.com)·真实站点采集",
+        "listUrl": "https://ixdzs8.com/sort/1/?t=1&page=1",
+        "ok": true,
+        "items": 20,
+        "engine": "http"
+      },
+      {
+        "id": "cmtqgabk9003zp2b5dl46d10j",
+        "name": "101看書(101kks.com)·真实站点采集",
+        "listUrl": "https://101kks.com/novels/class/1_1.html",
+        "ok": true,
+        "items": 10,
+        "engine": "http"
+      },
+      {
+        "id": "cmtqgac8h0040p2b50o80yfqy",
+        "name": "得奇小说网 (deqixs.cc)·直连+签名代理正文",
+        "listUrl": "https://www.deqixs.cc/sort/1/1.html",
+        "ok": true,
+        "items": 30,
+        "engine": "http"
+      },
+      {
+        "id": "cmtqgadjt0042p2b5j29n7zgs",
+        "name": "七猫官方API (wtzw.com)·Legado7698·签名代理",
+        "listUrl": "http://127.0.0.1:3013/rank?rank_type=hot_list&tab_type=1",
+        "ok": true,
+        "items": 50,
+        "engine": "http"
+      },
+      {
+        "id": "cmtqgae7j0043p2b5d9jbgvl0",
+        "name": "番茄小说聚合API (fq.taijiwang.top)",
+        "listUrl": "https://fq.taijiwang.top/api/search?key=%E5%89%91&tab_type=3&offset=0",
+        "ok": true,
+        "items": 10,
+        "engine": "http"
+      },
+      {
+        "id": "cmtsoyvsp00x1qv88nx47dgtf",
+        "name": "霹雳书屋(www.pilishuwu.com)·CF防护隐身采集",
+        "listUrl": "https://www.pilishuwu.com/0/list/1.html",
+        "ok": true,
+        "items": 20,
+        "engine": "browser"
+      },
+      {
+        "id": "cmtwwancg0000slh5bk2540wu",
+        "name": "小雨的世界(full.hnxianxin.cn)·起点API采集",
+        "listUrl": "https://full.hnxianxin.cn/qd/search.php?keyword={keyword}&site=1&page=1&page_size=20",
+        "ok": true,
+        "items": 20,
+        "engine": "http"
+      },
+      {
+        "id": "cmtxna0780000nvc7wqr0mep9",
+        "name": "零点看书(23.225.143.230)·首页最近更新",
+        "listUrl": "http://23.225.143.230/",
+        "ok": true,
+        "items": 40,
+        "engine": "http"
+      },
+      {
+        "id": "cmtxna07a0001nvc7vilin6rv",
+        "name": "零点看书(23.225.143.230)·单本采集",
+        "listUrl": "http://23.225.143.230/",
+        "ok": true,
+        "items": 40,
+        "engine": "http"
+      },
+      {
+        "id": "cmtxna07b0002nvc70519s8mp",
+        "name": "二三阅读(23.225.66.244)·首页最近更新",
+        "listUrl": "http://23.225.66.244/",
+        "ok": true,
+        "items": 40,
+        "engine": "http"
+      },
+      {
+        "id": "cmtxna07d0003nvc7ca3djudu",
+        "name": "二三阅读(23.225.66.244)·单本采集",
+        "listUrl": "http://23.225.66.244/",
+        "ok": true,
+        "items": 40,
+        "engine": "http"
+      },
+      {
+        "id": "cmtxo97h70000nv8hq7fsryf2",
+        "name": "黄金屋(huangjinwu.org)·首页最新更新",
+        "listUrl": "https://www.huangjinwu.org/",
+        "ok": true,
+        "items": 24,
+        "engine": "http"
+      },
+      {
+        "id": "cmtxzridr0000sn4smc0irdzu",
+        "name": "UU看书(uukanshu.cc)·首页最近更新",
+        "listUrl": "https://uukanshu.cc/",
+        "ok": true,
+        "items": 30,
+        "engine": "http"
+      },
+      {
+        "id": "cmtxzrinj0001sn4snthitpce",
+        "name": "得奇小说网(deqixs.cc)·首页最近更新",
+        "listUrl": "https://www.deqixs.cc/",
+        "ok": true,
+        "items": 30,
+        "engine": "http"
+      },
+      {
+        "id": "cmtxzriwt0002sn4sp1cx2fs1",
+        "name": "好读小说网(hodei.net)·首页最近更新小说列表",
+        "listUrl": "https://www.hodei.net/",
+        "ok": true,
+        "items": 25,
+        "engine": "http"
+      },
+      {
+        "id": "cmtxzrkj90003sn4s9dz7sk9e",
+        "name": "格格党(gegedangbook.com)·首页最近更新小说列表",
+        "listUrl": "https://gegedangbook.com/",
+        "ok": true,
+        "items": 30,
+        "engine": "http"
+      },
+      {
+        "id": "cmtxzrlnt0004sn4sh9ey99wi",
+        "name": "江湖神算(jhsssd.com)·首页最新小说",
+        "listUrl": "https://jhsssd.com/",
+        "ok": true,
+        "items": 24,
+        "engine": "browser"
+      },
+      {
+        "id": "cmtxzrm720005sn4sq1lpsjle",
+        "name": "新键盘小说网(xinjianpan.com)·首页最近更新",
+        "listUrl": "https://www.xinjianpan.com/",
+        "ok": true,
+        "items": 20,
+        "engine": "http"
+      },
+      {
+        "id": "cmtxzrmgc0006sn4s0ues6928",
+        "name": "努努书坊(kanunu8.com)·首页最新更新",
+        "listUrl": "https://www.kanunu8.com/",
+        "ok": true,
+        "items": 12,
+        "engine": "http"
+      },
+      {
+        "id": "cmtxzrmz80007sn4s7321gb1w",
+        "name": "八零电子书(80ge.info)·首页最新TXT电子书",
+        "listUrl": "http://www.80ge.info/",
+        "ok": true,
+        "items": 20,
+        "engine": "http"
+      },
+      {
+        "id": "cmtxzrnjl0008sn4swtdvg4jm",
+        "name": "久久小说网(aijjxs.com)·首页最新上传",
+        "listUrl": "https://www.aijjxs.com/",
+        "ok": true,
+        "items": 86,
+        "engine": "http"
+      },
+      {
+        "id": "cmtxzrnvv0009sn4s0gxqfq37",
+        "name": "ttkan中文(cn.ttkan.co)·首页最近更新",
+        "listUrl": "https://cn.ttkan.co/api/nq/amp_last_serial_novel_updates?page=1&limit=50&language=cn",
+        "ok": true,
+        "items": 50,
+        "engine": "http"
+      },
+      {
+        "id": "cmtxzyhcg0000snk3pk7fk2wp",
+        "name": "爱下电子书(ixdzs8.com)·首页最近更新",
+        "listUrl": "https://ixdzs8.com/",
+        "ok": true,
+        "items": 15,
+        "engine": "http"
+      },
+      {
+        "id": "cmtxzyhwu0001snk3tv0i4ybp",
+        "name": "笔趣阁(www.biquge.tw)·首页最近更新",
+        "listUrl": "https://www.biquge.tw/",
+        "ok": true,
+        "items": 6,
+        "engine": "http"
+      },
+      {
+        "id": "cmtxzyi430002snk37i3hg9p0",
+        "name": "笔趣阁bqg713(www.bqg713.cc)·首页最近更新",
+        "listUrl": "https://www.bqg713.cc/api/index?sort=all",
+        "ok": true,
+        "items": 30,
+        "engine": "http"
+      },
+      {
+        "id": "cmtxzyi910003snk3546na3fb",
+        "name": "速读谷(shudugu.org)·首页最近更新",
+        "listUrl": "https://www.shudugu.org/",
+        "ok": true,
+        "items": 11,
+        "engine": "http"
+      },
+      {
+        "id": "cmtxzyivk0004snk3c550f1hl",
+        "name": "飘天文学(www.piaotia.com)·首页最近更新",
+        "listUrl": "https://www.piaotia.com/",
+        "ok": true,
+        "items": 30,
+        "engine": "http"
+      },
+      {
+        "id": "cmtyzk3ab0000pwl8t86m3ara",
+        "name": "得得小说(ddyueshu.cc)·首页最近更新",
+        "listUrl": "https://www.ddyueshu.cc/",
+        "ok": true,
+        "items": 0,
+        "engine": "http"
+      },
+      {
+        "id": "cmtyzk3ak0001pwl8neqb76ty",
+        "name": "得得小说(ddyueshu.cc)·单本采集",
+        "listUrl": "https://www.ddyueshu.cc/",
+        "ok": true,
+        "items": 0,
+        "engine": "http"
+      },
+      {
+        "id": "cmtzvnff60000mjcjyz7rtu2l",
+        "name": "77读书(77shuku.info)·搜索采集",
+        "listUrl": "http://www.77shuku.info/rank/lastupdate/1.html",
+        "ok": false,
+        "items": 0,
+        "error": "HTTP(The operation was aborted.) 与浏览器渲染均失败: goto: Timeout 25000ms exceeded.\nCall log:\n  - navigating to \"http://www.77shuku.info/rank/lastupdate"
+      }
+    ]
+  },
+  "deepPhase": [
+    {
+      "id": "cmtq1nhrm000fp2b5m5d3gvjx",
+      "name": "101kks(101kks.com)·cdnshu框架UTF8站采集",
+      "listUrl": "https://101kks.com/novels/hot",
+      "listItems": 30,
+      "book": {
+        "ok": true,
+        "name": "火影：每年一個金手指",
+        "author": "佚名",
+        "intro_len": 141,
+        "cover": "https://101kks.com/files/article/image/48/48632/48632s.jpg"
+      },
+      "toc": {
+        "ok": true,
+        "chapters": 75,
+        "pages": 1,
+        "firstChapterUrl": "https://101kks.com/txt/48632/16646511.html"
+      },
+      "content": {
+        "ok": true,
+        "rawLength": 3738,
+        "cleanedLength": 3283,
+        "pages": 1
+      },
+      "clean": {
+        "hasPTags": true,
+        "pCount": 80,
+        "hasScript": false,
+        "hasStyle": false,
+        "hasIframe": false,
+        "hasEmptyP": false,
+        "adHits": 0,
+        "sample": "<p>「赞美地球母亲！」</p><p>一觉醒来，看著镜中那猩红的双眸，宇智波秀发出由衷的赞美。</p><p>这是他穿越到忍界的第六年。</p><p>身为穿越者，宇智波秀每年生日这天早上醒来，都会收到一份来自地球母亲的礼物。</p><p>并且这礼物送的十分讲究，每件都是他内心期盼，又并非是他无福消受的事物，就像是一位温柔的母亲为孩子精挑细选出来的。</p><p>不过因为发现自己和佐助是同龄人，灭族之"
+      }
+    },
+    {
+      "id": "cmtq1nhqh000dp2b5u0mcl9oe",
+      "name": "69书吧(69shuba.com)·cdnshu框架GBK站采集",
+      "listUrl": "https://www.69shuba.com/novels/hot",
+      "listItems": 50,
+      "book": {
+        "ok": true,
+        "name": "女总裁的贴身高手",
+        "author": "8难",
+        "intro_len": 53,
+        "cover": "https://cdn.cdnshu.com/files/article/image/47/47719/47719s.jpg"
+      },
+      "toc": {
+        "ok": false,
+        "chapters": 0,
+        "pages": 1
+      },
+      "content": {
+        "ok": false,
+        "error": "no chapters in toc",
+        "rawLength": 0,
+        "cleanedLength": 0,
+        "pages": 0
+      }
+    },
+    {
+      "id": "cmtq1nhpo000cp2b55e62hml3",
+      "name": "ttkan中文(cn.ttkan.co)·自定义pure-g框架采集",
+      "listUrl": "https://cn.ttkan.co/novel/class/xuanhuan?page=1",
+      "listItems": 38,
+      "book": {
+        "ok": true,
+        "name": "青山",
+        "intro_len": 129,
+        "cover": "https://static.ttkan.co/cover/qingshan-huishuohuadezhouzi.jpg"
+      },
+      "toc": {
+        "ok": false,
+        "chapters": 0,
+        "pages": 1
+      },
+      "content": {
+        "ok": false,
+        "error": "no chapters in toc",
+        "rawLength": 0,
+        "cleanedLength": 0,
+        "pages": 0
+      }
+    },
+    {
+      "id": "cmtq1nhva000kp2b50ge5l5z7",
+      "name": "UU看书(uukanshu.cc)·自定义框架繁体站采集",
+      "listUrl": "https://uukanshu.cc/class_1_1.html",
+      "listItems": 30,
+      "book": {
+        "ok": true,
+        "name": "九陰九陽",
+        "author": "佚名",
+        "intro_len": 187,
+        "cover": "https://image.uukanshu.cc/27/27044/27044s.jpg"
+      },
+      "toc": {
+        "ok": true,
+        "chapters": 755,
+        "pages": 1,
+        "firstChapterUrl": "https://uukanshu.cc/book/27044/17526381.html"
+      },
+      "content": {
+        "ok": true,
+        "rawLength": 4079,
+        "cleanedLength": 3370,
+        "pages": 1
+      },
+      "clean": {
+        "hasPTags": true,
+        "pCount": 107,
+        "hasScript": false,
+        "hasStyle": false,
+        "hasIframe": false,
+        "hasEmptyP": false,
+        "adHits": 0,
+        "sample": "<p>「林辰，你给本宫当了三年炉鼎，没有功劳也有苦劳！」</p><p>「念在你今日将是最后一次采补，可有什么未了的心愿？只要不过分，本宫都可应允。」</p><p>魔教合欢宗的密室内，氤氲雾气缭绕。</p><p>少年赤裸的上身浸泡在药香四溢的浴桶中，各色珍稀药材在琥珀色的药液里沉浮。</p><p>对面，一位身著红衣的绝色女子正凝视著他。</p><p>此人正是合欢宗掌门柳扶鸾！</p><p>她肌肤如雪"
+      }
+    },
+    {
+      "id": "cmtqgadjt0042p2b5j29n7zgs",
+      "name": "七猫官方API (wtzw.com)·Legado7698·签名代理",
+      "listUrl": "http://127.0.0.1:3013/rank?rank_type=hot_list&tab_type=1",
+      "listItems": 50,
+      "book": {
+        "ok": true,
+        "name": "太荒吞天诀",
+        "author": "铁马飞桥",
+        "intro_len": 101,
+        "cover": "https://cdn.wtzw.com/bookimg/public/images/cover/9bf3/bcf49669665ef6575e2c64b014"
+      },
+      "toc": {
+        "ok": true,
+        "chapters": 5257,
+        "pages": 1,
+        "firstChapterUrl": "http://127.0.0.1:3013/content?bid=195631&cid=59145186"
+      },
+      "content": {
+        "ok": true,
+        "rawLength": 2627,
+        "cleanedLength": 2706,
+        "pages": 1
+      },
+      "clean": {
+        "hasPTags": false,
+        "pCount": 0,
+        "hasScript": false,
+        "hasStyle": false,
+        "hasIframe": false,
+        "hasEmptyP": false,
+        "adHits": 0,
+        "sample": "“我没死？” 柳无邪是被疼醒的，身上压着几块碎木头，让他喘不上气来。 接着，一团凌乱的记忆，钻入他的脑海。 他本是凌云仙界十大仙帝之一，机缘巧合，拾到太荒神器——《吞天神鼎》，遭整个仙界围攻，命丧断魂崖。 最后一刻，施展血魔解体术，跟他们同归于尽，炸碎了吞天神鼎，醒来的时候，已经到了这里。 “真武大陆……徐家……上门女婿……败家子……” 脑海中出现的记忆告诉他，他已经不在凌云仙界，而是"
+      }
+    }
+  ]
+}
