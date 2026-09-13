@@ -798,8 +798,29 @@ export function sanitizeFetchConfig(v: unknown): Partial<FetchConfig> {
     r.fetchMode === 'moli'
   ) out.fetchMode = r.fetchMode
   // R7-28: Moli 引擎字段白名单
+  // moliEval: --eval JS 代码片段(供 moli 在页面上下文执行), safeStr 钳长(允许换行,
+  // 多语句 JS 需换行/分号; 仅长度上限防滥用, 形态不限制 —— moli 二进制按字面量接收)
   const moliEval = safeStr(r.moliEval, 1000)
   if (moliEval !== undefined) out.moliEval = moliEval
+  // moliHeaders: moli 自定义请求头 map —— 与 out.headers 同款消毒口径(safeHeaderKey +
+  // safeSingleLine + 30 条上限 + 1KB 单值上限), 防 CRLF 注入/HoR smuggling 向量
+  // (moli-bridge 把头组按 "-H key: value" 拼成命令行参数透传 moli 二进制, 未消毒的
+  // 规则可注入 \r\n 制造 HTTP 请求走私/分块解析混淆)
+  if (r.moliHeaders && typeof r.moliHeaders === 'object' && !Array.isArray(r.moliHeaders)) {
+    const srcMh = r.moliHeaders as Record<string, unknown>
+    const moliHeaders: Record<string, string> = {}
+    let nMh = 0
+    for (const [k, val] of Object.entries(srcMh)) {
+      if (nMh >= 30) break
+      const key = safeHeaderKey(k.slice(0, 100))
+      const sMh = safeStr(val, 1000)
+      if (key && sMh !== undefined) {
+        const value = safeSingleLine(sMh)
+        if (value) { moliHeaders[key] = value; nMh++ }
+      }
+    }
+    if (nMh > 0) out.moliHeaders = moliHeaders
+  }
   const scraplingBridgeUrlRaw = safeStr(r.scraplingBridgeUrl, 300)
   if (scraplingBridgeUrlRaw !== undefined) {
     const scraplingBridgeUrl = safeSingleLine(scraplingBridgeUrlRaw)

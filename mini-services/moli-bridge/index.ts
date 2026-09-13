@@ -18,6 +18,7 @@
  * 启动: cd mini-services/moli-bridge && bun run dev (端口 3017)
  */
 import { createBridgeServer, json } from '../_shared/server'
+import { accessSync, constants } from 'node:fs'
 
 const PORT = Number(process.env.PORT || 3017)
 const MOLI_BIN = process.env.MOLI_BIN || process.env.HOME + '/.local/bin/moli'
@@ -48,19 +49,29 @@ async function execMoli(args: string[]): Promise<{ stdout: string; stderr: strin
   }
 }
 
+/**
+ * R7-28 selfTest (audit-16 fix):
+ * 旧实现返回 { ok, detail } 对象, 与 _shared/server.ts 的 selfTest?:
+ * () => boolean | Promise<boolean> 契约不符(/health.selfTestOk 字段污染为对象);
+ * 且依赖 Bun.spawn 同步抛异常检测缺失二进制 —— Bun.spawn 对不存在路径在某些 Bun 版本
+ * 仅在 await proc.exited 时以非零 code 返回, 不抛同步异常, selfTest 恒为 ok:true
+ * 即使 moli 未安装。改为 fs.accessSync(F_OK) 探测二进制文件存在性, 失败返回 false
+ * (与 bqg713/deqixs-proxy 等同款 boolean 契约); detail 文本仅在 console 启动日志保留。
+ */
+function moliBinaryAvailable(): boolean {
+  try {
+    accessSync(MOLI_BIN, constants.F_OK | constants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
 const server = createBridgeServer({
   name: 'moli-bridge',
   port: PORT,
   idleTimeoutS: 60,
-  selfTest: () => {
-    // 简单检查 moli 二进制存在
-    try {
-      const proc = Bun.spawn([MOLI_BIN, '--version'], { stdout: 'pipe', stderr: 'pipe' })
-      return { ok: true, detail: 'moli binary found' }
-    } catch {
-      return { ok: false, detail: `moli not found at ${MOLI_BIN}` }
-    }
-  },
+  selfTest: moliBinaryAvailable,
   fetch: async (req: Request) => {
     const url = new URL(req.url)
     if (req.method === 'POST' && url.pathname === '/fetch') {
@@ -115,4 +126,4 @@ const server = createBridgeServer({
   },
 })
 
-console.log(`[moli-bridge] serving on port ${PORT}, moli=${MOLI_BIN}`)
+console.log(`[moli-bridge] serving on port ${PORT}, moli=${MOLI_BIN}, selfTest=${moliBinaryAvailable() ? 'PASS' : 'FAIL(missing binary)'}`)

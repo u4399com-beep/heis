@@ -867,6 +867,7 @@ function FetchPanel({ fetch: fc, onChange }: { fetch: FetchConfig; onChange: (p:
                 <SelectItem value="scrapling-static">scrapling-static · curl_cffi 指纹伪装</SelectItem>
                 <SelectItem value="scrapling-stealthy">scrapling-stealthy · 隐身浏览器+CF求解</SelectItem>
                 <SelectItem value="scrapling-playwright">scrapling-playwright · Playwright 渲染</SelectItem>
+                <SelectItem value="moli">moli · Rust AI 浏览器(低内存渲染)</SelectItem>
               </SelectContent>
             </Select>
             <p className="text-[11px] leading-relaxed text-zinc-600">
@@ -875,6 +876,7 @@ function FetchPanel({ fetch: fc, onChange }: { fetch: FetchConfig; onChange: (p:
               挑战自动求解; playwright=裸 Chromium JS 渲染。目标响应如实返回(token 预取/Cookie
               重试等 native 步骤跳过); 桥不可达自动降级 native 链。需先启动桥:
               cd mini-services/scrapling-bridge &amp;&amp; bun run dev。
+              moli 经 moli-bridge(缺省 127.0.0.1:3017)调用 Rust AI 浏览器, 适合 SPA/防采集诱饵/低内存并行。
             </p>
           </div>
         </div>

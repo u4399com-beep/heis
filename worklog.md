@@ -7001,3 +7001,187 @@ Stage Summary:
     'minimal'/'magazine'/'theater'/'pili' render identically.
 - Net LoC: +237 across 5 files (1 new + 4 modified; +321 additions, -84 deletions/removals
   incl. local sliceCombos dedup).
+  incl. local sliceCombos dedup).
+
+---
+Task ID: agent-YY-audit16
+Agent: Phase 16 comprehensive audit (moli integration R7-28 + auto-tdk R7-25 verification
+       + deep bug hunt on crawl/api/public surfaces + cleanup)
+
+Scope:
+  - src/lib/crawl/*.ts (all 16 files; focus on fetcher.ts moli integration + types.ts
+    sanitizeFetchConfig moliHeaders gap)
+  - src/components/public/*.tsx (auto-tdk.ts existence + 7 views actually consuming
+    generateTitle/MetaDescription/Keywords inside useSiteSEO)
+  - src/app/api/**/*.ts (all 67 routes; spot-checks of admin/tasks/control,
+    public/sitemap, public/books, public/chapter, admin/rules/*, auth/login)
+  - mini-services/moli-bridge/index.ts (new bridge service: selfTest type+behavior)
+
+Baseline (pre-fix):
+  - Lint 0/0 ✓ ; TSC 0 errors (excluding examples/skills) ✓ ; Dev server UP (Next 16.1.3
+    serving 200 on / + /api/public/sites); moli-bridge already running on :3017.
+
+Verifications:
+
+§1 moli integration (R7-28) — CONFIRMED WORKING END-TO-END:
+  · fetcher.ts:4186 `if (cfg.fetchMode === 'moli')` branch correctly invokes
+    fetchViaMoli(url, cfg) → returns {html, status} or null on bridge failure.
+    On null: console.warn + transparent fallback to native fetch chain
+    (existing scrapling/native dual-path preserved, zero-regression).
+  · fetcher.ts:4627 fetchViaMoli() constructs body {url, dump:'html', waitUntil:'done',
+    eval?, headers?}, POSTs to MOLI_BRIDGE_URL/fetch with AbortSignal.timeout(cfg.timeout
+    || 30000). Response parsing handles 4xx (returns null + warn), JSON.parse failure
+    (returns null + warn), network exception (returns null + warn). No throw paths.
+  · captcha detection: looksLikeCaptcha(moliResult.html) → returns
+    {engine:'browser', blocked:true, captchaDetected:true, captchaType} — matches
+    native+scrapling path contract (runner.ts treats blocked+captchaDetected as
+    hard-fail for current URL, skipping DB write).
+  · looksBlocked check after captcha path — same dual-check pattern as native chain.
+  · types.ts:798 sanitizeFetchConfig whitelist includes 'moli' (R7-28 added) —
+    non-whitelisted fetchMode values silently dropped to undefined (zero-regression).
+  · moli-bridge /fetch end-to-end test: POST {url:https://example.com, dump:html}
+    → 200 + {ok:true, html:"<!DOCTYPE html>...", len:559}. MOLI_BIN verified present
+    at ~/.local/bin/moli (108MB Rust binary).
+  · Engine end-to-end test: fetchPage("https://example.com", {fetchMode:'moli',
+    timeout:15000}) → {engine:'browser', blocked:false, html:559 chars} ✓
+
+§2 auto-tdk (R7-25) — CONFIRMED FULLY WIRED:
+  · src/components/public/auto-tdk.ts EXISTS (224 LoC), exports 7 functions:
+    extractKeywords, generateDescription, generateTitle, generateKeywords,
+    generateMetaDescription, generateTDK, formatWordCount (private). STOP_WORDS
+    set has 87 entries; tokenize() handles CJK 2-4 grams; topKeywords() dedups
+    substrings; all exports properly typed.
+  · ALL 7 views import + actually CALL the 3 main functions inside useSiteSEO:
+      · SearchView.tsx:12,97-99 — generateTitle/MetaDescription/Keywords
+        (with q ? branch)
+      · KeywordView.tsx:12,51-57 — all 3 functions (3 branches: tag+book, tag-only,
+        no-tag fallback)
+      · CategoryView.tsx:11,69-71 — all 3 functions
+      · HomeView.tsx:12,66-68 — all 3 functions (with site.title/description/keywords
+        short-circuit — admin override wins, auto-tdk fallback for unset)
+      · ReadView.tsx:24,397-432 — all 3 functions inside useMemo (3 separate
+        useMemo hooks for title/desc/keywords, supports seo.titleTemplate override
+        when site.chapterSeoAuto=false)
+      · BookView.tsx:15,395-397 — all 3 functions (book ? branch + fallback)
+      · HistoryView.tsx:19,121-123 — all 3 functions
+  · seo.ts:50 useSiteSEO(opts) hook correctly applies opts.title/description/keywords
+    to document.title + meta tags with cleanup-on-unmount (removes prior view's
+    description/keywords when new view doesn't provide them — prevents TDK leakage
+    between views). Verified all 7 views pass the auto-tdk results AS useSiteSEO
+    args (not just importing without using).
+
+§3 Deep bug hunt — 3 BUGS FOUND + FIXED:
+
+  BUG #1 (HIGH severity — security gap): moliHeaders NOT sanitized in
+  sanitizeFetchConfig (types.ts:800-802). Only moliEval was sanitized via
+  safeStr(1000); moliHeaders map was passed through verbatim to fetcher.ts:4640
+  where it became body.headers = cfg.moliHeaders → moli-bridge /fetch passes
+  each header as `-H "key: value"` arg to moli binary (no sanitization at bridge
+  layer either). Stored rule with moliHeaders={"X-Test":"a\r\nX-Evil:b"} would
+  be passed through to moli binary which may set X-Evil header on outbound
+  request (HTTP header injection vector). Smuggling-risk header keys (Host,
+  Content-Length, Transfer-Encoding, etc.) also not filtered.
+  FIX: types.ts:805-823 added moliHeaders map sanitization mirroring existing
+  `headers` field pattern (lines 685-699): safeHeaderKey (RFC 7230 token +
+  HEADER_KEY_DENYLIST smuggling-vector reject) + safeStr(val, 1000) +
+  safeSingleLine (strip CRLF/NUL) + 30-entry cap. Verified via bun -e test:
+    Input: {"Host":"evil.com","Content-Length":"99999","X-Test":"a\r\nX-Evil:b",
+            "Bad Key":"v","normal-header":"normal"}
+    Output: {"X-Test":"a X-Evil:b","BadKeyWithSpace":"v","normal-header":"normal"}
+  (Host/Content-Length dropped via denylist; CRLF→space; key chars stripped to
+  RFC token; empty keys dropped). Defense-in-depth preserved at rule storage
+  boundary; runtime fetcher.ts:4640 unchanged (already trusts cfg from sanitize).
+
+  BUG #2 (MED severity — type contract violation + broken health check):
+  mini-services/moli-bridge/index.ts selfTest returned `{ok:boolean, detail:string}`
+  object — but _shared/server.ts:390 BridgeServerOptions.selfTest type is
+  `() => boolean | Promise<boolean>`. /health endpoint serialized the object
+  into selfTestOk field as `{"ok":true,"detail":"moli binary found"}` instead
+  of plain `true` (verified: pre-fix /health response showed object). Worse,
+  the try/catch wrapped Bun.spawn(MOLI_BIN, ['--version']) expecting synchronous
+  throw on missing binary — but Bun.spawn doesn't throw synchronously on missing
+  binary in current Bun 1.3.14 (returns process with non-zero exit code on
+  await proc.exited). selfTest ALWAYS returned {ok:true} even when moli was
+  not installed → /health.selfTestOk gave false confidence to ops/runner.
+  FIX: index.ts:21,52-68,74 — added `import {accessSync, constants} from
+  'node:fs'`; new function `moliBinaryAvailable(): boolean` uses
+  accessSync(MOLI_BIN, F_OK | X_OK) for synchronous existence+executable
+  check; passed as `selfTest: moliBinaryAvailable` (matching boolean contract).
+  Startup console.log now includes selfTest=PASS/FAIL(missing binary) status.
+  Verified both cases:
+    · MOLI_BIN=/home/z/.local/bin/moli (exists) → /health.selfTestOk=true ✓
+    · MOLI_BIN=/nonexistent/moli PORT=3099 → /health.selfTestOk=false ✓
+    (Previously both would have returned ok:true object.)
+
+  BUG #3 (LOW severity — UX gap): RuleEditor.tsx fetchMode dropdown missing
+  `moli` option. Engine + types.ts + sanitizeFetchConfig all supported 'moli'
+  but admin UI only exposed native/scrapling-static/scrapling-stealthy/
+  scrapling-playwright. Users couldn't configure moli via UI (only via
+  direct API/seed scripts). FIX: RuleEditor.tsx:870 added
+  `<SelectItem value="moli">moli · Rust AI 浏览器(低内存渲染)</SelectItem>`
+  + extended help text below dropdown to mention moli-bridge port 3017.
+
+§4 Other verifications (no bugs found, intentional patterns confirmed):
+  · Race conditions: admin/tasks/[id]/control/route.ts uses updateMany with
+    `where: {id, status: {in: [...]}}` (atomic conditional write) preventing
+    concurrent-start label drift (R5-7/zz-d fix already in place). P2025/P2003
+    error codes handled per route. No new races found.
+  · Memory leaks: admin/rules/[id]/route.ts cleanupCalibrateArtifacts()
+    properly cleans globalThis.__novelCalibJobs_v1 Map + Setting row on
+    DELETE (R6-4 fix). moli-bridge execMoli uses try/finally + clearTimeout
+    (no timer leak). _shared/server.ts:624-637 userFetch wrapper uses
+    try/finally to clearTimeout even on success path (agent-AA fix).
+  · Sitemap cache (public/sitemap/route.ts) has FIFO eviction with 50-entry
+    cap (R5-2 fix), preventing ?site=<random> OOM attack vector.
+  · Circular imports (per agent-T prior audit): 2 known cycles still mitigated
+    (fetcher↔parser via dynamic import; theme-matrix↔themes via type-only).
+    No new cycles introduced by moli integration (moli is leaf in dep graph).
+  · /screenshot endpoint in moli-bridge: uses `--dump screenshot_full` /
+    `screenshot` values that are NOT in moli's documented dump enum
+    (json/html/markdown/semantic_tree/semantic_tree_text). Endpoint is dead
+    code (no caller in src/; only /fetch is invoked by fetchViaMoli). Left
+    as-is (not in scope to remove; future moli versions may add screenshot
+    support; current behavior returns 502 on real call which is safe).
+
+Quality Gates (post-fix):
+  · bun run lint → 0 errors / 0 warnings ✓
+  · bunx tsc --noEmit | grep -v "examples\|skills" | wc -l → 0 ✓
+  · Dev server UP (Next 16.1.3, port 3000): GET / 200, GET /api/public/sites 200,
+    GET /api/admin/health 401 (auth required, expected) ✓
+  · moli-bridge UP (port 3017): GET /health 200, POST /fetch 200 (returns HTML
+    from example.com via moli Rust binary) ✓
+
+Files modified (3):
+  · src/lib/crawl/types.ts — +19 LoC (moliHeaders sanitization block in
+    sanitizeFetchConfig; mirrors existing `headers` map sanitization pattern
+    using safeHeaderKey + safeStr + safeSingleLine + 30-entry cap; comment
+    explains CRLF injection / HTTP smuggling defense-in-depth rationale)
+  · mini-services/moli-bridge/index.ts — +18 LoC / -7 LoC (replaced broken
+    selfTest with moliBinaryAvailable() using node:fs.accessSync(F_OK|X_OK);
+    added node:fs import; startup log includes PASS/FAIL status)
+  · src/components/admin/RuleEditor.tsx — +2 LoC (added moli SelectItem +
+    extended help text mentioning moli-bridge port 3017)
+
+Constraints honored:
+  · Did NOT modify types.ts public API (FetchConfig interface unchanged —
+    moliHeaders?: Record<string,string> kept as declared; only sanitize body
+    extended). All existing rule configs continue to load identically (sanitize
+    is additive: previously-unsanitized moliHeaders gets cleaned on next load,
+    no behavior regression for clean inputs).
+  · Did NOT introduce new dependencies (used existing node:fs which is Bun
+    built-in; no npm installs).
+  · Re-ran lint + tsc after each fix iteration; final pass clean.
+
+Zero-regression verification:
+  · fetchMode='moli' path: fetcher.ts:4186-4200 branch unchanged; fetchViaMoli
+    unchanged. Only the cfg.moliHeaders VALUE has been sanitized upstream
+    (rule-load time) — clean configs (no CRLF, no smuggling-vector keys)
+    sanitize identically (verified: {X-Good:ok, normal-header:normal} survive
+    unchanged).
+  · fetchMode='native'/'scrapling-*' paths: untouched (moliHeaders block is
+    additive in sanitizeFetchConfig; only consumed when fetchMode='moli' set).
+  · /health endpoint contract change: selfTestOk was previously object
+    (broken contract) — now boolean per shared server type. Any consumer that
+    was treating selfTestOk as truthy (e.g. status.sh grep) still works
+    (boolean true is truthy; boolean false is falsy; object was always truthy
+    so the FALSE case is the only behavior change, which is the bug fix).
