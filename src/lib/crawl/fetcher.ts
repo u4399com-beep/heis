@@ -4182,6 +4182,23 @@ async function fetchPageOnce(url: string, cfg: FetchConfig): Promise<FetchResult
   // 未配置 fetchMode / 'native' → scraplingModeOf=null, 下方原流程零行为变化
   // agent-K-crawl-phase2: 桥路径同样做验证码检测 —— stealthy 模式桥内可能通过挑战,
   // 但若目标侧硬性需要人工过盾, 桥返回的 html 仍含验证码标记, 此处识别并冷却
+  // R7-28: Moli 引擎(Rust AI 浏览器) — 低内存高性能渲染, 优先于 scrapling/native
+  if (cfg.fetchMode === 'moli') {
+    const moliResult = await fetchViaMoli(url, cfg)
+    if (moliResult) {
+      const captchaType = looksLikeCaptcha(moliResult.html)
+      if (captchaType) {
+        markCaptchaEncountered(url, captchaType, resolveCaptchaCooldownMs(cfg))
+        console.warn(`[fetcher] moli 命中验证码 ${captchaType}: ${url.slice(0, 160)}`)
+        return { html: moliResult.html, engine: 'browser', blocked: true, captchaDetected: true, captchaType }
+      }
+      const blocked = looksBlocked(moliResult.html, { status: moliResult.status })
+      return { html: moliResult.html, engine: 'browser', blocked }
+    }
+    // moli 失败 → 降级 native 链
+    console.warn(`[fetcher] moli 降级到 native: ${url.slice(0, 120)}`)
+  }
+
   const slMode = scraplingModeOf(cfg.fetchMode)
   if (slMode) {
     const bridged = await fetchViaScraplingBridge(url, cfg, slMode)
@@ -4584,5 +4601,63 @@ export async function fetchBinary(
     return null
   } finally {
     clearTimeout(timer)
+  }
+}
+
+// ---------- Moli 引擎(R7-28): Rust AI 浏览器, 低内存高效率 ----------
+/**
+ * Moli (https://github.com/lexmount/moli) 是专为 AI Agent 打造的开源浏览器:
+ *   - Rust 从零写的浏览器内核(非套壳 Chromium)
+ *   - 内存占用 ~50MB(vs Chrome headless ~700MB)
+ *   - 按需渲染: 平时不布局不绘制, 截图时才渲染一帧
+ *   - 支持 --dump markdown/json/semantic_tree + --eval JS
+ *   - 支持 CDP 协议, Playwright 可直接连接
+ *
+ * 本函数通过 moli-bridge mini-service(端口 3017) 调用 moli fetch:
+ *   POST /fetch { url, dump, eval, waitUntil } → { ok, html }
+ *
+ * 适用场景:
+ *   - SPA 站点(纯客户端渲染, 如 bqg713)
+ *   - 需要执行 JS 但不需要完整浏览器指纹的站点
+ *   - 低内存场景(并行多任务, Chrome headless 吃不消时)
+ *   - 防采集站点(API 返回诱饵内容, 需要浏览器渲染真实内容)
+ */
+const MOLI_BRIDGE_URL = process.env.MOLI_BRIDGE_URL || 'http://127.0.0.1:3017'
+
+async function fetchViaMoli(url: string, cfg: FetchConfig): Promise<{ html: string; status: number } | null> {
+  // SSRF 守卫: moli-bridge 是 127.0.0.1 loopback, 已由 KNOWN_MINI_SERVICE_PORTS 放行
+  try {
+    const body: Record<string, unknown> = {
+      url,
+      dump: 'html',
+      waitUntil: 'done',
+    }
+    // 如果配置了自定义 eval 表达式(如提取特定 DOM 元素)
+    if (cfg.moliEval) {
+      body.eval = cfg.moliEval
+      body.dump = undefined // eval 模式不需要 dump
+    }
+    if (cfg.moliHeaders) {
+      body.headers = cfg.moliHeaders
+    }
+    const res = await fetch(`${MOLI_BRIDGE_URL}/fetch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(cfg.timeout || 30000),
+    })
+    if (!res.ok) {
+      console.warn(`[fetcher] moli-bridge 返回 ${res.status}: ${url.slice(0, 120)}`)
+      return null
+    }
+    const data = await res.json() as { ok: boolean; html?: string; status?: number; error?: string }
+    if (!data.ok || !data.html) {
+      console.warn(`[fetcher] moli-bridge 失败: ${data.error || 'unknown'}: ${url.slice(0, 120)}`)
+      return null
+    }
+    return { html: data.html, status: data.status || 200 }
+  } catch (e) {
+    console.warn(`[fetcher] moli-bridge 异常: ${(e as Error).message?.slice(0, 120)}: ${url.slice(0, 120)}`)
+    return null
   }
 }

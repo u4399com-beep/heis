@@ -246,6 +246,12 @@ export interface FetchConfig {
    *  引擎侧对非法值(非白名单枚举)一律回退 native(sanitize 白名单枚举校验 + fetcher
    *  scraplingModeOf 双重防线); 与 mirrorDomains 组合时逐镜像 host 各走一次桥分流 */
   fetchMode?: string
+  /** R7-28: Moli 引擎(Rust AI 浏览器) — 低内存(~50MB)高性能渲染
+   *  fetchMode='moli' 时启用, 通过 moli-bridge(端口3017) 调用 moli fetch
+   *  适用: SPA站点/防采集诱饵内容/低内存并行场景 */
+  moliEval?: string
+  /** Moli 自定义请求头 */
+  moliHeaders?: Record<string, string>
   /** scrapling 桥地址(fetchMode=scrapling-* 时生效), 缺省 http://127.0.0.1:3012
    *  (可用环境变量 SCRAPLING_BRIDGE_URL 改全局缺省); 桥服务见 mini-services/scrapling-bridge */
   scraplingBridgeUrl?: string
@@ -788,8 +794,12 @@ export function sanitizeFetchConfig(v: unknown): Partial<FetchConfig> {
   // 校验 + 单行化(防 CR/LF 注入), 非法形态整字段丢弃
   if (
     r.fetchMode === 'native' || r.fetchMode === 'scrapling-static' ||
-    r.fetchMode === 'scrapling-stealthy' || r.fetchMode === 'scrapling-playwright'
+    r.fetchMode === 'scrapling-stealthy' || r.fetchMode === 'scrapling-playwright' ||
+    r.fetchMode === 'moli'
   ) out.fetchMode = r.fetchMode
+  // R7-28: Moli 引擎字段白名单
+  const moliEval = safeStr(r.moliEval, 1000)
+  if (moliEval !== undefined) out.moliEval = moliEval
   const scraplingBridgeUrlRaw = safeStr(r.scraplingBridgeUrl, 300)
   if (scraplingBridgeUrlRaw !== undefined) {
     const scraplingBridgeUrl = safeSingleLine(scraplingBridgeUrlRaw)

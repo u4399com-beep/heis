@@ -19,7 +19,7 @@ LOG_DIR="$PROJECT_ROOT/.zscripts"
 
 mkdir -p "$LOG_DIR"
 
-# 服务名 → (端口, 启动目录, 启动命令) — 顺序与端口 3010-3015 一致
+# 服务名 → (端口, 启动目录, 启动命令) — 顺序与端口 3010-3017 一致
 declare -a SERVICES=(
   "bqg713-proxy|3010|$MINI_ROOT/bqg713-proxy|bun run dev"
   "fetch-relay|3011|$MINI_ROOT/fetch-relay|bun run dev"
@@ -27,9 +27,11 @@ declare -a SERVICES=(
   "qimao-proxy|3013|$MINI_ROOT/qimao-proxy|bun run dev"
   "deqixs-proxy|3014|$MINI_ROOT/deqixs-proxy|bun run dev"
   "xjp-proxy|3015|$MINI_ROOT/xjp-proxy|bun run dev"
+  "uc-bridge|3016|$MINI_ROOT/uc-bridge|python3 server.py"
+  "moli-bridge|3017|$MINI_ROOT/moli-bridge|bun run dev"
 )
 
-echo "[start-all] $(date +'%Y-%m-%d %H:%M:%S') starting 6 mini-services..."
+echo "[start-all] $(date +'%Y-%m-%d %H:%M:%S') starting 8 mini-services..."
 
 for entry in "${SERVICES[@]}"; do
   IFS='|' read -r name port dir cmd <<< "$entry"
