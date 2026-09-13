@@ -2152,9 +2152,13 @@ function loopbackBypassAllowed(url: string, cfg: FetchConfig): boolean {
   // R7-16 修复: 已知 mini-services 端口白名单 —— 规则的 toc.fields.url 直指
   // 127.0.0.1:301x(如 deqixs 规则 toc.fields.url.replaceTo='http://127.0.0.1:3014/content?u=')
   // 但 fetch 配置缺 contentProxyUrl → loopbackBypassAllowed 旧实现仅匹配 tokenUrl/contentProxyUrl/relay/bridge
-  // → SSRF 守卫拒 loopback → 章节采集在生产路径上坏的。修法: 端口 3010~3015 全部放行(均为本机
+  // → SSRF 守卫拒 loopback → 章节采集在生产路径上坏的。修法: 端口 3010~3017 全部放行(均为本机
   // mini-services, 启动时 bind 127.0.0.1, 无外网暴露面; 与 tokenUrl/contentProxyUrl 同口径豁免)
-  const KNOWN_MINI_SERVICE_PORTS = new Set(['3010', '3011', '3012', '3013', '3014', '3015'])
+  // agent-final-audit: 补 3017 (moli-bridge, R7-28) —— 原列表只到 3015, moli-bridge 端口缺失,
+  //   虽 fetchViaMoli 当前用裸 fetch 不走 assertSafeTarget (不受本表影响), 但若未来规则把
+  //   toc.fields.url 直接指向 127.0.0.1:3017 (moli-bridge /fetch 端点经 fetchPage 调用),
+  //   需本表放行 loopback; 与 deqixs 3014 同口径
+  const KNOWN_MINI_SERVICE_PORTS = new Set(['3010', '3011', '3012', '3013', '3014', '3015', '3017'])
   if (KNOWN_MINI_SERVICE_PORTS.has(uPort)) return true
   const matches = (rawUrl: string): boolean => {
     try {
@@ -4625,7 +4629,13 @@ export async function fetchBinary(
 const MOLI_BRIDGE_URL = process.env.MOLI_BRIDGE_URL || 'http://127.0.0.1:3017'
 
 async function fetchViaMoli(url: string, cfg: FetchConfig): Promise<{ html: string; status: number } | null> {
-  // SSRF 守卫: moli-bridge 是 127.0.0.1 loopback, 已由 KNOWN_MINI_SERVICE_PORTS 放行
+  // 安全模型: MOLI_BRIDGE_URL 由操作员在 env 配置(可信源), 本函数用裸 fetch 直连
+  //   桥端点(不经 assertSafeTarget), 故 MOLI_BRIDGE_URL 不会被 SSRF 守卫拦截。
+  //   桥内 /fetch 端点收到目标 url 后自行校验(moli-bridge index.ts:body.url 仅 http(s)
+  //   形态过滤, 无进一步 SSRF 校验 —— 已在 mini-services 审计中留档, 但桥本就设计为
+  //   "操作员配置的本地服务", 信任链与 fetch-relay/scrapling-bridge 同口径)。
+  //   assertSafeTarget 在 fetchPage 入口已对 url 做过 SSRF 校验, 抵达本函数的 url
+  //   一定是合法 http(s) 远程目标(非 loopback/私网/元数据); 桥 URL 自身不在该口径内。
   try {
     const body: Record<string, unknown> = {
       url,

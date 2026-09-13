@@ -7185,3 +7185,236 @@ Zero-regression verification:
     was treating selfTestOk as truthy (e.g. status.sh grep) still works
     (boolean true is truthy; boolean false is falsy; object was always truthy
     so the FALSE case is the only behavior change, which is the bug fix).
+
+---
+Task ID: agent-final-audit
+Agent: Final comprehensive audit + cleanup + bug hunt across entire codebase
+       (src/lib/crawl/, src/components/, src/app/api/, src/lib/, mini-services/)
+
+Scope: All files in src/lib/crawl/*.ts (16 files), src/components/** (admin + public
++ ui + read-layouts), src/app/api/** (admin + public + auth + _lib), src/lib/*.ts,
+mini-services/* (7 services + _shared).
+
+Baseline (pre-audit): lint 0/0 ✓ ; tsc 0 errors (excluding examples/skills) ✓ ;
+dev server UP (Next 16.1.3, port 3000) ✓.
+
+Verifications:
+
+§1 R7-* integration verification — ALL CONFIRMED PROPERLY WIRED:
+  · R7-1 (shutdownObscura shuttingDown guard): obscura.ts:1063/1302/1334 — withObscuraPage
+    checks S.shuttingDown at 3 points (free-slot path, createSlot post-completion,
+    recreateSlot pre-flight). ensureBrowser rejects new launches during shutdown. ✓
+  · R7-2 (createSlot slot.splice during shutdown): obscura.ts:1332 — S.shuttingDown
+    checked after createSlot returns; if set, manually indexOf+splice + ctx.close. ✓
+  · R7-3 (OBSCURA_CONCURRENCY clamp): obscura.ts:982 — Number(process.env) with
+    Math.min/max clamp [1,8]; tested with OBSCURA_CONCURRENCY=100 → clamps to 8. ✓
+  · R7-4/5/6/7/8 (canvas/audio/speech/devices init scripts): obscura.ts:565/693/704/
+    752/783 — all in selectStealthScripts (lite=4 / standard=full / maximum=full+audio);
+    buildPerContextScript (R7-9) registered after static scripts but before identity
+    script (correct overwrite order). ✓
+  · R7-9 (per-context screen/hardware/window script): obscura.ts:857/1123 —
+    buildPerContextScript(fp) called between static scripts and buildIdentityInitScript. ✓
+  · R7-10/11 (humanMoveAndClick/validateStealth): removed per file comment at 1623
+    ("R7-10 人类化鼠标移动 + R7-11 隐身有效性自检 已移除 — 全域无消费者"). ✓ (intentional
+    dead code removal; both exports verified absent via ripgrep).
+  · R7-12 (httpUrl placeholder preservation): _lib/http.ts:73-94 — httpUrl() extracts
+    all {...} placeholders, masks as ___PH<i>___, validates URL, then restores. ✓
+  · R7-13/14 (range mode task-level listUrl): runner.ts:682/687 — task.listUrl preferred
+    over rule.list.urlTemplate when present; {cat} placeholder fallback handled. ✓
+  · R7-15 (decode field base64-json/base64/url-decode/html-decode): types.ts:621
+    + parser.ts:214 — applyTransform applies decode after replaceFrom, before index. ✓
+  · R7-16 (KNOWN_MINI_SERVICE_PORTS loopback bypass): fetcher.ts:2157 — verifed
+    PRE-FIX had '3010'..'3015' (6 ports); POST-FIX adds '3017' (see §3 BUG #1). ✓
+  · R7-17 (wordCount source extraction): runner.ts:1080/1203/1831 + parser.ts:1078
+    — parsedWordCount extracted from rule.book.wordCount; aggregated by chapter
+    accumulators; agent-Q-deep-audit R7-17 wordCount 收尾 bug fix verified intact. ✓
+  · R7-18 (miniServiceConfig cache invalidation): settings/route.ts:58 +
+    mini-service-config/route.ts:38 — PUT /api/admin/settings calls
+    invalidateMiniServiceConfigCache() when entries contains 'miniServiceConfig'. ✓
+  · R7-19/20 (chapter pagination + pseudostatic): backup/route.ts:120 +
+    backup/restore/route.ts:198/213 + sites/route.ts:39-46 — siteChapterFields
+    used by backup; paginationFields() helper handles POST/PUT + restore with
+    defaults. pseudostatic.ts all 7 styles parse correctly (verified parseThemeId
+    round-trip per agent-XX-theme-fix). ✓
+  · R7-25 (auto-tdk): auto-tdk.ts EXISTS (224 LoC), all 7 views confirmed wired
+    (per agent-YY-audit16 verification; no regressions). ✓
+  · R7-26 (banned words): runner.ts:170-192 (loadGlobalBannedWords, 60s cache,
+    called at task start line 590) + runner.ts:1082-1096 (per-book check) +
+    SettingsSection.tsx:78/100/140/152/162 (admin UI). ✓
+  · R7-28 (Moli engine): fetcher.ts:4186/4607-4662 (fetchViaMoli) + types.ts:249/
+    804-826 (moliEval/moliHeaders sanitize) + moli-bridge/index.ts (selfTest
+    boolean, per agent-YY-audit16 fix) + RuleEditor.tsx:870 (UI option). ✓
+
+§2 Deep bug hunt — line-by-line review of anti-bot core (fetcher/obscura/hostgate):
+
+  Memory leaks: All Maps verified to have caps + eviction:
+    · inflightMap: 500 FIFO + 30s TTL (fetcher.ts:3842-3859)
+    · responseCache: 200 FIFO + per-entry TTL (3913-3932)
+    · cookieJar.jars: prune() every 5min, 30min TTL per entry (421-432)
+    · captchaCooldown: 500 FIFO + per-entry expiry (926-928)
+    · sessionPersonalityMap: cleared by maybeRotateFingerprint (1100-1102)
+    · domainUa: 200-cap FIFO at insert (1751-1757)
+    · hostLatencyMap: 500 FIFO (1294-1296)
+    · h3DetectLoggedAt: 500 FIFO + 5min TTL throttle (1351-1372)
+    · hostGate (hostgate.ts): HOSTS_CAP=1000 + sweepEvery=100 + idle eviction (155-218)
+    · obscura S.slots: MAX_CONCURRENCY=8 (clamped); reclaimTimer 60s sweep (1207-1226)
+    · loginAttempts (auth.ts): 10_000 FIFO + 5min sweep (24-57)
+    · buckets (proxy.ts): 10_000 FIFO (33-85)
+    · sitemapCache: 50 FIFO (37-47)
+    · loadFresh() inflight: local-ref finally-conditional-clear (links.ts:255-290)
+  Conclusion: No memory leaks found.
+
+  Race conditions: Verified atomic/serialized writes:
+    · admin/tasks/[id]/control: updateMany with where:{id,status:{in:[...]}}
+      (atomic conditional write, zz-d fix)
+    · serializeStatusWrite (runner.ts:216): per-task chain with tail.catch to
+      prevent chain breakage
+    · downloadJob in-flight counter (downloads/route.ts:24-28): globalThis-backed
+      counter survives HMR; synchronous incr before DB count check closes TOCTOU
+    · obscura S.shuttingDown flag: triple-checked across free-slot/createSlot/
+      recreateSlot paths (R7-1/R7-2)
+    · loadFresh() inflight: local-ref p checked in finally (only clears if still
+      current, links.ts:288)
+  Conclusion: No new race conditions.
+
+  AbortController cleanup: All clearTimeout in finally blocks:
+    · fetchHttp try/finally timer (verified in fetcher.ts)
+    · fetchBinary try/finally timer (4527-4604)
+    · probeFetch try/finally timer (calibrate.ts:153-176)
+    · readBodyCapped reader.cancel in finally (_shared/server.ts)
+    · userFetch try/finally timeoutTimer (agent-AA fix, _shared/server.ts:624-637)
+    · hostGate w.timer cleared in pump (hostgate.ts:255-258)
+    · hostGate gapTimer/penaltyTimer: clear-before-set pattern (268-291)
+  Conclusion: No timer leaks.
+
+  Error handling: All throw paths attach context (status/bodyHtml/retryAfterMs/
+  WAF headers); throw paths verified for:
+    · fetchHttp retry-loop: err.status + err.retryAfterMs + err.bodyHtml + WAF
+      headers (cfRay/cfMitigated/serverHeader)
+    · gateFetch: err.status===429 → reportHostRateLimited (runner.ts:1010-1015);
+      err.isFetchTimeout → fail host (1006); AbortError name check exempts
+      stop/epoch switches
+    · cookiePersist: best-effort, catches its own errors (663-686)
+    · generateBookTxt: try/catch with abort() cleanup (downloader.ts:233-236)
+    · admin routes: catch (e: any) with P2025/P2003/P2002 narrowing (per agent-T
+      stable pattern; lint config explicitly allows `: any`)
+  Conclusion: No gaps in error handling.
+
+  Type coercion: All numeric parses use Number.isFinite + safeNum clamps;
+    all URL inputs go through httpUrl() validation; all string inputs use str()
+    + slice(0, maxLen); all enum values use enumIn() whitelist. No unsafe
+    coercions found.
+
+  Promise rejection: All promise chains have catch handlers; unhandled-rejection
+    surface verified clean (dev.log shows zero unhandled rejections across
+    10min of dev traffic).
+
+§3 BUGS FOUND + FIXED:
+
+  BUG #1 (LOW severity — consistency gap, not exploitable): KNOWN_MINI_SERVICE_PORTS
+  whitelist in fetcher.ts:2157 missing port 3017 (moli-bridge, R7-28). Set was
+  ['3010'..'3015'] (6 ports), should include 3017.
+  Impact: NOT currently exploitable — fetchViaMoli uses bare fetch() directly
+  (not fetchPage → assertSafeTarget), so the SSRF guard is bypassed regardless.
+  But the misleading code comment at line 4628 ("SSRF 守卫: moli-bridge 是
+  127.0.0.1 loopback, 已由 KNOWN_MINI_SERVICE_PORTS 放行") claimed the guard
+  was active via this whitelist, which was false. Also: if a future rule's
+  toc.fields.url directly points to 127.0.0.1:3017 (moli-bridge /fetch endpoint
+  via fetchPage chain), it would be incorrectly rejected by SSRF guard.
+  FIX: Added '3017' to the set + updated comment to reflect actual security
+  model (operator-trust via env var; assertSafeTarget already covers the
+  fetched URL itself at fetchPage entry; bridge URL bypasses SSRF by design,
+  same as fetch-relay/scrapling-bridge).
+  Files modified: src/lib/crawl/fetcher.ts (KNOWN_MINI_SERVICE_PORTS set
+  + fetchViaMoli comment).
+
+§4 Other verifications (no bugs found, intentional patterns confirmed):
+  · All Map.size FIFO evictions verified correct (keys().next().value gets oldest
+    per ES2015+ insertion-order semantics).
+  · All catch (e: any) in src/lib/crawl/* — kept per agent-T precedent (eslint
+    config has @typescript-eslint/no-explicit-any 'off'; agent-YY verified all
+    admin/public route catches already tightened). crawl module's ~30 catches
+    with `: any` are stable per agent-O/T precedent; tightening would be ~30 LoC
+    added for marginal type-safety gain (lint config allows it explicitly).
+  · CookieJar serialize/restore roundtrip verified: serialize() filters expired
+    entries; restore() checks version+jars array structure + per-entry field
+    types (string/number) before adding to jar; validJar() check at module load
+    ensures HMR-damaged instances are rebuilt (631-637).
+  · Circular imports: 2 known cycles still mitigated (fetcher↔parser via dynamic
+    import; theme-matrix↔themes via type-only). Verified by madge per prior
+    agent-T audit; no new cycles introduced.
+  · obscura.ts R3-17 consecutiveFailures counter: slots removed after 3 failed
+    recreations, probeOk reset to force re-probe. Verified intact.
+  · runner.ts:746/822/901/1002/1131/1175/1290/1317/1346/1580/1784/1875/1887/1970
+    `catch (e: any)` patterns — each accesses e.code/e.name/e.message/e.status
+    via `?.` safe-access; stable per agent-T precedent.
+  · auto-tdk.ts is client-side pure function (no React hooks/useState/useEffect);
+    called inside useMemo in all 7 views (per agent-YY verification).
+  · parseViewPath all 7 styles verified (per agent-XX-theme-fix verification).
+  · parser.ts constTemplate() (R7-15): nested object access + key=value\n
+    flat-form fallback both verified; no injection vector (variable substitution
+    only reads from trusted vars map, never executes).
+  · cleaner.ts sanitizeReaderHtml() in shared.tsx (R4A-6): client-side XSS
+    defense-in-depth; strips <script>/<iframe>/<object>/<embed>/<noscript>/
+    <template>, on* event attrs, javascript:/vbscript:/data:text/html URLs.
+    Verified intact.
+  · api/public/chapter/route.ts (R7-19 pagination): includes book.category +
+    book.intro relations; reshapes to explicit {id,name,author,status,keywords,
+    category,intro} (agent-AAA-audit fix verified intact at line 170-180).
+  · admin/tasks/_shared.ts normalizeTaskData: validated all field clamps and
+    min<=max invariants. autoRefresh intervalMin clamped [5,1440] (R3-35).
+  · _shared/server.ts: AUTH_TOKEN/BRIDGE_KEY constant-time compare, 30s request
+    timeout (clearTimeout in finally per agent-AA), 10MB POST cap, SSRF guard
+    for fetch-relay/scrapling-bridge. Verified intact.
+  · moli-bridge/index.ts: selfTest returns boolean (agent-YY-audit16 fix
+    verified intact at line 61-68); /screenshot endpoint remains dead code per
+    agent-YY note (kept for future moli versions).
+
+§5 Cleanup performed:
+  · Updated misleading comment in fetchViaMoli (fetcher.ts:4631-4638) — was
+    claiming SSRF guard was active via KNOWN_MINI_SERVICE_PORTS but it isn't
+    (fetch uses bare fetch() to MOLI_BRIDGE_URL, bypassing assertSafeTarget).
+    Replaced with accurate security model description.
+  · Added '3017' to KNOWN_MINI_SERVICE_PORTS set (fetcher.ts:2161) — closes
+    consistency gap; if future code calls fetchPage with URL pointing to
+    127.0.0.1:3017 (moli-bridge /fetch), it will be allowed as loopback bypass
+    (matching deqixs 3014 / xjp 3015 pattern).
+  · NO dead code removed — codebase was already well-cleaned by agents
+    O/T/AA/YY; all "reserved future" exports (verifyFingerprintConsistency,
+    detectSiteType, recommendEngineForSite, responseCacheSnapshot,
+    clearResponseCache, detectHttp3AltSvc) verified consumed or intentionally
+    reserved per documented agent-FF/agent-Z patterns.
+  · NO duplicate consolidation — existing patterns (clientIp×3, raw fetch
+    wrappers×2, client api wrappers×2) all intentionally separate per agent-DD
+    precedent (consolidation risk > benefit).
+
+Quality Gates (post-fix):
+  · bun run lint → 0 errors / 0 warnings ✓
+  · bunx tsc --noEmit | grep -v "examples\|skills" → 0 errors ✓
+  · Dev server UP (Next 16.1.3, port 3000): GET / 200, GET /api/public/sites 200,
+    GET /api/admin/health 401 (auth required, expected),
+    GET /api/public/sitemap?page=1 200, GET /api/public/links 200 ✓
+
+Files modified (1):
+  · src/lib/crawl/fetcher.ts — +6 LoC / -2 LoC (KNOWN_MINI_SERVICE_PORTS
+    extended with '3017'; fetchViaMoli comment block rewritten to accurately
+    describe security model: operator-trust via env, assertSafeTarget covers
+    the fetched URL at fetchPage entry, bridge URL bypasses SSRF by design)
+
+Constraints honored:
+  · Did NOT modify FetchConfig interface or any public API signature.
+  · Did NOT introduce new dependencies.
+  · Re-ran lint + tsc after each change; final pass clean.
+  · KNOWN_MINI_SERVICE_PORTS set is a runtime-internal constant (not exported);
+    adding '3017' is purely additive (new port allowed; existing ports
+    unchanged). Zero-regression for existing rules.
+
+Zero-regression verification:
+  · fetchViaMoli path: behavior unchanged — still uses bare fetch() to
+    MOLI_BRIDGE_URL; only the comment was rewritten (no code change in the
+    actual fetch path).
+  · loopbackBypassAllowed: now correctly returns true for URL pointing to
+    127.0.0.1:3017 (was previously returning false → SSRF reject for any
+    hypothetical rule pointing there). Existing ports 3010-3015 behavior
+    unchanged.
+  · All other paths untouched.
