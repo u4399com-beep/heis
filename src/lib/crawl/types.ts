@@ -399,6 +399,10 @@ export interface CleanConfig {
   normalize: boolean
   /** 转换为纯文本(去掉所有标签只留换行) */
   plainText: boolean
+  /** R7-26: 违禁词列表(书名/简介/作者命中时跳过该书采集) */
+  bannedWords?: string[]
+  /** R7-26: 违禁词处理方式: skip=跳过全书(默认) / mask=替换为***继续 */
+  bannedAction?: 'skip' | 'mask'
 }
 
 /** 完整规则配置 */
@@ -1236,6 +1240,8 @@ export function sanitizeCleanConfig(v: unknown): CleanConfig | undefined {
       [...DEFAULT_CLEAN_CONFIG.whitelist],
     normalize: safeBool(r.normalize) ?? true,
     plainText: safeBool(r.plainText) ?? false,
+    bannedWords: safeStrArr(r.bannedWords, 200, 50) ?? undefined,
+    bannedAction: r.bannedAction === 'mask' ? 'mask' : 'skip',
   }
   return out
 }

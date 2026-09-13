@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { FolderOpen, Loader2, Save, Settings, Server, KeyRound, Eye, EyeOff } from 'lucide-react'
+import { FolderOpen, Loader2, Save, Settings, Server, KeyRound, Eye, EyeOff, Shield } from 'lucide-react'
 import { toast } from 'sonner'
 import { api, safeJsonParse } from './helpers'
 
@@ -73,6 +73,9 @@ export function SettingsSection() {
   const [saving, setSaving] = useState(false)
   const [savingMini, setSavingMini] = useState(false)
   const [showSecret, setShowSecret] = useState<Record<string, boolean>>({})
+  // R7-26: 违禁词
+  const [bannedWords, setBannedWords] = useState('')
+  const [savingBanned, setSavingBanned] = useState(false)
 
   useEffect(() => {
     ;(async () => {
@@ -90,6 +93,12 @@ export function SettingsSection() {
           {},
         )
         setMiniConfig(mc || {})
+        // R7-26: 违禁词
+        const bw = safeJsonParse<string[]>(
+          typeof settings.bannedWords === 'string' ? settings.bannedWords : JSON.stringify(settings.bannedWords ?? []),
+          [],
+        )
+        setBannedWords((bw || []).join('\n'))
       } catch (e) {
         toast.error(e instanceof Error ? e.message : '加载设置失败')
       } finally {
@@ -120,6 +129,34 @@ export function SettingsSection() {
     } finally {
       setSavingMini(false)
     }
+  }
+
+  // R7-26: 保存违禁词
+  const PRESET_BANNED_WORDS = [
+    '色情', '成人', '18禁', 'AV', '黄文', '肉文', '禁书',
+    '反动', '政治敏感', '六四', '法轮', '达赖',
+    '赌博', '博彩', '彩票预测',
+    '毒品', '吸毒', '贩毒',
+    '暴力', '恐怖主义', '极端组织',
+    '诈骗', '传销', '非法集资',
+  ]
+  const saveBannedWords = async () => {
+    setSavingBanned(true)
+    try {
+      const words = bannedWords.split(/[\n,，、;；\s]+/).map((w) => w.trim()).filter(Boolean)
+      await api.put('/api/admin/settings', { bannedWords: words })
+      toast.success(`违禁词已保存(${words.length}个), 60秒内生效`)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '保存失败')
+    } finally {
+      setSavingBanned(false)
+    }
+  }
+  const loadPresetBanned = () => {
+    const existing = new Set(bannedWords.split(/[\n,，、;；\s]+/).map((w) => w.trim()).filter(Boolean))
+    const merged = [...existing, ...PRESET_BANNED_WORDS.filter((w) => !existing.has(w))]
+    setBannedWords(merged.join('\n'))
+    toast.success(`已加载${PRESET_BANNED_WORDS.length}个预设违禁词`)
   }
 
   const updateField = (serviceKey: keyof MiniServiceConfig, fieldId: string, value: string) => {
@@ -277,6 +314,47 @@ export function SettingsSection() {
                 {savingMini ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
                 保存 mini-service 配置
               </Button>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* R7-26: 违禁词智能跳过 */}
+      <Card className="border-zinc-800 bg-zinc-900/60">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-sm text-zinc-200">
+            <Shield className="h-4 w-4 text-rose-400" />
+            违禁词智能跳过
+          </CardTitle>
+          <CardDescription className="text-xs text-zinc-500">
+            采集时检查书名/简介/作者是否含违禁词, 命中则跳过。一行一个词, 支持子串匹配。60秒内生效。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3 p-4 pt-0">
+          {loading ? (
+            <div className="flex items-center justify-center py-8 text-sm text-zinc-500">
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />加载中…
+            </div>
+          ) : (
+            <>
+              <Button size="sm" variant="outline" className="border-zinc-700 text-zinc-300" onClick={loadPresetBanned}>
+                加载预设违禁词
+              </Button>
+              <textarea
+                className="w-full rounded-md border border-zinc-700 bg-zinc-950 p-3 font-mono text-xs text-zinc-200 min-h-[200px] focus:outline-none focus:ring-2 focus:ring-rose-500/30"
+                placeholder="一行一个违禁词, 如:&#10;色情&#10;赌博&#10;毒品"
+                value={bannedWords}
+                onChange={(e) => setBannedWords(e.target.value)}
+              />
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-zinc-500">
+                  共 {bannedWords.split(/[\n,，、;；\s]+/).filter(Boolean).length} 个违禁词
+                </span>
+                <Button size="sm" className="gap-1.5" onClick={saveBannedWords} disabled={savingBanned}>
+                  {savingBanned ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                  保存违禁词
+                </Button>
+              </div>
             </>
           )}
         </CardContent>

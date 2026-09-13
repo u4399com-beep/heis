@@ -167,6 +167,30 @@ const MAX_BOOK_LAST_CHAPTERS = 50_000
  *  而非连败降额链; 403/验证码等其余特征维持既有降额链不变 */
 const RATE_LIMIT_HINT_RE = /429|rate[ _-]?limit|too many requests/i
 
+// R7-26: 全局违禁词列表(从系统设置加载, 60s缓存)
+let globalBannedWords: string[] = []
+let globalBannedWordsCachedAt = 0
+const BANNED_WORDS_CACHE_TTL = 60_000
+
+async function loadGlobalBannedWords(): Promise<string[]> {
+  if (Date.now() - globalBannedWordsCachedAt < BANNED_WORDS_CACHE_TTL) return globalBannedWords
+  try {
+    const row = await db.setting.findUnique({ where: { key: 'bannedWords' } })
+    let words: string[] = []
+    if (row?.value) {
+      try {
+        const parsed = JSON.parse(row.value)
+        if (Array.isArray(parsed)) words = parsed.filter((w: unknown) => typeof w === 'string' && w.trim())
+      } catch { /* ignore */ }
+    }
+    globalBannedWords = words
+    globalBannedWordsCachedAt = Date.now()
+    return words
+  } catch {
+    return globalBannedWords
+  }
+}
+
 // ---------- 全局单例 ----------
 const globalForRunner = globalThis as unknown as { __novelTaskRunner?: TaskRunner }
 
@@ -562,6 +586,8 @@ export class TaskRunner {
     const rt = this.runtimes.get(taskId)
     if (!rt) return // control('start') 必先 set, 纯防御
     const myEpoch = rt.epoch
+    // R7-26: 任务启动时加载全局违禁词(60s缓存)
+    await loadGlobalBannedWords()
     // 本轮已作废判断: 新一轮 start 会自增 epoch, 旧循环在所有检查点看到漂移即退出
     const isStale = () => rt.epoch !== myEpoch
     // zz-d 修复(running 标志泄漏): ensureDirs/loadConfig 与 `!cfg` 提前返回原先都在下方
@@ -1052,6 +1078,22 @@ export class TaskRunner {
     // R7-17: 源站字数(规则提取的 wordCount, 如七猫/小雨 API 的 WordsCount 字段)
     // 纯数字字符串解析为 int; 非数字/缺失时 NaN→0, 后续由章节累计口径覆盖
     const parsedWordCount = parseInt(String(parsed.wordCount || '').replace(/[^\d]/g, ''), 10) || 0
+
+    // R7-26: 违禁词智能跳过 — 检查书名/简介/作者是否含违禁词
+    const bannedWords = rule.clean.bannedWords || globalBannedWords
+    if (bannedWords && bannedWords.length > 0) {
+      const checkText = `${bookName}\n${intro}\n${author}`.toLowerCase()
+      const hitWord = bannedWords.find((w) => w && checkText.includes(w.toLowerCase()))
+      if (hitWord) {
+        if (rule.clean.bannedAction === 'mask') {
+          await this.log(taskId, 'warn', `违禁词过滤(mask): 《${bookName}》命中"${hitWord}"`)
+        } else {
+          await this.log(taskId, 'warn', `违禁词跳过: 《${bookName}》命中"${hitWord}"`)
+          stats.errors++
+          return 'ok' as const
+        }
+      }
+    }
 
     // feat-combo-theme-incremental(连载增量): 标记本次是否为连载书的增量检查
     // —— rt.ongoingBookUrls 中的书重启后不整体跳过, 抓目录后与 rt.bookLastChapters 中
