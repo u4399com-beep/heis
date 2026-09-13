@@ -718,15 +718,32 @@ export class TaskRunner {
             // 由 progress.discoveredBookUrls 装载, 范围任务续采只处理新增/未采完书籍
             let newlyDiscovered = 0
             let alreadyDiscovered = 0
+            // R7-29: 批量查询已发现URL在DB中是否存在(避免逐条查询N次)
+            const prevDiscovered = pageUrls.filter((u) => rt.discoveredBookUrls.has(u))
+            const dbExistMap = new Map<string, boolean>()
+            if (prevDiscovered.length > 0) {
+              try {
+                const existing = await db.book.findMany({
+                  where: { sourceUrl: { in: prevDiscovered } },
+                  select: { sourceUrl: true, _count: { select: { chapters: true } } },
+                })
+                for (const b of existing) {
+                  // 书存在且有章节才算真正已采集
+                  dbExistMap.set(b.sourceUrl, b._count.chapters > 0)
+                }
+              } catch { /* DB故障降级: 全部不跳过(重新加入队列) */ }
+            }
             for (const u of pageUrls) {
               if (rt.discoveredBookUrls.has(u)) {
-                alreadyDiscovered++
-                continue
+                // R7-29: 不再仅凭Set跳过, 先查DB是否有书+章节
+                const dbHasBook = dbExistMap.get(u)
+                if (dbHasBook === true) {
+                  alreadyDiscovered++
+                  continue
+                }
+                // DB中无书或无章节 → 重新加入队列(书被删除/采集中断)
+                await this.log(taskId, 'info', `续采: ${u.slice(-40)} 已发现但DB中无完整数据, 重新加入队列`)
               }
-              // agent-Q-deep-audit: 用 addToResumeSet 即时检查内存上限(与 completedBookUrls/
-              // ongoingBookUrls/failedBookUrls 同口径) —— 修前 rt.discoveredBookUrls.add(u)
-              // 无上限检查, 长任务站群场景下 Set 可涨至数百万 → OOM(saveProgress 落库时虽
-              // slice(0, 50000) 截断持久化, 但内存 Set 无界增长)
               addToResumeSet(rt.discoveredBookUrls, u)
               urls.push(u)
               newlyDiscovered++
@@ -780,13 +797,30 @@ export class TaskRunner {
         // 连载中(status==='ongoing')的书在 rt.ongoingBookUrls 中, 不整体跳过, 走 crawlOneBook
         // 的增量检查逻辑(抓目录→对比末章→无新章跳过/有新章增量采)。recrawlMode==='full' 启动时
         // 两 Set 已被清空, 此分支不触发(完全覆盖重采语义保留)
+        // R7-29: completedBookUrls也需要DB验证 —— 用户可能删除了所有书籍
+        // 但progress中仍记录了completedBookUrls, 导致重启后跳过了已删除的书
         if (rt.completedBookUrls.has(bookUrl)) {
-          progress.booksDone++
-          progress.currentBook = bookUrl
-          progress.phaseNote = `跳过已完结 (${bi + 1}/${bookQueue.length})`
-          await this.log(taskId, 'info', `跳过已完结: ${bookUrl}`)
-          await this.saveProgress(taskId, progress, stats)
-          continue
+          // 查DB确认书确实存在且有章节
+          let skipCompleted = false
+          try {
+            const existing = await db.book.findFirst({
+              where: { sourceUrl: bookUrl },
+              select: { id: true, _count: { select: { chapters: true } } },
+            })
+            if (existing && existing._count.chapters > 0) {
+              skipCompleted = true
+            } else {
+              await this.log(taskId, 'info', `续采: ${bookUrl.slice(-40)} 已标记完结但DB中无章节, 重新采集`)
+            }
+          } catch { /* DB故障不跳过 */ }
+          if (skipCompleted) {
+            progress.booksDone++
+            progress.currentBook = bookUrl
+            progress.phaseNote = `跳过已完结 (${bi + 1}/${bookQueue.length})`
+            await this.log(taskId, 'info', `跳过已完结: ${bookUrl}`)
+            await this.saveProgress(taskId, progress, stats)
+            continue
+          }
         }
 
         // 每本书重新读配置(支持在线调整)
