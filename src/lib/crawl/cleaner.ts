@@ -155,8 +155,12 @@ export function decodeEntitiesOnce(s: string): string {
 export function cleanContentHtml(raw: string, cfgOverride?: Partial<CleanConfig>): string {
   const cfg: CleanConfig = { ...DEFAULT_CLEAN_CONFIG, ...cfgOverride }
   if (!raw) return ''
-  // 0. 繁体→简体(标签外文本段): 后续广告清洗/导航词匹配/存储统一在简体上进行
-  const html = t2sHtml(raw)
+  // R-CRAWL-FINAL: 字面 \n (反斜杠+n 两字符) → 真实换行。部分源站以字面 \n 分段
+  // (二次转义 JSON 体 / 非 JSON 文本接口 / 模板字符串注入), 修前 plainText 模式按
+  // \n split 时被并成一行, HTML 模式也产不出段落断点。在 t2sHtml 之前转: 不影响
+  // 真实换行(JSON.parse 产物), 对 HTML 模式无副作用(cheerio 把空白规范化); Windows
+  // 路径 C:\new 等极罕见于小说正文, 收益(段落保真) >> 风险(罕见误伤)
+  const html = t2sHtml(raw.replace(/\\n/g, '\n'))
 
   if (cfg.plainText) {
     // 纯文本模式: 剥全部标签, 保留换行
@@ -441,6 +445,8 @@ export function cleanTextField(raw: string | undefined | null, maxLength?: numbe
   // 繁体→简体(检测未命中原样返回)
   v = t2sText(v)
   v = v
+    // R-CRAWL-FINAL: 字面 \n → 真实换行, 随后被下方 [r\n\t]+ 规整为空格(单行字段语义)
+    .replace(/\\n/g, '\n')
     .replace(/[\r\n\t]+/g, ' ')
     .replace(/\s{2,}/g, ' ')
     .trim()
@@ -462,6 +468,8 @@ export function cleanIntro(raw: string | undefined | null, maxLength = 2000): st
   v = t2sText(v)
   v = removeAdLines(v, DEFAULT_CLEAN_CONFIG.adPatterns)
   v = v
+    // R-CRAWL-FINAL: 字面 \n → 真实换行, 随后按 \n 切段保留多段简介
+    .replace(/\\n/g, '\n')
     .split('\n')
     .map((l) => l.trim())
     .filter(Boolean)

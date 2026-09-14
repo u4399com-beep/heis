@@ -712,8 +712,21 @@ export function urlVars(url: string): Record<string, string> {
  *  jsonGet 同款点路径逐层取值; 适配可预取 token 响应体作为整体对象注入 const 模板
  *  例如 vars.token = { data: { accessToken: 'xxx' } }, const 模板 {token.data.accessToken} */
 function constTemplate(expr: string, vars: Record<string, unknown> | undefined): string {
-  return expr.replace(/\{([a-zA-Z0-9_.]+)\}/g, (m, key: string) => {
+  return expr.replace(/\{([a-zA-Z0-9_./:]+)\}/g, (m, key: string) => {
     if (!vars) return ''
+    // R7-31: floor 语法 — {floor:field/divisor} → Math.floor(field / divisor)
+    // 用于 bqg713 等站点封面URL: {floor:id/1000} → 0/1/2... 子目录
+    const floorMatch = key.match(/^floor:([a-zA-Z0-9_.]+)\/(\d+)$/)
+    if (floorMatch) {
+      const fieldName = floorMatch[1]
+      const divisor = parseInt(floorMatch[2], 10)
+      const val = vars[fieldName]
+      if (val !== undefined && val !== null) {
+        const num = parseInt(String(val), 10)
+        if (!isNaN(num)) return String(Math.floor(num / divisor))
+      }
+      return ''
+    }
     // 直接变量优先(向后兼容: 整 key 命中即取)
     if (Object.prototype.hasOwnProperty.call(vars, key)) {
       const v = vars[key]
