@@ -1,19 +1,22 @@
 // ============================================================
-// 组合式主题矩阵 — 8 配色 × 8 风格 × 8 布局 = 512 组合
+// 组合式主题矩阵 — 12 配色 × 12 风格 × 12 布局 = 1728 组合
 //
-// 不预生成全部 512 个 ThemeDef 对象(内存/序列化代价低, 但仍按需合成以保持纯净):
+// 不预生成全部 1728 个 ThemeDef 对象(内存/序列化代价低, 但仍按需合成以保持纯净):
 //   getThemeById(themeId)      — 单一组合合成完整 ThemeDef
 //   sliceCombos(from, to)      — 惰性切片 [from, to) 的 ThemeListItem[]
 //
 // 主题 ID 格式: `{colorId}-{styleId}-{layoutId}` (e.g. "violet-glass-biquge-home")
 // 与 themes.ts 中的 12 个手写 preset 共存: getThemeById 先查 preset, 未命中再走合成
 //
-// 配色(8): violet / emerald / rose / amber / cyan / indigo / slate / crimson
+// 配色(12): violet / emerald / rose / amber / cyan / indigo / slate / crimson /
+//           sunset / forest / ocean / jewel
 //   - 每个配色含 light + dark 双重调色板, 由 Style.dark 决定取用
-// 风格(8): minimal / glass / classic / modern / neon / paper / magazine / biquge
-//   - glass 与 neon 标记 dark=true, 强制使用配色 dark 调色板
-// 布局(8): biquge-home / grid-home / list-home / shelf-home /
-//          classic-read / immersive-read / paginated-read / pili-read
+// 风格(12): minimal / glass / classic / modern / neon / paper / magazine / biquge /
+//           aurora / cyberpunk / vintage / editorial
+//   - glass / neon / aurora / cyberpunk 标记 dark=true, 强制使用配色 dark 调色板
+// 布局(12): biquge-home / grid-home / list-home / shelf-home /
+//           classic-read / immersive-read / paginated-read / pili-read /
+//           mosaic-home / masonry-home / showcase-home / editorial-home
 // ============================================================
 import type { ThemeDef, ThemeReadConfig, ReadVars } from './themes'
 
@@ -102,7 +105,7 @@ function shadowOf(kind: ShadowKind, primary: string, dark: boolean): string {
 }
 
 // ============================================================
-// 1. 8 配色方案 — 每个含 light + dark 双调色板
+// 1. 12 配色方案 — 每个含 light + dark 双调色板
 // ============================================================
 export const COLOR_SCHEMES: ColorScheme[] = [
   {
@@ -241,10 +244,78 @@ export const COLOR_SCHEMES: ColorScheme[] = [
     },
     preview: ['#fef2f2', '#dc2626', '#fbbf24'],
   },
+  {
+    id: 'sunset', name: '夕阳',
+    light: {
+      bg: '#fff7ed', surface: '#ffffff', surfaceAlt: '#fed7aa',
+      text: '#3a1a05', textMuted: '#a3683a',
+      primary: '#ea580c', primaryText: '#ffffff',
+      accent: '#9333ea', border: '#fcd9b6',
+    },
+    dark: {
+      bg: 'linear-gradient(160deg, #1a0e05 0%, #2a0d18 50%, #180a10 100%)',
+      surface: 'rgba(255,255,255,0.06)', surfaceAlt: 'rgba(255,255,255,0.1)',
+      text: '#f5d4a0', textMuted: '#a3683a',
+      primary: '#fb923c', primaryText: '#2a0d18',
+      accent: '#a855f7', border: 'rgba(251,146,60,0.3)',
+    },
+    preview: ['#fff7ed', '#ea580c', '#9333ea'],
+  },
+  {
+    id: 'forest', name: '森林',
+    light: {
+      bg: '#f0fdf4', surface: '#ffffff', surfaceAlt: '#dcfce7',
+      text: '#0a2e1a', textMuted: '#5a8b6f',
+      primary: '#16a34a', primaryText: '#ffffff',
+      accent: '#ca8a04', border: '#bbf0d2',
+    },
+    dark: {
+      bg: 'linear-gradient(160deg, #051a0d 0%, #0a2410 50%, #06180c 100%)',
+      surface: 'rgba(255,255,255,0.06)', surfaceAlt: 'rgba(255,255,255,0.1)',
+      text: '#d0f5d0', textMuted: '#5a9a78',
+      primary: '#4ade80', primaryText: '#042e1a',
+      accent: '#eab308', border: 'rgba(74,222,128,0.25)',
+    },
+    preview: ['#f7fee7', '#16a34a', '#ca8a04'],
+  },
+  {
+    id: 'ocean', name: '海洋',
+    light: {
+      bg: '#f0f9ff', surface: '#ffffff', surfaceAlt: '#bae6fd',
+      text: '#0a2a3b', textMuted: '#5a8ba3',
+      primary: '#0284c7', primaryText: '#ffffff',
+      accent: '#fb7185', border: '#bae6fd',
+    },
+    dark: {
+      bg: 'linear-gradient(160deg, #051a1f 0%, #0a2530 50%, #061820 100%)',
+      surface: 'rgba(255,255,255,0.06)', surfaceAlt: 'rgba(255,255,255,0.1)',
+      text: '#d0ecf5', textMuted: '#5a93a8',
+      primary: '#38bdf8', primaryText: '#042030',
+      accent: '#fb7185', border: 'rgba(56,189,248,0.3)',
+    },
+    preview: ['#f0f9ff', '#0284c7', '#fb7185'],
+  },
+  {
+    id: 'jewel', name: '宝石',
+    light: {
+      bg: '#fdf2f8', surface: '#ffffff', surfaceAlt: '#fbcfe8',
+      text: '#3b0a1a', textMuted: '#a35478',
+      primary: '#be185d', primaryText: '#ffffff',
+      accent: '#eab308', border: '#fbcfe8',
+    },
+    dark: {
+      bg: 'linear-gradient(160deg, #1a0510 0%, #2a0a1a 50%, #180510 100%)',
+      surface: 'rgba(255,255,255,0.06)', surfaceAlt: 'rgba(255,255,255,0.1)',
+      text: '#f5d0e0', textMuted: '#a35478',
+      primary: '#ec4899', primaryText: '#2a0a1a',
+      accent: '#fbbf24', border: 'rgba(236,72,153,0.3)',
+    },
+    preview: ['#fdf2f8', '#be185d', '#eab308'],
+  },
 ]
 
 // ============================================================
-// 2. 8 风格 (glass/neon 标记 dark=true 强制暗色)
+// 2. 12 风格 (glass/neon/aurora/cyberpunk 标记 dark=true 强制暗色)
 // ============================================================
 export const STYLES: StyleDef[] = [
   { id: 'minimal', name: '极简', desc: '白底极简·细线分隔·sans 字体', headerStyle: 'solid', cardShadow: 'none', radius: 4, fontFamily: 'sans', texture: 'none', chapterDeco: 'rule', dark: false },
@@ -255,10 +326,14 @@ export const STYLES: StyleDef[] = [
   { id: 'paper', name: '纸面纹理', desc: '宣纸纹理·衬线字体·菱形花饰', headerStyle: 'solid', cardShadow: 'sm', radius: 4, fontFamily: 'serif', texture: 'paper', chapterDeco: 'ornament', dark: false },
   { id: 'magazine', name: '杂志风', desc: '分栏标题·中阴影·菱形花饰·衬线', headerStyle: 'split', cardShadow: 'md', radius: 8, fontFamily: 'serif', texture: 'none', chapterDeco: 'ornament', dark: false },
   { id: 'biquge', name: '笔趣阁', desc: '简单表格·直角卡片·白底绿链', headerStyle: 'solid', cardShadow: 'none', radius: 2, fontFamily: 'sans', texture: 'none', chapterDeco: 'rule', dark: false },
+  { id: 'aurora', name: '极光', desc: '极光流动渐变·辉光晕染·大圆角·暗色基底', headerStyle: 'gradient', cardShadow: 'glow', radius: 20, fontFamily: 'sans', texture: 'vignette', chapterDeco: 'none', dark: true },
+  { id: 'cyberpunk', name: '赛博朋克', desc: '赛博朋克霓虹·故障字效·直角卡·暗色基底', headerStyle: 'gradient', cardShadow: 'glow', radius: 4, fontFamily: 'mono', texture: 'vignette', chapterDeco: 'none', dark: true },
+  { id: 'vintage', name: '复古怀旧', desc: '复古泛黄纸·衬线字·菱形花饰·直角卡', headerStyle: 'solid', cardShadow: 'sm', radius: 2, fontFamily: 'serif', texture: 'paper', chapterDeco: 'ornament', dark: false },
+  { id: 'editorial', name: '编辑视角', desc: '编辑周刊·分栏标题·中等阴影·无圆角', headerStyle: 'split', cardShadow: 'md', radius: 0, fontFamily: 'serif', texture: 'none', chapterDeco: 'rule', dark: false },
 ]
 
 // ============================================================
-// 3. 8 布局 (4 home-focused + 4 read-focused)
+// 3. 12 布局 (4 home-focused + 4 read-focused + 4 new home-focused)
 // ============================================================
 export const LAYOUTS: LayoutDef[] = [
   { id: 'biquge-home', name: '笔趣阁首页', homeLayout: 'biquge', readLayout: 'classic', readVars: { layout: 'classic', measure: 680, lineHeight: 1.9, fontBase: 17, indent: true, justify: false, toolbar: 'inline', texture: 'none', chapterDeco: 'rule' } },
@@ -269,6 +344,10 @@ export const LAYOUTS: LayoutDef[] = [
   { id: 'immersive-read', name: '沉浸阅读', homeLayout: 'minimal', readLayout: 'immersive', readVars: { layout: 'immersive', measure: 740, lineHeight: 2.1, fontBase: 18, indent: false, justify: false, toolbar: 'floating', texture: 'vignette', chapterDeco: 'none' } },
   { id: 'paginated-read', name: '分页阅读', homeLayout: 'grid', readLayout: 'paginated', readVars: { layout: 'paginated', measure: 480, lineHeight: 1.85, fontBase: 17, indent: false, justify: false, toolbar: 'bottom', texture: 'none', chapterDeco: 'rule' } },
   { id: 'pili-read', name: '霹雳阅读', homeLayout: 'pili', readLayout: 'pili', readVars: { layout: 'pili', measure: 680, lineHeight: 1.9, fontBase: 18, indent: true, justify: false, toolbar: 'bottom', texture: 'none', chapterDeco: 'rule' } },
+  { id: 'mosaic-home', name: '马赛克首页', homeLayout: 'mosaic', readLayout: 'classic', readVars: { layout: 'classic', measure: 700, lineHeight: 2, fontBase: 18, indent: true, justify: false, toolbar: 'inline', texture: 'none', chapterDeco: 'rule' } },
+  { id: 'masonry-home', name: '瀑布流首页', homeLayout: 'masonry', readLayout: 'classic', readVars: { layout: 'classic', measure: 720, lineHeight: 2, fontBase: 18, indent: true, justify: true, toolbar: 'inline', texture: 'paper', chapterDeco: 'ornament' } },
+  { id: 'showcase-home', name: '分屏首页', homeLayout: 'showcase', readLayout: 'immersive', readVars: { layout: 'immersive', measure: 740, lineHeight: 2.1, fontBase: 18, indent: false, justify: false, toolbar: 'floating', texture: 'vignette', chapterDeco: 'none' } },
+  { id: 'editorial-home', name: '周刊首页', homeLayout: 'editorial', readLayout: 'classic', readVars: { layout: 'classic', measure: 680, lineHeight: 1.95, fontBase: 17, indent: true, justify: false, toolbar: 'inline', texture: 'paper', chapterDeco: 'rule' } },
 ]
 
 // 索引: 用 ID 快速查找
@@ -336,11 +415,11 @@ export function generateTheme(colorSchemeId: string, styleId: string, layoutId: 
  *  通过对预定义 ID 列表 endsWith 匹配消歧。 */
 export function parseThemeId(themeId: string): { colorId: string; styleId: string; layoutId: string } | undefined {
   if (!themeId || typeof themeId !== 'string') return undefined
-  // 优先精确匹配预定义 layout (8 个, ID 唯一)
+  // 优先精确匹配预定义 layout (12 个, ID 唯一)
   for (const l of LAYOUTS) {
     if (themeId.endsWith(`-${l.id}`)) {
       const rest = themeId.slice(0, themeId.length - l.id.length - 1) // 去掉 `-${l.id}`
-      // 再匹配 style (8 个, ID 唯一)
+      // 再匹配 style (12 个, ID 唯一)
       for (const s of STYLES) {
         if (rest.endsWith(`-${s.id}`)) {
           const colorId = rest.slice(0, rest.length - s.id.length - 1)
@@ -375,7 +454,7 @@ export interface ThemeListItem {
   preview: [string, string, string]
 }
 
-/** 组合主题切片生成器(惰性, 仅生成本页所需项, 不构建全量 512 数组)
+/** 组合主题切片生成器(惰性, 仅生成本页所需项, 不构建全量 1728 数组)
  *  combos 全局序: colorIdx * STYLE_COUNT * LAYOUT_COUNT + styleIdx * LAYOUT_COUNT + layoutIdx
  *  返回 [from, to) 区间内的 ThemeListItem[] */
 export function sliceCombos(from: number, to: number): ThemeListItem[] {

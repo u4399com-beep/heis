@@ -7728,3 +7728,149 @@ Stage Summary:
   · bunx tsc --noEmit → 0 errors ✓
   · dev.log 无运行时错误 ✓
 - 脚本: scripts/fix-aijjxs-toplist-toc.ts(204 LoC, 一次性修复脚本, 已执行)
+
+---
+Task ID: R8-1A
+Agent: full-stack-developer
+Task: 扩展 theme-matrix.ts 主题矩阵维度
+
+Work Log:
+- 在 COLOR_SCHEMES 末尾追加 4 套配色: sunset/forest/ocean/jewel
+- 在 STYLES 末尾追加 4 套风格: aurora/cyberpunk/vintage/editorial
+- 在 LAYOUTS 末尾追加 4 套布局: mosaic-home/masonry-home/showcase-home/editorial-home
+- 修改 themes.ts 中 ThemeDef.layout 类型联合，新增 mosaic/masonry/showcase/editorial
+- 验证 tsc + lint 通过，新组合可正确合成
+
+Stage Summary:
+- 主题矩阵从 8×8×8=512 扩展到 12×12×12=1728 组合
+- 新配色: sunset(夕阳橙紫)/forest(森林绿土)/ocean(海洋蓝珊瑚)/jewel(宝石紫红金)
+- 新风格: aurora(极光流动)/cyberpunk(赛博朋克)/vintage(复古泛黄)/editorial(编辑周刊)
+- 新布局: mosaic(马赛克)/masonry(瀑布流)/showcase(分屏)/editorial(周刊)
+- 文件: src/lib/crawl/theme-matrix.ts, src/lib/crawl/themes.ts
+
+---
+Task ID: R8-1B
+Agent: full-stack-developer
+Task: 创建 4 个新首页布局组件 + 1 个细节组件库
+
+Work Log:
+- 创建 src/components/public/layouts/HomeMosaic.tsx (马赛克拼贴, 214 LoC)
+  · 顶部今日精选 hero: 左大封面 sm:col-span-2 row-span-2 + 右 2x2 小拼贴
+  · 中部分类马赛克墙: gridTemplateColumns repeat(12,1fr) + gridAutoRows 120px + gridAutoFlow dense
+  · cellSpan(): 偶数 1x2, 奇数 2x1, 第 6 倍数 2x2
+  · 底部横向滚动近期入库 (w-24 卡片)
+- 创建 src/components/public/layouts/HomeMasonry.tsx (Pinterest 瀑布流, 200 LoC)
+  · 顶部 sticky 站头 (backdropFilter blur + 半透明 bg)
+  · 主体 CSS columns: 2 列移动 / 3 列桌面 (md 媒体查询 + .home-masonry-cols 类)
+  · break-inside: avoid + display: inline-block + width: 100%
+  · isFeature(): 第 1/6/12 本作特写加大封面 + 4 行简介, 其余 2 行
+  · 底部本周热推横向滚动 (w-44 卡片 + 封面 48px)
+- 创建 src/components/public/layouts/HomeShowcase.tsx (分屏侧边栏, 311 LoC)
+  · 左侧 lg:sticky top-20 self-start 280px 固定侧边栏
+  · 站点 logo+名+简介 + 分类列表导航 + 本站统计
+  · 横向 stacked bar 展示连载 vs 完结比例 (primary/accent 双色 + 未知色)
+  · 右侧主区: 本周强推 3 列卡片 + 新书速递 5 行列表 (含最新章节) + 完结佳作 4 列网格
+- 创建 src/components/public/layouts/HomeEditorial.tsx (编辑周刊, 277 LoC)
+  · 顶部周刊刊头: EDITORIAL · ISSUE N° + 大字号期号 + 右侧站点 slogan + 3px double 横线分隔
+  · 本期导读双栏: 左 3fr 大封面 hero + 标题 + 副标题 + 4 行简介 + "阅读全文"按钮
+  · 右 2fr 5 行目录: 大字号编号 (tabular-nums italic) + 书名 + 章节标题 + 字数
+  · 底部本周精选 3x3 网格: 封面 + 书名 + 编辑短评 (editorialReview 7 种轮换伪文本)
+  · 全程使用 titleFont 衬线字体强调编辑感
+- 创建 src/components/public/layouts/HomeParts.tsx (4+1 可复用细节组件, 328 LoC)
+  · HeroBanner: linear-gradient primary→accent 背景 + 辉光圆斑 + 背景 cover + CTA 按钮
+  · RankingList: 前 3 名 accent 渐变徽章 No.1/2/3 + 4-10 名等宽 tabular-nums 编号 + ChevronRight 悬浮出现
+  · CategoryStrip: 水平滑动分类导航 (role=tablist + aria-selected) + 右侧渐隐遮罩
+  · ChapterTaser: 章节预览卡片 (封面 48x64 + 书名 + 字数 + TrendingUp 最新章节 + Clock fmtDate)
+  · StarMark (附赠): 小星星装饰组件
+- 修复 tsc 双重 role 警告 (bookNavProps 已含 role:button, 移除外层 role:listitem)
+- 清理 HomeMasonry 冗余 grid div + 合并 style 标签到 masonry 容器同级
+
+Quality Gates:
+- bunx tsc --noEmit | grep -v "examples\|skills" → 0 errors ✓
+- bun run lint → 0 errors / 0 warnings ✓
+- dev.log 无新增运行时错误 ✓ (仅残留 fetcher 镜像切换日志, 与本任务无关)
+- 5 文件总 1330 LoC, 全部 use client + 通过 usePublic() 拿 theme/site/navigate
+- 全部含骨架屏 + 空态 (if loading return Skeleton; if !books.length return null)
+- 全部响应式: 移动单列 / sm 2-3 列 / md 3 列 / lg 4-6 列
+- 全部用 bookNavProps 包装卡片 (role button + tabIndex 0 + Enter/Space 触发)
+
+Stage Summary:
+- 新增 4 个差异化首页布局: Mosaic 马赛克拼贴/Masonry 瀑布流/Showcase 分屏/Editorial 周刊
+- 新增 4+1 个可复用细节组件: HeroBanner 渐变 hero/RankingList 排行榜/CategoryStrip 分类导航条/ChapterTeaser 章节预览/StarMark 星标
+- 每个布局都有独特视觉层次、响应式断点、骨架屏、空态处理
+- 总代码量约 1330 行, 0 lint 错误, 0 tsc 错误
+- 未修改任何约束文件 (theme-matrix/themes/HomeView/已有 8 layouts/bits/seo/ctx/BookCover/types)
+- 完全遵守 usePublic() 拿 theme.vars 配色, 无硬编码颜色
+
+---
+Task ID: R8-1C
+Agent: 主控(本会话续作)
+Task: 重新设计规划主题模版系统，扩展配色/风格/布局维度，新增多个布局变体与细节组件
+
+Work Log:
+- 审查当前主题系统现状：
+  · theme-matrix.ts 8 配色×8 风格×8 布局=512 组合
+  · 12 个手写 preset 主题(THEMES 数组)
+  · 8 个首页布局组件(HomeShelf/Grid/List/Magazine/Minimal/Theater/Pili/Biquge)
+  · 单调原因：维度有限(512)+首页布局仅 8 种+每布局内部结构单一+缺乏细节组件
+- 启动 R8-1A 子代理(full-stack-developer) 扩展 theme-matrix.ts：
+  · 新增 4 配色(sunset/forest/ocean/jewel)
+  · 新增 4 风格(aurora/cyberpunk/vintage/editorial)
+  · 新增 4 布局(mosaic-home/masonry-home/showcase-home/editorial-home)
+  · 修改 themes.ts 中 ThemeDef.layout 类型联合新增 mosaic/masonry/showcase/editorial
+  · 总组合从 512 扩展到 12×12×12=1728
+- 启动 R8-1B 子代理(full-stack-developer) 创建 4 个新首页布局组件 + 1 个细节组件库：
+  · HomeMosaic.tsx (214 LoC) 马赛克拼贴: 12列 dense grid + hero 大封面 + 2x2 小拼贴
+  · HomeMasonry.tsx (200 LoC) Pinterest 瀑布流: CSS columns + 第1/6/12本特写
+  · HomeShowcase.tsx (311 LoC) 分屏侧边栏: sticky 280px 侧栏+主区+stacked bar 统计
+  · HomeEditorial.tsx (277 LoC) 编辑周刊: ISSUE N° 刊头+双栏导读+3x3 编辑短评
+  · HomeParts.tsx (328 LoC) 细节组件库: HeroBanner/RankingList/CategoryStrip/ChapterTeaser/StarMark
+  · 总计 1330 LoC, 全部含骨架屏+空态+响应式+键盘可达(bookNavProps)
+- 主代理接线 HomeView.tsx:
+  · import 4 个新布局组件(动态分包 const HomeMosaic/Masonry/Showcase/Editorial = dynamic(...))
+  · 在 layout 分发分支新增 mosaic/masonry/showcase/editorial 4 条
+  · 防御性兜底白名单扩为 12 个 layout key
+- 主代理在 themes.ts THEMES 数组末尾追加 4 个新 preset 主题:
+  · sunset-mosaic(夕阳马赛克): 橙紫渐变+gradient hero+14px 圆角
+  · ocean-masonry(海洋瀑布流): 海洋蓝渐变+12px 圆角+paper texture
+  · jewel-showcase(宝石分屏): 宝石紫红金+暗色+stacked bar
+  · vintage-editorial(复古周刊): 泛黄纸+衬线+2px 直角+split header
+- 验证(代码层):
+  · bunx tsc --noEmit → 0 errors ✓
+  · bun run lint → 0 errors/0 warnings ✓
+  · 主题加载脚本验证: THEMES.length=16, 矩阵 12×12×12=1728, 4 新 preset 全部 OK,
+    4 新组合(sunset-aurora-mosaic-home/forest-cyberpunk-masonry-home/
+    ocean-vintage-showcase-home/jewel-editorial-editorial-home) 全部正确合成
+  · parseThemeId 正确解析新 ID, getThemeById 入口正确路由 preset+combo
+  · 所有 12 种 layout(biquge/editorial/grid/list/magazine/masonry/minimal/mosaic/
+    pili/shelf/showcase/theater) 都在 preset 中出现
+- agent-browser 验证: 沙箱环境 dev server 不稳定(启动后约 30s 被 OS 杀),
+  前台无法持续跑; 但代码层 tsc/lint 全通+主题加载脚本全通, 5 个新组件
+  均遵循 usePublic/theme.vars/bookNavProps 约定, 与现有 8 个布局同构
+
+Stage Summary:
+- 主题矩阵从 8×8×8=512 扩展到 12×12×12=1728 组合(3.375 倍)
+- preset 主题从 12 套扩展到 16 套
+- 首页布局从 8 种扩展到 12 种:
+  · 原有: shelf/list/grid/minimal/magazine/theater/pili/biquge
+  · 新增: mosaic(马赛克拼贴)/masonry(Pinterest瀑布流)/showcase(分屏侧边栏)/
+         editorial(编辑周刊)
+- 新增 5 个可复用细节组件: HeroBanner/RankingList/CategoryStrip/ChapterTeaser/StarMark
+- 视觉差异度大幅提升:
+  · 4 新配色: 夕阳橙紫/森林绿土/海洋蓝珊瑚/宝石紫红金
+  · 4 新风格: 极光流动(暗)/赛博朋克(暗)/复古泛黄(亮)/编辑周刊(亮)
+  · 4 新布局各有独特视觉层次:
+    - Mosaic: 12列 dense grid + 不等大小卡片(偶1x2/奇2x1/6倍2x2)
+    - Masonry: CSS columns 3列不等高 + 第1/6/12本特写跨列
+    - Showcase: lg:sticky 280px 侧栏 + stacked bar 统计连载vs完结比例
+    - Editorial: ISSUE N° 刊头 + 3px double 横线 + tabular-nums italic 编号 + 衬线字体
+- 文件变更:
+  · src/lib/crawl/theme-matrix.ts(+~150 LoC: 4 配色/4 风格/4 布局)
+  · src/lib/crawl/themes.ts(+~115 LoC: 4 preset + layout 联合类型扩展)
+  · src/components/public/layouts/HomeMosaic.tsx(新增 214 LoC)
+  · src/components/public/layouts/HomeMasonry.tsx(新增 200 LoC)
+  · src/components/public/layouts/HomeShowcase.tsx(新增 311 LoC)
+  · src/components/public/layouts/HomeEditorial.tsx(新增 277 LoC)
+  · src/components/public/layouts/HomeParts.tsx(新增 328 LoC)
+  · src/components/public/HomeView.tsx(+8 行: 4 import + 4 layout 分发分支 + 兜底白名单)
+- 总新增代码: ~1400 LoC

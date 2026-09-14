@@ -23,6 +23,11 @@ const HomeMagazine = dynamic(() => import('./layouts/HomeMagazine').then((m) => 
 const HomeTheater = dynamic(() => import('./layouts/HomeTheater').then((m) => m.HomeTheater))
 const HomePili = dynamic(() => import('./layouts/HomePili').then((m) => m.HomePili))
 const HomeBiquge = dynamic(() => import('./layouts/HomeBiquge').then((m) => m.HomeBiquge))
+// R8-1B: 4 个新首页布局, 懒加载分包
+const HomeMosaic = dynamic(() => import('./layouts/HomeMosaic').then((m) => m.HomeMosaic))
+const HomeMasonry = dynamic(() => import('./layouts/HomeMasonry').then((m) => m.HomeMasonry))
+const HomeShowcase = dynamic(() => import('./layouts/HomeShowcase').then((m) => m.HomeShowcase))
+const HomeEditorial = dynamic(() => import('./layouts/HomeEditorial').then((m) => m.HomeEditorial))
 import type { BookItem } from './types'
 
 interface FetchState {
@@ -171,8 +176,13 @@ export function HomeView({ page, cat }: { page: number; cat?: string }) {
           {theme.layout === 'theater' && <HomeTheater books={books} loading={loading} />}
           {theme.layout === 'pili' && <HomePili books={books} loading={loading} />}
           {theme.layout === 'biquge' && <HomeBiquge books={books} loading={loading} />}
+          {/* R8-1B: 4 个新首页布局分发 */}
+          {theme.layout === 'mosaic' && <HomeMosaic books={books} loading={loading} />}
+          {theme.layout === 'masonry' && <HomeMasonry books={books} loading={loading} />}
+          {theme.layout === 'showcase' && <HomeShowcase books={books} loading={loading} />}
+          {theme.layout === 'editorial' && <HomeEditorial books={books} loading={loading} />}
           {/* feat-round-7 B3: 防御性兜底 — 未知布局/loading 期无任何布局命中时用 BookGridSkeleton */}
-          {!['shelf', 'list', 'grid', 'minimal', 'magazine', 'theater', 'pili', 'biquge'].includes(theme.layout) && loading && (
+          {!['shelf', 'list', 'grid', 'minimal', 'magazine', 'theater', 'pili', 'biquge', 'mosaic', 'masonry', 'showcase', 'editorial'].includes(theme.layout) && loading && (
             <BookGridSkeleton count={12} />
           )}
         </>

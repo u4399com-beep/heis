@@ -3,12 +3,13 @@
 // 样式 / 颜色 / 布局 / 阅读版式 全部差异化, 均适配 TDK / SEO / GEO
 //
 // 双布局维度:
-//   layout     → 首页布局 (grid/list/shelf/magazine/minimal/theater/pili/biquge)
+//   layout     → 首页布局 (grid/list/shelf/magazine/minimal/theater/pili/biquge/
+//                          mosaic/masonry/showcase/editorial)
 //   read       → 阅读页布局与排版参数 (经典典书版 / 沉浸暗色 / 分页横滑 / 书屋版)
 // read 可缺省: readOf() 会按 READ_DEFAULTS 回退, 旧调用点零破坏
 //
 // feat-combo-theme-incremental: 在 THEMES(preset) 之外引入组合主题矩阵
-// (8 配色 × 8 风格 × 8 布局 = 512 组合)。theme-matrix 仅依赖本模块的
+// (12 配色 × 12 风格 × 12 布局 = 1728 组合)。theme-matrix 仅依赖本模块的
 // 类型(type-only import, 编译期擦除无运行时循环依赖); 本模块在 getThemeById
 // 中静态引入组合解析器, preset 命中优先, 未命中回退组合, 全未命中返回 THEMES[0]。
 // ============================================================
@@ -73,7 +74,7 @@ export interface ThemeDef {
   name: string
   desc: string
   /** 首页布局风格 */
-  layout: 'grid' | 'list' | 'shelf' | 'magazine' | 'minimal' | 'theater' | 'pili' | 'biquge'
+  layout: 'grid' | 'list' | 'shelf' | 'magazine' | 'minimal' | 'theater' | 'pili' | 'biquge' | 'mosaic' | 'masonry' | 'showcase' | 'editorial'
   dark: boolean
   /** 阅读页布局与排版（缺省走 readOf 回退值） */
   read?: ThemeReadConfig
@@ -475,6 +476,121 @@ export const THEMES: ThemeDef[] = [
     },
     // 预览三色: [bg(取基色 #f3efe7), primary(#0f766e), accent(#b45309)]
     preview: ['#f3efe7', '#0f766e', '#b45309'],
+  },
+
+  // ==================== R8-1C: 4 个新布局 preset 主题 ====================
+  // 每个对应一种新布局, 让用户能直接选用而不必从 1728 组合里挑
+  {
+    // 夕阳橙紫·马赛克拼贴首页 — 大封面 hero + 2x2 小拼贴 + 12 列 dense grid 马赛克墙
+    id: 'sunset-mosaic',
+    name: '夕阳马赛克',
+    desc: '夕阳橙紫渐变·马赛克拼贴首页·dense grid 大小不一卡片·横向滚动入库',
+    layout: 'mosaic',
+    dark: false,
+    read: {
+      layout: 'classic', measure: 720, lineHeight: 2, fontBase: 18,
+      indent: true, justify: false, toolbar: 'inline', texture: 'none', chapterDeco: 'rule',
+    },
+    vars: {
+      bg: 'radial-gradient(1200px 600px at 0% 0%, #fff7ed 0%, transparent 50%), radial-gradient(900px 500px at 100% 5%, #ffe4e6 0%, transparent 55%), #fffbf5',
+      surface: '#ffffff',
+      surfaceAlt: '#fed7aa',
+      text: '#431407',
+      textMuted: '#9a3412',
+      primary: '#ea580c',
+      primaryText: '#ffffff',
+      accent: '#9333ea',
+      border: '#fed7aa',
+      radius: '14px',
+      fontFamily: '"HarmonyOS Sans SC","PingFang SC","Microsoft YaHei",sans-serif',
+      cardShadow: '0 8px 24px rgba(234,88,12,0.12), 0 2px 6px rgba(147,51,234,0.08)',
+      headerStyle: 'gradient',
+    },
+    preview: ['#fffbf5', '#ea580c', '#9333ea'],
+  },
+  {
+    // 海洋深蓝·瀑布流首页 — CSS columns 瀑布流 + 第 1/6/12 本特写
+    id: 'ocean-masonry',
+    name: '海洋瀑布流',
+    desc: '海洋蓝渐变·Pinterest 瀑布流·3 列不等高卡片·特写跨列',
+    layout: 'masonry',
+    dark: false,
+    read: {
+      layout: 'classic', measure: 740, lineHeight: 2, fontBase: 18,
+      indent: true, justify: true, toolbar: 'inline', texture: 'paper', chapterDeco: 'ornament',
+    },
+    vars: {
+      bg: 'radial-gradient(1000px 500px at 5% 0%, #e0f2fe 0%, transparent 50%), radial-gradient(800px 400px at 100% 10%, #cffafe 0%, transparent 55%), #f0f9ff',
+      surface: '#ffffff',
+      surfaceAlt: '#bae6fd',
+      text: '#0c4a6e',
+      textMuted: '#0369a1',
+      primary: '#0284c7',
+      primaryText: '#ffffff',
+      accent: '#fb7185',
+      border: '#bae6fd',
+      radius: '12px',
+      fontFamily: '"HarmonyOS Sans SC","PingFang SC","Microsoft YaHei",sans-serif',
+      cardShadow: '0 6px 20px rgba(2,132,199,0.1), 0 1px 3px rgba(2,132,199,0.06)',
+      headerStyle: 'gradient',
+    },
+    preview: ['#f0f9ff', '#0284c7', '#fb7185'],
+  },
+  {
+    // 宝石紫红金·分屏侧边栏首页 — sticky 280px 侧边栏 + 主区本周强推/新书速递/完结佳作
+    id: 'jewel-showcase',
+    name: '宝石分屏',
+    desc: '宝石紫红金·分屏侧边栏·sticky 280px 侧栏+主区滚动·stacked bar 统计',
+    layout: 'showcase',
+    dark: true,
+    read: {
+      layout: 'immersive', measure: 740, lineHeight: 2.05, fontBase: 18,
+      indent: false, justify: false, toolbar: 'floating', texture: 'vignette', chapterDeco: 'none',
+    },
+    vars: {
+      bg: 'linear-gradient(160deg, #1a0510 0%, #2a0a1a 50%, #180510 100%)',
+      surface: 'rgba(255,255,255,0.06)',
+      surfaceAlt: 'rgba(255,255,255,0.1)',
+      text: '#fce7f3',
+      textMuted: '#f9a8d4',
+      primary: '#be185d',
+      primaryText: '#ffffff',
+      accent: '#eab308',
+      border: 'rgba(190,24,93,0.25)',
+      radius: '12px',
+      fontFamily: '"HarmonyOS Sans SC","PingFang SC","Microsoft YaHei",sans-serif',
+      cardShadow: '0 8px 32px rgba(190,24,93,0.35)',
+      headerStyle: 'gradient',
+    },
+    preview: ['#1a0510', '#be185d', '#eab308'],
+  },
+  {
+    // 复古泛黄·编辑周刊首页 — ISSUE N° 刊头 + 双栏导读 + 3x3 编辑短评
+    id: 'vintage-editorial',
+    name: '复古周刊',
+    desc: '复古泛黄纸·编辑周刊·ISSUE N° 刊头·双栏导读·3x3 编辑短评',
+    layout: 'editorial',
+    dark: false,
+    read: {
+      layout: 'classic', measure: 680, lineHeight: 1.95, fontBase: 17,
+      indent: true, justify: false, toolbar: 'inline', texture: 'paper', chapterDeco: 'rule',
+    },
+    vars: {
+      bg: 'radial-gradient(1200px 600px at 0% 0%, #fef3c7 0%, transparent 50%), radial-gradient(900px 500px at 100% 0%, #fde68a 0%, transparent 55%), #fef9e7',
+      surface: '#fffdf3',
+      surfaceAlt: '#fde68a',
+      text: '#422006',
+      textMuted: '#854d0e',
+      primary: '#a16207',
+      primaryText: '#fffdf3',
+      accent: '#9f1239',
+      border: '#fde68a',
+      radius: '2px',
+      fontFamily: 'Georgia,"Noto Serif SC","Songti SC",serif',
+      cardShadow: '0 2px 6px rgba(161,98,7,0.08)',
+      headerStyle: 'split',
+    },
+    preview: ['#fef9e7', '#a16207', '#9f1239'],
   },
 ]
 
