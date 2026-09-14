@@ -7667,3 +7667,64 @@ Final conclusion: Codebase is production-ready. agent-final-audit's port 3017
 fix was the last necessary change; this re-audit confirms zero remaining bugs
 across the entire scope (src/lib/crawl/* + src/components/* + src/app/api/* +
 src/lib/* + mini-services/*).
+
+---
+Task ID: R7-32
+Agent: 主控(本会话续作)
+Task: 修复 aijjxs toplist 规则在重新采集时出现 "txt/57277.html" 形态脏书名问题
+
+Work Log:
+- 复现: 数据库 task cmu1fwysb 等 4 个增量重采 task + 1 个范围 task cmu194uz6,
+  progress.currentBook 显示 `https://www.aijjxs.com/txt/57277.html` 形态(未替换
+  为 /read/57277/), task logs 显示 "更新书籍: 《txt/57277.html》" 落到 urlPathName
+  兜底, tocLink 解析为 `/read//`(双斜杠, 抓回 2213 字节空页/404), 目录 0 章跳过正文
+- 抓取源站实测(2026-09-14 16:50):
+  * /txt/{id}.html: 无 og:novel:* 元数据, 无 og:title/og:image/JSON-LD, 仅有
+    <title>/<meta name=keywords>/<meta name=description>(后者不在 extractMetaTags
+    白名单 og:/article:/book:/twitter: 不被 parseBook 兜底链消费)
+    有 1 个 <a class="download-btn" href="/read/{id}/">在线阅读全文</a>
+    有 article.panel h3《书名》/.kv a[href*="/zuozhe/"] /span.sfwj/.pic img/div.desc
+  * /read/{id}/: 有 og:novel:book_name/author/category/status + og:image/og:description,
+    article.read-panel + h1.read-title + div.read-meta + div.read-intro + ul.chapter-list
+    第一个 li 是 "内容简介"(非真章节), 共 859 个 a[href^="/read/"]
+  * 结论: 两 URL 路径页面结构完全不同, og 元数据只在 /read/{id}/, .kv/.pic 等只在
+    /txt/{id}.html
+- 根因分析:
+  1. list.fields.bookUrl.replaceFrom 早在 fix-aijjxs-bookurl.ts(更早的会话) 修复
+     正确(/txt/(\d+)\.html → https://www.aijjxs.com/read/$1/), 但修复前 task
+     discoveredBookUrls 已存了 3494 条 /txt/xxx.html 形态 URL, Set 持久化在
+     task.progress 不跟随规则更新
+  2. toplist 规则 toc.tocLink 用 const `{q.id}` 模板, urlVars(baseUrl) 只取 URL
+     查询参数, /txt/{id}.html 无查询参数 → {q.id}=空串 → 拼出 https://www.aijjxs.com/read//
+  3. book 段 og:novel:* 元数据在 /txt/{id}.html 全空 → parsed.name=undefined →
+     runner.ts:1108 fallback 链: parsed.name 空 → listFields.name 空(single 模式无
+     listFields) → urlPathName("txt/57277.html") → 入库为脏书名
+  4. 增量重采 route(/api/admin/books/[id]/recrawl) 用 book.sourceUrl 创建 task,
+     book.sourceUrl 在数据库已是 /read/57277/(被范围 task 跑出来), 但旧 task
+     创建时 book.sourceUrl 是 /txt/57277.html → task.bookUrl 字段固化错误形态
+
+Stage Summary:
+- 修复 toplist 规则 cmu18j0jp0000nyls0capyu4a:
+  · toc.tocLink: const `{q.id}` → css `a.download-btn[href^="/read/"]` attr=href
+    (双 URL 适配: /txt/{id}.html 抓到 /read/{id}/ 作为 tocUrl; /read/{id}/ 自身
+    无 a.download-btn[href^="/read/"] 时 tocLink 解析空 → runner.extractToc 跳到
+    第2步用书籍页本身解析目录, parseToc 命中 ul.chapter-list li)
+  · toc.itemSelector: `ul.chapter-list li` → `ul.chapter-list li:not(:first-child)`
+    (排除首个 "内容简介" li 非真章节, 章节序号不错乱)
+- 清理 5 个坏 task:
+  · 4 个增量重采 task 的 bookUrl 字段(/txt/xxx.html → /read/xxx/): cmu1fwysb/
+    cmu1fwyrk/cmu1fwyrc/cmu1fwyr6
+  · 1 个范围 task cmu194uz6 的 progress.discoveredBookUrls 批量替换 3494 条
+- 四段测试全通:
+  · list 段 → count=10, bookUrl=`/read/57329/`(正确替换)
+  · book 段 (/read/57277/) → og:novel:book_name="这个地下城长蘑菇了", author=
+    "生吃菌子", category="玄幻小说", status="已完结", intro/cover 完整
+  · toc 段 (/read/57277/) → count=858 章(去"内容简介"后, 第1项是"第1章 变成蘑菇
+    的公爵千金")
+  · 模拟 runner extractToc 全流程: /txt/57277.html → cheerio 提取 tocLink=
+    /read/57277/ → 抓 tocUrl → parseToc → count=858 章 ✓
+- 质量门:
+  · bun run lint → 0 errors / 0 warnings ✓
+  · bunx tsc --noEmit → 0 errors ✓
+  · dev.log 无运行时错误 ✓
+- 脚本: scripts/fix-aijjxs-toplist-toc.ts(204 LoC, 一次性修复脚本, 已执行)
