@@ -631,53 +631,61 @@ export function SitesSection() {
                 <p className="text-[10px] text-zinc-600">将整章按段落数均分为 N 页; 短章节会自动合并(末页可短)</p>
               </div>
             )}
+          </div>
 
-            {form.chapterPaginationMode !== 'off' && (
-              <div className="mt-3 space-y-2 border-t border-zinc-800 pt-3">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-xs font-medium text-zinc-300">自动生成 SEO TDK</div>
-                    <div className="text-[10px] text-zinc-600">关闭后使用下方自定义模板</div>
-                  </div>
-                  <Switch
-                    checked={form.chapterSeoAuto}
-                    onCheckedChange={(v) => setForm({ ...form, chapterSeoAuto: v })}
+          {/* 章节 SEO TDK (R9-0: 拆出独立卡片, 不再嵌套在分页卡里) */}
+          <div className="mt-4 rounded-md border border-emerald-900/40 bg-emerald-950/10 p-3">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div>
+                <div className="text-xs font-semibold text-emerald-300">章节 SEO TDK</div>
+                <div className="text-[10px] text-zinc-500">自动从章节内容提取关键词+生成描述, 或使用自定义模板</div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Label htmlFor="seo-auto-switch" className="text-[11px] text-zinc-400 cursor-pointer">自动生成</Label>
+                <Switch
+                  id="seo-auto-switch"
+                  checked={form.chapterSeoAuto}
+                  onCheckedChange={(v) => setForm({ ...form, chapterSeoAuto: v })}
+                />
+              </div>
+            </div>
+            {!form.chapterSeoAuto && (
+              <div className="space-y-2 border-t border-zinc-800 pt-3">
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-zinc-400">
+                    标题模板 <span className="text-zinc-600">占位符: {'{bookName}'} {'{chapterTitle}'} {'{page}'} {'{totalPages}'} {'{siteName}'}</span>
+                  </Label>
+                  <Input
+                    className="h-9 border-zinc-700 bg-zinc-950 text-sm"
+                    placeholder="例: {bookName} {chapterTitle} 第{page}页 - {siteName}"
+                    value={form.chapterSeoTitleTemplate}
+                    onChange={(e) => setForm({ ...form, chapterSeoTitleTemplate: e.target.value.slice(0, 500) })}
                   />
                 </div>
-                {!form.chapterSeoAuto && (
-                  <div className="space-y-2">
-                    <div className="space-y-1.5">
-                      <Label className="text-xs text-zinc-400">
-                        标题模板 <span className="text-zinc-600">占位符: {'{bookName}'} {'{chapterTitle}'} {'{page}'} {'{totalPages}'} {'{siteName}'}</span>
-                      </Label>
-                      <Input
-                        className="h-9 border-zinc-700 bg-zinc-950 text-sm"
-                        placeholder="例: {bookName} {chapterTitle} 第{page}页 - {siteName}"
-                        value={form.chapterSeoTitleTemplate}
-                        onChange={(e) => setForm({ ...form, chapterSeoTitleTemplate: e.target.value.slice(0, 500) })}
-                      />
-                    </div>
-                    <div className="space-y-1.5">
-                      <Label className="text-xs text-zinc-400">描述模板</Label>
-                      <Textarea
-                        className="admin-scroll max-h-24 min-h-14 border-zinc-700 bg-zinc-950 text-sm"
-                        placeholder="例: {bookName} {chapterTitle} 第{page}页, 共{totalPages}页 - {siteName}"
-                        value={form.chapterSeoDescTemplate}
-                        onChange={(e) => setForm({ ...form, chapterSeoDescTemplate: e.target.value.slice(0, 500) })}
-                      />
-                    </div>
-                    <div className="space-y-1.5">
-                      <Label className="text-xs text-zinc-400">关键词模板</Label>
-                      <Input
-                        className="h-9 border-zinc-700 bg-zinc-950 text-sm"
-                        placeholder="例: {bookName}, {chapterTitle}, 在线阅读"
-                        value={form.chapterSeoKeywordsTemplate}
-                        onChange={(e) => setForm({ ...form, chapterSeoKeywordsTemplate: e.target.value.slice(0, 500) })}
-                      />
-                    </div>
-                  </div>
-                )}
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-zinc-400">描述模板</Label>
+                  <Textarea
+                    className="admin-scroll max-h-24 min-h-14 border-zinc-700 bg-zinc-950 text-sm"
+                    placeholder="例: {bookName} {chapterTitle} 第{page}页, 共{totalPages}页 - {siteName}"
+                    value={form.chapterSeoDescTemplate}
+                    onChange={(e) => setForm({ ...form, chapterSeoDescTemplate: e.target.value.slice(0, 500) })}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-zinc-400">关键词模板</Label>
+                  <Input
+                    className="h-9 border-zinc-700 bg-zinc-950 text-sm"
+                    placeholder="例: {bookName}, {chapterTitle}, 在线阅读"
+                    value={form.chapterSeoKeywordsTemplate}
+                    onChange={(e) => setForm({ ...form, chapterSeoKeywordsTemplate: e.target.value.slice(0, 500) })}
+                  />
+                </div>
               </div>
+            )}
+            {form.chapterSeoAuto && (
+              <p className="border-t border-zinc-800 pt-2 text-[10px] text-zinc-600 leading-relaxed">
+                ✓ 已启用自动模式: 系统将用 N-gram 分词从章节正文提取关键词, 用摘要算法生成描述, 标题按「书名 章节名 - 站点名」格式拼接。无需手动配置模板。
+              </p>
             )}
           </div>
 

@@ -1,8 +1,8 @@
 // 主题模板列表
 // - feat-combo-theme-incremental: 双模式 API
-//   默认(无 query): 返回 THEMES(12 个 preset)数组, 兼容 ThemesSection 卡片网格
+//   默认(无 query): 返回 THEMES(17 个 preset)数组, 兼容 ThemesSection 卡片网格
 //   ?page=N&size=M: 返回 { page, size, total, totalPages, items: [presets + combos] }
-//   preset 在 items[0..11], 512 组合紧跟其后, 每页可取任意 size(默认 50, 上限 500)
+//   preset 在 items[0..16], 1728 组合紧跟其后, 每页可取任意 size(默认 50, 上限 500)
 //   组合主题用惰性切片生成(不长期驻留内存), 仅计算本页所需项后即丢
 import { ok, num } from '@/lib/api'
 import { THEMES } from '@/lib/crawl/themes'

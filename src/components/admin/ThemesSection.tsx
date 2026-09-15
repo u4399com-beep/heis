@@ -1,7 +1,7 @@
 'use client'
 
 // ============================================================
-// 主题模板 — 12 预设 + 512 组合 = 524 套主题, 分页浏览/搜索/预览
+// 主题模板 — 17 精选 (5 精仿 + 12 设计) + 1728 组合 = 1745 套主题, 分页浏览/搜索/预览
 // ============================================================
 import { useCallback, useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
@@ -112,10 +112,10 @@ export function ThemesSection({ onPreviewSite }: ThemesSectionProps) {
           <h2 className="flex items-center gap-2 text-lg font-semibold text-zinc-100">
             <Palette className="h-5 w-5 text-violet-400" />
             主题模板
-            <span className="text-xs font-normal text-zinc-500">(共 {total} 套: 12 预设 + {total - 12} 组合)</span>
+            <span className="text-xs font-normal text-zinc-500">(共 {total} 套: 5 精仿 + 12 设计 + {Math.max(0, total - 17)} 组合)</span>
           </h2>
           <p className="mt-0.5 text-xs text-zinc-500">
-            8 配色 × 8 风格 × 8 布局 = 512 组合 + 12 精选预设; 默认站点: {defaultSite ? defaultSite.name : '未设置'}
+            12 配色 × 12 风格 × 12 布局 = 1728 组合 + 17 精选预设 (5 精仿 + 12 设计); 默认站点: {defaultSite ? defaultSite.name : '未设置'}
           </p>
         </div>
         <Button variant="outline" size="sm" className="h-9 gap-1.5 border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800" onClick={() => load(page)}>

@@ -28,6 +28,12 @@ const HomeMosaic = dynamic(() => import('./layouts/HomeMosaic').then((m) => m.Ho
 const HomeMasonry = dynamic(() => import('./layouts/HomeMasonry').then((m) => m.HomeMasonry))
 const HomeShowcase = dynamic(() => import('./layouts/HomeShowcase').then((m) => m.HomeShowcase))
 const HomeEditorial = dynamic(() => import('./layouts/HomeEditorial').then((m) => m.HomeEditorial))
+// R9-1A: 5 个精仿真实站点首页布局, 懒加载分包
+const HomeCloneAijjxs = dynamic(() => import('./layouts/HomeCloneAijjxs').then((m) => m.HomeCloneAijjxs))
+const HomeClone101kks = dynamic(() => import('./layouts/HomeClone101kks').then((m) => m.HomeClone101kks))
+const HomeClonePilishuwu = dynamic(() => import('./layouts/HomeClonePilishuwu').then((m) => m.HomeClonePilishuwu))
+const HomeCloneBiquge = dynamic(() => import('./layouts/HomeCloneBiquge').then((m) => m.HomeCloneBiquge))
+const HomeClone23qb = dynamic(() => import('./layouts/HomeClone23qb').then((m) => m.HomeClone23qb))
 import type { BookItem } from './types'
 
 interface FetchState {
@@ -181,8 +187,14 @@ export function HomeView({ page, cat }: { page: number; cat?: string }) {
           {theme.layout === 'masonry' && <HomeMasonry books={books} loading={loading} />}
           {theme.layout === 'showcase' && <HomeShowcase books={books} loading={loading} />}
           {theme.layout === 'editorial' && <HomeEditorial books={books} loading={loading} />}
+          {/* R9-1A: 5 个精仿真实站点首页布局分发 */}
+          {theme.layout === 'clone-aijjxs' && <HomeCloneAijjxs books={books} loading={loading} />}
+          {theme.layout === 'clone-101kks' && <HomeClone101kks books={books} loading={loading} />}
+          {theme.layout === 'clone-pilishuwu' && <HomeClonePilishuwu books={books} loading={loading} />}
+          {theme.layout === 'clone-biquge' && <HomeCloneBiquge books={books} loading={loading} />}
+          {theme.layout === 'clone-23qb' && <HomeClone23qb books={books} loading={loading} />}
           {/* feat-round-7 B3: 防御性兜底 — 未知布局/loading 期无任何布局命中时用 BookGridSkeleton */}
-          {!['shelf', 'list', 'grid', 'minimal', 'magazine', 'theater', 'pili', 'biquge', 'mosaic', 'masonry', 'showcase', 'editorial'].includes(theme.layout) && loading && (
+          {!['shelf', 'list', 'grid', 'minimal', 'magazine', 'theater', 'pili', 'biquge', 'mosaic', 'masonry', 'showcase', 'editorial', 'clone-aijjxs', 'clone-101kks', 'clone-pilishuwu', 'clone-biquge', 'clone-23qb'].includes(theme.layout) && loading && (
             <BookGridSkeleton count={12} />
           )}
         </>

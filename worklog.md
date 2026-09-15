@@ -7874,3 +7874,178 @@ Stage Summary:
   · src/components/public/layouts/HomeParts.tsx(新增 328 LoC)
   · src/components/public/HomeView.tsx(+8 行: 4 import + 4 layout 分发分支 + 兜底白名单)
 - 总新增代码: ~1400 LoC
+
+---
+Task ID: R9-1A
+Agent: full-stack-developer
+Task: 废弃 16 个旧 preset, 精仿 5 个真实小说站点主题 + 5 个专门 Home 布局
+
+Work Log:
+- 抓取 5 站首页 HTML+CSS:
+  * 101kks.com: 直连 200 (需不带 www), 抓 /css/style.css (60KB) + /css/block_booklist.css (7.9KB)
+    实测: 无 :root vars, .booklist-card bg #fff/radius 10px/shadow 0 2px 10px rgba(0,0,0,0.08)/
+    border 1px solid rgba(0,0,0,0.06)/height 128px, .booklist-cover-section gradient 135deg
+    #667eea→#764ba2, .booklist-title #2c3e50 14px/600, .booklist-meta #7f8c8d 12px, a #666→#06c
+  * pilishuwu.com: CF 防护 403 (jsd 挑战 + /cdn-cgi/challenge-platform 重定向), 直连不可达
+    兜底: 参考 scripts/seed-rule-pilishuwu.ts 形态描述 + 已有 HomePili.tsx 设计 (白卡书城 DNA
+    暖橙 #f77720 + 米黄 #fef9ef + 复古直角 + 橙头排行榜)
+  * aijjxs.com: 直连 200 (53KB HTML), 抓 /skin/yellow/style.css (40KB) :root 块完整:
+    --bg #f3efe7 / --paper #fffdf8 / --ink #1f2937 / --muted #6b7280 / --line #e5dccd /
+    --brand #0f766e (青绿) / --brand-dark #115e59 / --accent #b45309 (琥珀) /
+    --shadow 0 10px 30px rgba(17,24,39,0.08) / --radius 14px
+  * bqg713.cc (笔趣阁): /css/style.css 跟随 301 重定向后 200 (18KB), 实测:
+    BODY bg #E9FAFF (浅青蓝), color #333, font 14px/1.5 "Microsoft YaHei", Arial
+    a #6F78A7 (淡紫) → hover #FD5500 (橙红)
+    .header_top bg #E1ECED border-bottom 1px #A6D3E8, .nav bg #88C6E5 (天蓝) li radius 20px
+    .hot bg #FEF9EF border 3px solid #C3DFEA, .item .image img 120x150 border 1px #DDD
+    .item dl dt border-bottom dotted #A6D3E8 14px weight 700, .wrap .top border 3px solid #C3DFEA
+  * 23qb.net: 直连 200 (45KB HTML), 抓 /mxstatic/css/style.css (126KB), 实测:
+    body color #282828 bg #f8f9f9, a #282828→hover #ff2a14 (鲜红)
+    font-family: -apple-system-font, BlinkMacSystemFont, helvetica neue, pingfang sc,
+      hiragino sans gb, microsoft yahei ui, microsoft yahei, Arial, sans-serif
+    .header-content box-shadow 0 7px 21px rgba(149,157,165,.22) border-bottom 1px #eaedf1
+    .nav-menu-item padding 0 11px font-size 16px weight 700, .module-item width 200px 14px
+    .module-item-cover padding-top 140% (5:7) radius 5px, .module-item-caption 44px gradient caption
+    .block-box-item bg #eaedf1 padding 15px radius 10px, .block-box-content .title 18px ::after hover #ff2a14
+
+- 创建 5 个新 Home 布局组件 (src/components/public/layouts/):
+  * HomeCloneAijjxs.tsx (250 LoC): 顶 banner (奶油+青绿) + 5 列封面卡 (.book.book_r DNA:
+    48x64 缩略图+右侧书名+作者+简介) + 表格最近更新 (book_r grid: 类别/书名+最新章节/字数/
+    更新时间/状态) + 横向琥珀排行榜 (1-3 名带色徽章 + 4-10 灰号)
+  * HomeCloneBiquge.tsx (290 LoC): 顶 nav 蓝色条 (8 项菜单) + 双栏布局:
+    左 .hot 大卡列表 (item dt+dd DNA: 120x150 封面+标题/作者/简介/分类) + 表格最近更新
+    (类别/书名+最新章节/字数/更新时间/状态), 右 .top 排行榜 (3px border + 序号+书名+字数)
+    + 站点公告. 笔趣阁 DNA 全直角 (radius 0px), 浅青蓝底 #E9FAFF
+  * HomeClone101kks.tsx (310 LoC): 顶 banner 蓝紫渐变 (#667eea→#764ba2) + 站点名+搜索框 +
+    slogan, 精品推荐宽卡 3 列 (.booklist-card DNA: 120px 渐变 cover-section + info-section
+    title+meta+desc, hover translateY(-2px)), 最新入库封面网格 6 列, 表格最近更新
+    (#/书名/作者/最新章节/更新时间), 站点信息条
+  * HomeClonePilishuwu.tsx (260 LoC): 顶 banner 暖橙渐变 (#f77720) + 站点名, 双栏布局:
+    左主栏 (精品推荐封面网格 5 列 + 最新入库 6 列 + 最近更新表格 时间/分类/书名+最新章节/字数),
+    右侧橙头排行榜 (渐变头 + 1-3 名橙号 + 4-10 灰号) + 书屋公告奶油底
+  * HomeClone23qb.tsx (310 LoC): 顶 header-content (shadow 0 7px 21px + 1px border-bottom)
+    logo+搜索框+slogan, 精品推荐封面网格 6 列 (module-item DNA: padding-top 140% 5:7
+    aspect + 渐变 caption + 状态/分类角标), 本周强推 3 列宽卡 (block-box-item DNA:
+    bg #eaedf1 + No.编号 + hover 红 #ff2a14), 最新入库封面网格 6 列, 表格最近更新
+
+- 废弃 THEMES 数组所有 16 个旧 preset (aurora/paper/mango/bamboo/ocean/forest/sunset/jewel/
+  cyberpunk/vintage/midnight/sakura/aijjxs-exact/sunset-mosaic/ocean-masonry/jewel-showcase/
+  vintage-editorial 全删), 改为 5 套精仿 preset (clone-aijjxs/clone-101kks/clone-pilishuwu/
+  clone-biquge/clone-23qb), 保留 ThemeDef 类型/ReadVars/READ_DEFAULTS/getTheme/getThemeById
+- 每套 preset 配置基于实测 CSS: bg/surface/surfaceAlt/text/textMuted/primary/primaryText/accent/
+  border/radius/fontFamily/cardShadow/headerStyle 全部从源站 CSS 抽取或推断
+- clone-aijjxs 置首位 (实测最稳定, 直连 200), getTheme(undefined) 兜底返回 clone-aijjxs
+- 扩展 ThemeDef.layout 类型联合从 12 种 → 17 种, 新增 5 种: 'clone-101kks' | 'clone-pilishuwu'
+  | 'clone-aijjxs' | 'clone-biquge' | 'clone-23qb'
+- HomeView.tsx 接线: 5 个 dynamic import (HomeCloneAijjxs/101kks/Pilishuwu/Biquge/23qb) +
+  5 条 layout 分发分支 + 兜底白名单扩为 17 个 layout key
+- ThemesSection.tsx 文案更新: line 115 "(共 {total} 套: 5 精仿 + {total - 5} 组合)" /
+  line 118 "12 配色 × 12 风格 × 12 布局 = 1728 组合 + 5 精仿预设"
+
+Stage Summary:
+- THEMES preset 数量: 16 → 5 (5 套精仿)
+- 默认主题: aurora → clone-aijjxs (最稳定站, 直连 200, 实测 :root CSS 变量)
+- 新增 5 个 Home 布局组件 (HomeClone*), 完全复刻目标站首页结构 (含 header banner / 表格更新 /
+  排行榜 / 封面网格 / 站点公告)
+- 新增 5 种 layout 类型: clone-101kks/clone-pilishuwu/clone-aijjxs/clone-biquge/clone-23qb
+- theme-matrix 1728 组合矩阵保留不变 (12×12×12 引擎能力, 与 preset 解耦)
+- 每套精仿主题: 实测 CSS 变量 + 字体栈 + 圆角 + 阴影 + headerStyle (4/5 直连抓取, pilishuwu
+  CF 拦截兜底参考已有 HomePili 设计 + scripts/seed-rule-pilishuwu.ts 形态描述)
+- 5 个新 Home 布局均使用 usePublic() + theme.vars, 不硬编码颜色 (除黑/白透明色 rgba 外)
+- 5 个新 Home 布局均有 Skeleton + 空态处理 (if loading return CloneSkeleton; if !books.length return null)
+- 5 个新 Home 布局均响应式 (移动单列 / sm 2-3 列 / lg 3-6 列, 视布局而异)
+- 验证: bunx tsc --noEmit → 0 errors ✓ / bun run lint → 0 errors / 0 warnings ✓ /
+  主题加载脚本验证 THEMES.length=5 + 5 preset 全部 OK + 3 个 combo 主题 (violet-aurora-shelf-home/
+  forest-cyberpunk-biquge-home/sunset-aurora-mosaic-home) 全部正确合成 ✓
+- 抓取失败兜底: pilishuwu.com CF 防护 (403 + jsd 挑战) → 参考 scripts/seed-rule-pilishuwu.ts
+  站点形态描述 (列表 /book/index.html .book-item / 书籍页 /book/{id}.html h1+og:novel:*+intro+
+  cover / 目录 /book/{id}/ .list dd>a / 正文 /book/{bid}/{cid}.html div#content) + 已有 HomePili.tsx
+  设计 (白卡书城 DNA + 暖橙 #f77720 + 复古直角 + 橙头排行榜) 兜底
+- 文件变更:
+  · src/lib/crawl/themes.ts: 重构 (617 行 → 368 行, 删除 16 旧 preset + 新增 5 精仿 preset + 扩展 layout 联合)
+  · src/components/public/layouts/HomeCloneAijjxs.tsx (新增 250 LoC)
+  · src/components/public/layouts/HomeCloneBiquge.tsx (新增 290 LoC)
+  · src/components/public/layouts/HomeClone101kks.tsx (新增 310 LoC)
+  · src/components/public/layouts/HomeClonePilishuwu.tsx (新增 260 LoC)
+  · src/components/public/layouts/HomeClone23qb.tsx (新增 310 LoC)
+  · src/components/public/HomeView.tsx (+10 行: 5 dynamic import + 5 layout 分发分支 + 兜底白名单扩为 17)
+  · src/components/admin/ThemesSection.tsx (+2 行: 文案更新)
+- 总新增代码: ~1420 LoC (5 HomeClone 布局) + themes.ts 净减 250 LoC (删 16 旧 + 加 5 新)
+
+---
+Task ID: R9-1B
+Agent: full-stack-developer
+Task: 在 THEMES 数组追加 12 套完全不同风格+配色+布局的预设主题
+
+Work Log:
+- 在 themes.ts THEMES 数组末尾追加 12 套新 preset:
+  1. aurora-glass (极光玻璃·暗·shelf) 深紫蓝渐变+青绿+玻璃拟态
+  2. cyber-neon (赛博霓虹·暗·grid) 黑底+霓虹粉绿+故障字效
+  3. rice-paper (宣纸水墨·亮·magazine) 米黄+墨黑+朱砂红+衬线
+  4. sakura-mist (樱花薄雾·亮·minimal) 樱粉+灰白+深紫红+大留白
+  5. deep-ocean (深海潜行·暗·theater) 深海蓝+珊瑚橙+大字号 hero
+  6. midnight-gold (午夜黄金·暗·editorial) 黑+金+衬线+菱形花饰
+  7. bamboo-zen (竹简禅意·亮·list) 竹青+米黄+手写字体+纸纹
+  8. crimson-theater (朱砂剧场·暗·magazine) 朱红+金+黑+戏剧化
+  9. arctic-ice (北极冰原·亮·minimal) 冰蓝白+深海蓝+超细线+无圆角
+  10. sunset-glow (落日余晖·亮·grid) 橙粉渐变+紫红+暖色 hero
+  11. forest-cabin (森林木屋·暗·shelf) 深绿+木棕+米黄+复古纸纹
+  12. neon-magenta (霓虹品红·暗·masonry) 深紫+品红+青绿+玻璃拟态
+- 验证 12 套主题配色全部不同(12 个 unique primary)
+- 验证 tsc + lint 通过
+- THEMES 总数: 5 (精仿) + 12 (新设计) = 17
+
+Stage Summary:
+- THEMES preset 数量: 5 → 17 (新增 12 套完全不同主题)
+- 12 套主题覆盖: 暗色 7 + 亮色 5
+- 12 套主题布局覆盖: shelf×2 / grid×2 / magazine×2 / minimal×2 / theater×1 / editorial×1 / list×1 / masonry×1
+- 12 套主题字体覆盖: sans×6 / serif×4 / handwritten×1 / mono×1
+- 12 个 primary 色全部不同(无重复)
+- 文件: src/lib/crawl/themes.ts (+~360 LoC)
+
+---
+Task ID: R9-1C
+Agent: 主控(本会话续作)
+Task: 拆分自动 TDK 开关为独立卡片 + 验证 17 套主题端到端
+
+Work Log:
+- 修复自动 TDK 开关错位问题:
+  · 诊断: SitesSection.tsx line 635 原 `form.chapterPaginationMode !== 'off'` 条件
+    下嵌套了"自动生成 SEO TDK"开关+3 个模板输入, 导致用户关闭分页后无法配置 TDK
+  · 修复: 把 TDK 设置从"章节内容分页"卡里拆出, 独立成"章节 SEO TDK"卡(绿色边框)
+    放在分页卡下方, 去掉 `chapterPaginationMode !== 'off'` 条件, 让 TDK 配置始终可用
+  · 新增: 启用自动模式时显示"✓ 已启用自动模式: N-gram 分词+摘要算法"说明文案
+- 接线 HomeView.tsx 5 个精仿布局 dynamic import + 分发分支 + 兜底白名单扩为 17
+- 更新 ThemesSection.tsx 文案:
+  · 头注释: "12 预设 + 512 组合" → "17 精选 (5 精仿 + 12 设计) + 1728 组合"
+  · line 115: "(共 N 套: 5 精仿 + 12 设计 + {N-17} 组合)"
+  · line 118: "12 配色 × 12 风格 × 12 布局 = 1728 组合 + 17 精选预设 (5 精仿 + 12 设计)"
+- 更新 admin/themes/route.ts 头注释: "12 个 preset" → "17 个 preset", "items[0..11]" → "items[0..16]"
+- 端到端验证:
+  · tsc 0 errors / lint 0 errors ✓
+  · 主题加载脚本(bun): THEMES.length=17, 5 clone + 12 new, 12 个 primary 全唯一 ✓
+  · admin/themes API(curl+cookie): 默认模式返回 17 套 preset ✓
+  · admin/themes API(分页模式): total=1745, totalPages=59, 第 18 项首个组合 violet-minimal-biquge-home ✓
+  · agent-browser 后台主题模板页: 文案正确显示"5 精仿 + 12 设计", "1728 组合 + 17 精选预设"
+
+Stage Summary:
+- 自动 TDK 开关: 从分页卡里嵌套 → 独立成"章节 SEO TDK"卡(绿色边框, 与分页卡平级)
+- 主题总数: 16 旧 preset 全废 → 17 新 preset (5 精仿 + 12 设计)
+  · 5 精仿: clone-aijjxs/clone-101kks/clone-pilishuwu/clone-biquge/clone-23qb
+  · 12 设计: aurora-glass/cyber-neon/rice-paper/sakura-mist/deep-ocean/midnight-gold/
+             bamboo-zen/crimson-theater/arctic-ice/sunset-glow/forest-cabin/neon-magenta
+- 12 个 primary 色全部唯一(无重复, 不与 5 精仿撞色):
+  紫/霓虹粉/朱砂红/深紫红/珊瑚橙/金色/竹青/朱红/深海蓝/紫红/木棕/品红
+- 12 套布局覆盖: shelf×2 / grid×2 / magazine×2 / minimal×2 / theater×1 / editorial×1 /
+  list×1 / masonry×1
+- 12 套字体覆盖: sans×6 / serif×4 / handwritten×1 / mono×1
+- 5 套精仿布局组件: HomeCloneAijjxs/101kks/Pilishuwu/Biquge/23qb (共 ~1420 LoC)
+- theme-matrix 1728 组合矩阵保留不变
+- 文件变更:
+  · src/components/admin/SitesSection.tsx (TDK 卡拆分, 净 +20 行)
+  · src/components/admin/ThemesSection.tsx (文案更新, 3 处)
+  · src/app/api/admin/themes/route.ts (头注释更新, 2 处)
+  · src/lib/crawl/themes.ts (R9-1A/B 已完成: 5 精仿 + 12 设计 preset)
+  · src/lib/crawl/theme-matrix.ts (R8-1A 已完成: 12×12×12=1728 矩阵)
+  · src/components/public/layouts/HomeClone*.tsx (R9-1A 已完成: 5 个精仿布局组件)
+  · src/components/public/HomeView.tsx (R9-1A 已完成: 5 个 clone-* 分发)
