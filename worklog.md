@@ -8221,3 +8221,120 @@ Stage Summary:
   · admin/themes API: 返回 9 套 preset ✓
   · /api/public/book?id=X&site=Y: 返回 seo 字段(auto=true, 3 个空模板) ✓
   · agent-browser 后台可访问, 9 套 preset 全部正确显示
+
+---
+Task ID: R10-1D
+Agent: full-stack-developer
+Task: 重新创建 clone-ddyueshu + clone-shipsay 主题(基于真实抓取+书源规则)
+
+Work Log:
+- ddyueshu.cc 直连/代理/page_reader 全失败(region ban China IP)
+- 通过 GitHub yuanwangokk-1/TV-BOX 书源规则反推 ddyueshu.cc DOM 结构:
+  · GB18030 编码
+  · theme-color #6CAD53 (苹果绿)
+  · .nav ul li 导航 / #newscontent 推荐列表 / table.grid 全本列表
+  · .up ul li 分类列表 / #fmimg img 封面 / #intro p 简介
+  · #list dt/dd 目录 / #content 正文 (br 分隔, 末尾 2 行广告)
+- shipsay.com 通过 z-ai page_reader + curl 抓到完整 HTML+CSS:
+  · theme-color #ed4259 (红色)
+  · body bg #f4f4f4 / color #666 / font 微软雅黑
+  · a hover #ed4259 / .fullflag 红底白字徽章
+- 重写 HomeCloneDdyueshu.tsx (顶点小说标准模板: 绿头+表格+侧栏排行榜)
+- 重写 HomeCloneShipsay.tsx (船说CMS模板: .fullflag 红徽章 + 直角卡片)
+- 更新 themes.ts 中两个 preset 的 vars/desc/name
+
+Stage Summary:
+- clone-ddyueshu: primary 从 #1a8a5a 改为 #6CAD53 (顶点小说标准苹果绿)
+- clone-shipsay: primary 从 #ed4259 保持, 但完整重写 vars 字段
+- HomeCloneDdyueshu.tsx 重写为顶点小说标准模板 (table.grid + 侧栏排行榜)
+- HomeCloneShipsay.tsx 重写为船说CMS 模板 (.fullflag 红徽章 + 直角卡片)
+
+---
+Task ID: R10-1E
+Agent: 主控(本会话续作)
+Task: 编写 biqutu.info 采集规则 + 重建 ddyueshu/shipsay 精仿主题
+
+Work Log:
+- 检查 biqutu.info 站点可达性:
+  · 直连超时(178.107.151.99 / 178.107.154.211, shilicdn CDN, 国内 GFW 拦截)
+  · scrapling static 807ms 拿到 HTML(偶发成功)
+  · scrapling stealthy 60s timeout 失败
+  · page_reader 失败
+  · 站点国内不可达, 必须代理访问
+- 创建 scripts/seed-rule-biqutu.ts (笔趣阁系标准模板):
+  · 配置 fetch.engine='fetch-relay' + fetchRelayProxy 字段让用户填代理
+  · list: /sort/{page}.html .list-index-2:not(.hidden-xs) div.item
+  · book: h1+og:novel:* meta (lastest_chapter_name 拼写)
+  · toc: a.chapterlist tocLink → /book/{id}/ .booklist li>a
+  · content: div#chaptercontent 翻页关闭("下一章"=下一章)
+  · clean: biqutu.info 域名+笔趣阁广告词
+  · 测试探针: BIQUTU_PROXY=socks5://... bun run scripts/seed-rule-biqutu.ts
+  · 入库: 通过 /api/admin/rules 直接 POST 创建, id=cmu2pbbz60000pr2yd4hnl64c
+- ddyueshu.cc 不可达诊断:
+  · 直连 Connection reset by peer (CDN 23.225.146.107 yunjiasu360)
+  · z-ai page_reader 403 Forbidden "The region has been denied" (z-ai 出口 IP 34.34.253.x HK)
+  · 1000+ 公开 socks5/http 代理全部不可用
+  · m.ddyueshu.cc 移动版同样 403
+  · web.archive.org 缓存 404
+  · google cache 404
+- 通过 GitHub 仓库 yuanwangokk-1/TV-BOX/Aries/js/顶点小说2[书].js 反推 ddyueshu.cc DOM:
+  · host: https://www.ddyueshu.cc/
+  · 编码: gb18030 (★GBK!)
+  · theme-color: #6CAD53 (★顶点小说标准苹果绿)
+  · 导航: .nav ul li a (排除"书架|排行")
+  · 首页推荐: #newscontent ul li → .s2 书名 / .s5 时间
+  · 全本列表: /quanben/{page} → table.grid tr:gt(0)
+  · 分类列表: .up ul li → .s2/.s4
+  · 书籍页: h1 书名 / #fmimg img 封面 / #info p / #intro p 简介
+  · 目录: #list dt b 卷标题 / #list dd 章节 / dd a href
+  · 正文: #content (br 分隔, 末尾 2 行广告 slice(0,-2))
+- demo.shipsay.com 抓取成功:
+  · page_reader 200 拿到完整 HTML 35889 bytes
+  · page_reader 拿到 style.css 18440 bytes
+  · theme-color: #ed4259 (船说红)
+  · body bg #f4f4f4 / color #666 / font 14px 微软雅黑
+  · .fullflag 红底白字徽章 / .intro text-indent 2em line-height 1.8
+  · a:hover color #ed4259
+- 启动 R10-1D 子代理(full-stack-developer) 重写两个布局组件 + 更新 themes.ts:
+  · HomeCloneDdyueshu.tsx 重写为顶点小说标准模板:
+    - 顶部绿条 header (#6CAD53 + 站名 + 红色搜索按钮)
+    - 浅绿 nav 条 (#e8f3ec, 排除"书架|排行")
+    - 左主栏 #newscontent ul li (5 列: 类别/书名/.s3 章节/.s4 时间/.s5 状态)
+    - 左主栏 table.grid 全本列表 (序号/书名/作者/字数/更新时间/状态)
+    - 右栏 .wrap .top 排行榜 (4px 红色 border-left + top10, 前3加红号)
+    - 底部横排分类导航条 8 类
+  · HomeCloneShipsay.tsx 重写为船说CMS 模板:
+    - header logo + 红色搜索按钮 + 图标菜单
+    - 深灰 nav 底 (#3e3d43) + 9 分类 + 红色 border-top active
+    - .side_commend 大神小说 6 宽卡 (img 100x133 + .img_span overlay + h2 + p.indent + .li_bottom)
+    - aside .popular 热门小说链表 (前3红号)
+    - .sortvisit 8 个分类列表 (3 列布局, 1 大卡 + 12 链表)
+    - .lastupdate 最新章节 (4 列 9%/25%/41%/25%)
+    - aside 完本推荐 + .fullflag 红徽章
+    - .section.link 友情链接 + #footer 深灰底
+  · themes.ts 更新:
+    - clone-ddyueshu: primary #1a8a5a → #6CAD53 (实测苹果绿)
+    - clone-shipsay: primary #ed4259 (保持), accent #f0643a → #bf2c24 (实测深红),
+      radius 4px → 0px (实测全直角), fontBase 16 → 14 (实测 14px)
+    - desc 更新为完整描述
+
+Stage Summary:
+- biqutu.info 采集规则已入库(id=cmu2pbbz60000pr2yd4hnl64c):
+  · fetch.engine='fetch-relay' (走代理链)
+  · 笔趣阁系标准模板(/sort/{page}.html + /book/{id}.html + #chaptercontent)
+  · 用户在规则编辑器填 fetchRelayProxy 后启用
+- clone-ddyueshu 主题重建:
+  · primary #6CAD53 (实测顶点小说苹果绿)
+  · 顶点小说标准 DOM (.nav ul li / #newscontent / table.grid / #fmimg / #intro / #list)
+  · HomeCloneDdyueshu.tsx 复刻绿头+表格+侧栏排行榜
+- clone-shipsay 主题重建:
+  · primary #ed4259 (实测船说红)
+  · body bg #f4f4f4 / 14px 微软雅黑 / 全直角
+  · HomeCloneShipsay.tsx 复刻船说CMS模板(.fullflag 红徽章 + 直角卡)
+- 验证:
+  · bunx tsc --noEmit → 0 errors ✓
+  · bun run lint → 0 errors / 0 warnings ✓
+  · THEMES.length=9, 9 个 preset 全部正确
+  · ddyueshu.primary=#6CAD53 ✓
+  · shipsay.primary=#ed4259 ✓
+  · biqutu 规则已入库 ✓

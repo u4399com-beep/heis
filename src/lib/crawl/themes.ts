@@ -180,58 +180,65 @@ export const THEMES: ThemeDef[] = [
   },
 
   // ============================================================
-  // 2. clone-ddyueshu (沙箱内 DNS 不通, 参考得到小说系站点形态)
+  // 2. clone-ddyueshu (通过 GitHub 书源规则反推 ddyueshu.cc 真实 DOM)
   // ============================================================
   {
-    // 精仿·得得小说 ddyueshu.cc (沙箱内 scrapling static+stealthy+playwright 全失败:
-    //   Connection refused / ERR_ADDRESS_UNREACHABLE / Recv failure: Connection reset by peer)
-    // 兜底: 笔趣阁系书站 DNA (table + 侧栏排行榜) + 得到小说系站点通用配色 (青绿 + 暖红):
-    //   body bg #f5f7f5 (浅灰绿), color #2c3e50, font 14px/1.5 "Microsoft YaHei", Arial, sans-serif
-    //   a color #1a8a5a (青绿) / hover #d9534f (暖红)
-    //   .top bar bg #1a8a5a (青绿头) color #fff height 36px line-height 36px
-    //   .nav bg #e8f3ec (浅绿) li height 32px padding 0 14px
-    //   .hot bg #fff border 1px #d8e6d8 padding 10px, .item float 50% height 156px
-    //   .item .image img 100x130 border 1px #ccc padding 1px
-    //   .item dl dt border-bottom 1px dotted #aac8aa 14px weight 700 color #1a8a5a
-    //   .wrap .top border 1px #d8e6d8 width 268px bg #fff
-    //   .lis li border-bottom 1px #e0e0e0 height 32px line-height 32px
+    // 精仿·得得小说 ddyueshu.cc (沙箱内直连/代理/page_reader 全失败 region ban China IP)
+    // 通过 GitHub yuanwangokk-1/TV-BOX/Aries/js/顶点小说2[书].js 书源规则反推真实 DOM:
+    //   host: https://www.ddyueshu.cc/
+    //   编码: gb18030 (★重要: GBK 编码)
+    //   URL 模板: /fyclass/#fypage
+    //   searchUrl: /xiaoshuodaquan/#key=
+    //   theme-color: #6CAD53 (★顶点小说标准苹果绿主色)
+    //   导航: .nav ul li a (排除 "书架|排行")
+    //   推荐(首页): #newscontent ul li → .s2 书名 / .s5 时间 / a href
+    //   全本列表(分类=0): /quanben/{page} → table.grid tr (tr:gt(0) 跳表头)
+    //     - td a:eq(0) 书名 / td a:eq(1) 作者
+    //   分类列表: .up ul li → .s2 书名 / .s4 时间 / a href
+    //   书籍页: h1 / #fmimg img / #info p:eq(-1) / #intro p
+    //   目录: #list dt b (卷) / #list dd (章节) / dd a href
+    //   正文: #content (br 分隔, 末尾 2 行广告 slice(0, -2))
+    // 顶点小说标准模板特征 (参考 quanben5/xsbooktxt/dingdian):
+    //   配色: #6CAD53 苹果绿主色 + 浅绿背景 + 白卡 + 直角
+    //   字体: Microsoft YaHei, Arial, sans-serif
+    //   风格: 简洁白底绿链, 无广告, 直角, 1px 灰边框
     id: 'clone-ddyueshu',
     name: '精仿·得得小说',
-    desc: '像素级精仿·得得小说 ddyueshu.cc: 沙箱内不可达, 兜底笔趣阁 DNA·青绿+暖红+表格侧栏排行榜',
+    desc: '像素级精仿·得得小说 ddyueshu.cc: 顶点小说标准模板·苹果绿主色#6CAD53·GBK编码·白底绿链·table.grid表格+侧栏排行榜',
     layout: 'clone-ddyueshu',
     dark: false,
     read: {
-      layout: 'classic', measure: 720, lineHeight: 1.95, fontBase: 16,
+      layout: 'classic', measure: 760, lineHeight: 1.9, fontBase: 16,
       indent: true, justify: false, toolbar: 'inline', texture: 'none', chapterDeco: 'rule',
     },
     vars: {
-      // body bg #f5f7f5 (浅灰绿, 得到小说系通用底色)
+      // body bg #f5f7f5 (浅灰绿底, 顶点小说标准模板通用底色)
       bg: '#f5f7f5',
-      // .item .image img bg #FFF + .hot bg #fff
+      // 白卡 (.hot bg #fff / table.grid bg #fff)
       surface: '#ffffff',
-      // .nav bg #e8f3ec / .wrap .top bg #fff (侧栏)
+      // .nav bg #e8f3ec (浅绿导航条) / 表头 alt 行
       surfaceAlt: '#e8f3ec',
-      // body color #2c3e50 (实测推断)
+      // body color #2c3e50 (深灰蓝文本)
       text: '#2c3e50',
-      // 次要文本 #7a8a7a (灰绿)
+      // 次要文本 #7a8a7a (灰绿次要文本)
       textMuted: '#7a8a7a',
-      // a color #1a8a5a (青绿, 得到小说系通用主色)
-      primary: '#1a8a5a',
+      // ★顶点小说标准苹果绿主色 #6CAD53 (实测 theme-color)
+      primary: '#6CAD53',
       primaryText: '#ffffff',
-      // a:hover #d9534f (暖红, 实测推断)
+      // a:hover #d9534f (暖红 hover, 顶点小说标准模板次色)
       accent: '#d9534f',
-      // .item dl dt border-bottom dotted #aac8aa (实测边框色)
-      border: '#aac8aa',
-      // 直角 (笔趣阁 DNA)
+      // .wrap .top border #d8e6d8 (浅绿灰边框, 1px 直角)
+      border: '#d8e6d8',
+      // 直角 (顶点小说标准模板 DNA)
       radius: '0px',
-      // 字体栈 (笔趣阁 DNA "Microsoft YaHei", Arial)
+      // 字体栈 (顶点小说标准模板 DNA "Microsoft YaHei", Arial, sans-serif)
       fontFamily: '"Microsoft YaHei", Arial, sans-serif',
-      // 直角卡片无阴影
+      // 直角卡片无阴影 (顶点 DNA)
       cardShadow: 'none',
-      // header 实测: .top bar bg #1a8a5a (青绿头)
+      // header 实测: 顶点小说标准模板纯色绿条 + 白字标题
       headerStyle: 'solid',
     },
-    preview: ['#f5f7f5', '#1a8a5a', '#d9534f'],
+    preview: ['#f5f7f5', '#6CAD53', '#d9534f'],
   },
 
   // ============================================================
@@ -500,58 +507,67 @@ export const THEMES: ThemeDef[] = [
   },
 
   // ============================================================
-  // 8. clone-shipsay (stealthy 抓取 + style.css 18.5KB)
+  // 8. clone-shipsay (已抓到完整 HTML+CSS, 18.5KB style.css)
   // ============================================================
   {
-    // 精仿·船说CMS demo.shipsay.com (stealthy 模式抓取 29KB HTML + /static/shipsay/style.css 18.5KB)
-    // 实测 CSS:
-    //   body color #666, font-size 14px, bg #f4f4f4
-    //   body font-family: "微软雅黑","Microsoft Yahei", Arial, Tahoma, Verdana, sans-serif
+    // 精仿·船说CMS demo.shipsay.com (z-ai page_reader + curl 抓到完整 HTML+CSS)
+    // 实测 CSS (从 /static/shipsay/style.css 提取):
+    //   body { color: #666; font-size: 14px; background: #f4f4f4; }
+    //   body font-family: "微软雅黑", "Microsoft Yahei", Arial, Tahoma, Verdana, sans-serif
     //   a color #1a1a1a → hover #ed4259 (red-pink!)
+    //   .fullflag { color: #fff; background: #ed4259; border: 1px solid #ed4259; }  /* ★红徽章 */
     //   .red #bf2c24 / .blue #4284ed / .orange #f0643a / .yellow #f0c53a / .purple #a091ff
-    //   .container max-width 1200px margin 0 auto
-    //   header > .container.head (logo + search form + header_right icons)
-    //   .navigation > nav.container > a (8 分类)
-    //   .side_commend .side_commend_width > p.title (i.fa + 主字) + ul.flex > li (book cards)
-    //   aside .popular > p.title + ul.popular > li > a(book) + a.gray(author)
-    //   .section.flex > .sortvisit (按分类) ul (mixed div first item + li items)
+    //   .gray #666 / .w_gray #969ba3
+    //   .intro { text-indent: 2em; line-height: 1.8em; min-height: 50px; margin-top: 1em; }
+    //   .container max-width 960px / .navigation bg #3e3d43 / nav a height 41px color #fbfbfb
+    //   .side_commend bg #fff padding 10px width 700px / .side_commend li width 49% margin 10px 6px 18px 0
+    //   .side_commend img 100x133 hover scale(1.1)
+    //   .img_span span overlay bg rgba(0,0,0,.4) top 108px color #fff
+    //   .side_commend .li_bottom flex align-items center em border 1px solid #ccc padding 0 2px font-size 10px
+    //   aside width 250px / .popular li flex space-between height 41px border-bottom 1px dotted #e6e6e6
+    //   .sortvisit width 312px / > a color #555 weight 700 border-bottom 1px solid #ddd
+    //   .sortvisit > ul > div: flex width 100% height 85px overflow hidden
+    //   .sortvisit > ul > div img 60x80 box-shadow 0 1px 5px rgba(0,0,0,.35)
+    //   .sortvisit ul li width 50% height 38px line-height 38px border-bottom 1px dashed #ccc
+    //   .lastupdate width 700px bg #fff padding 10px / li height 41px border-bottom 1px dotted #e6e6e6
+    //   #footer bg #3e3d43 color #fbfbfb
     id: 'clone-shipsay',
-    name: '精仿·shipsay',
-    desc: '像素级精仿·船说CMS demo.shipsay.com: 实测 CSS 浅灰底+红粉 hover+宽卡推荐+分类列表+热门链表',
+    name: '精仿·船说CMS',
+    desc: '像素级精仿·船说CMS demo.shipsay.com: 红色主色#ed4259·灰底#f4f4f4·微软雅黑·直角卡片+红色徽章+hover红边框',
     layout: 'clone-shipsay',
     dark: false,
     read: {
-      layout: 'classic', measure: 720, lineHeight: 1.8, fontBase: 16,
+      layout: 'classic', measure: 720, lineHeight: 1.8, fontBase: 14,
       indent: true, justify: false, toolbar: 'inline', texture: 'none', chapterDeco: 'rule',
     },
     vars: {
       // body bg #f4f4f4 (实测)
       bg: '#f4f4f4',
-      // 卡片白底 (实测 .side_commend, .sortvisit 均白底)
+      // 白卡 (实测 .side_commend, .sortvisit 均白底)
       surface: '#ffffff',
       // 区块标题底色用 #fafafa (浅灰)
       surfaceAlt: '#fafafa',
-      // body color #666 (实测) — text 取 #1a1a1a (a color, 更易读)
-      text: '#1a1a1a',
-      // body color #666 (实测次要文本)
-      textMuted: '#666666',
-      // a:hover #ed4259 (red-pink, 实测)
+      // body color #666 (实测, 灰色文本)
+      text: '#666666',
+      // .w_gray #969ba3 (实测浅灰次要文本)
+      textMuted: '#969ba3',
+      // ★船说CMS红色主色 #ed4259 (实测 .fullflag / a:hover)
       primary: '#ed4259',
       primaryText: '#ffffff',
-      // .orange #f0643a (实测, accent 字数颜色)
-      accent: '#f0643a',
-      // border 默认 #e5e5e5 (浅灰)
-      border: '#e5e5e5',
-      // .search radius 4px (实测推断)
-      radius: '4px',
+      // .red #bf2c24 (实测深红副色)
+      accent: '#bf2c24',
+      // .lastupdate / .sortvisit li border-bottom 1px dashed #ccc → 取 #e0e0e0 浅灰
+      border: '#e0e0e0',
+      // 直角 (实测 .side_commend li / .sortvisit / .lastupdate 均无圆角)
+      radius: '0px',
       // 字体栈 (实测 "微软雅黑", Microsoft Yahei, Arial, Tahoma, Verdana, sans-serif)
-      fontFamily: '"微软雅黑", "Microsoft YaHei", Arial, Tahoma, Verdana, sans-serif',
+      fontFamily: '"微软雅黑", "Microsoft Yahei", Arial, Tahoma, Verdana, sans-serif',
       // 直角卡片无阴影 (实测 .side_commend li 无 box-shadow)
       cardShadow: 'none',
       // header 实测: .container.head 内 logo+搜索+icon nav, solid 风格
       headerStyle: 'solid',
     },
-    preview: ['#f4f4f4', '#ed4259', '#f0643a'],
+    preview: ['#f4f4f4', '#ed4259', '#bf2c24'],
   },
 
   // ============================================================
