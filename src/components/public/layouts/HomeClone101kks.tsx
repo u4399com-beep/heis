@@ -1,8 +1,10 @@
 // ============================================================
-// 首页布局 · clone-101kks (精仿·101看書 101kks.com)
-// 实测 CSS (cdnshu 框架, 101kks.com 直连 200):
-//   body 默认白底, 无 :root vars (全站直写颜色值)
+// 首页布局 · clone-101kks (精仿·101看書 101kks.com, 繁体)
+// 实测 probe-html2/probe-101kks.{html,css} 抓取真实 /css/style.css + /css/block_booklist.css:
+//   charset: utf8 (繁体)
+//   body { background:#f2f3f4; color:#333; font-size:14px; font-family:"Microsoft YaHei"; }
 //   a color #666 / hover #06c (Microsoft blue) text-decoration none
+//   header { background:#fff2df; }   /* ★米黄头 */
 //   .headbox max-width 1250px (主容器)
 //   .bookbox padding 10px overflow hidden
 //   .bookimg 48x64 float left, .booknav width calc(100% - 58px) float left

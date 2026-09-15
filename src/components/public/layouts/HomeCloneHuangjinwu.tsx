@@ -1,21 +1,25 @@
 // ============================================================
 // 首页布局 · clone-huangjinwu (精仿·黄金屋 huangjinwu.org)
-// 实测 CSS (huangjinwu.org 直连 200, /static/default/style.css 44KB, 含 dark/green 多主题变体):
-//   :root:
+// 实测 probe-html2/probe-huangjinwu.{html,css} 抓取真实 /static/default/style.css?v=hIZ8PgznfXiz (44KB, 含 dark/green 多主题变体):
+//   :root (23 变量):
+//     --font-family-ui: -apple-system,BlinkMacSystemFont,"Microsoft YaHei","PingFang SC","Segoe UI","Helvetica Neue",Arial,sans-serif
 //     --bg-color #f0f4fb / --bg-gradient linear-gradient(180deg,#f5f8ff 0%,#eef3fb 100%)
 //     --card-bg #fff / --header-bg rgba(255,255,255,.92) / --footer-bg #e2eaf5
+//     --hover-color #e8f1ff
 //     --primary-color #0f172a (深墨) / --secondary-color #2563eb (蓝) / --logo-color #1d4ed8
 //     --text-color #1e293b / --text-light #64748b / --text-muted #94a3b8
-//     --border-color #dbe4f0 / --hover-color #e8f1ff
+//     --border-color #dbe4f0
 //     --shadow 0 1px 2px rgba(15,23,42,.04), 0 4px 16px rgba(37,99,235,.06)
 //     --shadow-hover 0 8px 24px rgba(37,99,235,.14), 0 2px 8px rgba(15,23,42,.06)
+//     --reader-text #1e293b / --reader-bg #f8fafc / --reader-border #d8e3f0
+//     --btn-primary-hover-bg #1d4ed8 / --btn-primary-hover-text #fff
 //     --border-radius 6px / --border-radius-lg 10px
-//   body font-family: -apple-system,BlinkMacSystemFont,"Microsoft YaHei","PingFang SC","Segoe UI","Helvetica Neue",Arial,sans-serif
-//                      font-size 1.6rem line-height 1.65
+//   body font-family: var(--font-family-ui) font-size 1.6rem line-height 1.65
 //   a color var(--primary-color) → hover var(--secondary-color)
 //   .container max-width 1180px
 //   .headers backdrop-filter saturate(1.2) blur(12px), bg var(--header-bg), 1px border-bottom
 //   .navbar gap 1.6rem padding 1.6rem 0
+//   .book-grid { display:grid; gap:2.4rem; grid-template-columns:1fr; margin-bottom:3.2rem; }
 // 结构 (侧栏 + 顶 nav + 主区网格):
 //   顶 sticky header (logo + sidebar menu + search) + 主体推荐封面网格 + 最近更新列表 + 排行榜
 // ============================================================

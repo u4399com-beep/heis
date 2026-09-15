@@ -1,6 +1,6 @@
 // ============================================================
 // 首页布局 · clone-shipsay (精仿·船说CMS demo.shipsay.com)
-// 已抓到完整 HTML+CSS (probe-shipsay.html 3800行 + probe-shipsay.css 18.5KB)
+// 实测 probe-html2/probe-shipsay.{html,css} 抓取完整 HTML+CSS (probe-shipsay.html 377 行 + probe-shipsay.css 18.5KB)
 // 实测 CSS 关键变量 (从 /static/shipsay/style.css 提取):
 //   body { color: #666; font-size: 14px; background: #f4f4f4; }
 //   body font-family: "微软雅黑", "Microsoft Yahei", Arial, Tahoma, Verdana, sans-serif
@@ -31,6 +31,7 @@
 //   .lastupdate li flex, height 41px, border-bottom 1px dotted #e6e6e6
 //   .lastupdate li *:nth-child(1) width 9% / (2) 25% / (3) 41% / (4) 25% text-align right
 //   #footer bg #3e3d43, color #fbfbfb
+//   radius: 3px (实测 .side_commend li 等 3px 圆角)
 // HTML 结构 (从抓到的首页 HTML 提取):
 //   header > .container.head (logo + form.search + .header_right icons)
 //   .navigation > nav.container > a (8 分类: 首页/玄幻/武侠/都市/历史/科幻/游戏/女生/其他)

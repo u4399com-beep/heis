@@ -80,7 +80,7 @@ interface SiteForm {
 const emptyForm: SiteForm = {
   name: '',
   domain: '',
-  themeId: 'aurora',
+  themeId: 'clone-aijjxs',
   title: '',
   description: '',
   keywords: '',

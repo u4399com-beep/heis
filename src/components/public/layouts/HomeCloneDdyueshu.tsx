@@ -1,31 +1,27 @@
 // ============================================================
 // 首页布局 · clone-ddyueshu (精仿·得得小说 ddyueshu.cc)
-// 站点 ddyueshu.cc 在沙箱内直连/代理/page_reader 全失败 (region ban China IP),
-// 通过 GitHub yuanwangokk-1/TV-BOX/Aries/js/顶点小说2[书].js 书源规则反推真实 DOM:
-//   host: https://www.ddyueshu.cc/
-//   编码: gb18030  (★重要: GBK 编码)
-//   URL 模板: /fyclass/#fypage
-//   searchUrl: /xiaoshuodaquan/#key=
-//   theme-color: #6CAD53 (★顶点小说标准苹果绿主色)
-//   导航: .nav ul li a (排除 "书架|排行")
-//   推荐(首页): #newscontent && ul && li → .s2 书名 / .s5 时间 / a href
-//   全本列表(分类=0): /quanben/{page} → table.grid && tr:gt(0) (跳表头)
-//     - td a:eq(0) 书名 / td a:eq(1) 作者
-//   分类列表: .up && ul && li → .s2 书名 / .s4 时间 / a href
-//   书籍页: h1 书名 / #fmimg img 封面 / #info p:eq(-1) 信息 / #intro p 简介
-//   目录: #list dt b (卷标题) / #list dd (章节列表) / dd a href
-//   正文: #content (内容, br 分隔, 末尾两行广告需 slice(0, -2))
-//   搜索: .novellist && ul && li → a 书名
-// 顶点小说标准模板特征 (参考 quanben5/xsbooktxt/dingdian):
-//   配色: #6CAD53 苹果绿主色 + 浅绿背景 + 白卡 + 直角
-//   字体: Microsoft YaHei, Arial, sans-serif
-//   风格: 简洁白底绿链, 无广告, 直角, 1px 灰边框
-//   body 背景: 浅米色或纯白
-//   头部: 纯色绿条 + 白字标题, 高度 36-50px
-//   卡片: 直角, 无阴影, 1px 灰边框
-// 结构: 顶部绿色条 header + nav (排除 "书架|排行") + 双栏
-//   (左 #newscontent 最新更新列表 + table.grid 全本列表 / 右 .wrap .top 排行榜)
-//   + 底部横排分类导航条
+// 实测 probe-html2/probe-ddyueshu.{html,css} 抓取真实 biquge.css:
+//   charset: gbk (★GBK 编码)
+//   body { background-color:#E9FAFF; color:#555; font-family:宋体; font-size:12px; }
+//   a { color:#6F78A7; }   /* 蓝紫链 */
+//   .nav { background:#88C6E5; height:40px; width:980px; }   /* 天蓝条 */
+//   .nav ul li a { color:#FFF; font-size:15px; font-weight:700; padding:0 14px; }
+//   #main { width:980px; margin:auto; }
+//   #hotcontent .l { background:#FEF9EF; border:3px solid #C3DFEA; float:left; height:330px; width:695px; }
+//   #hotcontent .l .item { float:left; width:335px; padding:10px 0 0 10px; }   /* ★2 列大卡 */
+//   #hotcontent .r { border:3px solid #C3DFEA; float:right; width:265px; background:#FEF9EF; }   /* 排行榜 */
+//   #hotcontent h2 { background-color:#E1ECED; font-size:14px; font-weight:700; }
+//   .novelslist { margin:2px auto; border:3px solid #A6D3E8; width:968px; padding:3px; background:#FEF9EF; }
+//   .novelslist .content { float:left; width:315px; }   /* 3 列分类列表 */
+//   #newscontent .l { border:3px solid #88C6E5; float:left; width:695px; background:#E1ECED; }   /* 最新更新 */
+//   #newscontent .r { float:right; width:265px; border:3px solid #88C6E5; background:#E1ECED; }   /* 访问榜 */
+//   .novelslist li .s1 { width:10%; } / .s2 { width:20%; } / .s3 { width:49%; } / .s4 { color:#B3B3B3; width:15%; }
+//   .footer_link { border-bottom:2px solid #88C6E5; height:25px; line-height:25px; }
+//   .header_search form { border-radius:2px; border:2px solid #88C6E5; }
+// DOM 结构 (实测抓取):
+//   .header (logo 250x60 + search 450x32) + .nav (天蓝条 980x40, 10 分类) + #main (#hotcontent 双栏)
+//   #hotcontent .l (3 大卡 2 列 + .r 排行榜) + .novelslist (3 列分类列表) + #newscontent (最新更新+访问榜)
+//   + #footer (.footer_link + .footer_cont)
 // ============================================================
 'use client'
 

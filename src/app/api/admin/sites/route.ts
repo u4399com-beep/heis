@@ -29,7 +29,8 @@ interface PaginationFields {
 
 function validTheme(raw: unknown): string {
   const id = str(raw, 50).trim()
-  return getThemeById(id) ? id : 'aurora'
+  // R12-1: 兜底改为 clone-aijjxs (旧 'aurora' 主题已退役)
+  return getThemeById(id) ? id : 'clone-aijjxs'
 }
 
 /** 章节分页配置统一抽取(POST 创建 / PUT 更新共用) */

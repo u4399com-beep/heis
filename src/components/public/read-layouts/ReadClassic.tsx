@@ -107,7 +107,9 @@ export const ReadClassic = memo(function ReadClassic({
   const titleColor = night ? '#e6e9ee' : v.text
   const metaColor = night ? '#8b929e' : v.textMuted
   const lineColor = night ? 'rgba(255,255,255,0.08)' : withAlpha(v.border, 0.8)
-  const decoColor = night ? (theme.dark ? v.accent : '#5a6470') : theme.id === 'paper' || theme.id === 'scrolls' ? v.accent : v.primary
+  // R12-1: 简化 decoColor (移除 theme.id === 'paper' || 'scrolls' 分支, 旧主题已退役)
+  // 9 套 clone-* 主题统一使用 v.primary 作为章节头装饰色, 暗色用 v.accent 兜底
+  const decoColor = night ? (theme.dark ? v.accent : '#5a6470') : v.primary
 
   const fontPx = actualFontPx(fontSize, read)
 

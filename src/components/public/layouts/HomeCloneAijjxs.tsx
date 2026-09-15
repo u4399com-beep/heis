@@ -1,10 +1,13 @@
 // ============================================================
 // 首页布局 · clone-aijjxs (精仿·久久小说 aijjxs.com)
-// 实测 CSS 变量直接落地:
+// 实测 probe-html2/probe-aijjxs.{html,css} 抓取真实 :root CSS 变量直接落地:
 //   --bg #f3efe7 / --paper #fffdf8 / --ink #1f2937 / --muted #6b7280
 //   --line #e5dccd / --brand #0f766e (青绿) / --brand-dark #115e59
 //   --accent #b45309 (琥珀) / --shadow 0 10px 30px rgba(17,24,39,0.08) / --radius 14px
-//   body font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif, line-height 1.7
+//   --chip #eef9f7 / --rank #fff5e6
+//   body background: radial-gradient(1000px 420px at 0 -10%, #e0f2fe 0%, transparent 60%),
+//                    radial-gradient(900px 520px at 100% 0, #ffedd5 0%, transparent 60%), #f3efe7
+//   body font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif
 //   a: var(--brand-dark) #115e59 / hover var(--brand) #0f766e
 // 结构 (实测 .wrap max-width 1220px + .top header card + .layout grid 1fr 330px):
 //   顶 banner (奶油+青绿) + 5 列封面卡片网格 (book.booknav DNA: 48x64 缩略图+右侧书名+作者+简介)

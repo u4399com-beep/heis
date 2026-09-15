@@ -1,6 +1,7 @@
 // ============================================================
 // 书籍详情视图 — 封面/信息/状态徽章/简介/目录(分页)/标签云
-// 信息排布与目录样式按 6 套主题差异化
+// R12-1: 清理 pili/aurora/paper/mango/bamboo/rose/magazine/theater 旧主题分支
+//        clone-* 9 套主题统一走默认渲染分支 + 通用 EpisodeListSkeleton
 // ============================================================
 'use client'
 
@@ -11,7 +12,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { Skeleton } from '@/components/ui/skeleton'
 import { fetchBook, fetchChapter, type BookDetailData } from './data'
 import { usePublic } from './ctx'
-import { coverSrc, fmtDate, formatWords, statusLabel, useSiteSEO, withAlpha } from './seo'
+import { coverSrc, fmtDate, formatWords, useSiteSEO, withAlpha } from './seo'
 import { generateTitle, generateMetaDescription, generateKeywords } from './auto-tdk'
 import { BookCover } from './BookCover'
 import { ShareMenu } from './ShareMenu'
@@ -21,22 +22,8 @@ import type { BookItem, BookTagHit, TocChapter } from './types'
 import { getReadPos, formatReadTimeShort } from './read-layouts/reading-memory'
 
 function TocSkeleton({ themeId }: { themeId: string }) {
-  if (themeId === 'pili') {
-    // pili 四列章节网格骨架
-    return (
-      <div className="grid grid-cols-2 gap-x-8 sm:grid-cols-3 lg:grid-cols-4">
-        {Array.from({ length: 16 }).map((_, i) => <Sk key={i} className="h-8 w-full" />)}
-      </div>
-    )
-  }
-  if (themeId === 'aurora' || themeId === 'mango') {
-    return (
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-        {Array.from({ length: 9 }).map((_, i) => <Sk key={i} className="h-9 w-full" />)}
-      </div>
-    )
-  }
-  // feat-round-7 B3: 默认主题走通用 ChapterListSkeleton
+  // R12-1: 简化为通用 ChapterListSkeleton (旧 pili/aurora/mango 分支已随主题 ID 退役移除)
+  void themeId
   return <ChapterListSkeleton count={10} />
 }
 
@@ -456,7 +443,7 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
   if (!bookId) return <ErrorState message="缺少书籍参数" />
   if (error) return <ErrorState message="书籍不存在" detail={error} />
 
-  /* ---------- 目录面板（按主题差异化） ---------- */
+  /* ---------- 目录面板（clone-* 9 套主题统一走默认 3 列剧集列表） ---------- */
   const renderToc = () => {
     if (loading) return <TocSkeleton themeId={theme.id} />
     if (!chapters.length) return <EmptyState text="暂无章节" />
@@ -464,141 +451,10 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
     //   without bookId, buildViewUrl falls back to /book/.html (broken) for non-query styles.
     const go = (ch: TocChapter) => navigate({ view: 'read', bookId: book?.id || bookId, chapterId: ch.id })
 
-    /** 主题差异化章节列表渲染(list 入参: 分卷模式下按组传入, 无卷整页传入 — 与改前逐节点一致)
-     *  所有主题统一使用 3 列网格布局(grid-cols-3), 移动端 1 列, 平板 2 列, 桌面 3 列 */
+    /** 主题统一章节列表渲染 (R12-1: 移除 pili/aurora/paper/mango/bamboo/rose 旧主题分支
+     *  9 套 clone-* 主题统一走默认 3 列剧集列表 + EP 编号 + 字数, 移动端 1 列, 平板 2 列, 桌面 3 列) */
     const renderChapterList = (list: TocChapter[]) => {
-      if (theme.id === 'pili') {
-        // 三列章节网格（原站 works-chapter-item DNA: 紧凑行 + 悬停橙字）
-        return (
-          <div data-pili-toc className="grid grid-cols-1 gap-x-8 sm:grid-cols-2 lg:grid-cols-3">
-            {list.map((ch) => (
-              <TocChapterButton
-                key={ch.id}
-                ch={ch}
-                current={ch.id === currentChapterId}
-                cache={previewCacheRef}
-                onClick={() => go(ch)}
-                className="flex min-h-[36px] w-full items-center gap-2 border-b py-2 text-left text-[13px] transition-colors hover:text-[#fd8929]"
-                style={{ borderColor: withAlpha(v.border, 0.55), color: ch.id === currentChapterId ? v.primary : v.text, background: ch.id === currentChapterId ? withAlpha(v.primary, theme.dark ? 0.16 : 0.08) : undefined }}
-                ariaLabel={`阅读 ${ch.title}`}
-              >
-                <span className="shrink-0 text-[11px] tabular-nums" style={{ color: v.textMuted }}>{ch.idx}.</span>
-                <span className="line-clamp-1 flex-1">{ch.title}</span>
-              </TocChapterButton>
-            ))}
-          </div>
-        )
-      }
-      if (theme.id === 'aurora') {
-        // 玻璃格子 — 3列
-        return (
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-            {list.map((ch) => (
-              <TocChapterButton
-                key={ch.id}
-                ch={ch}
-                current={ch.id === currentChapterId}
-                cache={previewCacheRef}
-                onClick={() => go(ch)}
-                className="flex items-center gap-2 px-3 py-2 text-left text-sm transition-transform hover:-translate-y-0.5"
-                style={{ background: ch.id === currentChapterId ? withAlpha(v.primary, theme.dark ? 0.16 : 0.08) : v.surface, border: `1px solid ${ch.id === currentChapterId ? v.primary : v.border}`, borderRadius: v.radius, color: ch.id === currentChapterId ? v.primary : v.text }}
-              >
-                <span className="shrink-0 text-[10px] tabular-nums" style={{ color: v.accent }}>{String(ch.idx).padStart(3, '0')}</span>
-                <span className="line-clamp-1 flex-1">{ch.title}</span>
-              </TocChapterButton>
-            ))}
-          </div>
-        )
-      }
-      if (theme.id === 'paper') {
-        // 3列竖排列表（衬线 + 虚线引导）
-        return (
-          <div className="grid grid-cols-1 gap-x-8 sm:grid-cols-2 lg:grid-cols-3">
-            {list.map((ch) => (
-              <div key={ch.id} style={{ borderBottom: `1px dashed ${v.border}` }}>
-                <TocChapterButton
-                  ch={ch}
-                  current={ch.id === currentChapterId}
-                  cache={previewCacheRef}
-                  onClick={() => go(ch)}
-                  className="flex w-full items-baseline gap-3 py-2.5 text-left transition-colors hover:opacity-70"
-                  style={ch.id === currentChapterId ? { background: withAlpha(v.primary, theme.dark ? 0.16 : 0.08) } : undefined}
-                >
-                  <span className="shrink-0 text-xs tabular-nums" style={{ color: v.textMuted }}>{String(ch.idx).padStart(2, '0')}</span>
-                  <span className="flex-1 text-sm" style={{ color: ch.id === currentChapterId ? v.primary : v.text, fontFamily: v.titleFont }}>{ch.title}</span>
-                </TocChapterButton>
-              </div>
-            ))}
-          </div>
-        )
-      }
-      if (theme.id === 'mango') {
-        // 大圆角胶囊格子 — 3列
-        return (
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-            {list.map((ch) => (
-              <TocChapterButton
-                key={ch.id}
-                ch={ch}
-                current={ch.id === currentChapterId}
-                cache={previewCacheRef}
-                onClick={() => go(ch)}
-                className="px-3.5 py-2 text-sm font-medium transition-transform hover:scale-105"
-                style={{ background: ch.id === currentChapterId ? withAlpha(v.primary, theme.dark ? 0.16 : 0.08) : v.surfaceAlt, border: `1px solid ${ch.id === currentChapterId ? v.primary : v.border}`, borderRadius: 999, color: ch.id === currentChapterId ? v.primary : v.text }}
-              >
-                {ch.idx}. {ch.title}
-              </TocChapterButton>
-            ))}
-          </div>
-        )
-      }
-      if (theme.id === 'bamboo') {
-        // 三栏细线极简
-        return (
-          <div className="grid grid-cols-1 gap-x-12 sm:grid-cols-2 lg:grid-cols-3">
-            {list.map((ch) => (
-              <TocChapterButton
-                key={ch.id}
-                ch={ch}
-                current={ch.id === currentChapterId}
-                cache={previewCacheRef}
-                onClick={() => go(ch)}
-                className="flex w-full items-center gap-3 border-b py-2.5 text-left text-sm transition-colors hover:opacity-60"
-                style={{ borderColor: withAlpha(v.border, 0.7), color: ch.id === currentChapterId ? v.primary : v.text, breakInside: 'avoid', background: ch.id === currentChapterId ? withAlpha(v.primary, theme.dark ? 0.14 : 0.06) : undefined }}
-              >
-                <span className="w-6 shrink-0 text-[10px] tabular-nums" style={{ color: v.textMuted }}>{ch.idx}</span>
-                <span className="line-clamp-1 flex-1">{ch.title}</span>
-                <span className="shrink-0 text-[10px] tabular-nums" style={{ color: v.textMuted }}>{ch.wordCount}</span>
-              </TocChapterButton>
-            ))}
-          </div>
-        )
-      }
-      if (theme.id === 'rose') {
-        // 剧目单 — 3列（金色编号 + 衬线标题）
-        return (
-          <div className="grid grid-cols-1 gap-x-8 sm:grid-cols-2 lg:grid-cols-3">
-            {list.map((ch) => (
-              <div key={ch.id} className="border-b" style={{ borderColor: withAlpha(v.border, 0.7) }}>
-                <TocChapterButton
-                  ch={ch}
-                  current={ch.id === currentChapterId}
-                  cache={previewCacheRef}
-                  onClick={() => go(ch)}
-                  className="flex w-full items-baseline gap-3 py-2.5 text-left transition-colors hover:opacity-75"
-                  style={ch.id === currentChapterId ? { background: withAlpha(v.primary, theme.dark ? 0.14 : 0.06) } : undefined}
-                >
-                  <span className="w-8 shrink-0 text-right text-sm font-black italic tabular-nums" style={{ color: v.accent, fontFamily: v.titleFont }}>
-                    {ch.idx}
-                  </span>
-                  <span className="flex-1 text-sm" style={{ color: ch.id === currentChapterId ? v.primary : v.text, fontFamily: v.titleFont }}>{ch.title}</span>
-                </TocChapterButton>
-              </div>
-            ))}
-          </div>
-        )
-      }
-      // ocean + 默认 — 剧集列表 3列
+      // clone-* 9 套主题统一 — 剧集列表 3 列
       return (
         <div className="grid grid-cols-1 gap-x-8 sm:grid-cols-2 lg:grid-cols-3">
           {list.map((ch) => (
@@ -669,7 +525,8 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
     borderRadius: v.radius,
     boxShadow: v.cardShadow === 'none' ? undefined : v.cardShadow,
   }
-  const coverW = theme.id === 'magazine' ? 'w-44 sm:w-52' : theme.id === 'theater' ? 'w-36 sm:w-44' : 'w-32 sm:w-40'
+  // R12-1: 简化为通用 coverW (旧 magazine/theater 主题分支已退役)
+  const coverW = 'w-32 sm:w-40'
 
   return (
     <div className="mx-auto w-full max-w-5xl px-4 py-6 sm:px-6 sm:py-8">
@@ -687,118 +544,15 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
         </div>
       ) : (
         <>
-          {/* 信息区 */}
-          {theme.id === 'pili' ? (
-            /* pili 霹雳书屋详情头（原站 works-intro DNA: 左封面角标+右标题作者+简介+标签chips+橙色大按钮+统计行） */
-            <section data-pili-book style={panelStyle} className="p-5 sm:p-7" aria-label="书籍信息">
-              <div className="flex flex-col gap-6 sm:flex-row sm:gap-8">
-                <div className="relative mx-auto w-40 shrink-0 sm:mx-0 sm:w-48">
-                  {/* feat-round-5 S1: 封面梯度光晕 (halo) */}
-                  <div aria-hidden className="pointer-events-none absolute -inset-3 -z-10 opacity-70 blur-2xl" style={{ background: `radial-gradient(circle at 50% 30%, ${withAlpha(v.primary, 0.45)}, transparent 70%)` }} />
-                  <BookCover name={book.name} cover={book.cover} showAuthor={book.author} className="aspect-[3/4] w-full" />
-                  {(book.status === 'completed' || book.status === 'ongoing') && (
-                    <span
-                      className="absolute right-0 top-0 px-2.5 py-1 text-xs font-bold"
-                      style={{ background: book.status === 'completed' ? v.primary : v.accent, color: v.primaryText, borderRadius: `0 ${v.radius} 0 ${v.radius}` }}
-                    >
-                      {book.status === 'completed' ? '已完结' : '连载中'}
-                    </span>
-                  )}
-                </div>
-                <div className="min-w-0 flex-1 space-y-3.5">
-                  <h1 className="text-xl font-bold leading-snug sm:text-2xl" style={{ color: v.text, fontFamily: v.titleFont }}>
-                    {book.name}
-                    <span className="font-normal" style={{ color: v.textMuted }}>（作者：{book.author}）</span>
-                  </h1>
-                  <p className="text-sm leading-relaxed" style={{ color: v.textMuted }}>{book.intro || '暂无简介'}</p>
-                  {tags.length > 0 && (
-                    <p className="flex flex-wrap items-center gap-2 text-sm">
-                      <span style={{ color: v.textMuted }}>标签：</span>
-                      {tags.slice(0, 8).map((t) => (
-                        <button
-                          key={t.tag}
-                          type="button"
-                          onClick={() => navigate({ view: 'keyword', tag: t.tag })}
-                          className="px-2.5 py-0.5 text-xs transition-colors hover:text-[#fd8929]"
-                          style={{ color: v.primary, border: `1px solid ${withAlpha(v.primary, 0.45)}`, borderRadius: v.radius }}
-                          aria-label={`查看标签 ${t.tag}`}
-                        >
-                          {t.tag}
-                        </button>
-                      ))}
-                    </p>
-                  )}
-                  <div className="flex flex-wrap items-center gap-3 pt-1">
-                    <ReadFirstButton firstChapterId={chapters[0]?.id} bookId={book.id} label="开始阅读" />
-                    {/* feat-a D: 上次阅读徽章 (有 saved 位置时显示) */}
-                    {savedPos?.chapterId && (
-                      <button
-                        type="button"
-                        onClick={() => savedPos.chapterId && navigate({ view: 'read', bookId: book.id, chapterId: savedPos.chapterId })}
-                        className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium transition-opacity hover:opacity-85"
-                        style={{
-                          border: `1px solid ${withAlpha(v.primary, 0.45)}`,
-                          color: v.primary,
-                          borderRadius: v.radius,
-                          background: withAlpha(v.primary, theme.dark ? 0.16 : 0.08),
-                        }}
-                        aria-label={`继续阅读 ${savedPos.title || ''}`}
-                        title={savedPos.title || '继续阅读'}
-                      >
-                        <Clock className="h-3.5 w-3.5" aria-hidden />
-                        上次阅读
-                        {savedPos.readTimeMs && savedPos.readTimeMs > 0 ? ` · 已读 ${formatReadTimeShort(savedPos.readTimeMs)}` : ''}
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      className="inline-flex items-center gap-1.5 px-5 py-2 text-sm font-medium transition-opacity hover:opacity-85"
-                      style={{ background: v.primary, color: v.primaryText, borderRadius: v.radius }}
-                      onClick={() => tocRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-                      aria-label="查看完整章节目录"
-                    >
-                      <ListTree className="h-4 w-4" aria-hidden />
-                      章节目录
-                    </button>
-                    {/* TXT 下载（站内唯一 <a> 整页跳转，允许） */}
-                    <a
-                      href={`/api/public/download?book=${book.id}`}
-                      className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium transition-opacity hover:opacity-85"
-                      style={{ border: `1px solid ${withAlpha(v.primary, 0.5)}`, color: v.primary, borderRadius: v.radius }}
-                    >
-                    <Download className="h-4 w-4" aria-hidden />
-                    TXT 下载
-                    </a>
-                    {/* R7-20 GG: 分享菜单 (复制链接 + 微信/QQ/微博) */}
-                    <ShareMenu title={book.name} desc={book.intro?.slice(0, 80)} />
-                  </div>
-                  {/* 统计行 */}
-                  <p
-                    className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t pt-3 text-xs"
-                    style={{ borderColor: withAlpha(v.border, 0.7), color: v.textMuted }}
-                  >
-                    <span>分类：<span style={{ color: v.primary }}>{book.category}</span></span>
-                    <span>字数：{formatWords(book.wordCount)}</span>
-                    <span>状态：{statusLabel(book.status)}</span>
-                    {fmtDate(book.updatedAt) && <span>更新：{fmtDate(book.updatedAt)}</span>}
-                    <span className="min-w-0">最新：{book.latestChapter || '暂无'}</span>
-                  </p>
-                </div>
-              </div>
-            </section>
-          ) : (
+          {/* R12-1: 信息区 (移除 pili 霹雳书屋特殊详情头分支, 9 套 clone-* 主题统一渲染) */}
           <section style={panelStyle} className="p-5 sm:p-7" aria-label="书籍信息">
             <div className="flex flex-col gap-5 sm:flex-row sm:gap-7">
               <div className="mx-auto shrink-0 sm:mx-0">
                 <div className={`relative ${coverW}`}>
                   {/* feat-round-5 S1: 封面梯度光晕 (halo) */}
                   <div aria-hidden className="pointer-events-none absolute -inset-3 -z-10 opacity-70 blur-2xl" style={{ background: `radial-gradient(circle at 50% 30%, ${withAlpha(v.primary, 0.45)}, transparent 70%)` }} />
-                  <div
-                    className={theme.id === 'rose' ? 'p-1' : ''}
-                    style={theme.id === 'rose' ? { border: `2px solid ${v.accent}`, borderRadius: v.radius, background: v.bg } : undefined}
-                  >
-                    <BookCover name={book.name} cover={book.cover} showAuthor={book.author} className="aspect-[3/4] w-full" />
-                  </div>
+                  {/* R12-1: 移除 rose 主题特殊边框包装 (旧主题已退役) */}
+                  <BookCover name={book.name} cover={book.cover} showAuthor={book.author} className="aspect-[3/4] w-full" />
                 </div>
               </div>
               <div className="min-w-0 flex-1 space-y-3">
@@ -892,7 +646,6 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
               </div>
             </div>
           </section>
-          )}
 
           {/* feat-round-5 A3: 阅读统计条 */}
           <div className="mt-4">
@@ -902,8 +655,8 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
           {/* feat-round-5 S2: 分隔线 */}
           <div aria-hidden className="mt-6 h-px" style={{ background: withAlpha(v.border, 0.45) }} />
 
-          {/* 标签云 */}
-          {tags.length > 0 && theme.id !== 'pili' && (
+          {/* R12-1: 标签云 (移除 theme.id !== 'pili' 条件, 9 套 clone-* 主题统一渲染) */}
+          {tags.length > 0 && (
             <section className="pt-6" aria-label="本书标签">
               <div className="mb-3 flex items-center gap-2">
                 <Hash className="h-4 w-4" style={{ color: v.primary }} aria-hidden />
@@ -918,33 +671,17 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
 
           {/* 目录 */}
           <section ref={tocRef} className="scroll-mt-6 pt-8" aria-label="章节目录">
-            {theme.id === 'pili' ? (
-              /* pili 橙色 tab 头（原站 works-chapter-menu DNA） */
-              <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
-                <span
-                  data-pili-toc-tab
-                  className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-bold"
-                  style={{ background: v.primary, color: v.primaryText, borderRadius: `${v.radius} ${v.radius} 0 0` }}
-                >
-                  <ListTree className="h-4 w-4" aria-hidden />
-                  查看完整章节目录
-                </span>
-                <span className="pb-1 text-xs tabular-nums" style={{ color: v.textMuted }}>
+            {/* R12-1: 移除 pili 橙色 tab 头分支, 9 套 clone-* 主题统一走 SecTitle */}
+            <SecTitle
+              icon={<ListTree className="h-4 w-4" aria-hidden />}
+              right={
+                <span className="text-xs tabular-nums" style={{ color: v.textMuted }}>
                   共 {data?.tocTotal || 0} 章 · 第 {data?.tocPage || tocPage}/{data?.tocTotalPages || 1} 页
                 </span>
-              </div>
-            ) : (
-              <SecTitle
-                icon={<ListTree className="h-4 w-4" aria-hidden />}
-                right={
-                  <span className="text-xs tabular-nums" style={{ color: v.textMuted }}>
-                    共 {data?.tocTotal || 0} 章 · 第 {data?.tocPage || tocPage}/{data?.tocTotalPages || 1} 页
-                  </span>
-                }
-              >
-                章节目录
-              </SecTitle>
-            )}
+              }
+            >
+              章节目录
+            </SecTitle>
             {renderToc()}
             {/* 目录分页 */}
             {(data?.tocTotalPages || 1) > 1 && (

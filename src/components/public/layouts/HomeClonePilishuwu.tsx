@@ -1,15 +1,18 @@
 // ============================================================
 // 首页布局 · clone-pilishuwu (精仿·霹雳书屋 pilishuwu.com)
-// 站点 Cloudflare 防护, 直连 403 (jsd 挑战), scrapling static 仅返回 1.4KB 挑战页;
-// 兜底参考已有 HomePili.tsx 设计 + 站点形态描述 (scripts/seed-rule-pilishuwu.ts):
-//   - 列表 /book/index.html 或 /sort/{cat}/{page}.html (.book-item 卡片)
-//   - 书籍页 /book/{id}.html (h1 书名 + og:novel:* meta + .intro 简介 + .cover img 封面)
-//   - 目录 /book/{id}/ (.list dd>a 或 #list li>a)
-//   - 正文 /book/{bid}/{cid}.html div#content
-// 风格特征(基于 pilishuwu.com 系通用模板 + HomePili.tsx 已有仿站):
-//   - 白卡书城 DNA: 左主栏(精品推荐封面网格/最新入库/最近更新表格) + 右侧橙色头排行榜
-//   - 奶油区块标题(左橙竖条) + 复古直角白卡 + 橙色点缀红号次
-//   - 主色: 暖橙 #f77720 (border-top 3px, header gradient), 副色: 深橙 #c4521a, 米黄 #fef9ef
+// 实测 probe-html2/probe-pilishuwu.{html,css} 抓取真实 wmcms-web 模板 CSS:
+//   body { color:#666; background:transparent; }
+//   a { color:-moz-use-text-color; }   /* 继承色 */
+//   .mod-top-search-submit { background-color:#fd8929; color:#fff; }   /* ★霹雳橙主色 */
+//   .mod-top-search-submit:hover { background-color:#ec5245; }   /* hover 红橙 */
+//   .nav-list .active / .mod-top-tag a:hover { color:#d71704; }   /* 红 hover */
+//   .color-{red:#d71704 / blue:#3BCAFF / orange:#ff9a6a / yellow:#E8D25A}
+//   .ac_btn_{red:#ec5245 / orange:#ff9800 / green:#34a853}
+//   radius: 2px (复古直角风)
+// DOM 结构 (实测抓取):
+//   .mod-top-wr > .mod-top-frame > .mod-top-tool-wr (logo + search-wr 橙按钮 + hot-word tags)
+//   .mod-top-nav-wr > .mod-top-nav (5 主分类: 首页/全部小说/排行榜/男频/女频)
+//   主体: 双栏 (左 .bk-list 大卡封面网格 / 右 排行榜+热门标签)
 // 结构: 顶 banner (暖橙渐变) + 双栏 (左 精品封面网格 + 最新入库 + 表格更新 / 右 橙头排行榜 + 书屋公告)
 // ============================================================
 'use client'

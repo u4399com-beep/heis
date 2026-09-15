@@ -1,8 +1,9 @@
 // ============================================================
-// 首页布局 · clone-x2552 (精仿·爱文学 x2552.com)
-// 实测 CSS (x2552.com 直连 200, GBK 编码 HTML, /heibing/css/style.css 10.7KB):
-//   body color #666 bg transparent font 12px/120% 微软雅黑
-//   a color #2f468f (蓝紫) → hover #ff6600 (橙)
+// 首页布局 · clone-x2552 (精仿·吾爱文学 x2552.com)
+// 实测 probe-html2/probe-x2552.{html,css} 抓取真实 /heibing/css/style.css (10.7KB, GBK 编码 HTML):
+//   charset: gbk (★GBK 编码)
+//   body color #666 bg transparent font 12px/120% 微软雅黑,宋体,Verdana,Arial,sans-serif
+//   a color #2f468f (蓝紫) → hover #ff6600 (橙) + left:1px top:1px 微移
 //   .main width 960px margin 0 auto clear both (老式 960px 框架)
 //   .m_head height 60px (logo 180px + h_body 780px)
 //   .m_menu height 40px font 14px weight bold line-height 39px (12 个分类导航)
@@ -15,6 +16,7 @@
 //   .ultop / .ulcenter / .ulitem li border-bottom 1px dotted #F2F2F2 padding 0 3px list-style decimal inside
 //   table border 1px #E4E4E4 margin 10px width 98%
 //   td,th border-bottom 1px dotted #E4E4E4 padding 0 3px
+//   radius: 3px (老式框架圆角)
 // 结构: 顶 m_head (logo + search) + m_menu (12 分类) + 3 列布局 (centeri 760 / left 190 / right 190)
 //   左: 最新更新表 + 排行榜 / 中: 大卡推荐 + 章节更新 / 右: 完结 + 热门
 // ============================================================

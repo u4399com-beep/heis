@@ -1,6 +1,6 @@
 // ============================================================
 // 首页布局 · clone-23qb (精仿·铅笔小说 23qb.net)
-// 实测 CSS (23qb.net 直连 200, /mxstatic/css/style.css 125KB — 默认白底; mxhtmlblack.css 是 dark 可选)
+// 实测 probe-html2/probe-23qb.{html,css} 抓取真实 /mxstatic/css/style.css (125KB) + mxhtmlblack.css 可选 dark
 //   body color #282828 bg #f8f9f9 (实测 style.css 中 a color #282828 / hover #ff2a14)
 //   font-family: -apple-system-font, BlinkMacSystemFont, helvetica neue, pingfang sc, hiragino sans gb,
 //                microsoft yahei ui, microsoft yahei, Arial, sans-serif
@@ -12,6 +12,7 @@
 //   .block-box-item bg #eaedf1 padding 15px border-radius 10px
 //   .block-box-content .title font-size 18px / hover ::after width 36px bg #ff2a14
 //   .search-box box-shadow 0 7px 21px rgba(149,157,165,.22)
+//   .novel-info-item { display:block; text-overflow:ellipsis; overflow:hidden; white-space:nowrap }
 // 结构: 顶部 header-content (shadow + 1px border-bottom + logo + 搜索框 + slogan)
 //   + 精品推荐封面网格 (module-item DNA: padding-top 140% 5:7 aspect)
 //   + 本周强推 3 列宽卡 (block-box-item DNA: bg #eaedf1 + No.编号 + hover 红 #ff2a14)

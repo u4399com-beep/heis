@@ -94,9 +94,7 @@ export function KeywordView({ tag }: { tag?: string }) {
           style={{
             color: v.text,
             fontFamily: v.titleFont,
-            ...(theme.id === 'aurora'
-              ? { background: `linear-gradient(90deg, ${v.primary}, ${v.accent})`, WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }
-              : {}),
+            // R12-1: 移除 aurora 主题渐变文字分支 (旧主题已退役, 9 套 clone-* 主题统一用 v.text)
           }}
         >
           {tag}

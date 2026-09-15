@@ -1,6 +1,6 @@
 // ============================================================
 // 首页布局 · clone-ggd66 (精仿·格格党 ggd66.com)
-// 实测 CSS (ggd66.com 直连 200, /static/simple/style.css 11.5KB):
+// 实测 probe-html2/probe-ggd66.{html,css} 抓取真实 /static/simple/style.css (11.5KB):
 //   body bg #f9f9f9, color #888, font 15px "微软雅黑",Microsoft Yahei,simsun,arial,sans-serif, line-height 150%
 //   a color #00886d (mint green) → hover #f50 (orange-red!)
 //   .header bg #56ccb5 OR #1abc9c (mint) height 50px line-height 50px white text shadow
@@ -16,6 +16,7 @@
 //   breadcrumb bg #cdf3eb (light mint) border 1px #ccc radius 4px padding 8px 15px
 //   h2 border-bottom 1px #ccc color #333 font 18px weight 500
 //   footer bg #56ccb5 white text text-align center font 14px padding 10px 0
+//   .book radius 4px / .breadcrumb radius 4px / .search form radius 5px
 // 结构: 顶 mint header (logo + nav) + breadcrumb + content (左73% 热门推荐2列 + 最新更新 / 右25% 搜索+排行榜)
 // ============================================================
 'use client'
