@@ -334,7 +334,7 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
   useEffect(() => {
     if (!bookId) return
     let alive = true
-    fetchBook(bookId, tocPage, 100)
+    fetchBook(bookId, tocPage, 100, site.id)
       .then((d) => {
         if (!alive) return
         setState({ key, data: d })
@@ -346,7 +346,7 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
     return () => {
       alive = false
     }
-  }, [key, bookId, tocPage])
+  }, [key, bookId, tocPage, site.id])
 
   const loading = !state || state.key !== key
   const data = loading ? null : state.data || null
@@ -364,6 +364,40 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
   const book = data?.book
   const tags: BookTagHit[] = data?.tags || []
   const chapters: TocChapter[] = data?.chapters || []
+
+  // R10-1C: SEO 模板渲染(同 ReadView renderSeoTemplate, 兼容 site.chapterSeoAuto 开关)
+  // auto=true(默认): 走 generateTDK 自动模式; auto=false: 走 site.chapterSeo*Template 模板
+  const seoCtx = {
+    bookName: book?.name || '',
+    chapterTitle: book?.latestChapter || '',
+    page: 1,
+    totalPages: 1,
+    siteName: site.name,
+  }
+  const renderSeoTemplate = (template: string, ctx: typeof seoCtx): string => {
+    if (!template) return ''
+    return template
+      .replace(/\{bookName\}/g, ctx.bookName)
+      .replace(/\{chapterTitle\}/g, ctx.chapterTitle)
+      .replace(/\{page\}/g, String(ctx.page))
+      .replace(/\{totalPages\}/g, String(ctx.totalPages))
+      .replace(/\{siteName\}/g, ctx.siteName)
+  }
+  const seoTitle = book
+    ? (data?.seo && !data.seo.auto && data.seo.titleTemplate
+        ? renderSeoTemplate(data.seo.titleTemplate, seoCtx)
+        : generateTitle({ bookName: book.name, author: book.author, category: book.category, siteName: site.name }))
+    : `书籍详情 - ${site.name}`
+  const seoDescription = book
+    ? (data?.seo && !data.seo.auto && data.seo.descTemplate
+        ? renderSeoTemplate(data.seo.descTemplate, seoCtx)
+        : generateMetaDescription({ bookName: book.name, author: book.author, category: book.category, intro: book.intro, wordCount: book.wordCount, siteName: site.name }))
+    : undefined
+  const seoKeywords = book
+    ? (data?.seo && !data.seo.auto && data.seo.keywordsTemplate
+        ? renderSeoTemplate(data.seo.keywordsTemplate, seoCtx)
+        : generateKeywords({ bookName: book.name, author: book.author, category: book.category, existingKeywords: book.keywords, content: book.intro, siteName: site.name }))
+    : undefined
 
   const origin = typeof window !== 'undefined' ? window.location.origin : ''
   const coverAbs = (p: string | null): string | undefined => {
@@ -392,9 +426,9 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
     })
   }
   useSiteSEO({
-    title: book ? generateTitle({ bookName: book.name, author: book.author, category: book.category, siteName: site.name }) : `书籍详情 - ${site.name}`,
-    description: book ? generateMetaDescription({ bookName: book.name, author: book.author, category: book.category, intro: book.intro, wordCount: book.wordCount, siteName: site.name }) : undefined,
-    keywords: book ? generateKeywords({ bookName: book.name, author: book.author, category: book.category, existingKeywords: book.keywords, content: book.intro, siteName: site.name }) : undefined,
+    title: seoTitle,
+    description: seoDescription,
+    keywords: seoKeywords,
     canonicalPath: book ? `/?view=book&id=${book.id}&site=${site.id}` : undefined,
     site,
     jsonLd: book

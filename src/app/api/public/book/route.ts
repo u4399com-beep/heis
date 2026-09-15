@@ -1,4 +1,6 @@
 // 前台书籍详情 + 目录(TDK/SEO数据源)
+// R10-1C: 返回 site SEO 配置(chapterSeoAuto + 3 模板), 让 BookView 走与 ReadView 同口径的
+// SEO 模板渲染链; 不传 site 时 seo 字段缺省(auto=true), 行为与原 generateTDK 链一致
 import { db } from '@/lib/db'
 import { ok, fail } from '@/lib/api'
 import { withGuard, str, clampInt, withCache } from '../../_lib/http'
@@ -22,6 +24,30 @@ export async function GET(req: Request) {
       include: { category: true },
     })
     if (!book) return fail('书籍不存在', 404)
+
+    // R10-1C: 拉取站点 SEO 配置(?site= 参数, 与 chapter API 同口径)
+    const siteId = str(url.searchParams.get('site'), 64).trim()
+    let seoAuto = true
+    let seoTitleTemplate = ''
+    let seoDescTemplate = ''
+    let seoKeywordsTemplate = ''
+    if (siteId) {
+      const site = await db.site.findUnique({
+        where: { id: siteId },
+        select: {
+          chapterSeoAuto: true,
+          chapterSeoTitleTemplate: true,
+          chapterSeoDescTemplate: true,
+          chapterSeoKeywordsTemplate: true,
+        },
+      })
+      if (site) {
+        seoAuto = site.chapterSeoAuto !== false
+        seoTitleTemplate = site.chapterSeoTitleTemplate || ''
+        seoDescTemplate = site.chapterSeoDescTemplate || ''
+        seoKeywordsTemplate = site.chapterSeoKeywordsTemplate || ''
+      }
+    }
 
     const [total, tags, chapters] = await Promise.all([
       db.chapter.count({ where: { bookId: id } }),
@@ -58,6 +84,13 @@ export async function GET(req: Request) {
       tocTotalPages: Math.ceil(total / tocSize) || 1,
       chapters,
       tags,
+      // R10-1C: SEO 配置(同 chapter API 口径, BookView 据此选模板 vs 自动)
+      seo: {
+        auto: seoAuto,
+        titleTemplate: seoTitleTemplate,
+        descTemplate: seoDescTemplate,
+        keywordsTemplate: seoKeywordsTemplate,
+      },
     }))
   })
 }

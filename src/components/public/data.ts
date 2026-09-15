@@ -74,13 +74,21 @@ export interface BookDetailData {
   tocTotalPages: number
   chapters: TocChapter[]
   tags: BookTagHit[]
+  // R10-1C: 站点 SEO 配置(同 chapter API 口径); 旧客户端缺省时 undefined → 走自动模式
+  seo?: {
+    auto: boolean
+    titleTemplate: string
+    descTemplate: string
+    keywordsTemplate: string
+  }
 }
 
-/** 书籍详情 + 分页目录 */
-export function fetchBook(id: string, tocPage = 1, tocSize = 100): Promise<BookDetailData> {
+/** 书籍详情 + 分页目录 (R10-1C: 传 siteId 拉取站点 SEO 配置) */
+export function fetchBook(id: string, tocPage = 1, tocSize = 100, siteId?: string): Promise<BookDetailData> {
   const sp = new URLSearchParams({ id })
   sp.set('tocPage', String(tocPage))
   sp.set('tocSize', String(tocSize))
+  if (siteId) sp.set('site', siteId)
   return get<BookDetailData>(`/api/public/book?${sp.toString()}`)
 }
 

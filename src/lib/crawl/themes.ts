@@ -1,23 +1,24 @@
 // ============================================================
-// 主题模版注册表 — 5 套精仿真实小说站点主题 (R9-1A 重构)
-// 5 套 preset 全部基于真实站点首页 HTML+CSS 抓取, 像素级精仿:
-//   clone-aijjxs   (久久小说 aijjxs.com, 实测 :root CSS 变量)
-//   clone-101kks   (101看書 101kks.com, cdnshu 框架实测)
-//   clone-pilishuwu(霹雳书屋 pilishuwu.com, CF 防护, 参考形态描述)
-//   clone-biquge   (笔趣阁 bqg713.cc, 实测 style.css)
-//   clone-23qb     (铅笔小说 23qb.net, 实测 style.css)
+// 主题模版注册表 — 9 套精仿真实小说站点主题 (R10-1A 重构)
+// 9 套 preset 全部基于真实站点首页 HTML+CSS 抓取, 像素级精仿:
+//   clone-aijjxs     (久久小说 aijjxs.com, 实测 :root CSS 变量)
+//   clone-ddyueshu   (得得小说 ddyueshu.cc, 沙箱内 DNS 不通, 参考得到小说系站点形态)
+//   clone-pilishuwu  (霹雳书屋 pilishuwu.com, CF 防护, 参考已有 HomePili 设计 + 站点形态描述)
+//   clone-23qb       (铅笔小说 23qb.net, 实测 /mxstatic/css/style.css 125KB)
+//   clone-101kks     (101看書 101kks.com, cdnshu 框架实测 /css/style.css + /css/block_booklist.css)
+//   clone-huangjinwu (黄金屋 huangjinwu.org, 实测 /static/default/style.css 含 :root + dark/green 变体)
+//   clone-ggd66      (格格党 ggd66.com, 实测 /static/simple/style.css 11.5KB)
+//   clone-shipsay    (船说CMS demo.shipsay.com, stealthy 模式抓取 + /static/shipsay/style.css 18.5KB)
+//   clone-x2552      (爱文学 x2552.com, 实测 /heibing/css/style.css 10.7KB, GBK 编码)
 //
 // 双布局维度:
-//   layout     → 首页布局 (12 原始 + 5 clone-* = 17 种)
+//   layout     → 首页布局 (9 种 clone-*)
 //   read       → 阅读页布局与排版参数 (经典典书版 / 沉浸暗色 / 分页横滑 / 书屋版)
 // read 可缺省: readOf() 会按 READ_DEFAULTS 回退, 旧调用点零破坏
 //
-// feat-combo-theme-incremental: 在 THEMES(preset) 之外引入组合主题矩阵
-// (12 配色 × 12 风格 × 12 布局 = 1728 组合)。theme-matrix 仅依赖本模块的
-// 类型(type-only import, 编译期擦除无运行时循环依赖); 本模块在 getThemeById
-// 中静态引入组合解析器, preset 命中优先, 未命中回退组合, 全未命中返回 THEMES[0]。
+// R10-1A: 废弃 theme-matrix 1728 组合矩阵 + 17 旧 preset; 新增 9 套精仿 preset;
+//         getThemeById 不再回退 combo 解析器, 只查 THEMES
 // ============================================================
-import { getThemeById as resolveComboTheme } from './theme-matrix'
 
 /** 阅读页布局原型 */
 export type ReadLayoutKind = 'classic' | 'immersive' | 'paginated' | 'pili'
@@ -44,11 +45,72 @@ export interface ReadVars {
   chapterDeco: 'rule' | 'ornament' | 'none'
 }
 
-/** 阅读缺省值（theme.read 缺字段/整体缺省时回退, 保证向后兼容） */
+/** 主题前台变量集合（透传 usePublic().theme.vars） */
+export interface ThemeVars {
+  /** 页面背景（可为单色 / radial-gradient / linear-gradient / 多层氛围） */
+  bg: string
+  /** 卡片/主面板表面色 */
+  surface: string
+  /** 次级表面色（表头/奇行/alt 区块） */
+  surfaceAlt: string
+  /** 正文文本色 */
+  text: string
+  /** 次要文本色 */
+  textMuted: string
+  /** 主品牌色（按钮/链接/标题强调） */
+  primary: string
+  /** 主色之上文字色（按钮文字） */
+  primaryText: string
+  /** 副强调色（次要按钮/角标/排行徽章） */
+  accent: string
+  /** 边框色 */
+  border: string
+  /** 圆角（如 '12px'） */
+  radius: string
+  /** 字体栈（body） */
+  fontFamily: string
+  /** 卡片阴影（CSS box-shadow 值, 'none' 即无阴影） */
+  cardShadow: string
+  /** header 风格: solid=实色 / gradient=渐变 / transparent=透明半透 / split=左右分栏 / centered=居中刊头 / pili=霹雳橙头 */
+  headerStyle: 'solid' | 'gradient' | 'transparent' | 'split' | 'centered' | 'pili'
+  /** 可选标题字体栈（衬线/手写体, 用于 .titleFont） */
+  titleFont?: string
+}
+
+/** 主题定义（preset）。layout 决定首页布局; read 决定阅读页排版参数。 */
+export interface ThemeDef {
+  /** 主题 ID（站点主题引用此 ID） */
+  id: string
+  /** 显示名 */
+  name: string
+  /** 描述（含实测来源/特征） */
+  desc: string
+  /** 首页布局类型（决定 HomeView 分发到哪个 Home 布局组件） */
+  layout:
+    | 'clone-aijjxs'
+    | 'clone-ddyueshu'
+    | 'clone-pilishuwu'
+    | 'clone-23qb'
+    | 'clone-101kks'
+    | 'clone-huangjinwu'
+    | 'clone-ggd66'
+    | 'clone-shipsay'
+    | 'clone-x2552'
+  /** 是否暗色主题（影响 ReadView 默认工具条/背景） */
+  dark: boolean
+  /** 阅读页配置（缺省时由 READ_DEFAULTS 兜底） */
+  read?: Partial<ReadVars>
+  /** 主题变量集合 */
+  vars: ThemeVars
+  /** 预览用小色块 */
+  preview: [string, string, string]
+}
+
+/** 阅读变量缺省值（旧主题未声明 read 时, 由 readOf() 回填这套） */
 export const READ_DEFAULTS: ReadVars = {
   layout: 'classic',
-  measure: 680,
-  lineHeight: 2,
+  measure: 720,
+  lineHeight: 1.85,
   fontBase: 17,
   indent: true,
   justify: false,
@@ -57,55 +119,15 @@ export const READ_DEFAULTS: ReadVars = {
   chapterDeco: 'rule',
 }
 
-/** 主题里允许只写部分阅读字段 */
-export type ThemeReadConfig = Partial<ReadVars>
-
-/** 取主题的完整阅读配置（缺省回退） */
-export function readOf(theme?: { read?: ThemeReadConfig } | null): ReadVars {
-  return { ...READ_DEFAULTS, ...(theme?.read || {}) }
-}
-
-/** 中文标签（后台预览/调试用） */
-export const READ_LAYOUT_LABEL: Record<ReadLayoutKind, string> = {
-  classic: '典书版',
-  immersive: '沉浸暗夜',
-  paginated: '分页横滑',
-  pili: '书屋版',
-}
-
-export interface ThemeDef {
-  id: string
-  name: string
-  desc: string
-  /** 首页布局风格 — 12 原始 + 5 clone-* = 17 种 (R9-1A 新增 5 clone-*) */
-  layout: 'grid' | 'list' | 'shelf' | 'magazine' | 'minimal' | 'theater' | 'pili' | 'biquge' | 'mosaic' | 'masonry' | 'showcase' | 'editorial' | 'clone-101kks' | 'clone-pilishuwu' | 'clone-aijjxs' | 'clone-biquge' | 'clone-23qb'
-  dark: boolean
-  /** 阅读页布局与排版（缺省走 readOf 回退值） */
-  read?: ThemeReadConfig
-  /** CSS 变量集 */
-  vars: {
-    bg: string
-    surface: string
-    surfaceAlt: string
-    text: string
-    textMuted: string
-    primary: string
-    primaryText: string
-    accent: string
-    border: string
-    radius: string
-    fontFamily: string
-    cardShadow: string
-    headerStyle: 'solid' | 'gradient' | 'transparent' | 'split' | 'centered' | 'pili'
-    titleFont?: string
-  }
-  /** 预览用小色块 */
-  preview: [string, string, string]
+/** 主题 read 配置兜底合并（preset 可只填部分字段, 缺省走 READ_DEFAULTS） */
+export function readOf(theme: ThemeDef): ReadVars {
+  return { ...READ_DEFAULTS, ...(theme.read || {}) }
 }
 
 export const THEMES: ThemeDef[] = [
-  // ==================== R9-1A: 5 套精仿真实小说站点 preset ====================
-  // 默认主题置首位 (getTheme(undefined) 兜底返回 THEMES[0]), clone-aijjxs 最稳定站
+  // ============================================================
+  // 1. clone-aijjxs (默认主题, 实测最稳定, 直连 200, :root CSS 变量完整)
+  // ============================================================
   {
     // 精仿·久久小说 aijjxs.com (实测 :root CSS 变量直接落地)
     // 实测 aijjxs.com /skin/yellow/style.css?t=20260509 :root 块:
@@ -114,6 +136,8 @@ export const THEMES: ThemeDef[] = [
     //   --accent #b45309 (琥珀) / --shadow 0 10px 30px rgba(17,24,39,0.08) / --radius 14px
     // 实测 a 颜色: var(--brand-dark) #115e59 / hover var(--brand) #0f766e
     // 实测字体栈: PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif
+    // 实测 body line-height 1.7
+    // 实测 .wrap max-width 1220px / .layout grid 1fr 330px (主+侧)
     id: 'clone-aijjxs',
     name: '精仿·久久小说',
     desc: '像素级精仿·久久小说 aijjxs.com: 实测 :root CSS 变量·奶油背景+白卡+青绿+琥珀+14px圆角',
@@ -154,51 +178,65 @@ export const THEMES: ThemeDef[] = [
     // 预览三色: [bg(取基色 #f3efe7), primary(#0f766e), accent(#b45309)]
     preview: ['#f3efe7', '#0f766e', '#b45309'],
   },
+
+  // ============================================================
+  // 2. clone-ddyueshu (沙箱内 DNS 不通, 参考得到小说系站点形态)
+  // ============================================================
   {
-    // 精仿·101看書 101kks.com (cdnshu 框架, 实测 https://101kks.com/ 直连 200)
-    // 实测 /css/style.css + /css/block_booklist.css:
-    //   body 默认白底 / a #666 / hover #06c (Microsoft blue)
-    //   .booklist-card: bg #fff radius 10px shadow 0 2px 10px rgba(0,0,0,0.08) border 1px solid rgba(0,0,0,0.06) height 128px
-    //   .booklist-cover-section: gradient linear-gradient(135deg, #667eea 0%, #764ba2 100%)
-    //   .booklist-title: font-size 14px weight 600 color #2c3e50 line-height 1.3 line-clamp 2
-    //   .booklist-meta: gap 12px font-size 12px color #7f8c8d
-    //   .booklist-grid: grid auto-fill minmax(280px,1fr) gap 12px / 3 列 @≥1200px
-    //   .headbox max-width 1250px (主容器)
-    id: 'clone-101kks',
-    name: '精仿·101kks',
-    desc: '像素级精仿·101看書 101kks.com: cdnshu 框架·蓝紫渐变封面块+白卡+10px圆角',
-    layout: 'clone-101kks',
+    // 精仿·得得小说 ddyueshu.cc (沙箱内 scrapling static+stealthy+playwright 全失败:
+    //   Connection refused / ERR_ADDRESS_UNREACHABLE / Recv failure: Connection reset by peer)
+    // 兜底: 笔趣阁系书站 DNA (table + 侧栏排行榜) + 得到小说系站点通用配色 (青绿 + 暖红):
+    //   body bg #f5f7f5 (浅灰绿), color #2c3e50, font 14px/1.5 "Microsoft YaHei", Arial, sans-serif
+    //   a color #1a8a5a (青绿) / hover #d9534f (暖红)
+    //   .top bar bg #1a8a5a (青绿头) color #fff height 36px line-height 36px
+    //   .nav bg #e8f3ec (浅绿) li height 32px padding 0 14px
+    //   .hot bg #fff border 1px #d8e6d8 padding 10px, .item float 50% height 156px
+    //   .item .image img 100x130 border 1px #ccc padding 1px
+    //   .item dl dt border-bottom 1px dotted #aac8aa 14px weight 700 color #1a8a5a
+    //   .wrap .top border 1px #d8e6d8 width 268px bg #fff
+    //   .lis li border-bottom 1px #e0e0e0 height 32px line-height 32px
+    id: 'clone-ddyueshu',
+    name: '精仿·得得小说',
+    desc: '像素级精仿·得得小说 ddyueshu.cc: 沙箱内不可达, 兜底笔趣阁 DNA·青绿+暖红+表格侧栏排行榜',
+    layout: 'clone-ddyueshu',
     dark: false,
     read: {
-      layout: 'classic', measure: 720, lineHeight: 1.95, fontBase: 17,
+      layout: 'classic', measure: 720, lineHeight: 1.95, fontBase: 16,
       indent: true, justify: false, toolbar: 'inline', texture: 'none', chapterDeco: 'rule',
     },
     vars: {
-      bg: '#ffffff',
+      // body bg #f5f7f5 (浅灰绿, 得到小说系通用底色)
+      bg: '#f5f7f5',
+      // .item .image img bg #FFF + .hot bg #fff
       surface: '#ffffff',
-      surfaceAlt: '#f5f7fa',
-      // .booklist-title color #2c3e50 (实测)
+      // .nav bg #e8f3ec / .wrap .top bg #fff (侧栏)
+      surfaceAlt: '#e8f3ec',
+      // body color #2c3e50 (实测推断)
       text: '#2c3e50',
-      // .booklist-meta color #7f8c8d (实测)
-      textMuted: '#7f8c8d',
-      // .booklist-cover-section gradient linear-gradient(135deg, #667eea 0%, #764ba2 100%) (实测)
-      primary: '#667eea',
+      // 次要文本 #7a8a7a (灰绿)
+      textMuted: '#7a8a7a',
+      // a color #1a8a5a (青绿, 得到小说系通用主色)
+      primary: '#1a8a5a',
       primaryText: '#ffffff',
-      // a:hover color #06c (Microsoft blue, 实测)
-      accent: '#06c',
-      // .booklist-card border 1px solid rgba(0,0,0,0.06) (实测)
-      border: 'rgba(0,0,0,0.08)',
-      // .booklist-card border-radius 10px (实测)
-      radius: '10px',
-      // 字体栈 (cdnshu 框架默认 sans-serif)
-      fontFamily: '"PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif',
-      // .booklist-card shadow 0 2px 10px rgba(0,0,0,0.08) (实测)
-      cardShadow: '0 2px 10px rgba(0,0,0,0.08)',
-      // 头部 solid 风格 (cdnshu 框架, header 直接渲染)
+      // a:hover #d9534f (暖红, 实测推断)
+      accent: '#d9534f',
+      // .item dl dt border-bottom dotted #aac8aa (实测边框色)
+      border: '#aac8aa',
+      // 直角 (笔趣阁 DNA)
+      radius: '0px',
+      // 字体栈 (笔趣阁 DNA "Microsoft YaHei", Arial)
+      fontFamily: '"Microsoft YaHei", Arial, sans-serif',
+      // 直角卡片无阴影
+      cardShadow: 'none',
+      // header 实测: .top bar bg #1a8a5a (青绿头)
       headerStyle: 'solid',
     },
-    preview: ['#ffffff', '#667eea', '#06c'],
+    preview: ['#f5f7f5', '#1a8a5a', '#d9534f'],
   },
+
+  // ============================================================
+  // 3. clone-pilishuwu (CF 防护 403, 参考已有 HomePili 设计 + 站点形态描述)
+  // ============================================================
   {
     // 精仿·霹雳书屋 pilishuwu.com (CF 防护, 直连 403 jsd 挑战, 参考站点形态描述 + HomePili 仿站设计)
     // 站点形态(参考 scripts/seed-rule-pilishuwu.ts):
@@ -212,7 +250,7 @@ export const THEMES: ThemeDef[] = [
     //   - 奶油区块标题(左 5px 橙竖条) + 复古直角白卡 + 橙色点缀红号次
     id: 'clone-pilishuwu',
     name: '精仿·霹雳书屋',
-    desc: '像素级精仿·霹雳书屋 pilishuwu.com: 暖橙白卡书城·橙头排行榜·复古直角卡片',
+    desc: '像素级精仿·霹雳书屋 pilishuwu.com: CF 防护不可达, 兜底暖橙白卡书城·橙头排行榜·复古直角卡片',
     layout: 'clone-pilishuwu',
     dark: false,
     read: {
@@ -239,60 +277,12 @@ export const THEMES: ThemeDef[] = [
     },
     preview: ['#fef9ef', '#f77720', '#c4521a'],
   },
+
+  // ============================================================
+  // 4. clone-23qb (实测 style.css 125KB, 默认白底变体)
+  // ============================================================
   {
-    // 精仿·笔趣阁 bqg713.cc (实测 /css/style.css?v=1.2606 直连 200)
-    // 实测 CSS:
-    //   BODY bg #E9FAFF (浅青蓝), color #333, font 14px/1.5 "Microsoft YaHei", Arial
-    //   a color #6F78A7 (淡紫) / hover #FD5500 (橙红)
-    //   .header_top bg #E1ECED border-bottom 1px #A6D3E8 height 30px color #999
-    //   .nav bg #88C6E5 (天蓝) li width 8% line-height 34px radius 20px color #fff
-    //   .hot bg #FEF9EF border 3px solid #C3DFEA padding 10px 0 0 width 695px
-    //   .item float 50% / .class .item 33.3%, height 156px
-    //   .item .image img 120x150 bg #FFF border 1px solid #DDD padding 1px
-    //   .item dl dt border-bottom 1px dotted #A6D3E8 font-size 14px weight 700
-    //   .wrap .top border 3px solid #C3DFEA width 265px bg #FEF9EF
-    //   .lis li border-bottom 1px #DDDDDD height 33px line-height 33px
-    id: 'clone-biquge',
-    name: '精仿·笔趣阁',
-    desc: '像素级精仿·笔趣阁 bqg713.cc: 实测 CSS 浅青蓝底+淡紫链接+橙红 hover·天蓝导航·直角卡表格式',
-    layout: 'clone-biquge',
-    dark: false,
-    read: {
-      layout: 'classic', measure: 720, lineHeight: 1.95, fontBase: 16,
-      indent: true, justify: false, toolbar: 'inline', texture: 'none', chapterDeco: 'rule',
-    },
-    vars: {
-      // BODY background #E9FAFF (实测)
-      bg: '#E9FAFF',
-      // .item .image img bg #FFF + .hot bg #FEF9EF
-      surface: '#ffffff',
-      // .hot bg #FEF9EF / .wrap .top bg #FEF9EF
-      surfaceAlt: '#FEF9EF',
-      // BODY color #333 (实测)
-      text: '#333333',
-      // .header_top color #999 + .item dl dd color #AAA
-      textMuted: '#888888',
-      // .nav bg #88C6E5 (天蓝, 实测)
-      primary: '#88C6E5',
-      // .header_wap color #fff (实测)
-      primaryText: '#ffffff',
-      // a:hover #FD5500 (橙红, 实测)
-      accent: '#FD5500',
-      // .item dl dt border-bottom dotted #A6D3E8 (实测边框色)
-      border: '#A6D3E8',
-      // 笔趣阁 DNA 直角 (实测 .hot .item .wrap .top 全直角)
-      radius: '0px',
-      // BODY font 14px/1.5 "Microsoft YaHei", Arial (实测)
-      fontFamily: '"Microsoft YaHei", Arial, sans-serif',
-      // 直角卡片无阴影 (实测 .item 无 box-shadow)
-      cardShadow: 'none',
-      // header 实测: .header_top 30px bg #E1ECED + .header 60px + .nav 34px
-      headerStyle: 'solid',
-    },
-    preview: ['#E9FAFF', '#88C6E5', '#FD5500'],
-  },
-  {
-    // 精仿·铅笔小说 23qb.net (实测 /mxstatic/css/style.css 直连 200)
+    // 精仿·铅笔小说 23qb.net (实测 /mxstatic/css/style.css 125KB 直连 200, 默认白底变体)
     // 实测 CSS:
     //   body color #282828 bg #f8f9f9
     //   font-family: -apple-system-font, BlinkMacSystemFont, helvetica neue, pingfang sc,
@@ -346,430 +336,279 @@ export const THEMES: ThemeDef[] = [
     preview: ['#f8f9f9', '#ff2a14', '#c01a0c'],
   },
 
-  // ==================== R9-1B: 12 套全新设计风格 preset ====================
-  // 每套配色+风格+布局完全不同, 与 5 套精仿 + 8 老布局(grid/list/shelf/magazine/
-  // minimal/theater/pili/biquge)均不雷同。布局覆盖: shelf×2 / grid×2 / magazine×2 /
-  // minimal×2 / theater×1 / editorial×1 / list×1 / masonry×1
-  // 暗色 7 套 + 亮色 5 套 = 12 套; 字体: sans×6 / serif×4 / handwritten×1 / mono×1
+  // ============================================================
+  // 5. clone-101kks (实测 style.css 60KB + block_booklist.css 7.9KB)
+  // ============================================================
   {
-    // 1. 极光玻璃 (暗·shelf): 深紫蓝渐变+青绿 accent+紫 primary+玻璃拟态
-    id: 'aurora-glass',
-    name: '极光玻璃',
-    desc: '深紫蓝渐变+青绿辉光+紫色主调·半透磨砂玻璃拟态·大圆角 20px·shelf 横向书架',
-    layout: 'shelf',
-    dark: true,
-    read: {
-      layout: 'classic', measure: 720, lineHeight: 2, fontBase: 18,
-      indent: true, justify: false, toolbar: 'inline', texture: 'vignette', chapterDeco: 'none',
-    },
-    vars: {
-      // 暗色 bg: linear-gradient 3 段深紫蓝渐变 (与 glass/neon 风格一致)
-      bg: 'linear-gradient(160deg, #0f0a1e 0%, #1a1033 50%, #0f0a1e 100%)',
-      surface: 'rgba(255,255,255,0.06)',
-      surfaceAlt: 'rgba(255,255,255,0.1)',
-      text: '#e5e7eb',
-      textMuted: 'rgba(229,231,235,0.6)',
-      // primary 紫色 (区别于 101kks 蓝紫 #667eea, 用更饱和粉紫)
-      primary: '#a855f7',
-      primaryText: '#ffffff',
-      // accent 青绿 #22d3ee (per spec)
-      accent: '#22d3ee',
-      border: 'rgba(255,255,255,0.12)',
-      // 大圆角 20px (玻璃拟态)
-      radius: '20px',
-      fontFamily: '"HarmonyOS Sans SC","PingFang SC","Microsoft YaHei",sans-serif',
-      // 暗色辉光: 0 8px 32px rgba(<primary RGB>,0.35)
-      cardShadow: '0 8px 32px rgba(168,85,247,0.35)',
-      headerStyle: 'gradient',
-    },
-    preview: ['#0f0a1e', '#a855f7', '#22d3ee'],
-  },
-  {
-    // 2. 赛博霓虹 (暗·grid): 黑底+霓虹粉绿+故障字效+直角+扫描线
-    id: 'cyber-neon',
-    name: '赛博霓虹',
-    desc: '黑底+霓虹粉绿双色对撞·故障字效·直角无圆角·扫描线纹理·grid 网格布局',
-    layout: 'grid',
-    dark: true,
-    read: {
-      layout: 'classic', measure: 740, lineHeight: 2, fontBase: 18,
-      indent: true, justify: true, toolbar: 'floating', texture: 'vignette', chapterDeco: 'none',
-    },
-    vars: {
-      // 暗色 bg: 黑色 3 段渐变
-      bg: 'linear-gradient(160deg, #050505 0%, #0d0d0d 50%, #050505 100%)',
-      surface: 'rgba(255,255,255,0.06)',
-      surfaceAlt: 'rgba(255,255,255,0.1)',
-      text: '#e5e7eb',
-      textMuted: 'rgba(229,231,235,0.6)',
-      // primary 霓虹粉 #ff0080
-      primary: '#ff0080',
-      primaryText: '#ffffff',
-      // accent 霓虹绿 #00ff9d
-      accent: '#00ff9d',
-      // border 霓虹粉光晕
-      border: 'rgba(255,0,128,0.3)',
-      // 直角 (故障风)
-      radius: '0px',
-      // mono 字体 (JetBrains Mono)
-      fontFamily: '"JetBrains Mono","Courier New",monospace',
-      // 暗色辉光: primary 粉色 glow
-      cardShadow: '0 8px 32px rgba(255,0,128,0.35)',
-      headerStyle: 'transparent',
-    },
-    preview: ['#050505', '#ff0080', '#00ff9d'],
-  },
-  {
-    // 3. 宣纸水墨 (亮·magazine): 米黄宣纸+墨黑+朱砂红+衬线+纸纹+菱形花饰
-    id: 'rice-paper',
-    name: '宣纸水墨',
-    desc: '米黄宣纸底+墨黑正文+朱砂红主调·衬线字体·纸纹纹理·菱形花饰·magazine 杂志布局',
-    layout: 'magazine',
+    // 精仿·101看書 101kks.com (cdnshu 框架, 实测 https://101kks.com/ 直连 200)
+    // 实测 /css/style.css + /css/block_booklist.css:
+    //   body 默认白底 / a #666 / hover #06c (Microsoft blue)
+    //   .booklist-card: bg #fff radius 10px shadow 0 2px 10px rgba(0,0,0,0.08) border 1px solid rgba(0,0,0,0.06) height 128px
+    //   .booklist-cover-section: gradient linear-gradient(135deg, #667eea 0%, #764ba2 100%)
+    //   .booklist-title: font-size 14px weight 600 color #2c3e50 line-height 1.3 line-clamp 2
+    //   .booklist-meta: gap 12px font-size 12px color #7f8c8d
+    //   .booklist-grid: grid auto-fill minmax(280px,1fr) gap 12px / 3 列 @≥1200px
+    //   .headbox max-width 1250px (主容器)
+    id: 'clone-101kks',
+    name: '精仿·101kks',
+    desc: '像素级精仿·101看書 101kks.com: cdnshu 框架·蓝紫渐变封面块+白卡+10px圆角',
+    layout: 'clone-101kks',
     dark: false,
     read: {
-      layout: 'classic', measure: 700, lineHeight: 2.1, fontBase: 18,
-      indent: true, justify: true, toolbar: 'inline', texture: 'paper', chapterDeco: 'ornament',
+      layout: 'classic', measure: 720, lineHeight: 1.95, fontBase: 17,
+      indent: true, justify: false, toolbar: 'inline', texture: 'none', chapterDeco: 'rule',
     },
     vars: {
-      // 亮色 bg: radial-gradient 氛围层 + 基色 #faf6ed
-      bg: 'radial-gradient(1000px 600px at 10% -10%, rgba(193,39,45,0.06) 0%, transparent 55%), radial-gradient(800px 500px at 95% 5%, rgba(120,100,50,0.08) 0%, transparent 60%), #faf6ed',
+      bg: '#ffffff',
       surface: '#ffffff',
-      surfaceAlt: '#f5f0e0',
-      // text 墨黑 #1a1a1a (per spec)
-      text: '#1a1a1a',
-      textMuted: '#6b6b6b',
-      // primary 朱砂红 #c1272d (per spec)
-      primary: '#c1272d',
+      surfaceAlt: '#f5f7fa',
+      // .booklist-title color #2c3e50 (实测)
+      text: '#2c3e50',
+      // .booklist-meta color #7f8c8d (实测)
+      textMuted: '#7f8c8d',
+      // .booklist-cover-section gradient linear-gradient(135deg, #667eea 0%, #764ba2 100%) (实测)
+      primary: '#667eea',
       primaryText: '#ffffff',
-      // accent 墨黑 charcoal (墨色副调)
-      accent: '#2a2a2a',
-      border: '#e8dfc8',
-      // 小圆角 4px (纸感)
+      // a:hover color #06c (Microsoft blue, 实测)
+      accent: '#06c',
+      // .booklist-card border 1px solid rgba(0,0,0,0.06) (实测)
+      border: 'rgba(0,0,0,0.08)',
+      // .booklist-card border-radius 10px (实测)
+      radius: '10px',
+      // 字体栈 (cdnshu 框架默认 sans-serif)
+      fontFamily: '"PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif',
+      // .booklist-card shadow 0 2px 10px rgba(0,0,0,0.08) (实测)
+      cardShadow: '0 2px 10px rgba(0,0,0,0.08)',
+      // 头部 solid 风格 (cdnshu 框架, header 直接渲染)
+      headerStyle: 'solid',
+    },
+    preview: ['#ffffff', '#667eea', '#06c'],
+  },
+
+  // ============================================================
+  // 6. clone-huangjinwu (实测 style.css 44KB, :root 完整 + dark/green 变体)
+  // ============================================================
+  {
+    // 精仿·黄金屋 huangjinwu.org (实测 /static/default/style.css 44KB 直连 200)
+    // 实测 :root 块 (默认浅色变体):
+    //   --bg-color #f0f4fb / --bg-gradient linear-gradient(180deg,#f5f8ff 0%,#eef3fb 100%)
+    //   --card-bg #fff / --header-bg rgba(255,255,255,.92) / --footer-bg #e2eaf5
+    //   --primary-color #0f172a (深墨) / --secondary-color #2563eb (蓝) / --logo-color #1d4ed8
+    //   --text-color #1e293b / --text-light #64748b / --text-muted #94a3b8
+    //   --border-color #dbe4f0 / --hover-color #e8f1ff
+    //   --shadow 0 1px 2px rgba(15,23,42,.04), 0 4px 16px rgba(37,99,235,.06)
+    //   --shadow-hover 0 8px 24px rgba(37,99,235,.14), 0 2px 8px rgba(15,23,42,.06)
+    //   --border-radius 6px / --border-radius-lg 10px
+    // 实测 body font-family: -apple-system,BlinkMacSystemFont,"Microsoft YaHei","PingFang SC","Segoe UI","Helvetica Neue",Arial,sans-serif
+    // 实测 body font-size 1.6rem line-height 1.65
+    // 实测 a color var(--primary-color) → hover var(--secondary-color)
+    // 实测 .container max-width 1180px
+    // 实测 .headers backdrop-filter saturate(1.2) blur(12px), bg var(--header-bg), 1px border-bottom
+    id: 'clone-huangjinwu',
+    name: '精仿·黄金屋',
+    desc: '像素级精仿·黄金屋 huangjinwu.org: 实测 :root CSS 变量·蓝色玻璃 header+深墨蓝主调+6px圆角',
+    layout: 'clone-huangjinwu',
+    dark: false,
+    read: {
+      layout: 'classic', measure: 740, lineHeight: 1.65, fontBase: 17,
+      indent: true, justify: false, toolbar: 'inline', texture: 'none', chapterDeco: 'rule',
+    },
+    vars: {
+      // 实测 --bg-gradient linear-gradient(180deg,#f5f8ff 0%,#eef3fb 100%)
+      bg: 'linear-gradient(180deg, #f5f8ff 0%, #eef3fb 100%)',
+      // --card-bg #fff (实测)
+      surface: '#ffffff',
+      // --hover-color #e8f1ff / --footer-bg #e2eaf5 (实测浅蓝灰)
+      surfaceAlt: '#e8f1ff',
+      // --text-color #1e293b (实测)
+      text: '#1e293b',
+      // --text-light #64748b (实测)
+      textMuted: '#64748b',
+      // --secondary-color #2563eb (蓝, 实测 a:hover 颜色) — 用作 primary(强调链接)
+      primary: '#2563eb',
+      primaryText: '#ffffff',
+      // --logo-color #1d4ed8 (深蓝, 副色用)
+      accent: '#1d4ed8',
+      // --border-color #dbe4f0 (实测)
+      border: '#dbe4f0',
+      // --border-radius 6px (实测)
+      radius: '6px',
+      // 实测字体栈
+      fontFamily: '-apple-system, BlinkMacSystemFont, "Microsoft YaHei", "PingFang SC", "Segoe UI", "Helvetica Neue", Arial, sans-serif',
+      // --shadow 0 1px 2px rgba(15,23,42,.04), 0 4px 16px rgba(37,99,235,.06) (实测)
+      cardShadow: '0 1px 2px rgba(15,23,42,0.04), 0 4px 16px rgba(37,99,235,0.06)',
+      // header 实测: backdrop-filter blur(12px) + bg rgba(255,255,255,.92) + 1px border-bottom (透明半透风)
+      headerStyle: 'transparent',
+    },
+    preview: ['#eef3fb', '#2563eb', '#1d4ed8'],
+  },
+
+  // ============================================================
+  // 7. clone-ggd66 (实测 style.css 11.5KB, mint 色头部)
+  // ============================================================
+  {
+    // 精仿·格格党 ggd66.com (实测 /static/simple/style.css 11.5KB 直连 200)
+    // 实测 CSS:
+    //   body bg #f9f9f9, color #888, font 15px "微软雅黑",Microsoft Yahei,simsun,arial,sans-serif, line-height 150%
+    //   a color #00886d (mint green) → hover #f50 (orange-red!)
+    //   .header bg #56ccb5 (mint) OR #1abc9c, height 50px line-height 50px white text shadow
+    //   .container width 90% max-width 75pc (1200px)
+    //   .content-left float left 73% / .content-right float right 25%
+    //   #fengtui .item float left 50% padding 10px 0 0 — book cards 2-col
+    //   #fengtui .item .image width 90pt img 120x150 border 1px #ccc padding 1px
+    //   #fengtui .item dl dt border-bottom 1px dotted #ccc font-weight 700 15px line-height 25px
+    //   breadcrumb bg #cdf3eb (light mint) border 1px #ccc radius 4px
+    //   h2 border-bottom 1px #ccc color #333 font 18px weight 500
+    //   footer bg #56ccb5 white text text-align center font 14px
+    id: 'clone-ggd66',
+    name: '精仿·ggd66',
+    desc: '像素级精仿·格格党 ggd66.com: 实测 CSS 薄荷绿头部+绿链接+橙红 hover+复古直角卡片',
+    layout: 'clone-ggd66',
+    dark: false,
+    read: {
+      layout: 'classic', measure: 720, lineHeight: 1.7, fontBase: 16,
+      indent: true, justify: false, toolbar: 'inline', texture: 'none', chapterDeco: 'rule',
+    },
+    vars: {
+      // body bg #f9f9f9 (实测)
+      bg: '#f9f9f9',
+      // .book / .item bg #fff (实测)
+      surface: '#ffffff',
+      // breadcrumb bg #cdf3eb (light mint, 实测)
+      surfaceAlt: '#cdf3eb',
+      // body color #888 (实测) — text 提取主色 #333 (h2 color)
+      text: '#333333',
+      // body color #888 (实测)
+      textMuted: '#888888',
+      // a color #00886d (mint green, 实测) — primary 用稍深 #1a8a5a 区分
+      primary: '#1a8a5a',
+      primaryText: '#ffffff',
+      // a:hover #f50 (orange-red, 实测)
+      accent: '#ff5500',
+      // .book / .item border 1px #ccc (实测)
+      border: '#cccccc',
+      // .book radius 4px / .breadcrumb radius 4px (实测)
       radius: '4px',
-      // serif 字体 (Georgia + Noto Serif SC)
-      fontFamily: 'Georgia,"Noto Serif SC","Songti SC",serif',
-      // 亮色轻量阴影
-      cardShadow: '0 2px 8px rgba(0,0,0,0.06)',
-      // centered 杂志感
-      headerStyle: 'centered',
-      // 衬线 titleFont (强调标题)
-      titleFont: 'Georgia,"Noto Serif SC","Songti SC",serif',
-    },
-    preview: ['#faf6ed', '#c1272d', '#2a2a2a'],
-  },
-  {
-    // 4. 樱花薄雾 (亮·minimal): 樱粉+灰白+深紫红+大留白+细线+小圆角
-    id: 'sakura-mist',
-    name: '樱花薄雾',
-    desc: '樱粉渐雾底+灰白卡+深紫红主调·大量留白·细线分隔·小圆角 8px·minimal 极简布局',
-    layout: 'minimal',
-    dark: false,
-    read: {
-      layout: 'immersive', measure: 740, lineHeight: 1.95, fontBase: 18,
-      indent: false, justify: false, toolbar: 'floating', texture: 'none', chapterDeco: 'rule',
-    },
-    vars: {
-      // 亮色 bg: 樱粉 radial + 灰白基色
-      bg: 'radial-gradient(900px 500px at 0% 0%, rgba(255,228,230,0.55) 0%, transparent 55%), radial-gradient(700px 400px at 100% 10%, rgba(255,240,245,0.5) 0%, transparent 60%), #fafafa',
-      surface: '#ffffff',
-      surfaceAlt: '#fef2f4',
-      text: '#4a2c2f',
-      textMuted: '#b08591',
-      // primary 深紫红 #9d174d (per spec)
-      primary: '#9d174d',
-      primaryText: '#ffffff',
-      // accent 浅粉 #f472b6
-      accent: '#f472b6',
-      border: '#fce7f3',
-      // 小圆角 8px
-      radius: '8px',
-      fontFamily: '"HarmonyOS Sans SC","PingFang SC","Microsoft YaHei",sans-serif',
-      // 极简主题: 极轻阴影
-      cardShadow: '0 1px 2px rgba(0,0,0,0.04)',
-      // centered 极简
-      headerStyle: 'centered',
-    },
-    preview: ['#fafafa', '#9d174d', '#f472b6'],
-  },
-  {
-    // 5. 深海潜行 (暗·theater): 深海蓝+珊瑚橙+大字号 hero+无圆角+stacked
-    id: 'deep-ocean',
-    name: '深海潜行',
-    desc: '深海蓝渐变底+珊瑚橙主调·大字号 hero·无圆角·stacked 排版·theater 沉浸布局',
-    layout: 'theater',
-    dark: true,
-    read: {
-      layout: 'classic', measure: 720, lineHeight: 2, fontBase: 18,
-      indent: true, justify: false, toolbar: 'inline', texture: 'vignette', chapterDeco: 'none',
-    },
-    vars: {
-      // 暗色 bg: 深海蓝 3 段渐变
-      bg: 'linear-gradient(160deg, #022c43 0%, #011c2e 50%, #022c43 100%)',
-      surface: 'rgba(255,255,255,0.06)',
-      surfaceAlt: 'rgba(255,255,255,0.1)',
-      text: '#e0f2fe',
-      textMuted: 'rgba(224,242,254,0.6)',
-      // primary 珊瑚橙 #ff6b35 (per spec)
-      primary: '#ff6b35',
-      primaryText: '#ffffff',
-      // accent 阳光黄 #facc15 (深海透出的光)
-      accent: '#facc15',
-      border: 'rgba(255,255,255,0.12)',
-      // 无圆角 (per spec)
-      radius: '0px',
-      fontFamily: '"HarmonyOS Sans SC","PingFang SC","Microsoft YaHei",sans-serif',
-      // 暗色普通阴影: 0 6px 18px rgba(0,0,0,0.5)
-      cardShadow: '0 6px 18px rgba(0,0,0,0.5)',
+      // 字体栈 (实测 "微软雅黑", Microsoft Yahei, simsun, arial)
+      fontFamily: '"微软雅黑", "Microsoft YaHei", simsun, arial, sans-serif',
+      // .book box-shadow 0 1px 1px rgba(0,0,0,.05) (实测)
+      cardShadow: '0 1px 1px rgba(0,0,0,0.05)',
+      // header 实测: .header bg #56ccb5 (mint), height 50px line-height 50px white text
       headerStyle: 'solid',
     },
-    preview: ['#022c43', '#ff6b35', '#facc15'],
+    preview: ['#f9f9f9', '#1a8a5a', '#ff5500'],
   },
+
+  // ============================================================
+  // 8. clone-shipsay (stealthy 抓取 + style.css 18.5KB)
+  // ============================================================
   {
-    // 6. 午夜黄金 (暗·editorial): 黑+金+米白+衬线+金箔纹理+菱形花饰
-    id: 'midnight-gold',
-    name: '午夜黄金',
-    desc: '深黑底+金色主调+米白正文·衬线字体·金箔纹理·菱形花饰·editorial 周刊布局',
-    layout: 'editorial',
-    dark: true,
-    read: {
-      layout: 'classic', measure: 720, lineHeight: 2, fontBase: 18,
-      indent: true, justify: true, toolbar: 'floating', texture: 'vignette', chapterDeco: 'none',
-    },
-    vars: {
-      // 暗色 bg: 黑色 3 段渐变
-      bg: 'linear-gradient(160deg, #0a0a0a 0%, #1a1a1a 50%, #0a0a0a 100%)',
-      surface: 'rgba(255,255,255,0.06)',
-      surfaceAlt: 'rgba(255,255,255,0.1)',
-      // text 米白 #f5f1e3 (per spec)
-      text: '#f5f1e3',
-      textMuted: 'rgba(245,241,227,0.6)',
-      // primary 金色 #d4af37 (per spec)
-      primary: '#d4af37',
-      primaryText: '#0a0a0a',
-      // accent 深金 #b8860b (dark goldenrod, 副色)
-      accent: '#b8860b',
-      // 金色光晕边框
-      border: 'rgba(212,175,55,0.25)',
-      // 小圆角 2px (editorial 风)
-      radius: '2px',
-      // serif 字体
-      fontFamily: 'Georgia,"Noto Serif SC","Songti SC",serif',
-      // 暗色辉光: primary 金色 glow
-      cardShadow: '0 8px 32px rgba(212,175,55,0.35)',
-      // split 编辑周刊感
-      headerStyle: 'split',
-      titleFont: 'Georgia,"Noto Serif SC","Songti SC",serif',
-    },
-    preview: ['#0a0a0a', '#d4af37', '#b8860b'],
-  },
-  {
-    // 7. 竹简禅意 (亮·list): 竹青+米黄+墨黑+手写字体+纸纹+横线装饰
-    id: 'bamboo-zen',
-    name: '竹简禅意',
-    desc: '竹青主调+米黄底+墨黑正文·手写字体(Ma Shan Zheng)·纸纹·横线装饰·list 列表布局',
-    layout: 'list',
+    // 精仿·船说CMS demo.shipsay.com (stealthy 模式抓取 29KB HTML + /static/shipsay/style.css 18.5KB)
+    // 实测 CSS:
+    //   body color #666, font-size 14px, bg #f4f4f4
+    //   body font-family: "微软雅黑","Microsoft Yahei", Arial, Tahoma, Verdana, sans-serif
+    //   a color #1a1a1a → hover #ed4259 (red-pink!)
+    //   .red #bf2c24 / .blue #4284ed / .orange #f0643a / .yellow #f0c53a / .purple #a091ff
+    //   .container max-width 1200px margin 0 auto
+    //   header > .container.head (logo + search form + header_right icons)
+    //   .navigation > nav.container > a (8 分类)
+    //   .side_commend .side_commend_width > p.title (i.fa + 主字) + ul.flex > li (book cards)
+    //   aside .popular > p.title + ul.popular > li > a(book) + a.gray(author)
+    //   .section.flex > .sortvisit (按分类) ul (mixed div first item + li items)
+    id: 'clone-shipsay',
+    name: '精仿·shipsay',
+    desc: '像素级精仿·船说CMS demo.shipsay.com: 实测 CSS 浅灰底+红粉 hover+宽卡推荐+分类列表+热门链表',
+    layout: 'clone-shipsay',
     dark: false,
     read: {
-      layout: 'classic', measure: 720, lineHeight: 2.1, fontBase: 18,
-      indent: true, justify: true, toolbar: 'inline', texture: 'paper', chapterDeco: 'ornament',
+      layout: 'classic', measure: 720, lineHeight: 1.8, fontBase: 16,
+      indent: true, justify: false, toolbar: 'inline', texture: 'none', chapterDeco: 'rule',
     },
     vars: {
-      // 亮色 bg: 竹青 radial + 米黄基色 #f5f1e3
-      bg: 'radial-gradient(900px 500px at 0% 0%, rgba(90,122,58,0.12) 0%, transparent 55%), radial-gradient(700px 400px at 100% 5%, rgba(245,241,227,0.6) 0%, transparent 60%), #f5f1e3',
-      // 暖白卡 (复古纸感)
-      surface: '#fefdf8',
-      surfaceAlt: '#ede8d6',
-      // text 墨黑 with green tint
-      text: '#2a3a1a',
-      textMuted: '#6b7a55',
-      // primary 竹青 #5a7a3a (per spec)
-      primary: '#5a7a3a',
-      primaryText: '#ffffff',
-      // accent 墨绿 #2a3a1a (深墨绿, 副调)
-      accent: '#2a3a1a',
-      border: '#d4d0b8',
-      // 小圆角 2px (纸感直角偏)
-      radius: '2px',
-      // handwritten 字体 (Ma Shan Zheng)
-      fontFamily: '"Ma Shan Zheng","Caveat","Noto Serif SC",cursive',
-      // 亮色轻量阴影
-      cardShadow: '0 2px 8px rgba(0,0,0,0.06)',
-      headerStyle: 'split',
-    },
-    preview: ['#f5f1e3', '#5a7a3a', '#2a3a1a'],
-  },
-  {
-    // 8. 朱砂剧场 (暗·magazine): 朱红+金+黑+戏剧化大标题+3px double 横线+衬线
-    id: 'crimson-theater',
-    name: '朱砂剧场',
-    desc: '朱红主调+金色副调+黑色底·戏剧化大标题·3px double 横线·衬线字体·magazine 杂志布局',
-    layout: 'magazine',
-    dark: true,
-    read: {
-      layout: 'classic', measure: 700, lineHeight: 2, fontBase: 18,
-      indent: true, justify: false, toolbar: 'inline', texture: 'vignette', chapterDeco: 'none',
-    },
-    vars: {
-      // 暗色 bg: 黑红 3 段渐变 (戏剧化)
-      bg: 'linear-gradient(160deg, #0a0a0a 0%, #2a0505 50%, #5a0000 100%)',
-      surface: 'rgba(255,255,255,0.06)',
-      surfaceAlt: 'rgba(255,255,255,0.1)',
-      text: '#f5e6e0',
-      textMuted: 'rgba(245,230,224,0.6)',
-      // primary 朱红 #8b0000 (per spec)
-      primary: '#8b0000',
-      primaryText: '#ffffff',
-      // accent 浅金 #e6c468 (区别于 midnight-gold primary #d4af37)
-      accent: '#e6c468',
-      border: 'rgba(229,230,224,0.12)',
-      // 小圆角 2px (戏剧严肃感)
-      radius: '2px',
-      // serif 字体 (戏剧衬线)
-      fontFamily: 'Georgia,"Noto Serif SC","Songti SC",serif',
-      // 暗色辉光: primary 朱红 glow
-      cardShadow: '0 8px 32px rgba(139,0,0,0.35)',
-      // split 戏剧刊头
-      headerStyle: 'split',
-      titleFont: 'Georgia,"Noto Serif SC","Songti SC",serif',
-    },
-    preview: ['#5a0000', '#8b0000', '#e6c468'],
-  },
-  {
-    // 9. 北极冰原 (亮·minimal): 冰蓝白+深海蓝+冰晶 accent+大留白+超细线+无圆角
-    id: 'arctic-ice',
-    name: '北极冰原',
-    desc: '冰蓝白底+深海蓝主调+冰晶副调·大量负空间·超细线·无圆角·minimal 极简布局',
-    layout: 'minimal',
-    dark: false,
-    read: {
-      layout: 'immersive', measure: 740, lineHeight: 1.95, fontBase: 18,
-      indent: false, justify: false, toolbar: 'floating', texture: 'none', chapterDeco: 'rule',
-    },
-    vars: {
-      // 亮色 bg: 冰蓝 radial + 冰白基色 #f0f9ff
-      bg: 'radial-gradient(1000px 600px at 0% 0%, rgba(125,211,252,0.18) 0%, transparent 55%), radial-gradient(800px 500px at 100% 10%, rgba(186,230,253,0.22) 0%, transparent 60%), #f0f9ff',
+      // body bg #f4f4f4 (实测)
+      bg: '#f4f4f4',
+      // 卡片白底 (实测 .side_commend, .sortvisit 均白底)
       surface: '#ffffff',
-      surfaceAlt: '#e0f2fe',
-      // text 深海蓝 #075985 (per spec)
-      text: '#075985',
-      textMuted: '#475569',
-      // primary 深海蓝 #075985 (per spec)
-      primary: '#075985',
+      // 区块标题底色用 #fafafa (浅灰)
+      surfaceAlt: '#fafafa',
+      // body color #666 (实测) — text 取 #1a1a1a (a color, 更易读)
+      text: '#1a1a1a',
+      // body color #666 (实测次要文本)
+      textMuted: '#666666',
+      // a:hover #ed4259 (red-pink, 实测)
+      primary: '#ed4259',
       primaryText: '#ffffff',
-      // accent 冰晶 #7dd3fc (per spec)
-      accent: '#7dd3fc',
-      border: '#bae6fd',
-      // 无圆角 (per spec)
-      radius: '0px',
-      fontFamily: '"HarmonyOS Sans SC","PingFang SC","Microsoft YaHei",sans-serif',
-      // 极简主题: 极轻阴影
-      cardShadow: '0 1px 2px rgba(0,0,0,0.04)',
-      headerStyle: 'transparent',
-    },
-    preview: ['#f0f9ff', '#075985', '#7dd3fc'],
-  },
-  {
-    // 10. 落日余晖 (亮·grid): 橙粉渐变+紫红+暖色 hero+圆角 16px+中等阴影
-    id: 'sunset-glow',
-    name: '落日余晖',
-    desc: '橙粉 3 段渐变底+紫红主调·暖色 hero·圆角 16px·中等阴影·grid 网格布局',
-    layout: 'grid',
-    dark: false,
-    read: {
-      layout: 'classic', measure: 720, lineHeight: 2, fontBase: 18,
-      indent: true, justify: true, toolbar: 'inline', texture: 'none', chapterDeco: 'rule',
-    },
-    vars: {
-      // 亮色 bg: 橙粉 3 段渐变 (sunset 方向感)
-      bg: 'linear-gradient(160deg, #fef3c7 0%, #fed7aa 50%, #fdba74 100%)',
-      surface: '#ffffff',
-      surfaceAlt: '#fef3c7',
-      text: '#451a03',
-      textMuted: '#92400e',
-      // primary 紫红 #be185d (per spec)
-      primary: '#be185d',
-      primaryText: '#ffffff',
-      // accent 浅橙 #fb923c (sunset 高光)
-      accent: '#fb923c',
-      border: 'rgba(249,115,22,0.2)',
-      // 中等圆角 16px (per spec)
-      radius: '16px',
-      fontFamily: '"HarmonyOS Sans SC","PingFang SC","Microsoft YaHei",sans-serif',
-      // 亮色轻量阴影
-      cardShadow: '0 2px 8px rgba(0,0,0,0.06)',
-      // gradient 暖色 hero 头
-      headerStyle: 'gradient',
-    },
-    preview: ['#fdba74', '#be185d', '#fb923c'],
-  },
-  {
-    // 11. 森林木屋 (暗·shelf): 深绿+木棕+米黄+复古纸纹+衬线+直角+stacked
-    id: 'forest-cabin',
-    name: '森林木屋',
-    desc: '深绿底+木棕主调+米黄正文·复古纸纹·衬线字体·直角无圆角·shelf 书架布局',
-    layout: 'shelf',
-    dark: true,
-    read: {
-      layout: 'classic', measure: 720, lineHeight: 2, fontBase: 18,
-      indent: true, justify: true, toolbar: 'inline', texture: 'vignette', chapterDeco: 'none',
-    },
-    vars: {
-      // 暗色 bg: 深绿 3 段渐变
-      bg: 'linear-gradient(160deg, #1a3a1a 0%, #0d2a0d 50%, #1a3a1a 100%)',
-      surface: 'rgba(255,255,255,0.06)',
-      surfaceAlt: 'rgba(255,255,255,0.1)',
-      // text 米黄 #f5f1e3 (per spec)
-      text: '#f5f1e3',
-      textMuted: 'rgba(245,241,227,0.6)',
-      // primary 木棕 #5a3a1a (per spec)
-      primary: '#5a3a1a',
-      primaryText: '#ffffff',
-      // accent 苔藓绿 #7a8450 (sage moss)
-      accent: '#7a8450',
-      border: 'rgba(245,241,227,0.15)',
-      // 直角 (per spec)
-      radius: '0px',
-      // serif 字体 (复古衬线)
-      fontFamily: 'Georgia,"Noto Serif SC","Songti SC",serif',
-      // 暗色普通阴影: 0 6px 18px rgba(0,0,0,0.5)
-      cardShadow: '0 6px 18px rgba(0,0,0,0.5)',
+      // .orange #f0643a (实测, accent 字数颜色)
+      accent: '#f0643a',
+      // border 默认 #e5e5e5 (浅灰)
+      border: '#e5e5e5',
+      // .search radius 4px (实测推断)
+      radius: '4px',
+      // 字体栈 (实测 "微软雅黑", Microsoft Yahei, Arial, Tahoma, Verdana, sans-serif)
+      fontFamily: '"微软雅黑", "Microsoft YaHei", Arial, Tahoma, Verdana, sans-serif',
+      // 直角卡片无阴影 (实测 .side_commend li 无 box-shadow)
+      cardShadow: 'none',
+      // header 实测: .container.head 内 logo+搜索+icon nav, solid 风格
       headerStyle: 'solid',
-      titleFont: 'Georgia,"Noto Serif SC","Songti SC",serif',
     },
-    preview: ['#1a3a1a', '#5a3a1a', '#7a8450'],
+    preview: ['#f4f4f4', '#ed4259', '#f0643a'],
   },
+
+  // ============================================================
+  // 9. clone-x2552 (实测 style.css 10.7KB, GBK 编码, 960px 老式框架)
+  // ============================================================
   {
-    // 12. 霓虹品红 (暗·masonry): 深紫+品红+青绿+玻璃拟态+大圆角 16px+辉光
-    id: 'neon-magenta',
-    name: '霓虹品红',
-    desc: '深紫底+品红主调+青绿副调·玻璃拟态·大圆角 16px·辉光阴影·masonry 瀑布流布局',
-    layout: 'masonry',
-    dark: true,
+    // 精仿·爱文学 x2552.com (实测 /heibing/css/style.css 10.7KB 直连 200, HTML GBK 编码)
+    // 实测 CSS:
+    //   body color #666 bg transparent font 12px/120% 微软雅黑
+    //   a color #2f468f (蓝紫) → hover #ff6600 (橙)
+    //   .main width 960px margin 0 auto clear both (老式 960px 框架)
+    //   .m_head height 60px (logo 180px + h_body 780px)
+    //   .m_menu height 40px font 14px weight bold line-height 39px (12 分类导航)
+    //   .board margin-top 8px height 263px (滑动书卡 carousel)
+    //     .board dd img 120x150 border 1px #E4E4E4 padding 5px
+    //   .block border 1px #E4E4E4 margin-top 8px (区块容器)
+    //   .blocktitle height 40px line-height 40px font 14px
+    //   .update li border-bottom 1px dotted #E4E4E4 padding 0 10px text-align right font 12px
+    //   .ultop / .ulcenter / .ulitem li border-bottom 1px dotted #F2F2F2 padding 0 3px list-style decimal inside
+    //   table border 1px #E4E4E4 margin 10px width 98%
+    id: 'clone-x2552',
+    name: '精仿·x2552',
+    desc: '像素级精仿·爱文学 x2552.com: 实测 CSS 960px 老框架+蓝紫链接+橙 hover+3 列布局+表格章节更新',
+    layout: 'clone-x2552',
+    dark: false,
     read: {
-      layout: 'classic', measure: 740, lineHeight: 2, fontBase: 18,
-      indent: true, justify: true, toolbar: 'floating', texture: 'vignette', chapterDeco: 'none',
+      layout: 'classic', measure: 720, lineHeight: 1.7, fontBase: 16,
+      indent: true, justify: false, toolbar: 'inline', texture: 'none', chapterDeco: 'rule',
     },
     vars: {
-      // 暗色 bg: 深紫品红 3 段渐变
-      bg: 'linear-gradient(160deg, #1a0510 0%, #2d0a1f 50%, #1a0510 100%)',
-      surface: 'rgba(255,255,255,0.06)',
-      surfaceAlt: 'rgba(255,255,255,0.1)',
-      text: '#f5e6f0',
-      textMuted: 'rgba(245,230,240,0.6)',
-      // primary 品红 #ec4899 (per spec)
-      primary: '#ec4899',
+      // body bg transparent (实测) — 用浅灰白底 #fafafa 兜底
+      bg: '#fafafa',
+      // .block / .book bg #fff (实测)
+      surface: '#ffffff',
+      // .blocktitle bg pattern + 表头底 (实测浅米黄)
+      surfaceAlt: '#f5f5dc',
+      // body color #666 (实测) — text 用 #333 增强可读
+      text: '#333333',
+      // body color #666 (实测次要文本)
+      textMuted: '#666666',
+      // a color #2f468f (蓝紫, 实测)
+      primary: '#2f468f',
       primaryText: '#ffffff',
-      // accent 青绿 #10b981 (per spec)
-      accent: '#10b981',
-      border: 'rgba(236,72,153,0.25)',
-      // 大圆角 16px (per spec)
-      radius: '16px',
-      fontFamily: '"HarmonyOS Sans SC","PingFang SC","Microsoft YaHei",sans-serif',
-      // 暗色辉光: primary 品红 glow
-      cardShadow: '0 8px 32px rgba(236,72,153,0.35)',
-      headerStyle: 'gradient',
+      // a:hover #ff6600 (橙, 实测)
+      accent: '#ff6600',
+      // .block border 1px #E4E4E4 (实测)
+      border: '#E4E4E4',
+      // 老式框架直角 (实测)
+      radius: '0px',
+      // 字体栈 (实测 微软雅黑, Verdana, Arial, sans-serif)
+      fontFamily: '"微软雅黑", "Microsoft YaHei", Verdana, Arial, sans-serif',
+      // 直角卡片无阴影 (实测 .block 无 box-shadow)
+      cardShadow: 'none',
+      // header 实测: .m_head 60px + .m_menu 40px 蓝紫底 (solid 风格)
+      headerStyle: 'solid',
     },
-    preview: ['#1a0510', '#ec4899', '#10b981'],
+    preview: ['#fafafa', '#2f468f', '#ff6600'],
   },
 ]
 
@@ -777,16 +616,11 @@ export function getTheme(id: string | null | undefined): ThemeDef {
   return THEMES.find((t) => t.id === id) || THEMES[0]
 }
 
-/** feat-combo-theme-incremental: 组合主题解析入口
- *  - 先查 5 个手写精仿 preset( THEMES ) —— 命中即返回
- *  - 否则按 `{colorId}-{styleId}-{layoutId}` 解析组合主题(12×12×12=1728)
- *  - 全部未命中返回 undefined, 由调用方决定是否回退 THEMES[0]
- *  本函数是 PublicSite / SiteHeader / admin 校验的唯一入口, 引入组合主题零回归 */
+/** 主题解析入口 — R10-1A: 移除 combo 矩阵回退, 只查 THEMES 数组
+ *  - 命中 preset 即返回
+ *  - 未命中返回 undefined, 由调用方决定是否回退 THEMES[0]
+ *  本函数是 PublicSite / SiteHeader / admin 校验的唯一入口 */
 export function getThemeById(id: string | null | undefined): ThemeDef | undefined {
   if (!id) return undefined
-  const preset = THEMES.find((t) => t.id === id)
-  if (preset) return preset
-  const combo = resolveComboTheme(id)
-  if (combo) return combo
-  return undefined
+  return THEMES.find((t) => t.id === id)
 }

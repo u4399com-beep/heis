@@ -1,17 +1,17 @@
 // ============================================================
-// 首页布局 · clone-biquge (精仿·笔趣阁 bqg713.cc)
-// 实测 CSS 变量直接落地:
-//   BODY bg #E9FAFF (浅青蓝), color #333, font 14px/1.5 "Microsoft YaHei", Arial
-//   a #6F78A7 (淡紫) → hover #FD5500 (橙红)
-//   header_top bg #E1ECED, border-bottom 1px #A6D3E8, height 30px, color #999
-//   nav bg #88C6E5 (天蓝), li width 8% line-height 34px radius 20px color #fff
-//   .hot bg #FEF9EF border 3px solid #C3DFEA padding 10px 0 0 width 695px
-//   .item float 50% / .class .item 33.3%, height 156px
-//   .item .image img 120x150 bg #FFF border 1px #DDD padding 1px
-//   .item dl dt border-bottom 1px dotted #A6D3E8 font-size 14px weight 700
-//   .wrap .top border 3px solid #C3DFEA width 265px bg #FEF9EF
-//   .lis li border-bottom 1px #DDDDDD height 33px line-height 33px
-// 结构: 笔趣阁 DNA 表格 + 左主栏(.hot 大卡列表) + 右栏(.top 排行榜) 双栏布局
+// 首页布局 · clone-ddyueshu (精仿·得得小说 ddyueshu.cc)
+// 站点 ddyueshu.cc 在沙箱内 DNS 不通 / Connection refused (实测 scrapling static+stealthy+playwright 全失败)
+// 兜底参考笔趣阁系书站通用形态 (table 列表 + 侧栏 排行榜) + 得到小说系站点通用配色 (青绿 + 暖红):
+//   body bg #f5f7f5 (浅灰绿), color #2c3e50, font 14px/1.5 "Microsoft YaHei", Arial, sans-serif
+//   a color #1a8a5a (青绿) / hover #d9534f (暖红)
+//   .top bar bg #1a8a5a (青绿头) color #fff height 36px line-height 36px
+//   .nav bg #e8f3ec (浅绿) li height 32px padding 0 14px
+//   .hot bg #fff border 1px #d8e6d8 padding 10px, .item float 50% height 156px
+//   .item .image img 100x130 border 1px #ccc padding 1px
+//   .item dl dt border-bottom 1px dotted #aac8aa 14px weight 700 color #1a8a5a
+//   .wrap .top border 1px #d8e6d8 width 268px bg #fff
+//   .lis li border-bottom 1px #e0e0e0 height 32px line-height 32px
+// 结构: 顶 nav (青绿头) + 双栏 (左 .hot 大卡列表 + 表格最近更新 / 右 .top 排行榜 + 站点公告)
 // ============================================================
 'use client'
 
@@ -25,7 +25,7 @@ import { ChevronRight, Flame, LibraryBig } from 'lucide-react'
 function CloneSkeleton() {
   return (
     <div className="space-y-6">
-      <Sk className="h-8 w-full" />
+      <Sk className="h-9 w-full" />
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
         {Array.from({ length: 9 }).map((_, i) => (
           <div key={i} className="flex gap-3 p-2.5">
@@ -47,18 +47,18 @@ function CloneSkeleton() {
   )
 }
 
-/** 区块标题: 笔趣阁 DNA 红色 5px border-top + 主字 + 右更多 */
-function BiqugeSecTitle({ main, sub }: { main: string; sub: string }) {
+/** 区块标题: 得到小说 DNA — 绿色 5px border-top + 主字 + 右更多 */
+function DdyueshuSecTitle({ main, sub }: { main: string; sub: string }) {
   const v = usePublic().theme.vars
   return (
     <div
-      className="mb-3 flex items-end justify-between border-t-2 px-2 py-2"
-      style={{ borderColor: v.accent, background: withAlpha(v.accent, 0.05) }}
+      className="mb-3 flex items-end justify-between border-t-[3px] px-2 py-2"
+      style={{ borderColor: v.primary, background: withAlpha(v.primary, 0.05) }}
     >
       <h3 className="flex items-baseline gap-2 text-base font-bold leading-none" style={{ color: v.text }}>
-        <span className="text-lg" style={{ color: v.accent }} aria-hidden>◆</span>
+        <span className="text-lg" style={{ color: v.primary }} aria-hidden>◆</span>
         {main}
-        <em className="not-italic text-sm" style={{ color: v.accent }}>{sub}</em>
+        <em className="not-italic text-sm" style={{ color: v.primary }}>{sub}</em>
       </h3>
       <span className="flex items-center gap-0.5 text-[11px] transition-opacity hover:opacity-70" style={{ color: v.textMuted }} aria-hidden>
         更多 <ChevronRight className="h-3 w-3" />
@@ -67,8 +67,8 @@ function BiqugeSecTitle({ main, sub }: { main: string; sub: string }) {
   )
 }
 
-/** 大卡列表 (item dt+dd DNA: 120x150 封面 + 标题/作者/简介/分类) */
-function BiqugeBigCard({ book }: { book: BookItem }) {
+/** 大卡列表 (.item .image + dl dt + dd DNA) */
+function DdyueshuBigCard({ book }: { book: BookItem }) {
   const { theme, navigate } = usePublic()
   const v = theme.vars
   return (
@@ -83,7 +83,7 @@ function BiqugeBigCard({ book }: { book: BookItem }) {
           name={book.name}
           cover={book.cover}
           className="aspect-[4/5] w-full"
-          style={{ border: '1px solid #DDD', padding: 1, background: '#fff', borderRadius: 0 }}
+          style={{ border: '1px solid #ccc', padding: 1, background: '#fff', borderRadius: 0 }}
         />
       </div>
       <dl className="min-w-0 flex-1 py-0.5">
@@ -110,20 +110,20 @@ function BiqugeBigCard({ book }: { book: BookItem }) {
   )
 }
 
-/** 表格最近更新 (笔趣阁 DNA 表格: 类别/书名+最新章节/字数/更新时间/状态) */
-function BiqugeUpdateTable({ books }: { books: BookItem[] }) {
+/** 表格最近更新 (得到小说 DNA: 类别/书名+最新章节/字数/更新时间/状态) */
+function DdyueshuUpdateTable({ books }: { books: BookItem[] }) {
   const { navigate } = usePublic()
   const v = usePublic().theme.vars
   const rows = books.slice(0, 18)
   if (!rows.length) return null
   return (
-    <section data-clone-biquge-section="latest" aria-label="最近更新">
-      <BiqugeSecTitle main="最近" sub="更新" />
+    <section data-clone-ddyueshu-section="latest" aria-label="最近更新">
+      <DdyueshuSecTitle main="最近" sub="更新" />
       <div
         className="overflow-x-auto"
         style={{ background: v.surface, border: `1px solid ${v.border}` }}
       >
-        <table data-clone-biquge-table className="w-full min-w-[560px] border-collapse text-left text-[13px]">
+        <table data-clone-ddyueshu-table className="w-full min-w-[560px] border-collapse text-left text-[13px]">
           <thead>
             <tr style={{ background: v.surfaceAlt, color: v.textMuted }}>
               <th scope="col" className="w-20 whitespace-nowrap px-3 py-2 text-xs font-normal">类别</th>
@@ -145,7 +145,7 @@ function BiqugeUpdateTable({ books }: { books: BookItem[] }) {
                     type="button"
                     onClick={() => navigate({ view: 'home' })}
                     className="transition-opacity hover:underline"
-                    style={{ color: v.accent }}
+                    style={{ color: v.primary }}
                     aria-label={`分类 ${b.category}`}
                   >
                     [{b.category}]
@@ -182,16 +182,16 @@ function BiqugeUpdateTable({ books }: { books: BookItem[] }) {
 }
 
 /** 排行榜 (.top .lis DNA: 序号 + 书名 + 字数) */
-function BiqugeRankPanel({ books }: { books: BookItem[] }) {
+function DdyueshuRankPanel({ books }: { books: BookItem[] }) {
   const { navigate } = usePublic()
   const v = usePublic().theme.vars
   const ranked = [...books].sort((a, b) => (b.wordCount || 0) - (a.wordCount || 0)).slice(0, 12)
   if (!ranked.length) return null
   return (
     <section
-      data-clone-biquge-rank
+      data-clone-ddyueshu-rank
       aria-label="点击排行"
-      style={{ background: v.surfaceAlt, border: `3px solid ${withAlpha(v.primary, 0.4)}` }}
+      style={{ background: v.surface, border: `1px solid ${v.border}` }}
     >
       <header
         className="flex items-center gap-2 px-3 py-2 text-sm font-bold"
@@ -225,19 +225,19 @@ function BiqugeRankPanel({ books }: { books: BookItem[] }) {
   )
 }
 
-export function HomeCloneBiquge({ books, loading }: { books: BookItem[]; loading: boolean }) {
+export function HomeCloneDdyueshu({ books, loading }: { books: BookItem[]; loading: boolean }) {
   const { site, theme } = usePublic()
   const v = theme.vars
 
-  if (loading) return <div data-clone-biquge-home><CloneSkeleton /></div>
+  if (loading) return <div data-clone-ddyueshu-home><CloneSkeleton /></div>
   if (!books.length) return null
 
   const featured = books.slice(0, 9)
   const fresh = books.slice(9, 21)
 
   return (
-    <div data-clone-biquge-home className="space-y-6">
-      {/* 笔趣阁 DNA 顶部蓝色 nav 条 */}
+    <div data-clone-ddyueshu-home className="space-y-6">
+      {/* 得到小说 DNA 顶部青绿 nav 条 */}
       <nav
         aria-label="分类导航"
         className="flex flex-wrap items-center px-2 py-1"
@@ -258,37 +258,37 @@ export function HomeCloneBiquge({ books, loading }: { books: BookItem[]; loading
       <div className="flex flex-col gap-6 lg:flex-row lg:gap-5">
         {/* 左主栏 (.hot 大卡列表 + 表格最近更新) */}
         <div className="min-w-0 flex-1 space-y-6">
-          <section data-clone-biquge-section="featured" aria-label="精品推荐">
-            <BiqugeSecTitle main="精品" sub="推荐" />
+          <section data-clone-ddyueshu-section="featured" aria-label="精品推荐">
+            <DdyueshuSecTitle main="精品" sub="推荐" />
             <div
               className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3"
-              style={{ background: v.surfaceAlt, border: `3px solid ${withAlpha(v.primary, 0.3)}`, padding: 8 }}
+              style={{ background: v.surfaceAlt, border: `1px solid ${withAlpha(v.primary, 0.3)}`, padding: 8 }}
             >
-              {featured.map((b) => <BiqugeBigCard key={b.id} book={b} />)}
+              {featured.map((b) => <DdyueshuBigCard key={b.id} book={b} />)}
             </div>
           </section>
 
           {fresh.length > 0 && (
-            <section data-clone-biquge-section="fresh" aria-label="新书入库">
-              <BiqugeSecTitle main="新书" sub="入库" />
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3" style={{ background: v.surfaceAlt, border: `3px solid ${withAlpha(v.primary, 0.3)}`, padding: 8 }}>
-                {fresh.map((b) => <BiqugeBigCard key={b.id} book={b} />)}
+            <section data-clone-ddyueshu-section="fresh" aria-label="新书入库">
+              <DdyueshuSecTitle main="新书" sub="入库" />
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3" style={{ background: v.surfaceAlt, border: `1px solid ${withAlpha(v.primary, 0.3)}`, padding: 8 }}>
+                {fresh.map((b) => <DdyueshuBigCard key={b.id} book={b} />)}
               </div>
             </section>
           )}
 
-          <BiqugeUpdateTable books={books} />
+          <DdyueshuUpdateTable books={books} />
         </div>
 
         {/* 右栏 (.top 排行榜 + 站点公告) */}
         <aside className="w-full shrink-0 lg:w-[265px]">
-          <BiqugeRankPanel books={books} />
+          <DdyueshuRankPanel books={books} />
           <section
             className="mt-4 px-4 py-3 text-xs leading-relaxed"
             style={{
               background: v.surfaceAlt,
               color: v.textMuted,
-              border: `3px solid ${withAlpha(v.primary, 0.3)}`,
+              border: `1px solid ${withAlpha(v.primary, 0.3)}`,
             }}
             aria-label="站点公告"
           >
@@ -296,7 +296,7 @@ export function HomeCloneBiquge({ books, loading }: { books: BookItem[]; loading
               <LibraryBig className="h-3.5 w-3.5" style={{ color: v.primary }} aria-hidden />
               {site.name}
             </p>
-            <p style={{ opacity: 0.9 }}>笔趣阁系书站, 全本小说免费在线阅读。完结好书持续收录中, 顶部搜索可按书名 / 作者查找。</p>
+            <p style={{ opacity: 0.9 }}>得到小说系书站, 全本小说免费在线阅读。完结好书持续收录中, 顶部搜索可按书名 / 作者查找。</p>
           </section>
         </aside>
       </div>

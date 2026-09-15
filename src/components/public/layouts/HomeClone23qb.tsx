@@ -1,20 +1,21 @@
 // ============================================================
 // 首页布局 · clone-23qb (精仿·铅笔小说 23qb.net)
-// 实测 CSS (23qb.net 直连 200):
-//   body color #282828 bg #f8f9f9
+// 实测 CSS (23qb.net 直连 200, /mxstatic/css/style.css 125KB — 默认白底; mxhtmlblack.css 是 dark 可选)
+//   body color #282828 bg #f8f9f9 (实测 style.css 中 a color #282828 / hover #ff2a14)
 //   font-family: -apple-system-font, BlinkMacSystemFont, helvetica neue, pingfang sc, hiragino sans gb,
 //                microsoft yahei ui, microsoft yahei, Arial, sans-serif
-//   a color #282828 / hover #ff2a14 (鲜红!) text-decoration none
 //   .header-content box-shadow 0 7px 21px rgba(149,157,165,.22), border-bottom 1px #eaedf1
 //   .nav-menu-item padding 0 11px font-size 16px weight 700 / .nav-menu-item-name color #282828
 //   .module-item width 200px margin 0 20px 20px 0 font-size 14px
 //   .module-item-cover padding-top 140% (5:7 aspect) border-radius 5px / hover shadow 0 10px 30px rgba(0,0,0,.3)
-//   .module-item-caption bottom 0 height 44px padding 12px gradient bg rgba(0,0,0,0.68)→transparent
+//   .module-item-caption bottom 0 height 44px padding 12px gradient bg rgba(0,0,0,0.68)->transparent
 //   .block-box-item bg #eaedf1 padding 15px border-radius 10px
 //   .block-box-content .title font-size 18px / hover ::after width 36px bg #ff2a14
 //   .search-box box-shadow 0 7px 21px rgba(149,157,165,.22)
-//   .search-tag a padding 0 20px line-height 35px font-size 14px radius 10px
-// 结构: 顶部 header + 横向 5 列封面卡 (module-item) + 3 列宽卡 (block-box-item) + 表格更新
+// 结构: 顶部 header-content (shadow + 1px border-bottom + logo + 搜索框 + slogan)
+//   + 精品推荐封面网格 (module-item DNA: padding-top 140% 5:7 aspect)
+//   + 本周强推 3 列宽卡 (block-box-item DNA: bg #eaedf1 + No.编号 + hover 红 #ff2a14)
+//   + 最新入库封面网格 + 表格最近更新
 // ============================================================
 'use client'
 

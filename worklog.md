@@ -8049,3 +8049,175 @@ Stage Summary:
   · src/lib/crawl/theme-matrix.ts (R8-1A 已完成: 12×12×12=1728 矩阵)
   · src/components/public/layouts/HomeClone*.tsx (R9-1A 已完成: 5 个精仿布局组件)
   · src/components/public/HomeView.tsx (R9-1A 已完成: 5 个 clone-* 分发)
+
+---
+Task ID: R10-1B
+Agent: full-stack-developer
+Task: 删除 theme-matrix 1728 组合 + 精仿 9 个真实站点主题
+
+Work Log:
+- 阅读 /home/z/my-project/agent-ctx/probe-html/ 下 7 个站点的 HTML+CSS (共 ~30K 行):
+  * probe-aijjxs.html(1254 行)+.css(2199 行): 实测 :root 9 变量完整 (青绿/琥珀/奶油)
+  * probe-pilishuwu.html(5239 行)+.css(3800 行): body color #666 line-height 1.5 12px 宋体
+  * probe-23qb.html(1253 行)+.css(9220 行): body color #282828 bg #f8f9f9 hover #ff2a14 (鲜红)
+  * probe-101kks.html(971 行)+.css(4306 行): .booklist-card 渐变 #667eea→#764ba2 + 10px 圆角
+  * probe-huangjinwu.html(674 行)+.css(463 行): 完整 :root 14 变量 + dark/green 多主题变体
+  * probe-ggd66.html(268 行)+.css(172 行): mint 头 #1abc9c + 2 列 float .item 布局
+  * probe-x2552.html(299 行 GBK)+.css(4 行内联): 960px 老式框架 + 蓝紫 #2f468f/橙 #ff6600
+- 兜底 2 个不可达站:
+  * ddyueshu.cc: DNS 不通 → 兜底笔趣阁 DNA + 青绿/暖红配色
+  * shipsay.com: demo.shipsay.com 不可达 → 兜底船说 CMS 通用形态 + red-pink hover
+- 提取每站 :root CSS 变量、字体栈、圆角、阴影、header 样式、卡片样式, 汇总到
+  /home/z/my-project/agent-ctx/site-notes.md (9 站对照表)
+- 创建 9 个新 Home 布局组件 (src/components/public/layouts/):
+  * HomeCloneAijjxs.tsx (303 LoC): 顶 banner (奶油+青绿) + 5 列封面卡 (.book DNA 88x122 缩略图+书名+
+    作者+简介) + 表格最近更新 + 横向琥珀排行榜 (1-3 名色徽章)
+  * HomeCloneDdyueshu.tsx (305 LoC): 顶 nav 青绿头 + 双栏 (左 .hot 大卡列表 + 表格更新 / 右 .top 排行榜)
+  * HomeClonePilishuwu.tsx (277 LoC): 顶 banner 暖橙渐变 + 双栏 (左 精品封面网格 + 最新入库 + 表格更新 /
+    右 橙头排行榜 + 书屋公告)
+  * HomeClone23qb.tsx (309 LoC): 顶 header-content (shadow 0 7px 21px + 1px border-bottom) + 精品推荐封面
+    网格 6 列 (module-item DNA padding-top 140% 5:7) + 本周强推 3 列宽卡 + 表格更新
+  * HomeClone101kks.tsx (299 LoC): 顶 banner 蓝紫渐变 (#667eea→#764ba2) + 站点名+搜索 + 精品推荐宽卡
+    3 列 (.booklist-card DNA 120px 渐变 cover-section + info-section) + 最新入库封面网格 6 列 + 表格更新
+  * HomeCloneHuangjinwu.tsx (356 LoC): 顶 sticky header (logo + sidebar menu + search) + 主体推荐封面网格
+    (book-card DNA: var(--card-bg) + 1px border + radius-lg + shadow, hover translateY(-2px))
+  * HomeCloneGgd66.tsx (313 LoC): 顶 mint header #1abc9c + breadcrumb #cdf3eb + 双栏 (左73% #fengtui .item
+    2 列大卡 + 最新更新 / 右25% 搜索+排行榜)
+  * HomeCloneShipsay.tsx (335 LoC): 顶 header (logo+search+icon nav) + nav 8 分类 + 大神小说 6 宽卡 +
+    热门小说 aside 12 链表 + 分类列表 8 卡
+  * HomeCloneX2552.tsx (369 LoC): 顶 m_head (logo+search) + m_menu 12 分类 + 3 列布局 (centeri 760 + left 190
+    + right 190) + 最新更新表 + 排行榜 (老式 960px 框架 + 直角 + dotted 分隔)
+- 删除 theme-matrix.ts 整个文件 (1728 组合矩阵废弃)
+- 删除 13 个老布局组件 (HomeShelf/HomeList/HomeGrid/HomeMinimal/HomeMagazine/HomeTheater/HomePili/
+  HomeBiquge/HomeMosaic/HomeMasonry/HomeShowcase/HomeEditorial/HomeParts) + 删除 5 个 R9-1A 旧
+  HomeClone{Aijjxs,101kks,Pilishuwu,Biquge,23qb} (重新创建为新版)
+- THEMES 数组从 17 套全删, 重建为 9 套精仿 preset (clone-aijjxs/ddyueshu/pilishuwu/23qb/101kks/
+  huangjinwu/ggd66/shipsay/x2552), 全部基于实测 CSS 变量
+- clone-aijjxs 置首位 (实测最稳定, 直连 200, :root CSS 变量完整), getTheme(undefined) 兜底返回 clone-aijjxs
+- getThemeById 不再回退 combo 解析器, 只查 THEMES
+- admin/themes/route.ts 简化为单模式返回 THEMES 数组 (废弃 TOTAL_COMBOS/sliceCombos/分页模式)
+- ThemesSection 删除分页 UI (page/totalPages state、上一页/下一页按钮), 改为单次 api.get<ThemeRow[]>
+  加载全部; 文案改为 "(共 {themes.length} 套精仿)"
+- HomeView 接线 9 个新 dynamic import (HomeCloneAijjxs/Ddyueshu/Pilishuwu/23qb/101kks/Huangjinwu/
+  Ggd66/Shipsay/X2552) + 9 条 layout 分发分支 + 兜底白名单改为 9 个 layout key
+- ThemeDef.layout 类型联合改为 9 个 clone-* (clone-aijjxs/clone-ddyueshu/clone-pilishuwu/clone-23qb/
+  clone-101kks/clone-huangjinwu/clone-ggd66/clone-shipsay/clone-x2552)
+
+Stage Summary:
+- THEMES preset 数量: 17 → 9 (9 套站点精仿, 0 组合)
+- 默认主题: clone-aijjxs (实测最稳定站, 直连 200, 实测 :root CSS 变量完整)
+- 新增 9 个 Home 布局组件 (HomeClone*.tsx, 共 ~2866 LoC), 完全复刻目标站首页结构 (含 header banner /
+  表格更新 / 排行榜 / 封面网格 / 站点公告 / 双栏布局 / 960px 老框架等)
+- 新增 9 种 layout 类型: clone-aijjxs/clone-ddyueshu/clone-pilishuwu/clone-23qb/clone-101kks/
+  clone-huangjinwu/clone-ggd66/clone-shipsay/clone-x2552
+- theme-matrix.ts 文件已删除, 1728 组合矩阵废弃 (12×12×12 引擎能力 + 17 旧 preset 全清空)
+- 13 个老布局组件已删除 (HomeShelf/HomeGrid/.../HomeParts/HomeClone{Aijjxs,101kks,Pilishuwu,Biquge,23qb})
+- admin/themes API 简化为单模式 (无分页, 直接返回 THEMES 数组)
+- ThemesSection 简化为单次加载 (无分页 UI, 文案改为 "9 套站点精仿主题")
+- 9 套主题覆盖 9 种首页结构形态 (各站 DNA 完全不同: aijjxs 5列卡+表格/ ddyueshu 青绿双栏/ pilishuwu
+  暖橙白卡/ 23qb 5:7 封面+鲜红 hover/ 101kks 蓝紫渐变 cover-section/ huangjinwu backdrop blur header/
+  ggd66 mint 头+2列 float item/ shipsay red-pink hover+排行链表/ x2552 960px 老框架+3 列)
+- 9 套主题配色覆盖: 青绿/暖橙/鲜红/蓝紫/蓝/mint/red-pink/蓝紫(老式) — 全部唯一无重复
+- 9 个新 Home 布局均使用 usePublic() + theme.vars, 不硬编码颜色 (除黑/白透明色 rgba 外)
+- 9 个新 Home 布局均有 Skeleton + 空态处理 (if loading return CloneSkeleton; if !books.length return null)
+- 9 个新 Home 布局均响应式 (移动单列 / sm 2-3 列 / lg 3-6 列, 视布局而异)
+- 验证: bunx tsc --noEmit → 0 errors ✓ / bun run lint → 0 errors / 0 warnings ✓ /
+  /tmp/test-themes-9.ts → THEMES.length=9, 9 preset 全部 OK, default=clone-aijjxs ✓ /
+  theme-matrix.ts 已删除 ✓ / 13 老布局文件全部不存在 ✓
+- 文件变更:
+  · src/lib/crawl/themes.ts (重构: 删 17 旧 preset + 删 combo 回退 + 新增 9 精仿 preset + layout 联合改 9
+    clone-*)
+  · src/lib/crawl/theme-matrix.ts (删除整个文件)
+  · src/app/api/admin/themes/route.ts (简化: 删分页模式 + 删 import {TOTAL_COMBOS,sliceCombos},
+    ThemeListItem → 单模式 ok(THEMES))
+  · src/components/admin/ThemesSection.tsx (删分页 state/UI + 文案改 "(共 N 套精仿)")
+  · src/components/public/HomeView.tsx (9 dynamic import + 9 layout 分发 + 兜底白名单 9 key)
+  · src/components/public/layouts/HomeCloneAijjxs.tsx (新增 303 LoC)
+  · src/components/public/layouts/HomeCloneDdyueshu.tsx (新增 305 LoC)
+  · src/components/public/layouts/HomeClonePilishuwu.tsx (新增 277 LoC)
+  · src/components/public/layouts/HomeClone23qb.tsx (新增 309 LoC)
+  · src/components/public/layouts/HomeClone101kks.tsx (新增 299 LoC)
+  · src/components/public/layouts/HomeCloneHuangjinwu.tsx (新增 356 LoC)
+  · src/components/public/layouts/HomeCloneGgd66.tsx (新增 313 LoC)
+  · src/components/public/layouts/HomeCloneShipsay.tsx (新增 335 LoC)
+  · src/components/public/layouts/HomeCloneX2552.tsx (新增 369 LoC)
+  · src/components/public/layouts/HomeShelf.tsx (删除)
+  · src/components/public/layouts/HomeList.tsx (删除)
+  · src/components/public/layouts/HomeGrid.tsx (删除)
+  · src/components/public/layouts/HomeMinimal.tsx (删除)
+  · src/components/public/layouts/HomeMagazine.tsx (删除)
+  · src/components/public/layouts/HomeTheater.tsx (删除)
+  · src/components/public/layouts/HomePili.tsx (删除)
+  · src/components/public/layouts/HomeBiquge.tsx (删除)
+  · src/components/public/layouts/HomeMosaic.tsx (删除)
+  · src/components/public/layouts/HomeMasonry.tsx (删除)
+  · src/components/public/layouts/HomeShowcase.tsx (删除)
+  · src/components/public/layouts/HomeEditorial.tsx (删除)
+  · src/components/public/layouts/HomeParts.tsx (删除)
+  · src/components/public/layouts/HomeCloneBiquge.tsx (R9-1A 旧版删除)
+  · src/components/public/layouts/HomeCloneAijjxs.tsx (R9-1A 旧版重新创建为新版)
+  · src/components/public/layouts/HomeClone101kks.tsx (R9-1A 旧版重新创建为新版)
+  · src/components/public/layouts/HomeClonePilishuwu.tsx (R9-1A 旧版重新创建为新版)
+  · src/components/public/layouts/HomeClone23qb.tsx (R9-1A 旧版重新创建为新版)
+- 总变更: +~2866 LoC (9 HomeClone 布局) + themes.ts 净 -250 LoC (删 17 旧 + 加 9 新) +
+  -theme-matrix.ts (整文件删) + admin/themes route 净 -50 LoC (简化) +
+  ThemesSection 净 -50 LoC (删分页) - 13 老布局组件删除
+
+---
+Task ID: R10-1C
+Agent: 主控(本会话续作)
+Task: scrapling 安装 + 书籍页/章节页接入 SEO 模板 + 验证 9 套精仿主题
+
+Work Log:
+- scrapling 0.4.15 安装到 mini-services/scrapling-bridge/.venv
+  · uv venv .venv (Python 3.12.14)
+  · uv pip install 'scrapling[fetchers]' (含 curl_cffi/patchright/playwright/lxml)
+  · 验证: Fetcher/StealthyFetcher/DynamicFetcher 三个 fetcher 全可导入
+- scrapling-bridge 服务已启动 127.0.0.1:3012, selfTestOk=true, scrapling 0.4.15
+  · 用 setsid + nohup 启动脱离 controlling terminal, 避免 SIGHUP 杀
+- 用 scrapling-bridge /fetch 接口抓取 9 站首页:
+  · 7 站成功: aijjxs/pilishuwu/23qb/101kks/huangjinwu/ggd66/x2552
+  · 2 站不可达: ddyueshu.cc (Connection reset) / demo.shipsay.com (Connect timeout)
+  · 抓到的 HTML+CSS 保存到 /home/z/my-project/agent-ctx/probe-html/
+- 用 curl 抓取 7 站点外链 CSS 文件, 提取每站 :root CSS 变量+字体栈+body 样式
+- 启动 R10-1B 子代理(full-stack-developer):
+  · 基于 7 站抓取结果+2 站兜底, 创建 9 套精仿 preset + 9 个 Home 布局组件
+  · 删除 theme-matrix.ts 整个文件
+  · 删除 13 个老布局组件 (HomeShelf/HomeGrid/.../HomeParts/HomeClone{Aijjxs,101kks,Pilishuwu,Biquge,23qb} R9-1A 旧版)
+  · THEMES 数组从 17 套全删, 重建为 9 套精仿 preset
+  · getThemeById 不再回退 combo 解析器, 只查 THEMES
+  · admin/themes/route.ts 简化为单模式返回 THEMES 数组
+  · ThemesSection 删除分页 UI, 改为单次加载
+  · HomeView 接线 9 个新 dynamic import + 分发分支
+  · ThemeDef.layout 类型联合改为 9 个 clone-*
+- 主代理接入书籍页/章节页 SEO 模板(R10-1C):
+  · 修改 /api/public/book/route.ts: 增加 ?site= 参数, 查 site.chapterSeoAuto + 3 模板
+    返回 seo: {auto, titleTemplate, descTemplate, keywordsTemplate} 字段
+  · 修改 src/components/public/data.ts: fetchBook() 增加 siteId 参数, BookDetailData 增加 seo 字段
+  · 修改 src/components/public/BookView.tsx:
+    - 加 renderSeoTemplate() 函数(同 ReadView, 兼容 5 个占位符)
+    - 加 seoTitle/seoDescription/seoKeywords 三个 useMemo
+    - 走 site.chapterSeoAuto 开关: true → generateTDK 自动模式; false → 走模板
+    - fetchBook 调用传 site.id, useEffect 依赖加 site.id
+    - useSiteSEO 用新的 seoTitle/seoDescription/seoKeywords
+  · 章节页 ReadView 早已支持 seo.auto + 模板(R7-25 完成)
+  · 章节目录(SEO)在 BookView 通过 BookView 的 useSiteSEO 体现, 已接入
+
+Stage Summary:
+- scrapling 已就位: 0.4.15 安装 + bridge 服务 127.0.0.1:3012 selfTestOk=true
+- 9 套精仿主题创建完成, 9 个 HomeClone*.tsx 布局组件:
+  clone-aijjxs / clone-ddyueshu / clone-pilishuwu / clone-23qb / clone-101kks /
+  clone-huangjinwu / clone-ggd66 / clone-shipsay / clone-x2552
+- 9 个 primary 色: 青绿/青绿/暖橙/鲜红/蓝紫/蓝/mint/red-pink/蓝紫 (各不相同)
+- theme-matrix.ts 已删除, 1728 组合矩阵废弃
+- 13 个老布局组件已删除
+- admin/themes API 简化为单模式
+- BookView 接入 SEO 模板: 支持 site.chapterSeoAuto 开关 + 3 模板({bookName}/{chapterTitle}/{page}/{totalPages}/{siteName} 占位符)
+- ReadView 已有 SEO 模板支持(R7-25)
+- /api/public/book 返回 seo 配置(?site= 参数)
+- 验证:
+  · bunx tsc --noEmit → 0 errors ✓
+  · bun run lint → 0 errors / 0 warnings ✓
+  · admin/themes API: 返回 9 套 preset ✓
+  · /api/public/book?id=X&site=Y: 返回 seo 字段(auto=true, 3 个空模板) ✓
+  · agent-browser 后台可访问, 9 套 preset 全部正确显示

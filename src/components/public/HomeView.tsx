@@ -1,5 +1,7 @@
 // ============================================================
-// 首页视图 — 随机下拉词 + 6 分类图文卡 + 排序切换 + 按 theme.layout 分发 6 种布局（全主题去分页, 一次拉 48 本）
+// 首页视图 — 随机下拉词 + 6 分类图文卡 + 排序切换 + 按 theme.layout 分发 9 种 clone-* 布局
+// (全主题去分页, 一次拉 48 本)
+// R10-1A: 废弃 theme-matrix 1728 组合 + 17 旧 preset; 改为 9 套精仿 clone-* 布局
 // ============================================================
 'use client'
 
@@ -12,28 +14,16 @@ import { siteKeywordList, useSiteSEO, withAlpha } from './seo'
 import { generateTitle, generateMetaDescription, generateKeywords } from './auto-tdk'
 import { EmptyState, ErrorState, SuggestTagCloud, TagCloud, BookGridSkeleton } from './bits'
 import { CategoryShowcase } from './CategoryShowcase'
-// 默认主题 aurora → shelf: 首屏保证, 保持静态 import; 其余 6 布局按需分包(ab-d 懒加载试点)
-// —— 布局仅在本组件内引用且站点/主题经客户端 fetch 获知, SSR 首屏只会命中 shelf,
-//    非默认布局只会在数据到达后的客户端渲染分支中触发 chunk 拉取, 无首屏闪烁/CLS 回归面
-import { HomeShelf } from './layouts/HomeShelf'
-const HomeList = dynamic(() => import('./layouts/HomeList').then((m) => m.HomeList))
-const HomeGrid = dynamic(() => import('./layouts/HomeGrid').then((m) => m.HomeGrid))
-const HomeMinimal = dynamic(() => import('./layouts/HomeMinimal').then((m) => m.HomeMinimal))
-const HomeMagazine = dynamic(() => import('./layouts/HomeMagazine').then((m) => m.HomeMagazine))
-const HomeTheater = dynamic(() => import('./layouts/HomeTheater').then((m) => m.HomeTheater))
-const HomePili = dynamic(() => import('./layouts/HomePili').then((m) => m.HomePili))
-const HomeBiquge = dynamic(() => import('./layouts/HomeBiquge').then((m) => m.HomeBiquge))
-// R8-1B: 4 个新首页布局, 懒加载分包
-const HomeMosaic = dynamic(() => import('./layouts/HomeMosaic').then((m) => m.HomeMosaic))
-const HomeMasonry = dynamic(() => import('./layouts/HomeMasonry').then((m) => m.HomeMasonry))
-const HomeShowcase = dynamic(() => import('./layouts/HomeShowcase').then((m) => m.HomeShowcase))
-const HomeEditorial = dynamic(() => import('./layouts/HomeEditorial').then((m) => m.HomeEditorial))
-// R9-1A: 5 个精仿真实站点首页布局, 懒加载分包
+// R10-1A: 9 个精仿真实小说站点首页布局, 懒加载分包
 const HomeCloneAijjxs = dynamic(() => import('./layouts/HomeCloneAijjxs').then((m) => m.HomeCloneAijjxs))
-const HomeClone101kks = dynamic(() => import('./layouts/HomeClone101kks').then((m) => m.HomeClone101kks))
+const HomeCloneDdyueshu = dynamic(() => import('./layouts/HomeCloneDdyueshu').then((m) => m.HomeCloneDdyueshu))
 const HomeClonePilishuwu = dynamic(() => import('./layouts/HomeClonePilishuwu').then((m) => m.HomeClonePilishuwu))
-const HomeCloneBiquge = dynamic(() => import('./layouts/HomeCloneBiquge').then((m) => m.HomeCloneBiquge))
 const HomeClone23qb = dynamic(() => import('./layouts/HomeClone23qb').then((m) => m.HomeClone23qb))
+const HomeClone101kks = dynamic(() => import('./layouts/HomeClone101kks').then((m) => m.HomeClone101kks))
+const HomeCloneHuangjinwu = dynamic(() => import('./layouts/HomeCloneHuangjinwu').then((m) => m.HomeCloneHuangjinwu))
+const HomeCloneGgd66 = dynamic(() => import('./layouts/HomeCloneGgd66').then((m) => m.HomeCloneGgd66))
+const HomeCloneShipsay = dynamic(() => import('./layouts/HomeCloneShipsay').then((m) => m.HomeCloneShipsay))
+const HomeCloneX2552 = dynamic(() => import('./layouts/HomeCloneX2552').then((m) => m.HomeCloneX2552))
 import type { BookItem } from './types'
 
 interface FetchState {
@@ -174,27 +164,18 @@ export function HomeView({ page, cat }: { page: number; cat?: string }) {
         <EmptyState text="本页暂无书籍" hint="换个分类或翻页看看" />
       ) : (
         <>
-          {theme.layout === 'shelf' && <HomeShelf books={books} loading={loading} />}
-          {theme.layout === 'list' && <HomeList books={books} loading={loading} />}
-          {theme.layout === 'grid' && <HomeGrid books={books} loading={loading} />}
-          {theme.layout === 'minimal' && <HomeMinimal books={books} loading={loading} />}
-          {theme.layout === 'magazine' && <HomeMagazine books={books} loading={loading} />}
-          {theme.layout === 'theater' && <HomeTheater books={books} loading={loading} />}
-          {theme.layout === 'pili' && <HomePili books={books} loading={loading} />}
-          {theme.layout === 'biquge' && <HomeBiquge books={books} loading={loading} />}
-          {/* R8-1B: 4 个新首页布局分发 */}
-          {theme.layout === 'mosaic' && <HomeMosaic books={books} loading={loading} />}
-          {theme.layout === 'masonry' && <HomeMasonry books={books} loading={loading} />}
-          {theme.layout === 'showcase' && <HomeShowcase books={books} loading={loading} />}
-          {theme.layout === 'editorial' && <HomeEditorial books={books} loading={loading} />}
-          {/* R9-1A: 5 个精仿真实站点首页布局分发 */}
+          {/* R10-1A: 9 个精仿真实小说站点首页布局分发 */}
           {theme.layout === 'clone-aijjxs' && <HomeCloneAijjxs books={books} loading={loading} />}
-          {theme.layout === 'clone-101kks' && <HomeClone101kks books={books} loading={loading} />}
+          {theme.layout === 'clone-ddyueshu' && <HomeCloneDdyueshu books={books} loading={loading} />}
           {theme.layout === 'clone-pilishuwu' && <HomeClonePilishuwu books={books} loading={loading} />}
-          {theme.layout === 'clone-biquge' && <HomeCloneBiquge books={books} loading={loading} />}
           {theme.layout === 'clone-23qb' && <HomeClone23qb books={books} loading={loading} />}
+          {theme.layout === 'clone-101kks' && <HomeClone101kks books={books} loading={loading} />}
+          {theme.layout === 'clone-huangjinwu' && <HomeCloneHuangjinwu books={books} loading={loading} />}
+          {theme.layout === 'clone-ggd66' && <HomeCloneGgd66 books={books} loading={loading} />}
+          {theme.layout === 'clone-shipsay' && <HomeCloneShipsay books={books} loading={loading} />}
+          {theme.layout === 'clone-x2552' && <HomeCloneX2552 books={books} loading={loading} />}
           {/* feat-round-7 B3: 防御性兜底 — 未知布局/loading 期无任何布局命中时用 BookGridSkeleton */}
-          {!['shelf', 'list', 'grid', 'minimal', 'magazine', 'theater', 'pili', 'biquge', 'mosaic', 'masonry', 'showcase', 'editorial', 'clone-aijjxs', 'clone-101kks', 'clone-pilishuwu', 'clone-biquge', 'clone-23qb'].includes(theme.layout) && loading && (
+          {!['clone-aijjxs', 'clone-ddyueshu', 'clone-pilishuwu', 'clone-23qb', 'clone-101kks', 'clone-huangjinwu', 'clone-ggd66', 'clone-shipsay', 'clone-x2552'].includes(theme.layout) && loading && (
             <BookGridSkeleton count={12} />
           )}
         </>

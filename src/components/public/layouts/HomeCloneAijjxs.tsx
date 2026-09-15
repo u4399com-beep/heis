@@ -4,8 +4,11 @@
 //   --bg #f3efe7 / --paper #fffdf8 / --ink #1f2937 / --muted #6b7280
 //   --line #e5dccd / --brand #0f766e (青绿) / --brand-dark #115e59
 //   --accent #b45309 (琥珀) / --shadow 0 10px 30px rgba(17,24,39,0.08) / --radius 14px
-// 结构: 顶 banner (奶油+青绿) + 5 列封面卡片网格 (book.booknav 布局) + 表格最近更新 + 横向琥珀排行榜
-// 字体栈: PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif
+//   body font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif, line-height 1.7
+//   a: var(--brand-dark) #115e59 / hover var(--brand) #0f766e
+// 结构 (实测 .wrap max-width 1220px + .top header card + .layout grid 1fr 330px):
+//   顶 banner (奶油+青绿) + 5 列封面卡片网格 (book.booknav DNA: 48x64 缩略图+右侧书名+作者+简介)
+//   + 表格最近更新 (book_r grid: 类别/书名+最新章节/字数/更新时间/状态) + 横向琥珀排行榜
 // ============================================================
 'use client'
 

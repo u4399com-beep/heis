@@ -1,7 +1,8 @@
 'use client'
 
 // ============================================================
-// 主题模板 — 17 精选 (5 精仿 + 12 设计) + 1728 组合 = 1745 套主题, 分页浏览/搜索/预览
+// 主题模板 — 9 套精仿真实小说站点主题 (R10-1A 重构)
+// 废弃 theme-matrix 1728 组合矩阵 + 17 旧 preset; 单次加载 THEMES 数组
 // ============================================================
 import { useCallback, useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
@@ -50,24 +51,19 @@ interface ThemesSectionProps {
 
 export function ThemesSection({ onPreviewSite }: ThemesSectionProps) {
   const [themes, setThemes] = useState<ThemeRow[]>([])
-  const [total, setTotal] = useState(0)
-  const [page, setPage] = useState(1)
-  const [totalPages, setTotalPages] = useState(1)
   const [search, setSearch] = useState('')
   const [sites, setSites] = useState<SiteRow[]>([])
   const [loading, setLoading] = useState(true)
   const [applying, setApplying] = useState<string>('')
 
-  const load = useCallback(async (p: number) => {
+  const load = useCallback(async () => {
     setLoading(true)
     try {
       const [ts, ss] = await Promise.all([
-        api.get<{ items: ThemeRow[]; total: number; totalPages: number }>(`/api/admin/themes?page=${p}&size=60`),
+        api.get<ThemeRow[]>('/api/admin/themes'),
         api.get<SiteRow[]>('/api/admin/sites'),
       ])
-      setThemes(ts.items || [])
-      setTotal(ts.total || 0)
-      setTotalPages(ts.totalPages || 1)
+      setThemes(Array.isArray(ts) ? ts : [])
       setSites(Array.isArray(ss) ? ss : [])
     } catch (e) {
       toast.error(e instanceof Error ? e.message : '加载主题失败')
@@ -77,7 +73,7 @@ export function ThemesSection({ onPreviewSite }: ThemesSectionProps) {
   }, [])
 
   useEffect(() => {
-    load(1)
+    load()
   }, [load])
 
   const filteredThemes = search
@@ -95,7 +91,6 @@ export function ThemesSection({ onPreviewSite }: ThemesSectionProps) {
     try {
       await api.put(`/api/admin/sites/${defaultSite.id}`, { themeId: theme.id })
       toast.success(`已将默认站点「${defaultSite.name}」的主题设为「${theme.name}」`)
-      load(page)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : '设置失败')
     } finally {
@@ -112,13 +107,13 @@ export function ThemesSection({ onPreviewSite }: ThemesSectionProps) {
           <h2 className="flex items-center gap-2 text-lg font-semibold text-zinc-100">
             <Palette className="h-5 w-5 text-violet-400" />
             主题模板
-            <span className="text-xs font-normal text-zinc-500">(共 {total} 套: 5 精仿 + 12 设计 + {Math.max(0, total - 17)} 组合)</span>
+            <span className="text-xs font-normal text-zinc-500">(共 {themes.length} 套精仿)</span>
           </h2>
           <p className="mt-0.5 text-xs text-zinc-500">
-            12 配色 × 12 风格 × 12 布局 = 1728 组合 + 17 精选预设 (5 精仿 + 12 设计); 默认站点: {defaultSite ? defaultSite.name : '未设置'}
+            9 套站点精仿主题; 默认站点: {defaultSite ? defaultSite.name : '未设置'}
           </p>
         </div>
-        <Button variant="outline" size="sm" className="h-9 gap-1.5 border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800" onClick={() => load(page)}>
+        <Button variant="outline" size="sm" className="h-9 gap-1.5 border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800" onClick={() => load()}>
           <RefreshCw className="h-3.5 w-3.5" />
           刷新
         </Button>
@@ -195,33 +190,6 @@ export function ThemesSection({ onPreviewSite }: ThemesSectionProps) {
               </CardContent>
             </Card>
           ))}
-        </div>
-      )}
-
-      {/* 分页 */}
-      {!search && totalPages > 1 && (
-        <div className="flex items-center justify-center gap-2 pt-2">
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-8 border-zinc-700 bg-zinc-900 text-zinc-300"
-            disabled={page <= 1 || loading}
-            onClick={() => { setPage(page - 1); load(page - 1) }}
-          >
-            上一页
-          </Button>
-          <span className="text-xs text-zinc-500">
-            {page} / {totalPages} 页
-          </span>
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-8 border-zinc-700 bg-zinc-900 text-zinc-300"
-            disabled={page >= totalPages || loading}
-            onClick={() => { setPage(page + 1); load(page + 1) }}
-          >
-            下一页
-          </Button>
         </div>
       )}
     </div>
