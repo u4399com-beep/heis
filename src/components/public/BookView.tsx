@@ -7,10 +7,10 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
-import { Bookmark, ChevronLeft, ChevronRight, Clock, Download, FileText, Hash, ListTree, Sparkles, Type } from 'lucide-react'
+import { Bookmark, ChevronLeft, ChevronRight, Clock, Download, FileText, Hash, ListTree, Search, Sparkles, Type } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Skeleton } from '@/components/ui/skeleton'
-import { fetchBook, fetchChapter, type BookDetailData } from './data'
+import { fetchBook, fetchBookPSEOKeywords, fetchChapter, type BookDetailData } from './data'
 import { usePublic } from './ctx'
 import { coverSrc, fmtDate, formatWords, useSiteSEO, withAlpha } from './seo'
 import { generateTitle, generateMetaDescription, generateKeywords } from './auto-tdk'
@@ -84,6 +84,16 @@ function TocChapterButton({
 }) {
   const [preview, setPreview] = useState<PreviewState | null>(null)
   const timerRef = useRef<number>(0)
+
+  // P2 fix (R13-1C): 组件卸载时清理挂起的 hover 定时器。修前 onLeave 漏触达(用户点击
+  // 导航跳转/组件 unmount 期间)时定时器继续在 pending, 300ms 后 fire 调 setPreview
+  // 在已卸载组件上 setState. React 18+ 不再 warn, 但仍是内存/计时器泄漏(尤其目录长
+  // 列表多次悬停切换时累积); useEffect cleanup 在 unmount 时 clearTimeout 兜底
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) window.clearTimeout(timerRef.current)
+    }
+  }, [])
 
   const onEnter = () => {
     if (cache.current.has(ch.id)) {
@@ -274,6 +284,97 @@ function RelatedBooks({ bookId, siteId }: { bookId: string; siteId: string }) {
               <p className="text-[10px] tabular-nums" style={{ color: v.primary }}>{formatWords(b.wordCount)}</p>
             </div>
           </article>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+/* ---------- R13-1A: PSEO 相关搜索词区块 (底部, dofollow 链向 KeywordView 落地页) ---------- */
+
+function PSEOKeywordsSection({ bookId, siteId }: { bookId: string; siteId: string }) {
+  const { theme, navigate } = usePublic()
+  const v = theme.vars
+  const [keywords, setKeywords] = useState<{ keyword: string; source: string; score: number }[] | null>(null)
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    fetchBookPSEOKeywords(bookId)
+      .then((d) => {
+        if (!alive) return
+        if (d?.book && Array.isArray(d.pseoKeywords)) {
+          // 过滤与书名重复的纯词(留扩展长尾词)
+          const bookName = d.book.name
+          const filtered = d.pseoKeywords.filter((k) => k.keyword !== bookName).slice(0, 10)
+          setKeywords(filtered)
+        } else {
+          setKeywords([])
+        }
+      })
+      .catch(() => {
+        if (!alive) return
+        setFailed(true)
+        setKeywords([])
+      })
+    return () => {
+      alive = false
+    }
+  }, [bookId])
+
+  // 静默降级: 拉取失败时不渲染整个区块(不阻塞页面其他内容)
+  if (failed) return null
+  if (keywords === null) {
+    return (
+      <section className="pt-8" aria-label="相关搜索词">
+        <div className="mb-4 flex items-center gap-2">
+          <Search className="h-4 w-4" style={{ color: v.primary }} aria-hidden />
+          <h2 className="text-sm font-bold tracking-widest" style={{ color: v.text }}>相关搜索词</h2>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {Array.from({ length: 8 }).map((_, i) => (
+            <Sk key={i} className="h-7 w-20" style={{ borderRadius: v.radius }} />
+          ))}
+        </div>
+      </section>
+    )
+  }
+  if (keywords.length === 0) return null
+
+  const goKeyword = (kw: string) => navigate({ view: 'keyword', tag: kw, site: siteId })
+
+  return (
+    <section className="pt-8" aria-label="相关搜索词">
+      <div className="mb-4 flex items-center gap-2">
+        <Search className="h-4 w-4" style={{ color: v.primary }} aria-hidden />
+        <h2 className="text-sm font-bold tracking-widest" style={{ color: v.text }}>相关搜索词</h2>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {keywords.map((k, i) => (
+          <a
+            key={`${k.keyword}-${i}`}
+            href={`/?view=keyword&tag=${encodeURIComponent(k.keyword)}&site=${encodeURIComponent(siteId)}`}
+            onClick={(e) => {
+              // 左键点击走客户端路由(不整页跳转); Ctrl/Cmd+点击保留默认浏览器行为(新标签打开)
+              if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return
+              e.preventDefault()
+              goKeyword(k.keyword)
+            }}
+            className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-opacity hover:opacity-80"
+            style={{
+              background: withAlpha(v.primary, theme.dark ? 0.16 : 0.08),
+              color: v.primary,
+              border: `1px solid ${withAlpha(v.primary, 0.3)}`,
+              borderRadius: v.radius,
+            }}
+            // R13-1A: dofollow(不传 rel="nofollow") — 传递权重到 KeywordView 落地页;
+            // 目标页 KeywordView 自身已 robots=noindex,follow, 不收录重复页面
+            aria-label={`查看"${k.keyword}"相关小说推荐`}
+            title={`${k.keyword} · 来源:${k.source}`}
+          >
+            <Search className="h-3 w-3" aria-hidden />
+            {k.keyword}
+          </a>
         ))}
       </div>
     </section>
@@ -720,6 +821,9 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
 
           {/* feat-round-5 A1: 相关推荐 */}
           <RelatedBooks bookId={book.id} siteId={site.id} />
+
+          {/* R13-1A: 相关搜索词(PSEO 长尾词, 链向 KeywordView 落地页) */}
+          <PSEOKeywordsSection bookId={book.id} siteId={site.id} />
         </>
       )}
     </div>

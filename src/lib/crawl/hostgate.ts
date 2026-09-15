@@ -643,5 +643,5 @@ export function isPrivateIp(ip: string, allowLoopback = false): boolean {
 
 // DNS 重新绑定检测 + URL hostname 归一化辅助 (R-E4) 已移除 —— verifyDnsStability /
 // DnsStabilityResult / normalizeUrlHostname 在 src 与 scripts 全域均未被消费;
-// fetcher.ts assertSafeTarget 直接使用 resolveAllIps + isPrivateIp 组合防 SSRF,
-// IP 字面量归一化在 assertSafeIp 内通过 normalizeIpLiteral 完成。
+// fetcher.ts assertSafeTarget 直接使用 resolveAllIps + assertSafeIp 组合防 SSRF
+// (本地实现, 不调本模块 isPrivateIp / normalizeIpLiteral; 两者仅 hostgate 内部用)。

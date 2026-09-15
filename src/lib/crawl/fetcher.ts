@@ -1549,163 +1549,12 @@ export async function closeAllHostDispatchers(): Promise<void> {
 }
 
 // ============================================================
-// agent-Z-crawl-phase6: 指纹一致性校验(诊断能力)
+// agent-Z-crawl-phase6: 指纹一致性校验 + 智能引擎选择 (dead code, 全域 0 引用, 已删除)
 // ------------------------------------------------------------
-// 场景: fingerprintHeadersFor 按 UA 推导 sec-ch-ua 系列头组, 但若 cfg.headers 显式
-// 覆盖了 sec-ch-ua(操作员误配/规则迁移残留)而 UA 未相应调整, 会形成"UA 版本与
-// sec-ch-ua 版本不一致"的反向破绽 —— WAF 据此秒判为爬虫。本函数供 admin/rules/test
-// 端点在保存规则前做静态校验, 命中即给出可读警告(不阻断保存, 由操作员决定是否修正)
+// verifyFingerprintConsistency / detectSiteType / recommendEngineForSite / SiteType
+// 三个未消费 export 已删除 (R13-1D 清理)。如未来需要"规则保存前 UA↔Client Hints
+// 一致性诊断"或"按 URL 模式自动推荐引擎", 可基于本节注释重建。
 // ============================================================
-
-/** 校验 UA 与 headers 中的 Client Hints 头是否自洽(诊断, 不抛错)。
- *  返回 warnings 数组(空数组=一致)。规则配置端可据此在 UI 高亮可疑配置 */
-export function verifyFingerprintConsistency(
-  ua: string,
-  headers?: Record<string, string>,
-): string[] {
-  const warnings: string[] = []
-  if (!ua) {
-    warnings.push('UA 为空, 无法推导 Client Hints 头组')
-    return warnings
-  }
-  const family = uaFamilyOf(ua)
-  // Safari 不发 Client Hints; 若显式配置了 sec-ch-ua*, 与 Safari UA 自相矛盾
-  if (family === 'safari') {
-    if (headers) {
-      for (const k of Object.keys(headers)) {
-        if (/^sec-ch-ua/i.test(k)) {
-          warnings.push(`UA 为 Safari 系但 headers 配置了 ${k}; Safari 不发送 Client Hints, 此为反向破绽`)
-        }
-      }
-    }
-    return warnings
-  }
-  // Chromium 系: 校验 sec-ch-ua 品牌版本与 UA 版本一致
-  if (family === 'chromium') {
-    const cv = ua.match(CHROME_VER_RE)?.[1] || ''
-    const ev = ua.match(EDGE_VER_RE)?.[1] || ''
-    if (headers) {
-      for (const [k, v] of Object.entries(headers)) {
-        if (/^sec-ch-ua$/i.test(k) && cv) {
-          // 提取所有 v="X" 版本号(如 "Chromium";v="137" 中的 137), 校验主版本与 UA Chrome 版本一致
-          const brandVersions = [...v.matchAll(/v="(\d+)"/g)].map((m) => m[1])
-          if (brandVersions.length && !brandVersions.includes(cv)) {
-            warnings.push(`sec-ch-ua 品牌版本(v=${brandVersions.join(',')}) 与 UA Chrome/${cv} 不一致`)
-          }
-        }
-        if (/^sec-ch-ua-mobile$/i.test(k)) {
-          const expectMobile = isMobileUa(ua) ? '?1' : '?0'
-          if (v.trim() !== expectMobile) {
-            warnings.push(`sec-ch-ua-mobile=${v.trim()} 与 UA 移动性(${expectMobile})不一致`)
-          }
-        }
-        if (/^sec-ch-ua-platform$/i.test(k)) {
-          const expectPlatform = `"${uaPlatformHint(ua)}"`
-          if (v.trim() !== expectPlatform) {
-            warnings.push(`sec-ch-ua-platform=${v.trim()} 与 UA 平台(${expectPlatform})不一致`)
-          }
-        }
-        // Edge UA 应有 sec-ch-ua 含 "Microsoft Edge" 品牌; 非 Edge UA 不应有
-        if (/^sec-ch-ua$/i.test(k) && ev && !/Microsoft Edge/i.test(v)) {
-          warnings.push('UA 为 Edge 系但 sec-ch-ua 缺少 "Microsoft Edge" 品牌')
-        }
-      }
-    }
-  }
-  // Firefox 不发 sec-ch-ua, 但发 Sec-Fetch-*; 校验 Sec-Fetch-* 头值在合法枚举内
-  if (family === 'firefox' && headers) {
-    for (const [k, v] of Object.entries(headers)) {
-      if (/^sec-fetch-mode$/i.test(k) && v.trim() !== 'navigate') {
-        warnings.push(`Firefox Sec-Fetch-Mode=${v.trim()} 非常规值(导航请求=navigate)`)
-      }
-    }
-  }
-  return warnings
-}
-
-// ============================================================
-// agent-Z-crawl-phase6: 智能引擎选择(站点类型自动探测)
-// ------------------------------------------------------------
-// 场景: 规则配置时操作员未必清楚目标站是纯 API(JSON 接口) / 静态 HTML / AJAX SPA。
-// 选错引擎会浪费资源: API 站走 browser=慢且无意义; SPA 走 http=拿不到 JS 渲染后的内容。
-// 本函数据 URL 模式 + 采样响应(Content-Type + body 首段)启发式判断站点类型, 供规则
-// 配置端"自动推荐引擎"或引擎层 auto 模式预选(减少首轮 HTTP 试探)。
-//
-// 判定逻辑(优先级从高到低):
-//  1. URL 模式: /api/ / .json / 含 ?callback= → 倾向 api
-//  2. Content-Type: application/json → api; text/html → html/spa(需进一步判)
-//  3. HTML 首段: 含 <div id="root">/<div id="app">/极短 + 引用 react/vue/angular 框架 → spa
-//  4. HTML 含正常 <article>/<p> 文本且较长 → html(服务端渲染)
-//  5. 无法判定 → unknown(交回 auto 引擎既有探测链)
-// ============================================================
-
-/** 站点类型分类 */
-export type SiteType = 'api' | 'html' | 'spa' | 'unknown'
-
-/** 据 URL 模式 + 采样响应启发式判断站点类型。
- *  - url: 目标 URL(用于路径模式匹配)
- *  - sampleHtml: 采样响应体(可选; 首段 4KB 足够判定)
- *  - contentType: 采样响应 Content-Type 头(可选)
- *  返回 'api' / 'html' / 'spa' / 'unknown' */
-export function detectSiteType(
-  url: string,
-  sampleHtml?: string,
-  contentType?: string,
-): SiteType {
-  // 1. URL 模式: /api/ / .json / 含 ?callback=JSONP → 倾向 api
-  let path = ''
-  let query = ''
-  try {
-    const u = new URL(url)
-    path = u.pathname.toLowerCase()
-    query = u.search.toLowerCase()
-  } catch {
-    // URL 解析失败: 退回 unknown
-    return 'unknown'
-  }
-  if (/\/api\/|\.json$|\.json[?#]/.test(path)) return 'api'
-  if (/callback=|jsonp=/i.test(query)) return 'api'
-
-  // 2. Content-Type: application/json → api
-  const ct = (contentType || '').toLowerCase()
-  if (ct.includes('application/json')) return 'api'
-  if (ct.includes('text/html') || ct.includes('application/xhtml')) {
-    // 继续 HTML/SPA 判定
-  } else if (ct && !ct.includes('text/html') && !ct.includes('application/xhtml')) {
-    // 非 HTML 非 JSON 的 Content-Type(如 image/): unknown
-    return 'unknown'
-  }
-
-  // 3-4. HTML 内容判定
-  if (!sampleHtml) return 'unknown'
-  const head = sampleHtml.length > 4096 ? sampleHtml.slice(0, 4096) : sampleHtml
-  const headLower = head.toLowerCase()
-
-  // SPA 特征: 极短 HTML + 框架挂载点(典型 React/Vue/Angular CSR 壳)
-  const hasRootMount = /<div[^>]+id=["']?(root|app|__next|__nuxt)["']?/.test(headLower)
-  const hasFrameworkScript = /react|vue|angular|next\.js|nuxt|svelte/.test(headLower)
-  // SPA 壳通常 <2KB(只有 <div id="root"></div> + <script src="bundle.js">)
-  if (hasRootMount && (head.length < 2048 || hasFrameworkScript)) return 'spa'
-
-  // 静态 HTML: 含 <article>/<p>/<table> 等内容标签且长度足够(服务端渲染的章节/列表)
-  const hasContentTags = /<(article|p|table|ul|ol|div class=["']?[^"']*(content|chapter|list|book))/.test(headLower)
-  if (head.length >= 1200 && hasContentTags) return 'html'
-
-  // 短 HTML 且无内容标签: 可能是 SPA 壳或挑战页, 标 unknown 让引擎层进一步判
-  if (head.length < 500) return 'unknown'
-
-  // 中等长度 + 有框架脚本但无 root mount: 不确定, 标 unknown
-  if (hasFrameworkScript && !hasContentTags) return 'unknown'
-
-  return 'html'
-}
-
-/** 据 siteType 推荐引擎: api/html → http; spa → browser; unknown → auto(既有默认) */
-export function recommendEngineForSite(siteType: SiteType): 'auto' | 'http' | 'browser' {
-  if (siteType === 'api' || siteType === 'html') return 'http'
-  if (siteType === 'spa') return 'browser'
-  return 'auto'
-}
 
 // ---------- 浏览器渲染 (Playwright, 惰性加载) ----------
 let browserAvailable: boolean | null = null
@@ -3966,19 +3815,8 @@ function writeResponseCache(key: string, result: FetchResult, ttlMs: number): vo
   responseCacheTrim()
 }
 
-/** 诊断导出: 返回响应缓存当前状态(供 admin/snapshot 端点) */
-export function responseCacheSnapshot(): { size: number; entries: { key: string; at: number; ttlMs: number }[] } {
-  const entries: { key: string; at: number; ttlMs: number }[] = []
-  for (const [k, v] of responseCache) {
-    entries.push({ key: k.slice(0, 120), at: v.at, ttlMs: v.ttlMs })
-  }
-  return { size: responseCache.size, entries }
-}
-
-/** 手动清空响应缓存(供 admin/snapshot 端点 + 测试用) */
-export function clearResponseCache(): void {
-  responseCache.clear()
-}
+// R13-1D 清理: responseCacheSnapshot / clearResponseCache 调试导出已删除 (全域 0 引用)
+// 如未来需要 admin/snapshot 端点暴露响应缓存状态, 可基于 responseCache Map 重建。
 
 // ---------- agent-FF-crawl-phase8: HTTP/3 (QUIC) Alt-Svc 探测(观测用) ----------
 /**

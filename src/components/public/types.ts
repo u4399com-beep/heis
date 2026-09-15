@@ -142,6 +142,8 @@ export interface SearchData {
 /** 关键词落地页数据（/api/public/keyword） */
 export interface KeywordData {
   tag: string
+  /** R13-1A: 标签来源 'suggest'|'manual'|'pseo'(无命中时缺省 'suggest') — 用于 KeywordView 区分 PSEO 落地页模式 */
+  source?: string
   book: {
     id: string
     name: string
@@ -154,4 +156,20 @@ export interface KeywordData {
   } | null
   otherBooks: { id: string; name: string; author: string }[]
   related: string[]
+}
+
+/** R13-1A: 书籍 PSEO 关键词(/api/public/keyword?book=) */
+export interface BookPSEOData {
+  book: {
+    id: string
+    name: string
+    author: string
+    category: string
+  } | null
+  pseoKeywords: {
+    keyword: string
+    source: string
+    count: number
+    score: number
+  }[]
 }

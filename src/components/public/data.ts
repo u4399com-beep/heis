@@ -4,6 +4,7 @@
 import type {
   BookDetail,
   BookItem,
+  BookPSEOData,
   BookTagHit,
   CategoryItem,
   ChapterData,
@@ -109,6 +110,23 @@ export function fetchSearch(q: string): Promise<SearchData> {
 /** 关键词落地页 */
 export function fetchKeyword(tag: string): Promise<KeywordData> {
   return get<KeywordData>(`/api/public/keyword?tag=${encodeURIComponent(tag)}`)
+}
+
+/** R13-1A: 书籍 PSEO 关键词(用于 BookView 底部"相关搜索词") */
+export function fetchBookPSEOKeywords(bookId: string): Promise<BookPSEOData> {
+  return get<BookPSEOData>(`/api/public/keyword?book=${encodeURIComponent(bookId)}`)
+}
+
+/** R13-1A: 关键词聚合 — 调用 suggest 引擎返回某词的相关搜索词(用于 KeywordView 底部"相关搜索") */
+export async function fetchRelatedKeywords(keyword: string): Promise<string[]> {
+  try {
+    const res = await fetch(`/api/public/keyword/suggest?kw=${encodeURIComponent(keyword)}`, { cache: 'no-store' })
+    const j: { ok?: boolean; data?: { words?: unknown } } = await res.json().catch(() => null)
+    if (!j?.ok || !j.data || !Array.isArray(j.data.words)) return []
+    return (j.data.words as unknown[]).filter((t): t is string => typeof t === 'string' && !!t.trim()).slice(0, 12)
+  } catch {
+    return []
+  }
 }
 
 // ---------------- 页脚友链/链轮 ----------------

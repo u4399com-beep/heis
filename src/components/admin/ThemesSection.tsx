@@ -1,8 +1,8 @@
 'use client'
 
 // ============================================================
-// 主题模板 — 9 套精仿真实小说站点主题 (R10-1A 重构)
-// 废弃 theme-matrix 1728 组合矩阵 + 17 旧 preset; 单次加载 THEMES 数组
+// 主题模板 — 10 套精仿真实小说站点主题 (R13-1B 含 clone-trxsw 天人小说)
+// 单次加载 THEMES 数组 (R10-1A 起废弃 theme-matrix 1728 组合矩阵 + 17 旧 preset)
 // ============================================================
 import { useCallback, useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
@@ -110,7 +110,7 @@ export function ThemesSection({ onPreviewSite }: ThemesSectionProps) {
             <span className="text-xs font-normal text-zinc-500">(共 {themes.length} 套精仿)</span>
           </h2>
           <p className="mt-0.5 text-xs text-zinc-500">
-            9 套站点精仿主题; 默认站点: {defaultSite ? defaultSite.name : '未设置'}
+            10 套站点精仿主题; 默认站点: {defaultSite ? defaultSite.name : '未设置'}
           </p>
         </div>
         <Button variant="outline" size="sm" className="h-9 gap-1.5 border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800" onClick={() => load()}>

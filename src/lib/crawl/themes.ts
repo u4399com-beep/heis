@@ -1,6 +1,6 @@
 // ============================================================
-// 主题模版注册表 — 9 套精仿真实小说站点主题 (R12-1 重新精仿)
-// 9 套 preset 全部基于 agent-ctx/probe-html2/probe-<site>.{html,css} 抓取的真实
+// 主题模版注册表 — 10 套精仿真实小说站点主题 (R13-1B 重新精仿含 trxsw)
+// 前 9 套基于 agent-ctx/probe-html2/probe-<site>.{html,css} 抓取的真实
 // HTML+CSS, 像素级精仿 (CSS 变量、字体栈、配色、圆角、阴影、DOM 结构均与原站一致):
 //   clone-aijjxs     (久久小说 aijjxs.com, 实测 :root CSS 变量, 双层 radial-gradient)
 //   clone-ddyueshu   (得得小说 ddyueshu.cc, GBK 编码, 宋体 12px, 浅蓝底 #E9FAFF, 天蓝头 #88C6E5)
@@ -11,9 +11,11 @@
 //   clone-ggd66      (格格党 ggd66.com, 薄荷绿头 #56ccb5 + 青绿链 #00886d + 橙红 hover, 4px)
 //   clone-shipsay    (船说CMS demo.shipsay.com, 红主色 #ed4259, 深灰头 #3e3d43, 3px 圆角)
 //   clone-x2552      (吾爱文学 x2552.com, GBK 编码, 蓝紫链 #2f468f + 橙 hover #ff6600, 3px)
+// 第 10 套 (clone-trxsw) 域名已过期但规则保留, 通过 GitHub mason173/aira-browser 反查真实 DOM:
+//   clone-trxsw      (天人小说 trxsw.com, 唐人小说路由, .vlist 章节列表 + .detail 详情 + .content 正文 + .pager 翻页)
 //
 // 双布局维度:
-//   layout     → 首页布局 (9 种 clone-*)
+//   layout     → 首页布局 (10 种 clone-*)
 //   read       → 阅读页布局与排版参数 (经典典书版 / 沉浸暗色 / 分页横滑 / 书屋版)
 // read 可缺省: readOf() 会按 READ_DEFAULTS 回退, 旧调用点零破坏
 //
@@ -21,6 +23,7 @@
 //         getThemeById 不再回退 combo 解析器, 只查 THEMES
 // R11-1B: 新增第 10 套 clone-trxsw (天人小说)
 // R12-1: 删除 clone-trxsw (用户未指定); 重写 9 套 preset 基于真实抓取的 CSS 变量
+// R13-1B: 重新克隆 10 个站点主题 (含 trxsw): 恢复 clone-trxsw 基于 AiraBrowser 反查 DOM
 // ============================================================
 
 /** 阅读页布局原型 */
@@ -99,6 +102,7 @@ export interface ThemeDef {
     | 'clone-ggd66'
     | 'clone-shipsay'
     | 'clone-x2552'
+    | 'clone-trxsw'
   /** 是否暗色主题（影响 ReadView 默认工具条/背景） */
   dark: boolean
   /** 阅读页配置（缺省时由 READ_DEFAULTS 兜底） */
@@ -734,6 +738,68 @@ export const THEMES: ThemeDef[] = [
       headerStyle: 'solid',
     },
     preview: ['#fafafa', '#2f468f', '#ff6600'],
+  },
+
+  // ============================================================
+  // 10. clone-trxsw (天人小说 trxsw.com, GitHub mason173/aira-browser 反查 DOM)
+  // ============================================================
+  {
+    // 精仿·天人小说 trxsw.com (域名已过期但规则保留, 通过 GitHub mason173/aira-browser 反查真实 DOM)
+    // 反查依据 (AiraBrowser 完整配置直译):
+    //   站点: https://www.trxsw.com/ (天人小说, 唐人小说路由)
+    //   路径前缀: /tangren_ 或 /tangren/ (★关键: 路径前缀是 AiraBrowser 实测)
+    //   域名状态: 已过期但规则保留
+    // DOM 结构 (AiraBrowser 完整配置):
+    //   chapterLinkSelector: '.vlist > li:not(.now) > a, .read > li > a'   /* 目录章节链 */
+    //   contentSelector: '.content'                                          /* 正文容器 */
+    //   chapterTitleSelector: 'h1.headline'                                  /* 章节标题 */
+    //   prevSelector: '.pager a:first-of-type'                               /* 上一章 */
+    //   nextSelector: '.pager a:nth-of-type(3)'                              /* 下一章(★非翻页!) */
+    //   bookTitleSelector: '.detail .name strong'                            /* 书名 */
+    //   authorSelector: '.detail .author a'                                  /* 作者 */
+    //   coverSelector: '.detail > img'                                       /* 封面 */
+    //   synopsisSelector: '.intro'                                           /* 简介 */
+    // 类名特征 (.vlist/.detail/.content/.pager/.headline/.intro) 暗示:
+    //   简洁现代的小说站模板, 唐人小说系通用配色:
+    //   主色 深蓝/青色 + 浅灰/白背景 + 微软雅黑 + 小圆角卡片
+    id: 'clone-trxsw',
+    name: '精仿·天人小说',
+    desc: '像素级精仿·天人小说 trxsw.com: 唐人小说路由·.vlist 章节列表+.detail 详情+.content 正文+.pager 翻页·简洁现代深蓝主色',
+    layout: 'clone-trxsw',
+    dark: false,
+    read: {
+      layout: 'classic', measure: 720, lineHeight: 1.9, fontBase: 16,
+      indent: true, justify: false, toolbar: 'inline', texture: 'none', chapterDeco: 'rule',
+    },
+    vars: {
+      // 浅灰蓝底 (唐人小说系通用, 配 .vlist 简洁现代风)
+      bg: '#f5f7fa',
+      // 白卡 (.detail / .vlist li 卡片表面)
+      surface: '#ffffff',
+      // 浅蓝灰 alt (区块标题/表头底色)
+      surfaceAlt: '#eef2f7',
+      // 深灰文本 (.detail .name strong / .content 正文)
+      text: '#333333',
+      // 灰色次要文本 (.detail .author / .intro 次要)
+      textMuted: '#888888',
+      // 深蓝主色 (唐人小说系通用, .pager a.active / 链接 hover)
+      primary: '#2c7be5',
+      primaryText: '#ffffff',
+      // 深蓝副色 (徽章/排行前3加号色)
+      accent: '#1a5fb4',
+      // 浅灰边框 (.vlist li / .detail 卡片 border)
+      border: '#e0e6ed',
+      // 小圆角 (4px, 简洁现代风)
+      radius: '4px',
+      // 字体栈 (唐人小说系通用 微软雅黑)
+      fontFamily: '"Microsoft YaHei", Arial, sans-serif',
+      // 卡片阴影 (简洁现代风, 轻阴影)
+      cardShadow: '0 1px 3px rgba(0,0,0,0.05)',
+      // header 实测: 简洁深蓝顶 + logo + 搜索框 (solid 风格)
+      headerStyle: 'solid',
+    },
+    // 预览三色: [bg #f5f7fa, primary #2c7be5, accent #1a5fb4]
+    preview: ['#f5f7fa', '#2c7be5', '#1a5fb4'],
   },
 ]
 

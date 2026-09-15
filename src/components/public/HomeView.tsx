@@ -1,8 +1,10 @@
 // ============================================================
-// 首页视图 — 随机下拉词 + 6 分类图文卡 + 排序切换 + 按 theme.layout 分发 9 种 clone-* 布局
+// 首页视图 — 随机下拉词 + 6 分类图文卡 + 排序切换 + 按 theme.layout 分发 10 种 clone-* 布局
 // (全主题去分页, 一次拉 48 本)
 // R10-1A: 废弃 theme-matrix 1728 组合 + 17 旧 preset; 改为 9 套精仿 clone-* 布局
+// R11-1B: 扩充至 10 套 (新增 clone-trxsw 天人小说)
 // R12-1: 删除 clone-trxsw, 重写 9 套 preset 基于真实抓取的 CSS 变量
+// R13-1B: 重新克隆 10 个站点主题 (含 trxsw): 恢复 clone-trxsw 基于 AiraBrowser 反查 DOM
 // ============================================================
 'use client'
 
@@ -15,7 +17,8 @@ import { siteKeywordList, useSiteSEO, withAlpha } from './seo'
 import { generateTitle, generateMetaDescription, generateKeywords } from './auto-tdk'
 import { EmptyState, ErrorState, SuggestTagCloud, TagCloud, BookGridSkeleton } from './bits'
 import { CategoryShowcase } from './CategoryShowcase'
-// R10-1A: 9 个精仿真实小说站点首页布局, 懒加载分包
+// R10-1A: 10 个精仿真实小说站点首页布局, 懒加载分包 (R13-1B 含 clone-trxsw)
+// R13-1B: 第 10 个 clone-trxsw 天人小说 (AiraBrowser 反查 DOM)
 const HomeCloneAijjxs = dynamic(() => import('./layouts/HomeCloneAijjxs').then((m) => m.HomeCloneAijjxs))
 const HomeCloneDdyueshu = dynamic(() => import('./layouts/HomeCloneDdyueshu').then((m) => m.HomeCloneDdyueshu))
 const HomeClonePilishuwu = dynamic(() => import('./layouts/HomeClonePilishuwu').then((m) => m.HomeClonePilishuwu))
@@ -25,6 +28,7 @@ const HomeCloneHuangjinwu = dynamic(() => import('./layouts/HomeCloneHuangjinwu'
 const HomeCloneGgd66 = dynamic(() => import('./layouts/HomeCloneGgd66').then((m) => m.HomeCloneGgd66))
 const HomeCloneShipsay = dynamic(() => import('./layouts/HomeCloneShipsay').then((m) => m.HomeCloneShipsay))
 const HomeCloneX2552 = dynamic(() => import('./layouts/HomeCloneX2552').then((m) => m.HomeCloneX2552))
+const HomeCloneTrxsw = dynamic(() => import('./layouts/HomeCloneTrxsw').then((m) => m.HomeCloneTrxsw))
 import type { BookItem } from './types'
 
 interface FetchState {
@@ -165,7 +169,7 @@ export function HomeView({ page, cat }: { page: number; cat?: string }) {
         <EmptyState text="本页暂无书籍" hint="换个分类或翻页看看" />
       ) : (
         <>
-          {/* R10-1A: 9 个精仿真实小说站点首页布局分发; R11-1B: 扩充至 10 个 */}
+          {/* R10-1A: 9 个精仿真实小说站点首页布局分发; R11-1B: 扩充至 10 个; R13-1B: 恢复 clone-trxsw */}
           {theme.layout === 'clone-aijjxs' && <HomeCloneAijjxs books={books} loading={loading} />}
           {theme.layout === 'clone-ddyueshu' && <HomeCloneDdyueshu books={books} loading={loading} />}
           {theme.layout === 'clone-pilishuwu' && <HomeClonePilishuwu books={books} loading={loading} />}
@@ -175,8 +179,9 @@ export function HomeView({ page, cat }: { page: number; cat?: string }) {
           {theme.layout === 'clone-ggd66' && <HomeCloneGgd66 books={books} loading={loading} />}
           {theme.layout === 'clone-shipsay' && <HomeCloneShipsay books={books} loading={loading} />}
           {theme.layout === 'clone-x2552' && <HomeCloneX2552 books={books} loading={loading} />}
+          {theme.layout === 'clone-trxsw' && <HomeCloneTrxsw books={books} loading={loading} />}
           {/* feat-round-7 B3: 防御性兜底 — 未知布局/loading 期无任何布局命中时用 BookGridSkeleton */}
-          {!['clone-aijjxs', 'clone-ddyueshu', 'clone-pilishuwu', 'clone-23qb', 'clone-101kks', 'clone-huangjinwu', 'clone-ggd66', 'clone-shipsay', 'clone-x2552'].includes(theme.layout) && loading && (
+          {!['clone-aijjxs', 'clone-ddyueshu', 'clone-pilishuwu', 'clone-23qb', 'clone-101kks', 'clone-huangjinwu', 'clone-ggd66', 'clone-shipsay', 'clone-x2552', 'clone-trxsw'].includes(theme.layout) && loading && (
             <BookGridSkeleton count={12} />
           )}
         </>
