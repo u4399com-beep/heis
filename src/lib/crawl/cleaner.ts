@@ -191,7 +191,11 @@ export function cleanContentHtml(raw: string, cfgOverride?: Partial<CleanConfig>
     // 会把词组保护外的「乾县」继续转成「干县」), 双重转换是真实的简体损坏路径
     // 控制字符剥离(\b 退格等源站杂符; \t\n\r 不在剥离类内): 全库实扫发现 2 章孤立 \b
     // 随正文入库(dd 轮), 输出层统一剥离一次
-    return text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')
+    // 控制字符剥离(同 HTML 模式出口)
+    // R11-1A: 同步剥离零宽字符(U+200B/U+200C/U+200D/U+FEFF) —— 反爬水印常以零宽字符
+    //  注入正文(可视化无变化但影响搜索/排序/去重/字数统计); 与 cleanTextField/cleanIntro
+    //  同口径, 紧随控制字符剥离之后执行
+    return text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\u200B-\u200D\uFEFF]/g, '')
   }
 
   // HTML模式
@@ -215,6 +219,33 @@ export function cleanContentHtml(raw: string, cfgOverride?: Partial<CleanConfig>
     if (t && /^(下一页|上一页|下页|上页|目录|首?页|尾?页|返回目录|继续阅读|点击阅读|分页阅读?|加入书签|推荐本书?|报错).{0,4}$/.test(t)) {
       $(el).remove()
     }
+  })
+  // 1.55 R11-1A 新增: 水印段落识别 —— <p> 整段含站点 URL 推广 / 公众号推广 / 扫码下载 /
+  //      加入书签引导 / 章末推广段(本章未完/敬请期待)等水印特征词时, 整段 <p> 全删。
+  //      与 removeAdLines 的文本级正则不同: removeAdLines 跑在序列化 HTML 上, 只剥匹配
+  //      子串会留空 <p></p> 壳(后续 empty-p 清理才回收); 此处在 cheerio DOM 上直接
+  //      .remove() 节点, 避免壳段污染段落计数与排版。
+  //      ★长度闸门(120 字): 段落过长视为正文叙事(可能含 URL 但属合法内容, 如
+  //      "他打开了 https://example.com 这个网站"), 不剥; 短段(≤120 字)且命中水印词才剥。
+  //      ★特征词集: 6 类水印词任一命中即剥(走 .test 不需捕获组, 无 ReDoS 风险):
+  //        1) 裸域名灌水(www.xxx.com / xxx.cc / xxx.top 等)
+  //        2) 公众号推广(敬请期待/敬请关注/扫码关注/扫码下载/关注微信公众号)
+  //        3) 阅读引导(加入书签/为了方便下次阅读/本章未完/点击下一页)
+  //        4) 站点水印(本书首发于/请记住本书/最新章节请到/一秒记住)
+  //        5) 推广话术(为您提供...精彩小说/本站首发/本站更新最快)
+  //        6) 下载引导(下载APP/下载客户端/下载手机版)
+  $(`#__clean_root p`).each((_, el) => {
+    const t = ($(el).text() || '').trim()
+    if (!t) return
+    if (t.length > 120) return // 长段视为正文, 不剥(避免误伤含 URL 的叙事段)
+    const isWatermark =
+      /(www\.)?[a-z0-9-]+\.(com|net|cc|org|info|top|xyz|vip|site)/i.test(t) ||
+      /敬请(?:期待|关注)|扫码(?:关注|下载)|加入书签|关注微信公众号|为了方便下次阅读/.test(t) ||
+      /本章(?:未完|未完待续|继续阅读)|点击下一(?:页|章)/.test(t) ||
+      /本书首发于|请记住本书|最新章节请到|一秒记住/.test(t) ||
+      /为您提供.*?精彩小说|本站(?:首发|更新最快)/.test(t) ||
+      /下载(?:APP|客户端|手机版)/.test(t)
+    if (isWatermark) $(el).remove()
   })
   // 1.8 乱序段落重排: 部分站点(如 5165.org)把段落以 <div data-id="n"> 乱序输出作反采集
   //     手段 —— 直接清洗会保留乱序段落顺序。判定: 同一父容器下 ≥3 个 data-id 子元素且
@@ -339,8 +370,48 @@ export function cleanContentHtml(raw: string, cfgOverride?: Partial<CleanConfig>
       .map((l) => `<p>${l}</p>`)
       .join('')
   }
+  // 6. R11-1A 新增: 章节正文首行/末行剥离
+  //    源站常见两种噪声: ① 首行常为"第N章 标题"重复(源站把章节标题作为正文第一段输出,
+  //       与目录中已有章节标题重复); ② 末行常为"本章未完点击下一页"等"下一页"引导
+  //       (与 removeAdLines 文本级正则不同, 这里整段 <p> 移除避免留空 <p></p> 壳)。
+  //    策略: 用 cheerio 重新装载 HTML(轻量, 仅 <p> 节点), 取首段 .text() 命中
+  //      "第N章/Chapter N" 则删; 取末段 .text() 命中水印特征词或含裸域名则删。
+  //    ★不破坏 normalize: 此步在 normalize + rebuild 之后跑, 输出已是 <p>line</p>...
+  //      形态, cheerio 装载零成本; .remove() 仅删节点不重排, 段落顺序保持。
+  {
+    const $out = cheerio.load(`<div id="__strip_root">${out}</div>`)
+    const $root = $out('#__strip_root')
+    const $paras = $root.find('p')
+    // 首段剥离: 短文本(≤80 字)且匹配章节号归一化形态
+    if ($paras.length > 0) {
+      const $first = $paras.first()
+      const headText = ($first.text() || '').trim()
+      if (headText.length <= 80 && (
+        /^第[一二三四五六七八九十百千万0-9]+(?:章|节|回|话|集)\b/.test(headText) ||
+        /^Chapter\s+\d+/i.test(headText)
+      )) {
+        $first.remove()
+      }
+    }
+    // 末段剥离: 短文本(≤200 字)且匹配"本章未完/点击下一页/敬请期待"或含裸域名
+    //   ★重新查找因首段可能已被删, $paras 已失效
+    const $paras2 = $root.find('p')
+    if ($paras2.length > 0) {
+      const $last = $paras2.last()
+      const tailText = ($last.text() || '').trim()
+      if (tailText.length <= 200 && (
+        /本章(?:未完|未完待续|继续阅读)|点击下一(?:页|章)|敬请(?:期待|关注)|加入书签|为了方便下次阅读/.test(tailText) ||
+        /(www\.)?[a-z0-9-]+\.(com|net|cc|org|info|top|xyz|vip|site)/i.test(tailText) ||
+        /本书首发于|请记住本书|最新章节请到|一秒记住/.test(tailText)
+      )) {
+        $last.remove()
+      }
+    }
+    out = $root.html() || ''
+  }
   // 同上: HTML 模式出口同样剥离控制字符(源站 \b 杂符曾随 <p>\b话虽… 入库)
-  return out.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '').trim()
+  // R11-1A: 同步剥离零宽字符(U+200B/U+200C/U+200D/U+FEFF), 与 plainText 分支同口径
+  return out.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\u200B-\u200D\uFEFF]/g, '').trim()
 }
 
 // 广告正则清洗的 URL 保护例外(y-a重放): 默认首条广告正则
@@ -442,6 +513,11 @@ export function cleanTextField(raw: string | undefined | null, maxLength?: numbe
   // 关键词)漏网 —— 源站标题混入 \x00/\x08/\x0B 等随 DB 入库并进 JSON API/前台。
   // \t\n\r(\x09\x0A\x0D)不在剥离类内, 与正文出口同口径
   v = v.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')
+  // R11-1A 新增: 零宽字符剥离(U+200B/U+200C/U+200D/U+FEFF 等不可见字符)
+  //  - 反爬水印常以零宽字符注入书名/作者/章节标题(可视化无变化但影响搜索/排序/去重)
+  //  - 与控制字符剥离同口径, 紧随其后执行; 不影响后续 t2sText(零宽字符不在 CJK 区)
+  //  - 范围说明: \u200B-\u200D = ZWSP/ZWNJ/ZWJ; \uFEFF = BOM/ZWNBSP
+  v = v.replace(/[\u200B-\u200D\uFEFF]/g, '')
   // 繁体→简体(检测未命中原样返回)
   v = t2sText(v)
   v = v
@@ -449,7 +525,20 @@ export function cleanTextField(raw: string | undefined | null, maxLength?: numbe
     .replace(/\\n/g, '\n')
     .replace(/[\r\n\t]+/g, ' ')
     .replace(/\s{2,}/g, ' ')
+    // R11-1A 新增: 站点水印清洗(开头"本书首发于..."等水印, 在 trim 前跑)
+    //  - 源站常在书名/作者/分类字段开头注入"本书首发于 www.xxx.com"类水印推广文本
+    //  - 非贪婪匹配 [^，。；]* 到首个句末标点(，。；)截断, 避免误伤真实内容
+    //  - [，。；]? 可选吞掉句末标点, 防止残留孤立标点; g 标志支持多次匹配(理论上
+    //    单行字段只可能命中一次, 但 g 兜底防多水印拼接)
+    .replace(/^(?:本书首发于|转载请注明出处|本书来源于|本书首发自)[^，。；]*[，。；]?/g, '')
     .trim()
+  // R11-1A 新增: 重复标点压缩(!!! → !, 。。。 → 。, ??? → ?, ！！！ → ！)
+  //  - 源站标题/简介常因采集模板替换产出连续重复标点(如 "！！！" "。。" "???"),
+  //    影响视觉与去重; 压缩为单个不影响语义
+  //  - 仅压缩 3 种连续重复标点(! ? 。 及其全角形式 ! ？。), 不动其他标点避免误伤
+  //    (如 "--" 是分隔符, "..." 是省略号 —— 这些不在压缩范围)
+  //  - 反向引用 \1+ 匹配"捕获组1的字符重复1次以上", 替换为 $1(单字符)实现压缩
+  v = v.replace(/([!?。！？])\1+/g, '$1')
   if (maxLength && v.length > maxLength) {
     // 按码点截断(UTF-16 slice 会把 emoji 等 astral 字符代理对斩半产出乱码 U+FFFD)
     v = Array.from(v).slice(0, maxLength).join('')
@@ -465,6 +554,8 @@ export function cleanIntro(raw: string | undefined | null, maxLength = 2000): st
   v = decodeEntitiesOnce(v)
   // 控制字符剥离(qq-e): 与 cleanTextField 同口径(\t\n\r 保留, 供下方按行切段)
   v = v.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')
+  // R11-1A 新增: 零宽字符剥离(同 cleanTextField, 反爬水印注入简介的零宽字符)
+  v = v.replace(/[\u200B-\u200D\uFEFF]/g, '')
   v = t2sText(v)
   v = removeAdLines(v, DEFAULT_CLEAN_CONFIG.adPatterns)
   v = v
@@ -474,6 +565,27 @@ export function cleanIntro(raw: string | undefined | null, maxLength = 2000): st
     .map((l) => l.trim())
     .filter(Boolean)
     .join('\n')
+  // R11-1A 新增: 简介末尾推广段剥离 + 简介开头元数据剥离
+  //  ① 末尾推广段: 简介末尾几段常为"本书首发于 xxx, 敬请关注" / "正版阅读请到 xxx"
+  //     等推广段, 与简介无关。按行扫描, 从末尾向前扫, 连续命中推广词的段全删
+  //     (遇到非推广段即停, 保留中间正常简介)
+  //  ② 开头元数据: 部分站点模板在简介开头残留"字数：xxx万字 / 状态：连载中 / 分类：玄幻"
+  //     等元数据行, 与简介无关。从开头向后扫, 连续命中元数据前缀的段全删
+  //  两者均走"连续命中即剥"策略(非全文搜索), 避免误伤简介中合法提及"字数"的段落
+  {
+    const promoStart = /^(?:本书首发于|正版阅读请到|敬请关注|请记住|最新章节请到|一秒记住|本书来源于|转载请注明|本书首发自)/
+    const metaStart = /^(?:字数|状态|分类|作者|书名|类型|更新时间|最新章节|写作进度|完成进度)[:：]/
+    const lines = v.split('\n')
+    // 末尾向前剥连续推广段
+    while (lines.length > 0 && promoStart.test(lines[lines.length - 1])) {
+      lines.pop()
+    }
+    // 开头向后剥连续元数据段
+    while (lines.length > 0 && metaStart.test(lines[0])) {
+      lines.shift()
+    }
+    v = lines.join('\n')
+  }
   if (v.length > maxLength) v = Array.from(v).slice(0, maxLength).join('')
   return v
 }
@@ -484,6 +596,21 @@ export function cleanChapterTitle(raw: string | undefined | null, bookName?: str
   let t = cleanTextField(raw)
   if (bookName) {
     t = t.replace(new RegExp(`^${escapeReg(bookName)}\\s*`, 'g'), '')
+  }
+  // R11-1A 新增: 卷标题剥离(如 "第一卷 玄黄界 第一章 大道" → 只保留 "第一章 大道")
+  //  - 源站部分章节标题会带"第N卷 卷名"前缀(完整形式: 第N卷 卷名 第M章 章名), 卷名
+  //    本应单独存到 volume 字段(rules.toc.fields.volume), 但当前章节标题里不应包含
+  //  - 非贪婪匹配 \S+? 卷名, 避免误伤"第一卷中" 这类正常短语(短语无后续"第N章"则不剥)
+  //  - 卷号支持一二三...十百千万 + 阿拉伯数字; 章号同理(章/节/回/话/集 5 种)
+  //  - 不破坏现有 junk 切割: 卷剥离在 junk 切割之前跑, 剥后字符串更短, junk 切割更精准
+  {
+    const volMatch = t.match(/^第[一二三四五六七八九十百千万0-9]+卷\s+\S+?\s+(第[一二三四五六七八九十百千万0-9]+(?:章|节|回|话|集))/)
+    if (volMatch && volMatch[1]) {
+      // volMatch[0] = "第一卷 玄黄界 第一章"; volMatch[1] = "第一章"
+      // 切片保留从 volMatch[1] 起始位置开始的剩余字符串(含章名后缀)
+      const cutStart = volMatch[0].length - volMatch[1].length
+      t = t.slice(cutStart)
+    }
   }
   // 修复(qq-e): 剥离切割点从「分隔符起点」改为「垃圾关键词起点」—— 原实现
   // t.slice(0, junk.index) 以匹配起点(分隔符)切割, 标题内嵌连字符且站点尾巴与正文隔了
@@ -506,4 +633,71 @@ export function cleanChapterTitle(raw: string | undefined | null, bookName?: str
   // 按码点截断(与 cleanTextField/cleanIntro 同款): UTF-16 slice(0,120) 会把 emoji 等
   // astral 字符代理对斩半产出乱码(U+FFFD)
   return Array.from(t.trim()).slice(0, 120).join('') || '未命名章节'
+}
+
+/**
+ * R11-1A 新增: 章节序号归一化(供排序/去重识别用, 不修改章节标题可见文本)
+ *
+ * 章节标题形态各异("第1章" / "第一章" / "第001章" / "Chapter 1" / "1." / "01 "),
+ * 但语义上的章节序号是同一个。本函数将各种形态归一化为统一数字字符串(供 sort/dedup):
+ *   - "第3章 大道" → "3"
+ *   - "第三章 大道" → "3"
+ *   - "第003章 大道" → "3"
+ *   - "Chapter 3 Foo" → "3"
+ *   - "3. 大道" → "3"
+ *   - "卷一 第三章" → "3"(仅取章号, 不取卷号)
+ *   - 无法识别序号 → 返回 null(调用方应回退到字符串排序)
+ *
+ * ★不修改标题文本: cleanChapterTitle 保留原文(用户体验优先, 不强制改写); 此函数仅供
+ *   排序键生成/去重指纹计算用, 不影响存储与展示。
+ *
+ * 实现说明: 中文数字一二三...十百千转为 int(支持 1-9999 范围, 大数罕见);
+ * 阿拉伯数字直接 parseInt; 两者均 stripLeadingZeros 后 String(num) 输出。
+ */
+const CN_NUM_MAP: Record<string, number> = {
+  '零': 0, '〇': 0, '一': 1, '二': 2, '两': 2, '三': 3, '四': 4, '五': 5,
+  '六': 6, '七': 7, '八': 8, '九': 9, '十': 10, '百': 100, '千': 1000,
+}
+
+function cnNumToInt(s: string): number | null {
+  if (!s) return null
+  // 纯阿拉伯数字直接解析
+  if (/^\d+$/.test(s)) return parseInt(s, 10)
+  // 中文数字解析(支持 一/二...十/十一/二十/一百零五 等 1-9999 范围)
+  if (!/^[零〇一二两三四五六七八九十百千]+$/.test(s)) return null
+  let total = 0
+  let current = 0
+  for (const ch of s) {
+    const n = CN_NUM_MAP[ch]
+    if (n === undefined) return null
+    if (n >= 10) {
+      // 十/百/千 是乘数; 前无数字则视为 1(如"十"=10, "百"=100)
+      current = (current || 1) * n
+      if (n === 1000) { total += current; current = 0 }
+    } else {
+      // 0-9 累加到 current
+      if (current >= 10) { total += current; current = 0 }
+      current = current * 10 + n
+    }
+  }
+  return total + current
+}
+
+export function normalizeChapterNumber(title: string | undefined | null): string | null {
+  if (!title) return null
+  const t = title.trim()
+  // 优先匹配"第N章/节/回/话/集" 形态(中文章节标号)
+  let m = t.match(/第([零〇一二两三四五六七八九十百千0-9]+)(?:章|节|回|话|集)/)
+  if (m) {
+    const n = cnNumToInt(m[1])
+    if (n !== null) return String(n)
+  }
+  // 匹配"Chapter N" 形态(英文章节标号)
+  m = t.match(/Chapter\s+(\d+)/i)
+  if (m) return String(parseInt(m[1], 10))
+  // 匹配"N. " 或 "N、" 形态(纯数字开头章节)
+  m = t.match(/^(\d+)[.、)]/)
+  if (m) return String(parseInt(m[1], 10))
+  // 无法识别
+  return null
 }

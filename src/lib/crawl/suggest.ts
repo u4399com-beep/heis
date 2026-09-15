@@ -1,7 +1,8 @@
 // ============================================================
 // 搜索引擎下拉关键词聚合
-// 百度 / 必应 / 搜狗 / 360 / DuckDuckGo 下拉建议
+// 百度 / 必应 / 搜狗 / 360 / DuckDuckGo / Google / Yandex 下拉建议
 // 作为书籍辅助标签/关联词, 独立访问页面均指向主书籍信息页
+// R11-1C: 新增 Google Suggest(XML 解析) + Yandex Suggest(JSON)
 // ============================================================
 import { fetchBinary } from './fetcher'
 
@@ -44,11 +45,12 @@ const ENGINES: SuggestEngine[] = [
   },
   {
     name: 'so360',
-    url: (kw) => `https://sug.so.360.cn/suggest?word=${encodeURIComponent(kw)}&encode=utf-8`,
+    url: (kw) => `https://sug.so.360.cn/suggest/word?word=${encodeURIComponent(kw)}`,
     parse: (body) => {
+      // R11-1C: 修正 360 接口 (sug.so.360.cn/suggest/word?word= 返回 JSON {result:[{word:...}]})
       try {
-        const j = JSON.parse(body.replace(/^[^(]*\(/, '').replace(/\);?\s*$/, ''))
-        return (j?.s || j?.data || []).map((x: any) => (typeof x === 'string' ? x : x?.word)).filter(Boolean)
+        const j = JSON.parse(body)
+        return (j?.result || []).map((x: any) => x?.word).filter((s: any) => typeof s === 'string')
       } catch { return [] }
     },
   },
@@ -60,6 +62,37 @@ const ENGINES: SuggestEngine[] = [
         const j = JSON.parse(body)
         if (Array.isArray(j) && Array.isArray(j?.[1])) return j[1]
         if (Array.isArray(j)) return j.map((x: any) => x?.phrase).filter(Boolean)
+        return []
+      } catch { return [] }
+    },
+  },
+  {
+    // R11-1C: Google Suggest XML 接口 (海外可达, 国内偶发可访问)
+    name: 'google',
+    url: (kw) => `https://suggestqueries.google.com/complete/search?output=toolbar&hl=zh-CN&q=${encodeURIComponent(kw)}`,
+    parse: (body) => {
+      // XML 格式: <CompleteSuggestion><suggestion data="xxx"/></CompleteSuggestion>
+      try {
+        const matches = [...body.matchAll(/<suggestion\s+data="([^"]+)"\s*\/>/gi)]
+        return matches.map((m) => m[1]).filter((s) => s && typeof s === 'string')
+      } catch { return [] }
+    },
+  },
+  {
+    // R11-1C: Yandex Suggest (备用引擎, 海外可达, 中文支持一般但偶有长尾词)
+    name: 'yandex',
+    url: (kw) => `https://suggest.yandex.com/suggest-backend/suggest/suggest-ya.cgi?part=${encodeURIComponent(kw)}&srv=www.yandex.com&icon=1&fact=1&pos=4&sn=7&ll=0&v=4&uilv=2&lang=zh&ssl=1&multiline=1`,
+    parse: (body) => {
+      // Yandex 返回 JSON 数组 [query, [[suggestion, ...], ...], ...]
+      try {
+        const j = JSON.parse(body)
+        if (Array.isArray(j) && j.length >= 2 && Array.isArray(j[1])) {
+          return j[1].map((item: any) => {
+            if (typeof item === 'string') return item
+            if (Array.isArray(item) && item.length > 0) return String(item[0])
+            return ''
+          }).filter(Boolean)
+        }
         return []
       } catch { return [] }
     },

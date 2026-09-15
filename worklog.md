@@ -8338,3 +8338,273 @@ Stage Summary:
   · ddyueshu.primary=#6CAD53 ✓
   · shipsay.primary=#ed4259 ✓
   · biqutu 规则已入库 ✓
+
+---
+Task ID: R11-1A
+Agent: full-stack-developer
+Task: 编写 fanqianxs.com + trxsw.com 采集规则 + 强化 cleaner.ts 噪声清洗
+
+Work Log:
+- 反查依据:
+  · fanqianxs.com: GitHub Moli-X/mumuceo/wle2015 三书源汇总 DOM
+    (与 23qb.net 同款 JIEQI CMS 模板, og:novel:* meta + #list dl dt/dd + #content)
+  · trxsw.com: GitHub mason173/aira-browser 完整配置直译
+    (路径前缀 /tangren_ 或 /tangren/, .vlist/.detail/.content/.pager 类名)
+- 创建 scripts/seed-rule-fanqianxs.ts (JIEQI CMS 模板):
+  · list: /xuanhuan/{page}/ .novelslist2 li:not(:first-child)
+    (.s2>a 书名+bookUrl / .s3 最新章节 / .s4 作者 / .s5 更新时间 / .s6 状态)
+    备用 .booklist li 同款(23qb 模板切换时存在)
+  · book: og:novel:* meta 全套(book_name/author/category/status/latest_chapter_name/
+    update_time) + #intro 简介 + #fmimg img 封面
+  · toc: #list dl dt:nth-of-type(2) ~ dd (★跳过第1个dt"最新章节"区, JIEQI 双dt 模板)
+  · content: #content p 段落(老版本); 新版本可改 #htmlContent p
+  · fetch.engine='scrapling-static' (★Cloudflare 防护需 TLS 指纹伪装)
+    timeout 25s + hostGateLimit 2 (CF 站降低并发防 rate-limit)
+  · clean.adPatterns: fanqianxs 域名灌水 + 章末广告词(推荐下.*更新快 / 广个告.*离线朗读 等)
+    + 通用 JIEQI 推广词(本书首发于 / 请记住本书 / 一秒记住 等)
+  · 测试探针: list=/xuanhuan/1/ book=/book/1234/ toc=/book/1234/ content=/book/1234/5678.html
+  · 探针失败不阻断入库(CF 防护站点结构反推, 待 scrapling 实测)
+- 创建 scripts/seed-rule-trxsw.ts (唐人小说路由):
+  · list: /tangren_/sort/1/{page}.html .vlist li (a 书名+bookUrl)
+    ★路径前缀 /tangren_ 是关键(AiraBrowser 实测); /tangren/ 为备用前缀
+  · book: .detail .name strong 书名 + .detail .author a 作者 + .detail>img 封面 + .intro 简介
+  · toc: .vlist > li:not(.now) > a (★:not(.now) 排除"当前阅读位置"项, AiraBrowser 直译)
+  · content: .content (h1.headline 章节标题, AiraBrowser contentSelector 直译)
+  · fetch.engine='scrapling-static' (域名过期但规则保留, 兼容 SSL/CF 防护)
+  · clean.adPatterns: trxsw 域名灌水 + 天人小说/唐人小说推广词 + 通用推广词
+  · 翻页关闭: AiraBrowser nextSelector=.pager a:nth-of-type(3) 是"下一章"而非"下一页",
+    开启翻页会多章并一章(kanunu8 式陷阱)
+  · 测试探针: list=/tangren_/sort/1/1.html book=/tangren_/1234/ toc=/tangren_/1234/
+    content=/tangren_/1234/5678.html
+  · 探针失败不阻断入库(域名过期站点, 待镜像恢复后实测)
+- 强化 src/lib/crawl/cleaner.ts 噪声清洗(新增 7 处, 4 个函数全覆盖):
+  ① cleanTextField (line 506, 书名/作者/分类/关键词等单行字段):
+    · 新增零宽字符剥离 [\u200B-\u200D\uFEFF] (控制字符剥离后立即跑)
+      反爬水印常以零宽字符注入书名/作者/章节标题(可视化无变化但影响搜索/排序/去重)
+    · 新增站点水印清洗 ^(本书首发于|转载请注明出处|本书来源于|本书首发自)[^，。；]*[，。；]?
+      (在 trim 前跑, 非贪婪匹配到句末标点截断, 避免误伤真实内容)
+    · 新增重复标点压缩 ([!?。！？])\1+ → $1 (!!! → !, 。。。 → 。, ??? → ?)
+      仅压缩 3 种连续重复标点(! ? 。 及其全角形式), 不动其他标点避免误伤
+  ② cleanIntro (line 550, 多行简介):
+    · 新增零宽字符剥离 (同 cleanTextField, 反爬水印注入简介的零宽字符)
+    · 新增简介末尾推广段剥离 (从末尾向前扫, 连续命中"本书首发于/正版阅读请到/敬请关注"
+      等推广词的段全删, 遇到非推广段即停保留中间正常简介)
+    · 新增简介开头元数据剥离 (从开头向后扫, 连续命中"字数：/状态：/分类：/作者："
+      等元数据前缀的段全删, 站点模板残留与简介无关)
+    · 两者均走"连续命中即剥"策略(非全文搜索), 避免误伤简介中合法提及"字数"的段落
+  ③ cleanChapterTitle (line 594, 章节标题):
+    · 新增零宽字符剥离 (继承自 cleanTextField)
+    · 新增卷标题剥离: ^第[一二三四五六七八九十百千0-9]+卷\s+\S+?\s+(第N章/节/回/话/集)
+      匹配前缀, 切片保留从"第N章"起始位置开始的剩余字符串
+      (如"第一卷 玄黄界 第一章 大道" → 只保留"第一章 大道", 卷名应单独存 volume 字段)
+    · 新增 normalizeChapterNumber() 导出函数 (章节序号归一化供排序/去重识别用)
+      支持中文数字(一二三...十百千)/阿拉伯数字/Chapter N 等形态 → 统一数字字符串
+      ★不修改标题文本: cleanChapterTitle 保留原文(用户体验优先), 此函数仅供排序键生成
+  ④ cleanContentHtml (line 155, 章节正文):
+    · 新增水印段落识别 (cheerio DOM 1.55 步, 在 removeSelectors 之后 data-id 重排之前)
+      <p> 整段含站点 URL 推广/公众号推广/扫码下载/加入书签引导/章末推广段等水印特征词时
+      整段 <p> 全删(.remove() 节点不留空 <p></p> 壳, 与 removeAdLines 文本级正则互补)
+      ★长度闸门 120 字: 段落过长视为正文叙事(可能含 URL 但属合法内容), 不剥
+      ★特征词集 6 类: 裸域名/公众号推广/阅读引导/站点水印/推广话术/下载引导
+    · 新增首行/末行剥离 (cheerio DOM 6 步, 在 normalize + rebuild 之后 final return 之前)
+      首段: 短文本(≤80字)且匹配"第N章/Chapter N"形态则删(源站把章节标题作为正文第一段输出)
+      末段: 短文本(≤200字)且匹配"本章未完/点击下一页/敬请期待"或含裸域名则删
+      (与 removeAdLines 文本级正则不同, 这里整段 <p> 移除避免留空 <p></p> 壳)
+    · 新增零宽字符剥离 (final return 与 plainText 分支同口径)
+      plainText 分支: text.replace([\x00-\x08\x0B\x0C\x0E-\x1F\u200B-\u200D\uFEFF], '')
+      HTML 分支: out.replace([\x00-\x08\x0B\x0C\x0E-\x1F\u200B-\u200D\uFEFF], '').trim()
+- 不破坏现有 ReDoS 防护:
+  · 新增正则全部走非贪婪 .*? 或字符类 [\u200B-\u200D\uFEFF], 无嵌套量词
+  · ([!?。！？])\1+ 反向引用 + 量词, 但无嵌套量词形态(不命中 [+*]\s*\)\s*[+*{] 闸门)
+  · 卷标题正则 ^第[一二三四五六七八九十百千0-9]+卷\s+\S+?\s+(...) 无嵌套量词
+  · 水印特征词 .test() 走简单 alternation, 无回溯空间
+  · 长度闸门(120字/80字/200字)限制匹配空间, 进一步降低 ReDoS 风险
+- 控制字符剥离规则与现有 [\x00-\x08\x0B\x0C\x0E-\x1F] 一致:
+  · 零宽字符 [\u200B-\u200D\uFEFF] 紧随其后追加, 不改变原有行为
+  · \t\n\r 不在剥离类内(与正文出口同口径, 供按行切段用)
+
+Stage Summary:
+- 2 个新 seed-rule 脚本创建完成:
+  · scripts/seed-rule-fanqianxs.ts (JIEQI CMS 模板, CF 防护, scrapling-static)
+  · scripts/seed-rule-trxsw.ts (唐人小说路由, 域名过期规则保留, scrapling-static)
+- src/lib/crawl/cleaner.ts 新增 7 处噪声清洗功能(覆盖 4 个核心函数):
+  · cleanTextField: 零宽剥离 + 站点水印清洗 + 重复标点压缩 (3 处)
+  · cleanIntro: 零宽剥离 + 末尾推广段剥离 + 开头元数据剥离 (3 处)
+  · cleanChapterTitle: 卷标题剥离 + normalizeChapterNumber 导出 (2 处, 1 函数+1 helper)
+  · cleanContentHtml: 水印段落识别 + 首行/末行剥离 + 零宽剥离 (3 处)
+- 新增导出函数: normalizeChapterNumber(title) → string|null (章节序号归一化供排序/去重)
+- 新增 helper: cnNumToInt(s) → number|null (中文数字→int, 支持 1-9999 范围)
+- 验证:
+  · bunx tsc --noEmit → 0 errors ✓
+  · bun run lint → 0 errors / 0 warnings ✓
+  · cleaner.ts 函数签名全部保持向后兼容(cleanTextField/cleanIntro/cleanChapterTitle/
+    cleanContentHtml 签名不变, normalizeChapterNumber 为新增导出)
+
+---
+Task ID: R11-1B
+Agent: full-stack-developer
+Task: 克隆 trxsw.com 主题模板 (clone-trxsw) + 审计 10 套克隆主题模板完整性
+
+Work Log:
+- 反查依据 (R11-1A 已落库的 trxsw.com AiraBrowser 配置):
+  · 站点: https://www.trxsw.com/ (天人小说, 唐人小说路由, 域名已过期但规则保留)
+  · 路径前缀: /tangren_ 或 /tangren/
+  · DOM 结构: .vlist > li:not(.now) > a (目录章节链) / .content (正文) /
+    h1.headline (章节标题) / .pager a:nth-of-type(3) (下一章, ★非翻页) /
+    .detail .name strong (书名) / .detail .author a (作者) /
+    .detail > img (封面) / .intro (简介)
+  · 类名特征 .vlist/.detail/.content/.pager/.headline/.intro 暗示简洁现代模板,
+    唐人小说系通用配色: 深蓝主色 + 浅灰蓝底 + 白卡 + 微软雅黑 + 小圆角
+
+- 任务 A: 新增 clone-trxsw 主题 preset + HomeCloneTrxsw.tsx 布局组件:
+  ① themes.ts 修改:
+    · line 13 header 注释新增 clone-trxsw 描述
+    · line 101 layout 类型联合新增 'clone-trxsw'
+    · line 633-693 新增第 10 个 preset (id='clone-trxsw', name='精仿·天人小说'):
+      - bg #f5f7fa (浅灰蓝底) / surface #ffffff (白卡) / surfaceAlt #eef2f7
+      - text #333333 / textMuted #888888 / primary #2c7be5 (深蓝主色) /
+        accent #1a5fb4 (深蓝副色) / border #e0e6ed / radius 4px (小圆角)
+      - fontFamily "Microsoft YaHei", Arial, sans-serif
+      - cardShadow 0 1px 3px rgba(0,0,0,0.05) (轻阴影)
+      - headerStyle solid (简洁深蓝顶)
+      - read: classic / measure 720 / lineHeight 1.9 / fontBase 16 /
+        indent true / justify false / toolbar inline / texture none / chapterDeco rule
+      - preview ['#f5f7fa', '#2c7be5', '#1a5fb4']
+  ② 创建 src/components/public/layouts/HomeCloneTrxsw.tsx (513 行):
+    · 顶 header (.container.head DNA: logo + 搜索框 + 用户菜单书架/排行/登录)
+    · nav (浅蓝灰底 #eef2f7 + 8 分类 + borderTop 2px primary)
+    · 主区双栏 (lg:grid-cols-[1fr_300px]):
+      - 左主栏 70%: .vlist 最新更新 24 条 (5 列: 序号/类别15%/书名20%/最新章节40%/作者15%/时间10%)
+      - 右侧栏 30%: 热门推荐 10 (前3 加蓝号 primary 徽章) + 完本推荐 4 (status=completed)
+    · 分类列表网格 (6 列): 从 books 提取唯一 category 名 + 数量
+    · 友情链接 (5 个站点名/标签) + footer (站点信息)
+    · 全组件 theme.vars 引用 56 处 (使用 usePublic() + theme.vars, 无硬编码颜色)
+    · Skeleton 加载态 (header + nav + 12 vlist 行 + 2 侧栏 + 6 分类格)
+    · 空态处理: books.length === 0 直接 return null (上层 HomeView 兜底 EmptyState)
+    · 响应式: 移动单列 / 桌面双栏 (lg:grid-cols-[1fr_300px])
+  ③ HomeView.tsx 接线:
+    · line 27-28: 新增 dynamic import HomeCloneTrxsw
+    · line 179: 新增分发分支 {theme.layout === 'clone-trxsw' && <HomeCloneTrxsw ...>}
+    · line 181: 兜底白名单扩为 10 个 layout key (含 'clone-trxsw')
+    · line 2: header 注释更新为 "分发 10 种 clone-* 布局"
+  ④ React hooks 调用顺序修复:
+    · TrVListRow / TrPopularRow / TrCompletedCard: 顶部统一 const { navigate, theme } = usePublic() 解构,
+      避免在 JSX 属性中重复调用 usePublic()
+    · HomeCloneTrxsw 顶部 const { site, theme, navigate } = usePublic() 解构,
+      catList onClick 闭包引用外层 navigate (避免 rules of hooks 违规)
+  ⑤ lint 修复:
+    · 删除未使用 import formatWords (HomeCloneTrxsw.tsx 不需要字数格式化)
+
+- 任务 B: 10 套克隆主题模板完整性审计:
+  ① 首页适配 (HomeView → HomeClone*.tsx):
+    · 10 套全部接线 ✓ (clone-aijjxs/ddyueshu/pilishuwu/23qb/101kks/huangjinwu/ggd66/shipsay/x2552/trxsw)
+    · 新增 clone-trxsw 已正确接入 HomeView dynamic import + 分发分支 + 兜底白名单
+  ② 分类页适配 (CategoryView → ThemeBookList):
+    · 所有主题共用 ThemeBookList 通用组件 (BookCard.tsx line 125-138)
+    · ThemeBookList 内部调用 BookCard 通用卡片, 完整消费 theme.vars ✓
+    · 分类页适配无需按主题差异化, 单一通用组件已覆盖 10 套主题
+  ③ 书页适配 (BookView):
+    · BookView 全部元素均消费 theme.vars (panelStyle / 书名 / 作者 / 简介 / 标签 / 按钮 / 目录 / 翻页)
+    · BookView 通过 theme.id === 分支仅对 legacy 主题 (pili/aurora/paper/mango/bamboo/rose/magazine/theater)
+      做差异化, clone-* 主题统一走默认渲染分支 + 默认目录列表
+    · 无硬编码颜色 ✓
+  ④ 目录页适配 (BookView 内 toc):
+    · clone-* 主题统一走默认 3 列剧集列表 (EP01 编号 + 字数) 分支 (BookView.tsx line 601-625)
+    · 全部消费 theme.vars (border/text/textMuted/primary/withAlpha(primary, ...)) ✓
+    · 分卷分组 (kk-a) 仅当数据含 volume 字段才启用, 与 clone-* 主题无冲突
+  ⑤ 章节页适配 (ReadView):
+    · readOf(theme) 全字段生效: layout/measure/lineHeight/fontBase/indent/justify/toolbar/texture/chapterDeco
+    · ReadClassic.tsx 内 maxWidth: read.measure, fontPx: actualFontPx(userPx, read) = userPx + (read.fontBase - 17)
+    · ReadPili.tsx 同款消费 read.config
+    · 10 套主题的 read 配置全部有效 (见 theme-audit.md 表格)
+
+- 主题审计报告: /home/z/my-project/agent-ctx/theme-audit.md
+  · 5 个章节 (首页/分类页/书页/目录页/章节页) 全部审计
+  · 10 套主题逐个列出接线状态 + theme.vars 引用数
+  · BookView 元素逐项审计 (panelStyle/H1/作者/简介/标签/按钮/目录/翻页等 14 项)
+  · ReadView read 配置消费位置逐项验证 (9 字段)
+  · 列出未修复的良性硬编码 (Tailwind hover 类 / 船说CMS 视觉 DNA 色 / 通用 #fff 白文字)
+  · 验证结果: tsc 0 errors / lint 0 errors / THEMES.length=10 / clone-trxsw primary=#2c7be5
+
+Stage Summary:
+- 新增第 10 套精仿主题 clone-trxsw:
+  · primary #2c7be5 (深蓝, 唐人小说系通用)
+  · DOM 模板: .vlist 章节列表 + .detail 详情 + .content 正文 + .pager 翻页 (AiraBrowser 反查)
+  · HomeCloneTrxsw.tsx 513 行, theme.vars 引用 56 处
+  · HomeView.tsx 完整接线 (dynamic + 分发 + 白名单)
+- 10 套克隆主题模板完整性审计完成:
+  · 首页: 10/10 接线 ✓
+  · 分类页: 通用 ThemeBookList ✓
+  · 书页: BookView 全元素主题化 ✓
+  · 目录页: clone-* 统一默认 3 列剧集列表分支 ✓
+  · 章节页: readOf(theme) 9 字段全部生效 ✓
+- 验证:
+  · bunx tsc --noEmit → 0 errors ✓ (排除 examples/skills)
+  · bun run lint → 0 errors / 0 warnings ✓
+  · bunx tsx /tmp/test-themes-10.ts → THEMES.length=10, clone-trxsw.primary=#2c7be5 ✓
+  · 10 套主题 preset ID/name/primary 全部正确
+
+---
+Task ID: R11-1C
+Agent: 主控(本会话续作)
+Task: fanqianxs/trxsw采集规则 + 噪声清洗增强 + multi-search-engine调研 + trxsw克隆 + 主题审计
+
+Work Log:
+- 启动 R11-1A 子代理(full-stack-developer):
+  · 创建 scripts/seed-rule-fanqianxs.ts (西红柿小说, JIEQI CMS 模板)
+    - 基于 GitHub Moli-X/mumuceo/wle2015 三书源反查 DOM
+    - list: /xuanhuan/{page}/ .novelslist2 li:not(:first-child)(.s2>a+.s4+.s5+.s6)
+    - book: og:novel:* meta 全套 + #intro + #fmimg img
+    - toc: #list dl dt:nth-of-type(2) ~ dd
+    - content: #content p + adPatterns 22 条
+    - fetch.engine='scrapling-static' (CF 防护)
+  · 创建 scripts/seed-rule-trxsw.ts (天人小说, 唐人小说路由)
+    - 基于 GitHub mason173/aira-browser 完整配置直译
+    - ★路径前缀 /tangren_ 是关键 (AiraBrowser 实测)
+    - list: /tangren_/sort/1/{page}.html .vlist li
+    - book: .detail .name strong + .detail .author a + .detail>img + .intro
+    - toc: .vlist > li:not(.now) > a, .read > li > a
+    - content: .content (h1.headline 章节标题)
+    - fetch.engine='scrapling-static'
+  · 增强 cleaner.ts (新增 ~180 行):
+    - cleanTextField: 零宽字符剥离 [\u200B-\u200D\uFEFF] + 站点水印清洗 + 重复标点压缩
+    - cleanIntro: 零宽字符剥离 + 末尾推广段剥离 + 开头元数据剥离
+    - cleanChapterTitle: 零宽字符剥离 + 卷标题剥离 + normalizeChapterNumber 导出函数
+    - cleanContentHtml: 水印段落识别 (DOM <p> 整段含广告词全删) + 首行/末行剥离 + 零宽字符剥离
+- 启动 R11-1B 子代理(full-stack-developer):
+  · 创建 clone-trxsw 主题 (第 10 套):
+    - themes.ts 新增 preset: primary=#2c7be5 (深蓝唐人小说系) + 小圆角 4px
+    - HomeCloneTrxsw.tsx (513 LoC): .vlist/.detail/.content/.pager DOM 模板
+    - HomeView.tsx 接线: dynamic import + 分发分支 + 白名单扩为 10
+    - ThemeDef.layout 类型联合新增 'clone-trxsw'
+  · 主题审计 (10 套) - 报告写到 agent-ctx/theme-audit.md:
+    - 首页: 10/10 接线 ✓
+    - 分类页: 通用 ThemeBookList ✓
+    - 书页: BookView 全元素主题化 (无硬编码颜色) ✓
+    - 目录页: clone-* 统一默认 3 列剧集列表分支, 全部消费 theme.vars ✓
+    - 章节页: readOf(theme) 9 字段全部生效 ✓
+    - 良性硬编码: Tailwind 任意值 hover 类 (等同 v.primary, Tailwind 无法基于运行时值生成动态 hover 类)
+- 主代理 multi-search-engine 调研 + 增强:
+  · 现状: src/lib/crawl/suggest.ts 已有 5 引擎 (baidu/bing/sogou/so360/ddg)
+  · 测试: baidu/bing/so360 可用, sogou/ddg 偶发失败
+  · 修正 so360 接口 URL: sug.so.360.cn/suggest → sug.so.360.cn/suggest/word (返回 {result:[{word:...}]})
+  · 新增 google 引擎: suggestqueries.google.com/complete/search XML 解析 (实测可用)
+  · 新增 yandex 引擎: suggest.yandex.com 海外备用
+  · 测试 7 引擎聚合 "凡人修仙": 5 引擎可用 (baidu/bing/so360/google + 偶发 ddg/sogou/yandex)
+  · 合并去重 Top 20: 凡人修仙传 / 凡人修仙传小说 / 凡人修仙传在线观看 / 凡人修仙传动漫 / ...
+- 主代理入库 2 个新规则:
+  · fanqianxs: id=cmu2rtxma0000prt73y2j66dl, enabled=true
+  · trxsw: id=cmu2rtxna0001prt7a0j8pg7s, enabled=true
+  · (规则四段烟测失败: 两站不可达但规则基于反查 DOM 写定, 待 scrapling 实测)
+
+Stage Summary:
+- 采集规则: 新增 fanqianxs + trxsw (现共有 3 个待代理规则 biqutu/fanqianxs/trxsw)
+- 噪声清洗: 7 处新增功能覆盖 4 个核心函数, 含零宽字符/水印/重复标点/卷标题/水印段落/首末行
+- multi-search-engine: 5→7 引擎 (+ google + yandex), so360 接口修正
+- 主题模板: 9→10 套 (新增 clone-trxsw)
+- 主题审计: 10 套全部适配 (首页/分类/书页/目录/章节页)
+- 验证:
+  · tsc 0 errors / lint 0 errors/0 warnings
+  · THEMES.length=10, 10 个 preset 全部正确
+  · 3 个新规则全部入库 enabled=true
+  · 7 引擎 suggest 实测 5 引擎可用
