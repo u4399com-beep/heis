@@ -19,19 +19,33 @@ import { coverSrc, formatWords, useSiteSEO, withAlpha } from './seo'
 import { generateTitle, generateMetaDescription, generateKeywords } from './auto-tdk'
 import { BookCover } from './BookCover'
 // R15-1B: 改为按 theme.layout 动态选择 clone-themes 的 BookInfo 组件 (硬编码颜色, 不用 theme.vars)
-import { BookInfo as BookInfoAijjxs } from './clone-themes/aijjxs'
-import { BookInfo as BookInfoDdyueshu } from './clone-themes/ddyueshu'
-import { BookInfo as BookInfoPilishuwu } from './clone-themes/pilishuwu'
-import { BookInfo as BookInfo23qb } from './clone-themes/23qb'
-import { BookInfo as BookInfo101kks } from './clone-themes/101kks'
-import { BookInfo as BookInfoHuangjinwu } from './clone-themes/huangjinwu'
-import { BookInfo as BookInfoGgd66 } from './clone-themes/ggd66'
-import { BookInfo as BookInfoShipsay } from './clone-themes/shipsay'
-import { BookInfo as BookInfoX2552 } from './clone-themes/x2552'
-import { BookInfo as BookInfoTrxsw } from './clone-themes/trxsw'
 import { EmptyState, ErrorState, SecTitle, Sk, TagCloud, ChapterListSkeleton } from './bits'
 import type { BookItem, BookTagHit, TocChapter } from './types'
 import { getReadPos } from './read-layouts/reading-memory'
+
+  const BookInfoComponent = ({ book, theme, onScrollToc }: any) => {
+    const v = theme.vars
+    if (!book) return null
+    return (
+      <div style={{ maxWidth: 1200, margin: '0 auto', padding: 20 }}>
+        <div style={{ display: 'flex', gap: 20, background: v.surface, border: '1px solid ' + v.border, borderRadius: v.radius, padding: 24 }}>
+          <div style={{ width: 120, height: 160, overflow: 'hidden', borderRadius: v.radius, border: '1px solid ' + v.border, flexShrink: 0 }}>
+            {book.cover && <img src={book.cover} alt={book.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
+          </div>
+          <div style={{ flex: 1 }}>
+            <h1 style={{ fontSize: 22, fontWeight: 700, color: v.text, margin: '0 0 12px' }}>{book.name}</h1>
+            <p style={{ color: v.textMuted, fontSize: 14, lineHeight: 2 }}>作者: {book.author} | 分类: {book.category} | 字数: {(book.wordCount/10000).toFixed(1)}万字 | 状态: {book.status}</p>
+            <p style={{ color: v.textMuted, fontSize: 13, lineHeight: 1.8, marginTop: 8 }}>{book.intro}</p>
+            <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+              <button onClick={() => onScrollToc()} style={{ padding: '6px 16px', background: v.primary, color: v.primaryText, border: 'none', borderRadius: v.radius, cursor: 'pointer', fontSize: 14 }}>开始阅读</button>
+              <button onClick={() => onScrollToc()} style={{ padding: '6px 16px', background: v.surface, color: v.text, border: '1px solid ' + v.border, borderRadius: v.radius, cursor: 'pointer', fontSize: 14 }}>目录</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
 
 function TocSkeleton({ themeId }: { themeId: string }) {
   // R12-1: 简化为通用 ChapterListSkeleton (旧 pili/aurora/mango 分支已随主题 ID 退役移除)
@@ -636,18 +650,6 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
   //         不再用 BookInfoLayout 中转 (旧 9 套 clone-* 统一渲染分支已废弃)
   const coverW = 'w-32 sm:w-40'
 
-  const BookInfoComponent = {
-    'clone-aijjxs': BookInfoAijjxs,
-    'clone-ddyueshu': BookInfoDdyueshu,
-    'clone-pilishuwu': BookInfoPilishuwu,
-    'clone-23qb': BookInfo23qb,
-    'clone-101kks': BookInfo101kks,
-    'clone-huangjinwu': BookInfoHuangjinwu,
-    'clone-ggd66': BookInfoGgd66,
-    'clone-shipsay': BookInfoShipsay,
-    'clone-x2552': BookInfoX2552,
-    'clone-trxsw': BookInfoTrxsw,
-  }[theme.layout] || BookInfoAijjxs
 
   return (
     <div className="mx-auto w-full max-w-5xl px-4 py-6 sm:px-6 sm:py-8">

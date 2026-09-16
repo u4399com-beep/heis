@@ -13,7 +13,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ArrowLeftCircle, Eye } from 'lucide-react'
 import { Toaster } from '@/components/ui/sonner'
-import { CloneCSSLoader } from './CloneCSSLoader'
 import { getThemeById as getTheme, THEMES } from '@/lib/crawl/themes'
 import { fetchSites } from './data'
 import { parseView, PublicProvider, viewToUrl, type PublicCtxValue, type ViewParams } from './ctx'
@@ -28,6 +27,8 @@ import { SearchView } from './SearchView'
 import { KeywordView } from './KeywordView'
 import { CategoryView } from './CategoryView'
 import { HistoryView } from './HistoryView'
+import { RankingView } from './RankingView'
+import { FulltextView } from './FulltextView'
 import { Sk } from './bits'
 import { FeedbackWidget } from './FeedbackWidget'
 import { BackToTop } from './BackToTop'
@@ -41,7 +42,7 @@ export default function PublicSite({
   embedMode,
 }: {
   initialSiteId?: string
-  initialView?: { view: 'home' | 'book' | 'read' | 'search' | 'keyword' | 'category' | 'history'; bookId?: string; chapterId?: string; q?: string; tag?: string; cat?: string; page?: number; theme?: string }
+  initialView?: { view: 'home' | 'book' | 'read' | 'search' | 'keyword' | 'category' | 'history' | 'ranking' | 'fulltext'; bookId?: string; chapterId?: string; q?: string; tag?: string; cat?: string; page?: number; theme?: string }
   onBack?: () => void
   embedMode?: boolean
 }) {
@@ -225,6 +226,10 @@ export default function PublicSite({
         return <KeywordView key={`kw-${view.tag || ''}`} tag={view.tag} />
       case 'category':
         return <CategoryView key={`cat-${view.cat || ''}-${site.id}`} cat={view.cat} page={view.page || 1} />
+      case 'ranking':
+        return <RankingView key={`rank-${site.id}`} page={view.page || 1} />
+      case 'fulltext':
+        return <FulltextView key={`full-${site.id}`} page={view.page || 1} />
       default:
         return <HomeView key={`home-${site.id}-${view.cat || ''}`} page={view.page || 1} cat={view.cat} />
     }
@@ -243,7 +248,6 @@ export default function PublicSite({
       >
         <SiteHeader />
         {/* R16: 按当前主题加载源站 CSS, 让 clone-themes 组件用源站 class 名 */}
-        <CloneCSSLoader />
         {/* agent-W: 视图切换淡入动画 — key 变化触发 remount, animate-in fade-in 由 tw-animate-css 提供
             duration-200 让过渡明显但不拖沓; 仅 main 包裹不影响 header/footer 的稳定性 */}
         <main className="w-full flex-1 animate-in fade-in duration-200" key={`view-${view.view}-${view.bookId || view.chapterId || view.q || view.tag || view.cat || ''}-${view.page || 1}`}>

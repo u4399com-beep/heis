@@ -182,9 +182,19 @@ export function cleanContentHtml(raw: string, cfgOverride?: Partial<CleanConfig>
       .replace(/<[^>]+>/g, '')
     text = decodeEntitiesOnce(text)
     text = removeAdLines(text, cfg.adPatterns)
+    // R17-1A: 段落规整增强 — 段首缩进规整(去全角空格 U+3000 + 半角空格缩进统一为 0) +
+    //  段内多余换行去除 + 多连续空行压缩为段间 1 空行。原行为: 仅 trim + filter(Boolean)
+    //  + join('\n\n') 输出, 全角空格缩进残留(源站以 U+3000 作段首视觉缩进) + 半角空格
+    //  缩进残留(源站模板 4-空格缩进) + 段内 \r\n 等多换行未压(修前 split('\n') 后空段被
+    //  filter(Boolean) 滤掉, 但同一逻辑段被拆成两段). 新流程: 按双换行(>=2 个连续换行)
+    //  分段, 段内多个换行压为 1 个空格(段内不应有多行); 段首/段尾空白与全角空格一并清除;
+    //  段间用 \n\n(单空行) 重组. 与原 join('\n\n') 行为一致, 但更严格规整源站噪声.
     text = text
-      .split('\n')
-      .map((l) => l.trim())
+      .split(/\n{2,}/) // >=2 个连续换行视为段间分隔
+      .map((seg) =>
+        // 段内剩余换行压为单空格(段内不应多行) + 全角空格统一为半角空格 + 收敛多余空白
+        seg.replace(/\r/g, ' ').replace(/\n/g, ' ').replace(/\u3000/g, ' ').replace(/\s+/g, ' ').trim()
+      )
       .filter(Boolean)
       .join('\n\n')
     // 不再结尾二次 t2sText: 入口 t2sHtml 已转完 —— 转换非幂等(含「乾」的文本第二遍
@@ -369,6 +379,38 @@ export function cleanContentHtml(raw: string, cfgOverride?: Partial<CleanConfig>
       .filter(Boolean)
       .map((l) => `<p>${l}</p>`)
       .join('')
+  }
+  // 5.5 R17-1A: 段首缩进规整 + 段间空行压缩 + 段内多余 <br> 清理
+  //     源站常见三类噪声:
+  //     ① <p> 段首以全角空格 U+3000 作视觉缩进(常 2 个 U+3000 模仿 2em 缩进)
+  //     ② <p> 段首以 2-4 个半角空格作缩进(模板残留)
+  //     ③ <p> 内部嵌 <br><br> 制造伪段间空行(应改为 </p><p> 真分段)
+  //     策略: 用 cheerio 重装载 HTML(同 step 6 同款轻量装载), 遍历 <p> 节点
+  //       a) 取 .text() 后剥离前导全角空格 + 半角空格(段首缩进统一为 0, 真实缩进
+  //          由前台 CSS text-indent:2em 承担, 与主题 read.indent=true 同口径)
+  //       b) 段内 <br> 压缩: 连续 <br><br> 在 step 4 已转 </p><p>, 此处仅清残留的
+  //          单 <br>(段内不应有换行) → 替换为单空格
+  //       c) 段首/段尾空白 trim: 防 U+3000 + 半角空格混排残留
+  //     段间空行压缩: out 字符串中 </p>\s*<p> 之间的空白统一为无空行(HTML 段落本无
+  //       视觉空行, 由前台 CSS margin 接管); 多个连续 <p></p>(空段)在 step 4 已清.
+  //     全角空格剥离同步到 <br> 节点上下文: 段内 U+3000 一并压为单空格(避免段中段
+  //       视觉异常)。
+  {
+    const $out = cheerio.load(`<div id="__indent_root">${out}</div>`)
+    const $root = $out('#__indent_root')
+    $root.find('p').each((_, el) => {
+      const $el = $out(el)
+      // 段内 <br> → 单空格(段内不应多行); 段内连续空白(含全角空格)压缩
+      const html = ($el.html() || '')
+        .replace(/<\s*br\s*\/?\s*>/gi, ' ')
+        .replace(/\u3000/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+      $el.html(html)
+    })
+    out = $root.html() || ''
+    // 段间空白压缩: </p>\s*<p> → </p><p>(消除源站 </p>\n  <p> 等多空白噪声)
+    out = out.replace(/<\/p>\s*<p>/gi, '</p><p>')
   }
   // 6. R11-1A 新增: 章节正文首行/末行剥离
   //    源站常见两种噪声: ① 首行常为"第N章 标题"重复(源站把章节标题作为正文第一段输出,
@@ -558,11 +600,20 @@ export function cleanIntro(raw: string | undefined | null, maxLength = 2000): st
   v = v.replace(/[\u200B-\u200D\uFEFF]/g, '')
   v = t2sText(v)
   v = removeAdLines(v, DEFAULT_CLEAN_CONFIG.adPatterns)
+  // R17-1A: 段落规整增强 — 段首缩进规整(去全角空格 U+3000 + 半角空格缩进统一为 0) +
+  //  段内多余换行去除 + 多连续空行压缩为段间 1 空行。原行为: split('\n').map(trim)
+  //  .filter(Boolean).join('\n') 输出, 全角空格缩进残留(源站 U+3000 作段首视觉缩进) +
+  //  半角空格缩进残留(模板 4-空格缩进) + 段内 \r 等多换行未压. 新流程: 按双换行分段,
+  //  段内多个换行压为 1 个空格(段内不应多行), 段首/段尾空白与全角空格一并清除, 段间用
+  //  \n(单换行, 与原 join('\n') 行为一致) 重组. 注: 简介段间用单换行而非双换行, 与
+  //  cleanContentHtml plainText 分支用 \n\n 不同(简介显示走单行多段, 正文走双换行分段).
   v = v
-    // R-CRAWL-FINAL: 字面 \n → 真实换行, 随后按 \n 切段保留多段简介
     .replace(/\\n/g, '\n')
-    .split('\n')
-    .map((l) => l.trim())
+    .split(/\n{2,}/) // >=2 个连续换行视为段间分隔
+    .map((seg) =>
+      // 段内剩余换行压为单空格 + 全角空格统一为半角 + 收敛多余空白
+      seg.replace(/\r/g, ' ').replace(/\n/g, ' ').replace(/\u3000/g, ' ').replace(/\s+/g, ' ').trim()
+    )
     .filter(Boolean)
     .join('\n')
   // R11-1A 新增: 简介末尾推广段剥离 + 简介开头元数据剥离

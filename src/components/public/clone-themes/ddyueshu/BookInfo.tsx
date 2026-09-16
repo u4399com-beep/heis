@@ -1,118 +1,24 @@
 'use client'
-// ddyueshu.cc 书籍详情页 1:1 克隆 — biquge.css 模板
-// 源站 DOM: .box_con > .con_top > #sidebar + #maininfo(#fmimg + #info h1 + p) + #intro + #list
-// 实测颜色: nav bg #88C6E5 / .l bg #FEF9EF / a #6F78A7 / #info h1 28px
 import type { BookInfoProps } from '../shared'
 import { usePublic } from '../../ctx'
-import { formatWords, fmtDate, statusLabel } from '../../seo'
 import { BookCover } from '../../BookCover'
 
-export function BookInfo({ book, firstChapterId, onScrollToc }: BookInfoProps) {
-  const { navigate } = usePublic()
+export function BookInfo({ book, onScrollToc }: BookInfoProps) {
+  const { theme } = usePublic()
+  const v = theme.vars
   if (!book) return null
-
   return (
-    <div className="box_con" style={{ width: 980, maxWidth: '100%', margin: '0 auto', padding: '0 14px', background: '#E9FAFF', color: '#555', fontFamily: '"宋体", Arial, sans-serif', fontSize: 12 }}>
-      <div className="con_top" style={{ borderBottom: '1px solid #88C6E5', textAlign: 'left', padding: '0 10px', lineHeight: '40px', height: 40, background: '#E1ECED', color: '#555' }}>
-        <a href="/" onClick={(e) => { e.preventDefault(); navigate({ view: 'home' }) }} style={{ color: '#6F78A7', textDecoration: 'none' }}>{'>'} {book.category}</a>
-        <span style={{ color: '#B3B3B3' }}>&nbsp;&gt;&nbsp;{book.name}</span>
-      </div>
-
-      <div style={{ display: 'flex', gap: 24, padding: '16px 0', flexWrap: 'wrap' }}>
-        {/* 源站 #sidebar — 左侧分类侧栏 */}
-        <div id="sidebar" style={{ flex: '0 0 140px', textAlign: 'left', fontSize: 13 }}>
-          <div style={{ background: '#FEF9EF', border: '1px solid #C3DFEA', borderRadius: 4, padding: 10 }}>
-            <div style={{ fontWeight: 700, marginBottom: 8, color: '#1f6cb2', borderBottom: '1px dashed #A6D3E8', paddingBottom: 6 }}>本书信息</div>
-            <ul style={{ listStyle: 'none', padding: 0, margin: 0, lineHeight: '24px' }}>
-              <li>类别：{book.category}</li>
-              <li>作者：{book.author}</li>
-              <li>状态：{statusLabel(book.status)}</li>
-              <li>字数：{formatWords(book.wordCount)}</li>
-              <li>更新：{fmtDate(book.updatedAt) || '—'}</li>
-            </ul>
-          </div>
+    <div style={{ maxWidth: 1200, margin: '0 auto', padding: 20 }}>
+      <div style={{ display: 'flex', gap: 20, background: v.surface, border: '1px solid ' + v.border, borderRadius: v.radius, padding: 24 }}>
+        <div style={{ width: 120, height: 160, flexShrink: 0, overflow: 'hidden', borderRadius: v.radius, border: '1px solid ' + v.border }}>
+          <BookCover name={book.name} cover={book.cover} className="w-full h-full" />
         </div>
-
-        {/* 源站 #maininfo — 右侧主信息区 */}
-        <div id="maininfo" style={{ flex: '1 1 400px', minWidth: 0, display: 'flex', gap: 24, flexWrap: 'wrap' }}>
-          {/* 源站 #fmimg — 封面 */}
-          <div id="fmimg" style={{ flex: '0 0 120px', background: '#E1ECED', padding: 12, position: 'relative', borderRadius: 2 }}>
-            <div style={{ width: 120, height: 150, border: '1px solid #DDD', background: '#fff', padding: 1 }}>
-              <BookCover name={book.name} cover={book.cover} className="w-full h-full" style={{ borderRadius: 0 }} />
-            </div>
-          </div>
-
-          {/* 源站 #info — 标题 + meta 行 */}
-          <div id="info" style={{ flex: '1 1 280px', minWidth: 0, padding: '10px 0', fontSize: 15 }}>
-            <h1 style={{ fontFamily: '"宋体"', fontSize: 28, fontWeight: 700, overflow: 'hidden', margin: 0, padding: '1px 0', color: '#333', lineHeight: 1.4 }}>
-              {book.name}
-            </h1>
-            <p style={{ height: 25, lineHeight: '25px', paddingTop: 2, margin: 0, overflow: 'hidden', color: '#555' }}>
-              作者：<a href="#" style={{ color: '#6F78A7', textDecoration: 'none' }}>{book.author}</a>
-            </p>
-            <p style={{ height: 25, lineHeight: '25px', paddingTop: 2, margin: 0, overflow: 'hidden', color: '#555' }}>
-              分类：<span style={{ color: '#1f6cb2' }}>{book.category}</span>
-            </p>
-            <p style={{ height: 25, lineHeight: '25px', paddingTop: 2, margin: 0, overflow: 'hidden', color: '#555' }}>
-              状态：<span style={{ color: '#e15a00' }}>{statusLabel(book.status)}</span>
-              <span style={{ color: '#B3B3B3', marginLeft: 12 }}>字数：{formatWords(book.wordCount)}</span>
-            </p>
-            <p style={{ height: 25, lineHeight: '25px', paddingTop: 2, margin: 0, overflow: 'hidden', color: '#555' }}>
-              更新时间：{fmtDate(book.updatedAt) || '—'}
-            </p>
-            <p style={{ height: 25, lineHeight: '25px', paddingTop: 2, margin: 0, overflow: 'hidden', color: '#555' }}>
-              最新章节：<a href="#" style={{ color: '#6F78A7', textDecoration: 'none' }}>{book.latestChapter || '暂无'}</a>
-            </p>
-
-            {/* 行动按钮 */}
-            <div style={{ marginTop: 16, display: 'flex', flexWrap: 'wrap', gap: 10 }}>
-              {firstChapterId && (
-                <a
-                  href="#"
-                  onClick={(e) => { e.preventDefault(); navigate({ view: 'read', bookId: book.id, chapterId: firstChapterId }) }}
-                  style={{ display: 'inline-block', padding: '8px 24px', background: '#1f6cb2', color: '#fff', borderRadius: 4, fontSize: 14, fontWeight: 700, textDecoration: 'none' }}
-                >
-                  开始阅读
-                </a>
-              )}
-              <button
-                type="button"
-                onClick={onScrollToc}
-                style={{ padding: '8px 20px', background: '#fff', color: '#1f6cb2', border: '1px solid #88C6E5', borderRadius: 4, fontSize: 14, cursor: 'pointer' }}
-              >
-                章节目录
-              </button>
-              <a
-                href={`/api/public/download?book=${book.id}`}
-                style={{ padding: '8px 20px', background: '#fff', color: '#e15a00', border: '1px solid #fda85a', borderRadius: 4, fontSize: 14, textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}
-              >
-                TXT 下载
-              </a>
-            </div>
-          </div>
+        <div style={{ flex: 1 }}>
+          <h1 style={{ fontSize: 22, fontWeight: 700, color: v.text, marginBottom: 8 }}>{book.name}</h1>
+          <p style={{ color: v.textMuted, fontSize: 14, lineHeight: 2 }}>作者: {book.author} | 分类: {book.category} | 字数: {(book.wordCount / 10000).toFixed(1)}万字</p>
+          <p style={{ color: v.textMuted, fontSize: 13, lineHeight: 1.8, marginTop: 8 }}>{book.intro?.slice(0, 200)}...</p>
+          <button onClick={onScrollToc} style={{ marginTop: 12, padding: '6px 16px', background: v.primary, color: v.primaryText, border: 'none', borderRadius: v.radius, cursor: 'pointer' }}>开始阅读</button>
         </div>
-      </div>
-
-      {/* 源站 #intro — 内容简介 */}
-      <div id="intro" style={{ width: '96%', overflow: 'hidden', lineHeight: 1.5, borderTop: '1px dashed #88C6E5', padding: 10, fontSize: 13, background: '#FEF9EF', border: '1px solid #C3DFEA', borderRadius: 4, margin: '12px 0' }}>
-        <strong style={{ color: '#1f6cb2' }}>内容简介：</strong>
-        <p style={{ textIndent: '2em', marginTop: 8, color: '#555', margin: '8px 0 0' }}>
-          {book.intro || '暂无简介'}
-        </p>
-      </div>
-
-      {/* 源站 #list dt — 章节目录入口 */}
-      <div id="list" style={{ padding: '8px 0' }}>
-        <dl style={{ margin: 0 }}>
-          <dt style={{ background: '#C3DFEA', display: 'inline-block', fontSize: 14, lineHeight: '28px', textAlign: 'center', padding: '5px 10px', width: '98%', marginBottom: 5, color: '#1f6cb2', fontWeight: 700 }}>
-            章节目录
-          </dt>
-          <dd style={{ textAlign: 'center', padding: '6px 0', color: '#888' }}>
-            <button onClick={onScrollToc} style={{ background: 'transparent', border: 'none', color: '#1f6cb2', cursor: 'pointer', fontSize: 13, padding: '6px 16px' }}>
-              点击查看完整章节列表 →
-            </button>
-          </dd>
-        </dl>
       </div>
     </div>
   )

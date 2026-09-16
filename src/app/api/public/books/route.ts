@@ -28,8 +28,23 @@ export async function GET(req: Request) {
     // 状态白名单: 非法值忽略(不报错), 防任意字符串进查询
     if (status && ['unknown', 'ongoing', 'completed'].includes(status)) where.status = status
 
-    // 排序白名单(防 orderBy 注入任意字段)
-    const orderBy = sort === 'words' ? { wordCount: 'desc' as const } : { updatedAt: 'desc' as const }
+    // R17: 全本完本筛选 (sort=fulltext 时只返回已完结书)
+    if (sort === 'fulltext') where.status = 'completed'
+
+    // R17: 排序白名单(防 orderBy 注入任意字段)
+    // 新增 ranking 系列排序: allvisit/allvote/goodnum/size/lastupdate/postdate
+    const SORT_MAP: Record<string, Record<string, 'asc' | 'desc'>> = {
+      latest: { updatedAt: 'desc' },
+      words: { wordCount: 'desc' },
+      allvisit: { updatedAt: 'desc' },     // R17: 暂用 updatedAt (无独立 visit 字段)
+      allvote: { wordCount: 'desc' },     // R17: 暂用 wordCount (无独立 vote 字段)
+      goodnum: { updatedAt: 'desc' },     // R17: 暂用 updatedAt
+      size: { wordCount: 'desc' },
+      lastupdate: { updatedAt: 'desc' },
+      postdate: { createdAt: 'desc' },
+      fulltext: { updatedAt: 'desc' },
+    }
+    const orderBy = SORT_MAP[sort] || { updatedAt: 'desc' as const }
 
     // 站群偏移量仅在"无筛选"浏览时生效(首页书库翻页轮换);
     // 带 cat(分类) / q(搜索) / status 筛选时忽略 offset —— 否则会跳过该分类/搜索结果内前 offset 条

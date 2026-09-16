@@ -29,17 +29,24 @@ import { ReadImmersive } from './read-layouts/ReadImmersive'
 import { ReadPaginated } from './read-layouts/ReadPaginated'
 import { ReadPili } from './read-layouts/ReadPili'
 import { readerActionsRef, useReadingProgress, type ReadLayoutProps } from './read-layouts/shared'
+
+  const ReadChromeComponent = ({ children, chapterTitle, onPrev, onNext }: any) => {
+    const v = usePublic().theme.vars
+    return (
+      <div style={{ maxWidth: 800, margin: '0 auto', padding: 20 }}>
+        {chapterTitle && <h1 style={{ fontSize: 20, fontWeight: 700, textAlign: 'center', color: v.text, marginBottom: 24 }}>{chapterTitle}</h1>}
+        <div style={{ fontSize: 17, lineHeight: 2, color: v.text }}>{children}</div>
+        {(onPrev || onNext) && (
+          <div style={{ display: 'flex', justifyContent: 'center', gap: 12, marginTop: 32, paddingTop: 16, borderTop: '1px solid ' + v.border }}>
+            {onPrev && <button onClick={onPrev} style={{ padding: '6px 20px', border: '1px solid ' + v.border, borderRadius: v.radius, background: v.surface, color: v.text, cursor: 'pointer' }}>上一章</button>}
+            {onNext && <button onClick={onNext} style={{ padding: '6px 20px', border: '1px solid ' + v.border, borderRadius: v.radius, background: v.primary, color: v.primaryText, cursor: 'pointer' }}>下一章</button>}
+          </div>
+        )}
+      </div>
+    )
+  }
+
 // R15-1B: 改为按 theme.layout 动态选择 clone-themes 的 ReadChrome 组件 (硬编码颜色, 不用 theme.vars)
-import { ReadChrome as ReadChromeAijjxs } from './clone-themes/aijjxs'
-import { ReadChrome as ReadChromeDdyueshu } from './clone-themes/ddyueshu'
-import { ReadChrome as ReadChromePilishuwu } from './clone-themes/pilishuwu'
-import { ReadChrome as ReadChrome23qb } from './clone-themes/23qb'
-import { ReadChrome as ReadChrome101kks } from './clone-themes/101kks'
-import { ReadChrome as ReadChromeHuangjinwu } from './clone-themes/huangjinwu'
-import { ReadChrome as ReadChromeGgd66 } from './clone-themes/ggd66'
-import { ReadChrome as ReadChromeShipsay } from './clone-themes/shipsay'
-import { ReadChrome as ReadChromeX2552 } from './clone-themes/x2552'
-import { ReadChrome as ReadChromeTrxsw } from './clone-themes/trxsw'
 
 const READER_FONT_KEY = 'public_reader_fontSize'
 const READER_NIGHT_KEY = 'public_reader_night'
@@ -487,18 +494,6 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
   // 按主题阅读布局原型分发（缺省回退 classic）
   const layout = readOf(theme).layout
   // R15-1B: 按 theme.layout 选择 clone-themes/<site>/ReadChrome 渲染外壳 (硬编码颜色, 不用 theme.vars)
-  const ReadChromeComponent = {
-    'clone-aijjxs': ReadChromeAijjxs,
-    'clone-ddyueshu': ReadChromeDdyueshu,
-    'clone-pilishuwu': ReadChromePilishuwu,
-    'clone-23qb': ReadChrome23qb,
-    'clone-101kks': ReadChrome101kks,
-    'clone-huangjinwu': ReadChromeHuangjinwu,
-    'clone-ggd66': ReadChromeGgd66,
-    'clone-shipsay': ReadChromeShipsay,
-    'clone-x2552': ReadChromeX2552,
-    'clone-trxsw': ReadChromeTrxsw,
-  }[theme.layout] || ReadChromeAijjxs
   const chapterTitleStr = data?.chapter.title || ''
   // 章节导航: 透传给 ReadChrome 的 prev/next 按钮 (由 readerActionsRef 触发当前 read-layout 内置的导航)
   const handlePrevChapter = () => { readerActionsRef.current.onPrev?.() }

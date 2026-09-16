@@ -9,7 +9,7 @@ import type { PseudoStaticStyle } from '@/lib/pseudostatic'
 import { buildViewUrl, parseViewPath } from '@/lib/pseudostatic'
 import type { SiteInfo } from './types'
 
-export type PublicView = 'home' | 'book' | 'read' | 'search' | 'keyword' | 'category' | 'history'
+export type PublicView = 'home' | 'book' | 'read' | 'search' | 'keyword' | 'category' | 'history' | 'ranking' | 'fulltext'
 
 export interface ViewParams {
   view: PublicView
@@ -54,7 +54,7 @@ export function viewToUrl(v: ViewParams, siteId: string, style: PseudoStaticStyl
   return buildViewUrl(v, style, siteId)
 }
 
-const VIEW_LIST: PublicView[] = ['home', 'book', 'read', 'search', 'keyword', 'category', 'history']
+const VIEW_LIST: PublicView[] = ['home', 'book', 'read', 'search', 'keyword', 'category', 'history', 'ranking', 'fulltext']
 
 /**
  * 查询串/路径 → 视图参数

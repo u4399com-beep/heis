@@ -17,7 +17,7 @@ import { LoginGate } from '@/components/admin/LoginGate'
 import { parseViewPath, PSEUDO_PRESETS, type PseudoStaticStyle } from '@/lib/pseudostatic'
 
 type PublicViewObj = {
-  view: 'home' | 'book' | 'read' | 'search' | 'keyword' | 'category' | 'history'
+  view: 'home' | 'book' | 'read' | 'search' | 'keyword' | 'category' | 'history' | 'ranking' | 'fulltext'
   bookId?: string
   chapterId?: string
   q?: string
@@ -42,7 +42,7 @@ function Shell() {
     if (view) {
       // 查询串模式(?view=xxx) — 原生支持
       publicView = {
-        view: view as 'home' | 'book' | 'read' | 'search' | 'keyword' | 'category' | 'history',
+        view: view as 'home' | 'book' | 'read' | 'search' | 'keyword' | 'category' | 'history' | 'ranking' | 'fulltext',
         bookId: searchParams.get('id') || undefined,
         chapterId: searchParams.get('chapter') || undefined,
         q: searchParams.get('q') || undefined,

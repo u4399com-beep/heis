@@ -80,7 +80,7 @@ export const PSEUDO_PRESETS: Array<{
 // ============================================================
 
 export interface ViewPathParams {
-  view: 'home' | 'book' | 'read' | 'search' | 'keyword' | 'category' | 'history'
+  view: 'home' | 'book' | 'read' | 'search' | 'keyword' | 'category' | 'history' | 'ranking' | 'fulltext'
   bookId?: string
   chapterId?: string
   q?: string
