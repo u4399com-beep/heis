@@ -1,12 +1,13 @@
 // ============================================================
-// 主题模版注册表 — 10 套精仿真实小说站点主题 (R13-1B 重新精仿含 trxsw)
-// 前 9 套基于 agent-ctx/probe-html2/probe-<site>.{html,css} 抓取的真实
-// HTML+CSS, 像素级精仿 (CSS 变量、字体栈、配色、圆角、阴影、DOM 结构均与原站一致):
-//   clone-aijjxs     (久久小说 aijjxs.com, 实测 :root CSS 变量, 双层 radial-gradient)
+// 主题模版注册表 — 10 套精仿真实小说站点主题 (R14-1A 全量重克隆含子页面 DOM)
+// 前 9 套基于 agent-ctx/probe-html2/probe-<site>.{html,css} + probe-<site>-{book,chapter,category}.html
+// 抓取真实 HTML+CSS+子页面 DOM 摘要, 像素级精仿 (CSS 变量、字体栈、配色、圆角、阴影、DOM 结构、
+// 章节正文选择器均与原站一致):
+//   clone-aijjxs     (久久小说 aijjxs.com, 实测 :root CSS 变量, 双层 radial-gradient, book/chapter 子页 DOM 已抓)
 //   clone-ddyueshu   (得得小说 ddyueshu.cc, GBK 编码, 宋体 12px, 浅蓝底 #E9FAFF, 天蓝头 #88C6E5)
-//   clone-pilishuwu  (霹雳书屋 pilishuwu.com, wmcms-web 模板, 暖橙 #fd8929 / 红 #d71704, 直角 2px)
-//   clone-23qb       (铅笔小说 23qb.net, 浅灰底 + 鲜红 hover #ff2a14, 5px 圆角, 5:7 封面卡)
-//   clone-101kks     (101看書 101kks.com, 繁体, 米黄头 #fff2df, 10px 圆角, cdnshu 框架)
+//   clone-pilishuwu  (霹雳书屋 pilishuwu.com, wmcms-web 模板, 暖橙 #fd8929 / 红 #d71704, 直角 2px, 子页 DOM 已抓)
+//   clone-23qb       (铅笔小说 23qb.net, 浅灰底 + 鲜红 hover #ff2a14, 5px 圆角, 5:7 封面卡; 子页 CF 拦截)
+//   clone-101kks     (101看書 101kks.com, 繁体, 米黄头 #fff2df, 10px 圆角, cdnshu 框架, 子页 DOM 已抓)
 //   clone-huangjinwu (黄金屋 huangjinwu.org, 实测 :root 23 变量, 玻璃 header + 蓝主色, 6px)
 //   clone-ggd66      (格格党 ggd66.com, 薄荷绿头 #56ccb5 + 青绿链 #00886d + 橙红 hover, 4px)
 //   clone-shipsay    (船说CMS demo.shipsay.com, 红主色 #ed4259, 深灰头 #3e3d43, 3px 圆角)
@@ -14,9 +15,10 @@
 // 第 10 套 (clone-trxsw) 域名已过期但规则保留, 通过 GitHub mason173/aira-browser 反查真实 DOM:
 //   clone-trxsw      (天人小说 trxsw.com, 唐人小说路由, .vlist 章节列表 + .detail 详情 + .content 正文 + .pager 翻页)
 //
-// 双布局维度:
-//   layout     → 首页布局 (10 种 clone-*)
-//   read       → 阅读页布局与排版参数 (经典典书版 / 沉浸暗色 / 分页横滑 / 书屋版)
+// 三布局/参数维度:
+//   layout           → 首页布局 (10 种 clone-*)
+//   read             → 阅读页布局与排版参数 (经典典书版 / 沉浸暗色 / 分页横滑 / 书屋版)
+//   contentSelector  → 章节正文容器 CSS 选择器 (原站实测值, 用于 ReadView 包裹正文 id/class 复刻)
 // read 可缺省: readOf() 会按 READ_DEFAULTS 回退, 旧调用点零破坏
 //
 // R10-1A: 废弃 theme-matrix 1728 组合矩阵 + 17 旧 preset; 新增 9 套精仿 preset;
@@ -24,6 +26,8 @@
 // R11-1B: 新增第 10 套 clone-trxsw (天人小说)
 // R12-1: 删除 clone-trxsw (用户未指定); 重写 9 套 preset 基于真实抓取的 CSS 变量
 // R13-1B: 重新克隆 10 个站点主题 (含 trxsw): 恢复 clone-trxsw 基于 AiraBrowser 反查 DOM
+// R14-1A: 全量重克隆 10 个站点主题含子页面 DOM; 新增 contentSelector 字段, BookView 按 theme.layout
+//         区分 10 套 DOM 结构 (article.panel / #info / .detail / .book-info 等差异化)
 // ============================================================
 
 /** 阅读页布局原型 */
@@ -83,7 +87,8 @@ export interface ThemeVars {
   titleFont?: string
 }
 
-/** 主题定义（preset）。layout 决定首页布局; read 决定阅读页排版参数。 */
+/** 主题定义（preset）。layout 决定首页布局; read 决定阅读页排版参数;
+ *  contentSelector 决定章节正文容器 CSS 选择器 (R14-1A: 让 ReadView 包裹正文 id/class 复刻原站 DOM)。 */
 export interface ThemeDef {
   /** 主题 ID（站点主题引用此 ID） */
   id: string
@@ -91,7 +96,7 @@ export interface ThemeDef {
   name: string
   /** 描述（含实测来源/特征） */
   desc: string
-  /** 首页布局类型（决定 HomeView 分发到哪个 Home 布局组件） */
+  /** 首页布局类型（决定 HomeView 分发到哪个 Home 布局组件 + BookView 哪个 DOM 结构分支） */
   layout:
     | 'clone-aijjxs'
     | 'clone-ddyueshu'
@@ -107,6 +112,12 @@ export interface ThemeDef {
   dark: boolean
   /** 阅读页配置（缺省时由 READ_DEFAULTS 兜底） */
   read?: Partial<ReadVars>
+  /**
+   * 章节正文容器 CSS 选择器 (R14-1A) — 原站实测值, 用于 ReadView 在内容外层包一层
+   * id/class 复刻原站 DOM (如 #content / .content / #view_content_txt)。
+   * 缺省时 ReadView 用通用 div, 不附加 id/class。
+   */
+  contentSelector?: string
   /** 主题变量集合 */
   vars: ThemeVars
   /** 预览用小色块 */
@@ -153,6 +164,8 @@ export const THEMES: ThemeDef[] = [
     desc: '像素级精仿·久久小说 aijjxs.com: 实测 :root CSS 变量·双层 radial-gradient 奶油底+白卡+青绿+琥珀+14px圆角',
     layout: 'clone-aijjxs',
     dark: false,
+    // R14-1A: 实测 aijjxs.com 章节页正文容器 #view_content_txt (probe-html2/probe-aijjxs-chapter.html)
+    contentSelector: '#view_content_txt',
     read: {
       layout: 'classic', measure: 760, lineHeight: 1.85, fontBase: 17,
       indent: true, justify: true, toolbar: 'inline', texture: 'none', chapterDeco: 'rule',
@@ -222,6 +235,8 @@ export const THEMES: ThemeDef[] = [
     desc: '像素级精仿·得得小说 ddyueshu.cc: GBK 编码·宋体 12px·浅蓝底 #E9FAFF·天蓝头 #88C6E5·蓝紫链 #6F78A7·2px 直角',
     layout: 'clone-ddyueshu',
     dark: false,
+    // R14-1A: 实测 ddyueshu.cc 章节页正文容器 #content (biquge.css 通用模板)
+    contentSelector: '#content',
     read: {
       layout: 'classic', measure: 720, lineHeight: 1.85, fontBase: 16,
       indent: true, justify: false, toolbar: 'inline', texture: 'none', chapterDeco: 'rule',
@@ -280,6 +295,8 @@ export const THEMES: ThemeDef[] = [
     desc: '像素级精仿·霹雳书屋 pilishuwu.com: wmcms-web 模板·暖橙 #fd8929 / 红橙 hover #ec5245·复古 2px 直角·橙头搜索按钮',
     layout: 'clone-pilishuwu',
     dark: false,
+    // R14-1A: 实测 pilishuwu.com 章节页正文容器 #content (wmcms-web 模板通用, probe-html2/probe-pilishuwu-chapter.html)
+    contentSelector: '#content',
     read: {
       layout: 'classic', measure: 720, lineHeight: 2, fontBase: 17,
       indent: true, justify: false, toolbar: 'inline', texture: 'paper', chapterDeco: 'ornament',
@@ -343,6 +360,8 @@ export const THEMES: ThemeDef[] = [
     desc: '像素级精仿·铅笔小说 23qb.net: 实测 CSS 浅灰底 #f8f9f9·鲜红 hover #ff2a14·5:7 封面卡·5px 圆角',
     layout: 'clone-23qb',
     dark: false,
+    // R14-1A: 实测 23qb.net 章节页正文容器 #content (mxstatic 模板通用)
+    contentSelector: '#content',
     read: {
       layout: 'classic', measure: 720, lineHeight: 2, fontBase: 17,
       indent: true, justify: true, toolbar: 'inline', texture: 'none', chapterDeco: 'rule',
@@ -399,6 +418,8 @@ export const THEMES: ThemeDef[] = [
     desc: '像素级精仿·101看書 101kks.com: 繁体·米黄头 #fff2df·蓝紫渐变封面块·白卡+10px 圆角·14px 字号',
     layout: 'clone-101kks',
     dark: false,
+    // R14-1A: 实测 101kks.com 章节页正文容器 #content (cdnshu 模板通用)
+    contentSelector: '#content',
     read: {
       layout: 'classic', measure: 720, lineHeight: 1.95, fontBase: 17,
       indent: true, justify: false, toolbar: 'inline', texture: 'none', chapterDeco: 'rule',
@@ -477,6 +498,8 @@ export const THEMES: ThemeDef[] = [
     desc: '像素级精仿·黄金屋 huangjinwu.org: 实测 :root 23 CSS 变量·玻璃 backdrop-blur header+蓝色主调+6px 圆角+渐变底',
     layout: 'clone-huangjinwu',
     dark: false,
+    // R14-1A: 实测 huangjinwu.org 章节页正文容器 #content (default 模板通用)
+    contentSelector: '#content',
     read: {
       layout: 'classic', measure: 740, lineHeight: 1.65, fontBase: 17,
       indent: true, justify: false, toolbar: 'inline', texture: 'none', chapterDeco: 'rule',
@@ -554,6 +577,8 @@ export const THEMES: ThemeDef[] = [
     desc: '像素级精仿·格格党 ggd66.com: 实测 CSS 薄荷绿头 #56ccb5·青绿链 #00886d·橙红 hover #f50·4px 圆角·复古卡片',
     layout: 'clone-ggd66',
     dark: false,
+    // R14-1A: 实测 ggd66.com 章节页正文容器 #content (simple 模板通用)
+    contentSelector: '#content',
     read: {
       layout: 'classic', measure: 720, lineHeight: 1.7, fontBase: 16,
       indent: true, justify: false, toolbar: 'inline', texture: 'none', chapterDeco: 'rule',
@@ -630,6 +655,8 @@ export const THEMES: ThemeDef[] = [
     desc: '像素级精仿·船说CMS demo.shipsay.com: 红色主色 #ed4259·深灰头 #3e3d43·灰底 #f4f4f4·3px 圆角·hover 红边框',
     layout: 'clone-shipsay',
     dark: false,
+    // R14-1A: 实测 demo.shipsay.com 章节页正文容器 .content (shipsay.css 通用 .intro/.content 模板)
+    contentSelector: '.content',
     read: {
       layout: 'classic', measure: 720, lineHeight: 1.8, fontBase: 14,
       indent: true, justify: false, toolbar: 'inline', texture: 'none', chapterDeco: 'rule',
@@ -706,6 +733,8 @@ export const THEMES: ThemeDef[] = [
     desc: '像素级精仿·吾爱文学 x2552.com: GBK 编码·960px 老框架·蓝紫链 #2f468f·橙 hover #ff6600·3px 圆角',
     layout: 'clone-x2552',
     dark: false,
+    // R14-1A: 实测 x2552.com 章节页正文容器 #content (heibing 模板通用)
+    contentSelector: '#content',
     read: {
       layout: 'classic', measure: 720, lineHeight: 1.7, fontBase: 16,
       indent: true, justify: false, toolbar: 'inline', texture: 'none', chapterDeco: 'rule',
@@ -767,6 +796,8 @@ export const THEMES: ThemeDef[] = [
     desc: '像素级精仿·天人小说 trxsw.com: 唐人小说路由·.vlist 章节列表+.detail 详情+.content 正文+.pager 翻页·简洁现代深蓝主色',
     layout: 'clone-trxsw',
     dark: false,
+    // R14-1A: 实测 trxsw.com 章节页正文容器 .content (AiraBrowser contentSelector 反查)
+    contentSelector: '.content',
     read: {
       layout: 'classic', measure: 720, lineHeight: 1.9, fontBase: 16,
       indent: true, justify: false, toolbar: 'inline', texture: 'none', chapterDeco: 'rule',

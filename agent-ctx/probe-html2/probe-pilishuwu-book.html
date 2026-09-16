@@ -1,0 +1,1161 @@
+<html lang="zh-cn" dir="ltr" id="index"><head>
+	<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+	<meta http-equiv="Content-Language" content="utf-8">
+	<meta http-equiv="Pragma" content="no-cache">
+	<title>全部分类频道_全部分类列表_霹雳书屋</title>
+	<meta name="Keywords" content="全部分类,全部分类推荐,热门全部分类,最新全部分类,完本全部分类">
+	<meta name="Description" content="霹雳书屋全部分类频道，为您提供最新全部分类、热门全部分类、完本全部分类在线阅读。">
+	<meta name="renderer" content="webkit|ie-comp|ie-stand">
+	<meta http-equiv="X-UA-Compatible" content="IE=edge; chrome=1">
+	<link rel="stylesheet" type="text/css" href="/templates/wmcms-web/static/css/wmcms.global.css" media="screen">
+	<link href="/templates/wmcms-web/static/css/wmcms.main-header-content.css" rel="stylesheet" media="screen" type="text/css">
+	<link href="/templates/wmcms-web/static/css/wmcms.main-header-nav.css" rel="stylesheet" media="screen" type="text/css">
+	<link href="/templates/wmcms-web/static/css/wmcms.main-header-bg.css" rel="stylesheet" media="screen" type="text/css">
+	
+	<script type="text/javascript" src="/templates/wmcms-web/static/js/jquery-1.9.1.min.js"></script>
+	<script type="text/javascript" src="/templates/wmcms-web/static/js/wmcms.base.js"></script>
+	<!-- 弹窗组件 -->
+	<script type="text/javascript" src="/files/js/easydialog/easydialog.js"></script>
+	<link href="/files/js/easydialog/easydialog.css" rel="stylesheet" media="screen" type="text/css">
+<style>
+#search-condition li a{width:45px}
+
+.category-left-rank { 
+    background: #fff; 
+    padding: 15px; 
+    width: 300px; 
+    box-sizing: border-box; /* 确保 padding 不撑开宽度 */
+}
+
+/* 标题加大，并对齐右侧内容风格 */
+.rank-side-title { 
+    font-size: 20px; 
+    font-weight: bold; 
+    color: #333;
+    border-left: 5px solid #ff6600; 
+    padding-left: 12px; 
+    margin-bottom: 20px; 
+    line-height: 1;
+}
+
+.custom-rank-list { 
+    list-style: none; 
+    padding: 0; 
+    margin: 0; 
+    counter-reset: hot-rank; 
+}
+
+/* 列表项间距拉大 */
+.rank-item { 
+    position: relative; 
+    padding: 12px 0; 
+    border-bottom: 1px solid #f2f2f2; 
+    overflow: hidden; 
+    counter-increment: hot-rank; 
+}
+
+/* 排名数字稍微放大，对齐更美观 */
+.rank-num { 
+    float: left; 
+    width: 22px; 
+    height: 22px; 
+    line-height: 22px; 
+    text-align: center; 
+    background: #ccd0d7; 
+    color: #fff; 
+    font-size: 13px; 
+    font-weight: bold;
+    border-radius: 3px; 
+    margin-top: 2px; 
+}
+
+.rank-num::before { content: counter(hot-rank); }
+
+/* 前三名配色调鲜艳一点 */
+.rank-item:nth-child(1) .rank-num { background: #ff4a4a; }
+.rank-item:nth-child(2) .rank-num { background: #ff7e3e; }
+.rank-item:nth-child(3) .rank-num { background: #ffb83d; }
+
+/* 基础文字信息 */
+.rank-info { margin-left: 35px; }
+.rank-t { font-size: 16px; margin: 0; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rank-t a { color: #333; text-decoration: none; transition: color 0.2s; }
+.rank-t a:hover { color: #ff6600; }
+.rank-a { font-size: 13px; color: #888; margin: 6px 0 0 0; }
+
+/* --- 第一名样式重磅升级 --- */
+.rank-item:first-child { padding-bottom: 20px; }
+.rank-item:first-child .rank-img { 
+    display: block; 
+    float: left; 
+    width: 85px;  /* 增加封面宽度 */
+    height: 113px; 
+    margin: 5px 12px 0 35px; 
+    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    border-radius: 4px;
+    overflow: hidden;
+}
+.rank-item:first-child .rank-img img { width: 100%; height: 100%; object-fit: cover; }
+
+/* 第一名的文字排版 */
+.rank-item:first-child .rank-info { margin-left: 0; } 
+.rank-item:first-child .rank-t { 
+    font-size: 18px; /* 第一名标题更大 */
+    font-weight: bold; 
+    margin-top: 5px; 
+    white-space: normal; /* 允许换行 */
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+}
+.rank-item:first-child .rank-s { 
+    display: block; 
+    font-size: 13px; 
+    color: #666; 
+    line-height: 1.6; 
+    margin-top: 8px; 
+    height: 42px; 
+    overflow: hidden; 
+    text-align: justify;
+}
+
+/* 2-10名隐藏冗余信息 */
+.rank-img, .rank-s { display: none; }
+
+/* 去掉最后一名的下划线 */
+.rank-item:last-child { border-bottom: none; }
+</style>
+<link rel="stylesheet" type="text/css" href="/templates/wmcms-web/static/css/wmcms.page.comicall.css" media="screen">
+<link rel="stylesheet" type="text/css" href="/templates/wmcms-web/static/css/SunZX/SunZX_type.css" media="screen">
+</head>
+<body><script type="application/javascript" async="" src="//a.pemsrv.com/popunder1000.js" id="popmagicldr" data-exo-idzone="4920554" data-exo-frequency_period="360" data-exo-frequency_count="1" data-exo-trigger_method="3" data-exo-trigger_class="" data-exo-popup_force="false" data-exo-popup_fallback="true" data-exo-chrome_enabled="true" data-exo-new_tab="false" data-exo-cat="" data-exo-tags="" data-exo-el="" data-exo-sub="" data-exo-sub2="" data-exo-sub3="" data-exo-only_inline="false" data-exo-trigger_delay="0" data-exo-capping_enabled="true" data-exo-tcf_enabled="true" data-exo-cookieconsent="true" data-exo-should_fire="function(){return!0}" data-exo-on_redirect="null"></script>
+
+<div class="mod-top-wr">
+	<div class="mod-top-frame">
+		<div class="mod-top-tool-wr ui-wm">
+			<div class="mod-top-logo-wr ui-left">
+				<h1 class="mod-top-logo ui-left ui-text-hide">
+					<a title="霹雳书屋" href="/index.html"><img src="/files/images/logo.png" alt="霹雳书屋"><span class="ico-ani"></span></a>
+				</h1>
+				<div class="mod-top-event ui-left ui-dn"></div>
+			</div>
+			<div class="mod-top-search-wr ui-left">
+				<form action="/module/search/search.php" method="get">
+					<input type="hidden" name="module" value="novel">
+					<input type="hidden" name="type" value="0">
+					<div id="top-search" class="mod-top-search">
+						<div class="mod-search-input-wr ui-left">
+							<input class="mod-search-input" type="text" name="key" placeholder="可搜索小说名/作者名">
+						</div>
+						<button class="mod-search-submit ui-left ui-text-hide" type="submit">搜索</button>
+					</div>
+				</form>
+
+				<ul class="mod-top-tag" id="hotWord">
+					
+				</ul>
+			</div>
+		</div>
+	</div>
+
+
+	<div class="mod-top-nav-wr">
+		<div class="mod-top-nav ui-wm">
+		
+			<ul class="mod-top-nav-list ui-left">
+				<li>
+					<a class="mod-top-nav-home" href="/index.html" title="首页">
+						<span>首页</span>
+				
+					</a>
+				</li>
+				<li class="active"><a href="/0/list/1.html" title="全部小说"><span>全部小说</span></a></li>
+				<li><a href="/top/index.html" title="排行榜"><span>排行榜</span></a></li>
+				
+				<li><a href="/1/list/1.html" title="男频小说"><span>男频小说</span></a></li>
+				
+				<li><a href="/2/list/1.html" title="女频小说"><span>女频小说</span></a></li>
+				
+				<li><a href="/3/list/1.html" title="电子图书"><span>电子图书</span></a></li>
+				
+				<li><a href="/4/list/1.html" title="无CP小说"><span>无CP小说</span></a></li>
+				
+				<li><a href="/5/list/1.html" title="纯爱小说"><span>纯爱小说</span></a></li>
+				
+				<li><a href="/6/list/1.html" title="百合小说"><span>百合小说</span></a></li>
+				
+				<li><a href="/8/list/1.html" title="轻小说"><span>轻小说</span></a></li>
+				
+				<li id="homebox"></li>
+			</ul>
+	
+			<div class="mod-top-nav-tool ui-right" id="loginbox"></div>
+<a class="mod-top-nav-user ui-right" style="font-size:15px; text-align: center; font-weight:bold;" href="https://www.pilixiaoshuo.com/" target="blank">域名发布页</a>
+		</div>
+
+	</div>
+</div> 
+
+<div class="ui-wm ui-mb20 ui-mt40 clearfix">
+	<div class="ret-side-wr ui-left">
+
+<div class="category-left-rank">
+    <h3 class="rank-side-title">月点击排行</h3>
+    <ol class="custom-rank-list">
+        
+        <li class="rank-item">
+            <span class="rank-num"></span> 
+            
+            <a target="_blank" class="rank-img" title="K市必吃榜从良了" href="/5/22683/info.html">
+                <img src="/upload/images/20260902/20260902100916364181774306.jpg" alt="K市必吃榜从良了">
+            </a>
+            
+            <div class="rank-info">
+                <p class="rank-t"><a href="/5/22683/info.html" target="_blank">K市必吃榜从良了</a></p>
+                <p class="rank-a">作者：脑佺通</p>
+                <p class="rank-s">淡淡养胃精英为爱做0x被勾得五迷三窍逐渐馋...</p>
+            </div>
+        </li>
+        
+        <li class="rank-item">
+            <span class="rank-num"></span> 
+            
+            <a target="_blank" class="rank-img" title="老公对不起" href="/5/22715/info.html">
+                <img src="/upload/images/20260906/20260906084445349018243141.jpg" alt="老公对不起">
+            </a>
+            
+            <div class="rank-info">
+                <p class="rank-t"><a href="/5/22715/info.html" target="_blank">老公对不起</a></p>
+                <p class="rank-a">作者：乌合之宴</p>
+                <p class="rank-s">原名《我出轨了老公的白月光》【双处】满玉和...</p>
+            </div>
+        </li>
+        
+        <li class="rank-item">
+            <span class="rank-num"></span> 
+            
+            <a target="_blank" class="rank-img" title="穿到反派落魄时" href="/5/22651/info.html">
+                <img src="/upload/images/20260830/20260830074606044337794718.jpg" alt="穿到反派落魄时">
+            </a>
+            
+            <div class="rank-info">
+                <p class="rank-t"><a href="/5/22651/info.html" target="_blank">穿到反派落魄时</a></p>
+                <p class="rank-a">作者：一丛音</p>
+                <p class="rank-s">《长风传》的反派睚眦必报，因属下背叛而身受...</p>
+            </div>
+        </li>
+        
+        <li class="rank-item">
+            <span class="rank-num"></span> 
+            
+            <a target="_blank" class="rank-img" title="刁奴" href="/5/22668/info.html">
+                <img src="/files/images/nocover.jpg" alt="刁奴">
+            </a>
+            
+            <div class="rank-info">
+                <p class="rank-t"><a href="/5/22668/info.html" target="_blank">刁奴</a></p>
+                <p class="rank-a">作者：宴惟</p>
+                <p class="rank-s">顾家当年一声不吭跑了的奴才，摇身一变做官回...</p>
+            </div>
+        </li>
+        
+        <li class="rank-item">
+            <span class="rank-num"></span> 
+            
+            <a target="_blank" class="rank-img" title="可怜的社畜" href="/5/12668/info.html">
+                <img src="/upload/images/20241129/20241129090725383626941714.jpg" alt="可怜的社畜">
+            </a>
+            
+            <div class="rank-info">
+                <p class="rank-t"><a href="/5/12668/info.html" target="_blank">可怜的社畜</a></p>
+                <p class="rank-a">作者：东度日</p>
+                <p class="rank-s">又惨又倒霉疯批长发美人AX软弱可怜社畜B商...</p>
+            </div>
+        </li>
+        
+        <li class="rank-item">
+            <span class="rank-num"></span> 
+            
+            <a target="_blank" class="rank-img" title="老实人妻，但顶级魅魔" href="/5/22703/info.html">
+                <img src="/upload/images/20260905/20260905091842821073852874.jpg" alt="老实人妻，但顶级魅魔">
+            </a>
+            
+            <div class="rank-info">
+                <p class="rank-t"><a href="/5/22703/info.html" target="_blank">老实人妻，但顶级魅魔</a></p>
+                <p class="rank-a">作者：檀水</p>
+                <p class="rank-s">【人妻属性拉满·温柔直球·魅魔受vs占有欲...</p>
+            </div>
+        </li>
+        
+        <li class="rank-item">
+            <span class="rank-num"></span> 
+            
+            <a target="_blank" class="rank-img" title="交易沦陷" href="/5/12520/info.html">
+                <img src="/upload/images/20241121/20241121110310309991950379.jpg" alt="交易沦陷">
+            </a>
+            
+            <div class="rank-info">
+                <p class="rank-t"><a href="/5/12520/info.html" target="_blank">交易沦陷</a></p>
+                <p class="rank-a">作者：在下小神j</p>
+                <p class="rank-s">直男为钱卖肉，被猛1金主艹来艹去的故事。攻...</p>
+            </div>
+        </li>
+        
+        <li class="rank-item">
+            <span class="rank-num"></span> 
+            
+            <a target="_blank" class="rank-img" title="银龙的山海农场[美食]" href="/5/22666/info.html">
+                <img src="/upload/images/20260901/20260901084903070682659423.jpg" alt="银龙的山海农场[美食]">
+            </a>
+            
+            <div class="rank-info">
+                <p class="rank-t"><a href="/5/22666/info.html" target="_blank">银龙的山海农场[美食]</a></p>
+                <p class="rank-a">作者：月寂烟雨</p>
+                <p class="rank-s">作为一条白龙，谢镌寒意外穿到了魔法世界。后...</p>
+            </div>
+        </li>
+        
+        <li class="rank-item">
+            <span class="rank-num"></span> 
+            
+            <a target="_blank" class="rank-img" title="被哥哥管教的日子" href="/5/18698/info.html">
+                <img src="/files/images/nocover.jpg" alt="被哥哥管教的日子">
+            </a>
+            
+            <div class="rank-info">
+                <p class="rank-t"><a href="/5/18698/info.html" target="_blank">被哥哥管教的日子</a></p>
+                <p class="rank-a">作者：赏心</p>
+                <p class="rank-s">傅柏×傅雪茶禁欲温柔掌控欲极深西装暴徒抖s...</p>
+            </div>
+        </li>
+        
+        <li class="rank-item">
+            <span class="rank-num"></span> 
+            
+            <a target="_blank" class="rank-img" title="初恋是件坏事" href="/5/22654/info.html">
+                <img src="/upload/images/20260831/20260831091743031445588272.jpg" alt="初恋是件坏事">
+            </a>
+            
+            <div class="rank-info">
+                <p class="rank-t"><a href="/5/22654/info.html" target="_blank">初恋是件坏事</a></p>
+                <p class="rank-a">作者：成江入海</p>
+                <p class="rank-s">竹马是哥哥是情人竹马竹马（10-15w）程...</p>
+            </div>
+        </li>
+        
+    </ol>
+</div>
+		
+		<div style="margin:20px 0px;">
+		    <script async="" type="application/javascript" src="https://a.magsrv.com/ad-provider.js"></script> 
+ <div style="display: inline-flex; vertical-align: top;"><style type="text/css">.krRvND8k { border: 0px solid #000000;display: block;background-color: rgba(0, 0, 0, 0);margin: 0px 0px;padding: 0px 0px;max-width: 100%;}</style><div class="krRvND8k" data-uid="krRvND8k" style="height: 250px; width: 300px; cursor: pointer;"><div id="msg-native-widget-5286312-dAPjl" class="msg-native-widget"><style>#msg-native-widget-5286312-dAPjl.msg-native-widget , /* required space between class and comma because of regex from frontend loader*/#msg-native-widget-5286312-dAPjl.msg-native-widget * {    box-sizing: border-box;}#msg-native-widget-5286312-dAPjl.msg-native-widget {    background-color: transparent;    overflow: hidden;    max-width: 100%;    width: 300px;    min-width: 110px;    display: inline-flex;    flex-direction: column;}#msg-native-widget-5286312-dAPjl.msg-native-widget .msg-native-widget-header {    width: initial !important;    float: initial !important;    white-space: nowrap;    font-family: Arial, Helvetica, Verdana, sans-serif;    font-size: 12px;    color: #999999;    display: block;    padding-bottom: 15px;    line-height: 15px;}#msg-native-widget-5286312-dAPjl.msg-native-widget .msg-native-widget-header a {    display: flex;    justify-content: flex-end;    color: inherit;    text-decoration: none;}#msg-native-widget-5286312-dAPjl.msg-native-widget .msg-native-widget-header a span {    display: flex;    height: 14px;    width: 47px;    margin-left: 4px;    background: rgba(0, 0, 0, 0) url("//z6v2p9a8.bkcdn.net/widget-branding-logo.png") repeat scroll 0 0 / 47px 14px;}#msg-native-widget-5286312-dAPjl.msg-native-widget .msg-native-widget-header a:hover span {    background: rgba(0, 0, 0, 0) url("//z6v2p9a8.bkcdn.net/widget-branding-logo-hover.png") repeat scroll 0 0 / 47px 14px;}#msg-native-widget-5286312-dAPjl.msg-native-widget .msg-native-widget-outer-container {    display: flex;    flex-wrap: wrap;    height: 100%;    align-content: space-between;    margin-bottom: -10px;    margin-right: -10px;    width: inherit;    max-width: 100%;}#msg-native-widget-5286312-dAPjl.msg-native-widget .msg-native-widget-outer-container .msg-native-widget-item-container {    overflow: hidden;    flex-basis: calc(100%/2);    position: relative;    padding-right: 10px;    padding-bottom: 10px;}#msg-native-widget-5286312-dAPjl.msg-native-widget .msg-native-widget-outer-container .msg-native-widget-item-container a.msg-native-widget-item , /* required space between class and comma because of regex from frontend loader*/a.msg-native-widget-item:visited {    text-decoration: none;    font-family: Arial, Helvetica, Verdana, sans-serif;    font-size:  12px;    color: #999999;    overflow: hidden;    display: flex;    position: relative;    flex-direction: column;}#msg-native-widget-5286312-dAPjl.msg-native-widget .msg-native-widget-outer-container .msg-native-widget-item-container a.msg-native-widget-item .msg-native-widget-item-image-wrapper {    position: relative;    float: left;    width: 100%;    min-width: auto;    z-index: 2;    flex: initial;    height: 100%;    overflow: hidden;}.video-thumb-wrapper {    position: absolute;    top: 0;    left: 0;    width: 100%;    height: 100%;    overflow: hidden;    visibility: hidden;    user-select: none;    -webkit-user-select: none;    -moz-user-select: none;    -ms-user-select: none;}.video-thumb-wrapper > video,.video-thumb-wrapper > img {    position: absolute;    top: -1px;    left: -1px;    width: calc(100% + 2px);    height: calc(100% + 2px);    object-fit: cover;}#msg-native-widget-5286312-dAPjl.msg-native-widget .msg-native-widget-outer-container .msg-native-widget-item-container a.msg-native-widget-item .msg-native-widget-item-image-ratio {    width: 100%;    padding-top: 34.48275862068966%;    z-index: 1;}#msg-native-widget-5286312-dAPjl.msg-native-widget .msg-native-widget-outer-container .msg-native-widget-item-container a.msg-native-widget-item .msg-native-widget-item-image {    background-position: center;    background-repeat: no-repeat;    background-size: cover;        position: absolute;    top: 0;    left: 0;    width: 100%;    height: 100%;    transition: background-size 0.3s;}#msg-native-widget-5286312-dAPjl.msg-native-widget .msg-native-widget-outer-container .msg-native-widget-item-container a.msg-native-widget-item .msg-native-widget-item-image:hover {    transform: scale(1.05);}#msg-native-widget-5286312-dAPjl.msg-native-widget .msg-native-widget-outer-container .msg-native-widget-item-container a.msg-native-widget-item .msg-native-widget-item-content {    max-width: 100%;    max-height: 90px;    overflow: hidden;    position: initial;    right: 0;    top: 0;    width: 100%;    height: 90px;    padding-left: 0px;    padding-right: 0;    padding-top: 10px;    padding-bottom: 0;    display: block;    text-align: left;    flex: initial;    position: relative;}#msg-native-widget-5286312-dAPjl.msg-native-widget .msg-native-widget-outer-container .msg-native-widget-item-container a.msg-native-widget-item .msg-native-widget-item-content .msg-native-widget-item-content-box {    position: absolute;    width: 100%;}#msg-native-widget-5286312-dAPjl.msg-native-widget .msg-native-widget-outer-container .msg-native-widget-item-container a.msg-native-widget-item .msg-native-widget-item-content .msg-native-widget-item-title {    font-family: Arial, Helvetica, Verdana, sans-serif;    font-size: 12px;    color: #000000;    font-weight: normal;    text-decoration: none;    display: block;    transition: color 0.16s;}#msg-native-widget-5286312-dAPjl.msg-native-widget .msg-native-widget-outer-container .msg-native-widget-item-container a.msg-native-widget-item .msg-native-widget-item-content .msg-native-widget-item-text {     font-family: Arial, Helvetica, Verdana, sans-serif;    font-size: 14px;    color: #555555;    font-weight: normal;    text-decoration: none;    display: none;    transition: color 0.16s;}#msg-native-widget-5286312-dAPjl.msg-native-widget .msg-native-widget-outer-container .msg-native-widget-item-container a.msg-native-widget-item .msg-native-widget-item-content .msg-native-widget-item-brand {     font-family: Arial, Helvetica, Verdana, sans-serif;    font-size: 11px;    color: #555555;    font-weight: normal;    text-decoration: none;    display: block;}/* Hover section below: */#msg-native-widget-5286312-dAPjl.msg-native-widget .msg-native-widget-outer-container .msg-native-widget-item-container a.msg-native-widget-item .msg-native-widget-item-content .msg-native-widget-item-title:hover {    color: #0000FF;    font-weight: normal;    text-decoration: none;}#msg-native-widget-5286312-dAPjl.msg-native-widget .msg-native-widget-outer-container .msg-native-widget-item-container a.msg-native-widget-item .msg-native-widget-item-content .msg-native-widget-item-text:hover {     color: #0055FF;    font-weight: normal;    text-decoration: none;}@media all and (max-width: 450px) {    #msg-native-widget-5286312-dAPjl.msg-native-widget     .msg-native-widget-outer-container     .msg-native-widget-item-container:nth-child(n+5) {         display: none;    }        #msg-native-widget-5286312-dAPjl.msg-native-widget     .msg-native-widget-outer-container     .msg-native-widget-item-container {         flex-basis: calc(100%/2);    }}</style><style>@media all and (max-width: 450px) {    #msg-native-widget-5286312-dAPjl.msg-native-widget {        width: 100% !important;        height: auto !important;    }    #msg-native-widget-5286312-dAPjl.msg-native-widget .msg-native-widget-item-container {        clear: both;        width: 100% !important;        max-width: 100% !important;        margin-left: 0 !important;    }    #msg-native-widget-5286312-dAPjl.msg-native-widget .msg-native-widget-item-outer-container {        width: 100% !important;    }    #msg-native-widget-5286312-dAPjl.msg-native-widget .msg-native-widget-item .msg-native-widget-item-image {        width: 100% !important;        max-width: 100% !important;        margin: auto !important    }    #msg-native-widget-5286312-dAPjl.msg-native-widget .msg-native-widget-item-container .msg-native-widget-item .msg-native-widget-item-content {        max-width: 100% !important;    }    #msg-native-widget-5286312-dAPjl.msg-native-widget .msg-native-widget-item-container .msg-native-widget-item {        margin: 0 auto !important;    }}</style><style>#msg-native-widget-5286312-dAPjl.msg-native-widget .msg-native-widget-header{
+    display:none !important;
+} #msg-native-widget-5286312-dAPjl.msg-native-widget 
+
+.msg-native-widget-item-container{
+    width:140px !important;
+    height:115px !important;
+    max-width:140px !important;
+    padding-right:0 !important;
+    padding-bottom:0 !important;
+    margin:0 10px 10px 0 !important;
+} #msg-native-widget-5286312-dAPjl.msg-native-widget 
+
+.msg-native-widget-item-image-wrapper{
+    width:140px !important;
+    height:115px !important;
+    max-height:115px !important;
+    overflow:hidden !important;
+    border-radius:7px !important;
+    position:relative !important;
+} #msg-native-widget-5286312-dAPjl.msg-native-widget 
+
+.msg-native-widget-item-image{
+    width:100% !important;
+    height:100% !important;
+    background-size:cover !important;
+    background-repeat:no-repeat !important;
+    background-position:50% 50% !important;
+} #msg-native-widget-5286312-dAPjl.msg-native-widget 
+
+.msg-native-widget-item-image-ratio{
+    display:none !important;
+} #msg-native-widget-5286312-dAPjl.msg-native-widget 
+
+.msg-native-widget-item-content-box{
+    position:relative !important;
+} #msg-native-widget-5286312-dAPjl.msg-native-widget 
+
+.msg-native-widget-item-content{
+    position:absolute !important;
+    z-index:5 !important;
+    top:70px !important;
+    background-color:rgba(255, 255, 255, 0.6) !important;
+    padding:5px 0px 0px 0px !important;
+    height:55px !important;
+    width:100% !important;
+    max-width:150px !important;
+    border-bottom-left-radius:7px !important;
+    border-bottom-right-radius:7px !important;
+} #msg-native-widget-5286312-dAPjl.msg-native-widget 
+
+.msg-native-widget-item-content:before{
+    content:'';
+    position:absolute;
+    top:29px !important;
+    right:10px !important;
+    border:solid #444444;
+    border-width:0 2px 2px 0;
+    display:inline-block;
+    padding:3px;
+    transform:rotate(-45deg);
+    -webkit-transform:rotate(-45deg);
+} #msg-native-widget-5286312-dAPjl.msg-native-widget 
+
+.msg-native-widget-item-title{
+    padding:0px 8px 4px 4px !important;
+    height:20px !important;
+    color:black !important;
+    font-weight:normal !important;
+    font-size:12px !important;
+    display:block !important;
+    align-items:center;
+    white-space:nowrap !important;
+    overflow:hidden !important;
+    text-overflow:ellipsis !important;
+    width:100% !important;
+    min-width:0 !important;
+    box-sizing:border-box !important;
+} #msg-native-widget-5286312-dAPjl.msg-native-widget 
+
+.msg-native-widget-item-text{
+    display:none !important;
+} #msg-native-widget-5286312-dAPjl.msg-native-widget 
+
+.msg-native-widget-item-brand{
+    padding:2px 29px 0px 4px !important;
+    height:15px !important;
+    color:#444444 !important;
+    font-weight:normal !important;
+    font-size:11px !important;
+    display:block !important;
+    align-items:center;
+    white-space:nowrap !important;
+    overflow:hidden !important;
+    text-overflow:ellipsis !important;
+    width:100% !important;
+    min-width:0 !important;
+    box-sizing:border-box !important;
+}</style><script type="application/javascript">function setRealHref(e) {var caller = e.currentTarget || e.srcElement; caller.setAttribute("href", caller.getAttribute("real-href"));}function handleNativeAdClick(e) {if (e.ctrlKey || e.metaKey || e.shiftKey || e.button === 1) { return true; }var loader = (typeof MsgLoader !== "undefined") ? MsgLoader : undefined;if (!loader) { try { loader = window[atob("RXhvTG9hZGVy")]; } catch (err) {} }if (!loader || typeof loader.addAgeGoToken !== "function" || typeof loader.isAgegoEnabled !== "function" || !loader.isAgegoEnabled()) { return true; }e.preventDefault();var caller = e.currentTarget || e.srcElement;var realHref = caller.getAttribute("real-href");var openInNewWindow = caller.getAttribute("target") === "_blank";var newWindow = openInNewWindow ? window.open("", "_blank") : null;if (newWindow) { try { newWindow.opener = null; } catch (err) {} }loader.addAgeGoToken(realHref).then(function (finalHref) {if (newWindow) { newWindow.location.href = finalHref; } else { window.location.href = finalHref; }}).catch(function () {if (newWindow) { newWindow.location.href = realHref; } else { window.location.href = realHref; }});return false;}</script><div class="msg-native-widget-header"></div><div class="msg-native-widget-outer-container"><div class="msg-native-widget-item-container"><a class="msg-native-widget-item" href="" real-href="https://s.magsrv.com/click.php?d=H4sIAAAAAAAAA01SWU_jQAz.NX3rRjP2XHlcxLKV0NKIXtm.oOYoLeSYNAlFlX_8OqELyJbzOT7HttPagjUkAinp0HV.gj8ncMf8XCdJ0B5qP6h4t5uAkcqhdEobxv5YHJO6fg2qvGPVfeRhpMEZlMBIBEJIyWC14Jwmf69YdqcJ3tZd9ricMUfrx1m8UzrF9RKkWC770nd12fnmlEUP22y90XIlLs22YkuT3Zu1OHmtcb1ZCbHazJu2OdWFHw3W46Ivsj.jTzVv67oSLUJR92WFF19i1XmBQlYl.KrhGBXvcZu_.GjWzEIhwrbx3m7jedVdC8WLviyrUZFFJ1fyoe2Sal58mf_DimG6iZ6iV__r0RyeUn05ZE.Zubm1v2_Ti4_X82PJvn0cLY7mcrQvi.ayyWG_69_iON_vo2W.29iH8_4vkSBpXah52sLQ9zkTqoAZNAbG0ec26Dpy0rxDUpKApOYsgkgOBE68D4IIAMgiQmLzTGAoId8pmYNTSZ6kIDMFWnEYjFXbQ3_ug7Quh4aE5W4IpA253vl8nn56TNljKqasdVM5PXRlMZQVI2mrFKIdkTYoFHEPBI6u9oHU0CI3P_oTDl07a7gWv4eG30R8P98CvmgM4iPjKxu_Vyk_67dBuXtuT2_jK4bi7ACS7A90JkldZp1wxkKIIMHuTZbyXFITItK4hY80g3wDRfN7MqBDjUrLnRNZnvCKUCkpFZ9VCmKP_wAv9TKZTgMAAA--&amp;cb=e2e_6aa9d436b7e273.74211619&amp;suvt=7-386bc8d7808672932127f6dc7edc6933" oncontextmenu="setRealHref(event)" onmouseup="setRealHref(event)" onclick="return handleNativeAdClick(event)" rel="nofollow" target="_blank"><div class="msg-native-widget-item-image-wrapper"><div class="msg-native-widget-item-image" style="background-image: url(&quot;https://z6v2p9a8.bkcdn.net/library/328752/56be0c4138c0f2c0eee5a8f777c01da7578f71d6.webp&quot;); background-position: 50% 50%;"></div><div class="msg-native-widget-item-image-ratio"></div></div><div class="msg-native-widget-item-content"><div class="msg-native-widget-item-title">The Dalles</div><div class="msg-native-widget-item-text">The Dalles</div><div class="msg-native-widget-item-brand">DATING</div></div></a></div><div class="msg-native-widget-item-container"><a class="msg-native-widget-item" href="" real-href="https://s.magsrv.com/click.php?d=H4sIAAAAAAAAA01SWW.bQBD.NXlz0e7syWOrNLUUKVjxWb9ELODYCQuLgTix5sd3wG4S7Wj4hrkPqxjnQiKLOMd914Ub8fMG7oiea.eidl.HQRR36Q1oLgdrA4xwOJQHV9evUVV0JNpLHEIKrBYcCLGI0U8CyznF1MV7Rbw73ojbussfF1Oi2epxukmlysRqAZwtFr0PTel9W5X57GGbr9aKL9m52VakafJ7vWLHoJRYrZeMLddJ0zbHugyjwgQx78s8GW2qpK3rirUCyrr3lTgHL6ouMMF45SFUDfnIzU5si5cwmzbTmLG4bUIw201SdddEm3nvfTUKvOz4kj.0nauS8kv9H1YEs_XsafYafj_q_VOmzvv8Kde_bs2f2.wcNqvk4PN7k_oPU8CHm4M5vKydm_umgdQlvj9vDrrfnnZ_ERlyY2PFpWUav88ZhYyIQIlIW_zcBl5Hjop2iJIjIFcUhSHy4YFl7wNDBAA0QoAzRc5EzKFIJS_ASle4DHguQdEpkP.Qtd33pz7Kaj8UxAxVg8BNrDSeTqfJp8WELCZsQlI34ZN950vKM2anwoyUQpgRKS2YxEEHFq_64cmhRH7xUCiGqq3RlIv6GQMh0v18c_h6oxMdGY1h_F750PTFoI18.twe38YuhuTDncdofgirXWZzY5nVBmIBHMxO5xnNJdOxEDhu4RJm4G8gMblH5xTbkdGOQZa6NMuZY7LgKoYduBjMP9BAwDZOAwAA&amp;cb=e2e_6aa9d436b7fa34.99566747&amp;suvt=7-386bc8d7808672932127f6dc7edc6933" oncontextmenu="setRealHref(event)" onmouseup="setRealHref(event)" onclick="return handleNativeAdClick(event)" rel="nofollow" target="_blank"><div class="msg-native-widget-item-image-wrapper"><div class="msg-native-widget-item-image" style="background-image: url(&quot;https://z6v2p9a8.bkcdn.net/library/328752/c8e0977f84418edb44a31f88a0e3c658022224e7.webp&quot;); background-position: 50% 50%;"></div><div class="msg-native-widget-item-image-ratio"></div></div><div class="msg-native-widget-item-content"><div class="msg-native-widget-item-title">The Dalles</div><div class="msg-native-widget-item-text">The Dalles</div><div class="msg-native-widget-item-brand">DATING</div></div></a></div><div class="msg-native-widget-item-container"><a class="msg-native-widget-item" href="" real-href="https://s.magsrv.com/click.php?d=H4sIAAAAAAAAA01SWW_bMAz.NXnLDInU5ccVXRegQJM1h728FD6SJq0PObabIuCPH.1mbSGB.ih.PETKaSElOhKBlHToOj_BnxO44_1cp2nQHmo_qHiXTMBINbBDEIz9sTimdf0aVLuOVfcRh5EGZ1ACIxEIvmSwXnJMs3uvWHanCd7WXf64mvFebB5ncaJ0hpsVSLFa9aVvirLsqyJfPGzzTaTlWlyabcWWJr83G3HyWuMmWguxjuZN25zqwo8G63HZF_mfkVPN27quRItQ1H1Z4cWXWHVeoJBVCb5q2EfFe9zuXvxi1sxCIcK28d5u43nVXRPFy74sq1GRRSfX8qHt0mpefJn_w4phFi2eFq_.16M5PGX6csifcnNza3_fZhcfb.bHkrn76C2K52WfxMk.Xto9nwbK_hIlx1Pykryf93.JBEnrQi2VE4a.95lQBbxBY2AcfU6Dri0nzTMkJQlIao4iiOSwwIn3QRABAFlESO0uFxhK2CVK7sCpdJdmIHMFWrEbjFnbQ3_ug6wuh4KE5WoIpA21ofP5PP1kTJkxFVPWuqmcHrqyIMIxOxdmlUK0I9IGhSKugcDR1T4sNZTIxY_80ZOcNZyL30PDNRH_n28OX2t04k_GbRjPqxwe_UFogzJ5bk9v4yuG5EzgDvxAZ9LM5dYJZyyECBLs3uQZtyUzISKNQ_iIMsg3UDS_J8xVmivBXxnTZK_RKXBJkiCAUJnOs3.MTYVzTQMAAA--&amp;cb=e2e_6aa9d436b80c05.32463887&amp;suvt=7-386bc8d7808672932127f6dc7edc6933" oncontextmenu="setRealHref(event)" onmouseup="setRealHref(event)" onclick="return handleNativeAdClick(event)" rel="nofollow" target="_blank"><div class="msg-native-widget-item-image-wrapper"><div class="msg-native-widget-item-image" style="background-image: url(&quot;https://z6v2p9a8.bkcdn.net/library/328752/b63ee5e3331ca36fb011b58813643d8ffc4bec27.webp&quot;); background-position: 50% 50%;"></div><div class="msg-native-widget-item-image-ratio"></div></div><div class="msg-native-widget-item-content"><div class="msg-native-widget-item-title">The Dalles</div><div class="msg-native-widget-item-text">The Dalles</div><div class="msg-native-widget-item-brand">DATING</div></div></a></div><div class="msg-native-widget-item-container"><a class="msg-native-widget-item" href="" real-href="https://s.magsrv.com/click.php?d=H4sIAAAAAAAAA01S227bMAz9mrxlhu6SHzd0XYACTZCbs7wUtmU3Xi1Zju2mC_jxo92sLSTQh.YheUTJSEKpYEAiSuHU92HGv8_YPe7nJsui7tSE0eX36YwpKpDNqDCIQ1VXWdO8RL7o0TXvdRBJZhSnIyIRwZ8IdhusqYo3j7Y_z_hd09v1doF7tV8vDqmQOd9vGSXb7eBCWzvvQm9Xj0e7TyTdkWt79Bhp7YPak3OQku.THSG7ZNl27bmpwxTQgW.G2m4mjl92TeNJx1ndDM7za3Dc94FwQr1jwbeYIw4lPxZ_wmrRLmJC4q4NQR8PS9_fGh02g3N.cmjd0x197PrML.vP8H_oEebJ6mn1En6u1ekpl9eTfbLqx53.dZdfw2G_rBxyk9QlaXXdVkP1WhRJWlY6car9O1RJ0Zbl.lL.BiBAtYklzpko.Dpn4CLCzSSPlIGP24DbyEHiHYKgwIBKrEIA6LiYIW.jAWCMgeacZbqwhMeUFamgBTMiK7KcUSuYFJjGpq7dabgMUd64URDRqAYY1bFUcLlc5h.MOTLmZI5eP6fzU.9q1DB1JyC1EJzrCUnFiQDUAMzALT4uMUpE8RMf.KjaaIW98Dww_gbA9_Ml4XNNSfjI8JVN35sdD_1O6CKXPnfn1.kUY3Mk4AS.caOy3FhtiFGaxZxRpktlcxxLrmLOYbqE9yqjfWUClg9gNRGpibXKlNRWW5GmpaRKmaykOk3FP7wKB41NAwAA&amp;cb=e2e_6aa9d436b81c61.76547095&amp;suvt=7-386bc8d7808672932127f6dc7edc6933" oncontextmenu="setRealHref(event)" onmouseup="setRealHref(event)" onclick="return handleNativeAdClick(event)" rel="nofollow" target="_blank"><div class="msg-native-widget-item-image-wrapper"><div class="msg-native-widget-item-image" style="background-image: url(&quot;https://z6v2p9a8.bkcdn.net/library/328752/2f7383a5fdfbf5a8447706251d1cdf8c2e277e42.webp&quot;); background-position: 50% 50%;"></div><div class="msg-native-widget-item-image-ratio"></div></div><div class="msg-native-widget-item-content"><div class="msg-native-widget-item-title">The Dalles</div><div class="msg-native-widget-item-text">The Dalles</div><div class="msg-native-widget-item-brand">DATING</div></div></a></div></div></div></div></div><ins class="eas6a97888e2" data-zoneid="5286312" data-processed="true"></ins> 
+ <script>(AdProvider = window.AdProvider || []).push({"serve": {}});</script>
+		</div>
+		
+		
+		<div class="category-left-rank">
+    <h3 class="rank-side-title">日点击排行</h3>
+    <ol class="custom-rank-list">
+        
+        <li class="rank-item">
+            <span class="rank-num"></span> 
+            
+            <a target="_blank" class="rank-img" title="老公对不起" href="/5/22715/info.html">
+                <img src="/upload/images/20260906/20260906084445349018243141.jpg" alt="老公对不起">
+            </a>
+            
+            <div class="rank-info">
+                <p class="rank-t"><a href="/5/22715/info.html" target="_blank">老公对不起</a></p>
+                <p class="rank-a">作者：乌合之宴</p>
+                <p class="rank-s">原名《我出轨了老公的白月光》【双处】满玉和...</p>
+            </div>
+        </li>
+        
+        <li class="rank-item">
+            <span class="rank-num"></span> 
+            
+            <a target="_blank" class="rank-img" title="尔来伶仃百春秋" href="/5/22819/info.html">
+                <img src="/files/images/nocover.jpg" alt="尔来伶仃百春秋">
+            </a>
+            
+            <div class="rank-info">
+                <p class="rank-t"><a href="/5/22819/info.html" target="_blank">尔来伶仃百春秋</a></p>
+                <p class="rank-a">作者：黄金乡</p>
+                <p class="rank-s">春悯有个意中人，他偷摸着喜欢了他五年。他的...</p>
+            </div>
+        </li>
+        
+        <li class="rank-item">
+            <span class="rank-num"></span> 
+            
+            <a target="_blank" class="rank-img" title="寄养" href="/5/22805/info.html">
+                <img src="/files/images/nocover.jpg" alt="寄养">
+            </a>
+            
+            <div class="rank-info">
+                <p class="rank-t"><a href="/5/22805/info.html" target="_blank">寄养</a></p>
+                <p class="rank-a">作者：匿名咸鱼</p>
+                <p class="rank-s">避雷：人渣攻，轮j，爱无能。喜欢可以推荐一...</p>
+            </div>
+        </li>
+        
+        <li class="rank-item">
+            <span class="rank-num"></span> 
+            
+            <a target="_blank" class="rank-img" title="白月光他过分美丽" href="/5/22807/info.html">
+                <img src="/files/images/nocover.jpg" alt="白月光他过分美丽">
+            </a>
+            
+            <div class="rank-info">
+                <p class="rank-t"><a href="/5/22807/info.html" target="_blank">白月光他过分美丽</a></p>
+                <p class="rank-a">作者：向阳而生</p>
+                <p class="rank-s">林秋时刚死，就绑定了一个系统。系统发布任务...</p>
+            </div>
+        </li>
+        
+        <li class="rank-item">
+            <span class="rank-num"></span> 
+            
+            <a target="_blank" class="rank-img" title="替嫁世子妃受宠若惊[穿书]" href="/5/22810/info.html">
+                <img src="/upload/images/20260914/20260914131653039590446232.jpg" alt="替嫁世子妃受宠若惊[穿书]">
+            </a>
+            
+            <div class="rank-info">
+                <p class="rank-t"><a href="/5/22810/info.html" target="_blank">替嫁世子妃受宠若惊[穿书]</a></p>
+                <p class="rank-a">作者：花近溪</p>
+                <p class="rank-s">上辈子病死的娇气包白照影，这辈子睁眼穿书，...</p>
+            </div>
+        </li>
+        
+        <li class="rank-item">
+            <span class="rank-num"></span> 
+            
+            <a target="_blank" class="rank-img" title="食补（gl）" href="/6/22820/info.html">
+                <img src="/upload/images/20260915/20260915082145888007493455.jpg" alt="食补（gl）">
+            </a>
+            
+            <div class="rank-info">
+                <p class="rank-t"><a href="/6/22820/info.html" target="_blank">食补（gl）</a></p>
+                <p class="rank-a">作者：八千岁</p>
+                <p class="rank-s">.不是每个金手指都连接通天大道，不是每个幸...</p>
+            </div>
+        </li>
+        
+        <li class="rank-item">
+            <span class="rank-num"></span> 
+            
+            <a target="_blank" class="rank-img" title="拓荒者" href="/5/22812/info.html">
+                <img src="/files/images/nocover.jpg" alt="拓荒者">
+            </a>
+            
+            <div class="rank-info">
+                <p class="rank-t"><a href="/5/22812/info.html" target="_blank">拓荒者</a></p>
+                <p class="rank-a">作者：来自远方</p>
+                <p class="rank-s">意外穿越，来到星际世界，被送去边境星球拓荒...</p>
+            </div>
+        </li>
+        
+        <li class="rank-item">
+            <span class="rank-num"></span> 
+            
+            <a target="_blank" class="rank-img" title="即兴发挥" href="/5/22789/info.html">
+                <img src="/files/images/nocover.jpg" alt="即兴发挥">
+            </a>
+            
+            <div class="rank-info">
+                <p class="rank-t"><a href="/5/22789/info.html" target="_blank">即兴发挥</a></p>
+                <p class="rank-a">作者：林萨</p>
+                <p class="rank-s">颜控渣攻x痴情呆受。傻/黄/甜，白月光，狗...</p>
+            </div>
+        </li>
+        
+        <li class="rank-item">
+            <span class="rank-num"></span> 
+            
+            <a target="_blank" class="rank-img" title="老实人妻，但顶级魅魔" href="/5/22703/info.html">
+                <img src="/upload/images/20260905/20260905091842821073852874.jpg" alt="老实人妻，但顶级魅魔">
+            </a>
+            
+            <div class="rank-info">
+                <p class="rank-t"><a href="/5/22703/info.html" target="_blank">老实人妻，但顶级魅魔</a></p>
+                <p class="rank-a">作者：檀水</p>
+                <p class="rank-s">【人妻属性拉满·温柔直球·魅魔受vs占有欲...</p>
+            </div>
+        </li>
+        
+        <li class="rank-item">
+            <span class="rank-num"></span> 
+            
+            <a target="_blank" class="rank-img" title="交易沦陷" href="/5/12520/info.html">
+                <img src="/upload/images/20241121/20241121110310309991950379.jpg" alt="交易沦陷">
+            </a>
+            
+            <div class="rank-info">
+                <p class="rank-t"><a href="/5/12520/info.html" target="_blank">交易沦陷</a></p>
+                <p class="rank-a">作者：在下小神j</p>
+                <p class="rank-s">直男为钱卖肉，被猛1金主艹来艹去的故事。攻...</p>
+            </div>
+        </li>
+        
+    </ol>
+</div>
+	    
+
+	    
+	</div>
+	
+    <div class="ret-main-wr ui-mb40 ui-left">
+        <div class="ret-main">
+        	<div class="ret-search-head clearfix">
+                <ul id="search-condition" class="ret-search-type ui-left">
+               		
+                    <li class="active"><a class="ret-search-time" href="/0/list/0_0_0_0_0_0_0_1.html">更新</a></li>
+                    
+                    <li><a class="ret-search-time" href="/0/list/0_0_0_0_0_0_24_1.html">点击</a></li>
+                    
+                    <li><a class="ret-search-time" href="/0/list/0_0_0_0_0_0_27_1.html">字数</a></li>
+                    
+                </ul>
+                
+                <div class="ret-head-page ui-right" id="pagination1">
+                	<a href="javascript:alert('已经是第一页了');" class="mod_page_next">第一页</a>
+                	<a href="javascript:alert('已经是第一页了');" class="mod_page_next">上一页</a>
+                	<a href="javascript:void(0)" class="current">1</a>
+	                	
+	                	<a href="/0/list/0_0_0_0_0_0_0_2.html">2</a>
+                	
+	                	
+	                	<a href="/0/list/0_0_0_0_0_0_0_3.html">3</a>
+                	
+	                	
+	                	<a href="/0/list/0_0_0_0_0_0_0_4.html">4</a>
+                	
+	                	
+	                	<a href="/0/list/0_0_0_0_0_0_0_5.html">5</a>
+                	
+                	<a href="/0/list/0_0_0_0_0_0_0_2.html" class="mod_page_next">下一页</a>
+                	<a href="/0/list/0_0_0_0_0_0_0_1141.html" class="mod_page_next">最后页</a>
+                </div>
+              	<span class="ret-result-num ui-right">共<em>22818</em>个结果</span>
+            </div>
+            
+            <div class="ret-search-result">
+            	<ul class="ret-search-list clearfix">
+            		
+                	<li class="ret-search-item clearfix">
+	                    <div class="ret-works-cover">
+	                		<a class="mod-cover-list-thumb mod-cover-effect ui-db" title="食补（gl）" href="/6/22820/info.html" target="_blank">
+	                            <img class="lazy" src="/upload/images/20260915/20260915082145888007493455.jpg" style="display: block;">
+	                            <span class="mod-layer-mask">&nbsp;&nbsp;</span>
+	                        </a>
+	                        <p class="mod-cover-list-updata">
+	                        	<a class="mod-cover-list-mask" href="/6/22820/info.html" target="_blank"><span class="mod-cover-list-text">第155章 作者后话</span></a>
+	                        </p>
+	                    </div>
+	                    <div class="ret-works-info">
+	                    	<h3 class="ret-works-title clearfix"><a href="/6/22820/info.html" target="_blank" title="食补（gl）">食补（gl）</a></h3>
+	                        <p class="ret-works-author" title="八千岁">作者：八千岁</p>
+                            <p class="ret-works-tags">
+                                <a href="/6/list/1.html" target="_blank">分类：百合小说</a>
+                                <span>点击：<em>183</em></span>
+                    		</p>
+                            <p class="ret-works-decs">.不是每个金手指都连接通天大道，不是每个幸运儿都向往泼天富贵。.寒耕暑耘春华秋实，都市角落中悄悄盛开的小小奇迹，也是奇迹。</p>
+	                        <a class="ret-works-view ui-btn-pink" href="/6/22820/read/5361951.html" target="_blank">开始阅读</a>
+	                	</div>
+	                </li>
+					
+                	<li class="ret-search-item clearfix">
+	                    <div class="ret-works-cover">
+	                		<a class="mod-cover-list-thumb mod-cover-effect ui-db" title="尔来伶仃百春秋" href="/5/22819/info.html" target="_blank">
+	                            <img class="lazy" src="/files/images/nocover.jpg" style="display: block;">
+	                            <span class="mod-layer-mask">&nbsp;&nbsp;</span>
+	                        </a>
+	                        <p class="mod-cover-list-updata">
+	                        	<a class="mod-cover-list-mask" href="/5/22819/info.html" target="_blank"><span class="mod-cover-list-text">第163章 春秋岁</span></a>
+	                        </p>
+	                    </div>
+	                    <div class="ret-works-info">
+	                    	<h3 class="ret-works-title clearfix"><a href="/5/22819/info.html" target="_blank" title="尔来伶仃百春秋">尔来伶仃百春秋</a></h3>
+	                        <p class="ret-works-author" title="黄金乡">作者：黄金乡</p>
+                            <p class="ret-works-tags">
+                                <a href="/5/list/1.html" target="_blank">分类：纯爱小说</a>
+                                <span>点击：<em>444</em></span>
+                    		</p>
+                            <p class="ret-works-decs">春悯有个意中人，他偷摸着喜欢了他五年。他的意中人也有个意中人，对方也偷摸着暗恋了五年。他俩漫漫暗恋长路没个尽头，最终把那位</p>
+	                        <a class="ret-works-view ui-btn-pink" href="/5/22819/read/5361788.html" target="_blank">开始阅读</a>
+	                	</div>
+	                </li>
+					
+                	<li class="ret-search-item clearfix">
+	                    <div class="ret-works-cover">
+	                		<a class="mod-cover-list-thumb mod-cover-effect ui-db" title="文豪组织建设中" href="/4/22818/info.html" target="_blank">
+	                            <img class="lazy" src="/upload/images/20260915/20260915081627118332368957.jpg" style="display: block;">
+	                            <span class="mod-layer-mask">&nbsp;&nbsp;</span>
+	                        </a>
+	                        <p class="mod-cover-list-updata">
+	                        	<a class="mod-cover-list-mask" href="/4/22818/info.html" target="_blank"><span class="mod-cover-list-text">第186章 一个谎言，一个真相</span></a>
+	                        </p>
+	                    </div>
+	                    <div class="ret-works-info">
+	                    	<h3 class="ret-works-title clearfix"><a href="/4/22818/info.html" target="_blank" title="文豪组织建设中">文豪组织建设中</a></h3>
+	                        <p class="ret-works-author" title="空纪海">作者：空纪海</p>
+                            <p class="ret-works-tags">
+                                <a href="/4/list/1.html" target="_blank">分类：无CP小说</a>
+                                <span>点击：<em>148</em></span>
+                    		</p>
+                            <p class="ret-works-decs">海源北斗抵达文豪世界时候，世界还在战争，主角敦还没有出生。而他被委托了一个看上去绝不可能完成的任务：建设一个国际空壳异能组</p>
+	                        <a class="ret-works-view ui-btn-pink" href="/4/22818/read/5361602.html" target="_blank">开始阅读</a>
+	                	</div>
+	                </li>
+					
+                	<li class="ret-search-item clearfix">
+	                    <div class="ret-works-cover">
+	                		<a class="mod-cover-list-thumb mod-cover-effect ui-db" title="漫画续作，但前作男主已疯" href="/4/22817/info.html" target="_blank">
+	                            <img class="lazy" src="/upload/images/20260915/20260915081256341850805935.jpg" style="display: block;">
+	                            <span class="mod-layer-mask">&nbsp;&nbsp;</span>
+	                        </a>
+	                        <p class="mod-cover-list-updata">
+	                        	<a class="mod-cover-list-mask" href="/4/22817/info.html" target="_blank"><span class="mod-cover-list-text">第117章</span></a>
+	                        </p>
+	                    </div>
+	                    <div class="ret-works-info">
+	                    	<h3 class="ret-works-title clearfix"><a href="/4/22817/info.html" target="_blank" title="漫画续作，但前作男主已疯">漫画续作，但前作男主已疯</a></h3>
+	                        <p class="ret-works-author" title="空纪海">作者：空纪海</p>
+                            <p class="ret-works-tags">
+                                <a href="/4/list/1.html" target="_blank">分类：无CP小说</a>
+                                <span>点击：<em>166</em></span>
+                    		</p>
+                            <p class="ret-works-decs">某天，正在悠闲享受大学生活的黎鸣突然看到了来自世界之外的‘交流论坛’。论坛的用户称呼黎鸣的世界为漫画，称呼黎鸣的室友为主角</p>
+	                        <a class="ret-works-view ui-btn-pink" href="/4/22817/read/5361485.html" target="_blank">开始阅读</a>
+	                	</div>
+	                </li>
+					
+                	<li class="ret-search-item clearfix">
+	                    <div class="ret-works-cover">
+	                		<a class="mod-cover-list-thumb mod-cover-effect ui-db" title="洛阳农牧事" href="/2/22591/info.html" target="_blank">
+	                            <img class="lazy" src="/upload/images/20260825/20260825093008948352999403.jpg" style="display: block;">
+	                            <span class="mod-layer-mask">&nbsp;&nbsp;</span>
+	                        </a>
+	                        <p class="mod-cover-list-updata">
+	                        	<a class="mod-cover-list-mask" href="/2/22591/info.html" target="_blank"><span class="mod-cover-list-text">第235章 番外十三</span></a>
+	                        </p>
+	                    </div>
+	                    <div class="ret-works-info">
+	                    	<h3 class="ret-works-title clearfix"><a href="/2/22591/info.html" target="_blank" title="洛阳农牧事">洛阳农牧事</a></h3>
+	                        <p class="ret-works-author" title="绿豆红汤">作者：绿豆红汤</p>
+                            <p class="ret-works-tags">
+                                <a href="/2/list/1.html" target="_blank">分类：女频小说</a>
+                                <span>点击：<em>745</em></span>
+                    		</p>
+                            <p class="ret-works-decs">傅如意穿越到北魏时期，落脚在游牧文明与农耕文明深度交织的洛阳，生活在文识荒蛮和武力充沛的乡野。北魏时期，民族混居，胡汉杂糅</p>
+	                        <a class="ret-works-view ui-btn-pink" href="/2/22591/read/5325958.html" target="_blank">开始阅读</a>
+	                	</div>
+	                </li>
+					
+                	<li class="ret-search-item clearfix">
+	                    <div class="ret-works-cover">
+	                		<a class="mod-cover-list-thumb mod-cover-effect ui-db" title="八零我那颜控一家子" href="/4/22816/info.html" target="_blank">
+	                            <img class="lazy" src="/upload/images/20260915/20260915080118202597504461.jpg" style="display: block;">
+	                            <span class="mod-layer-mask">&nbsp;&nbsp;</span>
+	                        </a>
+	                        <p class="mod-cover-list-updata">
+	                        	<a class="mod-cover-list-mask" href="/4/22816/info.html" target="_blank"><span class="mod-cover-list-text">第121章 121</span></a>
+	                        </p>
+	                    </div>
+	                    <div class="ret-works-info">
+	                    	<h3 class="ret-works-title clearfix"><a href="/4/22816/info.html" target="_blank" title="八零我那颜控一家子">八零我那颜控一家子</a></h3>
+	                        <p class="ret-works-author" title="桃尚">作者：桃尚</p>
+                            <p class="ret-works-tags">
+                                <a href="/4/list/1.html" target="_blank">分类：无CP小说</a>
+                                <span>点击：<em>136</em></span>
+                    		</p>
+                            <p class="ret-works-decs">[女主重生无CP,欢脱种田文，时代背景半架空]孟大山是个重度颜控的丑老头，颜控到一看见镜子里自己那张脸就心情不好，为了改善</p>
+	                        <a class="ret-works-view ui-btn-pink" href="/4/22816/read/5361352.html" target="_blank">开始阅读</a>
+	                	</div>
+	                </li>
+					
+                	<li class="ret-search-item clearfix">
+	                    <div class="ret-works-cover">
+	                		<a class="mod-cover-list-thumb mod-cover-effect ui-db" title="绿茶小捞女被富豪老公娇养" href="/2/22815/info.html" target="_blank">
+	                            <img class="lazy" src="/upload/images/20260915/20260915075817458457519089.jpg" style="display: block;">
+	                            <span class="mod-layer-mask">&nbsp;&nbsp;</span>
+	                        </a>
+	                        <p class="mod-cover-list-updata">
+	                        	<a class="mod-cover-list-mask" href="/2/22815/info.html" target="_blank"><span class="mod-cover-list-text">第74章 【全文FIN】 大结局【全</span></a>
+	                        </p>
+	                    </div>
+	                    <div class="ret-works-info">
+	                    	<h3 class="ret-works-title clearfix"><a href="/2/22815/info.html" target="_blank" title="绿茶小捞女被富豪老公娇养">绿茶小捞女被富豪老公娇养</a></h3>
+	                        <p class="ret-works-author" title="柚子水豚">作者：柚子水豚</p>
+                            <p class="ret-works-tags">
+                                <a href="/2/list/1.html" target="_blank">分类：女频小说</a>
+                                <span>点击：<em>141</em></span>
+                    		</p>
+                            <p class="ret-works-decs">楚天晴脸红心跳看完一本肉香四溢的限制文，和闺蜜激情吐槽，眼睛一闭就穿到文里。好消息：她不是限制文女主。坏消息：她是文里虐待</p>
+	                        <a class="ret-works-view ui-btn-pink" href="/2/22815/read/5361278.html" target="_blank">开始阅读</a>
+	                	</div>
+	                </li>
+					
+                	<li class="ret-search-item clearfix">
+	                    <div class="ret-works-cover">
+	                		<a class="mod-cover-list-thumb mod-cover-effect ui-db" title=" [综英美]关注氪星人是卢瑟的核心设定吗" href="/5/21361/info.html" target="_blank">
+	                            <img class="lazy" src="/upload/images/20260510/20260510084932876402733847.jpg" style="display: block;">
+	                            <span class="mod-layer-mask">&nbsp;&nbsp;</span>
+	                        </a>
+	                        <p class="mod-cover-list-updata">
+	                        	<a class="mod-cover-list-mask" href="/5/21361/info.html" target="_blank"><span class="mod-cover-list-text">第232章 观影体16:TV最会读心的一次</span></a>
+	                        </p>
+	                    </div>
+	                    <div class="ret-works-info">
+	                    	<h3 class="ret-works-title clearfix"><a href="/5/21361/info.html" target="_blank" title=" [综英美]关注氪星人是卢瑟的核心设定吗"> [综英美]关注氪星人是卢瑟的核心设定吗</a></h3>
+	                        <p class="ret-works-author" title="寒带云盘">作者：寒带云盘</p>
+                            <p class="ret-works-tags">
+                                <a href="/5/list/1.html" target="_blank">分类：纯爱小说</a>
+                                <span>点击：<em>659</em></span>
+                    		</p>
+                            <p class="ret-works-decs">死亡是不幸的，穿越是幸运的，穿越成富豪之子是幸运的，但是……穿越成卢瑟？虽然什么记忆都没有，但是头顶有些凉——你好，有挂吗</p>
+	                        <a class="ret-works-view ui-btn-pink" href="/5/21361/read/5115876.html" target="_blank">开始阅读</a>
+	                	</div>
+	                </li>
+					
+                	<li class="ret-search-item clearfix">
+	                    <div class="ret-works-cover">
+	                		<a class="mod-cover-list-thumb mod-cover-effect ui-db" title="制霸手术室" href="/2/22814/info.html" target="_blank">
+	                            <img class="lazy" src="/upload/images/20260915/20260915075022546850310495.jpg" style="display: block;">
+	                            <span class="mod-layer-mask">&nbsp;&nbsp;</span>
+	                        </a>
+	                        <p class="mod-cover-list-updata">
+	                        	<a class="mod-cover-list-mask" href="/2/22814/info.html" target="_blank"><span class="mod-cover-list-text">第168章 番外（2）</span></a>
+	                        </p>
+	                    </div>
+	                    <div class="ret-works-info">
+	                    	<h3 class="ret-works-title clearfix"><a href="/2/22814/info.html" target="_blank" title="制霸手术室">制霸手术室</a></h3>
+	                        <p class="ret-works-author" title="时逢而已">作者：时逢而已</p>
+                            <p class="ret-works-tags">
+                                <a href="/2/list/1.html" target="_blank">分类：女频小说</a>
+                                <span>点击：<em>103</em></span>
+                    		</p>
+                            <p class="ret-works-decs">林熙冬上辈子在急诊科，兢兢业业，最后累死在手术台上。重生归来，她正站在人生分叉口。作为越州医学院临床系优秀学生，她的未来可</p>
+	                        <a class="ret-works-view ui-btn-pink" href="/2/22814/read/5361093.html" target="_blank">开始阅读</a>
+	                	</div>
+	                </li>
+					
+                	<li class="ret-search-item clearfix">
+	                    <div class="ret-works-cover">
+	                		<a class="mod-cover-list-thumb mod-cover-effect ui-db" title="老公对不起" href="/5/22715/info.html" target="_blank">
+	                            <img class="lazy" src="/upload/images/20260906/20260906084445349018243141.jpg" style="display: block;">
+	                            <span class="mod-layer-mask">&nbsp;&nbsp;</span>
+	                        </a>
+	                        <p class="mod-cover-list-updata">
+	                        	<a class="mod-cover-list-mask" href="/5/22715/info.html" target="_blank"><span class="mod-cover-list-text">第82章 82章</span></a>
+	                        </p>
+	                    </div>
+	                    <div class="ret-works-info">
+	                    	<h3 class="ret-works-title clearfix"><a href="/5/22715/info.html" target="_blank" title="老公对不起">老公对不起</a></h3>
+	                        <p class="ret-works-author" title="乌合之宴">作者：乌合之宴</p>
+                            <p class="ret-works-tags">
+                                <a href="/5/list/1.html" target="_blank">分类：纯爱小说</a>
+                                <span>点击：<em>3046</em></span>
+                    		</p>
+                            <p class="ret-works-decs">原名《我出轨了老公的白月光》【双处】满玉和丈夫结婚三年，也被丈夫奚落轻视了三年，因为他的丈夫心里有个可望而不可得的白月光。</p>
+	                        <a class="ret-works-view ui-btn-pink" href="/5/22715/read/5346182.html" target="_blank">开始阅读</a>
+	                	</div>
+	                </li>
+					
+                	<li class="ret-search-item clearfix">
+	                    <div class="ret-works-cover">
+	                		<a class="mod-cover-list-thumb mod-cover-effect ui-db" title="为你着迷" href="/6/22813/info.html" target="_blank">
+	                            <img class="lazy" src="/files/images/nocover.jpg" style="display: block;">
+	                            <span class="mod-layer-mask">&nbsp;&nbsp;</span>
+	                        </a>
+	                        <p class="mod-cover-list-updata">
+	                        	<a class="mod-cover-list-mask" href="/6/22813/info.html" target="_blank"><span class="mod-cover-list-text">第251章 黎芸x童雨番外</span></a>
+	                        </p>
+	                    </div>
+	                    <div class="ret-works-info">
+	                    	<h3 class="ret-works-title clearfix"><a href="/6/22813/info.html" target="_blank" title="为你着迷">为你着迷</a></h3>
+	                        <p class="ret-works-author" title="有毛儿">作者：有毛儿</p>
+                            <p class="ret-works-tags">
+                                <a href="/6/list/1.html" target="_blank">分类：百合小说</a>
+                                <span>点击：<em>210</em></span>
+                    		</p>
+                            <p class="ret-works-decs">郁绮不喜欢舒画。在别人眼中，舒画是知名学府南海大学的校花，仙气飘飘，出身优越。可留给郁绮的印象却是：喜欢假笑，热衷交际，虚</p>
+	                        <a class="ret-works-view ui-btn-pink" href="/6/22813/read/5360837.html" target="_blank">开始阅读</a>
+	                	</div>
+	                </li>
+					
+                	<li class="ret-search-item clearfix">
+	                    <div class="ret-works-cover">
+	                		<a class="mod-cover-list-thumb mod-cover-effect ui-db" title="拓荒者" href="/5/22812/info.html" target="_blank">
+	                            <img class="lazy" src="/files/images/nocover.jpg" style="display: block;">
+	                            <span class="mod-layer-mask">&nbsp;&nbsp;</span>
+	                        </a>
+	                        <p class="mod-cover-list-updata">
+	                        	<a class="mod-cover-list-mask" href="/5/22812/info.html" target="_blank"><span class="mod-cover-list-text">第193章</span></a>
+	                        </p>
+	                    </div>
+	                    <div class="ret-works-info">
+	                    	<h3 class="ret-works-title clearfix"><a href="/5/22812/info.html" target="_blank" title="拓荒者">拓荒者</a></h3>
+	                        <p class="ret-works-author" title="来自远方">作者：来自远方</p>
+                            <p class="ret-works-tags">
+                                <a href="/5/list/1.html" target="_blank">分类：纯爱小说</a>
+                                <span>点击：<em>525</em></span>
+                    		</p>
+                            <p class="ret-works-decs">意外穿越，来到星际世界，被送去边境星球拓荒。卫歆能怎么办？自然要走出一条前无古人，后无来者，遇虫杀虫，遇兽斩兽的光明大道。</p>
+	                        <a class="ret-works-view ui-btn-pink" href="/5/22812/read/5360644.html" target="_blank">开始阅读</a>
+	                	</div>
+	                </li>
+					
+                	<li class="ret-search-item clearfix">
+	                    <div class="ret-works-cover">
+	                		<a class="mod-cover-list-thumb mod-cover-effect ui-db" title="我见暴君来时" href="/2/22811/info.html" target="_blank">
+	                            <img class="lazy" src="/upload/images/20260914/20260914132110699027537295.jpg" style="display: block;">
+	                            <span class="mod-layer-mask">&nbsp;&nbsp;</span>
+	                        </a>
+	                        <p class="mod-cover-list-updata">
+	                        	<a class="mod-cover-list-mask" href="/2/22811/info.html" target="_blank"><span class="mod-cover-list-text">第163章 完结篇</span></a>
+	                        </p>
+	                    </div>
+	                    <div class="ret-works-info">
+	                    	<h3 class="ret-works-title clearfix"><a href="/2/22811/info.html" target="_blank" title="我见暴君来时">我见暴君来时</a></h3>
+	                        <p class="ret-works-author" title="兜兜阿麦">作者：兜兜阿麦</p>
+                            <p class="ret-works-tags">
+                                <a href="/2/list/1.html" target="_blank">分类：女频小说</a>
+                                <span>点击：<em>182</em></span>
+                    		</p>
+                            <p class="ret-works-decs">清醒理智偶尔摆烂的穿越女vs她那不择手段的野心家暴君【穿越第一课：远离未来暴君。】【实践结论：失败，且沦陷。】“杨广不是我</p>
+	                        <a class="ret-works-view ui-btn-pink" href="/2/22811/read/5360481.html" target="_blank">开始阅读</a>
+	                	</div>
+	                </li>
+					
+                	<li class="ret-search-item clearfix">
+	                    <div class="ret-works-cover">
+	                		<a class="mod-cover-list-thumb mod-cover-effect ui-db" title="替嫁世子妃受宠若惊[穿书]" href="/5/22810/info.html" target="_blank">
+	                            <img class="lazy" src="/upload/images/20260914/20260914131653039590446232.jpg" style="display: block;">
+	                            <span class="mod-layer-mask">&nbsp;&nbsp;</span>
+	                        </a>
+	                        <p class="mod-cover-list-updata">
+	                        	<a class="mod-cover-list-mask" href="/5/22810/info.html" target="_blank"><span class="mod-cover-list-text">第202章</span></a>
+	                        </p>
+	                    </div>
+	                    <div class="ret-works-info">
+	                    	<h3 class="ret-works-title clearfix"><a href="/5/22810/info.html" target="_blank" title="替嫁世子妃受宠若惊[穿书]">替嫁世子妃受宠若惊[穿书]</a></h3>
+	                        <p class="ret-works-author" title="花近溪">作者：花近溪</p>
+                            <p class="ret-works-tags">
+                                <a href="/5/list/1.html" target="_blank">分类：纯爱小说</a>
+                                <span>点击：<em>528</em></span>
+                    		</p>
+                            <p class="ret-works-decs">上辈子病死的娇气包白照影，这辈子睁眼穿书，被逼替嫁。新郎官虽贵为隋王府世子，当年也曾文武动京华，少年成名，风流意气，压得同</p>
+	                        <a class="ret-works-view ui-btn-pink" href="/5/22810/read/5360279.html" target="_blank">开始阅读</a>
+	                	</div>
+	                </li>
+					
+                	<li class="ret-search-item clearfix">
+	                    <div class="ret-works-cover">
+	                		<a class="mod-cover-list-thumb mod-cover-effect ui-db" title="网露谷，但立海大" href="/4/18753/info.html" target="_blank">
+	                            <img class="lazy" src="/upload/images/20251015/20251015092734552210602155.jpg" style="display: block;">
+	                            <span class="mod-layer-mask">&nbsp;&nbsp;</span>
+	                        </a>
+	                        <p class="mod-cover-list-updata">
+	                        	<a class="mod-cover-list-mask" href="/4/18753/info.html" target="_blank"><span class="mod-cover-list-text">第277章 观影体（58）:被鸡掰猫再度迫害の网球王子们~</span></a>
+	                        </p>
+	                    </div>
+	                    <div class="ret-works-info">
+	                    	<h3 class="ret-works-title clearfix"><a href="/4/18753/info.html" target="_blank" title="网露谷，但立海大">网露谷，但立海大</a></h3>
+	                        <p class="ret-works-author" title="鱼人吐司">作者：鱼人吐司</p>
+                            <p class="ret-works-tags">
+                                <a href="/4/list/1.html" target="_blank">分类：无CP小说</a>
+                                <span>点击：<em>4658</em></span>
+                    		</p>
+                            <p class="ret-works-decs">&gt;【星露谷X】&gt;【网露谷O】&gt;【请选择玩家阵营——】&gt;【立海大已确定】立海大网球部来了一名新生，仅有12岁。入部届上出身地</p>
+	                        <a class="ret-works-view ui-btn-pink" href="/4/18753/read/4695775.html" target="_blank">开始阅读</a>
+	                	</div>
+	                </li>
+					
+                	<li class="ret-search-item clearfix">
+	                    <div class="ret-works-cover">
+	                		<a class="mod-cover-list-thumb mod-cover-effect ui-db" title="十二巫" href="/2/22809/info.html" target="_blank">
+	                            <img class="lazy" src="/upload/images/20260914/20260914130630436976639445.jpg" style="display: block;">
+	                            <span class="mod-layer-mask">&nbsp;&nbsp;</span>
+	                        </a>
+	                        <p class="mod-cover-list-updata">
+	                        	<a class="mod-cover-list-mask" href="/2/22809/info.html" target="_blank"><span class="mod-cover-list-text">第105章 正文完结“我点香一</span></a>
+	                        </p>
+	                    </div>
+	                    <div class="ret-works-info">
+	                    	<h3 class="ret-works-title clearfix"><a href="/2/22809/info.html" target="_blank" title="十二巫">十二巫</a></h3>
+	                        <p class="ret-works-author" title="画七">作者：画七</p>
+                            <p class="ret-works-tags">
+                                <a href="/2/list/1.html" target="_blank">分类：女频小说</a>
+                                <span>点击：<em>152</em></span>
+                    		</p>
+                            <p class="ret-works-decs">永庆年间，苏聆兮干出了许多骇人听闻的事。她在战乱中强扶羸弱的少年天子继位，又于朝局动荡，四海煎熬时囚天子，扶女帝，从内阁首</p>
+	                        <a class="ret-works-view ui-btn-pink" href="/2/22809/read/5360133.html" target="_blank">开始阅读</a>
+	                	</div>
+	                </li>
+					
+                	<li class="ret-search-item clearfix">
+	                    <div class="ret-works-cover">
+	                		<a class="mod-cover-list-thumb mod-cover-effect ui-db" title="食明" href="/2/22808/info.html" target="_blank">
+	                            <img class="lazy" src="/upload/images/20260914/20260914130253988791434676.jpg" style="display: block;">
+	                            <span class="mod-layer-mask">&nbsp;&nbsp;</span>
+	                        </a>
+	                        <p class="mod-cover-list-updata">
+	                        	<a class="mod-cover-list-mask" href="/2/22808/info.html" target="_blank"><span class="mod-cover-list-text">第515章 515 【番外一：</span></a>
+	                        </p>
+	                    </div>
+	                    <div class="ret-works-info">
+	                    	<h3 class="ret-works-title clearfix"><a href="/2/22808/info.html" target="_blank" title="食明">食明</a></h3>
+	                        <p class="ret-works-author" title="春溪笛晓">作者：春溪笛晓</p>
+                            <p class="ret-works-tags">
+                                <a href="/2/list/1.html" target="_blank">分类：女频小说</a>
+                                <span>点击：<em>235</em></span>
+                    		</p>
+                            <p class="ret-works-decs">隆庆元年，新皇擢张居正为吏部左侍郎兼任东阁大学士，赫赫有名的大明名臣张居正正式成为了张阁老。这天傍晚，背着个锅的少年拦住了</p>
+	                        <a class="ret-works-view ui-btn-pink" href="/2/22808/read/5359618.html" target="_blank">开始阅读</a>
+	                	</div>
+	                </li>
+					
+                	<li class="ret-search-item clearfix">
+	                    <div class="ret-works-cover">
+	                		<a class="mod-cover-list-thumb mod-cover-effect ui-db" title="白月光他过分美丽" href="/5/22807/info.html" target="_blank">
+	                            <img class="lazy" src="/files/images/nocover.jpg" style="display: block;">
+	                            <span class="mod-layer-mask">&nbsp;&nbsp;</span>
+	                        </a>
+	                        <p class="mod-cover-list-updata">
+	                        	<a class="mod-cover-list-mask" href="/5/22807/info.html" target="_blank"><span class="mod-cover-list-text">第146章 结局</span></a>
+	                        </p>
+	                    </div>
+	                    <div class="ret-works-info">
+	                    	<h3 class="ret-works-title clearfix"><a href="/5/22807/info.html" target="_blank" title="白月光他过分美丽">白月光他过分美丽</a></h3>
+	                        <p class="ret-works-author" title="向阳而生">作者：向阳而生</p>
+                            <p class="ret-works-tags">
+                                <a href="/5/list/1.html" target="_blank">分类：纯爱小说</a>
+                                <span>点击：<em>524</em></span>
+                    		</p>
+                            <p class="ret-works-decs">林秋时刚死，就绑定了一个系统。系统发布任务：扮演男主年少时的白月光，在获得他的信任之后，背叛他、让他明白许章泉才是爱他最深</p>
+	                        <a class="ret-works-view ui-btn-pink" href="/5/22807/read/5359472.html" target="_blank">开始阅读</a>
+	                	</div>
+	                </li>
+					
+                	<li class="ret-search-item clearfix">
+	                    <div class="ret-works-cover">
+	                		<a class="mod-cover-list-thumb mod-cover-effect ui-db" title="通关废土世界的万人迷" href="/5/22806/info.html" target="_blank">
+	                            <img class="lazy" src="/upload/images/20260914/20260914125855182440373870.jpg" style="display: block;">
+	                            <span class="mod-layer-mask">&nbsp;&nbsp;</span>
+	                        </a>
+	                        <p class="mod-cover-list-updata">
+	                        	<a class="mod-cover-list-mask" href="/5/22806/info.html" target="_blank"><span class="mod-cover-list-text">第230章 终章</span></a>
+	                        </p>
+	                    </div>
+	                    <div class="ret-works-info">
+	                    	<h3 class="ret-works-title clearfix"><a href="/5/22806/info.html" target="_blank" title="通关废土世界的万人迷">通关废土世界的万人迷</a></h3>
+	                        <p class="ret-works-author" title="niniko">作者：niniko</p>
+                            <p class="ret-works-tags">
+                                <a href="/5/list/1.html" target="_blank">分类：纯爱小说</a>
+                                <span>点击：<em>364</em></span>
+                    		</p>
+                            <p class="ret-works-decs">沈听澜穿越了。他穿到了危机四伏的废土世界。不靠谱的系统对他说：你需要找到组队的队友组成小队，清除北方战区所有污染源boss</p>
+	                        <a class="ret-works-view ui-btn-pink" href="/5/22806/read/5359242.html" target="_blank">开始阅读</a>
+	                	</div>
+	                </li>
+					
+                	<li class="ret-search-item clearfix">
+	                    <div class="ret-works-cover">
+	                		<a class="mod-cover-list-thumb mod-cover-effect ui-db" title="寄养" href="/5/22805/info.html" target="_blank">
+	                            <img class="lazy" src="/files/images/nocover.jpg" style="display: block;">
+	                            <span class="mod-layer-mask">&nbsp;&nbsp;</span>
+	                        </a>
+	                        <p class="mod-cover-list-updata">
+	                        	<a class="mod-cover-list-mask" href="/5/22805/info.html" target="_blank"><span class="mod-cover-list-text">第五十九章 常见疑惑及解答</span></a>
+	                        </p>
+	                    </div>
+	                    <div class="ret-works-info">
+	                    	<h3 class="ret-works-title clearfix"><a href="/5/22805/info.html" target="_blank" title="寄养">寄养</a></h3>
+	                        <p class="ret-works-author" title="匿名咸鱼">作者：匿名咸鱼</p>
+                            <p class="ret-works-tags">
+                                <a href="/5/list/1.html" target="_blank">分类：纯爱小说</a>
+                                <span>点击：<em>540</em></span>
+                    		</p>
+                            <p class="ret-works-decs">避雷：人渣攻，轮j，爱无能。喜欢可以推荐一下吗(^з^)-☆一句话简介：生如鸿鹄，堕如杂雀。</p>
+	                        <a class="ret-works-view ui-btn-pink" href="/5/22805/read/5359183.html" target="_blank">开始阅读</a>
+	                	</div>
+	                </li>
+					
+                </ul>
+                
+                <div class="ret-page-wr mod-page" id="pagination2">
+                	<a href="javascript:alert('已经是第一页了');" class="mod_page_next">第一页</a>
+                	<a href="javascript:alert('已经是第一页了');" class="mod_page_next">上一页</a>
+                	<a href="javascript:void(0)" class="current">1</a>
+	                	
+	                	<a href="/0/list/0_0_0_0_0_0_0_2.html">2</a>
+                	
+	                	
+	                	<a href="/0/list/0_0_0_0_0_0_0_3.html">3</a>
+                	
+	                	
+	                	<a href="/0/list/0_0_0_0_0_0_0_4.html">4</a>
+                	
+	                	
+	                	<a href="/0/list/0_0_0_0_0_0_0_5.html">5</a>
+                	
+	                	
+	                	<a href="/0/list/0_0_0_0_0_0_0_6.html">6</a>
+                	
+	                	
+	                	<a href="/0/list/0_0_0_0_0_0_0_7.html">7</a>
+                	
+                	<a href="/0/list/0_0_0_0_0_0_0_2.html" class="mod_page_next">下一页</a>
+                	<a href="/0/list/0_0_0_0_0_0_0_1141.html" class="mod_page_next">最后页</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- footer -->
+<div class="mod-footer-wr">
+    <div class="mod-footer-main-wr">
+        <div class="mod-footer-main ui-wm">
+
+  
+            <div class="mod-footer-info">本站所有小说为完本转载作品，所有内容版权归版权方或原作者所有。</div>
+    
+        </div>
+    </div>
+    <div class="mod-footer-border"></div>
+</div>
+
+
+
+<script type="application/javascript">
+(function() {
+    function randStr(e,t){for(var n="",r=t||"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",o=0;o<e;o++)n+=r.charAt(Math.floor(Math.random()*r.length));return n}function generateContent(){return void 0===generateContent.val&&(generateContent.val="document.dispatchEvent("+randStr(4*Math.random()+3)+");"),generateContent.val}try{Object.defineProperty(document.currentScript,"innerHTML",),Object.defineProperty(document.currentScript,"textContent",)}catch(e){};
+
+    //version 8.0.0
+
+    var adConfig = {
+    "ads_host": "a.pemsrv.com",
+    "syndication_host": "s.pemsrv.com",
+    "idzone": 4920554,
+    "popup_fallback": true,
+    "popup_force": false,
+    "chrome_enabled": true,
+    "new_tab": false,
+    "frequency_period": 360,
+    "frequency_count": 1,
+    "trigger_method": 3,
+    "trigger_class": "",
+    "trigger_delay": 0,
+    "capping_enabled": true,
+    "tcf_enabled": true,
+    "only_inline": false
+};
+
+window.document.querySelectorAll||(document.querySelectorAll=document.body.querySelectorAll=Object.querySelectorAll=function(e,o,t,i,n){var r=document,a=r.createStyleSheet();for(n=r.all,o=[],t=(e=e.replace(/\[for\b/gi,"[htmlFor").split(",")).length;t--;){for(a.addRule(e[t],"k:v"),i=n.length;i--;)n[i].currentStyle.k&&o.push(n[i]);a.removeRule(0)}return o});var popMagic={version:8,cookie_name:"",url:"",config:{},open_count:0,top:null,browser:null,venor_loaded:!1,venor:!1,tcfData:null,remoteLicensedDomains:["exdynsrv.com","exosrv.com","exoclick.com","opoxv.com","exacdn.com","pemsrv.com"],configTpl:{ads_host:"",syndication_host:"",idzone:"",frequency_period:720,frequency_count:1,trigger_method:1,trigger_class:"",popup_force:!1,popup_fallback:!1,chrome_enabled:!0,new_tab:!1,cat:"",tags:"",el:"",sub:"",sub2:"",sub3:"",only_inline:!1,trigger_delay:0,capping_enabled:!0,tcf_enabled:!1,cookieconsent:!0,should_fire:function(){return!0},on_redirect:null},isAdsDomainLicensed:function(){for(var e=this.config.ads_host,o=this.remoteLicensedDomains.concat([".local","localhost","127.0.0.1"]),t=0;t<o.length;t++){var i=o[t];if("string"==typeof i)if("."===i.charAt(0)){var n=i,r=i.substring(1);if(e.slice(-n.length)===n||e===r)return!0}else{var a=e===i,c="."+i,p=e.slice(-c.length)===c;if(a||p)return!0}}return!1},init:function(e){if(void 0!==e.idzone&&e.idzone){void 0===e.customTargeting&&(e.customTargeting=[]),window.customTargeting=e.customTargeting||null;var o=Object.keys(e.customTargeting).filter(function(e){return e.search("ex_")>=0});for(var t in o.length&&o.forEach(function(e){return this.configTpl[e]=null}.bind(this)),this.configTpl)Object.prototype.hasOwnProperty.call(this.configTpl,t)&&(void 0!==e[t]?this.config[t]=e[t]:this.config[t]=this.configTpl[t]);if(void 0!==this.config.idzone&&""!==this.config.idzone){!0!==this.config.only_inline&&this.isAdsDomainLicensed()&&this.loadHosted();var i=this;this.checkTCFConsent(function(){"complete"===document.readyState?i.preparePopWait():i.addEventToElement(window,"load",i.preparePop)})}}},getCountFromCookie:function(){if(!this.config.cookieconsent)return 0;var e=popMagic.getCookie(popMagic.cookie_name),o=void 0===e?0:parseInt(e);return isNaN(o)&&(o=0),o},getLastOpenedTimeFromCookie:function(){var e=popMagic.getCookie(popMagic.cookie_name),o=null;if(void 0!==e){var t=e.split(";")[1];o=t>0?parseInt(t):0}return isNaN(o)&&(o=null),o},shouldShow:function(e){if(e=e||!1,!popMagic.config.capping_enabled){var o=!0,t=popMagic.config.should_fire;try{e||"function"!=typeof t||(o=Boolean(t()))}catch(e){console.error("Error executing should fire callback function:",e)}return o&&0===popMagic.open_count}if(popMagic.open_count>=popMagic.config.frequency_count)return!1;var i=popMagic.getCountFromCookie(),n=popMagic.getLastOpenedTimeFromCookie(),r=Math.floor(Date.now()/1e3),a=n+popMagic.config.trigger_delay;return!(n&&a>r)&&(popMagic.open_count=i,!(i>=popMagic.config.frequency_count))},venorShouldShow:function(){return popMagic.venor_loaded&&"0"===popMagic.venor},setAsOpened:function(e){var o=e?e.target||e.srcElement:null,t={id:"",tagName:"",classes:"",text:"",href:"",elm:""};void 0!==o&&null!=o&&(t={id:void 0!==o.id&&null!=o.id?o.id:"",tagName:void 0!==o.tagName&&null!=o.tagName?o.tagName:"",classes:void 0!==o.classList&&null!=o.classList?o.classList:"",text:void 0!==o.outerText&&null!=o.outerText?o.outerText:"",href:void 0!==o.href&&null!=o.href?o.href:"",elm:o});var i=new CustomEvent("creativeDisplayed-"+popMagic.config.idzone,{detail:t});if(document.dispatchEvent(i),popMagic.config.capping_enabled){var n=1;n=0!==popMagic.open_count?popMagic.open_count+1:popMagic.getCountFromCookie()+1;var r=Math.floor(Date.now()/1e3);popMagic.config.cookieconsent&&popMagic.setCookie(popMagic.cookie_name,n+";"+r,popMagic.config.frequency_period)}else++popMagic.open_count},loadHosted:function(){var e=document.createElement("script");for(var o in e.type="application/javascript",e.async=!0,e.src="//"+this.config.ads_host+"/popunder1000.js",e.id="popmagicldr",this.config)Object.prototype.hasOwnProperty.call(this.config,o)&&"ads_host"!==o&&"syndication_host"!==o&&e.setAttribute("data-exo-"+o,this.config[o]);var t=document.getElementsByTagName("body").item(0);t.firstChild?t.insertBefore(e,t.firstChild):t.appendChild(e)},preparePopWait:function(){setTimeout(popMagic.preparePop,400)},preparePop:function(){if("object"!=typeof exoJsPop101||!Object.prototype.hasOwnProperty.call(exoJsPop101,"add")){if(popMagic.top=self,popMagic.top!==self)try{top.document.location.toString()&&(popMagic.top=top)}catch(e){}if(popMagic.cookie_name="zone-cap-"+popMagic.config.idzone,popMagic.config.capping_enabled||(document.cookie=popMagic.cookie_name+"=;expires=Thu, 01 Jan 1970 00:00:01 GMT; path=/"),popMagic.shouldShow(!0)){var e=new XMLHttpRequest;e.onreadystatechange=function(){e.readyState==XMLHttpRequest.DONE&&(popMagic.venor_loaded=!0,200==e.status?popMagic.venor=e.responseText:popMagic.venor="0")};var o="https:"!==document.location.protocol&&"http:"!==document.location.protocol?"https:":document.location.protocol;e.open("GET",o+"//"+popMagic.config.syndication_host+"/venor.php",!0);try{e.send()}catch(e){popMagic.venor_loaded=!0}}if(popMagic.buildUrl(),popMagic.browser=popMagic.browserDetector.getBrowserInfo(),popMagic.config.chrome_enabled||!popMagic.browser.isChrome){var t=popMagic.getPopMethod(popMagic.browser);popMagic.addEvent("click",t)}}},getPopMethod:function(e){return popMagic.config.popup_force||popMagic.config.popup_fallback&&e.isChrome&&e.version>=68&&!e.isMobile?popMagic.methods.popup:e.isMobile?popMagic.methods.default:e.isChrome?popMagic.methods.chromeTab:popMagic.methods.default},checkTCFConsent:function(e){if(this.config.tcf_enabled&&"function"==typeof window.__tcfapi){var o=this;window.__tcfapi("addEventListener",2,function(t,i){i&&(o.tcfData=t,"tcloaded"!==t.eventStatus&&"useractioncomplete"!==t.eventStatus||(window.__tcfapi("removeEventListener",2,function(){},t.listenerId),e()))})}else e()},buildUrl:function(){var e,o="https:"!==document.location.protocol&&"http:"!==document.location.protocol?"https:":document.location.protocol,t=top===self?document.URL:document.referrer,i={type:"inline",name:"popMagic",ver:this.version},n="";customTargeting&&Object.keys(customTargeting).length&&("object"==typeof customTargeting?Object.keys(customTargeting):customTargeting).forEach(function(o){"object"==typeof customTargeting?e=customTargeting[o]:Array.isArray(customTargeting)&&(e=scriptEl.getAttribute(o));var t=o.replace("data-exo-","");n+="&"+t+"="+e});var r=this.tcfData&&this.tcfData.gdprApplies&&!0===this.tcfData.gdprApplies?1:0,a=popMagic.getCookie("__suvt");this.url=o+"//"+this.config.syndication_host+"/v1/link.php?cat="+this.config.cat+"&idzone="+this.config.idzone+"&type=8&p="+encodeURIComponent(t)+"&sub="+this.config.sub+(""!==this.config.sub2?"&sub2="+this.config.sub2:"")+(""!==this.config.sub3?"&sub3="+this.config.sub3:"")+"&block=1&el="+this.config.el+"&tags="+this.config.tags+"&scr_info="+function(e){var o=e.type+"|"+e.name+"|"+e.ver;return encodeURIComponent(btoa(o))}(i)+n+"&gdpr="+r+"&cb="+Math.floor(1e9*Math.random())+(a?"&suvt="+a:""),this.tcfData&&this.tcfData.tcString?this.url+="&gdpr_consent="+encodeURIComponent(this.tcfData.tcString):this.url+="&cookieconsent="+this.config.cookieconsent},addEventToElement:function(e,o,t){e.addEventListener?e.addEventListener(o,t,!1):e.attachEvent?(e["e"+o+t]=t,e[o+t]=function(){e["e"+o+t](window.event)},e.attachEvent("on"+o,e[o+t])):e["on"+o]=e["e"+o+t]},getTriggerClasses:function(){var e,o=[];-1===popMagic.config.trigger_class.indexOf(",")?e=popMagic.config.trigger_class.split(" "):e=popMagic.config.trigger_class.replace(/\s/g,"").split(",");for(var t=0;t<e.length;t++)""!==e[t]&&o.push("."+e[t]);return o},addEvent:function(e,o){var t;if("3"!=popMagic.config.trigger_method)if("2"!=popMagic.config.trigger_method||""==popMagic.config.trigger_class)if("4"!=popMagic.config.trigger_method||""==popMagic.config.trigger_class)if("5"!=popMagic.config.trigger_method||""==popMagic.config.trigger_class)popMagic.addEventToElement(document,e,o);else{var i="a"+popMagic.getTriggerClasses().map(function(e){return":not("+e+")"}).join("");t=document.querySelectorAll(i);for(var n=0;n<t.length;n++)popMagic.addEventToElement(t[n],e,o)}else{var r=popMagic.getTriggerClasses();popMagic.addEventToElement(document,e,function(e){r.some(function(o){return null!==e.target.closest(o)})||o.call(e.target,e)})}else{var a=popMagic.getTriggerClasses();for(t=document.querySelectorAll(a.join(", ")),n=0;n<t.length;n++)popMagic.addEventToElement(t[n],e,o)}else for(t=document.querySelectorAll("a"),n=0;n<t.length;n++)popMagic.addEventToElement(t[n],e,o)},setCookie:function(e,o,t){if(!this.config.cookieconsent)return!1;t=parseInt(t,10);var i=new Date;i.setMinutes(i.getMinutes()+parseInt(t));var n=encodeURIComponent(o)+"; expires="+i.toUTCString()+"; path=/";document.cookie=e+"="+n},getCookie:function(e){if(!this.config.cookieconsent)return!1;var o,t,i,n=document.cookie.split(";");for(o=0;o<n.length;o++)if(t=n[o].substr(0,n[o].indexOf("=")),i=n[o].substr(n[o].indexOf("=")+1),(t=t.replace(/^\s+|\s+$/g,""))===e)return decodeURIComponent(i)},randStr:function(e,o){for(var t="",i=o||"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",n=0;n<e;n++)t+=i.charAt(Math.floor(Math.random()*i.length));return t},isValidUserEvent:function(e){return!(!("isTrusted"in e)||!e.isTrusted||"ie"===popMagic.browser.name||"safari"===popMagic.browser.name)||0!=e.screenX&&0!=e.screenY},isValidHref:function(e){if(void 0===e||""==e)return!1;return!/\s?javascript\s?:/i.test(e)},findLinkToOpen:function(e){var o=e,t=!1;try{for(var i=0;i<20&&!o.getAttribute("href")&&o!==document&&"html"!==o.nodeName.toLowerCase();)o=o.parentNode,i++;var n=o.getAttribute("target");n&&-1!==n.indexOf("_blank")||(t=o.getAttribute("href"))}catch(e){}return popMagic.isValidHref(t)||(t=!1),t||window.location.href},getPuId:function(){return"ok_"+Math.floor(89999999*Math.random()+1e7)},executeOnRedirect:function(){try{popMagic.config.capping_enabled||"function"!=typeof popMagic.config.on_redirect||popMagic.config.on_redirect()}catch(e){console.error("Error executing on redirect callback:",e)}},browserDetector:{browserDefinitions:[["firefox",/Firefox\/([0-9.]+)(?:\s|$)/],["opera",/Opera\/([0-9.]+)(?:\s|$)/],["opera",/OPR\/([0-9.]+)(:?\s|$)$/],["edge",/Edg(?:e|)\/([0-9._]+)/],["ie",/Trident\/7\.0.*rv:([0-9.]+)\).*Gecko$/],["ie",/MSIE\s([0-9.]+);.*Trident\/[4-7].0/],["ie",/MSIE\s(7\.0)/],["safari",/Version\/([0-9._]+).*Safari/],["chrome",/(?!Chrom.*Edg(?:e|))Chrom(?:e|ium)\/([0-9.]+)(:?\s|$)/],["chrome",/(?!Chrom.*OPR)Chrom(?:e|ium)\/([0-9.]+)(:?\s|$)/],["bb10",/BB10;\sTouch.*Version\/([0-9.]+)/],["android",/Android\s([0-9.]+)/],["ios",/Version\/([0-9._]+).*Mobile.*Safari.*/],["yandexbrowser",/YaBrowser\/([0-9._]+)/],["crios",/CriOS\/([0-9.]+)(:?\s|$)/]],isChromeOrChromium:function(){var e=window.navigator,o=(e.userAgent||"").toLowerCase(),t=e.vendor||"";if(-1!==o.indexOf("crios"))return!0;if(e.userAgentData&&Array.isArray(e.userAgentData.brands)&&e.userAgentData.brands.length>0){var i=e.userAgentData.brands,n=i.some(function(e){return"Google Chrome"===e.brand}),r=i.some(function(e){return"Chromium"===e.brand})&&2===i.length;return n||r}var a=!!window.chrome,c=-1!==o.indexOf("edg"),p=!!window.opr||-1!==o.indexOf("opr"),s=!(!e.brave||!e.brave.isBrave),g=-1!==o.indexOf("vivaldi"),l=-1!==o.indexOf("yabrowser"),d=-1!==o.indexOf("samsungbrowser"),u=-1!==o.indexOf("ucbrowser");return a&&"Google Inc."===t&&!c&&!p&&!s&&!g&&!l&&!d&&!u},getBrowserInfo:function(){var e=window.navigator.userAgent,o={name:"other",version:"1.0",versionNumber:1,isChrome:this.isChromeOrChromium(),isMobile:!!e.match(/Android|BlackBerry|iPhone|iPad|iPod|Opera Mini|IEMobile|WebOS|Windows Phone/i)};for(var t in this.browserDefinitions){var i=this.browserDefinitions[t];if(i[1].test(e)){var n=i[1].exec(e),r=n&&n[1].split(/[._]/).slice(0,3),a=Array.prototype.slice.call(r,1).join("")||"0";r&&r.length<3&&Array.prototype.push.apply(r,1===r.length?[0,0]:[0]),o.name=i[0],o.version=r.join("."),o.versionNumber=parseFloat(r[0]+"."+a);break}}return o}},methods:{default:function(e){if(!popMagic.shouldShow()||!popMagic.venorShouldShow()||!popMagic.isValidUserEvent(e))return!0;var o=e.target||e.srcElement,t=popMagic.findLinkToOpen(o);return window.open(t,"_blank"),popMagic.setAsOpened(e),popMagic.executeOnRedirect(),popMagic.top.document.location=popMagic.url,void 0!==e.preventDefault&&(e.preventDefault(),e.stopPropagation()),!0},chromeTab:function(e){if(!popMagic.shouldShow()||!popMagic.venorShouldShow()||!popMagic.isValidUserEvent(e))return!0;if(void 0===e.preventDefault)return!0;e.preventDefault(),e.stopPropagation();var o=top.window.document.createElement("a"),t=e.target||e.srcElement;o.href=popMagic.findLinkToOpen(t),document.getElementsByTagName("body")[0].appendChild(o);var i=new MouseEvent("click",{bubbles:!0,cancelable:!0,view:window,screenX:0,screenY:0,clientX:0,clientY:0,ctrlKey:!0,altKey:!1,shiftKey:!1,metaKey:!0,button:0});i.preventDefault=void 0,o.dispatchEvent(i),o.parentNode.removeChild(o),popMagic.executeOnRedirect(),window.open(popMagic.url,"_self"),popMagic.setAsOpened(e)},popup:function(e){if(!popMagic.shouldShow()||!popMagic.venorShouldShow()||!popMagic.isValidUserEvent(e))return!0;var o="";if(popMagic.config.popup_fallback&&!popMagic.config.popup_force){var t=Math.max(Math.round(.8*window.innerHeight),300);o="menubar=1,resizable=1,width="+Math.max(Math.round(.7*window.innerWidth),300)+",height="+t+",top="+(window.screenY+100)+",left="+(window.screenX+100)}var i=document.location.href,n=window.open(i,popMagic.getPuId(),o);popMagic.setAsOpened(e),setTimeout(function(){n.location.href=popMagic.url,popMagic.executeOnRedirect()},200),void 0!==e.preventDefault&&(e.preventDefault(),e.stopPropagation())}}};    popMagic.init(adConfig);
+})();
+
+
+</script>
+
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a3bb65ee7976ec58',t:'MTc4OTUxNDgwNQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><iframe height="1" width="1" style="position: absolute; top: 0px; left: 0px; border-width: medium; border-style: none; border-color: currentcolor; border-image: none; visibility: hidden;"></iframe><script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/v31edd6df95cf4e85bb4c19e7a9bdbcba1788362987495" integrity="sha512-iIg7k2xntmwu6/uSb5tpc/hySgZc4eoL31yB29W6tJFo2akwjPWcEqnCEdJvGexCL0KEQwVYv5BlowfhVz26hg==" data-cf-beacon="{&quot;version&quot;:&quot;2024.11.0&quot;,&quot;token&quot;:&quot;61a70027544c43a888a31f239aee7bde&quot;,&quot;spa&quot;:2}" crossorigin="anonymous"></script>
+
+</body></html>

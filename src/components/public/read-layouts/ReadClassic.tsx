@@ -23,6 +23,7 @@ import {
   TocDrawer,
   actualFontPx,
   contentToHtml,
+  parseContentSelector,
   readerActionsRef,
   textureStyle,
   useReadPosMemory,
@@ -50,6 +51,7 @@ export const ReadClassic = memo(function ReadClassic({
   onSetBgTheme,
   chapterPagination,
   onChapterPage,
+  contentSelector,
 }: ReadLayoutProps) {
   const { site, theme, navigate } = usePublic()
   const v = theme.vars
@@ -273,7 +275,9 @@ export const ReadClassic = memo(function ReadClassic({
                 margin: '0 auto',
               }}
             >
+              {/* R14-1A: 外层包一层原站实测 contentSelector 复刻 DOM (#content / .content / #view_content_txt) */}
               <div
+                {...parseContentSelector(contentSelector)}
                 className={`text-justify read-content-dropcap ${read.indent ? '[&_p]:my-3 [&_p]:indent-8' : '[&_p]:my-4'}`}
                 style={{
                   ...(read.justify ? { textAlign: 'justify' } : null),

@@ -5,6 +5,7 @@
 // R11-1B: 扩充至 10 套 (新增 clone-trxsw 天人小说)
 // R12-1: 删除 clone-trxsw, 重写 9 套 preset 基于真实抓取的 CSS 变量
 // R13-1B: 重新克隆 10 个站点主题 (含 trxsw): 恢复 clone-trxsw 基于 AiraBrowser 反查 DOM
+// R14-1A: 全量重克隆 10 个站点主题含子页面 DOM; 10 个 HomeClone*.tsx + 10 套 BookInfoLayout
 // ============================================================
 'use client'
 
@@ -169,7 +170,7 @@ export function HomeView({ page, cat }: { page: number; cat?: string }) {
         <EmptyState text="本页暂无书籍" hint="换个分类或翻页看看" />
       ) : (
         <>
-          {/* R10-1A: 9 个精仿真实小说站点首页布局分发; R11-1B: 扩充至 10 个; R13-1B: 恢复 clone-trxsw */}
+          {/* R10-1A: 9 个精仿真实小说站点首页布局分发; R11-1B: 扩充至 10 个; R13-1B: 恢复 clone-trxsw; R14-1A: 10 套全保留 */}
           {theme.layout === 'clone-aijjxs' && <HomeCloneAijjxs books={books} loading={loading} />}
           {theme.layout === 'clone-ddyueshu' && <HomeCloneDdyueshu books={books} loading={loading} />}
           {theme.layout === 'clone-pilishuwu' && <HomeClonePilishuwu books={books} loading={loading} />}

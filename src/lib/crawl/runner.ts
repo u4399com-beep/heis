@@ -433,13 +433,23 @@ export class TaskRunner {
     // control 串行卡在 prev.then 后, 任务永远停不下来也启不动。Promise.race 上限 30s,
     // 超时则当前 control reject, 链尾 catch 吞错后释放 → 下次 control 可正常入队执行
     const prev = this.controlChains.get(taskId) ?? Promise.resolve()
+    // R14-1B fix: 30s 超时定时器在 controlInner 快路径下从未被 clearTimeout,
+    // 即 Promise.race 已 settled 后 timer 仍挂起 30s 持内存/事件循环条目.
+    // 改为: try/finally 显式 clearTimeout, 保证快路径下 timer 立即释放.
+    let raceTimer: ReturnType<typeof setTimeout> | undefined
     const inner = () => Promise.race([
       this.controlInner(taskId, action),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('control timeout(30s)')), 30_000),
-      ),
+      new Promise<never>((_, reject) => {
+        raceTimer = setTimeout(() => reject(new Error('control timeout(30s)')), 30_000)
+      }),
     ])
-    const run = prev.then(() => inner())
+    const run = prev.then(async () => {
+      try {
+        return await inner()
+      } finally {
+        if (raceTimer) clearTimeout(raceTimer)
+      }
+    })
     const tail = run.catch(() => {})
     this.controlChains.set(taskId, tail)
     void tail.then(() => {

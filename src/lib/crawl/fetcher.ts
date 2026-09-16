@@ -1514,15 +1514,6 @@ async function getHostDispatcher(url: string, opts?: { h2?: boolean }): Promise<
   }
 }
 
-/** 诊断导出: 返回 per-host 池当前状态(供 admin/snapshot 端点 + 测试脚本) */
-export function hostDispatcherSnapshot(): { size: number; origins: { origin: string; lastUsedAt: number }[] } {
-  const origins: { origin: string; lastUsedAt: number }[] = []
-  for (const [origin, entry] of hostDispatcherMap) {
-    origins.push({ origin, lastUsedAt: entry.lastUsedAt })
-  }
-  return { size: hostDispatcherMap.size, origins }
-}
-
 /** 进程退出钩子注册(幂等): 关闭所有 per-host dispatcher 释放底层 socket。
  *  undici Agent 内部也有 close-on-exit, 但显式 close 更可靠(防 socket 泄漏进 TIME_WAIT) */
 let hostDispatcherHooksRegistered = false
@@ -1547,14 +1538,6 @@ export async function closeAllHostDispatchers(): Promise<void> {
     try { return e.dispatcher?.destroy?.(() => {}) } catch { return Promise.resolve() }
   }))
 }
-
-// ============================================================
-// agent-Z-crawl-phase6: 指纹一致性校验 + 智能引擎选择 (dead code, 全域 0 引用, 已删除)
-// ------------------------------------------------------------
-// verifyFingerprintConsistency / detectSiteType / recommendEngineForSite / SiteType
-// 三个未消费 export 已删除 (R13-1D 清理)。如未来需要"规则保存前 UA↔Client Hints
-// 一致性诊断"或"按 URL 模式自动推荐引擎", 可基于本节注释重建。
-// ============================================================
 
 // ---------- 浏览器渲染 (Playwright, 惰性加载) ----------
 let browserAvailable: boolean | null = null
@@ -3577,7 +3560,11 @@ async function prefetchToken(targetUrl: string, cfg: FetchConfig, ua: string): P
       // 上一次预取失败, 落到下方自己重试一次(单次, 不再 in-flight 嵌套)
     }
   }
-  const p = (async () => {
+  // R14-1B fix (TOCTOU race): 用 entry 对象包装 promise, 让 finally 块能引用 entry 自身
+  // (而非直接引用 p, p 在 IIFE 完成赋值前不可引用, TDZ 限制). 仅当 Map 中当前条目仍是
+  // 本次 entry 时才 delete, 防止误删后来 caller 覆盖写入的新条目(让去重失效)
+  const entry: { p: Promise<string> } = { p: undefined as any }
+  entry.p = (async () => {
     try {
       const body = await fetchHttpWithCurlFallback(real, cfg, ua)
       const token = await extractToken(body, pattern)
@@ -3589,11 +3576,15 @@ async function prefetchToken(targetUrl: string, cfg: FetchConfig, ua: string): P
       return token
     } finally {
       // 完成后清 in-flight 条目, 让下次 TTL 过期能重新预取
-      inflightMap.delete(cacheKey)
+      // 修前: 无条件 delete(cacheKey), 若本条目已被后来 caller 覆盖(tokenInflight FIFO 淘汰
+      // /新 caller 重写), 此处 delete 会误删新 caller 的条目, 让其去重失效 → 后续 caller
+      // 重复发起相同 token 预取(增加对端负载). 与 fetchPage inflightMap 同款修复
+      const cur = inflightMap.get(cacheKey)
+      if (cur === entry.p) inflightMap.delete(cacheKey)
     }
   })()
-  inflightMap.set(cacheKey, p)
-  return p
+  inflightMap.set(cacheKey, entry.p)
+  return entry.p
 }
 
 // ---------- 镜像域名自动故障切换 (dd-b) ----------
@@ -3815,9 +3806,6 @@ function writeResponseCache(key: string, result: FetchResult, ttlMs: number): vo
   responseCacheTrim()
 }
 
-// R13-1D 清理: responseCacheSnapshot / clearResponseCache 调试导出已删除 (全域 0 引用)
-// 如未来需要 admin/snapshot 端点暴露响应缓存状态, 可基于 responseCache Map 重建。
-
 // ---------- agent-FF-crawl-phase8: HTTP/3 (QUIC) Alt-Svc 探测(观测用) ----------
 /**
  * 场景: 现代支持 HTTP/3 的站点在响应头携带 `Alt-Svc: h3=":443"; ma=86400`, 告知客户端
@@ -3888,7 +3876,11 @@ export async function fetchPage(url: string, cfgOverride?: Partial<FetchConfig>)
       // shallow clone 防调用方误改共享对象
       return existing.p.then((r) => ({ ...r }))
     }
-    const p = (async () => {
+    // R14-1B fix (TOCTOU race): 用 entry 对象包装 promise, 让 finally 块能引用 entry 自身
+    // (而非直接引用 p, p 在 IIFE 完成赋值前不可引用, TDZ 限制). 仅当 Map 中当前条目仍是
+    // 本次 entry 时才 delete, 防止误删后来 caller 覆盖写入的新条目(让去重失效)
+    const entry: { p: Promise<FetchResult>; at: number } = { p: undefined as any, at: Date.now() }
+    entry.p = (async () => {
       try {
         const result = await fetchPageUncached(url, cfg)
         // agent-FF-crawl-phase8: 成功且可缓存结果写入响应缓存(零回归条件: cacheTtlMs>0
@@ -3899,11 +3891,15 @@ export async function fetchPage(url: string, cfgOverride?: Partial<FetchConfig>)
         return result
       } finally {
         // 完成后清条目, 让下次 TTL 过期后能重新抓取
-        inflightMap.delete(dedupKey)
+        // 修前: 无条件 delete(dedupKey), 若本条目已被后来 caller 覆盖(inflightTrim FIFO 淘汰
+        // /TTL 过期被替换), 此处 delete 会误删新 caller 的条目, 让其去重失效 → 后续 caller
+        // 重复发起相同请求(增加对端负载). 引入 entry 引用对比保证只删自己的条目
+        const cur = inflightMap.get(dedupKey)
+        if (cur === entry) inflightMap.delete(dedupKey)
       }
     })()
-    inflightMap.set(dedupKey, { p, at: Date.now() })
-    return p
+    inflightMap.set(dedupKey, entry)
+    return entry.p
   }
   // 无 dedupKey 路径(runtime 注入: pageFetch / refererChain+refererUrl / onRequestInit)
   // 运行时注入使每请求 URL/headers 不同, 结果非确定性 —— 即使 cacheTtlMs>0 也不可缓存

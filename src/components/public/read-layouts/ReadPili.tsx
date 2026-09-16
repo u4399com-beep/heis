@@ -23,6 +23,7 @@ import {
   TocDrawer,
   actualFontPx,
   contentToHtml,
+  parseContentSelector,
   readerActionsRef,
   useReadPosMemory,
   useReadingProgress,
@@ -49,6 +50,7 @@ export const ReadPili = memo(function ReadPili({
   onSetBgTheme,
   chapterPagination,
   onChapterPage,
+  contentSelector,
 }: ReadLayoutProps) {
   const { theme, navigate } = usePublic()
   const v = theme.vars
@@ -231,8 +233,10 @@ export const ReadPili = memo(function ReadPili({
                 }}
               >
                 {/* 原站 read-content 直接排在 text-wrap 纸面上, 卡内不再二次缩窄居中 */}
+                {/* R14-1A: 外层包一层原站实测 contentSelector 复刻 DOM (#content / .content) */}
                 <div
                   data-pili-content
+                  {...parseContentSelector(contentSelector)}
                   className={`read-content-dropcap ${read.indent ? '[&_p]:my-3 [&_p]:indent-8' : '[&_p]:my-4'}`}
                   style={{
                     ...(read.justify ? { textAlign: 'justify' } : null),

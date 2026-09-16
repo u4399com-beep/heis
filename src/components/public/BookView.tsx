@@ -2,24 +2,25 @@
 // 书籍详情视图 — 封面/信息/状态徽章/简介/目录(分页)/标签云
 // R12-1: 清理 pili/aurora/paper/mango/bamboo/rose/magazine/theater 旧主题分支
 //        clone-* 9 套主题统一走默认渲染分支 + 通用 EpisodeListSkeleton
+// R14-1A: 信息区 DOM 按 theme.layout 区分 10 套精仿结构 (BookInfoLayout 组件)
+//         章节正文 contentSelector 由 theme 透传给 ReadView (复刻原站 DOM)
 // ============================================================
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
-import { Bookmark, ChevronLeft, ChevronRight, Clock, Download, FileText, Hash, ListTree, Search, Sparkles, Type } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Clock, FileText, Hash, ListTree, Search, Sparkles, Type } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Skeleton } from '@/components/ui/skeleton'
 import { fetchBook, fetchBookPSEOKeywords, fetchChapter, type BookDetailData } from './data'
 import { usePublic } from './ctx'
-import { coverSrc, fmtDate, formatWords, useSiteSEO, withAlpha } from './seo'
+import { coverSrc, formatWords, useSiteSEO, withAlpha } from './seo'
 import { generateTitle, generateMetaDescription, generateKeywords } from './auto-tdk'
 import { BookCover } from './BookCover'
-import { ShareMenu } from './ShareMenu'
-import { EmptyState, ErrorState, SecTitle, Sk, StatusBadge, TagCloud, ChapterListSkeleton } from './bits'
-import { ReadFirstButton } from './BookCard'
+import { BookInfoLayout } from './BookInfoLayout'
+import { EmptyState, ErrorState, SecTitle, Sk, TagCloud, ChapterListSkeleton } from './bits'
 import type { BookItem, BookTagHit, TocChapter } from './types'
-import { getReadPos, formatReadTimeShort } from './read-layouts/reading-memory'
+import { getReadPos } from './read-layouts/reading-memory'
 
 function TocSkeleton({ themeId }: { themeId: string }) {
   // R12-1: 简化为通用 ChapterListSkeleton (旧 pili/aurora/mango 分支已随主题 ID 退役移除)
@@ -620,13 +621,8 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
   }
 
   /* ---------- 信息区封面尺寸/面板（按主题差异化） ---------- */
-  const panelStyle: CSSProperties = {
-    background: v.surface,
-    border: `1px solid ${v.border}`,
-    borderRadius: v.radius,
-    boxShadow: v.cardShadow === 'none' ? undefined : v.cardShadow,
-  }
-  // R12-1: 简化为通用 coverW (旧 magazine/theater 主题分支已退役)
+  // R14-1A: 信息区 DOM 由 BookInfoLayout 按 theme.layout 区分 10 套精仿结构渲染,
+  //         不再用通用单层 panelStyle + coverW 内联布局 (旧 9 套 clone-* 统一渲染分支已废弃)
   const coverW = 'w-32 sm:w-40'
 
   return (
@@ -645,108 +641,15 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
         </div>
       ) : (
         <>
-          {/* R12-1: 信息区 (移除 pili 霹雳书屋特殊详情头分支, 9 套 clone-* 主题统一渲染) */}
-          <section style={panelStyle} className="p-5 sm:p-7" aria-label="书籍信息">
-            <div className="flex flex-col gap-5 sm:flex-row sm:gap-7">
-              <div className="mx-auto shrink-0 sm:mx-0">
-                <div className={`relative ${coverW}`}>
-                  {/* feat-round-5 S1: 封面梯度光晕 (halo) */}
-                  <div aria-hidden className="pointer-events-none absolute -inset-3 -z-10 opacity-70 blur-2xl" style={{ background: `radial-gradient(circle at 50% 30%, ${withAlpha(v.primary, 0.45)}, transparent 70%)` }} />
-                  {/* R12-1: 移除 rose 主题特殊边框包装 (旧主题已退役) */}
-                  <BookCover name={book.name} cover={book.cover} showAuthor={book.author} className="aspect-[3/4] w-full" />
-                </div>
-              </div>
-              <div className="min-w-0 flex-1 space-y-3">
-                <h1
-                  className="text-2xl font-black leading-snug sm:text-3xl"
-                  style={{ color: v.text, fontFamily: v.titleFont }}
-                >
-                  {book.name}
-                </h1>
-                <div className="flex flex-wrap items-center gap-2 text-sm" style={{ color: v.textMuted }}>
-                  <span>{book.author}</span>
-                  {book.categoryId ? (
-                    <button
-                      type="button"
-                      className="rounded-full px-2.5 py-0.5 text-xs transition-opacity hover:opacity-75"
-                      style={{ background: withAlpha(v.primary, theme.dark ? 0.18 : 0.1), color: v.primary }}
-                      onClick={() => navigate({ view: 'category', cat: book.categoryId || '' })}
-                      aria-label={`查看 ${book.category} 分类`}
-                    >
-                      {book.category}
-                    </button>
-                  ) : (
-                    <span className="rounded-full px-2.5 py-0.5 text-xs" style={{ background: withAlpha(v.primary, theme.dark ? 0.18 : 0.1), color: v.primary }}>
-                      {book.category}
-                    </span>
-                  )}
-                  <StatusBadge status={book.status} />
-                  <span className="inline-flex items-center gap-1">
-                    <Bookmark className="h-3.5 w-3.5" aria-hidden />
-                    {formatWords(book.wordCount)}
-                  </span>
-                  {fmtDate(book.updatedAt) && <span className="text-xs">更新于 {fmtDate(book.updatedAt)}</span>}
-                </div>
-                {book.keywords && (
-                  <p className="text-xs leading-relaxed" style={{ color: v.textMuted }}>
-                    <span style={{ color: v.accent }}>关键词：</span>{book.keywords}
-                  </p>
-                )}
-                <p className="max-w-2xl text-sm leading-relaxed" style={{ color: v.text }}>
-                  {book.intro || '暂无简介'}
-                </p>
-                <p className="text-xs" style={{ color: v.textMuted }}>
-                  最新章节：<span style={{ color: v.primary }}>{book.latestChapter || '暂无'}</span>
-                </p>
-                <div className="flex flex-wrap items-center gap-3 pt-1">
-                  <ReadFirstButton firstChapterId={chapters[0]?.id} bookId={book.id} label="开始阅读" />
-                  {/* feat-a D: 上次阅读徽章 (有 saved 位置时显示) */}
-                  {savedPos?.chapterId && (
-                    <button
-                      type="button"
-                      onClick={() => savedPos.chapterId && navigate({ view: 'read', bookId: book.id, chapterId: savedPos.chapterId })}
-                      className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium transition-opacity hover:opacity-85"
-                      style={{
-                        border: `1px solid ${withAlpha(v.primary, 0.45)}`,
-                        color: v.primary,
-                        borderRadius: v.radius,
-                        background: withAlpha(v.primary, theme.dark ? 0.16 : 0.08),
-                      }}
-                      aria-label={`继续阅读 ${savedPos.title || ''}`}
-                      title={savedPos.title || '继续阅读'}
-                    >
-                      <Clock className="h-3.5 w-3.5" aria-hidden />
-                      上次阅读
-                      {savedPos.readTimeMs && savedPos.readTimeMs > 0 ? ` · 已读 ${formatReadTimeShort(savedPos.readTimeMs)}` : ''}
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium transition-opacity hover:opacity-85"
-                    style={{ border: `1px solid ${v.border}`, color: v.text, borderRadius: v.radius, background: v.surfaceAlt }}
-                    onClick={() => tocRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-                    aria-label="滚动到章节目录"
-                  >
-                    <ListTree className="h-4 w-4" aria-hidden />
-                    目录
-                  </button>
-                  {/* TXT 下载（站内唯一 <a> 整页跳转，允许）
-                      book= 按书取最新已完成成品(与 /api/public/download 的 book 参数配套);
-                      原先误传 book.id 走 ?id= 任务通道, 任务 id ≠ 书籍 id, 链接恒 404 死链 */}
-                  <a
-                    href={`/api/public/download?book=${book.id}`}
-                    className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium transition-opacity hover:opacity-85"
-                    style={{ border: `1px solid ${withAlpha(v.accent, 0.5)}`, color: v.accent, borderRadius: v.radius }}
-                  >
-                    <Download className="h-4 w-4" aria-hidden />
-                    TXT 下载
-                  </a>
-                  {/* R7-20 GG: 分享菜单 (复制链接 + 微信/QQ/微博) */}
-                  <ShareMenu title={book.name} desc={book.intro?.slice(0, 80)} />
-                </div>
-              </div>
-            </div>
-          </section>
+          {/* R14-1A: 信息区按 theme.layout 区分 10 套 DOM (article.panel / #info / .detail 等) */}
+          <BookInfoLayout
+            book={book}
+            theme={theme}
+            savedPos={savedPos}
+            firstChapterId={chapters[0]?.id}
+            onScrollToc={() => tocRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+            onGoCategory={(categoryId) => navigate({ view: 'category', cat: categoryId })}
+          />
 
           {/* feat-round-5 A3: 阅读统计条 */}
           <div className="mt-4">

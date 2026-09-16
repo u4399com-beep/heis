@@ -496,6 +496,8 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
     onSetBgTheme: (b: ReaderBgTheme) => setBgTheme(b),
     // agent-P: 章节内容分页 — 透传给所有 read-layouts, 仅当 totalPages>1 时由布局渲染 ChapterPaginationBar
     chapterPagination: pagination,
+    // R14-1A: 主题 contentSelector 透传给 read-layouts, 用于在内容外层包一层 id/class 复刻原站 DOM
+    contentSelector: theme.contentSelector,
     onChapterPage: (p: number) => {
       if (!showChapterPagination) return
       const target = Math.min(Math.max(1, p), totalPages)

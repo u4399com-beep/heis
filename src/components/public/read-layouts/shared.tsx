@@ -76,6 +76,15 @@ export interface ReadLayoutProps {
   chapterPagination?: ChapterData['pagination']
   /** agent-P: 切换章节内分页(仅 chapterPagination.totalPages > 1 时调用) */
   onChapterPage?: (p: number) => void
+  /**
+   * R14-1A: 章节正文容器 CSS 选择器 (来自 theme.contentSelector, 原站实测值)。
+   * 由 read-layouts 在内容外层包一层 id/class 复刻原站 DOM:
+   *   '#content'        → <div id="content">
+   *   '.content'        → <div class="content">
+   *   '#view_content_txt' → <div id="view_content_txt">
+   * 缺省时不附加 id/class, 仅渲染通用 div。
+   */
+  contentSelector?: string
 }
 
 /* ---------------- feat-round-5 B1: 阅读器键盘快捷键动作注册 ---------------- */
@@ -119,6 +128,28 @@ export function contentToHtml(raw: string): string {
     .filter(Boolean)
     .map((s) => `<p>${s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>`)
     .join('')
+}
+
+/**
+ * R14-1A: 解析主题 contentSelector 为 { id, className } props, 供 read-layouts 包裹正文
+ * 复刻原站 DOM。例如:
+ *   '#content'         → { id: 'content' }
+ *   '.content'         → { className: 'content' }
+ *   '#view_content_txt' → { id: 'view_content_txt' }
+ *   undefined / ''      → {} (不附加)
+ *
+ * 容错: 仅识别以单个 # 或 . 开头的简单选择器; 复合选择器降级为不附加(避免误用)。
+ */
+export function parseContentSelector(selector?: string): { id?: string; className?: string } {
+  if (!selector) return {}
+  const s = selector.trim()
+  if (s.startsWith('#') && s.length > 1 && !/\s/.test(s)) {
+    return { id: s.slice(1) }
+  }
+  if (s.startsWith('.') && s.length > 1 && !/\s/.test(s)) {
+    return { className: s.slice(1) }
+  }
+  return {}
 }
 
 /* ---------------- agent-P: 章节内容分页导航条 ---------------- */

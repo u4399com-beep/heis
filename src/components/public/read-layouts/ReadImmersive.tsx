@@ -20,6 +20,7 @@ import {
   TocDrawer,
   actualFontPx,
   contentToHtml,
+  parseContentSelector,
   readerActionsRef,
   textureStyle,
   useReadPosMemory,
@@ -47,6 +48,7 @@ export const ReadImmersive = memo(function ReadImmersive({
   onSetBgTheme,
   chapterPagination,
   onChapterPage,
+  contentSelector,
 }: ReadLayoutProps) {
   const { theme, navigate } = usePublic()
   const v = theme.vars
@@ -220,7 +222,9 @@ export const ReadImmersive = memo(function ReadImmersive({
                   margin: '0 auto',
                 }}
               >
+                {/* R14-1A: 外层包一层原站实测 contentSelector 复刻 DOM (#content / .content) */}
                 <div
+                  {...parseContentSelector(contentSelector)}
                   className="[&_p]:my-5"
                   dangerouslySetInnerHTML={{ __html: contentToHtml(ch.content) || '<p>本章节内容为空</p>' }}
                 />

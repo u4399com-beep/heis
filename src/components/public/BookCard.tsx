@@ -1,12 +1,13 @@
 // ============================================================
-// 主题化书籍卡片 / 行 / 海报 / 通用结果列表
+// 主题化书籍卡片 / 通用结果列表
+// (R14-1C 清理: 删除未使用的 BookLine / BookPoster export — 0 引用)
 // ============================================================
 'use client'
 
-import { BookOpen, Clock3, User } from 'lucide-react'
+import { BookOpen, User } from 'lucide-react'
 import type { BookItem } from './types'
 import { usePublic } from './ctx'
-import { fmtDate, formatWords, withAlpha } from './seo'
+import { formatWords, withAlpha } from './seo'
 import { BookCover } from './BookCover'
 import { bookNavProps, EmptyState, StatusBadge, BookGridSkeleton } from './bits'
 
@@ -44,75 +45,6 @@ export function BookCard({ book }: { book: BookItem }) {
           <span className="truncate" style={{ color: v.primary }}>{book.category}</span>
           <span>{formatWords(book.wordCount)}</span>
         </p>
-      </div>
-    </article>
-  )
-}
-
-/** 通用书籍行（列表布局：横向封面 + 信息） */
-export function BookLine({ book, index }: { book: BookItem; index?: number }) {
-  const { theme, navigate } = usePublic()
-  const v = theme.vars
-  return (
-    <article
-      className="group flex cursor-pointer items-center gap-3 py-3 transition-colors"
-      style={{ borderBottom: `1px solid ${withAlpha(v.border, 0.7)}` }}
-      {...bookNavProps(navigate, book.id)}
-      aria-label={`查看《${book.name}》详情`}
-    >
-      {typeof index === 'number' && (
-        <span
-          className="w-8 shrink-0 text-center text-lg font-bold tabular-nums"
-          style={{ color: index < 3 ? v.primary : v.textMuted, fontFamily: v.titleFont }}
-        >
-          {String(index + 1).padStart(2, '0')}
-        </span>
-      )}
-      <BookCover name={book.name} cover={book.cover} className="aspect-[3/4] w-14 shrink-0" />
-      <div className="min-w-0 flex-1 space-y-1">
-        <div className="flex items-center gap-2">
-          <h3 className="line-clamp-1 text-sm font-semibold" style={{ color: v.text }}>{book.name}</h3>
-          <StatusBadge status={book.status} small />
-        </div>
-        <p className="flex flex-wrap items-center gap-x-3 text-xs" style={{ color: v.textMuted }}>
-          <span className="truncate">{book.author}</span>
-          <span style={{ color: v.primary }}>{book.category}</span>
-          <span>{formatWords(book.wordCount)}</span>
-        </p>
-        <p className="line-clamp-1 text-xs" style={{ color: v.textMuted }}>{book.intro || book.latestChapter}</p>
-      </div>
-      <span className="hidden shrink-0 items-center gap-1 text-xs sm:flex" style={{ color: v.textMuted }}>
-        <Clock3 className="h-3 w-3" aria-hidden />
-        {fmtDate(book.updatedAt)}
-      </span>
-    </article>
-  )
-}
-
-/** 影院海报卡（底部渐变遮罩标题） */
-export function BookPoster({ book }: { book: BookItem }) {
-  const { theme, navigate } = usePublic()
-  const v = theme.vars
-  return (
-    <article
-      className="group relative cursor-pointer overflow-hidden transition-transform duration-200 hover:scale-[1.03]"
-      style={{ borderRadius: v.radius, boxShadow: v.cardShadow === 'none' ? undefined : v.cardShadow }}
-      {...bookNavProps(navigate, book.id)}
-      aria-label={`查看《${book.name}》详情`}
-    >
-      {/* feat-round-5 S1: 海报梯度光晕 (hover 时显现) */}
-      <div aria-hidden className="pointer-events-none absolute -inset-2 -z-10 opacity-0 blur-2xl transition-opacity duration-300 group-hover:opacity-70" style={{ background: `radial-gradient(circle at 50% 25%, ${withAlpha(v.primary, 0.5)}, transparent 70%)` }} />
-      <BookCover name={book.name} cover={book.cover} className="aspect-[3/4] w-full" />
-      <div
-        className="absolute inset-x-0 bottom-0 p-2.5 pt-8"
-        style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.45) 55%, transparent 100%)' }}
-      >
-        <div className="mb-1 flex items-center gap-1.5">
-          <StatusBadge status={book.status} small />
-          <span className="text-[10px]" style={{ color: v.accent }}>{formatWords(book.wordCount)}</span>
-        </div>
-        <h3 className="line-clamp-1 text-sm font-semibold text-white">{book.name}</h3>
-        <p className="line-clamp-1 text-[11px] text-white/70">{book.author}</p>
       </div>
     </article>
   )

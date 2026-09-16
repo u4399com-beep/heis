@@ -22,6 +22,7 @@ import {
   TocDrawer,
   actualFontPx,
   contentToHtml,
+  parseContentSelector,
   readerActionsRef,
   textureStyle,
   useReadPosMemory,
@@ -47,6 +48,7 @@ export const ReadPaginated = memo(function ReadPaginated({
   onSetBgTheme,
   chapterPagination,
   onChapterPage,
+  contentSelector,
 }: ReadLayoutProps) {
   const { theme, navigate } = usePublic()
   const v = theme.vars
@@ -357,6 +359,7 @@ export const ReadPaginated = memo(function ReadPaginated({
               </div>
             ) : (
               <div
+                {...parseContentSelector(contentSelector)}
                 className={read.indent ? '[&_p]:my-2.5 [&_p]:indent-8' : '[&_p]:my-3.5'}
                 style={read.justify ? { textAlign: 'justify' } : undefined}
                 dangerouslySetInnerHTML={{ __html: contentToHtml(ch.content) || '<p>本章节内容为空</p>' }}
