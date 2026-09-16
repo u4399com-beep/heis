@@ -25,6 +25,9 @@ interface PaginationFields {
   chapterSeoDescTemplate: string
   chapterSeoKeywordsTemplate: string
   pseudoStaticStyle: PseudoStyle
+  // R16: 主题可编辑设置
+  navCategoryCount: number
+  homeModuleLimit: number
 }
 
 function validTheme(raw: unknown): string {
@@ -45,6 +48,9 @@ function paginationFields(body: unknown): PaginationFields {
     chapterSeoDescTemplate: str(b?.chapterSeoDescTemplate, 500),
     chapterSeoKeywordsTemplate: str(b?.chapterSeoKeywordsTemplate, 500),
     pseudoStaticStyle: enumIn(b?.pseudoStaticStyle, PSEUDO_STYLES, 'query'),
+    // R16: 主题可编辑设置 — 导航栏分类数(5-30) + 首页模块数据量(10-50)
+    navCategoryCount: clampInt(b?.navCategoryCount, 16, 5, 30),
+    homeModuleLimit: clampInt(b?.homeModuleLimit, 20, 10, 50),
   }
 }
 

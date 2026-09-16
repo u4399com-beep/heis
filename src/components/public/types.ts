@@ -36,6 +36,10 @@ export interface SiteInfo {
   chapterSeoKeywordsTemplate?: string
   /** 伪静态 URL 风格: query|numeric|alphanumeric|slug|short|classic|dir */
   pseudoStaticStyle?: string
+  /** R16: 导航栏展示几个分类 (5-30, 默认 16; 主题按需 slice NAV_ITEMS) */
+  navCategoryCount?: number
+  /** R16: 首页每个模块显示多少数据 (10-50, 默认 20) */
+  homeModuleLimit?: number
 }
 
 /** 分类（/api/admin/categories 返回结构） */

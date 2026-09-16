@@ -35,6 +35,9 @@ export function GET() {
         chapterSeoDescTemplate: true,
         chapterSeoKeywordsTemplate: true,
         pseudoStaticStyle: true,
+        // R16: 主题可编辑设置 — 导航栏分类数 + 首页模块数据量
+        navCategoryCount: true,
+        homeModuleLimit: true,
       },
     })
     return withCache(ok(sites), 300, 600)

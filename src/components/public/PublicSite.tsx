@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ArrowLeftCircle, Eye } from 'lucide-react'
 import { Toaster } from '@/components/ui/sonner'
+import { CloneCSSLoader } from './CloneCSSLoader'
 import { getThemeById as getTheme, THEMES } from '@/lib/crawl/themes'
 import { fetchSites } from './data'
 import { parseView, PublicProvider, viewToUrl, type PublicCtxValue, type ViewParams } from './ctx'
@@ -241,6 +242,8 @@ export default function PublicSite({
         }}
       >
         <SiteHeader />
+        {/* R16: 按当前主题加载源站 CSS, 让 clone-themes 组件用源站 class 名 */}
+        <CloneCSSLoader />
         {/* agent-W: 视图切换淡入动画 — key 变化触发 remount, animate-in fade-in 由 tw-animate-css 提供
             duration-200 让过渡明显但不拖沓; 仅 main 包裹不影响 header/footer 的稳定性 */}
         <main className="w-full flex-1 animate-in fade-in duration-200" key={`view-${view.view}-${view.bookId || view.chapterId || view.q || view.tag || view.cat || ''}-${view.page || 1}`}>

@@ -222,3 +222,240 @@ export function generateTDK(opts: {
     keywords: generateKeywords(opts),
   }
 }
+
+// ============================================================
+// R16-1B: 18 种 SEO TDK 预设 + 模板渲染工具
+// 占位符: {bookName} {author} {category} {chapterTitle} {siteName}
+//        {wordCount} {status} {latestChapter} {page} {totalPages}
+// ============================================================
+
+/** 18 种 SEO TDK 预设 ID */
+export type TDKPresetId =
+  | 'classic-seo' | 'keyword-rich' | 'question-form' | 'list-style'
+  | 'brand-first' | 'chapter-focus' | 'category-first' | 'author-first'
+  | 'download-focus' | 'read-online' | 'latest-chapter' | 'complete-status'
+  | 'word-count' | 'pinyin-style' | 'mobile-seo' | 'social-share'
+  | 'long-tail' | 'minimal'
+
+/** 单个 TDK 预设结构 */
+export interface TDKPreset {
+  id: TDKPresetId
+  name: string
+  titleTemplate: string
+  descTemplate: string
+  keywordsTemplate: string
+}
+
+/** 18 种 SEO TDK 预设表 */
+export const TDK_PRESETS: TDKPreset[] = [
+  {
+    id: 'classic-seo',
+    name: '经典 SEO',
+    titleTemplate: '{bookName} {chapterTitle} - {siteName}',
+    descTemplate: '{bookName} {author}创作的{category}小说, {chapterTitle}在线阅读。{latestChapter} - {siteName}',
+    keywordsTemplate: '{bookName}, {author}, {category}小说, {chapterTitle}, 在线阅读, {siteName}',
+  },
+  {
+    id: 'keyword-rich',
+    name: '关键词堆砌',
+    titleTemplate: '{bookName} {author} {category} {chapterTitle} 在线阅读 - {siteName}',
+    descTemplate: '{bookName}由{author}创作, 属于{category}小说, 当前章节{chapterTitle}。共{wordCount}, {status}, 提供{bookName}全文免费阅读, 找{bookName}最新章节就到{siteName}。',
+    keywordsTemplate: '{bookName}, {author}, {category}, {chapterTitle}, {bookName}最新章节, {bookName}在线阅读, {bookName}txt下载, {bookName}全文, {siteName}',
+  },
+  {
+    id: 'question-form',
+    name: '疑问式',
+    titleTemplate: '{bookName} {chapterTitle} 怎么样?好看吗? - {siteName}',
+    descTemplate: '{bookName}的{chapterTitle}好看吗? {author}的{category}小说{bookName}怎么样? 在{siteName}免费阅读{bookName} {chapterTitle}, 看书友评价决定是否值得追读。',
+    keywordsTemplate: '{bookName}怎么样, {bookName}好看吗, {chapterTitle}, {bookName}, {author}, {siteName}',
+  },
+  {
+    id: 'list-style',
+    name: '列表式',
+    titleTemplate: 'Top{page}/{totalPages} | {bookName} {chapterTitle} - {siteName}',
+    descTemplate: '当前阅读进度 第{page}页/共{totalPages}页 | {bookName} {chapterTitle} | {author}著, {category}小说 | {siteName}',
+    keywordsTemplate: '{bookName}, {chapterTitle}, {author}, {category}小说, 第{page}页, 共{totalPages}页, {siteName}',
+  },
+  {
+    id: 'brand-first',
+    name: '品牌优先',
+    titleTemplate: '{siteName} - {bookName} {chapterTitle}',
+    descTemplate: '{siteName}提供{bookName} {chapterTitle}在线阅读, {author}创作的{category}小说, {status}。{latestChapter}',
+    keywordsTemplate: '{siteName}, {bookName}, {chapterTitle}, {author}, {category}小说',
+  },
+  {
+    id: 'chapter-focus',
+    name: '章节聚焦',
+    titleTemplate: '{chapterTitle} - 《{bookName}》by {author} - {siteName}',
+    descTemplate: '《{bookName}》第{chapterTitle}章节, {author}著, {category}小说。{siteName}为您提供{bookName}全章节在线阅读, {status}。',
+    keywordsTemplate: '{chapterTitle}, {bookName}, {author}, {category}小说, {siteName}',
+  },
+  {
+    id: 'category-first',
+    name: '分类优先',
+    titleTemplate: '{category}小说 - {bookName} {chapterTitle} - {siteName}',
+    descTemplate: '{category}小说推荐: {bookName} {chapterTitle}, {author}著, 共{wordCount}, {status}。{siteName}收录优质{category}小说。',
+    keywordsTemplate: '{category}小说, {bookName}, {chapterTitle}, {author}, {siteName}',
+  },
+  {
+    id: 'author-first',
+    name: '作者优先',
+    titleTemplate: '{author}作品 - {bookName} {chapterTitle} - {siteName}',
+    descTemplate: '{author}作品{bookName} {chapterTitle}章节在线阅读, {category}小说, 共{wordCount}, {status}。{author}全部作品尽在{siteName}。',
+    keywordsTemplate: '{author}, {author}作品, {bookName}, {chapterTitle}, {category}小说, {siteName}',
+  },
+  {
+    id: 'download-focus',
+    name: '下载导向',
+    titleTemplate: '{bookName} TXT下载 {author} {chapterTitle} - {siteName}',
+    descTemplate: '{bookName} {chapterTitle} TXT下载, {author}创作的{category}小说, 共{wordCount}, {status}。{siteName}提供{bookName}全本TXT下载和在线阅读。',
+    keywordsTemplate: '{bookName}下载, {bookName}txt下载, {bookName}TXT, {chapterTitle}, {author}, {siteName}',
+  },
+  {
+    id: 'read-online',
+    name: '在线阅读',
+    titleTemplate: '{bookName} {chapterTitle} 在线阅读 - {siteName}',
+    descTemplate: '{bookName} {chapterTitle}在线阅读, {author}著, {category}小说, {status}。{siteName}为您提供{bookName}无弹窗免费在线阅读。',
+    keywordsTemplate: '{bookName}在线阅读, {chapterTitle}, {bookName}, {author}, {category}小说, {siteName}',
+  },
+  {
+    id: 'latest-chapter',
+    name: '最新章节',
+    titleTemplate: '{bookName}最新章节 {chapterTitle} - {siteName}',
+    descTemplate: '{bookName}最新章节{chapterTitle}, {author}著, {category}小说, 更新至{latestChapter}, {status}。{siteName}及时更新{bookName}最新章节。',
+    keywordsTemplate: '{bookName}最新章节, {chapterTitle}, {bookName}, {author}, {latestChapter}, {siteName}',
+  },
+  {
+    id: 'complete-status',
+    name: '完结状态',
+    titleTemplate: '{bookName} {status} {chapterTitle} - {siteName}',
+    descTemplate: '{bookName} {status} {chapterTitle}章节在线阅读, {author}著, {category}小说, 共{wordCount}。{siteName}为您提供{status}{bookName}全本阅读。',
+    keywordsTemplate: '{bookName}{status}, {bookName}全本, {chapterTitle}, {author}, {category}小说, {siteName}',
+  },
+  {
+    id: 'word-count',
+    name: '字数导向',
+    titleTemplate: '{bookName}({wordCount}) {chapterTitle} - {siteName}',
+    descTemplate: '{bookName}({wordCount}) {chapterTitle}章节, {author}著, {category}小说, {status}。{siteName}提供《{bookName}》全章节阅读。',
+    keywordsTemplate: '{bookName}, {wordCount}, {bookName}全本, {chapterTitle}, {author}, {siteName}',
+  },
+  {
+    id: 'pinyin-style',
+    name: '拼音风格',
+    titleTemplate: '{bookName} {author} {category}小说 - {siteName}',
+    descTemplate: '{bookName}({author}) {category}小说大全, {chapterTitle}章节阅读。{siteName}收录{category}类小说, 包含{bookName}等热门作品。',
+    keywordsTemplate: '{bookName}, {author}, {category}小说大全, {category}小说, {chapterTitle}, {siteName}',
+  },
+  {
+    id: 'mobile-seo',
+    name: '移动 SEO',
+    titleTemplate: '{chapterTitle} - {bookName} {siteName}',
+    descTemplate: '{chapterTitle}-{bookName}, {author}著, {category}小说, {status}。手机阅读{bookName}, {siteName}提供移动端优化阅读体验。',
+    keywordsTemplate: '{chapterTitle}, {bookName}, {author}, {category}, {siteName}',
+  },
+  {
+    id: 'social-share',
+    name: '社交分享',
+    titleTemplate: '📖 {bookName} | {chapterTitle} | {siteName}',
+    descTemplate: '推荐阅读《{bookName}》{chapterTitle}, {author}创作的{category}小说, {wordCount}, {status}。{siteName}好书分享, 转发收藏两不误。',
+    keywordsTemplate: '{bookName}, {chapterTitle}, {author}, {category}小说, {siteName}, 推荐阅读',
+  },
+  {
+    id: 'long-tail',
+    name: '长尾词',
+    titleTemplate: '{bookName} {author} {category} {chapterTitle} {status} - {siteName}',
+    descTemplate: '{bookName} {author} {category}小说 {chapterTitle}章节 {status} 共{wordCount}。在{siteName}免费阅读{bookName} {chapterTitle}, {latestChapter}。',
+    keywordsTemplate: '{bookName}, {author}, {category}, {chapterTitle}, {status}, {wordCount}, {latestChapter}, {siteName}',
+  },
+  {
+    id: 'minimal',
+    name: '极简',
+    titleTemplate: '{bookName} {chapterTitle}',
+    descTemplate: '{bookName} {chapterTitle} - {author}',
+    keywordsTemplate: '{bookName}, {chapterTitle}, {author}',
+  },
+]
+
+/** TDK 预设 Map (按 ID 索引) */
+const TDK_PRESET_MAP: Record<TDKPresetId, TDKPreset> = TDK_PRESETS.reduce(
+  (m, p) => {
+    m[p.id] = p
+    return m
+  },
+  {} as Record<TDKPresetId, TDKPreset>,
+)
+
+/** 渲染上下文 */
+export interface TDKRenderContext {
+  bookName?: string
+  author?: string
+  category?: string
+  chapterTitle?: string
+  siteName?: string
+  wordCount?: number
+  status?: string
+  latestChapter?: string
+  page?: number
+  totalPages?: number
+}
+
+/** 按 ID 获取预设 (不存在时回退到 classic-seo) */
+export function getTDKPreset(id: TDKPresetId | string): TDKPreset {
+  const k = (id as TDKPresetId) in TDK_PRESET_MAP ? (id as TDKPresetId) : 'classic-seo'
+  return TDK_PRESET_MAP[k]
+}
+
+/** 随机选一个预设 */
+export function getRandomTDKPreset(): TDKPreset {
+  return TDK_PRESETS[Math.floor(Math.random() * TDK_PRESETS.length)]
+}
+
+/** 渲染单个模板 — 替换占位符 */
+function renderTemplate(tpl: string, ctx: TDKRenderContext): string {
+  if (!tpl) return ''
+  const wordCountStr = ctx.wordCount && ctx.wordCount > 0 ? formatWordCount(ctx.wordCount) : ''
+  const statusStr = ctx.status ? (ctx.status === 'completed' ? '已完结' : ctx.status === 'ongoing' ? '连载中' : ctx.status) : ''
+  return tpl
+    .replace(/\{bookName\}/g, ctx.bookName || '')
+    .replace(/\{author\}/g, ctx.author || '')
+    .replace(/\{category\}/g, ctx.category || '')
+    .replace(/\{chapterTitle\}/g, ctx.chapterTitle || '')
+    .replace(/\{siteName\}/g, ctx.siteName || '')
+    .replace(/\{wordCount\}/g, wordCountStr)
+    .replace(/\{status\}/g, statusStr)
+    .replace(/\{latestChapter\}/g, ctx.latestChapter || '')
+    .replace(/\{page\}/g, ctx.page ? String(ctx.page) : '')
+    .replace(/\{totalPages\}/g, ctx.totalPages ? String(ctx.totalPages) : '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/** 按预设渲染 TDK */
+export function renderTDKByPreset(presetId: TDKPresetId | string, ctx: TDKRenderContext): TDKResult {
+  const preset = getTDKPreset(presetId)
+  return {
+    title: renderTemplate(preset.titleTemplate, ctx),
+    description: renderTemplate(preset.descTemplate, ctx),
+    keywords: renderTemplate(preset.keywordsTemplate, ctx),
+  }
+}
+
+/** 从 18 个预设随机组合 title/desc/keywords 模板 (3 个独立采样, 可互不相同) */
+export function randomCombineTDK(): {
+  presetId: TDKPresetId
+  titleTemplate: string
+  descTemplate: string
+  keywordsTemplate: string
+  sourcePresets: { title: TDKPresetId; desc: TDKPresetId; keywords: TDKPresetId }
+} {
+  const titlePreset = TDK_PRESETS[Math.floor(Math.random() * TDK_PRESETS.length)]
+  const descPreset = TDK_PRESETS[Math.floor(Math.random() * TDK_PRESETS.length)]
+  const keywordsPreset = TDK_PRESETS[Math.floor(Math.random() * TDK_PRESETS.length)]
+  return {
+    presetId: titlePreset.id,
+    titleTemplate: titlePreset.titleTemplate,
+    descTemplate: descPreset.descTemplate,
+    keywordsTemplate: keywordsPreset.keywordsTemplate,
+    sourcePresets: { title: titlePreset.id, desc: descPreset.id, keywords: keywordsPreset.id },
+  }
+}

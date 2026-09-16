@@ -29,7 +29,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Check, Globe, Loader2, Pencil, Plus, RefreshCw, Star, Trash2, Link2 } from 'lucide-react'
+import { Check, Globe, Loader2, Pencil, Plus, RefreshCw, Star, Trash2, Link2, Sparkles } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   BatchActionButton,
@@ -40,6 +40,7 @@ import {
 } from './batch'
 import { api, type SiteRow } from './helpers'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
+import { randomCombineTDK } from '@/components/public/auto-tdk'
 
 interface SiteTheme {
   id: string
@@ -75,6 +76,9 @@ interface SiteForm {
   chapterSeoKeywordsTemplate: string
   // 伪静态 URL 风格 (R7-20)
   pseudoStaticStyle: string
+  // R16: 主题可编辑设置 — 导航栏分类数 + 首页模块数据量
+  navCategoryCount: number
+  homeModuleLimit: number
 }
 
 const emptyForm: SiteForm = {
@@ -100,6 +104,9 @@ const emptyForm: SiteForm = {
   chapterSeoDescTemplate: '',
   chapterSeoKeywordsTemplate: '',
   pseudoStaticStyle: 'query',
+  // R16: 主题可编辑设置 — 默认值与 Prisma Site 模型一致 (16/20)
+  navCategoryCount: 16,
+  homeModuleLimit: 20,
 }
 
 export function SitesSection() {
@@ -175,6 +182,9 @@ export function SitesSection() {
       chapterSeoDescTemplate: s.chapterSeoDescTemplate ?? '',
       chapterSeoKeywordsTemplate: s.chapterSeoKeywordsTemplate ?? '',
       pseudoStaticStyle: s.pseudoStaticStyle ?? 'query',
+      // R16: 主题可编辑设置 — 旧数据缺字段时回退默认值 (16/20)
+      navCategoryCount: s.navCategoryCount ?? 16,
+      homeModuleLimit: s.homeModuleLimit ?? 20,
     })
     setDialogOpen(true)
   }
@@ -264,6 +274,21 @@ export function SitesSection() {
     void runSitesBatch(
       { action: 'offset', payload: { offset } },
       (r) => `已将 ${r.affected ?? 0} 个站点的书库偏移量设为 ${offset}`
+    )
+  }
+
+  // R16-1B: 随机刷新章节 SEO TDK 模板 — 从 18 个预设随机组合 title/desc/keywords 模板
+  const randomRefreshSeoTDK = () => {
+    const combo = randomCombineTDK()
+    setForm((prev) => ({
+      ...prev,
+      chapterSeoAuto: false,
+      chapterSeoTitleTemplate: combo.titleTemplate.slice(0, 500),
+      chapterSeoDescTemplate: combo.descTemplate.slice(0, 500),
+      chapterSeoKeywordsTemplate: combo.keywordsTemplate.slice(0, 500),
+    }))
+    toast.success(
+      `已随机生成 TDK 模板 (title←${combo.sourcePresets.title} / desc←${combo.sourcePresets.desc} / keywords←${combo.sourcePresets.keywords})`,
     )
   }
 
@@ -432,6 +457,10 @@ export function SitesSection() {
                             : `分页 · ${s.chapterPaginationPages ?? 3}页`}
                         </Badge>
                       )}
+                      {/* R16: 主题显示设置徽章 — 导航 N 类 / 模块 M 条 */}
+                      <Badge variant="outline" className="ml-2 border-amber-700/60 bg-amber-950/30 text-[10px] text-amber-300" title="R16 主题显示设置: 导航栏分类数 / 首页模块数据量">
+                        导航 {s.navCategoryCount ?? 16} · 模块 {s.homeModuleLimit ?? 20}
+                      </Badge>
                     </span>
                     <div className="flex gap-0.5">
                       <Button variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs text-zinc-400 hover:text-zinc-100" onClick={() => openEdit(s)}>
@@ -571,6 +600,50 @@ export function SitesSection() {
             </div>
           </div>
 
+          {/* R16: 主题显示设置 — 每个站点可单独编辑导航栏展示分类数与首页模块数据量 */}
+          <div className="mt-4 rounded-md border border-amber-900/40 bg-amber-950/10 p-3">
+            <div className="mb-2 flex items-center gap-2">
+              <div>
+                <div className="text-xs font-semibold text-amber-300">主题显示设置</div>
+                <div className="text-[10px] text-zinc-500">每个主题可单独编辑: 导航栏展示几个分类、首页每个模块显示多少数据</div>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label className="text-xs text-zinc-400">
+                  导航栏分类数 <span className="text-zinc-600">(5 - 30)</span>
+                </Label>
+                <Input
+                  type="number"
+                  min={5}
+                  max={30}
+                  className="h-9 border-zinc-700 bg-zinc-950 text-sm"
+                  value={form.navCategoryCount}
+                  onChange={(e) =>
+                    setForm({ ...form, navCategoryCount: Math.min(30, Math.max(5, Number(e.target.value) || 16)) })
+                  }
+                />
+                <p className="text-[10px] text-zinc-600">控制顶部导航栏展示的分类条目数, 超出的分类自动隐藏</p>
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs text-zinc-400">
+                  首页模块数据量 <span className="text-zinc-600">(10 - 50)</span>
+                </Label>
+                <Input
+                  type="number"
+                  min={10}
+                  max={50}
+                  className="h-9 border-zinc-700 bg-zinc-950 text-sm"
+                  value={form.homeModuleLimit}
+                  onChange={(e) =>
+                    setForm({ ...form, homeModuleLimit: Math.min(50, Math.max(10, Number(e.target.value) || 20)) })
+                  }
+                />
+                <p className="text-[10px] text-zinc-600">控制首页"最新上传/最近更新/排行榜"等模块的展示条目数</p>
+              </div>
+            </div>
+          </div>
+
           {/* 章节内容分页 (agent-P) */}
           <div className="mt-4 rounded-md border border-violet-900/40 bg-violet-950/10 p-3">
             <div className="mb-2 flex items-center justify-between gap-2">
@@ -641,6 +714,17 @@ export function SitesSection() {
                 <div className="text-[10px] text-zinc-500">自动从章节内容提取关键词+生成描述, 或使用自定义模板</div>
               </div>
               <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 gap-1.5 border-emerald-700/60 bg-emerald-950/40 px-2 text-[11px] text-emerald-200 hover:bg-emerald-900/60"
+                  onClick={randomRefreshSeoTDK}
+                  title="从 18 种 SEO 预设中随机组合 title/desc/keywords 模板并填入下方输入框"
+                >
+                  <Sparkles className="h-3 w-3" />
+                  随机刷新
+                </Button>
                 <Label htmlFor="seo-auto-switch" className="text-[11px] text-zinc-400 cursor-pointer">自动生成</Label>
                 <Switch
                   id="seo-auto-switch"
@@ -653,7 +737,7 @@ export function SitesSection() {
               <div className="space-y-2 border-t border-zinc-800 pt-3">
                 <div className="space-y-1.5">
                   <Label className="text-xs text-zinc-400">
-                    标题模板 <span className="text-zinc-600">占位符: {'{bookName}'} {'{chapterTitle}'} {'{page}'} {'{totalPages}'} {'{siteName}'}</span>
+                    标题模板 <span className="text-zinc-600">占位符: {'{bookName}'} {'{author}'} {'{category}'} {'{chapterTitle}'} {'{siteName}'} {'{wordCount}'} {'{status}'} {'{latestChapter}'} {'{page}'} {'{totalPages}'}</span>
                   </Label>
                   <Input
                     className="h-9 border-zinc-700 bg-zinc-950 text-sm"

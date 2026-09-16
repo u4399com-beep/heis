@@ -70,6 +70,13 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     if (body?.pseudoStaticStyle !== undefined) {
       data.pseudoStaticStyle = enumIn(body.pseudoStaticStyle, PSEUDO_STYLES, 'query')
     }
+    // R16: 主题可编辑设置 — 导航栏分类数(5-30) + 首页模块数据量(10-50), 显式传入才更新
+    if (body?.navCategoryCount !== undefined) {
+      data.navCategoryCount = clampInt(body.navCategoryCount, 16, 5, 30)
+    }
+    if (body?.homeModuleLimit !== undefined) {
+      data.homeModuleLimit = clampInt(body.homeModuleLimit, 20, 10, 50)
+    }
 
     try {
       let site

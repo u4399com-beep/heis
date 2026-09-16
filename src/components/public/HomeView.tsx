@@ -19,9 +19,13 @@ import { siteKeywordList, useSiteSEO, withAlpha } from './seo'
 import { generateTitle, generateMetaDescription, generateKeywords } from './auto-tdk'
 import { EmptyState, ErrorState, SuggestTagCloud, TagCloud, BookGridSkeleton } from './bits'
 import { CategoryShowcase } from './CategoryShowcase'
+<<<<<<< HEAD
 // R10-1A: 10 个精仿真实小说站点首页布局, 懒加载分包 (R13-1B 含 clone-trxsw)
 // R13-1B: 第 10 个 clone-trxsw 天人小说 (AiraBrowser 反查 DOM)
 // R15-1B: 改为从 clone-themes/<site> 导入 (硬编码颜色, 不用 theme.vars)
+=======
+// R16: 从 clone-themes/ 加载 1:1 克隆组件 (使用源站 CSS class + 硬编码颜色)
+>>>>>>> 1d2b523 (refactor(R16): 真正1:1克隆+CloneCSSLoader+18种TDK预设+主题编辑)
 const HomeCloneAijjxs = dynamic(() => import('./clone-themes/aijjxs').then((m) => m.HomeClone))
 const HomeCloneDdyueshu = dynamic(() => import('./clone-themes/ddyueshu').then((m) => m.HomeClone))
 const HomeClonePilishuwu = dynamic(() => import('./clone-themes/pilishuwu').then((m) => m.HomeClone))
@@ -173,16 +177,17 @@ export function HomeView({ page, cat }: { page: number; cat?: string }) {
       ) : (
         <>
           {/* R10-1A: 9 个精仿真实小说站点首页布局分发; R11-1B: 扩充至 10 个; R13-1B: 恢复 clone-trxsw; R14-1A: 10 套全保留 */}
-          {theme.layout === 'clone-aijjxs' && <HomeCloneAijjxs books={books} loading={loading} />}
-          {theme.layout === 'clone-ddyueshu' && <HomeCloneDdyueshu books={books} loading={loading} />}
-          {theme.layout === 'clone-pilishuwu' && <HomeClonePilishuwu books={books} loading={loading} />}
-          {theme.layout === 'clone-23qb' && <HomeClone23qb books={books} loading={loading} />}
-          {theme.layout === 'clone-101kks' && <HomeClone101kks books={books} loading={loading} />}
-          {theme.layout === 'clone-huangjinwu' && <HomeCloneHuangjinwu books={books} loading={loading} />}
-          {theme.layout === 'clone-ggd66' && <HomeCloneGgd66 books={books} loading={loading} />}
-          {theme.layout === 'clone-shipsay' && <HomeCloneShipsay books={books} loading={loading} />}
-          {theme.layout === 'clone-x2552' && <HomeCloneX2552 books={books} loading={loading} />}
-          {theme.layout === 'clone-trxsw' && <HomeCloneTrxsw books={books} loading={loading} />}
+          {/* R16-1C: 透传 site.navCategoryCount/homeModuleLimit 给各 HomeClone, 由组件按需 slice NAV_ITEMS/books */}
+          {theme.layout === 'clone-aijjxs' && <HomeCloneAijjxs books={books} loading={loading} navCategoryCount={site.navCategoryCount} homeModuleLimit={site.homeModuleLimit} />}
+          {theme.layout === 'clone-ddyueshu' && <HomeCloneDdyueshu books={books} loading={loading} navCategoryCount={site.navCategoryCount} homeModuleLimit={site.homeModuleLimit} />}
+          {theme.layout === 'clone-pilishuwu' && <HomeClonePilishuwu books={books} loading={loading} navCategoryCount={site.navCategoryCount} homeModuleLimit={site.homeModuleLimit} />}
+          {theme.layout === 'clone-23qb' && <HomeClone23qb books={books} loading={loading} navCategoryCount={site.navCategoryCount} homeModuleLimit={site.homeModuleLimit} />}
+          {theme.layout === 'clone-101kks' && <HomeClone101kks books={books} loading={loading} navCategoryCount={site.navCategoryCount} homeModuleLimit={site.homeModuleLimit} />}
+          {theme.layout === 'clone-huangjinwu' && <HomeCloneHuangjinwu books={books} loading={loading} navCategoryCount={site.navCategoryCount} homeModuleLimit={site.homeModuleLimit} />}
+          {theme.layout === 'clone-ggd66' && <HomeCloneGgd66 books={books} loading={loading} navCategoryCount={site.navCategoryCount} homeModuleLimit={site.homeModuleLimit} />}
+          {theme.layout === 'clone-shipsay' && <HomeCloneShipsay books={books} loading={loading} navCategoryCount={site.navCategoryCount} homeModuleLimit={site.homeModuleLimit} />}
+          {theme.layout === 'clone-x2552' && <HomeCloneX2552 books={books} loading={loading} navCategoryCount={site.navCategoryCount} homeModuleLimit={site.homeModuleLimit} />}
+          {theme.layout === 'clone-trxsw' && <HomeCloneTrxsw books={books} loading={loading} navCategoryCount={site.navCategoryCount} homeModuleLimit={site.homeModuleLimit} />}
           {/* feat-round-7 B3: 防御性兜底 — 未知布局/loading 期无任何布局命中时用 BookGridSkeleton */}
           {!['clone-aijjxs', 'clone-ddyueshu', 'clone-pilishuwu', 'clone-23qb', 'clone-101kks', 'clone-huangjinwu', 'clone-ggd66', 'clone-shipsay', 'clone-x2552', 'clone-trxsw'].includes(theme.layout) && loading && (
             <BookGridSkeleton count={12} />
