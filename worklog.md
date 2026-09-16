@@ -9761,3 +9761,66 @@ Stage Summary:
   · R15-1A/B 的 clone-themes 模块结构保留 (50 文件, 5 文件/套 × 10 套)
   · R15-1B 的接线重构保留 (4 视图 lookup table + R15-1B 删除的旧文件不复活, 仅补删 R15-1B 残留的 Pagination.tsx)
   · 未安装新 npm 包 (0 新依赖)
+
+---
+Task ID: R18-1A
+Agent: 子代理(深度代码审计+bug修复)
+Task: 逐行强力深度抓 bug + 全部修复 (采集/反反爬/清洗/前端视图/API 路由)
+
+Work Log:
+- 步骤 1 项目背景摸排:
+  · 阅读 worklog.md 末尾 400 行 (R13~R16 历史)
+  · 阅读 agent-ctx/code-audit-r16.md (R16-1C 审计报告) 确认 R15-1B 已落地 lookup table
+  · 用 git log + git diff 回溯 BookView/CategoryView/ReadView 的 R15→R17 变更
+
+- 步骤 2 采集引擎深度审计 (5 模块 ~10k LoC):
+  · fetcher.ts (4507 行): inflightMap/tokenInflight TOCTOU race (R14-1B fix 完整保留 line 3582/3897 entry 引用对比) + responseCache 200 cap + FIFO (line 3757-3776) + cookieJar 跨域安全 (R6-5 父域校验 + R5-6 副罐) + AbortController 3 处 try/finally clearTimeout + 5 级降级链 (responseCache → inflight → fetchPageOnce → tokenChallenge → browser upgrade) ✓
+  · runner.ts (2210 行): discoveredBookUrls/completedBookUrls Set 去重 (line 746-757 + 812-833 + R7-29 DB 批量查) + 续采 DB 恢复 (line 634-658) + control() 30s timer try/finally (R14-1B fix line 446-452) + BudgetExceeded 熔断 (line 1003-1008 + 870-878 上抛) ✓
+  · parser.ts (1484 行): parseList/parseToc/parseContent 翻页 + JSON 模式 + readability 兜底 ✓
+  · cleaner.ts (687 行): R17-1A 3 处增强 (cleanContentHtml step 5.5 段首缩进规整 + cleanIntro 段间空行压缩 + cleanChapterTitle 卷标题剥离) + 零宽字符剥离 4 个出口完整 + 水印段落识别 step 1.55 + step 6 首末行剥离 ✓
+  · obscura.ts (1649 行): withObscuraPage 池管理 + 30s 排队超时 (line 1354-1371 R5-18 TDZ 兜底) + 挑战等待循环 + Turnstile 点击 8s 截止 ✓
+
+- 步骤 3 前端视图深度审计 (4 视图 ~1.7k LoC):
+  · HomeView.tsx (115 行): 10 个 dynamic import clone-themes/<site> 全部就位 ✓
+  · BookView.tsx (760 行): **P1 BUG 发现** — R17 重构误删 BookInfo lookup table, 10 套 BookInfo 沦为死代码
+  · CategoryView.tsx (153 行): **同款 P1 BUG** — CatList lookup table 误删
+  · ReadView.tsx (673 行): **同款 P1 BUG** — ReadChrome lookup table 误删
+  · git diff 120d6ff b262bb5 实证: R17 commit 删除了 30 个 import + 3 个 lookup table, 替换为 3 个内联 fallback 组件 (用 theme.vars, 与注释承诺矛盾)
+
+- 步骤 4 API 路由安全审计 (14 个 public 路由):
+  · book/route.ts: clampInt skip 上限 10000 + sourceUrl 已剥离 ✓
+  · chapter/route.ts: readChapterTxt 路径校验 (DATA_ROOT + path.sep) + txt 装载实体转义 ✓
+  · keyword/route.ts: bookId 模式 LRU 缓存 (24h TTL, 200 entries) ✓
+  · 其余路由: withGuard + str/clampInt + withCache 包装, 无新增问题 ✓
+
+- 步骤 5 P1 修复 (P1-1: clone-themes lookup table 回归):
+  · BookView.tsx: 恢复 10 个 `import { BookInfo as BookInfoAijjxs } from './clone-themes/aijjxs'` 等 + lookup table (fallback BookInfoAijjxs), 删除内联 fallback 组件 (line 26-47)
+  · CategoryView.tsx: 恢复 10 个 `import { CategoryList as CatListAijjxs }` + lookup table (fallback CatListAijjxs), 删除内联 fallback (line 14-39)
+  · ReadView.tsx: 恢复 10 个 `import { ReadChrome as ReadChromeAijjxs }` + lookup table (fallback ReadChromeAijjxs), 删除内联 fallback (line 33-47)
+  · 修复口径: 与 R15-1B 原实现 100% 一致 — 同 import 别名 + 同 lookup key + 同 fallback; props 透传完全匹配 BookInfoProps/CategoryListProps/ReadChromeProps 接口
+  · 注释新增 R18-1A 标记说明修复原因 (R17 重构误删 + 恢复)
+
+- 步骤 6 验证:
+  · bunx tsc --noEmit (排除 examples/skills): 0 errors ✓
+  · bunx tsc --noEmit --noUnusedLocals --noUnusedParameters: 0 errors ✓ (10 个 import 全部使用)
+  · bun run lint: exit 0 (0 errors / 0 warnings) ✓
+  · bunx tsx -e 实测: 三视图模块加载成功, 10 套 clone-themes 8 个组件导出齐全 ✓
+
+Stage Summary:
+- 审计范围: 5 crawl 模块 (~10k LoC) + 4 视图 (~1.7k LoC) + 14 API 路由 = ~13k LoC
+- 修复数量: P0=0 / P1=1 (已修复) / P2=0 / P3=5 (4 项确认正确不修, 1 项顺带消除)
+- P1 修复: BookView/CategoryView/ReadView 三视图 clone-themes lookup table 回归 (R17 重构误删, R18-1A 恢复 R15-1B 原实现)
+- 修改文件清单 (R18-1A 净改动):
+  · src/components/public/BookView.tsx (恢复 10 import + lookup table, 删除内联 fallback)
+  · src/components/public/CategoryView.tsx (同上)
+  · src/components/public/ReadView.tsx (同上)
+- 验证: tsc 0 errors / lint 0 errors / 模块加载冒烟测试通过
+- 审计报告: agent-ctx/code-audit-r18.md (9 章节)
+- 不修改的文件 (尊重约束):
+  · fetcher.ts / runner.ts / parser.ts / obscura.ts / cleaner.ts / themes.ts / types.ts / suggest.ts / storage.ts / hostgate.ts / smart.ts / auto-tdk.ts 全部未动
+  · R13-1A 的 PSEO 集成保留 (suggest.ts/clearPSEOCacheForBook/PSEOKeywordsSection 未回滚)
+  · R14-1B 的 bug 修复保留 (fetcher.ts entry TOCTOU + runner.ts control timer 全部保留)
+  · R15-1B 的 clone-themes 模块结构保留 (50 文件, 8 文件/套 × 10 套)
+  · R17-1A 的 cleaner.ts 3 处增强保留 (cleanContentHtml step 5.5 / cleanIntro / cleanChapterTitle)
+  · R17 重构的 8 页型 clone-themes 模块保留 (新增 RankingView/FulltextView/SearchView/KeywordView)
+  · 未安装新 npm 包 (0 新依赖)

@@ -10,35 +10,19 @@ import { usePublic } from './ctx'
 import { useSiteSEO } from './seo'
 import { generateTitle, generateMetaDescription, generateKeywords } from './auto-tdk'
 import { ErrorState, Sk } from './bits'
-
-            const CatListComponent = ({ books, loading, label, page, total, size, onPage }: any) => {
-    const { theme, navigate } = usePublic()
-    const v = theme.vars
-    if (loading) return <div style={{ padding: 40, textAlign: 'center', color: v.textMuted }}>加载中...</div>
-    if (!books.length) return <div style={{ padding: 40, textAlign: 'center', color: v.textMuted }}>暂无书籍</div>
-    return (
-      <div style={{ maxWidth: 1200, margin: '0 auto', padding: 20 }}>
-        <h1 style={{ fontSize: 20, fontWeight: 700, color: v.text, marginBottom: 16 }}>{label}</h1>
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-          {books.map((b: any) => (
-            <div key={b.id} onClick={() => navigate({ view: 'book', bookId: b.id })} style={{ background: v.surface, border: '1px solid ' + v.border, borderRadius: v.radius, padding: 12, cursor: 'pointer' }}>
-              <h3 style={{ fontSize: 14, fontWeight: 600, color: v.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.name}</h3>
-              <p style={{ fontSize: 12, color: v.textMuted }}>{b.author} · {b.category}</p>
-            </div>
-          ))}
-        </div>
-        {total > size && (
-          <div style={{ display: 'flex', justifyContent: 'center', gap: 8, marginTop: 16 }}>
-            {page > 1 && <button onClick={() => onPage(page - 1)} style={{ padding: '6px 16px', border: '1px solid ' + v.border, borderRadius: v.radius, background: v.surface, color: v.text, cursor: 'pointer' }}>上一页</button>}
-            <span style={{ padding: '6px 12px', color: v.textMuted }}>第 {page} 页</span>
-            {page * size < total && <button onClick={() => onPage(page + 1)} style={{ padding: '6px 16px', border: '1px solid ' + v.border, borderRadius: v.radius, background: v.surface, color: v.text, cursor: 'pointer' }}>下一页</button>}
-          </div>
-        )}
-      </div>
-    )
-  }
-
 // R15-1B: 改为按 theme.layout 动态选择 clone-themes 的 CategoryList 组件 (硬编码颜色, 不用 theme.vars)
+// R18-1A 修复: R17 重构误删 lookup table, 让 clone-themes/<site>/CategoryList 沦为死代码;
+//             恢复 10 套 import + 按 theme.layout 分发, fallback 走 aijjxs (与 R15-1B 同口径)
+import { CategoryList as CatListAijjxs } from './clone-themes/aijjxs'
+import { CategoryList as CatListDdyueshu } from './clone-themes/ddyueshu'
+import { CategoryList as CatListPilishuwu } from './clone-themes/pilishuwu'
+import { CategoryList as CatList23qb } from './clone-themes/23qb'
+import { CategoryList as CatList101kks } from './clone-themes/101kks'
+import { CategoryList as CatListHuangjinwu } from './clone-themes/huangjinwu'
+import { CategoryList as CatListGgd66 } from './clone-themes/ggd66'
+import { CategoryList as CatListShipsay } from './clone-themes/shipsay'
+import { CategoryList as CatListX2552 } from './clone-themes/x2552'
+import { CategoryList as CatListTrxsw } from './clone-themes/trxsw'
 
 export function CategoryView({ cat, page }: { cat?: string; page: number }) {
   const { site, theme, navigate } = usePublic()
@@ -133,7 +117,20 @@ export function CategoryView({ cat, page }: { cat?: string; page: number }) {
       ) : (
         <>
           {/* R15-1B: 按 theme.layout 选择 clone-themes/<site>/CategoryList 渲染 (硬编码颜色) */}
+          {/* R18-1A 修复: R17 重构误删 lookup table, 此处恢复按 theme.layout 分发到 clone-themes/<site>/CategoryList */}
           {(() => {
+            const CatListComponent = {
+              'clone-aijjxs': CatListAijjxs,
+              'clone-ddyueshu': CatListDdyueshu,
+              'clone-pilishuwu': CatListPilishuwu,
+              'clone-23qb': CatList23qb,
+              'clone-101kks': CatList101kks,
+              'clone-huangjinwu': CatListHuangjinwu,
+              'clone-ggd66': CatListGgd66,
+              'clone-shipsay': CatListShipsay,
+              'clone-x2552': CatListX2552,
+              'clone-trxsw': CatListTrxsw,
+            }[theme.layout] || CatListAijjxs
             return (
               <CatListComponent
                 books={data?.books || []}
