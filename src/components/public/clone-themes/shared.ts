@@ -12,8 +12,12 @@ export interface HomeCloneProps {
 
 export interface BookInfoProps {
   book: import('../types').BookDetail
+  theme?: import('@/lib/crawl/themes').ThemeDef
+  savedPos?: { chapterId?: string; title?: string; readTimeMs?: number } | null
   firstChapterId?: string
   onScrollToc: () => void
+  onContinueRead?: () => void
+  onGoCategory?: (categoryId: string) => void
 }
 
 export interface CategoryListProps {

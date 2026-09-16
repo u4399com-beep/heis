@@ -6,7 +6,6 @@
 // R12-1: 删除 clone-trxsw, 重写 9 套 preset 基于真实抓取的 CSS 变量
 // R13-1B: 重新克隆 10 个站点主题 (含 trxsw): 恢复 clone-trxsw 基于 AiraBrowser 反查 DOM
 // R14-1A: 全量重克隆 10 个站点主题含子页面 DOM; 10 个 HomeClone*.tsx + 10 套 BookInfoLayout
-// R15-1B: 拆为 10 套 clone-themes/<site>/{HomeClone,BookInfo,CategoryList,ReadChrome,index.ts}, 删除 BookInfoLayout.tsx + 旧 10 个 HomeClone*.tsx
 // ============================================================
 'use client'
 
@@ -19,13 +18,7 @@ import { siteKeywordList, useSiteSEO, withAlpha } from './seo'
 import { generateTitle, generateMetaDescription, generateKeywords } from './auto-tdk'
 import { EmptyState, ErrorState, SuggestTagCloud, TagCloud, BookGridSkeleton } from './bits'
 import { CategoryShowcase } from './CategoryShowcase'
-<<<<<<< HEAD
-// R10-1A: 10 个精仿真实小说站点首页布局, 懒加载分包 (R13-1B 含 clone-trxsw)
-// R13-1B: 第 10 个 clone-trxsw 天人小说 (AiraBrowser 反查 DOM)
-// R15-1B: 改为从 clone-themes/<site> 导入 (硬编码颜色, 不用 theme.vars)
-=======
 // R16: 从 clone-themes/ 加载 1:1 克隆组件 (使用源站 CSS class + 硬编码颜色)
->>>>>>> 1d2b523 (refactor(R16): 真正1:1克隆+CloneCSSLoader+18种TDK预设+主题编辑)
 const HomeCloneAijjxs = dynamic(() => import('./clone-themes/aijjxs').then((m) => m.HomeClone))
 const HomeCloneDdyueshu = dynamic(() => import('./clone-themes/ddyueshu').then((m) => m.HomeClone))
 const HomeClonePilishuwu = dynamic(() => import('./clone-themes/pilishuwu').then((m) => m.HomeClone))
