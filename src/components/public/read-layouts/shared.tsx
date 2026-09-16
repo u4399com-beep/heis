@@ -157,7 +157,8 @@ export function parseContentSelector(selector?: string): { id?: string; classNam
 /**
  * 章节内容分页导航条 — 仅当 chapterPagination.totalPages > 1 且 mode !== 'off' 时由布局渲染。
  * 包含: 上一页/下一页按钮 + 页码指示 "第 X / Y 页" + 页码快跳(≤7 页全部展示; 否则首末页+当前页窗口+省略号)。
- * 样式由主题 vars 驱动(与 Pagination.tsx 同色系), 不依赖外部上下文。
+ * 样式由主题 vars 驱动, 不依赖外部上下文。
+ * (R15-1C: 原 "与 Pagination.tsx 同色系" 注释随 Pagination.tsx 删除而失效, 简化)
  */
 export function ChapterPaginationBar({
   pagination,

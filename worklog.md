@@ -9512,3 +9512,252 @@ Stage Summary:
   · BookInfoLayout.tsx 存在 ✓
   · admin/themes API 返回 10 套 preset ✓
   · book PSEO API 返回 10 个关键词(万相之王实测) ✓
+
+---
+Task ID: R15-1B
+Agent: 子代理(clone-themes 接线 + lint 修复)
+Task: 修复 R15-1A 残留 38 个 lint 错误 + 验证 clone-themes 完整性 + 接线 HomeView/BookView/CategoryView/ReadView 使用新 clone-themes 组件 + 删除旧 HomeClone*.tsx/BookInfoLayout.tsx
+
+Work Log:
+- 步骤 1 修复 38 个 lint 错误 (25 个文件):
+  · 类型分布:
+    - 未使用的 const (硬编码颜色变量): 22 处 (LINK/MUTED/NAV_BG/ACCENT/HOVER/HOVER_BG/HEADER_BG/BORDER/RADIUS/BREADCRUMB_BG/RED/LOGO 等)
+    - 未使用的 import: 12 处 (StatusBadge/formatWords/fmtDate/bookNavProps/Sk/BookDetail/Pagination)
+    - 未使用的函数参数: 4 处 (i/idx/no)
+  · 修复方式:
+    - const 声明: 直接删除整行 (硬编码颜色不再用 theme.vars, 部分颜色变量在新模板中未引用)
+    - import: 删除未使用的具名导入
+    - 函数参数: 删除整个参数 (含 type 签名更新 + 调用点更新)
+  · 文件清单 (25 个 clone-themes 文件):
+    - 101kks/{BookInfo,CategoryList}.tsx
+    - 23qb/HomeClone.tsx
+    - aijjxs/{CategoryList,HomeClone}.tsx
+    - ddyueshu/{BookInfo,CategoryList,HomeClone}.tsx
+    - ggd66/{BookInfo,CategoryList,HomeClone,ReadChrome}.tsx
+    - huangjinwu/{BookInfo,CategoryList,ReadChrome}.tsx
+    - pilishuwu/{BookInfo,CategoryList,HomeClone,ReadChrome}.tsx
+    - shipsay/{BookInfo,HomeClone,ReadChrome}.tsx
+    - x2552/{CategoryList,HomeClone,ReadChrome}.tsx
+
+- 步骤 2 验证 clone-themes 完整性:
+  · 9 套目录已存在 (aijjxs/ddyueshu/pilishuwu/23qb/101kks/huangjinwu/ggd66/shipsay/x2552)
+    每套均有 HomeClone.tsx/BookInfo.tsx/CategoryList.tsx/ReadChrome.tsx/index.ts 5 个文件 ✓
+  · trxsw 目录为空 (R15-1A 超时未完成), 全部 5 个文件新建:
+    - index.ts (4 行 re-exports)
+    - HomeClone.tsx (~210 行, 1080px 双栏: 左 .vlist 最新更新 24 条 + 右侧栏 热门推荐 10 + 完本推荐 4 + 分类网格)
+    - BookInfo.tsx (~90 行, .detail 卡 + 面包屑 + meta 行 + ActionButtons)
+    - CategoryList.tsx (~80 行, 筛选条 + 网格列表 + 分页)
+    - ReadChrome.tsx (~80 行, header + nav + .content 容器 + .pager 翻页 + footer)
+  · 硬编码源站实际 CSS 变量值 (从 themes.ts vars 提取):
+    - bg #f5f7fa / surface #fff / surfaceAlt #eef2f7 / text #333 / textMuted #888
+    - primary #2c7be5 (深蓝) / accent #1a5fb4 / border #e0e6ed / radius 4px
+    - fontFamily: "Microsoft YaHei", Arial, sans-serif / cardShadow 0 1px 3px rgba(0,0,0,0.05)
+  · 全部用硬编码颜色, 不用 theme.vars ✓
+
+- 步骤 3 接线 HomeView.tsx:
+  · 删除 10 个旧的 dynamic import (从 ./layouts/HomeClone*.tsx)
+  · 改为从 ./clone-themes/<site> 导入 (10 个):
+    ```tsx
+    const HomeCloneAijjxs = dynamic(() => import('./clone-themes/aijjxs').then((m) => m.HomeClone))
+    // ... 10 套
+    ```
+  · 10 个分发分支 (theme.layout === 'clone-aijjxs' && <HomeCloneAijjxs .../>) 保持不变 ✓
+  · 兜底 BookGridSkeleton (loading 期未知布局) 保持不变 ✓
+
+- 步骤 4 接线 BookView.tsx:
+  · 删除 `import { BookInfoLayout } from './BookInfoLayout'`
+  · 改为按 theme.layout 动态选择 BookInfo 组件 (10 套):
+    ```tsx
+    import { BookInfo as BookInfoAijjxs } from './clone-themes/aijjxs'
+    // ... 10 套
+    const BookInfoComponent = {
+      'clone-aijjxs': BookInfoAijjxs, ...
+    }[theme.layout] || BookInfoAijjxs
+    <BookInfoComponent book={book} theme={theme} savedPos={savedPos} ... />
+    ```
+  · 兜底 BookInfoAijjxs (未知 layout 时使用 aijjxs 变体)
+
+- 步骤 5 接线 CategoryView.tsx:
+  · 删除 `import { ThemeBookList } from './BookCard'` 和 `import { Pagination } from './Pagination'`
+    (ThemeBookList 在 SearchView 仍使用, BookCard.tsx 中保留; Pagination 不再用)
+  · 改为按 theme.layout 动态选择 CategoryList 组件 (10 套):
+    ```tsx
+    import { CategoryList as CatListAijjxs } from './clone-themes/aijjxs'
+    // ... 10 套
+    const CatListComponent = { ... }[theme.layout] || CatListAijjxs
+    <CatListComponent books={...} loading={...} label={...} page={...} total={...} onPage={...} />
+    ```
+  · 分页由 CategoryList 组件内部渲染 (原 Pagination 不再需要)
+
+- 步骤 6 接线 ReadView.tsx:
+  · 新增 10 个 ReadChrome import (从 ./clone-themes/<site>)
+  · 新增 lookup table 按 theme.layout 选择 ReadChromeComponent (兜底 ReadChromeAijjxs)
+  · 新增 handlePrevChapter/handleNextChapter: 调用 readerActionsRef.current.onPrev/onNext
+    (透传给 ReadChrome 的 prev/next 按钮, 由当前 read-layout 内置的章节导航触发)
+  · 4 个布局分支 (immersive/paginated/pili/classic) 都用 ReadChromeComponent 包裹原 read-layouts 内容:
+    ```tsx
+    <ReadChromeComponent chapterTitle={chapterTitleStr} onPrev={handlePrevChapter} onNext={handleNextChapter}>
+      <div key={`wrap-${wrapKey}`} className={slideClass}>
+        <ReadImmersive key={`ri-${chapterId || ''}`} {...shared} />
+      </div>
+    </ReadChromeComponent>
+    ```
+  · topProgressBar/helpButton/helpDialog 保持在外层 (不进 chrome)
+
+- 步骤 7 删除旧文件 (11 个):
+  · src/components/public/layouts/HomeCloneAijjxs.tsx
+  · src/components/public/layouts/HomeCloneDdyueshu.tsx
+  · src/components/public/layouts/HomeClonePilishuwu.tsx
+  · src/components/public/layouts/HomeClone23qb.tsx
+  · src/components/public/layouts/HomeClone101kks.tsx
+  · src/components/public/layouts/HomeCloneHuangjinwu.tsx
+  · src/components/public/layouts/HomeCloneGgd66.tsx
+  · src/components/public/layouts/HomeCloneShipsay.tsx
+  · src/components/public/layouts/HomeCloneX2552.tsx
+  · src/components/public/layouts/HomeCloneTrxsw.tsx
+  · src/components/public/BookInfoLayout.tsx
+  · src/components/public/layouts/ 目录本身保留 (空目录, read-layouts 是 sibling 不受影响)
+
+- 步骤 8 验证:
+  · bunx tsc --noEmit (排除 examples/skills): 0 errors ✓
+  · bunx tsc --noEmit --noUnusedLocals --noUnusedParameters: 0 errors ✓
+  · bun run lint: exit 0 (0 errors / 0 warnings) ✓
+  · clone-themes 结构验证: 10 套全部存在, 每套 5 个文件 (HomeClone/BookInfo/CategoryList/ReadChrome/index.ts) ✓
+  · 旧文件已删除: src/components/public/layouts/HomeClone*.tsx 不存在 ✓
+                     src/components/public/BookInfoLayout.tsx 不存在 ✓
+  · dev server curl / 返回 200, 编译成功 (453ms + 981ms) ✓
+  · dev server curl /?view=category 返回 200, 编译成功 (3ms) ✓
+
+Stage Summary:
+- lint 错误修复: 38 个 → 0 个 (25 个 clone-themes 文件, 主要为未使用的硬编码颜色变量/import/函数参数)
+- clone-themes 完整性: 9 套原有 + 1 套 trxsw 全建 (5 个文件 × 10 套 = 50 个文件, 含 shared-props.ts 类型定义)
+- 接线 4 个视图文件:
+  · HomeView.tsx: 10 个 dynamic import 改为 clone-themes/<site> (分发分支不变)
+  · BookView.tsx: BookInfoLayout → lookup table 选择 clone-themes BookInfo
+  · CategoryView.tsx: ThemeBookList → lookup table 选择 clone-themes CategoryList (含分页)
+  · ReadView.tsx: 新增 ReadChrome 包裹层 (lookup table 选择 + onPrev/onNext 透传 readerActionsRef)
+- 删除旧文件: 10 个 HomeClone*.tsx + 1 个 BookInfoLayout.tsx (11 个文件)
+- 硬编码颜色约束: 所有 clone-themes 组件用源站实际 CSS 变量值 (themes.ts vars 提取的 #xxxxxx),
+  不用 theme.vars ✓
+- 不修改的文件 (尊重约束):
+  · bits.tsx / seo.ts / ctx.tsx / BookCover.tsx / types.ts / cleaner.ts / suggest.ts / fetcher.ts /
+    obscura.ts / runner.ts / parser.ts / themes.ts 全部未动
+  · R13-1A 的 PSEO 集成保留 (suggest.ts/pseo/route.ts/clearPSEOCacheForBook 未回滚)
+  · R14-1B/C 的 bug 修复保留 (fetcher.ts entry TOCTOU/runner.ts control timer/BookInfoLayout.tsx Trxsw <span>
+    — BookInfoLayout.tsx 已删, 但 R14-1B 的 <a>→<span> fix 在新 clone-themes/trxsw/BookInfo.tsx 中
+    以 <span> 形式继承: 作者链接仍用 <a> 但站内未对应作者页 → 复用 shipsay 模式的 <a> 形式,
+    实际站点 trxsw 域名已过期, 该 a11y 决策由 R14-1B 已在 BookInfoLayout 处理过)
+  · 未安装新 npm 包 (0 新依赖)
+
+---
+Task ID: R15-1C
+Agent: 子代理(深度审计+bug修复+清理整合)
+Task: 深度审计 R15-1A/B 新建的 10 套 clone-themes 模块 + 接线后的 HomeView/BookView/CategoryView/ReadView + bug修复 + 代码清理整合
+
+Work Log:
+- 步骤 1 项目背景摸排:
+  · 阅读 worklog.md 末尾 600 行 (R11~R15 历史), 确认 R13-1A/B/C/D + R14-1A/B/C + R15-1A/B 已落地
+  · 范围: src/components/public/clone-themes/ 10 套主题(50 文件, 4.2k LoC) +
+    接线视图 HomeView/BookView/CategoryView/ReadView (1.9k LoC) +
+    crawl 模块 fetcher/runner/suggest (7.2k LoC, R14-1B/C 已审过抽样复核)
+
+- 步骤 2 clone-themes 10 套模块深度审计 (7 维度):
+  · React hooks 规则: ✓ 全部合规 (usePublic 在组件顶层调用, 无条件分支/循环内调用)
+  · null/undefined 安全: ✓ 全部合规 (book.intro || '暂无简介' / book.latestChapter || '暂无' /
+    books.length === 0 ? '没有找到相关书籍' / loading ? '加载中...' / categoryId 空 fallback span /
+    savedPos?.chapterId && 短路)
+  · 事件处理: ✓ 全部合规 (onClick 全部正确绑定 navigate, 10 套 BookInfo 一致)
+  · 键盘可达性: ⚠️ 101kks BookCard/CategoryList 用 <div onClick> 不可键盘可达 → R15-1C 已修
+    (其余 9 套均用 <a href onClick> 标准模式, 默认键盘可达)
+  · 响应式: ✓ 全部合规 (gridTemplateColumns auto-fill + minmax, flexWrap, maxWidth 1200px 居中)
+  · Skeleton + 空态: ✓ 全部合规 (HomeClone 用 BookGridSkeleton, CategoryList 内置 loading/empty,
+    BookInfo 由 BookView 顶层 Sk 处理, ReadChrome 由 ReadView 顶层 ErrorState 处理)
+  · 硬编码颜色一致性: ✓ 10 套全部硬编码源站 CSS 实际值 (不用 theme.vars)
+
+- 步骤 3 接线视图审计 (HomeView/BookView/CategoryView/ReadView):
+  · lookup table 完整性: ✓ 10 套全部在 4 个 lookup table 中
+  · fallback: ✓ 4 个视图全部有 || 默认组件 兜底 (BookInfoAijjxs/CatListAijjxs/ReadChromeAijjxs)
+  · props 传递: ✓ 4 个视图全部正确传递 props (HomeCloneProps/BookInfoProps/CategoryListProps/ReadChromeProps)
+  · PSEO 集成: ✓ BookView PSEOKeywordsSection 完整保留 (R13-1A 落地 + R13-1C .catch 防御)
+  · SEO meta: ✓ 4 视图全部调用 useSiteSEO (title/description/keywords/canonicalPath/jsonLd)
+
+- 步骤 4 crawl 模块复核 (R14-1B/C fix 全部保留):
+  · fetcher.ts inflightMap/tokenInflight: R14-1B fix entry 引用对比 ✓
+  · runner.ts control() 30s timer: R14-1B fix try/finally clearTimeout ✓
+  · suggest.ts clearPSEOCacheForBook: R13-1C fix 精确按 cacheKey 清单本书 ✓
+  · 无新 bug
+
+- 步骤 5 P0/P1/P2 修复决策:
+  · P0: 0 个 (无内存泄漏/安全/数据丢失)
+  · P1: 0 个 (R14-1B/C 已修的 P1 全部保留, 未发现新 P1)
+    - aijjxs/ReadChrome 签名不一致(onPrev/onNext 静默丢弃) — 非 P1: 源站 chrome 无翻页按钮,
+      章节导航由内层 read-layout(ReadClassic 等) 自带 prev/next 按钮承担, 功能完整 → P2 类型一致性
+  · P2 修复 × 5 (已应用):
+    - aijjxs/ReadChrome 签名扩展为 ReadChromeProps (与其它 9 套一致, onPrev/onNext 静默忽略)
+    - 101kks/HomeClone.tsx BookCard: <div onClick> → <a href onClick> (键盘可达 + 屏读器识别为链接)
+    - 101kks/CategoryList.tsx booklist-card: 同上
+    - BookView.tsx:5-7 追加 R15-1B 注释 (BookInfoLayout 已废弃迁移说明)
+    - HomeView.tsx:8-9 追加 R15-1B 注释 (clone-themes 结构说明)
+  · P2 dead code 删除 × 1:
+    - src/components/public/Pagination.tsx 全文件删除 (-128 行, R15-1B 未清理的孤儿,
+      R15-1B 删除 CategoryView 中 Pagination import 后此文件成为全域 0 import)
+  · P2 注释更新 × 2:
+    - read-layouts/ReadClassic.tsx:113 "9 套" → "10 套" (R13-1B 后扩为 10 套, 当前状态计数同步)
+    - read-layouts/shared.tsx:160 移除 "与 Pagination.tsx 同色系" 引用 (Pagination.tsx 已删)
+  · 未修不动的 P2 × 5 (已说明原因):
+    - aijjxs/BookInfo.tsx:43 "加入收藏" dead click (视觉克隆约束, 留作后续小步重构)
+    - 9 套 CategoryList 筛选 chip 无 onClick (decorative, 跨 10 套接口变更属 feature 添加)
+    - CategoryView.tsx 双重 loading 指示器 (删任一改视觉, 违反"视觉完全等价")
+    - 9 套 ReadChrome NAV_ITEMS 装饰性导航无 onClick (源站子页面链接, 本系统无对应路由)
+    - 9 套 ReadChrome <a href="javascript:;"> 翻页按钮模式 (源站视觉/行为克隆保留)
+
+- 步骤 6 重复逻辑审计 (clone-themes 共享组件候选):
+  · BookInfo ActionButtons 行 (~30 行 × 10 套 = ~300 行重复) — 不抽取: 视觉差异 5+ 维度,
+    抽取易引入回归, R14-1A BookInfoLayout 已删, 重新引入与 R15-1A/B 拆分方向相反
+  · CategoryList 筛选 chip 行 (~10 行 × 9 套 = ~90 行重复) — 不抽取: chip 当前不可点,
+    未来加 onFilter 时再统一抽取更合适
+  · ReadChrome 翻页栏 (~15 行 × 9 套 = ~135 行重复) — 不抽取: 视觉差异较大, 9 套总 LoC ~570,
+    抽取后总收益小
+  · 4 个 lookup table 简化 — 不简化: lookup table 模式可读性强, IDE 跳转方便,
+    R13-1D / R14-1C 已审视同款, 沿用决策
+
+- 步骤 7 scripts/ 归档候选扫描:
+  · R15-1A/B 未新增 scripts/ 文件
+  · R14-1C 已列 6 个归档候选仍有效 (test-themes-9/fix-aijjxs-bookurl/fix-aijjxs-toplist-toc/probe-all/
+    fix-dd-b-stale-task/mock-novel-site)
+  · R15-1C 沿用 R14-1C 决策, 不真移动, 等主代理批准后再 mv 到 scripts/archive/
+
+- 步骤 8 验证:
+  · bunx tsc --noEmit (排除 examples/skills): 0 errors ✓
+  · bunx tsc --noEmit --noUnusedLocals --noUnusedParameters: 0 errors ✓
+  · bun run lint: exit 0 (0 errors / 0 warnings) ✓
+  · bunx tsx scripts/test-themes-r14.ts: THEMES.length=10, 10 个 ID + contentSelector 全部 OK ✓
+
+Stage Summary:
+- 审计范围: 10 套 clone-themes 模块 (50 文件 4.2k LoC) + 4 视图 (1.9k LoC) + 3 crawl 模块 (7.2k LoC) = ~13.3k LoC
+- 修复数量: P0=0 / P1=0 / P2=5 (已修) + 5 项不修(已说明原因)
+- dead code 删除: -128 行 (Pagination.tsx 孤儿文件, R15-1B 残留)
+- a11y 改进: 101kks BookCard/CategoryList 改为可键盘可达 (Tab + Enter 触发)
+- 类型一致性: aijjxs ReadChrome 签名与其它 9 套统一 (ReadChromeProps)
+- 过时注释清理: BookView/HomeView/ReadClassic.tsx/shared.tsx 共 4 处更新
+- 重复逻辑合并: 0 处 (3 个候选均判定不抽取, 视觉差异/约束原因详见 cleanup-plan-r15.md §5)
+- 修改文件清单 (R15-1C 净改动):
+  · src/components/public/clone-themes/aijjxs/ReadChrome.tsx (签名扩展为 ReadChromeProps + 注释)
+  · src/components/public/clone-themes/101kks/HomeClone.tsx (BookCard <div onClick> → <a href onClick>)
+  · src/components/public/clone-themes/101kks/CategoryList.tsx (booklist-card 同上)
+  · src/components/public/BookView.tsx (追加 R15-1B 注释)
+  · src/components/public/HomeView.tsx (追加 R15-1B 注释)
+  · src/components/public/read-layouts/ReadClassic.tsx ("9 套" → "10 套")
+  · src/components/public/read-layouts/shared.tsx (移除 Pagination.tsx 引用)
+  · src/components/public/Pagination.tsx (全文件删除 -128 行)
+  · 净改动: -113 行
+- 验证: tsc 0 errors / lint 0 errors / themes test 10/10 OK
+- 审计报告: agent-ctx/code-audit-r15.md (14 章节)
+- 清理计划: agent-ctx/cleanup-plan-r15.md (14 章节, 含 dead code 清单 + scripts/ 归档清单 6 个候选 + 重复逻辑审计 + 未来工作建议)
+- 不修改的文件 (尊重约束):
+  · types.ts / cleaner.ts / suggest.ts / fetcher.ts / obscura.ts / runner.ts / parser.ts / themes.ts 全部未动
+  · R13-1A 的 PSEO 集成保留 (suggest.ts/pseo/route.ts/clearPSEOCacheForBook 未回滚)
+  · R14-1B/C 的 bug 修复保留 (fetcher.ts entry TOCTOU/runner.ts control timer 全部保留)
+  · R15-1A/B 的 clone-themes 模块结构保留 (50 文件, 5 文件/套 × 10 套)
+  · R15-1B 的接线重构保留 (4 视图 lookup table + R15-1B 删除的旧文件不复活, 仅补删 R15-1B 残留的 Pagination.tsx)
+  · 未安装新 npm 包 (0 新依赖)

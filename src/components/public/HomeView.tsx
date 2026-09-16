@@ -6,6 +6,7 @@
 // R12-1: 删除 clone-trxsw, 重写 9 套 preset 基于真实抓取的 CSS 变量
 // R13-1B: 重新克隆 10 个站点主题 (含 trxsw): 恢复 clone-trxsw 基于 AiraBrowser 反查 DOM
 // R14-1A: 全量重克隆 10 个站点主题含子页面 DOM; 10 个 HomeClone*.tsx + 10 套 BookInfoLayout
+// R15-1B: 拆为 10 套 clone-themes/<site>/{HomeClone,BookInfo,CategoryList,ReadChrome,index.ts}, 删除 BookInfoLayout.tsx + 旧 10 个 HomeClone*.tsx
 // ============================================================
 'use client'
 
@@ -20,16 +21,17 @@ import { EmptyState, ErrorState, SuggestTagCloud, TagCloud, BookGridSkeleton } f
 import { CategoryShowcase } from './CategoryShowcase'
 // R10-1A: 10 个精仿真实小说站点首页布局, 懒加载分包 (R13-1B 含 clone-trxsw)
 // R13-1B: 第 10 个 clone-trxsw 天人小说 (AiraBrowser 反查 DOM)
-const HomeCloneAijjxs = dynamic(() => import('./layouts/HomeCloneAijjxs').then((m) => m.HomeCloneAijjxs))
-const HomeCloneDdyueshu = dynamic(() => import('./layouts/HomeCloneDdyueshu').then((m) => m.HomeCloneDdyueshu))
-const HomeClonePilishuwu = dynamic(() => import('./layouts/HomeClonePilishuwu').then((m) => m.HomeClonePilishuwu))
-const HomeClone23qb = dynamic(() => import('./layouts/HomeClone23qb').then((m) => m.HomeClone23qb))
-const HomeClone101kks = dynamic(() => import('./layouts/HomeClone101kks').then((m) => m.HomeClone101kks))
-const HomeCloneHuangjinwu = dynamic(() => import('./layouts/HomeCloneHuangjinwu').then((m) => m.HomeCloneHuangjinwu))
-const HomeCloneGgd66 = dynamic(() => import('./layouts/HomeCloneGgd66').then((m) => m.HomeCloneGgd66))
-const HomeCloneShipsay = dynamic(() => import('./layouts/HomeCloneShipsay').then((m) => m.HomeCloneShipsay))
-const HomeCloneX2552 = dynamic(() => import('./layouts/HomeCloneX2552').then((m) => m.HomeCloneX2552))
-const HomeCloneTrxsw = dynamic(() => import('./layouts/HomeCloneTrxsw').then((m) => m.HomeCloneTrxsw))
+// R15-1B: 改为从 clone-themes/<site> 导入 (硬编码颜色, 不用 theme.vars)
+const HomeCloneAijjxs = dynamic(() => import('./clone-themes/aijjxs').then((m) => m.HomeClone))
+const HomeCloneDdyueshu = dynamic(() => import('./clone-themes/ddyueshu').then((m) => m.HomeClone))
+const HomeClonePilishuwu = dynamic(() => import('./clone-themes/pilishuwu').then((m) => m.HomeClone))
+const HomeClone23qb = dynamic(() => import('./clone-themes/23qb').then((m) => m.HomeClone))
+const HomeClone101kks = dynamic(() => import('./clone-themes/101kks').then((m) => m.HomeClone))
+const HomeCloneHuangjinwu = dynamic(() => import('./clone-themes/huangjinwu').then((m) => m.HomeClone))
+const HomeCloneGgd66 = dynamic(() => import('./clone-themes/ggd66').then((m) => m.HomeClone))
+const HomeCloneShipsay = dynamic(() => import('./clone-themes/shipsay').then((m) => m.HomeClone))
+const HomeCloneX2552 = dynamic(() => import('./clone-themes/x2552').then((m) => m.HomeClone))
+const HomeCloneTrxsw = dynamic(() => import('./clone-themes/trxsw').then((m) => m.HomeClone))
 import type { BookItem } from './types'
 
 interface FetchState {

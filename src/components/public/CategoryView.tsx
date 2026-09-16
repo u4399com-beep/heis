@@ -10,8 +10,17 @@ import { usePublic } from './ctx'
 import { useSiteSEO } from './seo'
 import { generateTitle, generateMetaDescription, generateKeywords } from './auto-tdk'
 import { ErrorState, Sk } from './bits'
-import { Pagination } from './Pagination'
-import { ThemeBookList } from './BookCard'
+// R15-1B: 改为按 theme.layout 动态选择 clone-themes 的 CategoryList 组件 (硬编码颜色, 不用 theme.vars)
+import { CategoryList as CatListAijjxs } from './clone-themes/aijjxs'
+import { CategoryList as CatListDdyueshu } from './clone-themes/ddyueshu'
+import { CategoryList as CatListPilishuwu } from './clone-themes/pilishuwu'
+import { CategoryList as CatList23qb } from './clone-themes/23qb'
+import { CategoryList as CatList101kks } from './clone-themes/101kks'
+import { CategoryList as CatListHuangjinwu } from './clone-themes/huangjinwu'
+import { CategoryList as CatListGgd66 } from './clone-themes/ggd66'
+import { CategoryList as CatListShipsay } from './clone-themes/shipsay'
+import { CategoryList as CatListX2552 } from './clone-themes/x2552'
+import { CategoryList as CatListTrxsw } from './clone-themes/trxsw'
 
 export function CategoryView({ cat, page }: { cat?: string; page: number }) {
   const { site, theme, navigate } = usePublic()
@@ -105,16 +114,31 @@ export function CategoryView({ cat, page }: { cat?: string; page: number }) {
         <ErrorState message="分类列表加载失败" detail={error} />
       ) : (
         <>
-          <ThemeBookList books={data?.books || []} loading={loading} />
-          {!loading && data && (
-            <Pagination
-              page={data.page}
-              total={data.total}
-              size={data.size}
-              onPage={(p) => navigate({ view: 'category', cat, page: p })}
-              center
-            />
-          )}
+          {/* R15-1B: 按 theme.layout 选择 clone-themes/<site>/CategoryList 渲染 (硬编码颜色) */}
+          {(() => {
+            const CatListComponent = {
+              'clone-aijjxs': CatListAijjxs,
+              'clone-ddyueshu': CatListDdyueshu,
+              'clone-pilishuwu': CatListPilishuwu,
+              'clone-23qb': CatList23qb,
+              'clone-101kks': CatList101kks,
+              'clone-huangjinwu': CatListHuangjinwu,
+              'clone-ggd66': CatListGgd66,
+              'clone-shipsay': CatListShipsay,
+              'clone-x2552': CatListX2552,
+              'clone-trxsw': CatListTrxsw,
+            }[theme.layout] || CatListAijjxs
+            return (
+              <CatListComponent
+                books={data?.books || []}
+                loading={loading}
+                label={label}
+                page={data?.page ?? page}
+                total={data?.total ?? 0}
+                onPage={(p) => navigate({ view: 'category', cat, page: p })}
+              />
+            )
+          })()}
           {loading && <Sk className="mx-auto mt-4 h-9 w-64" />}
         </>
       )}

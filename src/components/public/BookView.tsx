@@ -4,6 +4,7 @@
 //        clone-* 9 套主题统一走默认渲染分支 + 通用 EpisodeListSkeleton
 // R14-1A: 信息区 DOM 按 theme.layout 区分 10 套精仿结构 (BookInfoLayout 组件)
 //         章节正文 contentSelector 由 theme 透传给 ReadView (复刻原站 DOM)
+// R15-1B: BookInfoLayout 已废弃, 改为按 theme.layout 直接 lookup clone-themes/<site>/BookInfo 渲染
 // ============================================================
 'use client'
 
@@ -17,7 +18,17 @@ import { usePublic } from './ctx'
 import { coverSrc, formatWords, useSiteSEO, withAlpha } from './seo'
 import { generateTitle, generateMetaDescription, generateKeywords } from './auto-tdk'
 import { BookCover } from './BookCover'
-import { BookInfoLayout } from './BookInfoLayout'
+// R15-1B: 改为按 theme.layout 动态选择 clone-themes 的 BookInfo 组件 (硬编码颜色, 不用 theme.vars)
+import { BookInfo as BookInfoAijjxs } from './clone-themes/aijjxs'
+import { BookInfo as BookInfoDdyueshu } from './clone-themes/ddyueshu'
+import { BookInfo as BookInfoPilishuwu } from './clone-themes/pilishuwu'
+import { BookInfo as BookInfo23qb } from './clone-themes/23qb'
+import { BookInfo as BookInfo101kks } from './clone-themes/101kks'
+import { BookInfo as BookInfoHuangjinwu } from './clone-themes/huangjinwu'
+import { BookInfo as BookInfoGgd66 } from './clone-themes/ggd66'
+import { BookInfo as BookInfoShipsay } from './clone-themes/shipsay'
+import { BookInfo as BookInfoX2552 } from './clone-themes/x2552'
+import { BookInfo as BookInfoTrxsw } from './clone-themes/trxsw'
 import { EmptyState, ErrorState, SecTitle, Sk, TagCloud, ChapterListSkeleton } from './bits'
 import type { BookItem, BookTagHit, TocChapter } from './types'
 import { getReadPos } from './read-layouts/reading-memory'
@@ -621,9 +632,22 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
   }
 
   /* ---------- 信息区封面尺寸/面板（按主题差异化） ---------- */
-  // R14-1A: 信息区 DOM 由 BookInfoLayout 按 theme.layout 区分 10 套精仿结构渲染,
-  //         不再用通用单层 panelStyle + coverW 内联布局 (旧 9 套 clone-* 统一渲染分支已废弃)
+  // R15-1B: 信息区 DOM 由 clone-themes/<site>/BookInfo 按 theme.layout 选择对应组件渲染,
+  //         不再用 BookInfoLayout 中转 (旧 9 套 clone-* 统一渲染分支已废弃)
   const coverW = 'w-32 sm:w-40'
+
+  const BookInfoComponent = {
+    'clone-aijjxs': BookInfoAijjxs,
+    'clone-ddyueshu': BookInfoDdyueshu,
+    'clone-pilishuwu': BookInfoPilishuwu,
+    'clone-23qb': BookInfo23qb,
+    'clone-101kks': BookInfo101kks,
+    'clone-huangjinwu': BookInfoHuangjinwu,
+    'clone-ggd66': BookInfoGgd66,
+    'clone-shipsay': BookInfoShipsay,
+    'clone-x2552': BookInfoX2552,
+    'clone-trxsw': BookInfoTrxsw,
+  }[theme.layout] || BookInfoAijjxs
 
   return (
     <div className="mx-auto w-full max-w-5xl px-4 py-6 sm:px-6 sm:py-8">
@@ -641,8 +665,8 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
         </div>
       ) : (
         <>
-          {/* R14-1A: 信息区按 theme.layout 区分 10 套 DOM (article.panel / #info / .detail 等) */}
-          <BookInfoLayout
+          {/* R15-1B: 信息区按 theme.layout 区分 10 套 DOM (clone-themes/<site>/BookInfo) */}
+          <BookInfoComponent
             book={book}
             theme={theme}
             savedPos={savedPos}
