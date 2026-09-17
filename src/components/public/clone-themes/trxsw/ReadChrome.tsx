@@ -1,18 +1,6 @@
 'use client'
 import type { ReadChromeProps } from '../shared'
-const C = {
-  "id": "trxsw",
-  "bg": "#f5f7fa",
-  "surface": "#fff",
-  "text": "#333",
-  "muted": "#888",
-  "primary": "#2c7be5",
-  "accent": "#1a5fb4",
-  "border": "#e0e6ed",
-  "radius": "4px",
-  "font": "\"Microsoft YaHei\",Arial,sans-serif",
-  "maxW": 1200
-}
+const C = {"id":"trxsw","bg":"#f5f7fa","surface":"#fff","text":"#333","muted":"#888","primary":"#2c7be5","accent":"#1a5fb4","border":"#e0e6ed","radius":"4px","font":"\"Microsoft YaHei\",Arial,sans-serif","maxW":1200}
 export function ReadChrome({ children, chapterTitle, onPrev, onNext }: ReadChromeProps) {
   return (
     <div style={{ maxWidth: 800, margin: '0 auto', padding: 20, fontFamily: C.font, color: C.text }}>

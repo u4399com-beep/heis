@@ -2,19 +2,7 @@
 import type { RankingViewProps } from '../shared'
 import { usePublic } from '../../ctx'
 import { bookNavProps } from '../../bits'
-const C = {
-  "id": "ggd66",
-  "bg": "#f9f9f9",
-  "surface": "#fff",
-  "text": "#888",
-  "muted": "#aaa",
-  "primary": "#00886d",
-  "accent": "#56ccb5",
-  "border": "#eee",
-  "radius": "4px",
-  "font": "\"微软雅黑\",Microsoft Yahei,sans-serif",
-  "maxW": 1200
-}
+const C = {"id":"ggd66","bg":"#f9f9f9","surface":"#fff","text":"#888","muted":"#aaa","primary":"#00886d","accent":"#56ccb5","border":"#eee","radius":"4px","font":"\"微软雅黑\",Microsoft Yahei,sans-serif","maxW":1200}
 export function RankingView({ books, loading, tab, onTabChange, page, total, size, onPage }: RankingViewProps) {
   const { navigate } = usePublic()
   const TABS = [{id:'allvisit',name:'总点击'},{id:'allvote',name:'总推荐'},{id:'size',name:'字数榜'},{id:'lastupdate',name:'最近更新'}]

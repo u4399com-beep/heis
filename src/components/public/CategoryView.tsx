@@ -24,18 +24,41 @@ import { CategoryList as CatListShipsay } from './clone-themes/shipsay'
 import { CategoryList as CatListX2552 } from './clone-themes/x2552'
 import { CategoryList as CatListTrxsw } from './clone-themes/trxsw'
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const CatListLookup: Record<string, any> = {
-  'clone-aijjxs': CatListAijjxs,
-  'clone-ddyueshu': CatListDdyueshu,
-  'clone-pilishuwu': CatListPilishuwu,
-  'clone-23qb': CatList23qb,
-  'clone-101kks': CatList101kks,
-  'clone-huangjinwu': CatListHuangjinwu,
-  'clone-ggd66': CatListGgd66,
-  'clone-shipsay': CatListShipsay,
-  'clone-x2552': CatListX2552,
-  'clone-trxsw': CatListTrxsw,
+  'clone-aijjxs': CatListAijjxs, 'clone-ddyueshu': CatListDdyueshu,
+  'clone-pilishuwu': CatListPilishuwu, 'clone-23qb': CatList23qb,
+  'clone-101kks': CatList101kks, 'clone-huangjinwu': CatListHuangjinwu,
+  'clone-ggd66': CatListGgd66, 'clone-shipsay': CatListShipsay,
+  'clone-x2552': CatListX2552, 'clone-trxsw': CatListTrxsw,
 }
+
+const CatListComponent = ({ books, loading, label, page, total, size, onPage }: any) => {
+    const { theme, navigate } = usePublic()
+    const v = theme.vars
+    if (loading) return <div style={{ padding: 40, textAlign: 'center', color: v.textMuted }}>加载中...</div>
+    if (!books.length) return <div style={{ padding: 40, textAlign: 'center', color: v.textMuted }}>暂无书籍</div>
+    return (
+      <div style={{ maxWidth: 1200, margin: '0 auto', padding: 20 }}>
+        <h1 style={{ fontSize: 20, fontWeight: 700, color: v.text, marginBottom: 16 }}>{label}</h1>
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+          {books.map((b: any) => (
+            <div key={b.id} onClick={() => navigate({ view: 'book', bookId: b.id })} style={{ background: v.surface, border: '1px solid ' + v.border, borderRadius: v.radius, padding: 12, cursor: 'pointer' }}>
+              <h3 style={{ fontSize: 14, fontWeight: 600, color: v.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.name}</h3>
+              <p style={{ fontSize: 12, color: v.textMuted }}>{b.author}</p>
+            </div>
+          ))}
+        </div>
+        {total > size && (
+          <div style={{ display: 'flex', justifyContent: 'center', gap: 8, marginTop: 16 }}>
+            {page > 1 && <button onClick={() => onPage(page - 1)} style={{ padding: '6px 16px', border: '1px solid ' + v.border, borderRadius: v.radius, background: v.surface, color: v.text, cursor: 'pointer' }}>上一页</button>}
+            <span style={{ padding: '6px 12px', color: v.textMuted }}>第 {page} 页</span>
+            {page * size < total && <button onClick={() => onPage(page + 1)} style={{ padding: '6px 16px', border: '1px solid ' + v.border, borderRadius: v.radius, background: v.surface, color: v.text, cursor: 'pointer' }}>下一页</button>}
+          </div>
+        )}
+      </div>
+    )
+  }
 
 export function CategoryView({ cat, page }: { cat?: string; page: number }) {
   const { site, theme, navigate } = usePublic()
@@ -130,9 +153,8 @@ export function CategoryView({ cat, page }: { cat?: string; page: number }) {
         <>
           {/* R20-1A: 接 CatListComponent (lookup table 在文件顶部定义, fallback aijjxs) */}
           {(() => {
-            const CatListComp = CatListLookup[theme.layout] || CatListAijjxs
-            return (
-              <CatListComp
+                        return (
+              <CatListComponent
                 books={data?.books || []}
                 loading={loading}
                 label={label}

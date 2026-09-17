@@ -2,19 +2,7 @@
 import type { KeywordViewProps } from '../shared'
 import { usePublic } from '../../ctx'
 import { bookNavProps } from '../../bits'
-const C = {
-  "id": "aijjxs",
-  "bg": "#f3efe7",
-  "surface": "#fffdf8",
-  "text": "#1f2937",
-  "muted": "#6b7280",
-  "primary": "#0f766e",
-  "accent": "#b45309",
-  "border": "#e5dccd",
-  "radius": "14px",
-  "font": "\"PingFang SC\",\"Microsoft YaHei\",sans-serif",
-  "maxW": 1220
-}
+const C = {"id":"aijjxs","bg":"#f3efe7","surface":"#fffdf8","text":"#1f2937","muted":"#6b7280","primary":"#0f766e","accent":"#b45309","border":"#e5dccd","radius":"14px","font":"\"PingFang SC\",\"Microsoft YaHei\",sans-serif","maxW":1220}
 export function KeywordView({ tag, books, loading }: KeywordViewProps) {
   const { navigate } = usePublic()
   return (
@@ -22,7 +10,7 @@ export function KeywordView({ tag, books, loading }: KeywordViewProps) {
       <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 16 }}>"{tag}" 相关小说</h1>
       {loading ? <div style={{ padding: 40, textAlign: 'center', color: C.muted }}>加载中...</div> : !books.length ? <div style={{ padding: 40, textAlign: 'center', color: C.muted }}>暂无相关书籍</div> : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 8 }}>
-          {books.map((b) => (
+          {books.map(b => (
             <div key={b.id} {...bookNavProps(navigate, b.id)} style={{ padding: 8, background: C.surface, border: '1px solid ' + C.border, borderRadius: C.radius, cursor: 'pointer' }}>
               <span style={{ fontSize: 14, fontWeight: 500, color: C.primary }}>{b.name}</span>
               <span style={{ fontSize: 12, color: C.muted, marginLeft: 8 }}>{b.author}</span>

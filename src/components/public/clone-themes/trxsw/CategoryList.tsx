@@ -2,19 +2,7 @@
 import type { CategoryListProps } from '../shared'
 import { usePublic } from '../../ctx'
 import { bookNavProps } from '../../bits'
-const C = {
-  "id": "trxsw",
-  "bg": "#f5f7fa",
-  "surface": "#fff",
-  "text": "#333",
-  "muted": "#888",
-  "primary": "#2c7be5",
-  "accent": "#1a5fb4",
-  "border": "#e0e6ed",
-  "radius": "4px",
-  "font": "\"Microsoft YaHei\",Arial,sans-serif",
-  "maxW": 1200
-}
+const C = {"id":"trxsw","bg":"#f5f7fa","surface":"#fff","text":"#333","muted":"#888","primary":"#2c7be5","accent":"#1a5fb4","border":"#e0e6ed","radius":"4px","font":"\"Microsoft YaHei\",Arial,sans-serif","maxW":1200}
 export function CategoryList({ books, loading, label, page, total, size = 24, onPage }: CategoryListProps) {
   const { navigate } = usePublic()
   if (loading) return <div style={{ padding: 40, textAlign: 'center', color: C.muted, fontFamily: C.font }}>加载中...</div>
@@ -23,7 +11,7 @@ export function CategoryList({ books, loading, label, page, total, size = 24, on
     <div style={{ maxWidth: C.maxW, margin: '0 auto', padding: 20, fontFamily: C.font, color: C.text }}>
       <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 16 }}>{label}</h1>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 8 }}>
-        {books.map((b) => (
+        {books.map(b => (
           <div key={b.id} {...bookNavProps(navigate, b.id)} style={{ padding: 8, background: C.surface, border: '1px solid ' + C.border, borderRadius: C.radius, cursor: 'pointer' }}>
             <span style={{ fontSize: 14, fontWeight: 500, color: C.primary }}>{b.name}</span>
             <span style={{ fontSize: 12, color: C.muted, marginLeft: 8 }}>{b.author}</span>

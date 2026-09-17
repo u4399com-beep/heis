@@ -4,19 +4,7 @@ import { usePublic } from '../../ctx'
 import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
 import { formatWords } from '../../seo'
-const C = {
-  "id": "aijjxs",
-  "bg": "#f3efe7",
-  "surface": "#fffdf8",
-  "text": "#1f2937",
-  "muted": "#6b7280",
-  "primary": "#0f766e",
-  "accent": "#b45309",
-  "border": "#e5dccd",
-  "radius": "14px",
-  "font": "\"PingFang SC\",\"Microsoft YaHei\",sans-serif",
-  "maxW": 1220
-}
+const C = {"id":"aijjxs","bg":"#f3efe7","surface":"#fffdf8","text":"#1f2937","muted":"#6b7280","primary":"#0f766e","accent":"#b45309","border":"#e5dccd","radius":"14px","font":"\"PingFang SC\",\"Microsoft YaHei\",sans-serif","maxW":1220}
 export function FulltextView({ books, loading, page, total, size, onPage }: FulltextViewProps) {
   const { navigate } = usePublic()
   if (loading) return <div style={{ padding: 40, textAlign: 'center', color: C.muted, fontFamily: C.font }}>加载中...</div>
@@ -24,7 +12,7 @@ export function FulltextView({ books, loading, page, total, size, onPage }: Full
     <div style={{ maxWidth: C.maxW, margin: '0 auto', padding: 20, fontFamily: C.font, color: C.text }}>
       <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 16 }}>全本完本小说</h1>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 12 }}>
-        {books.map((b) => (
+        {books.map(b => (
           <div key={b.id} {...bookNavProps(navigate, b.id)} style={{ cursor: 'pointer', background: C.surface, border: '1px solid ' + C.border, borderRadius: C.radius, overflow: 'hidden' }}>
             <BookCover name={b.name} cover={b.cover} className="aspect-[3/4] w-full" />
             <div style={{ padding: 8 }}>

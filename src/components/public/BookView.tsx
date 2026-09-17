@@ -393,29 +393,26 @@ interface FetchState {
 }
 
 
-import { BookInfo as BookInfoAijjxs } from './clone-themes/aijjxs'
-import { BookInfo as BookInfoDdyueshu } from './clone-themes/ddyueshu'
-import { BookInfo as BookInfoPilishuwu } from './clone-themes/pilishuwu'
-import { BookInfo as BookInfo23qb } from './clone-themes/23qb'
-import { BookInfo as BookInfo101kks } from './clone-themes/101kks'
-import { BookInfo as BookInfoHuangjinwu } from './clone-themes/huangjinwu'
-import { BookInfo as BookInfoGgd66 } from './clone-themes/ggd66'
-import { BookInfo as BookInfoShipsay } from './clone-themes/shipsay'
-import { BookInfo as BookInfoX2552 } from './clone-themes/x2552'
-import { BookInfo as BookInfoTrxsw } from './clone-themes/trxsw'
 
-const BookInfoLookup: Record<string, any> = {
-  'clone-aijjxs': BookInfoAijjxs,
-  'clone-ddyueshu': BookInfoDdyueshu,
-  'clone-pilishuwu': BookInfoPilishuwu,
-  'clone-23qb': BookInfo23qb,
-  'clone-101kks': BookInfo101kks,
-  'clone-huangjinwu': BookInfoHuangjinwu,
-  'clone-ggd66': BookInfoGgd66,
-  'clone-shipsay': BookInfoShipsay,
-  'clone-x2552': BookInfoX2552,
-  'clone-trxsw': BookInfoTrxsw,
-}
+const BookInfoComponent = ({ book, theme, onScrollToc }: any) => {
+    const v = theme.vars
+    if (!book) return null
+    return (
+      <div style={{ maxWidth: 1200, margin: '0 auto', padding: 20 }}>
+        <div style={{ display: 'flex', gap: 20, background: v.surface, border: '1px solid ' + v.border, borderRadius: v.radius, padding: 24 }}>
+          <div style={{ width: 120, height: 160, flexShrink: 0, overflow: 'hidden', borderRadius: v.radius, border: '1px solid ' + v.border }}>
+            {book.cover && <img src={book.cover} alt={book.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
+          </div>
+          <div style={{ flex: 1 }}>
+            <h1 style={{ fontSize: 22, fontWeight: 700, color: v.text, marginBottom: 8 }}>{book.name}</h1>
+            <p style={{ color: v.textMuted, fontSize: 14, lineHeight: 2 }}>作者: {book.author} | 分类: {book.category} | 字数: {(book.wordCount/10000).toFixed(1)}万字</p>
+            <p style={{ color: v.textMuted, fontSize: 13, lineHeight: 1.8, marginTop: 8 }}>{book.intro}</p>
+            <button onClick={onScrollToc} style={{ marginTop: 12, padding: '6px 16px', background: v.primary, color: v.primaryText, border: 'none', borderRadius: v.radius, cursor: 'pointer' }}>开始阅读</button>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
 export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number }) {
   const { site, theme, navigate } = usePublic()
@@ -674,9 +671,8 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
         <>
           {/* R20-1A: 接 BookInfoComponent (lookup table 在文件顶部定义, fallback aijjxs) */}
           {(() => {
-            const BookInfoComp = BookInfoLookup[theme.layout] || BookInfoAijjxs
-            return (
-              <BookInfoComp
+                        return (
+              <BookInfoComponent
                 book={book}
                 theme={theme}
                 savedPos={savedPos}

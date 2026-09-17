@@ -1,19 +1,7 @@
 'use client'
 import type { BookInfoProps } from '../shared'
 import { BookCover } from '../../BookCover'
-const C = {
-  "id": "pilishuwu",
-  "bg": "#fdf6ec",
-  "surface": "#fff",
-  "text": "#666",
-  "muted": "#999",
-  "primary": "#fd8929",
-  "accent": "#ec5245",
-  "border": "#eee",
-  "radius": "2px",
-  "font": "\"Microsoft YaHei\",sans-serif",
-  "maxW": 1200
-}
+const C = {"id":"pilishuwu","bg":"#fdf6ec","surface":"#fff","text":"#666","muted":"#999","primary":"#fd8929","accent":"#ec5245","border":"#eee","radius":"2px","font":"\"Microsoft YaHei\",sans-serif","maxW":1200}
 export function BookInfo({ book, onScrollToc }: BookInfoProps) {
   if (!book) return null
   return (

@@ -4,19 +4,7 @@ import { usePublic } from '../../ctx'
 import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
 import { formatWords } from '../../seo'
-const C = {
-  "id": "ddyueshu",
-  "bg": "#E9FAFF",
-  "surface": "#fff",
-  "text": "#555",
-  "muted": "#999",
-  "primary": "#6F78A7",
-  "accent": "#88C6E5",
-  "border": "#ddd",
-  "radius": "2px",
-  "font": "宋体",
-  "maxW": 1200
-}
+const C = {"id":"ddyueshu","bg":"#E9FAFF","surface":"#fff","text":"#555","muted":"#999","primary":"#6F78A7","accent":"#88C6E5","border":"#ddd","radius":"2px","font":"宋体","maxW":1200}
 export function FulltextView({ books, loading, page, total, size, onPage }: FulltextViewProps) {
   const { navigate } = usePublic()
   if (loading) return <div style={{ padding: 40, textAlign: 'center', color: C.muted, fontFamily: C.font }}>加载中...</div>
@@ -24,7 +12,7 @@ export function FulltextView({ books, loading, page, total, size, onPage }: Full
     <div style={{ maxWidth: C.maxW, margin: '0 auto', padding: 20, fontFamily: C.font, color: C.text }}>
       <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 16 }}>全本完本小说</h1>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 12 }}>
-        {books.map((b) => (
+        {books.map(b => (
           <div key={b.id} {...bookNavProps(navigate, b.id)} style={{ cursor: 'pointer', background: C.surface, border: '1px solid ' + C.border, borderRadius: C.radius, overflow: 'hidden' }}>
             <BookCover name={b.name} cover={b.cover} className="aspect-[3/4] w-full" />
             <div style={{ padding: 8 }}>

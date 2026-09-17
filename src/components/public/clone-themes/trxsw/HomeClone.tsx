@@ -4,22 +4,10 @@ import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
 import { formatWords } from '../../seo'
 import type { HomeCloneProps } from '../shared'
-const C = {
-  "id": "trxsw",
-  "bg": "#f5f7fa",
-  "surface": "#fff",
-  "text": "#333",
-  "muted": "#888",
-  "primary": "#2c7be5",
-  "accent": "#1a5fb4",
-  "border": "#e0e6ed",
-  "radius": "4px",
-  "font": "\"Microsoft YaHei\",Arial,sans-serif",
-  "maxW": 1200
-}
+const C = {"id":"trxsw","bg":"#f5f7fa","surface":"#fff","text":"#333","muted":"#888","primary":"#2c7be5","accent":"#1a5fb4","border":"#e0e6ed","radius":"4px","font":"\"Microsoft YaHei\",Arial,sans-serif","maxW":1200}
 export function HomeClone({ books, loading, homeModuleLimit = 20 }: HomeCloneProps) {
   const { site, navigate } = usePublic()
-  if (loading) return <div style={{ padding: 40, textAlign: 'center', color: C.muted }}>加载中...</div>
+  if (loading) return <div style={{ padding: 40, textAlign: 'center', color: C.muted, fontFamily: C.font }}>加载中...</div>
   if (!books.length) return null
   const list = books.slice(0, homeModuleLimit)
   return (
@@ -29,8 +17,8 @@ export function HomeClone({ books, loading, homeModuleLimit = 20 }: HomeClonePro
         <span style={{ fontSize: 13, color: C.muted }}>共 {books.length} 本</span>
       </header>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 12 }}>
-        {list.map((b) => (
-          <div key={b.id} {...bookNavProps(navigate, b.id)} style={{ cursor: 'pointer', background: C.surface, border: '1px solid ' + C.border, borderRadius: C.radius, overflow: 'hidden', transition: 'transform 0.2s' }}>
+        {list.map(b => (
+          <div key={b.id} {...bookNavProps(navigate, b.id)} style={{ cursor: 'pointer', background: C.surface, border: '1px solid ' + C.border, borderRadius: C.radius, overflow: 'hidden' }}>
             <BookCover name={b.name} cover={b.cover} className="aspect-[3/4] w-full" />
             <div style={{ padding: 8 }}>
               <h3 style={{ fontSize: 14, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: C.text }}>{b.name}</h3>

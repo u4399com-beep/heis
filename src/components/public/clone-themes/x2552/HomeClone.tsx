@@ -4,22 +4,10 @@ import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
 import { formatWords } from '../../seo'
 import type { HomeCloneProps } from '../shared'
-const C = {
-  "id": "x2552",
-  "bg": "#fafafa",
-  "surface": "#fff",
-  "text": "#666",
-  "muted": "#999",
-  "primary": "#2f468f",
-  "accent": "#ff6600",
-  "border": "#eee",
-  "radius": "3px",
-  "font": "\"Microsoft YaHei\",sans-serif",
-  "maxW": 1200
-}
+const C = {"id":"x2552","bg":"#fafafa","surface":"#fff","text":"#666","muted":"#999","primary":"#2f468f","accent":"#ff6600","border":"#eee","radius":"3px","font":"\"Microsoft YaHei\",sans-serif","maxW":1200}
 export function HomeClone({ books, loading, homeModuleLimit = 20 }: HomeCloneProps) {
   const { site, navigate } = usePublic()
-  if (loading) return <div style={{ padding: 40, textAlign: 'center', color: C.muted }}>加载中...</div>
+  if (loading) return <div style={{ padding: 40, textAlign: 'center', color: C.muted, fontFamily: C.font }}>加载中...</div>
   if (!books.length) return null
   const list = books.slice(0, homeModuleLimit)
   return (
@@ -29,8 +17,8 @@ export function HomeClone({ books, loading, homeModuleLimit = 20 }: HomeClonePro
         <span style={{ fontSize: 13, color: C.muted }}>共 {books.length} 本</span>
       </header>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 12 }}>
-        {list.map((b) => (
-          <div key={b.id} {...bookNavProps(navigate, b.id)} style={{ cursor: 'pointer', background: C.surface, border: '1px solid ' + C.border, borderRadius: C.radius, overflow: 'hidden', transition: 'transform 0.2s' }}>
+        {list.map(b => (
+          <div key={b.id} {...bookNavProps(navigate, b.id)} style={{ cursor: 'pointer', background: C.surface, border: '1px solid ' + C.border, borderRadius: C.radius, overflow: 'hidden' }}>
             <BookCover name={b.name} cover={b.cover} className="aspect-[3/4] w-full" />
             <div style={{ padding: 8 }}>
               <h3 style={{ fontSize: 14, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: C.text }}>{b.name}</h3>
