@@ -1,151 +1,32 @@
-// ============================================================
-// clone-themes/23qb/BookInfo.tsx — 铅笔小说 书籍详情页 (R19-1A)
-// 1:1 克隆源站配色 (硬编码 #xxxxxx, 不用 theme.vars)
-// DOM: 封面 + 信息键值表 + 简介面板 + 操作按钮
-// ============================================================
 'use client'
-
+import type { BookInfoProps } from '../shared'
 import { BookCover } from '../../BookCover'
-import { usePublic } from '../../ctx'
-import { StatusBadge } from '../../bits'
-import { formatWords } from '../../seo'
-import type { BookInfoProps } from './shared'
-
 const C = {
-  bg: "#f8f9f9",
-  surface: "#ffffff",
-  surfaceAlt: "#eaedf1",
-  text: "#282828",
-  textMuted: "#888888",
-  primary: "#ff2a14",
-  primaryText: "#ffffff",
-  accent: "#c01a0c",
-  border: "#eaedf1",
-  radius: "5px",
-  cardShadow: "0 7px 21px rgba(149,157,165,0.22)",
-  fontFamily: "-apple-system-font, BlinkMacSystemFont, \"Helvetica Neue\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei UI\", \"Microsoft YaHei\", Arial, sans-serif",
-  maxW: 1200,
+  "id": "23qb",
+  "bg": "#f8f9f9",
+  "surface": "#fff",
+  "text": "#282828",
+  "muted": "#888",
+  "primary": "#ff2a14",
+  "accent": "#c01a0c",
+  "border": "#eee",
+  "radius": "5px",
+  "font": "\"Microsoft YaHei\",sans-serif",
+  "maxW": 1200
 }
-
-export function BookInfo({ book, savedPos, firstChapterId, onScrollToc, onContinueRead, onGoCategory }: BookInfoProps) {
-  const { navigate } = usePublic()
-  const wordText = formatWords(book.wordCount)
-  const continueRead = () => {
-    if (onContinueRead) return onContinueRead()
-    if (savedPos && savedPos.chapterId) {
-      navigate({ view: 'read', bookId: book.id, chapterId: savedPos.chapterId })
-    } else if (firstChapterId) {
-      navigate({ view: 'read', bookId: book.id, chapterId: firstChapterId })
-    } else {
-      onScrollToc()
-    }
-  }
+export function BookInfo({ book, onScrollToc }: BookInfoProps) {
+  if (!book) return null
   return (
-    <div
-      style={{
-        background: C.bg,
-        fontFamily: C.fontFamily,
-        color: C.text,
-        padding: 16,
-      }}
-    >
-      <div style={{ maxWidth: C.maxW, margin: '0 auto' }}>
-        <div
-          style={{
-            display: 'flex',
-            gap: 20,
-            background: C.surface,
-            border: '1px solid ' + C.border,
-            borderRadius: C.radius,
-            boxShadow: C.cardShadow === 'none' ? undefined : C.cardShadow,
-            padding: 20,
-            flexWrap: 'wrap',
-          }}
-        >
-          <div style={{ width: 120, height: 160, flexShrink: 0, overflow: 'hidden', borderRadius: C.radius, border: '1px solid ' + C.border }}>
-            <BookCover name={book.name} cover={book.cover} className="aspect-[3/4] w-full" />
-          </div>
-          <div style={{ flex: 1, minWidth: 240 }}>
-            <h1 style={{ fontSize: 22, fontWeight: 700, color: C.text, margin: '0 0 12px' }}>{book.name}</h1>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, fontSize: 13, color: C.textMuted, marginBottom: 12 }}>
-              <span>作者: <a
-                href="#"
-                onClick={(e) => { e.preventDefault() }}
-                style={{ color: C.primary, textDecoration: 'none' }}
-              >{book.author}</a></span>
-              <span>分类: {book.categoryId ? (
-                <a
-                  href={'/?view=category&cat=' + encodeURIComponent(book.categoryId)}
-                  onClick={(e) => {
-                    if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return
-                    e.preventDefault()
-                    const cid = book.categoryId
-                    if (!cid) return
-                    if (onGoCategory) onGoCategory(cid)
-                    else navigate({ view: 'category', cat: cid })
-                  }}
-                  style={{ color: C.primary, textDecoration: 'none' }}
-                >{book.category}</a>
-              ) : book.category}</span>
-              <span>字数: {wordText}</span>
-              <StatusBadge status={book.status} />
-            </div>
-            <p style={{ fontSize: 13, lineHeight: 1.8, color: C.textMuted, margin: '0 0 12px' }}>
-              最新章节: {book.latestChapter || '暂无'}
-            </p>
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-              <button
-                type="button"
-                onClick={continueRead}
-                style={{
-                  padding: '8px 18px',
-                  background: C.primary,
-                  color: C.primaryText,
-                  border: 'none',
-                  borderRadius: C.radius,
-                  cursor: 'pointer',
-                  fontSize: 14,
-                  fontWeight: 700,
-                }}
-                aria-label="开始阅读"
-              >
-                {savedPos && savedPos.chapterId ? '继续阅读' : '开始阅读'}
-              </button>
-              <button
-                type="button"
-                onClick={onScrollToc}
-                style={{
-                  padding: '8px 18px',
-                  background: C.surfaceAlt,
-                  color: C.text,
-                  border: '1px solid ' + C.border,
-                  borderRadius: C.radius,
-                  cursor: 'pointer',
-                  fontSize: 14,
-                }}
-                aria-label="查看目录"
-              >
-                查看目录
-              </button>
-            </div>
-          </div>
+    <div style={{ maxWidth: C.maxW, margin: '0 auto', padding: 20, fontFamily: C.font, color: C.text }}>
+      <div style={{ display: 'flex', gap: 20, background: C.surface, border: '1px solid ' + C.border, borderRadius: C.radius, padding: 24 }}>
+        <div style={{ width: 120, height: 160, flexShrink: 0, overflow: 'hidden', borderRadius: C.radius, border: '1px solid ' + C.border }}>
+          <BookCover name={book.name} cover={book.cover} className="w-full h-full" />
         </div>
-        <div
-          style={{
-            marginTop: 14,
-            background: C.surface,
-            border: '1px solid ' + C.border,
-            borderRadius: C.radius,
-            boxShadow: C.cardShadow === 'none' ? undefined : C.cardShadow,
-            padding: 20,
-          }}
-        >
-          <h2 style={{ fontSize: 16, fontWeight: 700, color: C.text, margin: '0 0 10px', paddingBottom: 6, borderBottom: '1px solid ' + C.border }}>
-            内容简介
-          </h2>
-          <div style={{ fontSize: 14, lineHeight: 1.9, color: C.textMuted, whiteSpace: 'pre-wrap' }}>
-            {book.intro || '暂无简介'}
-          </div>
+        <div style={{ flex: 1 }}>
+          <h1 style={{ fontSize: 22, fontWeight: 700, color: C.text, marginBottom: 8 }}>{book.name}</h1>
+          <p style={{ color: C.muted, fontSize: 14, lineHeight: 2 }}>作者: {book.author} | 分类: {book.category} | 字数: {(book.wordCount / 10000).toFixed(1)}万字</p>
+          <p style={{ color: C.muted, fontSize: 13, lineHeight: 1.8, marginTop: 8 }}>{book.intro}</p>
+          <button onClick={onScrollToc} style={{ marginTop: 12, padding: '6px 16px', background: C.primary, color: '#fff', border: 'none', borderRadius: C.radius, cursor: 'pointer' }}>开始阅读</button>
         </div>
       </div>
     </div>

@@ -1,103 +1,35 @@
-// ============================================================
-// clone-themes/ddyueshu/SearchView.tsx — 得得小说 搜索结果页 (R19-1A)
-// 1:1 克隆源站配色 (硬编码 #xxxxxx, 不用 theme.vars)
-// DOM: 查询关键字标题 + 结果网格 (auto-fill minmax 响应式) + 空态
-// ============================================================
 'use client'
-
-import { BookCover } from '../../BookCover'
+import type { SearchViewProps } from '../shared'
 import { usePublic } from '../../ctx'
-import { BookGridSkeleton, EmptyState, StatusBadge } from '../../bits'
-import { formatWords } from '../../seo'
-import type { SearchViewProps } from './shared'
-
+import { bookNavProps } from '../../bits'
 const C = {
-  bg: "#E9FAFF",
-  surface: "#ffffff",
-  surfaceAlt: "#E1ECED",
-  text: "#555555",
-  textMuted: "#B3B3B3",
-  primary: "#6F78A7",
-  primaryText: "#ffffff",
-  accent: "#88C6E5",
-  border: "#A6D3E8",
-  radius: "2px",
-  cardShadow: "none",
-  fontFamily: "\"宋体\", \"SimSun\", \"Microsoft YaHei\", Arial, sans-serif",
-  maxW: 980,
+  "id": "ddyueshu",
+  "bg": "#E9FAFF",
+  "surface": "#fff",
+  "text": "#555",
+  "muted": "#999",
+  "primary": "#6F78A7",
+  "accent": "#88C6E5",
+  "border": "#ddd",
+  "radius": "2px",
+  "font": "宋体",
+  "maxW": 1200
 }
-
 export function SearchView({ q, books, loading }: SearchViewProps) {
   const { navigate } = usePublic()
   return (
-    <div style={{ background: C.bg, fontFamily: C.fontFamily, color: C.text, padding: 16 }}>
-      <div style={{ maxWidth: C.maxW, margin: '0 auto' }}>
-        <h1 style={{
-          fontSize: 20,
-          fontWeight: 700,
-          color: C.text,
-          margin: '0 0 16px',
-          paddingBottom: 8,
-          borderBottom: '2px solid ' + C.primary,
-        }}>
-          “{q}” 的搜索结果
-          {!loading && books && (
-            <span style={{ marginLeft: 8, fontSize: 12, fontWeight: 400, color: C.textMuted }}>
-              共 {books.length} 本
-            </span>
-          )}
-        </h1>
-        {loading ? (
-          <BookGridSkeleton count={12} />
-        ) : !books || !books.length ? (
-          <EmptyState text={'没有找到与“' + q + '”相关的书籍'} hint="试试更换关键词或浏览全部分类" />
-        ) : (
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))',
-              gap: 12,
-            }}
-          >
-            {books.map((b) => (
-              <a
-                key={b.id}
-                href={'/?view=book&id=' + b.id}
-                onClick={(e) => {
-                  if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return
-                  e.preventDefault()
-                  navigate({ view: 'book', bookId: b.id })
-                }}
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  background: C.surface,
-                  border: '1px solid ' + C.border,
-                  borderRadius: C.radius,
-                  boxShadow: C.cardShadow === 'none' ? undefined : C.cardShadow,
-                  overflow: 'hidden',
-                  textDecoration: 'none',
-                  color: 'inherit',
-                }}
-                aria-label={'查看《' + b.name + '》详情'}
-              >
-                <div style={{ position: 'relative' }}>
-                  <BookCover name={b.name} cover={b.cover} className="aspect-[3/4] w-full" />
-                  <span style={{ position: 'absolute', left: 6, top: 6 }}><StatusBadge status={b.status} small /></span>
-                </div>
-                <div style={{ padding: 8, display: 'flex', flexDirection: 'column', gap: 2 }}>
-                  <h3 style={{ fontSize: 14, fontWeight: 700, color: C.text, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.name}</h3>
-                  <p style={{ fontSize: 12, color: C.textMuted, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.author}</p>
-                  <p style={{ fontSize: 11, color: C.textMuted, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    <span style={{ marginRight: 4, padding: '0 4px', borderRadius: C.radius, background: C.surfaceAlt, color: C.primary }}>{b.category}</span>
-                    {formatWords(b.wordCount)}
-                  </p>
-                </div>
-              </a>
-            ))}
-          </div>
-        )}
-      </div>
+    <div style={{ maxWidth: C.maxW, margin: '0 auto', padding: 20, fontFamily: C.font, color: C.text }}>
+      <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 16 }}>搜索: {q}</h1>
+      {loading ? <div style={{ padding: 40, textAlign: 'center', color: C.muted }}>搜索中...</div> : !books.length ? <div style={{ padding: 40, textAlign: 'center', color: C.muted }}>未找到相关书籍</div> : (
+        <div style={{ display: 'grid', gap: 8 }}>
+          {books.map((b) => (
+            <div key={b.id} {...bookNavProps(navigate, b.id)} style={{ padding: 12, background: C.surface, border: '1px solid ' + C.border, borderRadius: C.radius, cursor: 'pointer' }}>
+              <span style={{ fontSize: 14, fontWeight: 600, color: C.primary }}>{b.name}</span>
+              <span style={{ fontSize: 12, color: C.muted, marginLeft: 8 }}>{b.author} · {b.category}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

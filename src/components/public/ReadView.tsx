@@ -14,7 +14,7 @@
 // ============================================================
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { createElement as React_createElement, useEffect, useMemo, useState } from 'react'
 import { Clock, HelpCircle, Keyboard } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { fetchChapter } from './data'
@@ -29,44 +29,13 @@ import { ReadImmersive } from './read-layouts/ReadImmersive'
 import { ReadPaginated } from './read-layouts/ReadPaginated'
 import { ReadPili } from './read-layouts/ReadPili'
 import { readerActionsRef, useReadingProgress, type ReadLayoutProps } from './read-layouts/shared'
-// R15-1B: 改为按 theme.layout 动态选择 clone-themes 的 ReadChrome 组件 (硬编码颜色, 不用 theme.vars)
-// R18-1A 修复: R17 重构误删 lookup table, 让 clone-themes/<site>/ReadChrome 沦为死代码;
-//             恢复 10 套 import + 按 theme.layout 分发, fallback 走 aijjxs (与 R15-1B 同口径)
-// R19-1B 接线: clone-themes 由 R19-1A 重建, 此处恢复 lookup table 引用
-import { ReadChrome as ReadChromeAijjxs } from './clone-themes/aijjxs'
-import { ReadChrome as ReadChromeDdyueshu } from './clone-themes/ddyueshu'
-import { ReadChrome as ReadChromePilishuwu } from './clone-themes/pilishuwu'
-import { ReadChrome as ReadChrome23qb } from './clone-themes/23qb'
-import { ReadChrome as ReadChrome101kks } from './clone-themes/101kks'
-import { ReadChrome as ReadChromeHuangjinwu } from './clone-themes/huangjinwu'
-import { ReadChrome as ReadChromeGgd66 } from './clone-themes/ggd66'
-import { ReadChrome as ReadChromeShipsay } from './clone-themes/shipsay'
-import { ReadChrome as ReadChromeX2552 } from './clone-themes/x2552'
-import { ReadChrome as ReadChromeTrxsw } from './clone-themes/trxsw'
-import type { ReadChromeProps } from './clone-themes/aijjxs/shared'
 
-// R19-1B: lookup table 必须定义在 render 函数外部 (eslint-react/no-render-defined-component)
-// 按 theme.layout 选择 clone-themes/<site>/ReadChrome 渲染外壳 (硬编码颜色, 不用 theme.vars)
-// fallback 走 aijjxs (与 R15-1B 同口径)
-const ReadChromeComponent: Record<string, React.ComponentType<ReadChromeProps>> = {
-  'clone-aijjxs': ReadChromeAijjxs,
-  'clone-ddyueshu': ReadChromeDdyueshu,
-  'clone-pilishuwu': ReadChromePilishuwu,
-  'clone-23qb': ReadChrome23qb,
-  'clone-101kks': ReadChrome101kks,
-  'clone-huangjinwu': ReadChromeHuangjinwu,
-  'clone-ggd66': ReadChromeGgd66,
-  'clone-shipsay': ReadChromeShipsay,
-  'clone-x2552': ReadChromeX2552,
-  'clone-trxsw': ReadChromeTrxsw,
-}
 
 const READER_FONT_KEY = 'public_reader_fontSize'
 const READER_NIGHT_KEY = 'public_reader_night'
 // feat-a C: 行距 / 字距持久化
 const READER_LINE_HEIGHT_KEY = 'public_reader_lineHeight'
 const READER_LETTER_SPACING_KEY = 'public_reader_letterSpacing'
-// R7-20 GG: 字体族 / 背景色持久化
 const READER_FONT_FAMILY_KEY = 'public_reader_fontFamily'
 const READER_BG_THEME_KEY = 'public_reader_bgTheme'
 
@@ -125,8 +94,7 @@ function readStoredFontSize(): number {
 function readStoredNight(): boolean {
   if (typeof window === 'undefined') return false
   try {
-    // R7-20 GG: auto-detect prefers-color-scheme when user has no saved preference
-    const saved = window.localStorage.getItem(READER_NIGHT_KEY)
+        const saved = window.localStorage.getItem(READER_NIGHT_KEY)
     if (saved === '1') return true
     if (saved === '0') return false
     // Saved preference absent → fall back to OS preference (only on first visit)
@@ -195,6 +163,22 @@ const SHORTCUTS_LIST: { keys: string[]; desc: string }[] = [
   { keys: ['Esc'], desc: '关闭弹层' },
 ]
 
+const ReadChromeComponent = ({ children, chapterTitle, onPrev, onNext }: any) => {
+    const v = usePublic().theme.vars
+    return (
+      <div style={{ maxWidth: 800, margin: '0 auto', padding: 20 }}>
+        {chapterTitle && <h1 style={{ fontSize: 20, fontWeight: 700, textAlign: 'center', color: v.text, marginBottom: 24 }}>{chapterTitle}</h1>}
+        <div style={{ fontSize: 17, lineHeight: 2, color: v.text }}>{children}</div>
+        {(onPrev || onNext) && (
+          <div style={{ display: 'flex', justifyContent: 'center', gap: 12, marginTop: 32, paddingTop: 16, borderTop: '1px solid ' + v.border }}>
+            {onPrev && <button onClick={onPrev} style={{ padding: '6px 20px', border: '1px solid ' + v.border, borderRadius: v.radius, background: v.surface, color: v.text, cursor: 'pointer' }}>上一章</button>}
+            {onNext && <button onClick={onNext} style={{ padding: '6px 20px', border: '1px solid ' + v.border, borderRadius: v.radius, background: v.primary, color: v.primaryText, cursor: 'pointer' }}>下一章</button>}
+          </div>
+        )}
+      </div>
+    )
+  }
+
 export function ReadView({ chapterId, initialPage }: { chapterId?: string; initialPage?: number }) {
   const { site, theme, navigate } = usePublic()
   const v = theme.vars
@@ -208,8 +192,7 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
   const [night, setNight] = useState(readStoredNight)
   const [lineHeight, setLineHeight] = useState(readStoredLineHeight)
   const [letterSpacing, setLetterSpacing] = useState(readStoredLetterSpacing)
-  // R7-20 GG: 字体族 / 背景色 持久化
-  const [fontFamily, setFontFamily] = useState<ReaderFontFamily>(readStoredFontFamily)
+    const [fontFamily, setFontFamily] = useState<ReaderFontFamily>(readStoredFontFamily)
   const [bgTheme, setBgTheme] = useState<ReaderBgTheme>(readStoredBgTheme)
   const [prevCh, setPrevCh] = useState(chapterId)
   // feat-round-5 B1: 帮助对话框
@@ -298,8 +281,7 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
       /* 隐私模式等场景忽略 */
     }
   }, [letterSpacing])
-  // R7-20 GG: 字体族 / 背景色 持久化
-  useEffect(() => {
+    useEffect(() => {
     try {
       window.localStorage.setItem(READER_FONT_FAMILY_KEY, String(fontFamily))
     } catch {
@@ -313,8 +295,7 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
       /* 隐私模式等场景忽略 */
     }
   }, [bgTheme])
-  // R7-20 GG: 当 bgTheme 改变时, 同步 night 状态 (dark/black = night=true, white/sepia = night=false, auto 跟随 OS)
-  // 用派生值替代 useEffect+setState, 避免 react-hooks/set-state-in-effect 警告
+    // 用派生值替代 useEffect+setState, 避免 react-hooks/set-state-in-effect 警告
   // bgTheme 非 auto 时直接覆盖 night; auto 时保留用户手动 toggle 的 night 值
   const effectiveNight = bgTheme === 'dark' || bgTheme === 'black' ? true
     : bgTheme === 'white' || bgTheme === 'sepia' ? false
@@ -343,8 +324,7 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
     }
   }, [bgTheme])
 
-  // R7-20 GG: 计算实际渲染用的字体族 + 背景色 (供 read-layouts 通过 props 读取)
-  const resolvedFontFamily = FONT_FAMILY_STACK[fontFamily]
+    const resolvedFontFamily = FONT_FAMILY_STACK[fontFamily]
   const resolvedBgColor: string | undefined = bgTheme === 'auto' ? undefined : BG_THEME_COLORS[bgTheme]
 
   // feat-round-5 B1: 键盘快捷键
@@ -506,10 +486,7 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
 
   // 按主题阅读布局原型分发（缺省回退 classic）
   const layout = readOf(theme).layout
-  // R15-1B: 按 theme.layout 选择 clone-themes/<site>/ReadChrome 渲染外壳 (硬编码颜色, 不用 theme.vars)
-  // R18-1A 修复: R17 重构误删 lookup table, 此处恢复按 theme.layout 分发到 clone-themes/<site>/ReadChrome
-  // R19-1B 接线: 接 ReadChromeComponent lookup table (lookup table 在文件顶部定义, fallback aijjxs)
-  const ReadChromeForLayout = ReadChromeComponent[theme.layout] || ReadChromeAijjxs
+    //         (lookup table 在文件顶部定义, fallback aijjxs)
   const chapterTitleStr = data?.chapter.title || ''
   // 章节导航: 透传给 ReadChrome 的 prev/next 按钮 (由 readerActionsRef 触发当前 read-layout 内置的导航)
   const handlePrevChapter = () => { readerActionsRef.current.onPrev?.() }
@@ -526,8 +503,7 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
     onLetterSpacing: (delta: number) =>
       setLetterSpacing((s) => Math.min(2, Math.max(-0.5, Math.round((s + delta) * 100) / 100))),
     onToggleNight: () => setNight((n) => !n),
-    // R7-20 GG: 字体族 / 背景色 (新增 props, 透传给所有 read-layouts)
-    fontFamily,
+        fontFamily,
     fontFamilyStack: resolvedFontFamily,
     bgTheme,
     bgColorOverride: resolvedBgColor,
@@ -535,8 +511,7 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
     onSetBgTheme: (b: ReaderBgTheme) => setBgTheme(b),
     // agent-P: 章节内容分页 — 透传给所有 read-layouts, 仅当 totalPages>1 时由布局渲染 ChapterPaginationBar
     chapterPagination: pagination,
-    // R14-1A: 主题 contentSelector 透传给 read-layouts, 用于在内容外层包一层 id/class 复刻原站 DOM
-    contentSelector: theme.contentSelector,
+        contentSelector: theme.contentSelector,
     onChapterPage: (p: number) => {
       if (!showChapterPagination) return
       const target = Math.min(Math.max(1, p), totalPages)
@@ -549,8 +524,7 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
       }
       setPage(target)
       // agent-DD: 同步 URL ?page=N 让深链/分享/刷新保持页码, 浏览器前进后退也能恢复位置
-      // R7-20 GG: pass bookId (from chapterData) so pseudostatic read URL builds correctly;
-      //   query-style would work without it, but non-query styles require bookId
+            //   query-style would work without it, but non-query styles require bookId
       if (chapterId) navigate({ view: 'read', bookId: data?.book?.id, chapterId, page: target, site: site.id })
     },
   }
@@ -639,11 +613,18 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
     return (
       <>
         {topProgressBar}
-        <ReadChromeForLayout chapterTitle={chapterTitleStr} onPrev={handlePrevChapter} onNext={handleNextChapter}>
-          <div key={`wrap-${wrapKey}`} className={slideClass}>
-            <ReadImmersive key={`ri-${chapterId || ''}`} {...shared} />
-          </div>
-        </ReadChromeForLayout>
+        {(() => {
+                    return React_createElement(ReadChromeComponent, {
+            chapterTitle: chapterTitleStr,
+            onPrev: handlePrevChapter,
+            onNext: handleNextChapter,
+            children: (
+              <div key={`wrap-${wrapKey}`} className={slideClass}>
+                <ReadImmersive key={`ri-${chapterId || ''}`} {...shared} />
+              </div>
+            ),
+          })
+        })()}
         {helpButton}
         {helpDialog}
       </>
@@ -652,11 +633,18 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
     return (
       <>
         {topProgressBar}
-        <ReadChromeForLayout chapterTitle={chapterTitleStr} onPrev={handlePrevChapter} onNext={handleNextChapter}>
-          <div key={`wrap-${wrapKey}`} className={slideClass}>
-            <ReadPaginated key={`rp-${chapterId || ''}`} {...shared} />
-          </div>
-        </ReadChromeForLayout>
+        {(() => {
+                    return React_createElement(ReadChromeComponent, {
+            chapterTitle: chapterTitleStr,
+            onPrev: handlePrevChapter,
+            onNext: handleNextChapter,
+            children: (
+              <div key={`wrap-${wrapKey}`} className={slideClass}>
+                <ReadPaginated key={`rp-${chapterId || ''}`} {...shared} />
+              </div>
+            ),
+          })
+        })()}
         {helpButton}
         {helpDialog}
       </>
@@ -665,11 +653,18 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
     return (
       <>
         {topProgressBar}
-        <ReadChromeForLayout chapterTitle={chapterTitleStr} onPrev={handlePrevChapter} onNext={handleNextChapter}>
-          <div key={`wrap-${wrapKey}`} className={slideClass}>
-            <ReadPili key={`rpl-${chapterId || ''}`} {...shared} />
-          </div>
-        </ReadChromeForLayout>
+        {(() => {
+                    return React_createElement(ReadChromeComponent, {
+            chapterTitle: chapterTitleStr,
+            onPrev: handlePrevChapter,
+            onNext: handleNextChapter,
+            children: (
+              <div key={`wrap-${wrapKey}`} className={slideClass}>
+                <ReadPili key={`rpl-${chapterId || ''}`} {...shared} />
+              </div>
+            ),
+          })
+        })()}
         {helpButton}
         {helpDialog}
       </>
@@ -677,11 +672,18 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
   return (
     <>
       {topProgressBar}
-      <ReadChromeForLayout chapterTitle={chapterTitleStr} onPrev={handlePrevChapter} onNext={handleNextChapter}>
-        <div key={`wrap-${wrapKey}`} className={slideClass}>
-          <ReadClassic key={`rc-${chapterId || ''}`} {...shared} />
-        </div>
-      </ReadChromeForLayout>
+      {(() => {
+                return React_createElement(ReadChromeComponent, {
+          chapterTitle: chapterTitleStr,
+          onPrev: handlePrevChapter,
+          onNext: handleNextChapter,
+          children: (
+            <div key={`wrap-${wrapKey}`} className={slideClass}>
+              <ReadClassic key={`rc-${chapterId || ''}`} {...shared} />
+            </div>
+          ),
+        })
+      })()}
       {helpButton}
       {helpDialog}
     </>

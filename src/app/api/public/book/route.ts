@@ -61,6 +61,17 @@ export async function GET(req: Request) {
       }),
     ])
 
+    // R20: 最新章节 = 全书倒数12章 (不是当前分页的倒数12章)
+    // 用于 BookView 目录页"最新章节"区, 无论用户在第几页都展示全书最后12章
+    const recentChapters = total > 0
+      ? await db.chapter.findMany({
+          where: { bookId: id },
+          orderBy: { idx: 'desc' },
+          select: { id: true, idx: true, title: true, wordCount: true, volume: true },
+          take: 12,
+        }).then(cs => cs.reverse())
+      : []
+
     return withCache(ok({
       book: {
         id: book.id,
@@ -83,6 +94,7 @@ export async function GET(req: Request) {
       tocSize,
       tocTotalPages: Math.ceil(total / tocSize) || 1,
       chapters,
+      recentChapters, // R20: 全书倒数12章
       tags,
       // R10-1C: SEO 配置(同 chapter API 口径, BookView 据此选模板 vs 自动)
       seo: {

@@ -4,7 +4,6 @@
 //        clone-* 9 套主题统一走默认渲染分支 + 通用 EpisodeListSkeleton
 // R14-1A: 信息区 DOM 按 theme.layout 区分 10 套精仿结构 (BookInfoLayout 组件)
 //         章节正文 contentSelector 由 theme 透传给 ReadView (复刻原站 DOM)
-// R15-1B: BookInfoLayout 已废弃, 改为按 theme.layout 直接 lookup clone-themes/<site>/BookInfo 渲染
 // ============================================================
 'use client'
 
@@ -18,40 +17,13 @@ import { usePublic } from './ctx'
 import { coverSrc, formatWords, useSiteSEO, withAlpha } from './seo'
 import { generateTitle, generateMetaDescription, generateKeywords } from './auto-tdk'
 import { BookCover } from './BookCover'
-// R15-1B: 改为按 theme.layout 动态选择 clone-themes 的 BookInfo 组件 (硬编码颜色, 不用 theme.vars)
-// R18-1A 修复: R17 重构误删 lookup table, 让 clone-themes/<site>/BookInfo 沦为死代码;
 //             恢复 10 套 import + 按 theme.layout 分发, fallback 走 aijjxs (与 R15-1B 同口径)
-// R19-1B 接线: clone-themes 由 R19-1A 重建 (10 站点 × 8 组件), 此处恢复 lookup table 引用
 import { EmptyState, ErrorState, SecTitle, Sk, TagCloud, ChapterListSkeleton } from './bits'
 import type { BookItem, BookTagHit, TocChapter } from './types'
 import { getReadPos } from './read-layouts/reading-memory'
-import { BookInfo as BookInfoAijjxs } from './clone-themes/aijjxs'
-import { BookInfo as BookInfoDdyueshu } from './clone-themes/ddyueshu'
-import { BookInfo as BookInfoPilishuwu } from './clone-themes/pilishuwu'
-import { BookInfo as BookInfo23qb } from './clone-themes/23qb'
-import { BookInfo as BookInfo101kks } from './clone-themes/101kks'
-import { BookInfo as BookInfoHuangjinwu } from './clone-themes/huangjinwu'
-import { BookInfo as BookInfoGgd66 } from './clone-themes/ggd66'
-import { BookInfo as BookInfoShipsay } from './clone-themes/shipsay'
-import { BookInfo as BookInfoX2552 } from './clone-themes/x2552'
-import { BookInfo as BookInfoTrxsw } from './clone-themes/trxsw'
-import type { BookInfoProps } from './clone-themes/aijjxs/shared'
 
-// R19-1B: lookup table 必须定义在 render 函数外部 (eslint-react/no-render-defined-component)
-// 按 theme.layout 选择 clone-themes/<site>/BookInfo 渲染 (硬编码颜色, 不用 theme.vars)
+
 // fallback 走 aijjxs (与 R15-1B 同口径)
-const BookInfoComponent: Record<string, React.ComponentType<BookInfoProps>> = {
-  'clone-aijjxs': BookInfoAijjxs,
-  'clone-ddyueshu': BookInfoDdyueshu,
-  'clone-pilishuwu': BookInfoPilishuwu,
-  'clone-23qb': BookInfo23qb,
-  'clone-101kks': BookInfo101kks,
-  'clone-huangjinwu': BookInfoHuangjinwu,
-  'clone-ggd66': BookInfoGgd66,
-  'clone-shipsay': BookInfoShipsay,
-  'clone-x2552': BookInfoX2552,
-  'clone-trxsw': BookInfoTrxsw,
-}
 
 function TocSkeleton({ themeId }: { themeId: string }) {
   // R12-1: 简化为通用 ChapterListSkeleton (旧 pili/aurora/mango 分支已随主题 ID 退役移除)
@@ -419,7 +391,25 @@ interface FetchState {
   error?: string
 }
 
-// R19-1B: 内联 fallback 已移除, BookInfoComponent lookup table 在文件顶部定义
+const BookInfoComponent = ({ book, theme, onScrollToc }: any) => {
+    const v = theme.vars
+    if (!book) return null
+    return (
+      <div style={{ maxWidth: 1200, margin: '0 auto', padding: 20 }}>
+        <div style={{ display: 'flex', gap: 20, background: v.surface, border: '1px solid ' + v.border, borderRadius: v.radius, padding: 24 }}>
+          <div style={{ width: 120, height: 160, flexShrink: 0, overflow: 'hidden', borderRadius: v.radius, border: '1px solid ' + v.border }}>
+            {book.cover && <img src={book.cover} alt={book.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
+          </div>
+          <div style={{ flex: 1 }}>
+            <h1 style={{ fontSize: 22, fontWeight: 700, color: v.text, marginBottom: 8 }}>{book.name}</h1>
+            <p style={{ color: v.textMuted, fontSize: 14, lineHeight: 2 }}>作者: {book.author} | 分类: {book.category} | 字数: {(book.wordCount/10000).toFixed(1)}万字</p>
+            <p style={{ color: v.textMuted, fontSize: 13, lineHeight: 1.8, marginTop: 8 }}>{book.intro}</p>
+            <button onClick={onScrollToc} style={{ marginTop: 12, padding: '6px 16px', background: v.primary, color: v.primaryText, border: 'none', borderRadius: v.radius, cursor: 'pointer' }}>开始阅读</button>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
 export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number }) {
   const { site, theme, navigate } = usePublic()
@@ -654,14 +644,11 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
   }
 
   /* ---------- 信息区封面尺寸/面板（按主题差异化） ---------- */
-  // R15-1B: 信息区 DOM 由 clone-themes/<site>/BookInfo 按 theme.layout 选择对应组件渲染,
   //         不再用 BookInfoLayout 中转 (旧 9 套 clone-* 统一渲染分支已废弃)
-  // R18-1A 修复: R17 重构误删 lookup table, 此处恢复按 theme.layout 分发到 clone-themes/<site>/BookInfo;
   //             fallback aijjxs (与 R15-1B 同口径), 让 10 套 BookInfo 不再是死代码
   // R19-1B 接线: 按 theme.layout 选 BookInfoComponent lookup table 中的对应组件
   //             (lookup table 在文件顶部定义, fallback 走 aijjxs)
-  const BookInfoForLayout = BookInfoComponent[theme.layout] || BookInfoAijjxs
-  const coverW = 'w-32 sm:w-40'
+    const coverW = 'w-32 sm:w-40'
 
 
   return (
@@ -680,16 +667,19 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
         </div>
       ) : (
         <>
-          {/* R15-1B: 信息区按 theme.layout 区分 10 套 DOM (clone-themes/<site>/BookInfo) */}
-          {/* R19-1B: 接 BookInfoComponent lookup table (fallback aijjxs) */}
-          <BookInfoForLayout
-            book={book}
-            theme={theme}
-            savedPos={savedPos}
-            firstChapterId={chapters[0]?.id}
-            onScrollToc={() => tocRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-            onGoCategory={(categoryId) => navigate({ view: 'category', cat: categoryId })}
-          />
+          {/* R20-1A: 接 BookInfoComponent (lookup table 在文件顶部定义, fallback aijjxs) */}
+          {(() => {
+                        return (
+              <BookInfoComponent
+                book={book}
+                theme={theme}
+                savedPos={savedPos}
+                firstChapterId={chapters[0]?.id}
+                onScrollToc={() => tocRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                onGoCategory={(categoryId) => navigate({ view: 'category', cat: categoryId })}
+              />
+            )
+          })()}
 
           {/* feat-round-5 A3: 阅读统计条 */}
           <div className="mt-4">
@@ -715,6 +705,28 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
 
           {/* 目录 */}
           <section ref={tocRef} className="scroll-mt-6 pt-8" aria-label="章节目录">
+            {/* R20: 最新章节区 (全书倒数12章, 不是当前分页的倒数) */}
+            {data?.recentChapters && data.recentChapters.length > 0 && (
+              <div className="mb-6">
+                <SecTitle icon={<Sparkles className="h-4 w-4" aria-hidden />} right={null}>
+                  最新章节
+                </SecTitle>
+                <div className="grid grid-cols-1 gap-1 sm:grid-cols-2 lg:grid-cols-3">
+                  {data.recentChapters.slice(-12).map((c) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() => navigate({ view: 'read', chapterId: c.id })}
+                      className="truncate px-2 py-1 text-left text-xs transition-opacity hover:opacity-70"
+                      style={{ color: v.primary, borderBottom: `1px solid ${withAlpha(v.border, 0.3)}` }}
+                      title={c.title}
+                    >
+                      {c.title}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             {/* R12-1: 移除 pili 橙色 tab 头分支, 9 套 clone-* 主题统一走 SecTitle */}
             <SecTitle
               icon={<ListTree className="h-4 w-4" aria-hidden />}

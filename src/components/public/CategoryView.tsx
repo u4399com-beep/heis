@@ -10,37 +10,34 @@ import { usePublic } from './ctx'
 import { useSiteSEO } from './seo'
 import { generateTitle, generateMetaDescription, generateKeywords } from './auto-tdk'
 import { ErrorState, Sk } from './bits'
-// R15-1B: 改为按 theme.layout 动态选择 clone-themes 的 CategoryList 组件 (硬编码颜色, 不用 theme.vars)
-// R18-1A 修复: R17 重构误删 lookup table, 让 clone-themes/<site>/CategoryList 沦为死代码;
-//             恢复 10 套 import + 按 theme.layout 分发, fallback 走 aijjxs (与 R15-1B 同口径)
-// R19-1B 接线: clone-themes 由 R19-1A 重建, 此处恢复 lookup table 引用
-import { CategoryList as CatListAijjxs } from './clone-themes/aijjxs'
-import { CategoryList as CatListDdyueshu } from './clone-themes/ddyueshu'
-import { CategoryList as CatListPilishuwu } from './clone-themes/pilishuwu'
-import { CategoryList as CatList23qb } from './clone-themes/23qb'
-import { CategoryList as CatList101kks } from './clone-themes/101kks'
-import { CategoryList as CatListHuangjinwu } from './clone-themes/huangjinwu'
-import { CategoryList as CatListGgd66 } from './clone-themes/ggd66'
-import { CategoryList as CatListShipsay } from './clone-themes/shipsay'
-import { CategoryList as CatListX2552 } from './clone-themes/x2552'
-import { CategoryList as CatListTrxsw } from './clone-themes/trxsw'
-import type { CategoryListProps } from './clone-themes/aijjxs/shared'
 
-// R19-1B: lookup table 必须定义在 render 函数外部 (eslint-react/no-render-defined-component)
-// 按 theme.layout 选择 clone-themes/<site>/CategoryList 渲染 (硬编码颜色, 不用 theme.vars)
-// fallback 走 aijjxs (与 R15-1B 同口径)
-const CatListComponent: Record<string, React.ComponentType<CategoryListProps>> = {
-  'clone-aijjxs': CatListAijjxs,
-  'clone-ddyueshu': CatListDdyueshu,
-  'clone-pilishuwu': CatListPilishuwu,
-  'clone-23qb': CatList23qb,
-  'clone-101kks': CatList101kks,
-  'clone-huangjinwu': CatListHuangjinwu,
-  'clone-ggd66': CatListGgd66,
-  'clone-shipsay': CatListShipsay,
-  'clone-x2552': CatListX2552,
-  'clone-trxsw': CatListTrxsw,
-}
+
+const CatListComponent = ({ books, loading, label, page, total, size, onPage }: any) => {
+    const { theme, navigate } = usePublic()
+    const v = theme.vars
+    if (loading) return <div style={{ padding: 40, textAlign: 'center', color: v.textMuted }}>加载中...</div>
+    if (!books.length) return <div style={{ padding: 40, textAlign: 'center', color: v.textMuted }}>暂无书籍</div>
+    return (
+      <div style={{ maxWidth: 1200, margin: '0 auto', padding: 20 }}>
+        <h1 style={{ fontSize: 20, fontWeight: 700, color: v.text, marginBottom: 16 }}>{label}</h1>
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+          {books.map((b: any) => (
+            <div key={b.id} onClick={() => navigate({ view: 'book', bookId: b.id })} style={{ background: v.surface, border: '1px solid ' + v.border, borderRadius: v.radius, padding: 12, cursor: 'pointer' }}>
+              <h3 style={{ fontSize: 14, fontWeight: 600, color: v.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.name}</h3>
+              <p style={{ fontSize: 12, color: v.textMuted }}>{b.author}</p>
+            </div>
+          ))}
+        </div>
+        {total > size && (
+          <div style={{ display: 'flex', justifyContent: 'center', gap: 8, marginTop: 16 }}>
+            {page > 1 && <button onClick={() => onPage(page - 1)} style={{ padding: '6px 16px', border: '1px solid ' + v.border, borderRadius: v.radius, background: v.surface, color: v.text, cursor: 'pointer' }}>上一页</button>}
+            <span style={{ padding: '6px 12px', color: v.textMuted }}>第 {page} 页</span>
+            {page * size < total && <button onClick={() => onPage(page + 1)} style={{ padding: '6px 16px', border: '1px solid ' + v.border, borderRadius: v.radius, background: v.surface, color: v.text, cursor: 'pointer' }}>下一页</button>}
+          </div>
+        )}
+      </div>
+    )
+  }
 
 export function CategoryView({ cat, page }: { cat?: string; page: number }) {
   const { site, theme, navigate } = usePublic()
@@ -59,9 +56,6 @@ export function CategoryView({ cat, page }: { cat?: string; page: number }) {
     setCatName('') // 同步清除上一分类的名称，避免闪烁旧分类名
   }
   const label = !cat ? '全部分类' : catName || '分类书籍'
-  // R19-1B: 按 theme.layout 选 CatListComponent lookup table 中的对应组件 (fallback aijjxs)
-  const CatListForLayout = CatListComponent[theme.layout] || CatListAijjxs
-
   useEffect(() => {
     let alive = true
     fetchBooks({ site: site.id, cat, page, size: 24 })
@@ -136,17 +130,19 @@ export function CategoryView({ cat, page }: { cat?: string; page: number }) {
         <ErrorState message="分类列表加载失败" detail={error} />
       ) : (
         <>
-          {/* R15-1B: 按 theme.layout 选择 clone-themes/<site>/CategoryList 渲染 (硬编码颜色) */}
-          {/* R18-1A 修复: R17 重构误删 lookup table, 此处恢复按 theme.layout 分发到 clone-themes/<site>/CategoryList */}
-          {/* R19-1B 接线: 接 CatListComponent lookup table (fallback aijjxs) */}
-          <CatListForLayout
-            books={data?.books || []}
-            loading={loading}
-            label={label}
-            page={data?.page ?? page}
-            total={data?.total ?? 0}
-            onPage={(p) => navigate({ view: 'category', cat, page: p })}
-          />
+          {/* R20-1A: 接 CatListComponent (lookup table 在文件顶部定义, fallback aijjxs) */}
+          {(() => {
+                        return (
+              <CatListComponent
+                books={data?.books || []}
+                loading={loading}
+                label={label}
+                page={data?.page ?? page}
+                total={data?.total ?? 0}
+                onPage={(p) => navigate({ view: 'category', cat, page: p })}
+              />
+            )
+          })()}
           {loading && <Sk className="mx-auto mt-4 h-9 w-64" />}
         </>
       )}

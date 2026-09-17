@@ -1,125 +1,44 @@
-// ============================================================
-// clone-themes/shipsay/HomeClone.tsx — 船说CMS 首页 (R19-1A)
-// 1:1 克隆源站配色 (硬编码 #xxxxxx, 不用 theme.vars)
-// DOM: 顶部 banner + 多模块书籍网格 (auto-fill minmax 响应式)
-// ============================================================
 'use client'
-
-import { BookCover } from '../../BookCover'
 import { usePublic } from '../../ctx'
-import { BookGridSkeleton, EmptyState, StatusBadge } from '../../bits'
+import { BookCover } from '../../BookCover'
+import { bookNavProps } from '../../bits'
 import { formatWords } from '../../seo'
-import type { HomeCloneProps } from './shared'
-
+import type { HomeCloneProps } from '../shared'
 const C = {
-  bg: "#f4f4f4",
-  surface: "#ffffff",
-  surfaceAlt: "#fafafa",
-  text: "#666666",
-  textMuted: "#969ba3",
-  primary: "#ed4259",
-  primaryText: "#ffffff",
-  accent: "#bf2c24",
-  border: "#e0e0e0",
-  radius: "3px",
-  cardShadow: "0 2px 6px rgba(0,0,0,0.06)",
-  fontFamily: "\"微软雅黑\", \"Microsoft YaHei\", Arial, Tahoma, Verdana, sans-serif",
-  maxW: 960,
+  "id": "shipsay",
+  "bg": "#f4f4f4",
+  "surface": "#fff",
+  "text": "#666",
+  "muted": "#969ba3",
+  "primary": "#ed4259",
+  "accent": "#bf2c24",
+  "border": "#e0e0e0",
+  "radius": "3px",
+  "font": "\"微软雅黑\",\"Microsoft Yahei\",sans-serif",
+  "maxW": 1200
 }
-
-function BookCard({ b }: { b: HomeCloneProps['books'][number] }) {
-  const { navigate } = usePublic()
+export function HomeClone({ books, loading, homeModuleLimit = 20 }: HomeCloneProps) {
+  const { site, navigate } = usePublic()
+  if (loading) return <div style={{ padding: 40, textAlign: 'center', color: C.muted }}>加载中...</div>
+  if (!books.length) return null
+  const list = books.slice(0, homeModuleLimit)
   return (
-    <a
-      href={'/?view=book&id=' + b.id}
-      onClick={(e) => {
-        if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return
-        e.preventDefault()
-        navigate({ view: 'book', bookId: b.id })
-      }}
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        background: C.surface,
-        border: '1px solid ' + C.border,
-        borderRadius: C.radius,
-        boxShadow: C.cardShadow === 'none' ? undefined : C.cardShadow,
-        overflow: 'hidden',
-        textDecoration: 'none',
-        color: 'inherit',
-        transition: 'transform 200ms ease',
-      }}
-      aria-label={'查看《' + b.name + '》详情'}
-    >
-      <div style={{ position: 'relative' }}>
-        <BookCover name={b.name} cover={b.cover} className="aspect-[3/4] w-full" />
-        <span style={{ position: 'absolute', left: 6, top: 6 }}><StatusBadge status={b.status} small /></span>
-        <span
-          style={{
-            position: 'absolute',
-            right: 6,
-            bottom: 6,
-            borderRadius: 999,
-            padding: '1px 6px',
-            fontSize: 10,
-            fontWeight: 700,
-            background: C.primary,
-            color: C.primaryText,
-          }}
-        >
-          {formatWords(b.wordCount)}
-        </span>
-      </div>
-      <div style={{ padding: 8, display: 'flex', flexDirection: 'column', gap: 2 }}>
-        <h3 style={{ fontSize: 14, fontWeight: 700, color: C.text, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.name}</h3>
-        <p style={{ fontSize: 12, color: C.textMuted, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.author}</p>
-        <p style={{ fontSize: 11, color: C.textMuted, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          <span style={{ marginRight: 4, padding: '0 4px', borderRadius: C.radius, background: C.surfaceAlt, color: C.primary }}>{b.category}</span>
-          {b.latestChapter || '暂无章节'}
-        </p>
-      </div>
-    </a>
-  )
-}
-
-export function HomeClone({ books, loading }: HomeCloneProps) {
-  usePublic()
-  if (loading) return <BookGridSkeleton count={12} />
-  if (!books || !books.length) return <EmptyState text="暂无书籍" />
-  return (
-    <div
-      style={{
-        background: C.bg,
-        fontFamily: C.fontFamily,
-        color: C.text,
-        minHeight: '100%',
-        padding: 16,
-      }}
-    >
-      <div style={{ maxWidth: C.maxW, margin: '0 auto' }}>
-        <section style={{ marginBottom: 16 }}>
-          <h2 style={{
-            fontSize: 18,
-            fontWeight: 700,
-            color: C.text,
-            margin: '0 0 12px',
-            paddingBottom: 8,
-            borderBottom: '2px solid ' + C.primary,
-          }}>
-            最新上架
-          </h2>
-        </section>
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))',
-            gap: 12,
-          }}
-        >
-          {books.map((b) => (
-            <BookCard key={b.id} b={b} />
-          ))}
-        </div>
+    <div style={{ maxWidth: C.maxW, margin: '0 auto', padding: 16, fontFamily: C.font, background: C.bg, color: C.text, minHeight: '100vh' }}>
+      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 0', borderBottom: '2px solid ' + C.primary, marginBottom: 16 }}>
+        <h1 style={{ fontSize: 22, fontWeight: 700, color: C.text }}>{site.name}</h1>
+        <span style={{ fontSize: 13, color: C.muted }}>共 {books.length} 本</span>
+      </header>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 12 }}>
+        {list.map((b) => (
+          <div key={b.id} {...bookNavProps(navigate, b.id)} style={{ cursor: 'pointer', background: C.surface, border: '1px solid ' + C.border, borderRadius: C.radius, overflow: 'hidden', transition: 'transform 0.2s' }}>
+            <BookCover name={b.name} cover={b.cover} className="aspect-[3/4] w-full" />
+            <div style={{ padding: 8 }}>
+              <h3 style={{ fontSize: 14, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: C.text }}>{b.name}</h3>
+              <p style={{ fontSize: 12, color: C.muted }}>{b.author}</p>
+              <p style={{ fontSize: 11, color: C.muted }}>{formatWords(b.wordCount)}</p>
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   )

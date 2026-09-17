@@ -74,6 +74,7 @@ export interface BookDetailData {
   tocSize: number
   tocTotalPages: number
   chapters: TocChapter[]
+  recentChapters?: TocChapter[] // R20: 全书倒数12章
   tags: BookTagHit[]
   // R10-1C: 站点 SEO 配置(同 chapter API 口径); 旧客户端缺省时 undefined → 走自动模式
   seo?: {
