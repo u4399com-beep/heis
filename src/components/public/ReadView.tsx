@@ -14,7 +14,7 @@
 // ============================================================
 'use client'
 
-import { createElement as React_createElement, useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { Clock, HelpCircle, Keyboard } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { fetchChapter } from './data'
@@ -163,25 +163,35 @@ const SHORTCUTS_LIST: { keys: string[]; desc: string }[] = [
   { keys: ['Esc'], desc: '关闭弹层' },
 ]
 
-const ReadChromeComponent = ({ children, chapterTitle, onPrev, onNext }: any) => {
-    const v = usePublic().theme.vars
-    return (
-      <div style={{ maxWidth: 800, margin: '0 auto', padding: 20 }}>
-        {chapterTitle && <h1 style={{ fontSize: 20, fontWeight: 700, textAlign: 'center', color: v.text, marginBottom: 24 }}>{chapterTitle}</h1>}
-        <div style={{ fontSize: 17, lineHeight: 2, color: v.text }}>{children}</div>
-        {(onPrev || onNext) && (
-          <div style={{ display: 'flex', justifyContent: 'center', gap: 12, marginTop: 32, paddingTop: 16, borderTop: '1px solid ' + v.border }}>
-            {onPrev && <button onClick={onPrev} style={{ padding: '6px 20px', border: '1px solid ' + v.border, borderRadius: v.radius, background: v.surface, color: v.text, cursor: 'pointer' }}>上一章</button>}
-            {onNext && <button onClick={onNext} style={{ padding: '6px 20px', border: '1px solid ' + v.border, borderRadius: v.radius, background: v.primary, color: v.primaryText, cursor: 'pointer' }}>下一章</button>}
-          </div>
-        )}
-      </div>
-    )
-  }
+
+import { ReadChrome as ReadChromeAijjxs } from './clone-themes/aijjxs'
+import { ReadChrome as ReadChromeDdyueshu } from './clone-themes/ddyueshu'
+import { ReadChrome as ReadChromePilishuwu } from './clone-themes/pilishuwu'
+import { ReadChrome as ReadChrome23qb } from './clone-themes/23qb'
+import { ReadChrome as ReadChrome101kks } from './clone-themes/101kks'
+import { ReadChrome as ReadChromeHuangjinwu } from './clone-themes/huangjinwu'
+import { ReadChrome as ReadChromeGgd66 } from './clone-themes/ggd66'
+import { ReadChrome as ReadChromeShipsay } from './clone-themes/shipsay'
+import { ReadChrome as ReadChromeX2552 } from './clone-themes/x2552'
+import { ReadChrome as ReadChromeTrxsw } from './clone-themes/trxsw'
+
+const ReadChromeLookup: Record<string, any> = {
+  'clone-aijjxs': ReadChromeAijjxs,
+  'clone-ddyueshu': ReadChromeDdyueshu,
+  'clone-pilishuwu': ReadChromePilishuwu,
+  'clone-23qb': ReadChrome23qb,
+  'clone-101kks': ReadChrome101kks,
+  'clone-huangjinwu': ReadChromeHuangjinwu,
+  'clone-ggd66': ReadChromeGgd66,
+  'clone-shipsay': ReadChromeShipsay,
+  'clone-x2552': ReadChromeX2552,
+  'clone-trxsw': ReadChromeTrxsw,
+}
 
 export function ReadView({ chapterId, initialPage }: { chapterId?: string; initialPage?: number }) {
   const { site, theme, navigate } = usePublic()
   const v = theme.vars
+  const ReadChromeComponent = ReadChromeLookup[theme.layout] || ReadChromeAijjxs
   const [data, setData] = useState<ChapterData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -614,7 +624,8 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
       <>
         {topProgressBar}
         {(() => {
-                    return React_createElement(ReadChromeComponent, {
+          // eslint-disable-next-line react/no-children-prop
+                    return React.createElement(ReadChromeComponent, {
             chapterTitle: chapterTitleStr,
             onPrev: handlePrevChapter,
             onNext: handleNextChapter,
@@ -634,7 +645,8 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
       <>
         {topProgressBar}
         {(() => {
-                    return React_createElement(ReadChromeComponent, {
+          // eslint-disable-next-line react/no-children-prop
+                    return React.createElement(ReadChromeComponent, {
             chapterTitle: chapterTitleStr,
             onPrev: handlePrevChapter,
             onNext: handleNextChapter,
@@ -654,7 +666,8 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
       <>
         {topProgressBar}
         {(() => {
-                    return React_createElement(ReadChromeComponent, {
+          // eslint-disable-next-line react/no-children-prop
+                    return React.createElement(ReadChromeComponent, {
             chapterTitle: chapterTitleStr,
             onPrev: handlePrevChapter,
             onNext: handleNextChapter,
@@ -673,7 +686,8 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
     <>
       {topProgressBar}
       {(() => {
-                return React_createElement(ReadChromeComponent, {
+          // eslint-disable-next-line react/no-children-prop
+                return React.createElement(ReadChromeComponent, {
           chapterTitle: chapterTitleStr,
           onPrev: handlePrevChapter,
           onNext: handleNextChapter,

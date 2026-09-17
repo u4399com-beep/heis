@@ -1,24 +1,6 @@
-:root {
-  --bg: #f5f7fa;
-  --surface: #ffffff;
-  --text: #333333;
-  --muted: #888888;
-  --primary: #2c7be5;
-  --primary-dark: #1a5fb4;
-  --border: #e0e6ed;
-  --radius: 4px;
-}
-body { color: var(--text); font-family: "Microsoft YaHei", Arial, sans-serif; background: var(--bg); }
-a { color: var(--primary); text-decoration: none; }
-a:hover { color: var(--primary-dark); text-decoration: underline; }
-.vlist { list-style: none; padding: 0; }
-.vlist li { padding: 8px 12px; border-bottom: 1px solid var(--border); }
-.vlist li a { color: var(--text); }
-.detail { display: flex; gap: 20px; padding: 20px; background: var(--surface); border-radius: var(--radius); }
-.detail .name { font-size: 22px; font-weight: bold; color: var(--text); }
-.detail .author a { color: var(--primary); }
-.detail > img { width: 120px; height: 160px; object-fit: cover; border-radius: var(--radius); }
-.intro { padding: 16px; line-height: 1.8; color: var(--muted); }
-.content { max-width: 800px; margin: 0 auto; padding: 20px; line-height: 2; font-size: 16px; }
-.pager { display: flex; gap: 10px; justify-content: center; padding: 20px; }
-.pager a { padding: 6px 16px; border: 1px solid var(--border); border-radius: var(--radius); }
+:root { --bg:#f5f7fa; --surface:#fff; --text:#333; --muted:#888; --primary:#2c7be5; --border:#e0e6ed; --radius:4px; }
+body { color:var(--text); font-family:"Microsoft YaHei",Arial,sans-serif; background:var(--bg); }
+a { color:var(--primary); text-decoration:none; }
+.vlist { list-style:none; padding:0; }
+.detail { display:flex; gap:20px; padding:20px; background:var(--surface); border-radius:var(--radius); }
+.content { max-width:800px; margin:0 auto; padding:20px; line-height:2; }
