@@ -194,6 +194,11 @@ model Site {
   // R16: 主题可编辑设置 — 每个站点可独立配置导航栏展示分类数与首页模块数据量
   navCategoryCount             Int     @default(16)  // 导航栏展示几个分类 (5-30)
   homeModuleLimit              Int     @default(20)  // 首页每个模块显示多少数据 (10-50)
+  // R22: 页面底部自定义编辑 — 站点可自定义 footer 文案/版权信息/备案号
+  footerText                   String  @default("")  // 自定义底部文案 (支持多行, 空则用默认)
+  footerCopyright              String  @default("")   // 自定义版权信息 (空则用 "© {year} {site.name}")
+  footerIcp                    String  @default("")   // ICP 备案号
+  footerStats                  Boolean @default(true) // 是否显示统计信息 (书籍数/章节数)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }

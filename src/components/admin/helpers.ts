@@ -217,6 +217,11 @@ export interface SiteRow {
   navCategoryCount?: number
   /** R16: 首页每个模块显示多少数据 (10-50, 默认 20) */
   homeModuleLimit?: number
+  /** R22: 页面底部自定义编辑 */
+  footerText?: string
+  footerCopyright?: string
+  footerIcp?: string
+  footerStats?: boolean
   createdAt: string
   updatedAt: string
 }

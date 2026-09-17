@@ -247,7 +247,8 @@ export default function PublicSite({
           minHeight: '100vh',
         }}
       >
-        <SiteHeader />
+        {/* R22: clone-* 主题自己渲染 header/footer, 不用全站统一的 SiteHeader/SiteFooter */}
+        {!theme.layout.startsWith('clone-') && <SiteHeader />}
         <CloneCSSLoader />
         {/* R16: 按当前主题加载源站 CSS, 让 clone-themes 组件用源站 class 名 */}
         {/* agent-W: 视图切换淡入动画 — key 变化触发 remount, animate-in fade-in 由 tw-animate-css 提供
@@ -255,7 +256,7 @@ export default function PublicSite({
         <main className="w-full flex-1 animate-in fade-in duration-200" key={`view-${view.view}-${view.bookId || view.chapterId || view.q || view.tag || view.cat || ''}-${view.page || 1}`}>
           {renderView()}
         </main>
-        <SiteFooter />
+        {!theme.layout.startsWith('clone-') && <SiteFooter />}
 
         {/* agent-W: mount Toaster — 之前 FeedbackWidget/InstallPrompt 调 toast() 但前台未挂载 Toaster,
             导致提示根本不渲染。dark 主题跟随主题色; closeButton + richColors 提升可读性 */}

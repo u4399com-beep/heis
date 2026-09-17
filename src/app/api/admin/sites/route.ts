@@ -28,6 +28,11 @@ interface PaginationFields {
   // R16: 主题可编辑设置
   navCategoryCount: number
   homeModuleLimit: number
+  // R22: 页面底部自定义编辑
+  footerText: string
+  footerCopyright: string
+  footerIcp: string
+  footerStats: boolean
 }
 
 function validTheme(raw: unknown): string {
@@ -51,6 +56,11 @@ function paginationFields(body: unknown): PaginationFields {
     // R16: 主题可编辑设置 — 导航栏分类数(5-30) + 首页模块数据量(10-50)
     navCategoryCount: clampInt(b?.navCategoryCount, 16, 5, 30),
     homeModuleLimit: clampInt(b?.homeModuleLimit, 20, 10, 50),
+    // R22: 页面底部自定义编辑
+    footerText: str(b?.footerText, 2000),
+    footerCopyright: str(b?.footerCopyright, 200),
+    footerIcp: str(b?.footerIcp, 100),
+    footerStats: b?.footerStats !== false,
   }
 }
 

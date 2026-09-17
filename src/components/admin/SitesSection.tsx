@@ -79,6 +79,11 @@ interface SiteForm {
   // R16: 主题可编辑设置 — 导航栏分类数 + 首页模块数据量
   navCategoryCount: number
   homeModuleLimit: number
+  // R22: 页面底部自定义编辑
+  footerText: string
+  footerCopyright: string
+  footerIcp: string
+  footerStats: boolean
 }
 
 const emptyForm: SiteForm = {
@@ -107,6 +112,10 @@ const emptyForm: SiteForm = {
   // R16: 主题可编辑设置 — 默认值与 Prisma Site 模型一致 (16/20)
   navCategoryCount: 16,
   homeModuleLimit: 20,
+  footerText: "",
+  footerCopyright: "",
+  footerIcp: "",
+  footerStats: true,
 }
 
 export function SitesSection() {
@@ -185,6 +194,11 @@ export function SitesSection() {
       // R16: 主题可编辑设置 — 旧数据缺字段时回退默认值 (16/20)
       navCategoryCount: s.navCategoryCount ?? 16,
       homeModuleLimit: s.homeModuleLimit ?? 20,
+      // R22: 页面底部自定义编辑
+      footerText: s.footerText ?? '',
+      footerCopyright: s.footerCopyright ?? '',
+      footerIcp: s.footerIcp ?? '',
+      footerStats: s.footerStats ?? true,
     })
     setDialogOpen(true)
   }
@@ -640,6 +654,57 @@ export function SitesSection() {
                   }
                 />
                 <p className="text-[10px] text-zinc-600">控制首页"最新上传/最近更新/排行榜"等模块的展示条目数</p>
+              </div>
+            </div>
+          </div>
+
+          {/* R22: 页面底部自定义编辑 */}
+          <div className="mt-4 rounded-md border border-cyan-900/40 bg-cyan-950/10 p-3">
+            <div className="mb-2 flex items-center gap-2">
+              <div>
+                <div className="text-xs font-semibold text-cyan-300">页面底部编辑</div>
+                <div className="text-[10px] text-zinc-500">自定义底部文案 / 版权信息 / 备案号</div>
+              </div>
+            </div>
+            <div className="space-y-3">
+              <div className="space-y-1.5">
+                <Label className="text-xs text-zinc-400">自定义底部文案</Label>
+                <Textarea
+                  className="admin-scroll max-h-24 min-h-14 border-zinc-700 bg-zinc-950 text-sm"
+                  placeholder="支持多行文本, 显示在友链下方. 留空则不显示"
+                  value={form.footerText || ''}
+                  onChange={(e) => setForm({ ...form, footerText: e.target.value.slice(0, 2000) })}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-zinc-400">版权信息</Label>
+                  <Input
+                    className="h-9 border-zinc-700 bg-zinc-950 text-sm"
+                    placeholder="© 2026 站名 · 保留所有权利"
+                    value={form.footerCopyright || ''}
+                    onChange={(e) => setForm({ ...form, footerCopyright: e.target.value.slice(0, 200) })}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-zinc-400">ICP 备案号</Label>
+                  <Input
+                    className="h-9 border-zinc-700 bg-zinc-950 text-sm"
+                    placeholder="如: 京ICP备12345678号"
+                    value={form.footerIcp || ''}
+                    onChange={(e) => setForm({ ...form, footerIcp: e.target.value.slice(0, 100) })}
+                  />
+                </div>
+              </div>
+              <div className="flex items-center justify-between rounded-md border border-zinc-800 bg-zinc-950/60 px-3 py-2">
+                <div>
+                  <div className="text-xs font-medium text-zinc-300">显示统计信息</div>
+                  <div className="text-[10px] text-zinc-600">GEO 地区信息等</div>
+                </div>
+                <Switch
+                  checked={form.footerStats !== false}
+                  onCheckedChange={(v) => setForm({ ...form, footerStats: v })}
+                />
               </div>
             </div>
           </div>

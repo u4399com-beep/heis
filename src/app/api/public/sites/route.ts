@@ -38,6 +38,10 @@ export function GET() {
         // R16: 主题可编辑设置 — 导航栏分类数 + 首页模块数据量
         navCategoryCount: true,
         homeModuleLimit: true,
+        footerText: true,
+        footerCopyright: true,
+        footerIcp: true,
+        footerStats: true,
       },
     })
     return withCache(ok(sites), 300, 600)
