@@ -21,6 +21,10 @@ import { BookCover } from './BookCover'
 // R15-1B: 改为按 theme.layout 动态选择 clone-themes 的 BookInfo 组件 (硬编码颜色, 不用 theme.vars)
 // R18-1A 修复: R17 重构误删 lookup table, 让 clone-themes/<site>/BookInfo 沦为死代码;
 //             恢复 10 套 import + 按 theme.layout 分发, fallback 走 aijjxs (与 R15-1B 同口径)
+// R19-1B 接线: clone-themes 由 R19-1A 重建 (10 站点 × 8 组件), 此处恢复 lookup table 引用
+import { EmptyState, ErrorState, SecTitle, Sk, TagCloud, ChapterListSkeleton } from './bits'
+import type { BookItem, BookTagHit, TocChapter } from './types'
+import { getReadPos } from './read-layouts/reading-memory'
 import { BookInfo as BookInfoAijjxs } from './clone-themes/aijjxs'
 import { BookInfo as BookInfoDdyueshu } from './clone-themes/ddyueshu'
 import { BookInfo as BookInfoPilishuwu } from './clone-themes/pilishuwu'
@@ -31,9 +35,23 @@ import { BookInfo as BookInfoGgd66 } from './clone-themes/ggd66'
 import { BookInfo as BookInfoShipsay } from './clone-themes/shipsay'
 import { BookInfo as BookInfoX2552 } from './clone-themes/x2552'
 import { BookInfo as BookInfoTrxsw } from './clone-themes/trxsw'
-import { EmptyState, ErrorState, SecTitle, Sk, TagCloud, ChapterListSkeleton } from './bits'
-import type { BookItem, BookTagHit, TocChapter } from './types'
-import { getReadPos } from './read-layouts/reading-memory'
+import type { BookInfoProps } from './clone-themes/aijjxs/shared'
+
+// R19-1B: lookup table 必须定义在 render 函数外部 (eslint-react/no-render-defined-component)
+// 按 theme.layout 选择 clone-themes/<site>/BookInfo 渲染 (硬编码颜色, 不用 theme.vars)
+// fallback 走 aijjxs (与 R15-1B 同口径)
+const BookInfoComponent: Record<string, React.ComponentType<BookInfoProps>> = {
+  'clone-aijjxs': BookInfoAijjxs,
+  'clone-ddyueshu': BookInfoDdyueshu,
+  'clone-pilishuwu': BookInfoPilishuwu,
+  'clone-23qb': BookInfo23qb,
+  'clone-101kks': BookInfo101kks,
+  'clone-huangjinwu': BookInfoHuangjinwu,
+  'clone-ggd66': BookInfoGgd66,
+  'clone-shipsay': BookInfoShipsay,
+  'clone-x2552': BookInfoX2552,
+  'clone-trxsw': BookInfoTrxsw,
+}
 
 function TocSkeleton({ themeId }: { themeId: string }) {
   // R12-1: 简化为通用 ChapterListSkeleton (旧 pili/aurora/mango 分支已随主题 ID 退役移除)
@@ -401,6 +419,8 @@ interface FetchState {
   error?: string
 }
 
+// R19-1B: 内联 fallback 已移除, BookInfoComponent lookup table 在文件顶部定义
+
 export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number }) {
   const { site, theme, navigate } = usePublic()
   const v = theme.vars
@@ -638,18 +658,9 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
   //         不再用 BookInfoLayout 中转 (旧 9 套 clone-* 统一渲染分支已废弃)
   // R18-1A 修复: R17 重构误删 lookup table, 此处恢复按 theme.layout 分发到 clone-themes/<site>/BookInfo;
   //             fallback aijjxs (与 R15-1B 同口径), 让 10 套 BookInfo 不再是死代码
-  const BookInfoComponent = {
-    'clone-aijjxs': BookInfoAijjxs,
-    'clone-ddyueshu': BookInfoDdyueshu,
-    'clone-pilishuwu': BookInfoPilishuwu,
-    'clone-23qb': BookInfo23qb,
-    'clone-101kks': BookInfo101kks,
-    'clone-huangjinwu': BookInfoHuangjinwu,
-    'clone-ggd66': BookInfoGgd66,
-    'clone-shipsay': BookInfoShipsay,
-    'clone-x2552': BookInfoX2552,
-    'clone-trxsw': BookInfoTrxsw,
-  }[theme.layout] || BookInfoAijjxs
+  // R19-1B 接线: 按 theme.layout 选 BookInfoComponent lookup table 中的对应组件
+  //             (lookup table 在文件顶部定义, fallback 走 aijjxs)
+  const BookInfoForLayout = BookInfoComponent[theme.layout] || BookInfoAijjxs
   const coverW = 'w-32 sm:w-40'
 
 
@@ -670,7 +681,8 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
       ) : (
         <>
           {/* R15-1B: 信息区按 theme.layout 区分 10 套 DOM (clone-themes/<site>/BookInfo) */}
-          <BookInfoComponent
+          {/* R19-1B: 接 BookInfoComponent lookup table (fallback aijjxs) */}
+          <BookInfoForLayout
             book={book}
             theme={theme}
             savedPos={savedPos}

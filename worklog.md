@@ -9824,3 +9824,165 @@ Stage Summary:
   · R17-1A 的 cleaner.ts 3 处增强保留 (cleanContentHtml step 5.5 / cleanIntro / cleanChapterTitle)
   · R17 重构的 8 页型 clone-themes 模块保留 (新增 RankingView/FulltextView/SearchView/KeywordView)
   · 未安装新 npm 包 (0 新依赖)
+
+---
+Task ID: R19-1A
+Agent: 子代理(clone-themes 10 套 8 组件模块重建)
+Task: 在 src/components/public/clone-themes/ 创建 10 套主题模块, 每套 8 个组件 + 1 个 index.ts + 1 个 shared.ts (共 100 文件)
+
+Work Log:
+- 步骤 1 项目背景摸排:
+  · tail -200 worklog.md, 确认 R13~R18 历史: clone-themes 经历 5 次重构 (R15-1A 创建 → R17 重构误删 lookup → R18-1A 恢复 lookup)
+  · 当前状态: clone-themes 目录已被删除 (R17 重构后未恢复), 4 视图全部走内联 fallback (theme.vars)
+  · HomeView.tsx 注释明确: "重建窗口期: 无 clone-themes, 用通用网格保证前台不白屏"
+
+- 步骤 2 提取 10 站点配色 (1:1 来自 src/lib/crawl/themes.ts 实测源站 CSS):
+  · aijjxs (久久小说): 双层 radial-gradient 奶油底 + #0f766e 青绿 + #b45309 琥珀 + 14px
+  · ddyueshu (得得小说): #E9FAFF 浅蓝底 + #88C6E5 天蓝头 + #6F78A7 蓝紫链 + 2px 直角 + 宋体
+  · pilishuwu (霹雳书屋): #fdf6ec 暖米底 + #fd8929 暖橙 + #ec5245 红橙 hover + 2px 直角
+  · 23qb (铅笔小说): #f8f9f9 浅灰底 + #ff2a14 鲜红 hover + 5px 圆角
+  · 101kks (101看書): #f2f3f4 + 米黄头 #fff2df + #667eea 蓝紫 + 10px 圆角
+  · huangjinwu (黄金屋): 蓝渐变底 + 玻璃 header + #2563eb 蓝 + 6px 圆角
+  · ggd66 (格格党): #f9f9f9 + 薄荷绿头 #56ccb5 + #00886d 青绿链 + #f50 橙红 hover + 4px
+  · shipsay (船说CMS): #f4f4f4 + #ed4259 红主色 + #3e3d43 深灰头 + 3px 圆角
+  · x2552 (吾爱文学): GBK + #2f468f 蓝紫链 + #ff6600 橙 hover + 3px 圆角
+  · trxsw (天人小说): 域名过期 AiraBrowser 反查 + #2c7be5 深蓝 + 4px 圆角
+
+- 步骤 3 编写生成器脚本 (scripts/gen-clone-themes-r19.cjs, ~830 行):
+  · SITES 数组定义 10 套配色 (硬编码 bg/surface/text/primary/accent/border/radius/cardShadow/fontFamily/maxW)
+  · genHomeClone/genBookInfo/genCategoryList/genReadChrome/genRankingView/genFulltextView/genSearchView/genKeywordView
+    8 个生成函数, 接受 site 参数, 模板化输出 .tsx 内容
+  · SHARED_TS 模板: 8 个 props 接口定义 (HomeCloneProps/BookInfoProps/.../KeywordViewProps)
+  · genIndex: 导出 8 个组件 + 8 个 props 类型
+
+- 步骤 4 生成全部 100 文件 (10 站点 × 10 文件/站点):
+  · 80 个 .tsx (8 组件 × 10 站点)
+  · 20 个 .ts (10 index.ts + 10 shared.ts)
+  · 总 LoC ~12000 (每站点 ~1200 行)
+
+- 步骤 5 1:1 克隆标准验证 (6 项全部满足):
+  1. ✓ 硬编码颜色 — const C = {bg/surface/...} 全部 #xxxxxx 来自源站 CSS, 不用 theme.vars
+  2. ✓ 用 inline style — 全部 style={{}} 对象, 不依赖 Tailwind 类
+  3. ✓ 用 usePublic() — 每个组件顶层调用, 取 site/navigate
+  4. ✓ 用 BookCover 渲染封面 — import { BookCover } from '../../BookCover'
+  5. ✓ 有 Skeleton + 空态 — loading 走 BookGridSkeleton, 空数组走 EmptyState
+  6. ✓ 响应式 — gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))'
+
+- 步骤 6 P1 修复 (BookInfo.tsx 类型不匹配):
+  · 错误: book.categoryId 类型为 string | null, onGoCategory 期望 string, navigate.cat 期望 string | undefined
+  · 修复: onClick 内 const cid = book.categoryId; if (!cid) return; 双重窄化, 后续 cid 严格为 string
+  · 同步修复 href 用 encodeURIComponent(book.categoryId) 防特殊字符
+  · 全 10 套 BookInfo 一致修复 (生成器一处改, 全部重生成)
+
+- 步骤 7 验证 (4 项全通过):
+  · bunx tsc --noEmit (排除 examples/skills 预存在错误): clone-themes 0 errors ✓
+  · bunx tsc --noEmit --noUnusedLocals --noUnusedParameters: clone-themes 0 errors ✓
+  · bun run lint: exit 0 (0 errors / 0 warnings) ✓
+  · bunx tsx -e 模块加载冒烟测试: 10 套 × 8 组件 = 80 exports 全部 typeof === 'function' ✓
+  · dev server curl / 返回 200 (clone-themes 模块编译成功) ✓
+  · 文件计数: 100 个 (80 .tsx + 20 .ts), 与规划完全一致 ✓
+
+Stage Summary:
+- 创建范围: 10 站点 clone-themes 模块 (100 文件, ~12000 LoC) + 1 生成器脚本 (830 LoC) = ~12800 LoC
+- 文件结构: clone-themes/<site>/{HomeClone,BookInfo,CategoryList,ReadChrome,RankingView,FulltextView,SearchView,KeywordView}.tsx + index.ts + shared.ts
+- 配色来源: 全部硬编码自 src/lib/crawl/themes.ts vars 字段 (实测源站 CSS 值, 不用 theme.vars 抽象)
+- 组件契约: 严格遵循 shared.ts 中 8 个 props 接口 (与 R18-1A 视图 lookup table 期望的签名一致)
+- 接线建议 (供 R19-1B+ 后续代理):
+  · HomeView.tsx: 10 个 dynamic import + lookup table, fallback GenericBookGrid
+  · BookView.tsx: lookup table, fallback 内联 BookInfoComponent
+  · CategoryView.tsx: lookup table, fallback 内联 CatListComponent
+  · ReadView.tsx: lookup table, fallback 内联 ReadChromeComponent
+  · RankingView.tsx: CloneRankingViews Record 填充 10 个 import
+  · FulltextView.tsx: CloneFulltextViews Record 填充 10 个 import
+  · SearchView.tsx: 新增 clone-themes lookup (当前未引用)
+  · KeywordView.tsx: 新增 clone-themes lookup (当前未引用)
+- 修改文件清单 (R19-1A 净改动):
+  · 新增 src/components/public/clone-themes/{aijjxs,ddyueshu,pilishuwu,23qb,101kks,huangjinwu,ggd66,shipsay,x2552,trxsw}/ 各 10 文件 (共 100 文件)
+  · 新增 scripts/gen-clone-themes-r19.cjs (生成器脚本)
+  · 净改动: +101 文件, +约 12800 行
+- 验证: tsc 0 errors / lint 0 errors / 80 exports smoke test 全部 OK
+- 工作记录: agent-ctx/R19-1A-clone-themes.md
+- 不修改的文件 (尊重约束):
+  · 现有视图 HomeView/BookView/CategoryView/ReadView/RankingView/FulltextView/SearchView/KeywordView 全部未改
+    (当前仍走重建窗口期通用兜底, R19 后续子代理按 lookup table 模式接线)
+  · types.ts / cleaner.ts / suggest.ts / fetcher.ts / runner.ts / parser.ts / themes.ts / ctx.tsx / bits.tsx 全部未动
+  · 未安装新 npm 包 (0 新依赖)
+
+---
+Task ID: R19-1B
+Agent: 子代理(clone-themes 接线 + 深度审计)
+Task: 接线所有 8 视图使用 clone-themes + 增强噪声清洗审计 + 代码深度审计
+
+Work Log:
+- 步骤 1 项目背景摸排:
+  · tail -200 worklog.md, 确认 R13~R19-1A 历史: R19-1A 创建 10 套 clone-themes (100 文件 ~12k LoC), 视图全部走"重建窗口期通用兜底" (theme.vars)
+  · 阅读 BookView/CategoryView/ReadView, 发现 R18-1A 注释承诺"恢复 lookup table" 但实际只恢复了注释, 内联 fallback 组件仍存在
+  · 阅读 RankingView/FulltextView/SearchView/KeywordView, 发现 4 视图 lookup table 为空 {} 或未引用 clone-themes
+  · 阅读 HomeView, 发现 R19 通用网格兜底 (GenericBookGrid), 10 个 dynamic import + 分发分支缺失
+
+- 步骤 2 clone-themes 契约确认:
+  · 阅读 clone-themes/aijjxs/shared.ts, 确认 8 个 props 接口
+  · 阅读 clone-themes/aijjxs/index.ts, 确认 8 个组件导出
+  · 阅读 clone-themes/aijjxs/*.tsx, 确认所有组件: 'use client' + usePublic() + BookCover + Skeleton + EmptyState
+  · 确认 themes.ts 10 个 layout 键
+
+- 步骤 3 视图接线 (部分 1, 8 视图):
+  · HomeView.tsx (185 行): 恢复 10 dynamic import + CLONE_LAYOUTS 常量 + 10 条 theme.layout 分发分支 + 透传 navCategoryCount/homeModuleLimit + 保留 GenericBookGrid 兜底
+  · BookView.tsx (792 行): 顶部新增 10 import + BookInfoComponent lookup table (Record<string, React.ComponentType<BookInfoProps>>), 删除内联 fallback (19 行 theme.vars 实现)
+  · CategoryView.tsx (155 行): 顶部新增 10 import + CatListComponent lookup table, 删除内联 fallback (25 行 IIFE)
+  · ReadView.tsx (690 行): 顶部新增 10 import + ReadChromeComponent lookup table, 删除内联 fallback (14 行 theme.vars 实现), 4 处 JSX 调用全部替换
+  · RankingView.tsx (126 行): 顶部新增 10 import + CloneRankingViews lookup table, 类型收紧到 RankingViewProps, fallback 走 aijjxs
+  · FulltextView.tsx (102 行): 同 RankingView 模式, CloneFulltextViews lookup table
+  · SearchView.tsx (342 行): 顶部新增 10 import + CloneSearchViews lookup table, 删除 ThemeBookList import, 搜索结果区改为 <CloneSearchView>
+  · KeywordView.tsx (403 行): 顶部新增 10 import + CloneKeywordViews lookup table, 主+次书籍区条件分发 (clone-theme 命中时走 CloneKeywordView, 保留 PSEO 装饰模块), cloneBooks 用默认值补齐 BookItem 缺失字段
+
+- 步骤 4 噪声清洗审计 (部分 2):
+  · cleaner.ts:688 行, R11-1A + R17-1A 全部增强已落地, 4 项要求全部满足:
+    1. ✓ 段落处理 (cleanContentHtml step 5.5 + cleanIntro 段间分割)
+    2. ✓ 空行处理 (split(/\n{2,}/) + filter(Boolean) + join)
+    3. ✓ 缩进处理 (U+3000 → 半角空格, 段首 trim)
+    4. ✓ 特殊字符剥离 (零宽字符 U+200B/C/D/FEFF + 控制字符 \x00-\x1F)
+  · 不重复添加 (R11-1A / R17-1A 增强完整保留)
+
+- 步骤 5 深度审计 (部分 3):
+  · fetcher.ts inflightMap TOCTOU (R14-1B 修复): line 3897-3898 + line 3582-3583 双处 entry 引用对比, 注释完整 ✓ 正确
+  · runner.ts control() 定时器泄漏 (R14-1B 修复): line 435-458 raceTimer let 声明 + Promise 构造器内赋值 + try/finally clearTimeout ✓ 正确
+  · fetcher.ts 3 处 AbortController clearTimeout (fetchProxy/fetchPageUncached/fetchBinary) 全部 try/finally 模式 ✓ 正确
+  · runner.ts controlChains Map 清理: tail 引用对比 + 异步 delete ✓ 正确
+  · BookView/CategoryView/ReadView lookup table 位置: 全部在 render 函数外部定义, 符合 eslint-react/no-render-defined-component ✓
+  · RankingView/FulltextView/SearchView/KeywordView lookup table 位置: 全部在 render 函数外部定义, 类型收紧到具体 props 接口 ✓
+  · clone-themes 10 套 × 8 组件 Skeleton + 空态审计 (80 文件):
+    - 6 列表组件 (HomeClone/CategoryList/RankingView/FulltextView/SearchView/KeywordView) 全套 ✓ Skeleton + EmptyState
+    - BookInfo (10 套): 无 Skeleton (父 BookView 用 <Sk> 占位), 空态有 (EmptyState) ✓ 设计合理
+    - ReadChrome (10 套): 无 Skeleton/EmptyState (父 ReadView 用 <ErrorState> 占位) ✓ 设计合理
+  · 文件计数: 100 文件 (10 站点 × 10 文件 = 80 .tsx + 20 .ts) ✓
+  · 未发现新 bug, 历史 bug (R14-1B fetcher TOCTOU + runner control timer) 全部正确保留
+
+- 步骤 6 验证 (4 项全通过):
+  · bunx tsc --noEmit (排除 examples/skills 预存在错误): src/ 0 errors ✓
+  · bunx tsc --noEmit --noUnusedLocals --noUnusedParameters: src/ 0 errors ✓ (10 套 import 全部使用)
+  · bun run lint: exit 0 (0 errors / 0 warnings) ✓
+  · 10 主题运行时冒烟测试 (curl /?view=home&theme=clone-*): 10/10 全部 200 OK ✓
+  · 多视图冒烟测试 (home/book/ranking/fulltext/search/keyword/category): 7 视图全部 200 OK ✓
+  · dev server log 检查: 无 error/warning/fail, 10 个 clone-* 主题渲染耗时 26-47ms (正常) ✓
+
+Stage Summary:
+- 审计范围: 8 视图 (~2.5k LoC) + 10 套 clone-themes (100 文件 ~12k LoC) + 3 crawl 模块 (~7.4k LoC) = ~22k LoC
+- 修复数量: P0=0 / P1=0 / P2=0 (历史 bug 已修) / 接线补全: 8 视图全部接 clone-themes lookup table
+- 关键改动: 8 视图全部从"内联 fallback / 重建窗口期通用兜底"切换到"clone-themes lookup table 分发", fallback 走 aijjxs (与 R15-1B 同口径)
+- 修改文件清单 (R19-1B 净改动, 8 文件):
+  · src/components/public/HomeView.tsx (185 行: 恢复 10 dynamic import + CLONE_LAYOUTS + 分发分支 + navCategoryCount/homeModuleLimit 透传)
+  · src/components/public/BookView.tsx (792 行: 顶部 lookup table + 删除内联 BookInfoComponent fallback)
+  · src/components/public/CategoryView.tsx (155 行: 顶部 lookup table + 删除内联 CatListComponent fallback)
+  · src/components/public/ReadView.tsx (690 行: 顶部 lookup table + 删除内联 ReadChromeComponent fallback + 4 处 JSX 调用替换)
+  · src/components/public/RankingView.tsx (126 行: lookup table 填充 10 套 + 类型收紧 + fallback aijjxs)
+  · src/components/public/FulltextView.tsx (102 行: 同 RankingView 模式)
+  · src/components/public/SearchView.tsx (342 行: 新增 lookup table + 替换 ThemeBookList 为 CloneSearchView)
+  · src/components/public/KeywordView.tsx (403 行: 新增 lookup table + clone-theme 命中时主+次书籍区走 CloneKeywordView, 保留 PSEO 装饰模块)
+- 验证: tsc 0 errors / lint 0 errors / 10 主题运行时 200 OK / dev log 无错误
+- 审计报告: agent-ctx/code-audit-r19.md (8 章节) + agent-ctx/R19-1B-wiring-audit.md (工作记录)
+- 不修改的文件 (尊重约束):
+  · bits.tsx / seo.ts / ctx.tsx / BookCover.tsx / types.ts / cleaner.ts / suggest.ts / fetcher.ts / obscura.ts / runner.ts / parser.ts / themes.ts 全部未动
+  · clone-themes/<site>/* 100 文件未动 (R19-1A 创建, R19-1B 仅接线引用)
+  · R13~R18 修改全部保留 (PSEO 集成 / fetcher entry 引用对比 / runner control timer / clone-themes 模块结构 / cleaner.ts 3 处增强 / R17 重构 8 页型模块)
+  · 未安装新 npm 包 (0 新依赖)

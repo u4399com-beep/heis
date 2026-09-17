@@ -13,6 +13,7 @@ import { ErrorState, Sk } from './bits'
 // R15-1B: 改为按 theme.layout 动态选择 clone-themes 的 CategoryList 组件 (硬编码颜色, 不用 theme.vars)
 // R18-1A 修复: R17 重构误删 lookup table, 让 clone-themes/<site>/CategoryList 沦为死代码;
 //             恢复 10 套 import + 按 theme.layout 分发, fallback 走 aijjxs (与 R15-1B 同口径)
+// R19-1B 接线: clone-themes 由 R19-1A 重建, 此处恢复 lookup table 引用
 import { CategoryList as CatListAijjxs } from './clone-themes/aijjxs'
 import { CategoryList as CatListDdyueshu } from './clone-themes/ddyueshu'
 import { CategoryList as CatListPilishuwu } from './clone-themes/pilishuwu'
@@ -23,6 +24,23 @@ import { CategoryList as CatListGgd66 } from './clone-themes/ggd66'
 import { CategoryList as CatListShipsay } from './clone-themes/shipsay'
 import { CategoryList as CatListX2552 } from './clone-themes/x2552'
 import { CategoryList as CatListTrxsw } from './clone-themes/trxsw'
+import type { CategoryListProps } from './clone-themes/aijjxs/shared'
+
+// R19-1B: lookup table 必须定义在 render 函数外部 (eslint-react/no-render-defined-component)
+// 按 theme.layout 选择 clone-themes/<site>/CategoryList 渲染 (硬编码颜色, 不用 theme.vars)
+// fallback 走 aijjxs (与 R15-1B 同口径)
+const CatListComponent: Record<string, React.ComponentType<CategoryListProps>> = {
+  'clone-aijjxs': CatListAijjxs,
+  'clone-ddyueshu': CatListDdyueshu,
+  'clone-pilishuwu': CatListPilishuwu,
+  'clone-23qb': CatList23qb,
+  'clone-101kks': CatList101kks,
+  'clone-huangjinwu': CatListHuangjinwu,
+  'clone-ggd66': CatListGgd66,
+  'clone-shipsay': CatListShipsay,
+  'clone-x2552': CatListX2552,
+  'clone-trxsw': CatListTrxsw,
+}
 
 export function CategoryView({ cat, page }: { cat?: string; page: number }) {
   const { site, theme, navigate } = usePublic()
@@ -41,6 +59,8 @@ export function CategoryView({ cat, page }: { cat?: string; page: number }) {
     setCatName('') // 同步清除上一分类的名称，避免闪烁旧分类名
   }
   const label = !cat ? '全部分类' : catName || '分类书籍'
+  // R19-1B: 按 theme.layout 选 CatListComponent lookup table 中的对应组件 (fallback aijjxs)
+  const CatListForLayout = CatListComponent[theme.layout] || CatListAijjxs
 
   useEffect(() => {
     let alive = true
@@ -118,30 +138,15 @@ export function CategoryView({ cat, page }: { cat?: string; page: number }) {
         <>
           {/* R15-1B: 按 theme.layout 选择 clone-themes/<site>/CategoryList 渲染 (硬编码颜色) */}
           {/* R18-1A 修复: R17 重构误删 lookup table, 此处恢复按 theme.layout 分发到 clone-themes/<site>/CategoryList */}
-          {(() => {
-            const CatListComponent = {
-              'clone-aijjxs': CatListAijjxs,
-              'clone-ddyueshu': CatListDdyueshu,
-              'clone-pilishuwu': CatListPilishuwu,
-              'clone-23qb': CatList23qb,
-              'clone-101kks': CatList101kks,
-              'clone-huangjinwu': CatListHuangjinwu,
-              'clone-ggd66': CatListGgd66,
-              'clone-shipsay': CatListShipsay,
-              'clone-x2552': CatListX2552,
-              'clone-trxsw': CatListTrxsw,
-            }[theme.layout] || CatListAijjxs
-            return (
-              <CatListComponent
-                books={data?.books || []}
-                loading={loading}
-                label={label}
-                page={data?.page ?? page}
-                total={data?.total ?? 0}
-                onPage={(p) => navigate({ view: 'category', cat, page: p })}
-              />
-            )
-          })()}
+          {/* R19-1B 接线: 接 CatListComponent lookup table (fallback aijjxs) */}
+          <CatListForLayout
+            books={data?.books || []}
+            loading={loading}
+            label={label}
+            page={data?.page ?? page}
+            total={data?.total ?? 0}
+            onPage={(p) => navigate({ view: 'category', cat, page: p })}
+          />
           {loading && <Sk className="mx-auto mt-4 h-9 w-64" />}
         </>
       )}

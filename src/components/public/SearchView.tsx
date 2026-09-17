@@ -1,5 +1,7 @@
 // ============================================================
 // 搜索视图 — 搜索框 + 主题化结果列表 + 相关词 + 热搜词 + 搜索历史
+// R19-1B 接线: clone-themes 由 R19-1A 重建, 此处加 CloneSearchViews lookup table
+//             按 theme.layout 选 clone-themes/<site>/SearchView 渲染结果区 (fallback 走 aijjxs)
 // ============================================================
 'use client'
 
@@ -11,8 +13,33 @@ import { usePublic } from './ctx'
 import { siteKeywordList, useSiteSEO, withAlpha } from './seo'
 import { generateTitle, generateMetaDescription, generateKeywords } from './auto-tdk'
 import { EmptyState, ErrorState, TagCloud } from './bits'
-import { ThemeBookList } from './BookCard'
 import { addSearchHistory, clearSearchHistory, getSearchHistory } from './search-history'
+import { SearchView as CloneSearchViewAijjxs } from './clone-themes/aijjxs'
+import { SearchView as CloneSearchViewDdyueshu } from './clone-themes/ddyueshu'
+import { SearchView as CloneSearchViewPilishuwu } from './clone-themes/pilishuwu'
+import { SearchView as CloneSearchView23qb } from './clone-themes/23qb'
+import { SearchView as CloneSearchView101kks } from './clone-themes/101kks'
+import { SearchView as CloneSearchViewHuangjinwu } from './clone-themes/huangjinwu'
+import { SearchView as CloneSearchViewGgd66 } from './clone-themes/ggd66'
+import { SearchView as CloneSearchViewShipsay } from './clone-themes/shipsay'
+import { SearchView as CloneSearchViewX2552 } from './clone-themes/x2552'
+import { SearchView as CloneSearchViewTrxsw } from './clone-themes/trxsw'
+import type { SearchViewProps } from './clone-themes/aijjxs/shared'
+
+// R19-1B: clone-themes 搜索组件 lookup table (按 theme.layout 选择对应组件, fallback aijjxs)
+// lookup table 必须定义在 render 函数外部 (eslint-react/no-render-defined-component)
+const CloneSearchViews: Record<string, React.ComponentType<SearchViewProps>> = {
+  'clone-aijjxs': CloneSearchViewAijjxs,
+  'clone-ddyueshu': CloneSearchViewDdyueshu,
+  'clone-pilishuwu': CloneSearchViewPilishuwu,
+  'clone-23qb': CloneSearchView23qb,
+  'clone-101kks': CloneSearchView101kks,
+  'clone-huangjinwu': CloneSearchViewHuangjinwu,
+  'clone-ggd66': CloneSearchViewGgd66,
+  'clone-shipsay': CloneSearchViewShipsay,
+  'clone-x2552': CloneSearchViewX2552,
+  'clone-trxsw': CloneSearchViewTrxsw,
+}
 
 export function SearchView({ q }: { q?: string }) {
   const { site, theme, navigate } = usePublic()
@@ -273,7 +300,11 @@ export function SearchView({ q }: { q?: string }) {
                   {!loading && data && <span className="ml-2 text-xs font-normal" style={{ color: v.textMuted }}>共 {data.books.length} 本</span>}
                 </h1>
               </div>
-              <ThemeBookList books={data?.books || []} loading={loading} />
+              {/* R19-1B: 按 theme.layout 选 clone-themes/<site>/SearchView 渲染结果 (fallback 通用 ThemeBookList) */}
+              {(() => {
+                const CloneSearchView = CloneSearchViews[theme.layout] || CloneSearchViewAijjxs
+                return <CloneSearchView q={q} books={data?.books || []} loading={loading} />
+              })()}
 
               {/* 相关搜索词 */}
               {!loading && data && data.relatedTags.length > 0 && (

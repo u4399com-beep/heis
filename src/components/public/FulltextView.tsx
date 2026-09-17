@@ -1,6 +1,7 @@
 // ============================================================
 // R17: 全本完本视图壳 — 按主题分发到 clone-themes/<site>/FulltextView
-// 重建窗口期: 通用网格兜底
+// R19-1B 接线: clone-themes 由 R19-1A 重建, 此处填充 CloneFulltextViews lookup table (10 套)
+// 未知 layout 走通用网格兜底 (与 R15-1B 同口径)
 // ============================================================
 'use client'
 
@@ -15,9 +16,32 @@ import { BookCover } from './BookCover'
 import { formatWords } from './seo'
 import { Pagination } from './Pagination'
 import type { BookItem } from './types'
+import { FulltextView as CloneFulltextViewAijjxs } from './clone-themes/aijjxs'
+import { FulltextView as CloneFulltextViewDdyueshu } from './clone-themes/ddyueshu'
+import { FulltextView as CloneFulltextViewPilishuwu } from './clone-themes/pilishuwu'
+import { FulltextView as CloneFulltextView23qb } from './clone-themes/23qb'
+import { FulltextView as CloneFulltextView101kks } from './clone-themes/101kks'
+import { FulltextView as CloneFulltextViewHuangjinwu } from './clone-themes/huangjinwu'
+import { FulltextView as CloneFulltextViewGgd66 } from './clone-themes/ggd66'
+import { FulltextView as CloneFulltextViewShipsay } from './clone-themes/shipsay'
+import { FulltextView as CloneFulltextViewX2552 } from './clone-themes/x2552'
+import { FulltextView as CloneFulltextViewTrxsw } from './clone-themes/trxsw'
+import type { FulltextViewProps } from './clone-themes/aijjxs/shared'
 
-// R17: clone-themes 全本组件懒加载
-const CloneFulltextViews: Record<string, React.ComponentType<any>> = {}
+// R19-1B: clone-themes 全本组件 lookup table (按 theme.layout 选择对应组件, fallback aijjxs)
+// lookup table 必须定义在 render 函数外部 (eslint-react/no-render-defined-component)
+const CloneFulltextViews: Record<string, React.ComponentType<FulltextViewProps>> = {
+  'clone-aijjxs': CloneFulltextViewAijjxs,
+  'clone-ddyueshu': CloneFulltextViewDdyueshu,
+  'clone-pilishuwu': CloneFulltextViewPilishuwu,
+  'clone-23qb': CloneFulltextView23qb,
+  'clone-101kks': CloneFulltextView101kks,
+  'clone-huangjinwu': CloneFulltextViewHuangjinwu,
+  'clone-ggd66': CloneFulltextViewGgd66,
+  'clone-shipsay': CloneFulltextViewShipsay,
+  'clone-x2552': CloneFulltextViewX2552,
+  'clone-trxsw': CloneFulltextViewTrxsw,
+}
 
 export function FulltextView({ page }: { page: number }) {
   const { site, theme, navigate } = usePublic()
@@ -45,8 +69,9 @@ export function FulltextView({ page }: { page: number }) {
     site,
   })
 
-  const CloneFulltext = CloneFulltextViews[theme.layout]
-  if (CloneFulltext && !loading && data) {
+  // R19-1B: 按 theme.layout 选 CloneFulltextViews lookup table 中的对应组件 (fallback aijjxs)
+  const CloneFulltext = CloneFulltextViews[theme.layout] || CloneFulltextViewAijjxs
+  if (!loading && data) {
     return <CloneFulltext books={data.books} loading={loading} page={page} total={data.total} size={data.size} onPage={(p: number) => navigate({ view: 'fulltext', page: p })} />
   }
 

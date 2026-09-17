@@ -1,6 +1,7 @@
 // ============================================================
 // R17: 排行榜视图壳 — 按主题分发到 clone-themes/<site>/RankingView
-// 重建窗口期: 通用网格兜底
+// R19-1B 接线: clone-themes 由 R19-1A 重建, 此处填充 CloneRankingViews lookup table (10 套)
+// 未知 layout 走通用网格兜底 (与 R15-1B 同口径)
 // ============================================================
 'use client'
 
@@ -16,9 +17,32 @@ import { bookNavProps, StatusBadge } from './bits'
 import { formatWords, } from './seo'
 import { Pagination } from './Pagination'
 import type { BookItem } from './types'
+import { RankingView as CloneRankingViewAijjxs } from './clone-themes/aijjxs'
+import { RankingView as CloneRankingViewDdyueshu } from './clone-themes/ddyueshu'
+import { RankingView as CloneRankingViewPilishuwu } from './clone-themes/pilishuwu'
+import { RankingView as CloneRankingView23qb } from './clone-themes/23qb'
+import { RankingView as CloneRankingView101kks } from './clone-themes/101kks'
+import { RankingView as CloneRankingViewHuangjinwu } from './clone-themes/huangjinwu'
+import { RankingView as CloneRankingViewGgd66 } from './clone-themes/ggd66'
+import { RankingView as CloneRankingViewShipsay } from './clone-themes/shipsay'
+import { RankingView as CloneRankingViewX2552 } from './clone-themes/x2552'
+import { RankingView as CloneRankingViewTrxsw } from './clone-themes/trxsw'
+import type { RankingViewProps } from './clone-themes/aijjxs/shared'
 
-// R17: clone-themes 排行榜组件懒加载 (重建窗口期不加载, 用通用兜底)
-const CloneRankingViews: Record<string, React.ComponentType<any>> = {}
+// R19-1B: clone-themes 排行榜组件 lookup table (按 theme.layout 选择对应组件, fallback aijjxs)
+// lookup table 必须定义在 render 函数外部 (eslint-react/no-render-defined-component)
+const CloneRankingViews: Record<string, React.ComponentType<RankingViewProps>> = {
+  'clone-aijjxs': CloneRankingViewAijjxs,
+  'clone-ddyueshu': CloneRankingViewDdyueshu,
+  'clone-pilishuwu': CloneRankingViewPilishuwu,
+  'clone-23qb': CloneRankingView23qb,
+  'clone-101kks': CloneRankingView101kks,
+  'clone-huangjinwu': CloneRankingViewHuangjinwu,
+  'clone-ggd66': CloneRankingViewGgd66,
+  'clone-shipsay': CloneRankingViewShipsay,
+  'clone-x2552': CloneRankingViewX2552,
+  'clone-trxsw': CloneRankingViewTrxsw,
+}
 
 const RANKING_TABS = [
   { id: 'allvisit', name: '总点击' },
@@ -56,8 +80,9 @@ export function RankingView({ page }: { page: number }) {
     site,
   })
 
-  const CloneRankingView = CloneRankingViews[theme.layout]
-  if (CloneRankingView && !loading && data) {
+  // R19-1B: 按 theme.layout 选 CloneRankingViews lookup table 中的对应组件 (fallback aijjxs)
+  const CloneRankingView = CloneRankingViews[theme.layout] || CloneRankingViewAijjxs
+  if (!loading && data) {
     return <CloneRankingView books={data.books} loading={loading} tab={tab} onTabChange={setTab} page={page} total={data.total} size={data.size} onPage={(p: number) => navigate({ view: 'ranking', page: p })} />
   }
 

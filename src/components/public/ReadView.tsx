@@ -32,6 +32,7 @@ import { readerActionsRef, useReadingProgress, type ReadLayoutProps } from './re
 // R15-1B: 改为按 theme.layout 动态选择 clone-themes 的 ReadChrome 组件 (硬编码颜色, 不用 theme.vars)
 // R18-1A 修复: R17 重构误删 lookup table, 让 clone-themes/<site>/ReadChrome 沦为死代码;
 //             恢复 10 套 import + 按 theme.layout 分发, fallback 走 aijjxs (与 R15-1B 同口径)
+// R19-1B 接线: clone-themes 由 R19-1A 重建, 此处恢复 lookup table 引用
 import { ReadChrome as ReadChromeAijjxs } from './clone-themes/aijjxs'
 import { ReadChrome as ReadChromeDdyueshu } from './clone-themes/ddyueshu'
 import { ReadChrome as ReadChromePilishuwu } from './clone-themes/pilishuwu'
@@ -42,6 +43,23 @@ import { ReadChrome as ReadChromeGgd66 } from './clone-themes/ggd66'
 import { ReadChrome as ReadChromeShipsay } from './clone-themes/shipsay'
 import { ReadChrome as ReadChromeX2552 } from './clone-themes/x2552'
 import { ReadChrome as ReadChromeTrxsw } from './clone-themes/trxsw'
+import type { ReadChromeProps } from './clone-themes/aijjxs/shared'
+
+// R19-1B: lookup table 必须定义在 render 函数外部 (eslint-react/no-render-defined-component)
+// 按 theme.layout 选择 clone-themes/<site>/ReadChrome 渲染外壳 (硬编码颜色, 不用 theme.vars)
+// fallback 走 aijjxs (与 R15-1B 同口径)
+const ReadChromeComponent: Record<string, React.ComponentType<ReadChromeProps>> = {
+  'clone-aijjxs': ReadChromeAijjxs,
+  'clone-ddyueshu': ReadChromeDdyueshu,
+  'clone-pilishuwu': ReadChromePilishuwu,
+  'clone-23qb': ReadChrome23qb,
+  'clone-101kks': ReadChrome101kks,
+  'clone-huangjinwu': ReadChromeHuangjinwu,
+  'clone-ggd66': ReadChromeGgd66,
+  'clone-shipsay': ReadChromeShipsay,
+  'clone-x2552': ReadChromeX2552,
+  'clone-trxsw': ReadChromeTrxsw,
+}
 
 const READER_FONT_KEY = 'public_reader_fontSize'
 const READER_NIGHT_KEY = 'public_reader_night'
@@ -490,18 +508,8 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
   const layout = readOf(theme).layout
   // R15-1B: 按 theme.layout 选择 clone-themes/<site>/ReadChrome 渲染外壳 (硬编码颜色, 不用 theme.vars)
   // R18-1A 修复: R17 重构误删 lookup table, 此处恢复按 theme.layout 分发到 clone-themes/<site>/ReadChrome
-  const ReadChromeComponent = {
-    'clone-aijjxs': ReadChromeAijjxs,
-    'clone-ddyueshu': ReadChromeDdyueshu,
-    'clone-pilishuwu': ReadChromePilishuwu,
-    'clone-23qb': ReadChrome23qb,
-    'clone-101kks': ReadChrome101kks,
-    'clone-huangjinwu': ReadChromeHuangjinwu,
-    'clone-ggd66': ReadChromeGgd66,
-    'clone-shipsay': ReadChromeShipsay,
-    'clone-x2552': ReadChromeX2552,
-    'clone-trxsw': ReadChromeTrxsw,
-  }[theme.layout] || ReadChromeAijjxs
+  // R19-1B 接线: 接 ReadChromeComponent lookup table (lookup table 在文件顶部定义, fallback aijjxs)
+  const ReadChromeForLayout = ReadChromeComponent[theme.layout] || ReadChromeAijjxs
   const chapterTitleStr = data?.chapter.title || ''
   // 章节导航: 透传给 ReadChrome 的 prev/next 按钮 (由 readerActionsRef 触发当前 read-layout 内置的导航)
   const handlePrevChapter = () => { readerActionsRef.current.onPrev?.() }
@@ -631,11 +639,11 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
     return (
       <>
         {topProgressBar}
-        <ReadChromeComponent chapterTitle={chapterTitleStr} onPrev={handlePrevChapter} onNext={handleNextChapter}>
+        <ReadChromeForLayout chapterTitle={chapterTitleStr} onPrev={handlePrevChapter} onNext={handleNextChapter}>
           <div key={`wrap-${wrapKey}`} className={slideClass}>
             <ReadImmersive key={`ri-${chapterId || ''}`} {...shared} />
           </div>
-        </ReadChromeComponent>
+        </ReadChromeForLayout>
         {helpButton}
         {helpDialog}
       </>
@@ -644,11 +652,11 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
     return (
       <>
         {topProgressBar}
-        <ReadChromeComponent chapterTitle={chapterTitleStr} onPrev={handlePrevChapter} onNext={handleNextChapter}>
+        <ReadChromeForLayout chapterTitle={chapterTitleStr} onPrev={handlePrevChapter} onNext={handleNextChapter}>
           <div key={`wrap-${wrapKey}`} className={slideClass}>
             <ReadPaginated key={`rp-${chapterId || ''}`} {...shared} />
           </div>
-        </ReadChromeComponent>
+        </ReadChromeForLayout>
         {helpButton}
         {helpDialog}
       </>
@@ -657,11 +665,11 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
     return (
       <>
         {topProgressBar}
-        <ReadChromeComponent chapterTitle={chapterTitleStr} onPrev={handlePrevChapter} onNext={handleNextChapter}>
+        <ReadChromeForLayout chapterTitle={chapterTitleStr} onPrev={handlePrevChapter} onNext={handleNextChapter}>
           <div key={`wrap-${wrapKey}`} className={slideClass}>
             <ReadPili key={`rpl-${chapterId || ''}`} {...shared} />
           </div>
-        </ReadChromeComponent>
+        </ReadChromeForLayout>
         {helpButton}
         {helpDialog}
       </>
@@ -669,11 +677,11 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
   return (
     <>
       {topProgressBar}
-      <ReadChromeComponent chapterTitle={chapterTitleStr} onPrev={handlePrevChapter} onNext={handleNextChapter}>
+      <ReadChromeForLayout chapterTitle={chapterTitleStr} onPrev={handlePrevChapter} onNext={handleNextChapter}>
         <div key={`wrap-${wrapKey}`} className={slideClass}>
           <ReadClassic key={`rc-${chapterId || ''}`} {...shared} />
         </div>
-      </ReadChromeComponent>
+      </ReadChromeForLayout>
       {helpButton}
       {helpDialog}
     </>

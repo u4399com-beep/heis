@@ -5,6 +5,9 @@
 //   - meta description 改为 "{关键词}" 相关小说在线阅读, ...
 //   - 顶部加 "搜索其他关键词" 搜索框
 //   - 底部加 "相关搜索" 区块(同引擎聚合的相关词, 再链到其他 keyword 落地页)
+// R19-1B 接线: clone-themes 由 R19-1A 重建, 此处加 CloneKeywordViews lookup table
+//             按 theme.layout 选 clone-themes/<site>/KeywordView 渲染主+次书籍区
+//             (保留顶部搜索框 + 底部相关词/相关搜索 PSEO 模块, fallback 走原 PSEO 渲染分支)
 // ============================================================
 'use client'
 
@@ -17,6 +20,33 @@ import { formatWords, useSiteSEO, withAlpha } from './seo'
 import { generateTitle, generateMetaDescription, generateKeywords } from './auto-tdk'
 import { BookCover } from './BookCover'
 import { EmptyState, ErrorState, Sk, StatusBadge, TagCloud } from './bits'
+import { KeywordView as CloneKeywordViewAijjxs } from './clone-themes/aijjxs'
+import { KeywordView as CloneKeywordViewDdyueshu } from './clone-themes/ddyueshu'
+import { KeywordView as CloneKeywordViewPilishuwu } from './clone-themes/pilishuwu'
+import { KeywordView as CloneKeywordView23qb } from './clone-themes/23qb'
+import { KeywordView as CloneKeywordView101kks } from './clone-themes/101kks'
+import { KeywordView as CloneKeywordViewHuangjinwu } from './clone-themes/huangjinwu'
+import { KeywordView as CloneKeywordViewGgd66 } from './clone-themes/ggd66'
+import { KeywordView as CloneKeywordViewShipsay } from './clone-themes/shipsay'
+import { KeywordView as CloneKeywordViewX2552 } from './clone-themes/x2552'
+import { KeywordView as CloneKeywordViewTrxsw } from './clone-themes/trxsw'
+import type { KeywordViewProps } from './clone-themes/aijjxs/shared'
+import type { BookItem } from './types'
+
+// R19-1B: clone-themes 关键词组件 lookup table (按 theme.layout 选择对应组件, fallback aijjxs)
+// lookup table 必须定义在 render 函数外部 (eslint-react/no-render-defined-component)
+const CloneKeywordViews: Record<string, React.ComponentType<KeywordViewProps>> = {
+  'clone-aijjxs': CloneKeywordViewAijjxs,
+  'clone-ddyueshu': CloneKeywordViewDdyueshu,
+  'clone-pilishuwu': CloneKeywordViewPilishuwu,
+  'clone-23qb': CloneKeywordView23qb,
+  'clone-101kks': CloneKeywordView101kks,
+  'clone-huangjinwu': CloneKeywordViewHuangjinwu,
+  'clone-ggd66': CloneKeywordViewGgd66,
+  'clone-shipsay': CloneKeywordViewShipsay,
+  'clone-x2552': CloneKeywordViewX2552,
+  'clone-trxsw': CloneKeywordViewTrxsw,
+}
 
 export function KeywordView({ tag }: { tag?: string }) {
   const { site, theme, navigate } = usePublic()
@@ -119,6 +149,14 @@ export function KeywordView({ tag }: { tag?: string }) {
   if (error) return <ErrorState message="关键词页面加载失败" detail={error} />
 
   const main = data?.book
+  // R19-1B: 按 theme.layout 选 CloneKeywordViews lookup table 中的对应组件 (fallback aijjxs)
+  // 当 clone-theme 命中时, 主+次书籍区走 clone-theme KeywordView; 否则保留原 PSEO 渲染分支
+  const CloneKeywordView = CloneKeywordViews[theme.layout] || CloneKeywordViewAijjxs
+  // clone-theme KeywordView 接收 BookItem[]; data.otherBooks 是简略结构 (id/name/author),
+  // 用默认值补齐 BookItem 缺失字段 (intro/cover/status/wordCount/category); main 不存在时 books=otherBooks
+  const cloneBooks: BookItem[] = main
+    ? [main as BookItem, ...data!.otherBooks.map((b) => ({ ...b, intro: '', cover: '', status: 'unknown' as const, wordCount: 0, category: '' }))]
+    : (data?.otherBooks ?? []).map((b) => ({ ...b, intro: '', cover: '', status: 'unknown' as const, wordCount: 0, category: '' }))
 
   return (
     <div className="mx-auto w-full max-w-5xl px-4 py-8 sm:px-6 sm:py-10">
@@ -188,7 +226,11 @@ export function KeywordView({ tag }: { tag?: string }) {
         </form>
       </section>
 
-      {effectiveLoading ? (
+      {/* R19-1B: clone-theme 命中时主+次书籍区走 clone-theme KeywordView (硬编码颜色),
+          未知 layout 走原 PSEO 渲染分支 (保留主题 vars 风格) */}
+      {CloneKeywordViews[theme.layout] ? (
+        <CloneKeywordView tag={tag} books={cloneBooks} loading={effectiveLoading} />
+      ) : effectiveLoading ? (
         <div className="space-y-6">
           <div className="flex gap-5 p-5" style={{ background: v.surface, border: `1px solid ${v.border}`, borderRadius: v.radius }}>
             <Sk className="aspect-[3/4] w-32 shrink-0" />
