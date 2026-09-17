@@ -38,6 +38,7 @@ export function GET() {
         // R16: 主题可编辑设置 — 导航栏分类数 + 首页模块数据量
         navCategoryCount: true,
         homeModuleLimit: true,
+        // R22: 页面底部自定义编辑 (前台 SiteFooter 消费 footerText/footerCopyright/footerIcp/footerStats)
         footerText: true,
         footerCopyright: true,
         footerIcp: true,

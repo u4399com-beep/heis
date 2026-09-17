@@ -162,15 +162,6 @@ export function formatReadTime(ms: number): string {
   return mm === 0 ? `${h}小时` : `${h}小时${mm}分`
 }
 
-/**
- * 紧凑格式 (用于徽章): 2h15m / 15m / 45s
- */
-export function formatReadTimeShort(ms: number): string {
-  const s = Math.max(0, Math.floor(ms / 1000))
-  if (s < 60) return `${s}s`
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m`
-  const h = Math.floor(m / 60)
-  const mm = m % 60
-  return mm === 0 ? `${h}h` : `${h}h${mm}m`
-}
+// R22-1A 清理: formatReadTimeShort(原 ms→"NhMm" 紧凑格式) 已随 BookInfoLayout.tsx 一并退役,
+//   全域 0 引用。如未来需要紧凑时长徽章再恢复, 当前为防止误用而删除, 同款长格式
+//   formatReadTime(中文 "N小时N分") 仍在使用。

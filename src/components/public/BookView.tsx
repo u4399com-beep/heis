@@ -1,9 +1,10 @@
 // ============================================================
 // 书籍详情视图 — 封面/信息/状态徽章/简介/目录(分页)/标签云
 // R12-1: 清理 pili/aurora/paper/mango/bamboo/rose/magazine/theater 旧主题分支
-//        clone-* 9 套主题统一走默认渲染分支 + 通用 EpisodeListSkeleton
-// R14-1A: 信息区 DOM 按 theme.layout 区分 10 套精仿结构 (BookInfoLayout 组件)
-//         章节正文 contentSelector 由 theme 透传给 ReadView (复刻原站 DOM)
+//        clone-* 10 套主题统一走默认渲染分支 + 通用 EpisodeListSkeleton
+// R19-1B: 信息区按 theme.layout 分发到 clone-themes/<site>/BookInfo (lookup table),
+//         fallback 走 aijjxs; 章节正文 contentSelector 由 theme 透传给 ReadView (复刻原站 DOM)
+// R22-1A: 清理 — 删除已退役的 BookInfoLayout.tsx (R20 误回滚的孤儿文件, 全域 0 引用)
 // ============================================================
 'use client'
 
@@ -649,11 +650,10 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
   }
 
   /* ---------- 信息区封面尺寸/面板（按主题差异化） ---------- */
-  //         不再用 BookInfoLayout 中转 (旧 9 套 clone-* 统一渲染分支已废弃)
-  //             fallback aijjxs (与 R15-1B 同口径), 让 10 套 BookInfo 不再是死代码
-  // R19-1B 接线: 按 theme.layout 选 BookInfoComponent lookup table 中的对应组件
-  //             (lookup table 在文件顶部定义, fallback 走 aijjxs)
-    const coverW = 'w-32 sm:w-40'
+  // R22-1A 清理: BookInfoLayout.tsx 已删除(R20 误回滚的孤儿文件), 不再"中转"概念.
+  //   当前由文件顶部 BookInfoLookup 按 theme.layout 分发到 clone-themes/<site>/BookInfo,
+  //   fallback 走 aijjxs (与 R15-1B / R19-1B 同口径).
+  const coverW = 'w-32 sm:w-40'
 
 
   return (

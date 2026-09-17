@@ -9986,3 +9986,122 @@ Stage Summary:
   · clone-themes/<site>/* 100 文件未动 (R19-1A 创建, R19-1B 仅接线引用)
   · R13~R18 修改全部保留 (PSEO 集成 / fetcher entry 引用对比 / runner control timer / clone-themes 模块结构 / cleaner.ts 3 处增强 / R17 重构 8 页型模块)
   · 未安装新 npm 包 (0 新依赖)
+
+---
+Task ID: R22-1A
+Agent: 子代理(深度代码审计+bug修复+清理整合)
+Task: 逐行强力深度抓 bug + 全部修复 (采集/反反爬/清洗/前端视图/API 路由) + 清理整合优化精简代码
+
+Work Log:
+- 步骤 1 项目背景摸排:
+  · tail -300 worklog.md, 确认 R13~R19 历史链路 (R13-1A PSEO → R14-1A/B/C BookInfoLayout+TOCTOU+control timer+清理
+    → R15-1A/B/C clone-themes 50 文件 + 4 视图 lookup table → R16 clone-themes 1:1 + CloneCSSLoader
+    → R17 8 页型 clone-themes + cleaner.ts 段落规整 → R18-1A 4 视图 lookup 恢复
+    → R19-1A/B 100 文件 clone-themes + 8 视图接线)
+  · worklog 未记录 R20/R21/R22 三个迭代, 用 git log 反推:
+    - e30b054 R20: 推倒重建 clone-themes + recentChapters 全书倒数 12 章 + 噪声清洗 + 阅读设置
+    - abb0a5f R21: 根因修复主题 1:1 克隆 + CloneCSSLoader + 视图接线 + 最新章节 + 阅读设置
+    - 158cc8e R22: 修复 clone-* 主题顶部底部旧主题残留 + 页面底部编辑功能
+  · R22 已落地: PublicSite.tsx 行 251/259 clone-* 主题跳过 SiteHeader/SiteFooter;
+    SiteFooter.tsx 行 36-39 消费 footerText/footerCopyright/footerIcp/footerStats;
+    SitesSection.tsx 行 670-708 footer 编辑 UI 表单; admin/sites POST + public/sites GET 路由已处理 footer 字段
+
+- 步骤 2 R22 新增代码逐行审计 (5 处):
+  · PublicSite.tsx `theme.layout.startsWith('clone-')` 跳过 SiteHeader/SiteFooter → 正确
+    (themes.ts ThemeDef.layout 是 10 套 clone-* 字面量联合, startsWith 恒 true, clone-* 主题
+    由内置 HomeClone/ReadChrome 接管 chrome, 未来加非 clone-* 主题自动放行)
+  · SiteFooter.tsx 4 字段消费 → 正确 (空字符串短路兜底, footerStats !== false 与 admin 同口径)
+  · SitesSection.tsx footer 编辑 UI 表单 → 正确 (emptyForm 默认值与 Prisma @default 一致,
+    openEdit 旧站缺字段 ?? 默认值, 长度上限 2000/200/100 与 API 一致)
+  · admin/sites POST 路由 paginationFields() → 正确 (4 字段 str + 长度上限 + footerStats !== false)
+  · admin/sites PUT 路由 → **P1 BUG 发现**: PUT 路由完全没有处理 footer 4 字段,
+    只处理 navCategoryCount/homeModuleLimit 等 R16 字段. 修前管理员编辑既有站点的 footer 修改不持久化
+    (POST 创建 OK, PUT 编辑丢字段)
+  · public/sites GET 路由 → 正确 (4 字段 select 完整, SiteFooter 消费侧无回归)
+  · public/book GET 路由 recentChapters (R20) → 正确 (total>0 短路 + orderBy idx desc + take 12 + reverse,
+    BookView 消费侧 slice(-12) 兜底)
+
+- 步骤 3 P1 修复 (PUT /api/admin/sites/[id]/route.ts):
+  · 补齐 footer 4 字段处理 (与 POST paginationFields() 100% 同口径):
+    - footerText: str(body, 2000)
+    - footerCopyright: str(body, 200)
+    - footerIcp: str(body, 100)
+    - footerStats: body.footerStats !== false
+  · 显式传入才更新 (PATCH 语义, 与同文件 R16 字段同模式, 未传字段保持现状)
+  · 注释明确说明修复原因 (R22-1A 修复 P1 BUG, PUT 路由漏处理 footer 4 字段)
+
+- 步骤 4 已有代码历史修复复核:
+  · fetcher.ts inflightMap TOCTOU (R14-1B): line 3879-3901 entry 引用对比完整保留 ✓
+  · fetcher.ts tokenInflight TOCTOU (R14-1B): line 3563-3587 entry 引用对比完整保留 ✓
+  · runner.ts control() 30s timer (R14-1B): line 439-452 try/finally clearTimeout 完整保留 ✓
+  · fetcher.ts AbortController clearTimeout × 3 (fetchProxy/fetchPageUncached/fetchBinary): 全部 try/finally ✓
+  · cleaner.ts R17-1A 段落规整 (step 5.5 段首缩进 + cleanIntro 段间空行 + cleanChapterTitle 卷剥离): 完整保留 ✓
+  · cleaner.ts 零宽字符剥离 4 个出口 (cleanTextField/cleanIntro/cleanContentHtml HTML/plainText): 完整 ✓
+  · obscura.ts 池管理 + 30s 排队超时 + Turnstile 8s 截止: 完整保留 ✓
+
+- 步骤 5 dead code 扫描 (P0 级发现):
+  · **25 个孤儿文件**: src/components/public/layouts/*.tsx (24 个) + BookInfoLayout.tsx (1 个)
+  · 根因: R15-1B worklog 明确承诺删除 11 个旧文件 (HomeClone*.tsx × 10 + BookInfoLayout.tsx),
+    但 R20 commit (e30b054) 在重建 clone-themes 时把 25 个文件全部又添加回仓库, R20~R22 三个迭代都没清理
+  · 全域 0 引用验证: grep -rn "from './layouts" src/ scripts/ → 0 hits;
+    grep -rn "import.*BookInfoLayout" src/ scripts/ → 0 hits (仅 BookView.tsx 注释提及, 无实际 import)
+  · 文件清单:
+    - 旧克隆布局 11 个 (R15-1B 已废): HomeClone{Aijjxs,Ddyueshu,Pilishuwu,23qb,101kks,Huangjinwu,Ggd66,Shipsay,X2552,Trxsw,Biquge}.tsx
+    - 旧通用布局 13 个 (R12-1 已废): Home{Biquge,Editorial,Grid,List,Magazine,Masonry,Minimal,Mosaic,Parts,Pili,Shelf,Showcase,Theater}.tsx
+    - 旧书籍信息布局 1 个 (R14-1A → R15-1B 已废): BookInfoLayout.tsx
+  · 删除全部 25 个文件 + 空目录 layouts/
+
+- 步骤 6 依赖死代码清理 (随 BookInfoLayout 退役):
+  · BookCard.tsx 全文件 3 个 export (BookCard/ThemeBookList/ReadFirstButton) 在 BookInfoLayout 删除后
+    全部成为 0 引用 (ReadFirstButton 唯一调用者是 BookInfoLayout; ThemeBookList 全域 0 import;
+    BookCard 仅由同文件 ThemeBookList 内部用) → 全文件删除 (97 行)
+  · reading-memory.ts formatReadTimeShort(ms) 仅由 BookInfoLayout line 65 调用 (作"已读 NhMm"徽章),
+    删除 BookInfoLayout 后变 0 引用. 同款长格式 formatReadTime (中文"N小时N分") 仍由 BookView/ReadView 用, 保留
+    → 删除 formatReadTimeShort 函数 (12 行) + 加 R22-1A 退役注释
+
+- 步骤 7 注释/微调:
+  · public/sites/route.ts: footer 4 字段加 `// R22: 页面底部自定义编辑` 注释 (与 R16 字段对齐, 无功能改动)
+  · BookView.tsx 头部注释更新: R14-1A BookInfoLayout 已退役 → R19-1B clone-themes lookup + R22-1A 删除孤儿
+  · BookView.tsx 内部 line 651-655 注释块清理: 删除"不再用 BookInfoLayout 中转"过时描述, 改为
+    "R22-1A 清理: BookInfoLayout.tsx 已删除(R20 误回滚的孤儿文件), 当前由 BookInfoLookup 按 theme.layout 分发"
+
+- 步骤 8 验证 (4 项全通过):
+  · bunx tsc --noEmit (排除 examples/skills 预存在错误): src/ 0 errors ✓
+  · bunx tsc --noEmit --noUnusedLocals --noUnusedParameters: src/ 0 errors ✓
+  · bun run lint: exit 0 (0 errors / 0 warnings) ✓
+  · 净改动统计: 30 文件, +27 / -7489 = -7462 行 (1 处 P1 修复 + 27 个 dead code 文件删除 + 1 个未使用函数删除)
+
+Stage Summary:
+- 审计范围: 5 crawl 模块 (~10.5k LoC) + 8 视图 (~2.5k LoC) + clone-themes 100 文件 (~12k LoC)
+  + admin/public API 路由 (sites/book 抽样) = ~25k LoC
+- 修复数量: P0=0 / **P1=1** (已修) / P2=0 / P3=0
+- P1 修复: PUT /api/admin/sites/[id]/route.ts 漏处理 footer 4 字段 (footerText/footerCopyright/footerIcp/footerStats),
+  修前管理员编辑既有站点时 footer 修改不持久化, POST 路由正常所以只有编辑路径被破坏
+- dead code 删除: -7462 行
+  · 25 个孤儿文件 (layouts/HomeClone*.tsx × 11 + layouts/Home*.tsx × 13 + BookInfoLayout.tsx, R20 误回滚)
+  · BookCard.tsx 全文件 (3 export 随 BookInfoLayout 退役, 97 行)
+  · reading-memory.ts formatReadTimeShort 函数 (12 行, 0 引用)
+  · BookView.tsx 注释清理 (R14-1A 过时描述)
+- 修改文件清单 (R22-1A 净改动, 30 文件):
+  · src/app/api/admin/sites/[id]/route.ts (P1 修复: 补齐 footer 4 字段 PUT 处理 +14 行)
+  · src/app/api/public/sites/route.ts (footer 4 字段加 R22 注释 +1 行)
+  · src/components/public/BookView.tsx (头部 + 内部注释清理)
+  · src/components/public/read-layouts/reading-memory.ts (删除 formatReadTimeShort + 退役注释)
+  · 删除 27 个 dead code 文件:
+    - src/components/public/BookInfoLayout.tsx (506 行)
+    - src/components/public/BookCard.tsx (97 行)
+    - src/components/public/layouts/HomeClone{Aijjxs,Ddyueshu,Pilishuwu,23qb,101kks,Huangjinwu,Ggd66,Shipsay,X2552,Trxsw,Biquge}.tsx (11 个文件)
+    - src/components/public/layouts/Home{Biquge,Editorial,Grid,List,Magazine,Masonry,Minimal,Mosaic,Parts,Pili,Shelf,Showcase,Theater}.tsx (13 个文件)
+    - src/components/public/layouts/ 空目录已 rm
+- 验证: tsc 0 errors / tsc strict 0 errors / lint 0 errors / 0 warnings
+- 审计报告: agent-ctx/code-audit-r22.md (12 章节, 408 行)
+- 不修改的文件 (尊重约束):
+  · src/lib/crawl/{fetcher,runner,parser,cleaner,obscura,themes,types,suggest,storage,hostgate,smart,sorter,calibrate,downloader,rule-templates,auto-tdk}.ts 全部未动
+  · src/components/public/{HomeView,CategoryView,ReadView,SearchView,KeywordView,RankingView,FulltextView,CloneCSSLoader,PublicSite,SiteHeader,SiteFooter}.tsx 全部未动 (仅 BookView.tsx 注释更新)
+  · src/components/public/clone-themes/<site>/* 100 文件未动 (R19-1A 创建 + R19-1B 接线状态保留)
+  · src/components/public/read-layouts/{ReadClassic,ReadImmersive,ReadPaginated,ReadPili,shared,chapter-progress,bookmarks}.ts(x) 全部未动
+  · src/components/admin/SitesSection.tsx 未动 (R22 footer 表单 UI 正确)
+  · prisma/schema.prisma 未动 (R22 footer 4 字段已正确声明)
+  · R13~R21 修改全部保留 (PSEO 集成 / fetcher entry 引用对比 / runner control timer / clone-themes 模块结构
+    / cleaner.ts 3 处增强 / R17 重构 8 页型模块 / R20 recentChapters / R21 1:1 克隆 + CloneCSSLoader)
+  · 未安装新 npm 包 (0 新依赖)

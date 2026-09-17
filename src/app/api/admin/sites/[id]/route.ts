@@ -77,6 +77,21 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     if (body?.homeModuleLimit !== undefined) {
       data.homeModuleLimit = clampInt(body.homeModuleLimit, 20, 10, 50)
     }
+    // R22-1A 修复 P1 BUG: PUT 路由漏处理 footer 4 字段, 修前管理员编辑既有站点的
+    // 自定义底部文案/版权/备案号/统计开关均不会被持久化(POST 路由已正确处理, 此处补齐).
+    // 与 POST paginationFields() 同口径: 文本走 str+长度上限, footerStats 缺省 true
+    if (body?.footerText !== undefined) {
+      data.footerText = str(body.footerText, 2000)
+    }
+    if (body?.footerCopyright !== undefined) {
+      data.footerCopyright = str(body.footerCopyright, 200)
+    }
+    if (body?.footerIcp !== undefined) {
+      data.footerIcp = str(body.footerIcp, 100)
+    }
+    if (body?.footerStats !== undefined) {
+      data.footerStats = body.footerStats !== false
+    }
 
     try {
       let site
