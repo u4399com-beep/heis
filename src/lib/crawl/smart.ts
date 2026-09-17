@@ -69,20 +69,32 @@ export async function smartCategory(
     const ZAI = (await import('z-ai-web-dev-sdk')).default
     const zai = await ZAI.create()
     const prompt = `你是一个小说分类专家。请从以下分类列表中选出最合适的一个分类(只返回分类名本身, 不要其他内容):\n分类列表: ${names.join('、')}\n\n书名: ${bookName}\n简介: ${intro.slice(0, 500)}\n\n只返回一个分类名:`
+    // R23-1A 修复 P2 资源泄漏: 旧实现 setTimeout 在 LLM 早返回(success/异常)后仍挂 15s
+    // 才触发 reject, 期间事件循环持条目; 高频 LLM 分类(批量入库)累积 timer 泄漏。
+    // 改为: 持 timer 句柄, race settle 后(finally)clearTimeout 显式释放, 与 fetchHttp/
+    // obscura withObscuraPage 同款 try/finally 模式。timeoutP.catch 仍保留以防 unhandled
+    // rejection(LLM 早返回时 timer 在 finally 已 clear, 但保留兜底防御 finally 与
+    // timer fire 间的微秒级竞态)
+    let timer: ReturnType<typeof setTimeout> | undefined
     const timeoutP = new Promise<never>((_, rej) => {
-      const t = setTimeout(() => rej(new Error('LLM 分类超时(15s)')), 15_000)
-      if (typeof t.unref === 'function') t.unref()
+      timer = setTimeout(() => rej(new Error('LLM 分类超时(15s)')), 15_000)
+      if (timer && typeof timer.unref === 'function') timer.unref()
     })
     timeoutP.catch(() => {}) // 落选后吞掉 rejection, 防 unhandled rejection
-    const res = await Promise.race([
-      zai.chat.completions.create({
-        messages: [{ role: 'user', content: prompt }],
-      }),
-      timeoutP,
-    ])
-    const answer = (res.choices?.[0]?.message?.content || '').trim()
-    const hit = names.find((n) => answer.includes(n))
-    if (hit) return { category: hit, method: 'llm' }
+    try {
+      const res = await Promise.race([
+        zai.chat.completions.create({
+          messages: [{ role: 'user', content: prompt }],
+        }),
+        timeoutP,
+      ])
+      const answer = (res.choices?.[0]?.message?.content || '').trim()
+      const hit = names.find((n) => answer.includes(n))
+      if (hit) return { category: hit, method: 'llm' }
+    } finally {
+      // LLM 早返回(success/异常)立即清 timer, 不再挂 15s 才 fire
+      if (timer) clearTimeout(timer)
+    }
   } catch (e: any) {
     console.warn('[smart] llm category failed:', e?.message?.slice(0, 80))
   }
