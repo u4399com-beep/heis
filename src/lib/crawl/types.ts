@@ -546,10 +546,15 @@ function safeBool(v: unknown): boolean | undefined {
   return typeof v === 'boolean' ? v : undefined
 }
 
-/** 安全字符串: 非字符串丢弃, 钳长度 */
+/** 安全字符串: 非字符串丢弃, 钳长度。
+ *  R26-1A P2 增强: 码点安全截断 —— 旧行为 `v.slice(0, max)` 按 UTF-16 code unit 截断,
+ *  emoji/CJK 扩展等 astral 字符(占 2 个 code unit 的代理对)被拦腰斩半产出 lone surrogate,
+ *  存入 DB 后 read 出显示为 U+FFFD(乱码); 规则配置中含 astral 字符的字段(如 UA 含 emoji)
+ *  被截断后入库即损坏。改用 Array.from 按码点迭代后 slice, 永不切断代理对(与 cleaner /
+ *  storage 的同名做法一致)。纯 ASCII / BMP 字符零回归(每字符 1 code unit = 1 码点) */
 function safeStr(v: unknown, max: number): string | undefined {
   if (typeof v !== 'string') return undefined
-  return v.slice(0, max)
+  return Array.from(v).slice(0, max).join('')
 }
 
 /**
@@ -587,13 +592,14 @@ function safeHeaderKey(v: string): string | undefined {
   return s
 }
 
-/** 安全字符串数组: 过滤非字符串项, 钳项数与单项长度 */
+/** 安全字符串数组: 过滤非字符串项, 钳项数与单项长度。
+ *  R26-1A P2: 同 safeStr, 单项截断改用 Array.from 码点安全截断(防代理对斩半) */
 function safeStrArr(v: unknown, maxItems: number, maxLen: number): string[] | undefined {
   if (!Array.isArray(v)) return undefined
   const out = v
     .filter((x): x is string => typeof x === 'string')
     .slice(0, maxItems)
-    .map((x) => x.slice(0, maxLen))
+    .map((x) => Array.from(x).slice(0, maxLen).join(''))
   return out
 }
 

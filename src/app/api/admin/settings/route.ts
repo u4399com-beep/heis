@@ -3,7 +3,7 @@ import { db } from '@/lib/db'
 import { ok, fail, readBody } from '@/lib/api'
 import { withGuard, isPlainObject } from '../../_lib/http'
 import { WHEEL_SETTING_KEY, invalidateLinksCache } from '@/lib/links'
-import { invalidateMiniServiceConfigCache } from '../../public/mini-service-config/route'
+import { invalidateMiniServiceConfigCache } from '@/lib/mini-service-config-cache'
 
 /** key 白名单: 字母数字下划线点横线, 1~64位 */
 const KEY_RE = /^[A-Za-z0-9_.-]{1,64}$/

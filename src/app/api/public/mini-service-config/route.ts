@@ -13,33 +13,14 @@
 // }
 //
 // 缓存: 60s in-memory(配置变更后最多 60s 生效), 避免每次 mini-service 请求都打 DB
+// 缓存逻辑移到 src/lib/mini-service-config-cache.ts (R26: 避免 route 文件导出非标准函数导致 tsc 类型检查失败)
+import { getCached, setCached } from '@/lib/mini-service-config-cache'
 import { timingSafeEqual } from 'node:crypto'
 import { db } from '@/lib/db'
 import { ok, fail } from '@/lib/api'
 import { withGuard } from '../../_lib/http'
 
 export const dynamic = 'force-dynamic'
-
-// 进程级缓存(60s TTL, HMR 安全)
-const CACHE_TTL_MS = 60_000
-let cachedAt = 0
-let cachedConfig: Record<string, unknown> | null = null
-
-function getCached(): Record<string, unknown> | null {
-  if (cachedConfig !== null && Date.now() - cachedAt < CACHE_TTL_MS) return cachedConfig
-  return null
-}
-
-function setCached(cfg: Record<string, unknown>) {
-  cachedConfig = cfg
-  cachedAt = Date.now()
-}
-
-/** R7-18: 供 admin settings 保存后显式失效缓存(miniServiceConfig 变更时立即生效) */
-export function invalidateMiniServiceConfigCache() {
-  cachedConfig = null
-  cachedAt = 0
-}
 
 /**
  * 常量时间字符串比较(供 BRIDGE_KEY 校验用, 防 timing side-channel)。

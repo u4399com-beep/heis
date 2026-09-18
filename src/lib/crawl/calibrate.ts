@@ -161,8 +161,16 @@ async function probeFetch(url: string, timeoutMs: number): Promise<ProbeReply> {
       redirect: 'manual',
       signal: ctl.signal,
     })
-    // 小页面直接读干, 释放连接
-    await res.text().catch(() => '')
+    // R26-1A P2 增强: 释放响应体连接 —— 旧行为 `await res.text().catch(() => '')` 把整个
+    // 响应体读进内存后丢弃; 真实源站(非模拟 mock)返回大页面(几 MB+)时无意义占内存且
+    // 拖慢探测节奏, 万章校准对全 size 站跑 60+ probe 时内存峰值可达数百 MB。probe 仅需
+    // 状态码 + Retry-After 头, 改用 ReadableStream.cancel() 释放流(whatwg-fetch / undici
+    // 均支持), 不把 body 拼成字符串。cancel 不可用(老 polyfill)时回退 res.text() 保持兼容
+    if (res.body && typeof (res.body as any).cancel === 'function') {
+      try { await (res.body as ReadableStream<Uint8Array>).cancel() } catch { /* 释放失败忽略 */ }
+    } else {
+      await res.text().catch(() => '')
+    }
     // Bug 7 修复: 原实现 parseFloat 仅支持"秒数"形态 Retry-After, 对 HTTP-date 形态
     // (如 "Wed, 21 Oct 2025 07:28:00 GMT")直接 NaN 当 0 处理 → 漏掉冷却信号 → 后续档
     // 紧贴未冷却的源站继续打, 误判源站防护极严。复用 fetcher.parseRetryAfterHeaderMs

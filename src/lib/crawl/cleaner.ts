@@ -205,7 +205,11 @@ export function cleanContentHtml(raw: string, cfgOverride?: Partial<CleanConfig>
     // R11-1A: 同步剥离零宽字符(U+200B/U+200C/U+200D/U+FEFF) —— 反爬水印常以零宽字符
     //  注入正文(可视化无变化但影响搜索/排序/去重/字数统计); 与 cleanTextField/cleanIntro
     //  同口径, 紧随控制字符剥离之后执行
-    return text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\u200B-\u200D\uFEFF]/g, '')
+    //  R26-1A: 追加 U+2060(Word Joiner) —— 与 downloader.ts ZW_CHARS 同口径, 防
+    //  obfuscate 'zero-width' 模式产出的 U+2060 在被重清洗时漏网(原集仅含
+    //  U+200B/C/D + U+FEFF; U+2060 是 obfuscator 4 选 1 之一, 但 cleaner 不剥,
+    //  闭环不对齐)
+    return text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\u200B-\u200D\u2060\uFEFF]/g, '')
   }
 
   // HTML模式
@@ -453,7 +457,8 @@ export function cleanContentHtml(raw: string, cfgOverride?: Partial<CleanConfig>
   }
   // 同上: HTML 模式出口同样剥离控制字符(源站 \b 杂符曾随 <p>\b话虽… 入库)
   // R11-1A: 同步剥离零宽字符(U+200B/U+200C/U+200D/U+FEFF), 与 plainText 分支同口径
-  return out.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\u200B-\u200D\uFEFF]/g, '').trim()
+  // R26-1A: 同步追加 U+2060(Word Joiner), 与 plainText 分支 + downloader.ZW_CHARS 同口径
+  return out.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\u200B-\u200D\u2060\uFEFF]/g, '').trim()
 }
 
 // 广告正则清洗的 URL 保护例外(y-a重放): 默认首条广告正则
@@ -559,7 +564,9 @@ export function cleanTextField(raw: string | undefined | null, maxLength?: numbe
   //  - 反爬水印常以零宽字符注入书名/作者/章节标题(可视化无变化但影响搜索/排序/去重)
   //  - 与控制字符剥离同口径, 紧随其后执行; 不影响后续 t2sText(零宽字符不在 CJK 区)
   //  - 范围说明: \u200B-\u200D = ZWSP/ZWNJ/ZWJ; \uFEFF = BOM/ZWNBSP
-  v = v.replace(/[\u200B-\u200D\uFEFF]/g, '')
+  //  R26-1A: 追加 U+2060(Word Joiner) —— 与 downloader.ZW_CHARS 同口径, 防 obfuscator
+  //  产出的 U+2060 注入书名/作者后被原样落库(原集仅含 4 字符, 缺 U+2060)
+  v = v.replace(/[\u200B-\u200D\u2060\uFEFF]/g, '')
   // 繁体→简体(检测未命中原样返回)
   v = t2sText(v)
   v = v
@@ -597,7 +604,8 @@ export function cleanIntro(raw: string | undefined | null, maxLength = 2000): st
   // 控制字符剥离(qq-e): 与 cleanTextField 同口径(\t\n\r 保留, 供下方按行切段)
   v = v.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')
   // R11-1A 新增: 零宽字符剥离(同 cleanTextField, 反爬水印注入简介的零宽字符)
-  v = v.replace(/[\u200B-\u200D\uFEFF]/g, '')
+  // R26-1A: 追加 U+2060(Word Joiner), 与 cleanTextField/cleanContentHtml 同口径
+  v = v.replace(/[\u200B-\u200D\u2060\uFEFF]/g, '')
   v = t2sText(v)
   v = removeAdLines(v, DEFAULT_CLEAN_CONFIG.adPatterns)
   // R17-1A: 段落规整增强 — 段首缩进规整(去全角空格 U+3000 + 半角空格缩进统一为 0) +

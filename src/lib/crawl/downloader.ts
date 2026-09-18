@@ -235,6 +235,18 @@ export async function generateBookTxt(
     throw e
   }
 
-  const { rel, size } = await writer.finish()
-  return { rel, size, chapters: book.chapters.length }
+  // R26-1A P1 修复: writer.finish() 包入 try/catch —— 原实现把 finish() 放在 try 块外,
+  // finish() 内 fh.close() 已成功(文件句柄关)但 fs.stat(filePath) 抛错(罕见: 文件被并发删
+  // /权限丢失 / 路径符号链接损坏)时, 半成品文件已落盘且无 abort() 清理, 后续重试/重发同
+  // 书下载时 openDownloadTxtWriter 同名 fs.open('w') 会截断该半成品, 但若中间有读者
+  // /api/public/download 读到该半成品, 则成品损坏且静默成功(坏字节给到用户)。
+  // 现失败时主动 abort() 删半成品(与 try 块 catch 路径同口径), 维持"失败即无文件"卫生语义
+  let finishResult: { rel: string; size: number }
+  try {
+    finishResult = await writer.finish()
+  } catch (e) {
+    await writer.abort()
+    throw e
+  }
+  return { ...finishResult, chapters: book.chapters.length }
 }

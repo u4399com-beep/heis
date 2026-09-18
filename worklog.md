@@ -12204,3 +12204,186 @@ Stage Summary:
   5. ✓ 智能分类/TDK/SEO/搜索下拉: 全部审查工作, 修复 yandex endpoint
 - 验证: lint 0 + tsc 0 + home SSR 完整渲染 (CSS+DOM+数据+工具栏) + book SSR 渲染 (BookInfo clone)
 - 环境: dev server webpack + NODE_OPTIONS=3072 稳定 (4GB 无 swap 限制下)
+
+---
+Task ID: R26-1A
+Agent: full-stack-developer (剩余 crawl 模块深度审查)
+Task: cleaner/parser/sorter/storage/hostgate/downloader/calibrate/types 逐段审查 + bug 修复
+
+Work Log:
+- 步骤 1 读交接文档: 读 worklog.md 末 200 行(R25-1A2 fetcher 8 级降级链 + Referer 修复 + sleepUnref;
+  R25-1A3 obscura 3 P1 + runner 2 P2; R25-1B 其他页型 SSR 接线 50+ 文件; R25-1C 主题工具栏
+  收藏/繁体/记录; R25-1D2 智能 TDK/SEO/搜索下拉/分类)
+
+- 步骤 2 全量逐段审查 8 个剩余 crawl 模块共 5436 行:
+  · cleaner.ts (687 行): 4 个零宽字符剥离出口 ✓ / 段落规整(\n{2,} 分段+段内 \n 压空格+U+3000→
+    半角+\s+ 收敛+filter(Boolean)join(\n\n)) ✓ / 水印段落识别(短段≤120 字+6 类水印词任一命中才剥,
+    长段视为正文不剥防误伤含 URL 的合法内容) ✓ / data-id 段落重排 DOM 节点移动(append 而非
+    parent.html 字符串重组防吞夹带兄弟节点) ✓ / 白名单剥壳 contents() 移动原节点(非字符串重 parse
+    防迭代快照失效泄漏内层标签) ✓ / 白名单属性消毒 a[href]+img[src] 仅 http(s) 绝对地址+img[alt]
+    任意文本, 其余属性(onerror/onload/style/data:img)一律剥除防存储型 XSS ✓ /
+    findReadableContent 链接密度评分+class boost+boilerplate penalty+punct boost ✓
+  · parser.ts (1484 行): XSS 风险下游 cleanContentHtml 消毒白名单标签+剥属性, 存储型 XSS 面关闭 ✓;
+    selector 注入 cheerio.load().find() 解析选择器不执行 ✓; ReDoS applyTransform chunked regex
+    路径+嵌套量词闸门+validateRegexSafety API 入口预审+引擎 try/catch 兜底 ✓; absolutize 协议
+    白名单(http(s) only)+自引用过滤(同 origin+path+search 仅 fragment 差异返空) ✓; docBase <
+    base href> 解析仅 http(s), 非法/相对按文档 URL 兜底 ✓; resolveWithBase 相对地址先按 base href
+    解析再交 absolutize 自引用过滤(两基准分离) ✓; JSON 模式 jsonGet/jsonWalkCore/
+    jsonRecursiveDescent 完整支持 union(||) / 递归下降(..) / JSONPath filter(?(@.field==value)) /
+    map-collect ✓; parseToc 同 path 不同 query 伪翻页检测(连 5 次同 path 即停)防分页 bug 死循环 ✓;
+    parseContent 三层兜底(规则 / readability / findLargestText / JSON-LD articleBody) ✓
+  · sorter.ts (381 行): 无 SQL 注入面(全量排序在内存 TocItem 数组, 无 orderBy 字符串拼接 → SQL 入口) ✓;
+    ES2019+ Array.sort 稳定+同号时回退 i 原始索引保稳定 ✓; reorderToc URL 去重(规范化: origin+
+    path+sorted query)+章节名去重 ✓; reorderWithVolumes 分卷感知重排(字段 volume+标题卷锚点
+    第N卷/Volume N/罗马数字)+卷内锚点固定最前+无号卷组装配式归位 ✓; cnNumToNumber 支持十百千万亿
+    +连写位值+romanToNumber NFKC 归一罗马字符 ✓
+  · storage.ts (160 行): readChapterTxt 已修(path.sep suffix 防同级前缀绕过) ✓; saveChapterTxt
+    bookId 未消毒 ❌ P1(Prisma cuid() 安全但防御性 coding 要求); saveCoverWebp name 走 [^\w-] 剥离
+    + basename 安全 ✓; downloadTxtTarget 走 [/\\:*?"<>|\s] 剥离防 ../ + 路径分隔符 ✓;
+    saveChapterTxt 非原子写入(fs.writeFile 进程崩溃/磁盘满 → 半成品文件被公共 API 读取损坏内容) ❌ P1;
+    openDownloadTxtWriter 非原子但有 abort() 半成品清理 ✓; readCover line 107 startsWith 死代码
+    (basename 已保证安全)但无害 ✓
+  · hostgate.ts (647 行): 模块不持 SSRF 责任(fetcher.assertSafeTarget 是唯一准入闸门), 本模块只导出
+    IP 字面量归一化工具(normalizeIpLiteral 十进制/八进制/十六进制 IPv4 编码 → 标准点分十进制)
+    +私网判定(isPrivateIp 私网/回环/链路本地/CGNAT/云元数据/0.0.0.0) ✓; DNS 重绑定注释说明
+    verifyDnsStability 已移除(未消费), fetcher 用 resolveAllIps+assertSafeTarget 组合防 SSRF ✓;
+    池管理全局 Map+globalThis 单例防 HMR+LRU 1000 上限+惰性 sweep 每 100 调用 ✓;
+    gapTimer/penaltyTimer/waiter.timer 全 unref ✓; settleRateLimitExpiry 在 pump 入口跑+acquire
+    入口也跑(双保险) ✓; FIFO 队头自查余量+节流到点+非限流冷却期才准入(无 barge) ✓;
+    caller 换代 minGapMsLastValue 检测+重置不 MAX 合并 ✓; 冷却到期回滚 minGapMsBeforeCooldown 快照 ✓;
+    hostGateReset R4-15 修复保留 wait.timer 显式 reject+clear 防 fire 后调已结束 awaiter ✓
+  · downloader.ts (240 行): generateBookTxt 用 openDownloadTxtWriter 流式落盘(原 parts 数组峰值消除) ✓;
+    单章文本仍逐章内存处理(与原实现相同) ✓; 无断点续传(单文件生成, 失败 abort() 清半成品) ✓;
+    半成品清理 try/catch 包 emit 流失败 writer.abort() 删半成品 ✓; obfuscateText 码点安全
+    (Array.from 迭代代理对)+density 钳 [0,0.3]+homoglyph 仅替换 BMP 字符 ✓; adInterval 合法化
+    Bug 20 修复保留 0=用户主动关+正数 floor+max(1)+负数回退默认 10 ✓; 并发同书互踩 zz-d 修复保留
+    Date.now+random 后缀消解毫秒碰撞 ✓; **writer.finish() 在 try 块外 ❌ P1**(fh.close 成功后
+    fs.stat 抛错时半成品文件无 abort() 清理, 公共 /api/public/download 读到损坏字节静默成功)
+  · calibrate.ts (590 行): calibrateRule 入口 assertSafeTarget({allowLoopback:true}) 校验 siteBase ✓;
+    sleepAbortable 200ms 切片 shouldAbort+throw CalibrateAbort ✓; stageVerify 120s 截止防死循环(R5-14)
+    +chainUrls.length 早破 ✓; zz-a2 首档撞临时封禁期 looksLikeBanResidue(403 占多数+Retry-After)
+    冷却后重探一次(每阶段至多一次) ✓; probeFetch timeoutMs=0 走默认 10_000(R4-17)+AbortController+
+    clearTimeout 兜底 ✓; 3xx 视为失败(Bug 17 redirect:'manual' 下源站主动跳转=挑战页) ✓;
+    0 status 视为异常(ab-c 修复 网络错误/5xx/路径 404 计 other, 防源站宕机虚高极限梯) ✓;
+    banEscalated(410 永久封禁)提前终止+firstFail 提前终止+输出最保守配置 ✓; v1 失败回退一档
+    (并发-1+间隔×1.3)再验一次 ✓; zz-a3 resetBefore 后读 /stats.profile 与请求档位比对不一致提示 ✓;
+    CooldownAfterFail Retry-After 优先(上限 90s)否则固定 8s ✓; **probeFetch res.text() 读整个响应体
+    进内存 ❌ P2**(probe 仅需状态码+Retry-After 头, 真实源站返回大页面时无意义占内存且拖慢探测)
+  · types.ts (1247 行): 大量 Record<string, unknown>+白名单枚举校验, unknown → 具体类型走 sanitize 链 ✓;
+    any 仅在 cheerio/xmldom interop 边界使用(不可避免, 第三方类型缺失) ✓; deep sanitize
+    parseRuleConfig+sanitizeFieldRule/PageRule/FetchConfig/CleanConfig 全字段白名单重建, 未知键全丢弃 ✓;
+    safeNum/safeBool/safeStr/safeSingleLine/safeHeaderKey/safeStrArr 类型消毒+长度钳制+CR/LF/NUL 剥离
+    +HTTP smuggling 头拒绝 ✓; HEADER_KEY_DENYLIST R4-22 拒 smuggling 向量头+R5-15 拒代理识别头
+    (via/forwarded/x-forwarded-*/x-real-ip 等) ✓; 正则安全审查 hasNestedQuantifier+
+    groupHasUnboundedTail+branchesHavePrefixAmbiguity+validateRegexSafety+collectRegexIssues 覆盖 4 入口
+    (FieldRule.expression/replaceFrom/tokenPattern/adPatterns) ✓; regex 编译试错 validateRegexSafety
+    先 new RegExp 编译试错非法 → 拒绝+reason ✓; **safeStr 用 v.slice(0, max) 按 UTF-16 code unit
+    截断 ❌ P2**(astral 字符占 2 code unit 代理对被拦腰斩半产出 lone surrogate, 存 DB 后读出显示
+    U+FFFD; safeStrArr 同款问题)
+
+- 步骤 3 修复 + 增强(只改 5 个剩余 crawl 模块):
+  · cleaner.ts (687 → 696, +9): P1 修复① 4 个零宽字符剥离出口追加 U+2060 (Word Joiner), 与
+    downloader.ZW_CHARS 同口径, 防 obfuscator 产出的 U+2060 在被重清洗时漏网(原集仅含
+    U+200B/C/D + U+FEFF, 缺 U+2060); 也防部分反爬水印使用 U+2060 (比 U+200B 更隐蔽)注入书名/
+    作者后被原样落库。4 处出口:
+    - cleanContentHtml plainText 分支 (line 212)
+    - cleanContentHtml HTML 分支 (line 461)
+    - cleanTextField (line 569)
+    - cleanIntro (line 608)
+    都加 R26-1A 注释说明
+  · storage.ts (160 → 184, +24):
+    - P1 修复① saveChapterTxt bookId 路径穿越防御 — 新增 safeBookId 计算
+      `String(bookId || '').replace(/[\\/\x00\s.]+/g, '_').replace(/^_+|_+$/g, '') || 'unknown_book'`,
+      剥除路径分隔符(\\ /) + NUL + 空白 + 点号(.) 防 `..` 父目录指针; 防御性 coding 即使 Prisma cuid()
+      是字母数字安全也要求(防御在源头, 不依赖 caller 传值合规)
+    - P1 修复② saveChapterTxt 原子写入 — 改为先写 .tmp 临时文件再 fs.rename
+      `tmpPath = ${filePath}.${process.pid}.${Math.floor(Math.random()*1e9)}.tmp`,
+      fs.rename 在 POSIX 同文件系统上是原子的(inode 替换), 中间任何时点读者看到的都是【旧完整文件】
+      或【新完整文件】之一, 永远看不到半成品; 临时文件名加 PID+随机段防并发同章节写入互踩
+      (同一本书同章节并发采集场景); catch 块主动 fs.unlink(tmpPath) 防泄漏
+    - P2 增强① saveCoverWebp fallback 加随机段 — 原 `cover_${Date.now()}` 改为
+      `cover_${Date.now()}_${Math.floor(Math.random()*9999)}`, 与 caller runner.ts:1235 同款做法
+      (防并发同毫秒空名碰撞)
+  · downloader.ts (240 → 252, +12): P1 修复① writer.finish() 包入 try/catch — 原实现把 finish() 放在
+    try 块外, finish() 内 fh.close() 已成功(文件句柄关)但 fs.stat(filePath) 抛错(罕见: 文件被并发删
+    / 权限丢失 / 路径符号链接损坏)时, 半成品文件已落盘且无 abort() 清理, 后续重试/重发同书下载时
+    openDownloadTxtWriter 同名 fs.open('w') 会截断该半成品, 但若中间有读者 /api/public/download
+    读到该半成品, 则成品损坏且静默成功(坏字节给到用户)。现失败时主动 abort() 删半成品(与 try 块
+    catch 路径同口径), 维持"失败即无文件"卫生语义
+  · calibrate.ts (590 → 600, +10): P2 增强① probeFetch 改用 ReadableStream.cancel() 释放响应体连接 —
+    旧行为 `await res.text().catch(() => '')` 把整个响应体读进内存后丢弃; 真实源站(非模拟 mock)
+    返回大页面(几 MB+)时无意义占内存且拖慢探测节奏, 万章校准对全 size 站跑 60+ probe 时内存峰值
+    可达数百 MB。probe 仅需状态码+Retry-After 头, 改用 cancel() 释放流(whatwg-fetch/undici 均支持),
+    不把 body 拼成字符串; cancel 不可用(老 polyfill / body 为 null)时回退 res.text() 保持兼容
+  · types.ts (1247 → 1257, +10):
+    - P2 修复① safeStr 码点安全截断 — 原 `v.slice(0, max)` 按 UTF-16 code unit 截断, emoji/CJK 扩展
+      等 astral 字符(占 2 code unit 代理对)被拦腰斩半产出 lone surrogate, 存 DB 后读出显示 U+FFFD;
+      改用 `Array.from(v).slice(0, max).join('')` 按码点迭代后 slice, 永不切断代理对。纯 ASCII/BMP
+      字符零回归(每字符 1 code unit = 1 码点)
+    - P2 修复② safeStrArr 同款问题修复 — `x.slice(0, maxLen)` → `Array.from(x).slice(0, maxLen).join('')`
+
+- 步骤 4 验证:
+  · bun run lint → 0 errors / 0 warnings exit 0 ✓
+  · bunx tsc --noEmit → 0 errors in 改动文件 ✓ (残留 tsc 错误均不在改动范围: .next/dev/types/app/api/
+    public/mini-service-config/route.ts 自动生成文件的 invalidateMiniServiceConfigCache 不兼容
+    index signature 问题 — 预存在, 与本次审查的 8 个 crawl 模块无关; examples/websocket /
+    skills/* 预存在错误也排除)
+  · dev server log: 全部 200 OK, fetcher 活跃采集 apibi.cc/api/chapter ✓
+
+Stage Summary:
+- 完成 8 个剩余 crawl 模块全量逐段审查(5436 行)+ 3 个 P1 bug 修复 + 4 处 P2 增强
+- 修改文件: 仅 src/lib/crawl/cleaner.ts (687→696, +9) + storage.ts (160→184, +24) + downloader.ts
+  (240→252, +12) + calibrate.ts (590→600, +10) + types.ts (1247→1257, +10), 共 +65 行
+- 核心改动:
+  · P1 修复① cleaner 4 个零宽字符剥离出口追加 U+2060(Word Joiner), 与 downloader.ZW_CHARS 同口径,
+    防 obfuscator 产出的 U+2060 在被重清洗时漏网(原集仅含 U+200B/C/D+U+FEFF, 缺 U+2060); 也防
+    部分反爬水印使用 U+2060(比 U+200B 更隐蔽)注入书名/作者后被原样落库
+  · P1 修复② storage saveChapterTxt bookId 路径穿越防御 — safeBookId 计算(剥除路径分隔符+NUL+
+    空白+点号防 `..` 父目录指针), 防御性 coding 即使 Prisma cuid() 安全也要求(防御在源头)
+  · P1 修复③ storage saveChapterTxt 原子写入 — 改为先写 .tmp 临时文件再 fs.rename(POSIX 同文件系统
+    原子 inode 替换), 中间任何时点读者看到的都是【旧完整文件】或【新完整文件】之一, 永远看不到
+    半成品; 临时文件名加 PID+随机段防并发同章节写入互踩; catch 块主动 fs.unlink(tmpPath) 防泄漏
+  · P1 修复④ downloader writer.finish() 包入 try/catch — 防 fh.close 成功后 fs.stat 抛错时半成品
+    文件无 abort() 清理, 后续 /api/public/download 读到损坏字节静默成功(坏字节给到用户); 现失败
+    时主动 abort() 删半成品维持"失败即无文件"卫生语义
+  · P2 增强① calibrate probeFetch 改用 ReadableStream.cancel() 释放响应体连接 — 旧行为 res.text()
+    把整个响应体读进内存后丢弃, 真实源站返回大页面(几 MB+)时无意义占内存且拖慢探测节奏; probe 仅需
+    状态码+Retry-After 头, 改用 cancel() 释放流(whatwg-fetch/undici 均支持); cancel 不可用时回退
+    res.text() 保持兼容
+  · P2 修复⑤ types safeStr 码点安全截断 — 原 v.slice(0, max) 按 UTF-16 code unit 截断, emoji/CJK
+    扩展等 astral 字符代理对被拦腰斩半产出 lone surrogate, 存 DB 后读出显示 U+FFFD; 改用
+    Array.from 按码点迭代后 slice, 永不切断代理对; 纯 ASCII/BMP 字符零回归
+  · P2 修复⑥ types safeStrArr 同款问题修复, 与 safeStr 同口径
+  · P2 增强⑦ storage saveCoverWebp fallback 加随机段, 与 caller runner.ts:1235 同款做法(防并发
+    同毫秒空名碰撞)
+- 历史修复全部保留(零回归确认):
+  · R11-1A cleaner 零宽字符剥离+水印段落识别+章首/章末剥离 / R17-1A 段落规整增强+段首缩进规整+
+    段间空行压缩 / R-CRAWL-FINAL 字面 \n→真实换行+实体单遍解码 / R-E5 内置额外广告/弹窗/友链选择器+
+    EXTRA_AD_PATTERNS 文案 / R3-25 img[src] 白名单放行 / Bug 15 <br><br>→</p><p> 替换前 <p>...</p>
+    包裹 / R3-26 sorter normalizeUrlKey 用 url.origin 代替 host / R3-27 storage 标题强制单行 /
+    Bug 21 按码点截断文件名 / Bug 16 URL 去重 query 排序 / Bug 7 calibrate Retry-After HTTP-date 形态
+    解析 / Bug 17 3xx 视为失败 / R4-17 timeoutMs=0 不立即 abort / R5-11 aborted 后不再回调 /
+    R5-14 stageVerify 120s deadline / R4-22+R5-15 HEADER_KEY_DENYLIST 拒 smuggling+代理识别头 /
+    gg-a 正则安全审查 hasNestedQuantifier+branchesHavePrefixAmbiguity+validateRegexSafety /
+    ee-d safeSingleLine 剥 CR/LF/NUL 防 HTTP 请求走私 / R4-15 hostgateReset waiter.timer 显式
+    reject+clear / R6-2 caller 换代同步快照 / zz-a2 首档撞临时封禁期重探 / zz-a3 档位一致性提醒 /
+    zz-b 限流冷却+minGapMs 节流双维独立 / audit C-zz LRU 1000 上限+惰性 sweep+evictIdleHosts /
+    agent-N parser JSON 联合||+递归下降..+JSONPath filter+map-collect+defaultValue 兜底+required 必填
+    +extractMultiple 多值提取 / cc-c 数组上非数字段 map-collect+[k=v] 过滤+* 递归展平 / Bug 20
+    downloader adInterval 合法化 / zz-d 并发同书互踩 Date.now+random 后缀 / qq-e 卷头判重基准改为
+    lastEmittedVolume 全部保留
+- 审查后零回归未改的 3 文件:
+  · parser.ts (1484 行): 审查后无 P0/P1 bug(XSS 下游消毒关闭+selector 注入无面+ReDoS chunked 闸门
+    完整+absolutize 自引用过滤完整+JSON walker 完整+伪翻页检测完整+三层兜底完整)
+  · sorter.ts (381 行): 审查后无 P0/P1 bug(无 SQL 注入面+ES2019+ sort 稳定+分卷感知重排完整+卷号
+    解析完整)
+  · hostgate.ts (647 行): 审查后无 P0/P1 bug(模块不持 SSRF 责任+IP 字面量归一化完整+池管理 LRU
+    sweep 完整+定时器全 unref+TOCTOU 双保险+FIFO 无 barge+caller 换代+冷却到期回滚完整)
+- 验证: bun run lint 0 errors / 0 warnings ✓ / bunx tsc --noEmit 0 errors in 改动文件 ✓ (排除
+  .next 自动生成+examples+skills 预存在) / dev server 200 OK + fetcher 活跃采集 ✓
+- 详细工作记录: agent-ctx/R26-1A-full-stack-developer.md (含 6 章节: 读交接/审查 8 模块/修复增强/
+  验证/修改文件清单/历史保留+已知限制)
+- 未修改(尊重约束): src/lib/crawl/fetcher.ts/obscura.ts/runner.ts (R25-1A2/A3 已审) / themes.ts /
+  suggest.ts / smart.ts (R25-1D2 已审) / rule-templates.ts (规则模板, 不在审查范围) /
+  src/components/public/* (前端) / src/app/page.tsx/PublicSite.tsx (主控已改) / src/app/api/*
+  (API 路由) / mini-services/* (mini 服务) / prisma/schema.prisma / package.json (0 新依赖)
