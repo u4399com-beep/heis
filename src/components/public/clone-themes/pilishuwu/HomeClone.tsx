@@ -29,12 +29,15 @@ const DEFAULT_NAV: Cat[] = [
   { id: '6', name: '百合小说' }, { id: '8', name: '轻小说' },
 ]
 
-export function HomeClone({ books, loading, navCategoryCount = 8 }: HomeCloneProps) {
+export function HomeClone({ books, loading, navCategoryCount = 8, initialCategories }: HomeCloneProps) {
   const { site, navigate } = usePublic()
-  const [cats, setCats] = useState<Cat[]>([])
+  // R24: SSR 首载用 page.tsx server fetch 的 initialCategories 初始化, 避免 SSR 时 cats=[] → navigation 没分类
+  const [cats, setCats] = useState<Cat[]>(() => (initialCategories || []).map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) })))
 
   // 拉分类列表用于 mod-top-nav-list + 各分类区块
+  // R24: cats 为空时才 fetch, 避免覆盖 SSR initialCategories 数据
   useEffect(() => {
+    if (cats.length > 0) return
     let aborted = false
     fetch('/api/public/categories?limit=60')
       .then(r => r.json())
@@ -47,7 +50,7 @@ export function HomeClone({ books, loading, navCategoryCount = 8 }: HomeClonePro
       })
       .catch(() => { if (!aborted) setCats(DEFAULT_NAV) })
     return () => { aborted = true }
-  }, [])
+  }, [cats.length])
 
   const navCats = (cats.length ? cats : DEFAULT_NAV).slice(0, navCategoryCount)
 

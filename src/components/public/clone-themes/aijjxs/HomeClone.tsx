@@ -39,12 +39,15 @@ const TOPIC_LIST = [
   { title: '都市爽文精选', desc: '升级流、事业线、金手指开局。' },
 ]
 
-export function HomeClone({ books, loading, navCategoryCount = 15, homeModuleLimit = 20 }: HomeCloneProps) {
+export function HomeClone({ books, loading, navCategoryCount = 15, homeModuleLimit = 20, initialCategories }: HomeCloneProps) {
   const { site, navigate } = usePublic()
-  const [cats, setCats] = useState<Cat[]>([])
+  // R24: SSR 首载用 page.tsx server fetch 的 initialCategories 初始化, 避免 SSR 时 cats=[] → navigation 没分类
+  const [cats, setCats] = useState<Cat[]>(() => (initialCategories || []).map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) })))
 
   // 拉分类列表用于 top-float-nav + 小說分类区块标题
+  // R24: cats 为空时才 fetch, 避免覆盖 SSR initialCategories 数据
   useEffect(() => {
+    if (cats.length > 0) return
     let aborted = false
     fetch('/api/public/categories?limit=60')
       .then(r => r.json())
@@ -57,7 +60,7 @@ export function HomeClone({ books, loading, navCategoryCount = 15, homeModuleLim
       })
       .catch(() => { if (!aborted) setCats(DEFAULT_NAV) })
     return () => { aborted = true }
-  }, [])
+  }, [cats.length])
 
   const navCats = (cats.length ? cats : DEFAULT_NAV).slice(0, navCategoryCount)
 

@@ -11643,3 +11643,120 @@ Stage Summary:
 - 环境: dev server 改 webpack 模式 (package.json --webpack flag), 4GB 无 swap 下稳定运行
 - 验证: shipsay home agent-browser snapshot 确认 1:1 克隆完整渲染源站 DOM 结构
 - 剩余风险: book/read/category 等子页 agent-browser 验证受 4GB 无 swap 限制 (curl SSR 200 OK, 代码正确)
+
+---
+Task ID: R24-3A
+Agent: 主控 (SSR 渲染根治 — 让用户真正看到 1:1 克隆)
+Task: 用户质问"主题模板还是不对！！！" — 实地排查发现 SSR 只渲染 skeleton, 根治架构让 SSR 渲染完整源站 DOM + CSS
+
+Work Log:
+- 步骤 1 实地排查 (curl 抓 SSR HTML 而非凭 lint 判断):
+  · curl 抓 /?view=home&site=xxx HTML, body 只有 skeleton + animate-pulse
+  · 完全没有 side_commend/sortvisit/navigation/header_right/万相之王 等源站 DOM
+  · 即 80 个文件 1:1 重写了但用户根本看不到 — SSR 没渲染 clone 组件!
+
+- 步骤 2 根因 1: HomeView dynamic import ssr=false:
+  · HomeView 用 dynamic(() => import(...), { ssr: false, loading: () => <BookGridSkeleton/> })
+  · ssr=false → SSR 只渲染 BookGridSkeleton, clone 组件根本没被调用
+  · 客户端 JS 编译时 4GB 无 swap OOM 崩 → 用户看到 skeleton 或空白
+  · 修复: 改 ssr: true (显式), 让 SSR await chunk 编译 + 渲染 clone 组件
+
+- 步骤 3 根因 2: PublicSite client useState([]) + useEffect fetch:
+  · PublicSite line 50: useState<SiteInfo[]>([]) — SSR 时 sites=[]
+  · line 77: useEffect fetchSites — SSR 时不执行
+  · line 144: theme = getTheme(themeOverride || site?.themeId) || THEMES[0]
+  · SSR 时 site=undefined → themeId=undefined → theme=THEMES[0](默认非 clone)
+  · → theme.layout.startsWith('clone-')=false → 走 GenericBookGrid skeleton (不是 clone 组件!)
+  · 修复: PublicSite 加 initialSite/initialSites prop, useState 初始值用这些
+
+- 步骤 4 根因 3: page.tsx 是 client (useSearchParams):
+  · page.tsx 'use client' → 不能 server fetch site 数据
+  · → PublicSite 没法 SSR 拿到 site/theme
+  · 修复: page.tsx 改 server component (去掉 'use client', async function Home({ searchParams }))
+  · server 端 fetch site + sites + books + categories (db 直接查)
+  · 传给 PublicSite initialSite/initialSites/initialBooks/initialCategories
+
+- 步骤 5 根因 4: HomeView client useEffect fetch books:
+  · HomeView useEffect fetch books — SSR 时不执行, books=[]
+  · clone 组件收到 loading=true → 渲染"加载中"
+  · 修复: HomeView 加 initialBooks prop, useState 初始值用 initialBooks (SSR loading=false)
+  · useEffect 跳过首次 (state.key === key 时 return), sort/page/cat 变化时重新 fetch
+
+- 步骤 6 根因 5: CloneCSSLoader client useEffect 注入 CSS:
+  · CloneCSSLoader useEffect 动态注入 <link> — SSR 时不执行
+  · SSR HTML head 只有 globals.css (Tailwind preflight), 没有源站 CSS
+  · 用户看到无样式 DOM (Tailwind reset 后裸 div)
+  · 修复 1: CloneCSSLoader 改直接渲染 <link> (不用 useEffect) — 但 client component <link> 不 hoist
+  · 修复 2: page.tsx server component 渲染 <link> — server <link> 会 hoist 到 <head> ✓
+
+- 步骤 7 根因 6: shipsay HomeClone client useEffect fetch categories:
+  · HomeClone useEffect fetch categories — SSR 时不执行, cats=[]
+  · navigation 没分类链接, sortvisit 分类区块没标题
+  · 修复: shipsay HomeClone 接 initialCategories prop, useState 初始值用 initialCategories
+  · useEffect 只在 cats 为空时 fetch (client 端补充)
+  · shared.ts HomeCloneProps 加 initialCategories?: any[]
+
+- 步骤 8 验证 (curl 抓 SSR HTML 确认, 不靠 lint 判断):
+  · head: /clone-css/shipsay.css ✓ (源站 CSS 在 head)
+  · body: side_commend/sortvisit/navigation/header_right/container ✓ (源站 DOM)
+  · body: 万相之王/大神小说/热门小说/玄幻 ✓ (books + categories 数据)
+  · TEXT: "dewew localhost:3000 首页 书库 完本 足迹 首页 玄幻 历史军事... 大神小说 玄幻/连载 万相之王 简介 天蚕土豆 531万字 2026-09-15 热门小说..."
+  · 完整复刻源站首页 DOM + 数据 + CSS!
+
+- 步骤 9 副作用处理:
+  · page.tsx 改 server 后不能传函数 prop (onBack/onPreviewSite 不能序列化)
+  · 修复: PublicSite 加 handleBack 默认函数 (window.location.href='/?admin=1')
+  · PublicSite 3 处 onBack 引用改 handleBack (line 194/197/288)
+  · AdminApp onPreviewSite 改可选, 不传时按钮 noop
+
+- 步骤 10 质量门:
+  · bun run lint: 0 errors ✓
+  · curl SSR HTML: head 有 shipsay.css + body 有完整源站 DOM + 数据 ✓
+  · dev server: webpack 模式 + NODE_OPTIONS=2560 稳定运行 (root/home 200)
+
+Stage Summary:
+- 用户质问正确: 之前 80 文件 1:1 重写了但 SSR 没渲染 — 用户只看到 skeleton/空白
+- 根因 5 层叠加: (1) HomeView ssr:false (2) PublicSite client useState (3) page.tsx client (4) HomeView useEffect fetch (5) CloneCSSLoader useEffect 注入
+- 修复: page.tsx 改 server + fetch site/sites/books/categories; PublicSite/HomeView/shipsay HomeClone 用 initialXxx prop 初始化; CloneCSSLoader 改直接渲染 <link>; page.tsx server 渲染 <link> hoist 到 head
+- 验证: curl 抓 SSR HTML — head 有 shipsay.css + body 有 side_commend/sortvisit/navigation/万相之王/大神小说/热门小说/玄幻 (完整源站 DOM + 数据 + CSS)
+- 剩余: 其他 9 套 HomeClone 也需接 initialCategories prop (当前 SSR cats=[], navigation 少分类, client 端 useEffect 补全)
+- 剩余: agent-browser 截图受 4GB 无 swap 限制 (客户端 JS 编译 OOM), 但 SSR HTML 已确认完整渲染
+
+---
+Task ID: R24-3B
+Agent: full-stack-developer (9 套 HomeClone 接 initialCategories)
+Task: 9 套 HomeClone 加 initialCategories prop + useState 初始值 + useEffect 条件
+
+Work Log:
+- 步骤 1 读交接文档: 读 worklog.md 末尾确认 R24-3A 主控 SSR 根因修复完成 — page.tsx 改 server component fetch site/sites/books/categories 传给 PublicSite/HomeView; HomeView 加 initialBooks/initialCategories prop; shipsay HomeClone 已示范接 initialCategories (useState 初始值 + useEffect `if (cats.length > 0) return` 跳过 fetch 避免覆盖 SSR 数据); shared.ts HomeCloneProps 已加 `initialCategories?: any[]`。
+- 步骤 2 读 shipsay 示范 (line 17-36): 函数签名 `export function HomeClone({ ..., initialCategories }: HomeCloneProps)` + `useState<Cat[]>(() => (initialCategories || []).map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) })))` + useEffect 首行 `if (cats.length > 0) return` + deps 改 `[cats.length]`。
+
+- 步骤 3 改 9 套 HomeClone.tsx (全部位于 src/components/public/clone-themes/):
+  · aijjxs/HomeClone.tsx: 函数签名 `navCategoryCount = 15, homeModuleLimit = 20` → 加 `initialCategories`; useState 初始值 `(initialCategories || []).map(c => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) }))`; useEffect 首行加 `if (cats.length > 0) return`; deps `[]` → `[cats.length]`。
+  · 23qb/HomeClone.tsx: 函数签名 `navCategoryCount = 13, homeModuleLimit = 16` → 加 `initialCategories`; useState 初始值同上; useEffect 加 `if (cats.length > 0) return`; deps 改 `[cats.length]`。
+  · ddyueshu/HomeClone.tsx: 函数签名 `navCategoryCount = 8` → 加 `initialCategories`; useState 初始值同上; useEffect 加 `if (cats.length > 0) return`; deps 改 `[cats.length]`。
+  · pilishuwu/HomeClone.tsx: 函数签名 `navCategoryCount = 8` → 加 `initialCategories`; useState 初始值同上; useEffect 加 `if (cats.length > 0) return`; deps 改 `[cats.length]`。
+  · 101kks/HomeClone.tsx: 函数签名 `homeModuleLimit = 20` → 加 `initialCategories`; useState 初始值同上; useEffect 加 `if (cats.length > 0) return`; deps 改 `[cats.length]`。
+  · huangjinwu/HomeClone.tsx: 函数签名 `navCategoryCount = 8, homeModuleLimit = 12` → 加 `initialCategories`; useState 初始值 `(initialCategories || []).map(c => ({ id: c.id || c.slug || c.name, name: (c.name || c.title || String(c)) + '榜' }))` (保留 '榜' 后缀与 client fetch 一致, sort-section 标题); useEffect 加 `if (cats.length > 0) return`; deps 改 `[cats.length]`。
+  · ggd66/HomeClone.tsx: 函数签名 `homeModuleLimit = 20` → 加 `initialCategories`; useState 初始值同上; useEffect 加 `if (cats.length > 0) return`; deps 改 `[cats.length]`。
+  · x2552/HomeClone.tsx: 函数签名 `navCategoryCount = 10, homeModuleLimit = 36` → 加 `initialCategories`; useState 初始值同上; useEffect 加 `if (cats.length > 0) return`; deps 改 `[cats.length]`。
+  · trxsw/HomeClone.tsx: 函数签名 `navCategoryCount = 16, homeModuleLimit = 20` → 加 `initialCategories`; useState 初始值同上; useEffect 加 `if (cats.length > 0) return`; deps 改 `[cats.length]`。
+
+- 步骤 4 关键设计:
+  · 完全照搬 shipsay 示范三处改法: (1) 函数签名加 initialCategories (2) useState 用函数式初始值 `(initialCategories || []).map(...)` 让 SSR 首次渲染就有 cats 数据 (3) useEffect 首行 `if (cats.length > 0) return` 让 SSR 数据不被 client fetch 覆盖。
+  · huangjinwu 特殊处理: 保留 `+ '榜'` 后缀的 name 映射逻辑, 与其 useEffect 内 `(c.name || ...) + '榜'` 一致, 避免 SSR 显示 "玄幻" 但 client 后续会显示 "玄幻榜" 不一致。
+  · deps 从 `[]` 改 `[cats.length]`: 与 shipsay 一致, 同时让 react-hooks/exhaustive-deps 不警告 (因为 effect 内引用了 cats.length)。
+  · 兜底 DEFAULT_NAV 保留: 9 套原本就有 fetch 失败时的 fallback, 没动这些逻辑; 只是 useEffect 加 `if (cats.length > 0) return` 让 SSR 数据优先, fetch 仅作为 cats 为空时的客户端补充。
+
+- 步骤 5 验证:
+  · bun run lint: 0 errors / 0 warnings exit 0 ✓ (9 套改动全部通过, 无未用 import / 无类型错误)
+  · bunx tsc --noEmit (排除 examples/skills 预存在错误): src/components/public/clone-themes/ 下 9 套 HomeClone 0 errors ✓; 唯一剩余 error 在 src/components/public/HomeView.tsx(73,57) (R24-3A 主控的 FetchState 类型不匹配 — initialBooks inline object 缺 page/size 字段, 与本次 9 套改动无关, 且任务明确"不要碰 HomeView.tsx")。
+  · dev server log: ✓ Compiled in 17.5s (webpack 模式), /?view=home&site=xxx GET 200 OK render 460ms, 无 compile error / 无 runtime error。
+
+Stage Summary:
+- 完成 9 套 HomeClone 接 initialCategories prop 改造 (位于 src/components/public/clone-themes/{aijjxs,23qb,ddyueshu,pilishuwu,101kks,huangjinwu,ggd66,x2552,trxsw}/HomeClone.tsx)。
+- 每套 3 处改: (1) 函数签名加 `initialCategories` (2) useState 用 `(initialCategories || []).map(...)` 函数式初始值 (3) useEffect 首行 `if (cats.length > 0) return` + deps 改 `[cats.length]`。
+- 与 shipsay 示范 (R24-3A 主控改好) 完全一致, SSR 时 navigation 有分类数据, client fetch 仅在 cats 为空时作为补充。
+- huangjinwu 保留 `+ '榜'` 后缀逻辑与其 useEffect 一致。
+- 未修改的文件 (尊重约束): shipsay/HomeClone.tsx (主控已改好) / shared.ts (HomeCloneProps 已加 initialCategories) / HomeView.tsx·PublicSite.tsx·page.tsx·CloneCSSLoader.tsx (主控已改) / 其他页型 BookInfo/CategoryList/ReadChrome 等 / themes.ts·books route。
+- 验证: bun run lint 0 errors ✓ / bunx tsc --noEmit src/components/public/clone-themes/ 0 errors ✓ (唯一剩余 HomeView.tsx(73,57) 是 R24-3A 主控 FetchState 类型错误, 与本次改动无关) / dev server 编译 + 200 OK render 460ms ✓。

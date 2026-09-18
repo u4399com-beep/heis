@@ -16,18 +16,20 @@ import { formatWords } from './seo'
 import type { BookItem } from './types'
 
 
-// R24: clone-themes 懒加载
+// R24: clone-themes dynamic import 显式 ssr=true — SSR 渲染 clone 组件 DOM (不只 loading fallback)
+// 之前 ssr:false → SSR skeleton + 客户端 JS OOM = 用户看到空白
+// 现在 ssr:true → SSR await chunk 编译 + 渲染 clone 组件 (loading=true 时渲染"加载中", 客户端 hydration 后 useEffect fetch books)
 const HomeClones: Record<string, React.ComponentType<any>> = {
-  'clone-aijjxs': dynamic(() => import('./clone-themes/aijjxs').then(m => m.HomeClone), { ssr: false, loading: () => <BookGridSkeleton count={12} /> }),
-  'clone-ddyueshu': dynamic(() => import('./clone-themes/ddyueshu').then(m => m.HomeClone), { ssr: false, loading: () => <BookGridSkeleton count={12} /> }),
-  'clone-pilishuwu': dynamic(() => import('./clone-themes/pilishuwu').then(m => m.HomeClone), { ssr: false, loading: () => <BookGridSkeleton count={12} /> }),
-  'clone-23qb': dynamic(() => import('./clone-themes/23qb').then(m => m.HomeClone), { ssr: false, loading: () => <BookGridSkeleton count={12} /> }),
-  'clone-101kks': dynamic(() => import('./clone-themes/101kks').then(m => m.HomeClone), { ssr: false, loading: () => <BookGridSkeleton count={12} /> }),
-  'clone-huangjinwu': dynamic(() => import('./clone-themes/huangjinwu').then(m => m.HomeClone), { ssr: false, loading: () => <BookGridSkeleton count={12} /> }),
-  'clone-ggd66': dynamic(() => import('./clone-themes/ggd66').then(m => m.HomeClone), { ssr: false, loading: () => <BookGridSkeleton count={12} /> }),
-  'clone-shipsay': dynamic(() => import('./clone-themes/shipsay').then(m => m.HomeClone), { ssr: false, loading: () => <BookGridSkeleton count={12} /> }),
-  'clone-x2552': dynamic(() => import('./clone-themes/x2552').then(m => m.HomeClone), { ssr: false, loading: () => <BookGridSkeleton count={12} /> }),
-  'clone-trxsw': dynamic(() => import('./clone-themes/trxsw').then(m => m.HomeClone), { ssr: false, loading: () => <BookGridSkeleton count={12} /> }),
+  'clone-aijjxs': dynamic(() => import('./clone-themes/aijjxs').then(m => m.HomeClone), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
+  'clone-ddyueshu': dynamic(() => import('./clone-themes/ddyueshu').then(m => m.HomeClone), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
+  'clone-pilishuwu': dynamic(() => import('./clone-themes/pilishuwu').then(m => m.HomeClone), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
+  'clone-23qb': dynamic(() => import('./clone-themes/23qb').then(m => m.HomeClone), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
+  'clone-101kks': dynamic(() => import('./clone-themes/101kks').then(m => m.HomeClone), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
+  'clone-huangjinwu': dynamic(() => import('./clone-themes/huangjinwu').then(m => m.HomeClone), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
+  'clone-ggd66': dynamic(() => import('./clone-themes/ggd66').then(m => m.HomeClone), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
+  'clone-shipsay': dynamic(() => import('./clone-themes/shipsay').then(m => m.HomeClone), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
+  'clone-x2552': dynamic(() => import('./clone-themes/x2552').then(m => m.HomeClone), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
+  'clone-trxsw': dynamic(() => import('./clone-themes/trxsw').then(m => m.HomeClone), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
 }
 
 interface FetchState { key: string; data?: BooksData; error?: string }
@@ -62,19 +64,22 @@ function GenericBookGrid({ books, loading }: { books: BookItem[]; loading: boole
   )
 }
 
-export function HomeView({ page, cat }: { page: number; cat?: string }) {
+export function HomeView({ page, cat, initialBooks, initialCategories }: { page: number; cat?: string; initialBooks?: any[]; initialCategories?: any[] }) {
   const { site, theme, navigate } = usePublic()
   const v = theme.vars
   const [sort, setSort] = useState<'latest' | 'words'>('latest')
-  const [state, setState] = useState<FetchState | null>(null)
+  // R24: SSR 首载用 page.tsx server fetch 的 initialBooks 初始化 state, 让 SSR 时 loading=false → clone 组件渲染 books 数据
   const key = `${site.id}|${cat || ''}|${sort}|${page}`
+  const [state, setState] = useState<FetchState | null>(initialBooks && initialBooks.length > 0 ? { key, data: { books: initialBooks, total: initialBooks.length, page: 1, size: 48 } as any } : null)
   useEffect(() => {
+    // initialBooks 已是 server fetch 的首屏数据, 首次 effect 跳过避免覆盖; sort/page/cat 变化时重新 fetch
+    if (state && state.key === key && state.data) return
     let alive = true
     fetchBooks({ site: site.id, cat, sort, page, size: 48 })
       .then(d => { if (alive) setState({ key, data: d }) })
       .catch((e: Error) => { if (alive) setState({ key, error: e.message }) })
     return () => { alive = false }
-  }, [key, site.id, cat, sort, page])
+  }, [key, site.id, cat, sort, page, state])
   const loading = !state || state.key !== key
   const data = loading ? null : state.data || null
   const error = loading ? '' : state.error || ''
@@ -99,7 +104,8 @@ export function HomeView({ page, cat }: { page: number; cat?: string }) {
     return (
       <Clone books={books} loading={loading}
         navCategoryCount={(site as any).navCategoryCount}
-        homeModuleLimit={(site as any).homeModuleLimit} />
+        homeModuleLimit={(site as any).homeModuleLimit}
+        initialCategories={initialCategories} />
     )
   }
   // 非 clone 主题: 通用布局 (搜索推荐 + 分类导航 + 排序 + 书网格 + 热门标签)

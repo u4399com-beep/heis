@@ -39,16 +39,27 @@ import type { SiteInfo } from './types'
 export default function PublicSite({
   initialSiteId,
   initialView,
+  initialSite,
+  initialSites,
+  initialBooks,
+  initialCategories,
   onBack,
   embedMode,
 }: {
   initialSiteId?: string
   initialView?: { view: 'home' | 'book' | 'read' | 'search' | 'keyword' | 'category' | 'history' | 'ranking' | 'fulltext'; bookId?: string; chapterId?: string; q?: string; tag?: string; cat?: string; page?: number; theme?: string }
+  initialSite?: SiteInfo | null
+  initialSites?: SiteInfo[]
+  initialBooks?: any[]
+  initialCategories?: any[]
   onBack?: () => void
   embedMode?: boolean
 }) {
-  const [sites, setSites] = useState<SiteInfo[]>([])
-  const [siteId, setSiteId] = useState('')
+  // R24: page.tsx 改 server 后不能传函数 prop, onBack 缺省时用默认 (返回后台)
+  const handleBack = onBack || (() => { if (typeof window !== 'undefined') window.location.href = '/?admin=1' })
+  // R24: SSR 首载用 page.tsx server fetch 的 initialSite/initialSites 初始化, 避免 SSR 时 sites=[] → site=null → theme=THEMES[0](非 clone) → 走 GenericBookGrid skeleton
+  const [sites, setSites] = useState<SiteInfo[]>(initialSites || [])
+  const [siteId, setSiteId] = useState(initialSite?.id || initialSiteId || '')
   const [view, setView] = useState<ViewParams>(() => {
     // 深链保真: initialView 已是 parseView 同构的完整参数(cat/page 等), 逐字段透传
     // (原先硬捾 cat: undefined 使 /?view=category&cat=x 深链/刷新丢分类过滤, 而
@@ -184,10 +195,10 @@ export default function PublicSite({
         >
           重新加载
         </button>
-        {embedMode && onBack && (
+        {embedMode && (
           <button
             type="button"
-            onClick={onBack}
+            onClick={handleBack}
             className="mt-2 inline-flex items-center gap-1.5 text-xs text-white/60 transition-opacity hover:opacity-80"
             aria-label="返回后台"
           >
@@ -232,7 +243,7 @@ export default function PublicSite({
       case 'fulltext':
         return <FulltextView key={`full-${site.id}`} page={view.page || 1} />
       default:
-        return <HomeView key={`home-${site.id}-${view.cat || ''}`} page={view.page || 1} cat={view.cat} />
+        return <HomeView key={`home-${site.id}-${view.cat || ''}`} page={view.page || 1} cat={view.cat} initialBooks={initialBooks} initialCategories={initialCategories} />
     }
   }
 
@@ -278,7 +289,7 @@ export default function PublicSite({
         {embedMode && (
           <button
             type="button"
-            onClick={onBack}
+            onClick={handleBack}
             className="fixed bottom-5 left-5 z-50 inline-flex items-center gap-2 rounded-full px-4 py-2.5 text-sm font-bold shadow-lg transition-transform hover:scale-105"
             style={{
               background: `linear-gradient(120deg, ${v.primary}, ${v.accent})`,

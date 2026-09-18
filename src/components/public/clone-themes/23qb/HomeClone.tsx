@@ -15,12 +15,15 @@ import { useEffect, useState } from 'react'
 
 interface Cat { id: string; name: string }
 
-export function HomeClone({ books, loading, navCategoryCount = 13, homeModuleLimit = 16 }: HomeCloneProps) {
+export function HomeClone({ books, loading, navCategoryCount = 13, homeModuleLimit = 16, initialCategories }: HomeCloneProps) {
   const { site, navigate } = usePublic()
-  const [cats, setCats] = useState<Cat[]>([])
+  // R24: SSR 首载用 page.tsx server fetch 的 initialCategories 初始化, 避免 SSR 时 cats=[] → navigation 没分类
+  const [cats, setCats] = useState<Cat[]>(() => (initialCategories || []).map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) })))
 
   // 拉分类列表用于 nav + list-item 分类区块标题
+  // R24: cats 为空时才 fetch, 避免覆盖 SSR initialCategories 数据
   useEffect(() => {
+    if (cats.length > 0) return
     let aborted = false
     fetch('/api/public/categories?limit=60')
       .then(r => r.json())
@@ -32,7 +35,7 @@ export function HomeClone({ books, loading, navCategoryCount = 13, homeModuleLim
       })
       .catch(() => {})
     return () => { aborted = true }
-  }, [])
+  }, [cats.length])
 
   if (loading) return <div className="wrapper"><div className="content" style={{ padding: 40, textAlign: 'center' }}>加载中...</div></div>
   if (!books.length) return <div className="wrapper"><div className="content" style={{ padding: 40, textAlign: 'center' }}>暂无内容</div></div>

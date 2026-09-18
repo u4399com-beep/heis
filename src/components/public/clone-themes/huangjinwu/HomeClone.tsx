@@ -52,12 +52,16 @@ const SITEMAP_LINKS = [
   { href: '/sitemap/html/ebooknews', title: '相关电子书大全' },
 ]
 
-export function HomeClone({ books, loading, navCategoryCount = 8, homeModuleLimit = 12 }: HomeCloneProps) {
+export function HomeClone({ books, loading, navCategoryCount = 8, homeModuleLimit = 12, initialCategories }: HomeCloneProps) {
   const { site, navigate } = usePublic()
-  const [cats, setCats] = useState<Cat[]>([])
+  // R24: SSR 首载用 page.tsx server fetch 的 initialCategories 初始化, 避免 SSR 时 cats=[] → navigation 没分类
+  // huangjinwu 的 sort-section 标题需加“榜”后缀, 与 client fetch 逻辑保持一致
+  const [cats, setCats] = useState<Cat[]>(() => (initialCategories || []).map((c: any) => ({ id: c.id || c.slug || c.name, name: (c.name || c.title || String(c)) + '榜' })))
 
   // 拉分类列表用于 sort-section 排行榜标题
+  // R24: cats 为空时才 fetch, 避免覆盖 SSR initialCategories 数据
   useEffect(() => {
+    if (cats.length > 0) return
     let aborted = false
     fetch('/api/public/categories?limit=60')
       .then(r => r.json())
@@ -69,7 +73,7 @@ export function HomeClone({ books, loading, navCategoryCount = 8, homeModuleLimi
       })
       .catch(() => { if (!aborted) setCats(DEFAULT_RANK_CATS) })
     return () => { aborted = true }
-  }, [])
+  }, [cats.length])
 
   if (loading) return <div className="main-content"><div className="container" style={{ padding: 40, textAlign: 'center' }}>加载中...</div></div>
   if (!books.length) return <div className="main-content"><div className="container empty-state"><p>暂无内容</p></div></div>
