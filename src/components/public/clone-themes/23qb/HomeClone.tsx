@@ -10,10 +10,28 @@
 import { usePublic } from '../../ctx'
 import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
+import { addFavoriteSite, useTraditionalChinese } from '../tools'
 import type { HomeCloneProps } from '../shared'
 import { useEffect, useState } from 'react'
 
 interface Cat { id: string; name: string }
+
+// 简繁切换按钮 — 23qb 风格 (iconfont icon-language + 文字)
+function TcToggle23qb() {
+  const { isTc, mounted, toggleTc } = useTraditionalChinese()
+  const label = mounted && isTc ? '简体' : '繁體'
+  return (
+    <a
+      href="#tc-toggle"
+      title="简繁切换"
+      onClick={(e) => { e.preventDefault(); toggleTc() }}
+      style={{ fontSize: 14 }}
+    >
+      <i className="iconfont icon-language" style={{ marginRight: 4 }} />
+      {label}
+    </a>
+  )
+}
 
 export function HomeClone({ books, loading, navCategoryCount = 13, homeModuleLimit = 16, initialCategories }: HomeCloneProps) {
   const { site, navigate } = usePublic()
@@ -118,6 +136,15 @@ export function HomeClone({ books, loading, navCategoryCount = 13, homeModuleLim
                 <a className="mac_user" href="/login.php" title="会员中心" onClick={(e) => { e.preventDefault(); navigate({ view: 'history' }) }}>
                   <i className="iconfont icon-yonghu-fuben" />
                 </a>
+              </li>
+              <li className="nav-menu-item">
+                <a href="#favorite" title="收藏本站 (Ctrl+D)" onClick={(e) => addFavoriteSite(e)} style={{ fontSize: 14 }}>
+                  <i className="iconfont icon-mark" style={{ marginRight: 4 }} />
+                  收藏本站
+                </a>
+              </li>
+              <li className="nav-menu-item">
+                <TcToggle23qb />
               </li>
             </ul>
           </div>

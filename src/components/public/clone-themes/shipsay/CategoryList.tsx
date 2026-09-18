@@ -28,12 +28,14 @@ const DEFAULT_NAV: Cat[] = [
   { id: '7', name: '女生' }, { id: '8', name: '其他' },
 ]
 
-export function CategoryList({ books, loading, label, page, total, size = 12, onPage }: CategoryListProps) {
+export function CategoryList({ books, loading, label, page, total, size = 12, onPage, initialCategories }: CategoryListProps) {
   const { site, navigate } = usePublic()
-  const [cats, setCats] = useState<Cat[]>([])
+  // R25: SSR 首载用 page.tsx server fetch 的 initialCategories 初始化, 避免 SSR 时 cats=[] → navigation 没分类
+  const [cats, setCats] = useState<Cat[]>(() => (initialCategories || []).map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) })))
 
   // 拉分类列表用于 navigation nav + #store_right 全部分类侧栏
   useEffect(() => {
+    if (cats.length > 0) return
     let aborted = false
     fetch('/api/public/categories?limit=60')
       .then(r => r.json())
@@ -45,7 +47,7 @@ export function CategoryList({ books, loading, label, page, total, size = 12, on
       })
       .catch(() => { if (!aborted) setCats(DEFAULT_NAV) })
     return () => { aborted = true }
-  }, [])
+  }, [cats.length])
 
   const navCats = (cats.length ? cats : DEFAULT_NAV).slice(0, 8)
   const totalPages = Math.max(1, Math.ceil(total / size))

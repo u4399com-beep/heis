@@ -11,11 +11,28 @@ import { usePublic } from '../../ctx'
 import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
 import { formatWords } from '../../seo'
+import { addFavoriteSite, useTraditionalChinese } from '../tools'
 import type { HomeCloneProps } from '../shared'
 import type { BookItem } from '../../types'
 import { useEffect, useState } from 'react'
 
 interface Cat { id: string; name: string }
+
+// 简繁切换按钮 — aijjxs 风格 (纯文字链接, 红色)
+function TcToggleAijjxs() {
+  const { isTc, mounted, toggleTc } = useTraditionalChinese()
+  const label = mounted && isTc ? '简体' : '繁體'
+  return (
+    <a
+      href="#tc-toggle"
+      title="简繁切换"
+      onClick={(e) => { e.preventDefault(); toggleTc() }}
+      style={{ marginLeft: 6 }}
+    >
+      {label}
+    </a>
+  )
+}
 
 // 源站默认 16 个分类(用于 fetch 失败/分类列表为空时兜底, 与 probe-aijjxs.html 顺序一致)
 const DEFAULT_NAV: Cat[] = [
@@ -173,6 +190,8 @@ export function HomeClone({ books, loading, navCategoryCount = 15, homeModuleLim
           <div className="top-float-auth">
             <a href="/e/member/login" onClick={(e) => e.preventDefault()}>登录</a>
             <a href="/e/member/register/" onClick={(e) => e.preventDefault()}>注册</a>
+            <a href="#favorite" title="收藏本站 (Ctrl+D)" onClick={(e) => addFavoriteSite(e)} style={{ marginLeft: 6 }}>收藏本站</a>
+            <TcToggleAijjxs />
           </div>
         </div>
       </div>

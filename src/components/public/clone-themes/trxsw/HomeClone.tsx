@@ -12,6 +12,7 @@ import { usePublic } from '../../ctx'
 import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
 import { formatWords } from '../../seo'
+import { addFavoriteSite, useTraditionalChinese } from '../tools'
 import type { HomeCloneProps } from '../shared'
 import type { BookItem } from '../../types'
 import { useEffect, useState } from 'react'
@@ -31,6 +32,22 @@ const DEFAULT_NAV: Cat[] = [
 ]
 
 const HOT_KEYWORDS = ['末日', '白月光', '末世', '直播', '万人迷', '女帝', '游戏入侵', '诡秘之主', '斗破', '香江']
+
+// 简繁切换按钮 — trxsw 风格 (.header-right 内文字链接)
+function TcToggleTrxsw() {
+  const { isTc, mounted, toggleTc } = useTraditionalChinese()
+  const label = mounted && isTc ? '简体' : '繁體'
+  return (
+    <a
+      href="#tc-toggle"
+      title="简繁切换"
+      onClick={(e) => { e.preventDefault(); toggleTc() }}
+      style={{ marginLeft: 8 }}
+    >
+      {label}
+    </a>
+  )
+}
 
 export function HomeClone({ books, loading, navCategoryCount = 16, homeModuleLimit = 20, initialCategories }: HomeCloneProps) {
   const { site, navigate } = usePublic()
@@ -133,6 +150,8 @@ export function HomeClone({ books, loading, navCategoryCount = 16, homeModuleLim
             <a href="/sort/" onClick={(e) => goCat(e)}>书库</a>
             <a href="/quanben/" onClick={goFulltext}>完本</a>
             <a href="/history.html" onClick={goHistory}>足迹</a>
+            <a href="#favorite" title="收藏本站 (Ctrl+D)" onClick={(e) => addFavoriteSite(e)} style={{ marginLeft: 8 }}>收藏本站</a>
+            <TcToggleTrxsw />
           </div>
         </div>
       </header>

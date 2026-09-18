@@ -11,10 +11,27 @@ import { usePublic } from '../../ctx'
 import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
 import { formatWords } from '../../seo'
+import { addFavoriteSite, useTraditionalChinese } from '../tools'
 import type { HomeCloneProps } from '../shared'
 import { useEffect, useState } from 'react'
 
 interface Cat { id: string; name: string }
+
+// 简繁切换按钮 — ddyueshu 风格 (.userpanel 内 a 链接, 无图标)
+function TcToggleDdyueshu() {
+  const { isTc, mounted, toggleTc } = useTraditionalChinese()
+  const label = mounted && isTc ? '简体' : '繁體'
+  return (
+    <a
+      href="#tc-toggle"
+      title="简繁切换"
+      onClick={(e) => { e.preventDefault(); toggleTc() }}
+      style={{ marginTop: 2, display: 'inline-block' }}
+    >
+      {label}
+    </a>
+  )
+}
 
 export function HomeClone({ books, loading, navCategoryCount = 8, initialCategories }: HomeCloneProps) {
   const { site, navigate } = usePublic()
@@ -104,7 +121,9 @@ export function HomeClone({ books, loading, navCategoryCount = 8, initialCategor
         </div>
         <div className="userpanel">
           <a href="/" onClick={goHome}>返回首页</a><br />
-          <a href="/modules/article/bookcase.php" onClick={goHistory}>我的书架</a>
+          <a href="/modules/article/bookcase.php" onClick={goHistory}>我的书架</a><br />
+          <a href="#favorite" title="收藏本站 (Ctrl+D)" onClick={(e) => addFavoriteSite(e)} style={{ marginTop: 2, display: 'inline-block' }}>收藏本站</a><br />
+          <TcToggleDdyueshu />
         </div>
       </div>
 

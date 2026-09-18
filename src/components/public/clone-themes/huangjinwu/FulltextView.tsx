@@ -41,11 +41,12 @@ const NAV_ITEMS = [
   { id: 'search', name: '搜索', icon: 'icon-search' },
 ]
 
-export function FulltextView({ books, loading, page, total, size, onPage }: FulltextViewProps) {
+export function FulltextView({ books, loading, page, total, size, onPage, initialCategories }: FulltextViewProps) {
   const { site, navigate } = usePublic()
-  const [cats, setCats] = useState<Cat[]>([])
+  const [cats, setCats] = useState<Cat[]>(() => (initialCategories || []).map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) })))
 
   useEffect(() => {
+    if (cats.length > 0) return
     let aborted = false
     fetch('/api/public/categories?limit=60')
       .then(r => r.json())
@@ -57,7 +58,7 @@ export function FulltextView({ books, loading, page, total, size, onPage }: Full
       })
       .catch(() => { if (!aborted) setCats(DEFAULT_NAV) })
     return () => { aborted = true }
-  }, [])
+  }, [cats.length])
 
   const navCats = cats.length ? cats : DEFAULT_NAV
   const totalPages = Math.max(1, Math.ceil(total / size))

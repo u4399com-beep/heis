@@ -168,12 +168,23 @@ const MAX_BOOK_LAST_CHAPTERS = 50_000
 const RATE_LIMIT_HINT_RE = /429|rate[ _-]?limit|too many requests/i
 
 // R7-26: 全局违禁词列表(从系统设置加载, 60s缓存)
-let globalBannedWords: string[] = []
-let globalBannedWordsCachedAt = 0
+// R25-1A 修复 P2 HMR 安全: 原模块级变量在 Next dev HMR 模块重求值时丢失缓存, 60s TTL 内反复
+// 读 DB 增加负载 + 短窗口内多任务并发 miss cache 各自加载一次。挂 globalThis 单例与
+// __novelTaskRunner/__novelHostGate_v1 同口径, HMR 复用同一缓存实例
+const globalForBannedWords = globalThis as unknown as {
+  __novelBannedWords_v1?: { words: string[]; cachedAt: number }
+}
+function getBannedWordsCache(): { words: string[]; cachedAt: number } {
+  if (!globalForBannedWords.__novelBannedWords_v1) {
+    globalForBannedWords.__novelBannedWords_v1 = { words: [], cachedAt: 0 }
+  }
+  return globalForBannedWords.__novelBannedWords_v1
+}
 const BANNED_WORDS_CACHE_TTL = 60_000
 
 async function loadGlobalBannedWords(): Promise<string[]> {
-  if (Date.now() - globalBannedWordsCachedAt < BANNED_WORDS_CACHE_TTL) return globalBannedWords
+  const cache = getBannedWordsCache()
+  if (Date.now() - cache.cachedAt < BANNED_WORDS_CACHE_TTL) return cache.words
   try {
     const row = await db.setting.findUnique({ where: { key: 'bannedWords' } })
     let words: string[] = []
@@ -183,11 +194,11 @@ async function loadGlobalBannedWords(): Promise<string[]> {
         if (Array.isArray(parsed)) words = parsed.filter((w: unknown) => typeof w === 'string' && w.trim())
       } catch { /* ignore */ }
     }
-    globalBannedWords = words
-    globalBannedWordsCachedAt = Date.now()
+    cache.words = words
+    cache.cachedAt = Date.now()
     return words
   } catch {
-    return globalBannedWords
+    return cache.words
   }
 }
 
@@ -436,11 +447,16 @@ export class TaskRunner {
     // R14-1B fix: 30s 超时定时器在 controlInner 快路径下从未被 clearTimeout,
     // 即 Promise.race 已 settled 后 timer 仍挂起 30s 持内存/事件循环条目.
     // 改为: try/finally 显式 clearTimeout, 保证快路径下 timer 立即释放.
+    // R25-1A 修复 P2 资源泄漏: raceTimer 同时 unref —— 30s 超时挂起会阻止 CLI/测试
+    //  自然退出(scheduleAutoRefresh/cancelAutoRefresh/serializeStatusWrite 同口径都 unref)
     let raceTimer: ReturnType<typeof setTimeout> | undefined
     const inner = () => Promise.race([
       this.controlInner(taskId, action),
       new Promise<never>((_, reject) => {
         raceTimer = setTimeout(() => reject(new Error('control timeout(30s)')), 30_000)
+        // R25-1A: unref 30s 超时定时器(快路径下 finally clearTimeout 立即释放; 慢路径
+        // controlInner 真挂 30s 时也不阻塞进程自然退出)
+        ;(raceTimer as unknown as { unref?: () => void }).unref?.()
       }),
     ])
     const run = prev.then(async () => {
@@ -1124,7 +1140,8 @@ export class TaskRunner {
     const parsedWordCount = parseInt(String(parsed.wordCount || '').replace(/[^\d]/g, ''), 10) || 0
 
     // R7-26: 违禁词智能跳过 — 检查书名/简介/作者是否含违禁词
-    const bannedWords = rule.clean.bannedWords || globalBannedWords
+    // R25-1A: 从 HMR 安全的 cache 实例读取(原模块级变量 globalBannedWords 已迁移到 globalThis)
+    const bannedWords = rule.clean.bannedWords || getBannedWordsCache().words
     if (bannedWords && bannedWords.length > 0) {
       const checkText = `${bookName}\n${intro}\n${author}`.toLowerCase()
       const hitWord = bannedWords.find((w) => w && checkText.includes(w.toLowerCase()))
@@ -1185,7 +1202,13 @@ export class TaskRunner {
           }
           // 另一事务未提交, findUnique 读不到; 退避后再试(最后一次仍读不到则放弃, categoryId=null)
           if (attempt < CATEGORY_P2002_MAX_ATTEMPTS - 1) {
-            await new Promise((r) => setTimeout(r, 50 * Math.pow(2, attempt)))
+            // R25-1A3 修复 P2 资源泄漏: 重试退避定时器 unref —— 与 control raceTimer /
+            // autoRefresh timer / obscura reclaimTimer 同口径, CLI/测试退出时不挂起额外时间。
+            // 退避时长 50/100/200ms 极短, unref 仅在进程退出场景生效, 正常采集路径 await 语义不变
+            await new Promise((r) => {
+              const t = setTimeout(r, 50 * Math.pow(2, attempt))
+              ;(t as unknown as { unref?: () => void }).unref?.()
+            })
           } else {
             await this.log(taskId, 'warn', `分类「${categoryName}」3 次重试后仍未就绪, 本书暂不关联分类`).catch(() => {})
           }
@@ -1323,7 +1346,12 @@ export class TaskRunner {
             try {
               page = await this.gateFetch(taskId, abs, { ...fetchCfg, requestPriority: 'book' }, { minGapMs: nextInterval() }) // ab-b
             } catch (_firstErr) {
-              await new Promise((r) => setTimeout(r, 800))
+              // R25-1A3 修复 P2 资源泄漏: 重试退避定时器 unref —— 同 control raceTimer 口径,
+              // CLI/测试退出时不挂起 800ms; 正常采集路径 await 语义不变
+              await new Promise((r) => {
+                const t = setTimeout(r, 800)
+                ;(t as unknown as { unref?: () => void }).unref?.()
+              })
               // 二次仍失败则向上抛, 走书籍页回退; ab-b: 重试同样逐次取随机 interval 作 minGapMs
               page = await this.gateFetch(taskId, abs, { ...fetchCfg, requestPriority: 'book' }, { minGapMs: nextInterval() })
             }

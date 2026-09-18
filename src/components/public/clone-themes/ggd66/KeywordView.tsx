@@ -38,11 +38,12 @@ const TOP_NAV: { id: string; name: string; view: 'home' | 'category' | 'fulltext
   { id: 'search', name: '搜索', view: 'search' },
 ]
 
-export function KeywordView({ tag, books, loading }: KeywordViewProps) {
+export function KeywordView({ tag, books, loading, initialCategories }: KeywordViewProps) {
   const { site, navigate } = usePublic()
-  const [cats, setCats] = useState<Cat[]>([])
+  const [cats, setCats] = useState<Cat[]>(() => (initialCategories || []).map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) })))
 
   useEffect(() => {
+    if (cats.length > 0) return
     let aborted = false
     fetch('/api/public/categories?limit=60')
       .then(r => r.json())
@@ -54,7 +55,7 @@ export function KeywordView({ tag, books, loading }: KeywordViewProps) {
       })
       .catch(() => { if (!aborted) setCats(DEFAULT_NAV) })
     return () => { aborted = true }
-  }, [])
+  }, [cats.length])
 
   const rankBooks = books.slice(0, 13)
   // 相关标签: 从所有书 keywords 拆分去重

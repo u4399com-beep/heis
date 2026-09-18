@@ -1143,7 +1143,27 @@ function applyThinkTime(cfg: FetchConfig): Promise<void> {
   if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) return Promise.resolve()
   const delay = Math.floor(Math.random() * ms) // [0, ms) 全抖动
   if (delay <= 0) return Promise.resolve()
-  return new Promise((r) => setTimeout(r, delay))
+  // R25-1A 修复 P2 资源泄漏: 原 new Promise((r) => setTimeout(r, delay)) 未 unref ——
+  // 一次性脚本/测试用例结束时事件循环因 thinkTime 定时器挂起额外 delay 才退; 长跑 dev
+  // server 无影响但与 sleepGap/obscura timer 同口径统一 unref, 防 CLI 卡死
+  return sleepUnref(delay)
+}
+
+// ---------- R25-1A2: 统一 unref sleep helper ----------
+/**
+ * setTimeout + 自动 unref 的 sleep helper。
+ *  R25-1A2 修复 P2 资源泄漏: 引擎内 9 处 `new Promise((r) => setTimeout(r, X))` 模式
+ *  (cookie 重试/429 退避/scrapling 重试/DNS 重试等)修前未 unref —— 一次性脚本/测试用例
+ *  结束时事件循环因 retry/backoff 定时器挂起额外 X ms 才退; 长跑 dev server 无影响但与
+ *  applyThinkTime/cookiePersistTimer/hostgate.timer 同口径统一 unref, 防 CLI 卡死。
+ *  零回归: unref 仅让定时器在事件循环无其他活跃任务时不阻止退出, 正常 Promise 语义不变。
+ */
+function sleepUnref(ms: number): Promise<void> {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) return Promise.resolve()
+  return new Promise((r) => {
+    const t = setTimeout(r, ms)
+    ;(t as unknown as { unref?: () => void }).unref?.()
+  })
 }
 
 // ---------- 全局速率上限(滑窗 60s 钳制) ----------
@@ -1196,7 +1216,12 @@ function applyGlobalRateLimit(cfg: FetchConfig): Promise<void> {
       }
       // 加 0~200ms jitter 防多 waiter 同步惊群(同时唤醒同时 push, 瞬时过冲)
       const jitter = Math.floor(Math.random() * 200)
-      setTimeout(attempt, r.waitMs + jitter)
+      // R25-1A 修复 P2 资源泄漏: 原内层 setTimeout(attempt, r.waitMs + jitter) 未 unref ——
+      // 全局速率节流在长间隔配置(r.waitMs 可达 30s)下挂住 CLI/测试用例自然退出; unref 后
+      // 仅在事件循环仍活跃时 fire(dev server 长跑场景正常生效), 与 triggerProxyHealthCheck /
+      // scheduleAutoRefresh / hostgate.timer 同口径
+      const t = setTimeout(attempt, r.waitMs + jitter)
+      ;(t as unknown as { unref?: () => void }).unref?.()
     }
     attempt()
   })
@@ -1642,7 +1667,25 @@ async function renderWithBrowser(url: string, cfg: FetchConfig, ua: string): Pro
       return res.html
     }
   } catch (e: any) {
-    console.warn('[fetcher] Obscura 渲染失败, 降级裸 Playwright:', e?.message?.slice(0, 120))
+    // R25-1A2: Obscura 失败后先试 uc-bridge(undetected-chromedriver 隐身)再降级裸 Playwright
+    console.warn('[fetcher] Obscura 渲染失败, 降级 uc-bridge / 裸 Playwright:', e?.message?.slice(0, 120))
+  }
+  // R25-1A2 修复 P1: 5 级降级链断档补齐(anti-anti-crawl-research.md 文档第 7 级) ——
+  //   修前 Obscura 不可用/失败后直接落裸 Playwright(无隐身, 指纹裸露, 易被 WAF 拦截);
+  //   补齐: Obscura 失败后先试 uc-bridge (undetected-chromedriver, 反 CF Turnstile/navigator.webdriver
+  //   /CDP 检测), 桥不可达/失败再降级裸 Playwright(无隐身, 最后兜底)。
+  //   完整 8 级降级链: native → curl → fetch-relay → scrapling-static → scrapling-stealthy
+  //     → Obscura → uc-bridge → moli-bridge
+  //   注: moli-bridge 已在 fetchPageOnce 顶部按 cfg.fetchMode==='moli' 分流, 不参与本降级链;
+  //   scrapling-* 在 fetchPageOnce 顶部按 fetchMode 分流, 不参与本降级链。
+  //   失败语义(照 fetchViaMoli / fetchViaScraplingBridge 先例): uc-bridge 返回 null(桥不可达
+  //   /桥内失败) → 继续降级裸 Playwright。目标侧 4xx/5xx 在 ok:true 信封内如实透传, 不双发。
+  //   cookies 回写: uc-bridge 返回 cf_clearance 等挑战凭证 → 写回 CookieJar → 后续 HTTP 直连复用,
+  //   与 Obscura 路径 cookies 回写同口径。
+  const ucResult = await fetchViaUcBridge(url, cfg)
+  if (ucResult) {
+    if (ucResult.cookies.length) cookieJar.store(originHost(url), ucResult.cookies)
+    return ucResult.html
   }
   return renderWithBrowserRaw(url, cfg, ua, '')
 }
@@ -1748,10 +1791,17 @@ async function renderWithBrowserRaw(url: string, cfg: FetchConfig, ua: string, p
 function buildHeaders(url: string, cfg: FetchConfig, ua: string, opts?: { fingerprint?: boolean; refererOverride?: string; headerOrderProfile?: string }): Record<string, string> {
   let origin = ''
   try { origin = new URL(url).origin } catch { /* ignore */ }
+  // R25-1A 修复 P1 指纹泄漏: 原 buildHeaders 基础头硬编码 'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.6',
+  // 仅在 opts.fingerprint===true 时由 fingerprintHeadersFor→acceptLanguageFor(ua) 覆盖为与 UA 自洽的值。
+  // 但 fetchBinary(封面)/fetchHttp 非 fingerprint 路径(代理/relay/keepAlive)/scrapling 桥透传 headers
+  // 均用此基础头组 —— 移动 UA + 中文 Accept-Language 是 WAF 指纹库典型破绽("Android Chrome 141 +
+  // zh-CN 头"在 ja-JP / en-US 出口 IP 下显著可疑)。改为按 UA 派生 Accept-Language(与
+  // fingerprintHeadersFor 同口径调用 acceptLanguageFor), 让基础头组本身即与 UA 自洽;
+  // fingerprint=true 时 fingerprintHeadersFor 仍会再覆盖一次(同值, 幂等), 零回归
   const headers: Record<string, string> = {
     'User-Agent': ua,
     Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.6',
+    'Accept-Language': acceptLanguageFor(ua),
     'Cache-Control': 'no-cache',
   }
   // chainReferer 优先级: opts.refererOverride(逐跳显式) > cfg.refererChain+cfg.refererUrl > ''(回退 origin)
@@ -1761,18 +1811,44 @@ function buildHeaders(url: string, cfg: FetchConfig, ua: string, opts?: { finger
   } else {
     chainReferer = cfg.refererChain && cfg.refererUrl ? cfg.refererUrl : ''
   }
+  // R25-1A2: 检查 cfg.headers 是否显式配置了 Referer(大小写不敏感) —— 用于:
+  //   (1) fingerprintHeadersFor 内 Sec-Fetch-Site 计算: 当用户配了 fake search Referer
+  //       (如 https://www.google.com/)时, secFetchSite 应为 cross-site 而非 same-origin;
+  //   (2) 最终 Referer 头: 不被 origin 回退覆盖(见下方 line ~1818)。
+  //   cfg.headers 是 Record<string, string>, 头键大小写均合法, 故逐键小写化比对。
+  let cfgReferer: string | undefined
+  if (cfg.headers) {
+    for (const k of Object.keys(cfg.headers)) {
+      if (k.toLowerCase() === 'referer') {
+        const v = (cfg.headers as Record<string, string>)[k]
+        if (typeof v === 'string') { cfgReferer = v; break }
+      }
+    }
+  }
   if (opts?.fingerprint) {
     // 指纹头组按【实际选中 UA】+【生效 Referer】推导(Sec-Fetch-Site 语义依赖后者);
     // 先于 cfg.headers 合并 —— 规则显式配置的头永远最优先
     // agent-FF-crawl-phase8: 透传 cfg.fingerprintJitter 启用指纹抖动(零回归条件:
     // cfg.fingerprintJitter !== true 时行为完全等同改前)
-    Object.assign(headers, fingerprintHeadersFor(ua, chainReferer || origin, url, {
+    // R25-1A2: Sec-Fetch-Site 计算的 Referer 优先级 = chainReferer > cfgReferer > origin
+    //   (与最终 Referer 头优先级一致), 修复"用户配了 fake search Referer 但 secFetchSite
+    //   仍按 origin 计算 same-origin"的指纹自相矛盾破绽
+    const fpReferer = chainReferer || cfgReferer || origin
+    Object.assign(headers, fingerprintHeadersFor(ua, fpReferer, url, {
       jitter: cfg.fingerprintJitter === true,
     }))
   }
   Object.assign(headers, cfg.headers)
   if (chainReferer) headers.Referer = chainReferer
-  else if (cfg.referer !== false && origin) headers.Referer = origin
+  // R25-1A2 修复 P1 Referer 覆盖 bug: 原实现 `else if (cfg.referer !== false && origin)
+  //   headers.Referer = origin` 会无条件覆盖 cfg.headers.Referer (用户显式配置的伪造
+  //   Referer, 如搜索引擎 Referer https://www.google.com/ 用于"按目标站伪造"反反爬场景)。
+  //   注释声明"规则显式配置的头永远最优先"(line 1783), 但 origin 回退违反此优先级 ——
+  //   修法: 仅当 cfg.headers 未显式提供 Referer 时才回退 origin(零回归: 默认无
+  //   cfg.headers.Referer 时行为等同改前)。用户显式配 cfg.headers.Referer 时,
+  //   上方 Object.assign(headers, cfg.headers) 已注入, 此处不再覆盖, 让 fingerprintHeadersFor
+  //   内 secFetchSite 按该 Referer 计算同源/跨站语义自洽
+  else if (cfg.referer !== false && origin && !cfgReferer) headers.Referer = origin
   // Cookie 合并去重: 同名键以罐中值(服务端最新 Set-Cookie)为准, 避免拼出 "a=1; a=9" 重复 Cookie 头
   const merged = new Map<string, string>()
   for (const src of [cfg.cookies, cookieJar.get(originHost(url))]) {
@@ -1990,7 +2066,11 @@ function loopbackBypassAllowed(url: string, cfg: FetchConfig): boolean {
   //   虽 fetchViaMoli 当前用裸 fetch 不走 assertSafeTarget (不受本表影响), 但若未来规则把
   //   toc.fields.url 直接指向 127.0.0.1:3017 (moli-bridge /fetch 端点经 fetchPage 调用),
   //   需本表放行 loopback; 与 deqixs 3014 同口径
-  const KNOWN_MINI_SERVICE_PORTS = new Set(['3010', '3011', '3012', '3013', '3014', '3015', '3017'])
+  // R25-1A 修复 P1 BUG: 原列表 3010/3011/3012/3013/3014/3015/3017 漏掉 3016 (uc-bridge) ——
+  //   uc-bridge (undetected-chromedriver) 服务监听 127.0.0.1:3016, 规则若把 tokenUrl 或
+  //   contentProxyUrl 指向 127.0.0.1:3016 会触发 SSRF 拒绝, uc-bridge 在生产路径上坏的
+  //   (与 deqixs 3014 / xjp 3015 同口径豁免, 全 8 个 mini-services 3010~3017 端口齐全)
+  const KNOWN_MINI_SERVICE_PORTS = new Set(['3010', '3011', '3012', '3013', '3014', '3015', '3016', '3017'])
   if (KNOWN_MINI_SERVICE_PORTS.has(uPort)) return true
   const matches = (rawUrl: string): boolean => {
     try {
@@ -2829,6 +2909,8 @@ async function checkCurl(): Promise<boolean> {
         try { child.kill() } catch { /* ignore */ }
         resolve(false)
       }, 5000)
+      // R25-1A: unref 防 5s 探测挂在 CLI/测试退出时阻塞(与 cookiePersistTimer 同口径)
+      ;(t as unknown as { unref?: () => void }).unref?.()
       child.on('error', () => { clearTimeout(t); resolve(false) })
       child.on('close', (code) => { clearTimeout(t); resolve(code === 0) })
     })
@@ -3288,7 +3370,8 @@ async function fetchViaScraplingBridge(url: string, cfg: FetchConfig, mode: Scra
       if (!res.ok) {
         console.warn(`[fetcher] scrapling 桥响应形态非法(HTTP ${res.status}), ${retryHint}`)
         if (attempt === 1) {
-          await new Promise((r) => setTimeout(r, 800))
+          // R25-1A2: sleepUnref 防 CLI 卡死(与 applyThinkTime 同口径)
+          await sleepUnref(800)
           continue
         }
         return null
@@ -3297,7 +3380,8 @@ async function fetchViaScraplingBridge(url: string, cfg: FetchConfig, mode: Scra
       if (!payload?.ok || typeof payload.status !== 'number' || typeof payload.html !== 'string') {
         console.warn(`[fetcher] scrapling 桥内失败(${String(payload?.error || '响应形态非法').slice(0, 140)}), ${retryHint}`)
         if (attempt === 1) {
-          await new Promise((r) => setTimeout(r, 800))
+          // R25-1A2: sleepUnref 防 CLI 卡死(与 applyThinkTime 同口径)
+          await sleepUnref(800)
           continue
         }
         return null
@@ -3306,7 +3390,8 @@ async function fetchViaScraplingBridge(url: string, cfg: FetchConfig, mode: Scra
     } catch (e: any) {
       console.warn(`[fetcher] scrapling 桥不可达(${bridge}): ${String(e?.message || e).slice(0, 120)}, ${retryHint}`)
       if (attempt === 1) {
-        await new Promise((r) => setTimeout(r, 800))
+        // R25-1A2: sleepUnref 防 CLI 卡死(与 applyThinkTime 同口径)
+        await sleepUnref(800)
         continue
       }
       return null
@@ -3347,7 +3432,8 @@ async function fetchHttpWithCurlSingle(url: string, cfg: FetchConfig, ua: string
       (e?.code === 'ENOTFOUND' || e?.code === 'EAI_AGAIN' ||
         /getaddrinfo (ENOTFOUND|EAI_AGAIN)/i.test(String(e?.message || '')))
     ) {
-      await new Promise((r) => setTimeout(r, 2000))
+      // R25-1A2: sleepUnref 防 CLI 卡死(与 applyThinkTime 同口径)
+      await sleepUnref(2000)
       try {
         return await fetchHttp(url, cfg, ua, proxy)
       } catch {
@@ -4218,7 +4304,8 @@ async function fetchPageOnce(url: string, cfg: FetchConfig): Promise<FetchResult
       if ((gotNewCookieOk || isJsChallenge(html)) && cookieRetries < MAX_COOKIE_RETRIES) {
         cookieRetries++
         // agent-A-fetcher: 抖动 200~500ms 防并发同 host 多任务同步重试(原固定 350ms)
-        await new Promise((r) => setTimeout(r, 200 + Math.random() * 300))
+        // R25-1A2: sleepUnref 防 CLI 卡死(与 applyThinkTime 同口径)
+        await sleepUnref(200 + Math.random() * 300)
         continue
       }
       lastErr = new Error('内容疑似被拦截(验证码/JS挑战)')
@@ -4259,7 +4346,8 @@ async function fetchPageOnce(url: string, cfg: FetchConfig): Promise<FetchResult
         if ((gotNewCookie || isJsChallenge(bodyHtml)) && cookieRetries < MAX_COOKIE_RETRIES) {
           cookieRetries++
           // agent-A-fetcher: 抖动 200~500ms 防并发同步(与成功路径同口径)
-          await new Promise((r) => setTimeout(r, 200 + Math.random() * 300))
+          // R25-1A2: sleepUnref 防 CLI 卡死(与 applyThinkTime 同口径)
+          await sleepUnref(200 + Math.random() * 300)
           continue // 带刚种下的新 Cookie 重发
         }
         // ff-b③: 403 且罐中已有会话但无新 Cookie —— 疑"陈旧会话 Cookie 被目标端拒绝"
@@ -4269,7 +4357,8 @@ async function fetchPageOnce(url: string, cfg: FetchConfig): Promise<FetchResult
           cookieJar.clear(domain)
           cookieRetries++
           // agent-A-fetcher: 抖动 200~500ms 防并发同步(同上)
-          await new Promise((r) => setTimeout(r, 200 + Math.random() * 300))
+          // R25-1A2: sleepUnref 防 CLI 卡死(与 applyThinkTime 同口径)
+          await sleepUnref(200 + Math.random() * 300)
           continue
         }
         // ff-b④ + 2-fetcher Bug 3: 429/瞬时 5xx(500/502/504) 指数退避重试 HTTP 级
@@ -4292,7 +4381,8 @@ async function fetchPageOnce(url: string, cfg: FetchConfig): Promise<FetchResult
           const cap = 8000
           const temp = Math.min(cap, base * Math.pow(2, backoffRetries - 1))
           const delay = Math.floor(Math.random() * temp)
-          await new Promise((r) => setTimeout(r, delay))
+          // R25-1A2: sleepUnref 防 CLI 卡死(与 applyThinkTime 同口径; delay 可达 8s 长退避尤其需要 unref)
+          await sleepUnref(delay)
           continue
         }
         break
@@ -4301,7 +4391,8 @@ async function fetchPageOnce(url: string, cfg: FetchConfig): Promise<FetchResult
       // 原固定 400*attempt 改为带 ±25% 抖动, 防瞬时同步重试
       const baseDelay = 400 * attempt
       const jitteredDelay = Math.floor(baseDelay * (0.75 + Math.random() * 0.5))
-      await new Promise((r) => setTimeout(r, jitteredDelay))
+      // R25-1A2: sleepUnref 防 CLI 卡死(与 applyThinkTime 同口径)
+      await sleepUnref(jitteredDelay)
     }
   }
 
@@ -4502,6 +4593,102 @@ async function fetchViaMoli(url: string, cfg: FetchConfig): Promise<{ html: stri
     return { html: data.html, status: data.status || 200 }
   } catch (e) {
     console.warn(`[fetcher] moli-bridge 异常: ${(e as Error).message?.slice(0, 120)}: ${url.slice(0, 120)}`)
+    return null
+  }
+}
+
+// ---------- uc-bridge (R25-1A2: 5 级降级链第 7 级补齐) ----------
+/**
+ * uc-bridge (mini-services/uc-bridge, 端口 3016): undetected-chromedriver (UC) 隐身浏览器,
+ * 反 CF Turnstile / navigator.webdriver / CDP Runtime.enable 探针 等自动化指纹检测。
+ * 完整 8 级降级链(anti-anti-crawl-research.md):
+ *   native → curl → fetch-relay → scrapling-static → scrapling-stealthy → Obscura → uc-bridge → moli-bridge
+ * R25-1A2 修前缺口: SSRF 端口白名单已含 3016(loopbackBypassAllowed), 但 fetchViaUcBridge
+ *   未实现, renderWithBrowser 失败后直接落裸 Playwright(无隐身, 指纹裸露) —— 与 8 级链
+ *   断档。补齐: renderWithBrowser 在 Obscura 不可用/失败后先试 uc-bridge, 桥不可达/失败
+ *   再降级裸 Playwright。
+ *
+ * 协议(mini-services/uc-bridge/server.py):
+ *   POST /fetch  body: { url, cookies?, timeout?, xvfb? }  ← xvfb 走查询参数 ?xvfb=1
+ *                → 200 { ok:true, status, html, cookies[], finalUrl, xvfbUsed }   目标侧任何响应(3xx
+ *                  跟随后终态/4xx/5xx)都算 ok:true 如实透传, 仅传输层语义; 引擎侧不再对目标双发
+ *                → 200 { ok:false, error }  桥内异常(url 非法/Chrome 不可用/UC 启动失败/网络层
+ *                  失败/超时), 引擎侧据此降级下一级
+ *   GET  /health → 200 { ok, selfTestOk, versions, ... }
+ *
+ * 安全模型: 与 fetchViaMoli 同口径 —— UC_BRIDGE_URL 由操作员在 env 配置(可信源), 裸 fetch
+ *   直连桥端点; assertSafeTarget 在 fetchPage 入口已校验目标 url 合法性。桥内 server.py
+ *   另有 SSRF 守卫(双重保险, 与 fetch-relay/scrapling-bridge 同范式)。
+ *
+ * 失败语义(照 fetchViaMoli / fetchViaScraplingBridge 先例): 桥进程不可达/桥内异常 → 返回
+ *   null → renderWithBrowser 降级裸 Playwright。目标侧响应(含 4xx/5xx)在 ok:true 信封内
+ *   如实透传 —— 与 fetch-relay/scrapling 契约同向: 仅传输层失败触发降级, 目标请求不双发。
+ */
+const UC_BRIDGE_URL = process.env.UC_BRIDGE_URL || 'http://127.0.0.1:3016'
+const UC_BRIDGE_PROBE_RETRY_MS = 60_000
+let ucBridgeAvailable: boolean | null = null
+let ucBridgeCheckedAt = 0
+
+/** uc-bridge 可用性探测(/health), 结果按 UC_BRIDGE_PROBE_RETRY_MS 缓存(与 checkRelay 同口径) */
+async function checkUcBridge(): Promise<boolean> {
+  if (ucBridgeAvailable === true) return true
+  if (ucBridgeAvailable === false && Date.now() - ucBridgeCheckedAt < UC_BRIDGE_PROBE_RETRY_MS) return false
+  try {
+    const res = await fetch(`${UC_BRIDGE_URL}/health`, { signal: AbortSignal.timeout(1500) })
+    ucBridgeAvailable = res.ok
+  } catch {
+    ucBridgeAvailable = false
+  }
+  ucBridgeCheckedAt = Date.now()
+  return ucBridgeAvailable
+}
+
+/**
+ * 经 uc-bridge 抓取一次: 成功返回 {html, status, cookies}; 桥不可达/桥内失败返回 null
+ *  (调用方 renderWithBrowser 降级裸 Playwright)。目标侧响应(含 4xx/5xx)在 ok:true 信封内
+ *  如实透传 —— 与 fetchViaMoli / fetchViaScraplingBridge 契约同向, 仅传输层失败触发降级。
+ *  返回的 cookies (cf_clearance 等)由 renderWithBrowser 写回 CookieJar, 供后续 HTTP 链复用。
+ */
+async function fetchViaUcBridge(url: string, cfg: FetchConfig): Promise<{ html: string; status: number; cookies: string[] } | null> {
+  // 可用性短超时快返(与 checkRelay 同口径): 桥不在时每请求 ECONNREFUSED ~50ms, 60s 内缓存避免叠加
+  if (!(await checkUcBridge())) return null
+  const timeoutMs = cfg.timeout && cfg.timeout > 0 ? cfg.timeout : 20000
+  try {
+    const body: Record<string, unknown> = {
+      url,
+      // uc-bridge MAX_TIMEOUT_MS=30s 硬帽(server.py), 配置超时按硬帽钳制
+      timeout: Math.min(timeoutMs, 30_000),
+    }
+    // 透传现有 cookies (cf_clearance 等)给 UC 浏览器, 让 UC 复用已通过的挑战凭证
+    // (与 obscuraFetch 同口径: 引擎层 cookies → 浏览器层, 避免挑战重新求解)
+    const existingCookies = cookieJar.get(originHost(url))
+    if (existingCookies) body.cookies = existingCookies
+    const res = await fetch(`${UC_BRIDGE_URL}/fetch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      // 客户端护栏只防桥进程僵死(桥自身对目标限时 30s); 冗余 15s, 下限 45s(UC 冷启 +
+      // Turnstile 挑战求解常需 10~25s, server.py MAX_TIMEOUT_MS=30_000 注释同口径)
+      signal: AbortSignal.timeout(Math.max(timeoutMs + 15_000, 45_000)),
+    })
+    if (!res.ok) {
+      console.warn(`[fetcher] uc-bridge 返回 ${res.status}: ${url.slice(0, 120)}`)
+      return null
+    }
+    const data = await res.json() as {
+      ok: boolean; html?: string; status?: number; cookies?: string[]; finalUrl?: string; error?: string
+    }
+    if (!data.ok || !data.html) {
+      console.warn(`[fetcher] uc-bridge 失败: ${data.error || 'unknown'}: ${url.slice(0, 120)}`)
+      return null
+    }
+    return {
+      html: data.html,
+      status: data.status || 200,
+      cookies: Array.isArray(data.cookies) ? data.cookies : [],
+    }
+  } catch (e) {
+    console.warn(`[fetcher] uc-bridge 异常: ${(e as Error).message?.slice(0, 120)}: ${url.slice(0, 120)}`)
     return null
   }
 }

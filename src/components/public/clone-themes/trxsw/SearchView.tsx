@@ -31,11 +31,12 @@ const DEFAULT_NAV: Cat[] = [
 // 热门搜索词 (占位, 用于侧栏)
 const HOT_KEYWORDS = ['末日', '白月光', '末世', '直播', '万人迷', '女帝', '游戏入侵', '诡秘之主', '斗破', '香江']
 
-export function SearchView({ q, books, loading }: SearchViewProps) {
+export function SearchView({ q, books, loading, initialCategories }: SearchViewProps) {
   const { site, navigate } = usePublic()
-  const [cats, setCats] = useState<Cat[]>([])
+  const [cats, setCats] = useState<Cat[]>(() => (initialCategories || []).map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) })))
 
   useEffect(() => {
+    if (cats.length > 0) return
     let aborted = false
     fetch('/api/public/categories?limit=60')
       .then(r => r.json())
@@ -47,7 +48,7 @@ export function SearchView({ q, books, loading }: SearchViewProps) {
       })
       .catch(() => { if (!aborted) setCats(DEFAULT_NAV) })
     return () => { aborted = true }
-  }, [])
+  }, [cats.length])
 
   const navCats = (cats.length ? cats : DEFAULT_NAV).slice(0, 12)
   const hotTop10 = books.slice(0, 10)

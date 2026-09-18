@@ -15,6 +15,7 @@
 import { usePublic } from '../../ctx'
 import { bookNavProps } from '../../bits'
 import { formatWords } from '../../seo'
+import { addFavoriteSite, useTraditionalChinese } from '../tools'
 import type { HomeCloneProps } from '../shared'
 import type { BookItem } from '../../types'
 import { useEffect, useState } from 'react'
@@ -51,6 +52,24 @@ const SITEMAP_LINKS = [
   { href: '/sitemap/html/ebook', title: '电子书大全' },
   { href: '/sitemap/html/ebooknews', title: '相关电子书大全' },
 ]
+
+// 简繁切换按钮 — huangjinwu 风格 (navbar 内 iconfont icon-language + 文字)
+function TcToggleHuangjinwu() {
+  const { isTc, mounted, toggleTc } = useTraditionalChinese()
+  const label = mounted && isTc ? '简体' : '繁體'
+  return (
+    <a
+      href="#tc-toggle"
+      title="简繁切换"
+      className="navbar-link"
+      onClick={(e) => { e.preventDefault(); toggleTc() }}
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 8, color: 'inherit', textDecoration: 'none', fontSize: 13 }}
+    >
+      <span className="iconfont icon-language"></span>
+      <span>{label}</span>
+    </a>
+  )
+}
 
 export function HomeClone({ books, loading, navCategoryCount = 8, homeModuleLimit = 12, initialCategories }: HomeCloneProps) {
   const { site, navigate } = usePublic()
@@ -194,6 +213,12 @@ export function HomeClone({ books, loading, navCategoryCount = 8, homeModuleLimi
               <button className="theme-toggle" type="button" aria-label="切换主题">
                 <span className="iconfont icon-dark"></span>
               </button>
+              {/* 收藏本站 + 简繁切换 */}
+              <a href="#favorite" title="收藏本站 (Ctrl+D)" className="navbar-link" onClick={(e) => addFavoriteSite(e)} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 8, color: 'inherit', textDecoration: 'none' }}>
+                <span className="iconfont icon-mark"></span>
+                <span style={{ fontSize: 13 }}>收藏本站</span>
+              </a>
+              <TcToggleHuangjinwu />
             </div>
           </div>
           <div className="menu-overlay" id="menuOverlay" aria-hidden="true"></div>

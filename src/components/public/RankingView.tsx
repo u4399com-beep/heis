@@ -1,5 +1,11 @@
+// ============================================================
+// 排行榜视图 — 7 tab 切换(总/月/周/日点击榜 + 总推荐 + 字数 + 最近更新)
+// R25: clone-* 主题走 RankingViewLookup → clone-themes/<site>/RankingView
+//      SSR: page.tsx server fetch books by sort, 传 initialBooks 让 SSR 渲染排行榜
+// ============================================================
 'use client'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import dynamic from 'next/dynamic'
 import { Trophy, ChevronRight } from 'lucide-react'
 import { fetchBooks, type BooksData } from './data'
 import { usePublic } from './ctx'
@@ -19,20 +25,43 @@ const RANKING_TABS = [
   { id: 'lastupdate', name: '最近更新' },
 ] as const
 
-export function RankingView({ page }: { page: number }) {
+// R25: RankingView lookup table — clone-* 主题动态加载对应 RankingView 组件, ssr=true 让 SSR 直接渲染源站 DOM
+const RankingViewLookup: Record<string, React.ComponentType<any>> = {
+  'clone-aijjxs': dynamic(() => import('./clone-themes/aijjxs').then(m => m.RankingView), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
+  'clone-ddyueshu': dynamic(() => import('./clone-themes/ddyueshu').then(m => m.RankingView), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
+  'clone-pilishuwu': dynamic(() => import('./clone-themes/pilishuwu').then(m => m.RankingView), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
+  'clone-23qb': dynamic(() => import('./clone-themes/23qb').then(m => m.RankingView), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
+  'clone-101kks': dynamic(() => import('./clone-themes/101kks').then(m => m.RankingView), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
+  'clone-huangjinwu': dynamic(() => import('./clone-themes/huangjinwu').then(m => m.RankingView), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
+  'clone-ggd66': dynamic(() => import('./clone-themes/ggd66').then(m => m.RankingView), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
+  'clone-shipsay': dynamic(() => import('./clone-themes/shipsay').then(m => m.RankingView), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
+  'clone-x2552': dynamic(() => import('./clone-themes/x2552').then(m => m.RankingView), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
+  'clone-trxsw': dynamic(() => import('./clone-themes/trxsw').then(m => m.RankingView), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
+}
+
+interface FetchState { key: string; data?: BooksData; error?: string }
+
+export function RankingView({ page, initialBooks, initialCategories }: { page: number; initialBooks?: any; initialCategories?: any[] }) {
   const { site, theme, navigate } = usePublic()
   const v = theme.vars
   const [tab, setTab] = useState<string>('allvisit')
-  const [state, setState] = useState<{ data?: BooksData; error?: string } | null>(null)
+  // R25: SSR 首载用 page.tsx server fetch 的 initialBooks 初始化 state, 让 SSR 时 loading=false → clone RankingView 组件渲染排行列表
   const key = `${site.id}|ranking|${tab}|${page}`
+  const [state, setState] = useState<FetchState | null>(initialBooks && initialBooks.books ? { key: `${site.id}|ranking|allvisit|${page}`, data: initialBooks as BooksData } : null)
+  // R25: firstRender ref — SSR 首载已有 initialBooks 时跳过首次 effect 避免 client fetch 覆盖
+  const firstRender = useRef(true)
   useEffect(() => {
+    if (firstRender.current && state && state.data) {
+      firstRender.current = false
+      return
+    }
     let alive = true
     fetchBooks({ site: site.id, sort: tab as any, page, size: 30 })
-      .then(d => { if (alive) setState({ data: d }) })
-      .catch((e: Error) => { if (alive) setState({ error: e.message }) })
+      .then(d => { if (alive) setState({ key, data: d }) })
+      .catch((e: Error) => { if (alive) setState({ key, error: e.message }) })
     return () => { alive = false }
-  }, [key, site.id, tab, page])
-  const loading = !state || !state.data
+  }, [key, site.id, tab, page, state])
+  const loading = !state || state.key !== key
   const data = loading ? null : state.data || null
   const error = loading ? '' : state.error || ''
   useSiteSEO({
@@ -42,6 +71,23 @@ export function RankingView({ page }: { page: number }) {
     canonicalPath: `/?view=ranking&page=${page}&site=${site.id}`, site,
   })
   const books: BookItem[] = data?.books || []
+  // R25: clone-* 主题走 RankingViewLookup, 否则走通用布局
+  const Clone = RankingViewLookup[theme.layout]
+  if (Clone) {
+    return (
+      <Clone
+        books={books}
+        loading={loading}
+        tab={tab}
+        onTabChange={(t: string) => { setTab(t); navigate({ view: 'ranking', page: 1 }) }}
+        page={data?.page || page}
+        total={data?.total || 0}
+        size={data?.size || 30}
+        onPage={(p: number) => navigate({ view: 'ranking', page: p })}
+        initialCategories={initialCategories}
+      />
+    )
+  }
   return (
     <div className="mx-auto w-full max-w-5xl px-4 py-6 sm:px-6">
       <div className="mb-6 flex items-center gap-3">

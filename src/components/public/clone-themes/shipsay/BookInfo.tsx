@@ -29,13 +29,15 @@ const DEFAULT_NAV: Cat[] = [
   { id: '7', name: '女生' }, { id: '8', name: '其他' },
 ]
 
-export function BookInfo({ book, onScrollToc, onContinueRead, onGoCategory }: BookInfoProps) {
+export function BookInfo({ book, onScrollToc, onContinueRead, onGoCategory, initialCategories }: BookInfoProps) {
   const { site, navigate } = usePublic()
-  const [cats, setCats] = useState<Cat[]>([])
+  // R25: SSR 首载用 page.tsx server fetch 的 initialCategories 初始化, 避免 SSR 时 cats=[] → navigation 没分类
+  const [cats, setCats] = useState<Cat[]>(() => (initialCategories || []).map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) })))
   const [related, setRelated] = useState<BookItem[]>([])
 
   // 拉分类列表用于 navigation nav + sortvisit 同类推荐
   useEffect(() => {
+    if (cats.length > 0) return
     let aborted = false
     fetch('/api/public/categories?limit=60')
       .then(r => r.json())
@@ -47,7 +49,7 @@ export function BookInfo({ book, onScrollToc, onContinueRead, onGoCategory }: Bo
       })
       .catch(() => { if (!aborted) setCats(DEFAULT_NAV) })
     return () => { aborted = true }
-  }, [])
+  }, [cats.length])
 
   // 拉"同类推荐": 同分类前 12 本(排除当前书)
   useEffect(() => {

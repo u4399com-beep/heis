@@ -9,10 +9,27 @@ import { usePublic } from '../../ctx'
 import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
 import { formatWords } from '../../seo'
+import { addFavoriteSite, useTraditionalChinese } from '../tools'
 import type { HomeCloneProps } from '../shared'
 import { useEffect, useState } from 'react'
 
 interface Cat { id: string; name: string }
+
+// 简繁切换按钮 — shipsay 风格 (fa fa-language + br + 文案)
+function TcToggleShip() {
+  const { isTc, mounted, toggleTc } = useTraditionalChinese()
+  // SSR/水合一致: mount 前显示简体态 "繁體", mount 后按当前状态显示 "简体"/"繁體"
+  const label = mounted && isTc ? '简体' : '繁體'
+  return (
+    <a
+      href="#tc-toggle"
+      title="简繁切换"
+      onClick={(e) => { e.preventDefault(); toggleTc() }}
+    >
+      <i className="fa fa-language fa-lg" /><br />{label}
+    </a>
+  )
+}
 
 export function HomeClone({ books, loading, navCategoryCount = 8, homeModuleLimit = 6, initialCategories }: HomeCloneProps) {
   const { site, navigate } = usePublic()
@@ -83,6 +100,8 @@ export function HomeClone({ books, loading, navCategoryCount = 8, homeModuleLimi
             <a href="/sort/" onClick={(e) => goCat(e)}><i className="fa fa-book fa-lg" /><br />书库</a>
             <a href="/quanben/sort/" onClick={(e) => goCat(e)}><i className="fa fa-coffee fa-lg" /><br />完本</a>
             <a href="/history.html" onClick={(e) => { e.preventDefault(); navigate({ view: 'history' }) }}><i className="fa fa-history fa-lg" /><br />足迹</a>
+            <a href="#favorite" title="收藏本站 (Ctrl+D)" onClick={(e) => addFavoriteSite(e)}><i className="fa fa-star fa-lg" /><br />收藏本站</a>
+            <TcToggleShip />
           </div>
         </div>
       </header>

@@ -1,35 +1,78 @@
+// ============================================================
+// 关键词落地页视图 — 主书籍 + 其他相关书籍 + 相关关键词
+// R25: clone-* 主题走 KeywordViewLookup → clone-themes/<site>/KeywordView
+//      SSR: page.tsx server fetch keyword data, 传 initialKeyword 让 SSR 渲染关键词落地页
+// ============================================================
 'use client'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import dynamic from 'next/dynamic'
 import { Tag } from 'lucide-react'
 import { fetchKeyword } from './data'
 import type { KeywordData } from './types'
 import { usePublic } from './ctx'
 import { useSiteSEO, withAlpha } from './seo'
 import { generateTitle, generateMetaDescription, generateKeywords } from './auto-tdk'
-import { ErrorState, Sk, TagCloud } from './bits'
+import { ErrorState, Sk, TagCloud, BookGridSkeleton } from './bits'
 import { BookCover } from './BookCover'
 import { formatWords } from './seo'
 
-export function KeywordView({ tag }: { tag?: string }) {
+// R25: KeywordView lookup table — clone-* 主题动态加载对应 KeywordView 组件, ssr=true 让 SSR 直接渲染源站 DOM
+const KeywordViewLookup: Record<string, React.ComponentType<any>> = {
+  'clone-aijjxs': dynamic(() => import('./clone-themes/aijjxs').then(m => m.KeywordView), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
+  'clone-ddyueshu': dynamic(() => import('./clone-themes/ddyueshu').then(m => m.KeywordView), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
+  'clone-pilishuwu': dynamic(() => import('./clone-themes/pilishuwu').then(m => m.KeywordView), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
+  'clone-23qb': dynamic(() => import('./clone-themes/23qb').then(m => m.KeywordView), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
+  'clone-101kks': dynamic(() => import('./clone-themes/101kks').then(m => m.KeywordView), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
+  'clone-huangjinwu': dynamic(() => import('./clone-themes/huangjinwu').then(m => m.KeywordView), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
+  'clone-ggd66': dynamic(() => import('./clone-themes/ggd66').then(m => m.KeywordView), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
+  'clone-shipsay': dynamic(() => import('./clone-themes/shipsay').then(m => m.KeywordView), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
+  'clone-x2552': dynamic(() => import('./clone-themes/x2552').then(m => m.KeywordView), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
+  'clone-trxsw': dynamic(() => import('./clone-themes/trxsw').then(m => m.KeywordView), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
+}
+
+export function KeywordView({ tag, initialKeyword, initialCategories }: { tag?: string; initialKeyword?: KeywordData | null; initialCategories?: any[] }) {
   const { site, theme, navigate } = usePublic()
   const v = theme.vars
-  const [data, setData] = useState<KeywordData | null>(null)
-  const [loading, setLoading] = useState(true)
+  // R25: SSR 首载用 page.tsx server fetch 的 initialKeyword 初始化, 让 SSR 时 loading=false → clone KeywordView 组件渲染关键词落地页
+  const [data, setData] = useState<KeywordData | null>(initialKeyword && initialKeyword.tag === tag ? initialKeyword : null)
+  const [loading, setLoading] = useState(!(initialKeyword && initialKeyword.tag === tag))
   const [error, setError] = useState('')
+  // R25: firstRender ref — SSR 首载已有 initialKeyword 时跳过首次 effect 避免 client fetch 覆盖
+  const firstRender = useRef(true)
   useEffect(() => {
+    if (firstRender.current && data && data.tag === tag) {
+      firstRender.current = false
+      return
+    }
     if (!tag) return
     let alive = true
     fetchKeyword(tag)
       .then(d => { if (alive) { setData(d); setLoading(false) } })
       .catch((e: Error) => { if (alive) { setError(e.message); setLoading(false) } })
     return () => { alive = false }
-  }, [tag, site.id])
+  }, [tag, site.id, data, firstRender])
   useSiteSEO({
     title: generateTitle({ category: tag, siteName: site.name }),
     description: generateMetaDescription({ category: tag, siteName: site.name, intro: `${tag}相关小说推荐` }),
     keywords: generateKeywords({ category: tag, siteName: site.name }),
     canonicalPath: `/?view=keyword&tag=${encodeURIComponent(tag || '')}&site=${site.id}`, site,
   })
+
+  // R25: clone-* 主题走 KeywordViewLookup
+  const Clone = KeywordViewLookup[theme.layout]
+  if (Clone) {
+    // 把 KeywordData 转成 books[] 数组传给 clone 组件
+    const books = data?.book ? [data.book, ...data.otherBooks.map((b) => ({ ...b, cover: '', status: 'unknown', wordCount: 0, category: '', intro: '' }))] : []
+    return (
+      <Clone
+        tag={tag || ''}
+        books={books}
+        loading={loading}
+        initialCategories={initialCategories}
+      />
+    )
+  }
+
   if (loading) return <div className="mx-auto max-w-5xl px-4 py-8"><Sk className="h-96 w-full" /></div>
   if (error) return <div className="mx-auto max-w-5xl px-4 py-8"><ErrorState message="加载失败" detail={error} /></div>
   if (!data || !data.book) return <div className="mx-auto max-w-5xl px-4 py-8 text-center" style={{ color: v.textMuted }}>暂无相关书籍</div>

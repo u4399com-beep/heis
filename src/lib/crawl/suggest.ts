@@ -2,9 +2,12 @@
 // 搜索引擎下拉关键词聚合
 // 百度 / 必应 / 搜狗 / 360 / DuckDuckGo / Google / Yandex 下拉建议
 // 作为书籍辅助标签/关联词, 独立访问页面均指向主书籍信息页
-// R11-1C: 新增 Google Suggest(XML 解析) + Yandex Suggest(JSON)
+// R11-1C: 新增 Google Suggest + Yandex Suggest
 // R13-1A: 新增 fetchSuggestKeywordsForBook / generatePSEOKeywords
 //         + LRU 缓存(Map + TTL, 24h) — PSEO 长尾词程序化生成入口
+// R25-1D: 修复失效引擎 — Bing api.bing.com→www.bing.com+cc=cn (强制中文市场),
+//         Google output=toolbar XML 已弃用→client=firefox JSON (与 Bing 同款 j[1] 解析);
+//         搜狗 sugproxy/sug 返回 HTML 错误页 (suggest API 下线), 解析器优雅 []
 // ============================================================
 import { fetchBinary } from './fetcher'
 
@@ -26,8 +29,10 @@ const ENGINES: SuggestEngine[] = [
     },
   },
   {
+    // R25-1D: api.bing.com 已退役 (返回 400); 改用 www.bing.com 并加 cc=cn 强制中文市场,
+    // 否则中文 query 返回空数组 ["斗罗大陆",[]] (默认走英文市场无中文 suggest)
     name: 'bing',
-    url: (kw) => `https://api.bing.com/osjson.aspx?query=${encodeURIComponent(kw)}`,
+    url: (kw) => `https://www.bing.com/osjson.aspx?query=${encodeURIComponent(kw)}&cc=cn`,
     parse: (body) => {
       try {
         const j = JSON.parse(body)
@@ -36,6 +41,8 @@ const ENGINES: SuggestEngine[] = [
     },
   },
   {
+    // R25-1D: 搜狗 sugproxy/sug 与 sugg/sug.jsp 均返回 HTML 错误页 (suggest API 已下线);
+    // 解析器对非 JSON 优雅返回 [], 不影响其他引擎聚合, 不缓存空结果 (R13-1C P1 fix)
     name: 'sogou',
     url: (kw) => `https://www.sogou.com/sugproxy/sug?action=get&encode=utf-8&query=${encodeURIComponent(kw)}`,
     parse: (body) => {
@@ -69,23 +76,29 @@ const ENGINES: SuggestEngine[] = [
     },
   },
   {
-    // R11-1C: Google Suggest XML 接口 (海外可达, 国内偶发可访问)
+    // R25-1D: output=toolbar XML 接口已弃用 (返回 400 Bad Request); 改用 client=firefox
+    // JSON 接口, 返回 ["query", ["sugg1", ...]] 格式, 解析器与 bing 同款 (取 j[1])
     name: 'google',
-    url: (kw) => `https://suggestqueries.google.com/complete/search?output=toolbar&hl=zh-CN&q=${encodeURIComponent(kw)}`,
+    url: (kw) => `https://suggestqueries.google.com/complete/search?client=firefox&hl=zh-CN&q=${encodeURIComponent(kw)}`,
     parse: (body) => {
-      // XML 格式: <CompleteSuggestion><suggestion data="xxx"/></CompleteSuggestion>
       try {
-        const matches = [...body.matchAll(/<suggestion\s+data="([^"]+)"\s*\/>/gi)]
-        return matches.map((m) => m[1]).filter((s) => s && typeof s === 'string')
+        const j = JSON.parse(body)
+        if (Array.isArray(j) && Array.isArray(j[1])) {
+          return (j[1] as unknown[]).filter((s: any) => typeof s === 'string')
+        }
+        return []
       } catch { return [] }
     },
   },
   {
-    // R11-1C: Yandex Suggest (备用引擎, 海外可达, 中文支持一般但偶有长尾词)
+    // R11-1C: Yandex Suggest (备用引擎, 海外可达)
+    // R25-1D: 旧 endpoint /suggest-backend/suggest/suggest-ya.cgi 已下线 (返回 404),
+    // 改用 /suggest-ya.cgi 根路径; 中文长查询(如完整书名"斗罗大陆")Yandex 无中文索引,
+    // 返回 ["斗罗大陆",[],{"r":134}], 解析器对空数组优雅返回 [], 不影响聚合
     name: 'yandex',
-    url: (kw) => `https://suggest.yandex.com/suggest-backend/suggest/suggest-ya.cgi?part=${encodeURIComponent(kw)}&srv=www.yandex.com&icon=1&fact=1&pos=4&sn=7&ll=0&v=4&uilv=2&lang=zh&ssl=1&multiline=1`,
+    url: (kw) => `https://suggest.yandex.com/suggest-ya.cgi?part=${encodeURIComponent(kw)}&uilv=2&srv=search&lang=zh&ssl=1`,
     parse: (body) => {
-      // Yandex 返回 JSON 数组 [query, [[suggestion, ...], ...], ...]
+      // Yandex 返回 JSON 数组 [query, [[suggestion, ...], ...], ...] 或 [query, [], ...]
       try {
         const j = JSON.parse(body)
         if (Array.isArray(j) && j.length >= 2 && Array.isArray(j[1])) {

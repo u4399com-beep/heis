@@ -10,6 +10,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
+import dynamic from 'next/dynamic'
 import { ChevronLeft, ChevronRight, Clock, FileText, Hash, ListTree, Search, Sparkles, Type } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -18,10 +19,25 @@ import { usePublic } from './ctx'
 import { coverSrc, formatWords, useSiteSEO, withAlpha } from './seo'
 import { generateTitle, generateMetaDescription, generateKeywords } from './auto-tdk'
 import { BookCover } from './BookCover'
-//             恢复 10 套 import + 按 theme.layout 分发, fallback 走 aijjxs (与 R15-1B 同口径)
-import { EmptyState, ErrorState, SecTitle, Sk, TagCloud, ChapterListSkeleton } from './bits'
+import { EmptyState, ErrorState, SecTitle, Sk, TagCloud, ChapterListSkeleton, BookGridSkeleton } from './bits'
 import type { BookItem, BookTagHit, TocChapter } from './types'
 import { getReadPos } from './read-layouts/reading-memory'
+
+// R25: BookInfo lookup table — clone-* 主题动态加载对应 BookInfo 组件, ssr=true 让 SSR 直接渲染源站 DOM
+// 之前 BookView 只有 inline BookInfoComponent 兜底 fallback, 没有走 clone-themes 路由表
+// → 现在 clone-* 主题的 BookInfo 组件被使用, 源站 class 命中 shipsay.css / aijjxs.css 等
+const BookInfoLookup: Record<string, React.ComponentType<any>> = {
+  'clone-aijjxs': dynamic(() => import('./clone-themes/aijjxs').then(m => m.BookInfo), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
+  'clone-ddyueshu': dynamic(() => import('./clone-themes/ddyueshu').then(m => m.BookInfo), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
+  'clone-pilishuwu': dynamic(() => import('./clone-themes/pilishuwu').then(m => m.BookInfo), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
+  'clone-23qb': dynamic(() => import('./clone-themes/23qb').then(m => m.BookInfo), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
+  'clone-101kks': dynamic(() => import('./clone-themes/101kks').then(m => m.BookInfo), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
+  'clone-huangjinwu': dynamic(() => import('./clone-themes/huangjinwu').then(m => m.BookInfo), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
+  'clone-ggd66': dynamic(() => import('./clone-themes/ggd66').then(m => m.BookInfo), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
+  'clone-shipsay': dynamic(() => import('./clone-themes/shipsay').then(m => m.BookInfo), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
+  'clone-x2552': dynamic(() => import('./clone-themes/x2552').then(m => m.BookInfo), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
+  'clone-trxsw': dynamic(() => import('./clone-themes/trxsw').then(m => m.BookInfo), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
+}
 
 
 // fallback 走 aijjxs (与 R15-1B 同口径)
@@ -414,10 +430,11 @@ const BookInfoComponent = ({ book, theme, onScrollToc }: any) => {
     )
   }
 
-export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number }) {
+export function BookView({ bookId, tocPage, initialBook, initialCategories }: { bookId?: string; tocPage: number; initialBook?: BookDetailData | null; initialCategories?: any[] }) {
   const { site, theme, navigate } = usePublic()
   const v = theme.vars
-  const [state, setState] = useState<FetchState | null>(null)
+  // R25: SSR 首载用 page.tsx server fetch 的 initialBook 初始化 state, 让 SSR 时 loading=false → clone BookInfo 组件渲染 book 详情
+  const [state, setState] = useState<FetchState | null>(initialBook && initialBook.book ? { key: `${bookId || ''}|${tocPage}|${site.id}`, data: initialBook } : null)
   const tocRef = useRef<HTMLDivElement>(null)
   const firstRender = useRef(true)
   // feat-round-5 A2: 章节预览缓存 (跨翻页共享, 同 BookView 生命周期内复用)
@@ -447,6 +464,8 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
   const key = `${bookId || ''}|${tocPage}|${site.id}`
 
   useEffect(() => {
+    // initialBook 是 server fetch 首屏数据, 首次 effect 跳过避免覆盖; bookId/tocPage 变化时重新 fetch
+    if (state && state.key === key && state.data) return
     if (!bookId) return
     let alive = true
     fetchBook(bookId, tocPage, 100, site.id)
@@ -461,7 +480,7 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
     return () => {
       alive = false
     }
-  }, [key, bookId, tocPage, site.id])
+  }, [key, bookId, tocPage, site.id, state])
 
   const loading = !state || state.key !== key
   const data = loading ? null : state.data || null
@@ -669,9 +688,24 @@ export function BookView({ bookId, tocPage }: { bookId?: string; tocPage: number
         </div>
       ) : (
         <>
-          {/* R20-1A: 接 BookInfoComponent (lookup table 在文件顶部定义, fallback aijjxs) */}
+          {/* R25: BookInfo lookup table 分发到 clone-themes/<site>/BookInfo (ssr=true), fallback 走 inline BookInfoComponent */}
           {(() => {
-                        return (
+            const CloneBookInfo = BookInfoLookup[theme.layout]
+            if (CloneBookInfo) {
+              return (
+                <CloneBookInfo
+                  book={book}
+                  theme={theme}
+                  savedPos={savedPos}
+                  firstChapterId={chapters[0]?.id}
+                  onScrollToc={() => tocRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                  onContinueRead={() => chapters[0]?.id && navigate({ view: 'read', chapterId: chapters[0].id, bookId: book.id })}
+                  onGoCategory={(categoryId: string) => navigate({ view: 'category', cat: categoryId })}
+                  initialCategories={initialCategories}
+                />
+              )
+            }
+            return (
               <BookInfoComponent
                 book={book}
                 theme={theme}

@@ -43,15 +43,16 @@ const TOP_NAV: { id: string; name: string; view: 'home' | 'category' | 'fulltext
   { id: 'search', name: '搜索', view: 'search' },
 ]
 
-export function BookInfo({ book, onScrollToc, onContinueRead, onGoCategory }: BookInfoProps) {
+export function BookInfo({ book, onScrollToc, onContinueRead, onGoCategory, initialCategories }: BookInfoProps) {
   const { site, navigate } = usePublic()
-  const [cats, setCats] = useState<Cat[]>([])
+  const [cats, setCats] = useState<Cat[]>(() => (initialCategories || []).map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) })))
   const [chapters, setChapters] = useState<Chapter[]>([])
   const [showAll, setShowAll] = useState(false)
   const [rankBooks, setRankBooks] = useState<BookItem[]>([])
 
   // 拉分类列表
   useEffect(() => {
+    if (cats.length > 0) return
     let aborted = false
     fetch('/api/public/categories?limit=60')
       .then(r => r.json())
@@ -63,7 +64,7 @@ export function BookInfo({ book, onScrollToc, onContinueRead, onGoCategory }: Bo
       })
       .catch(() => { if (!aborted) setCats(DEFAULT_NAV) })
     return () => { aborted = true }
-  }, [])
+  }, [cats.length])
 
   // 拉书页章节目录 (/api/public/book?id=... 返回 toc + book)
   useEffect(() => {

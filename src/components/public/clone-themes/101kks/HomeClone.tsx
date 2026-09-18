@@ -22,6 +22,7 @@ import { usePublic } from '../../ctx'
 import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
 import { formatWords } from '../../seo'
+import { addFavoriteSite, useTraditionalChinese } from '../tools'
 import type { HomeCloneProps } from '../shared'
 import type { BookItem } from '../../types'
 import { useEffect, useState } from 'react'
@@ -47,6 +48,8 @@ const HOT_TAGS = ['系統', '穿越', '重生', '空間', '同人衍生', '多�
 
 export function HomeClone({ books, loading, homeModuleLimit = 20, initialCategories }: HomeCloneProps) {
   const { site, navigate } = usePublic()
+  // 简繁切换: 状态 + toggle + 显式 setTc
+  const { isTc, mounted, toggleTc, setTc } = useTraditionalChinese()
   // R24: SSR 首载用 page.tsx server fetch 的 initialCategories 初始化, 避免 SSR 时 cats=[] → navigation 没分类
   const [cats, setCats] = useState<Cat[]>(() => (initialCategories || []).map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) })))
 
@@ -198,10 +201,12 @@ export function HomeClone({ books, loading, homeModuleLimit = 20, initialCategor
           </form>
           <div className="user1 pull-right"><img className="user_touxiang" src="/images/user.png" alt="" /></div>
           <div className="lang pull-right">
-            <a href="javascript:;" className="textsel">繁體</a>
+            <a href="javascript:;" className="textsel" onClick={(e) => { e.preventDefault(); toggleTc() }} title="简繁切换">
+              {mounted && isTc ? '簡體' : '繁體'}
+            </a>
             <ul>
-              <li><a href="javascript:;" className="zh_click" id="zh_click_s" onClick={(e) => e.preventDefault()}>簡體</a></li>
-              <li><a href="javascript:;" className="zh_click" id="zh_click_t" onClick={(e) => e.preventDefault()}>繁體</a></li>
+              <li><a href="javascript:;" className="zh_click" id="zh_click_s" onClick={(e) => { e.preventDefault(); setTc(false) }}>簡體</a></li>
+              <li><a href="javascript:;" className="zh_click" id="zh_click_t" onClick={(e) => { e.preventDefault(); setTc(true) }}>繁體</a></li>
             </ul>
           </div>
           <div className="menu1 pull-right">
@@ -214,6 +219,11 @@ export function HomeClone({ books, loading, homeModuleLimit = 20, initialCategor
                   </a>
                 </li>
               ))}
+              <li>
+                <a href="#favorite" title="加入收藏 (Ctrl+D)" onClick={(e) => addFavoriteSite(e)}>
+                  <i className="iconfont icon-mark"></i> 加入收藏
+                </a>
+              </li>
             </ul>
           </div>
         </div>

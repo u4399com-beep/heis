@@ -16,6 +16,7 @@
 import { usePublic } from '../../ctx'
 import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
+import { addFavoriteSite, useTraditionalChinese } from '../tools'
 import type { HomeCloneProps } from '../shared'
 import type { BookItem } from '../../types'
 import { useEffect, useState } from 'react'
@@ -42,6 +43,21 @@ const TOP_NAV: { id: string; name: string; view: 'home' | 'category' | 'fulltext
   { id: 'quanben', name: '全本', view: 'fulltext' },
   { id: 'search', name: '搜索', view: 'search' },
 ]
+
+// 简繁切换按钮 — ggd66 风格 (.header-right 内文字链接, 与"|"分隔)
+function TcToggleGgd66() {
+  const { isTc, mounted, toggleTc } = useTraditionalChinese()
+  const label = mounted && isTc ? '简体' : '繁體'
+  return (
+    <a
+      href="#tc-toggle"
+      title="简繁切换"
+      onClick={(e) => { e.preventDefault(); toggleTc() }}
+    >
+      {label}
+    </a>
+  )
+}
 
 export function HomeClone({ books, loading, homeModuleLimit = 20, initialCategories }: HomeCloneProps) {
   const { site, navigate } = usePublic()
@@ -126,6 +142,10 @@ export function HomeClone({ books, loading, homeModuleLimit = 20, initialCategor
             <a href="/login/" onClick={(e) => e.preventDefault()}>登录</a>
             {' | '}
             <a href="/register" onClick={(e) => e.preventDefault()}>注册</a>
+            {' | '}
+            <a href="#favorite" title="收藏本站 (Ctrl+D)" onClick={(e) => addFavoriteSite(e)}>收藏本站</a>
+            {' | '}
+            <TcToggleGgd66 />
           </div>
           <div className="header-nav">
             {TOP_NAV.map(n => (

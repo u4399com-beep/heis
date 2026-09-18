@@ -15,6 +15,7 @@
 import { usePublic } from '../../ctx'
 import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
+import { addFavoriteSite, useTraditionalChinese } from '../tools'
 import type { HomeCloneProps } from '../shared'
 import type { BookItem } from '../../types'
 import { useEffect, useState } from 'react'
@@ -33,6 +34,8 @@ const DEFAULT_NAV: Cat[] = [
 
 export function HomeClone({ books, loading, navCategoryCount = 10, homeModuleLimit = 36, initialCategories }: HomeCloneProps) {
   const { site, navigate } = usePublic()
+  // 简繁切换状态 + setTc (用于 .h_body p 的 简体版/繁体版 链接)
+  const { isTc, mounted, setTc } = useTraditionalChinese()
   // R24: SSR 首载用 page.tsx server fetch 的 initialCategories 初始化, 避免 SSR 时 cats=[] → navigation 没分类
   const [cats, setCats] = useState<Cat[]>(() => (initialCategories || []).map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) })))
 
@@ -115,7 +118,8 @@ export function HomeClone({ books, loading, navCategoryCount = 10, homeModuleLim
         <div className="h_body fl">
           <div>
             <p className="fr">
-              <a rel="nofollow" href="#" onClick={(e) => e.preventDefault()}>简体版</a> | <a rel="nofollow" href="#" onClick={(e) => e.preventDefault()}>繁体版</a> | <a rel="nofollow" href="#" onClick={(e) => e.preventDefault()}>设为首页</a> | <a rel="nofollow" href="#" onClick={(e) => e.preventDefault()}>联系我们</a> | <a rel="nofollow" href="#" onClick={(e) => e.preventDefault()}>加入收藏</a>
+              <a rel="nofollow" href="#tc-toggle" onClick={(e) => { e.preventDefault(); setTc(false) }} title="切换为简体">简体版</a> | <a rel="nofollow" href="#tc-toggle" onClick={(e) => { e.preventDefault(); setTc(true) }} title="切换为繁体">繁体版</a> | <a rel="nofollow" href="#favorite" onClick={(e) => addFavoriteSite(e)} title="加入收藏 (Ctrl+D)">加入收藏</a>
+              {mounted && isTc ? <span style={{ marginLeft: 6, color: '#f50' }}>【繁体模式】</span> : null}
             </p>
             {site.name}：新吾读小说网,没有弹窗广告 好看的小说免费阅读
           </div>

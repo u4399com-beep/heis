@@ -37,11 +37,12 @@ const TOP_NAV: { id: string; name: string; view: 'home' | 'category' | 'fulltext
   { id: 'search', name: '搜索', view: 'search' },
 ]
 
-export function ReadChrome({ children, chapterTitle, onPrev, onNext }: ReadChromeProps) {
+export function ReadChrome({ children, chapterTitle, onPrev, onNext, initialCategories }: ReadChromeProps) {
   const { site, navigate } = usePublic()
-  const [cats, setCats] = useState<Cat[]>([])
+  const [cats, setCats] = useState<Cat[]>(() => (initialCategories || []).map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) })))
 
   useEffect(() => {
+    if (cats.length > 0) return
     let aborted = false
     fetch('/api/public/categories?limit=60')
       .then(r => r.json())
@@ -53,7 +54,7 @@ export function ReadChrome({ children, chapterTitle, onPrev, onNext }: ReadChrom
       })
       .catch(() => { if (!aborted) setCats(DEFAULT_NAV) })
     return () => { aborted = true }
-  }, [])
+  }, [cats.length])
 
   // 章节切换时滚动到顶部
   useEffect(() => {

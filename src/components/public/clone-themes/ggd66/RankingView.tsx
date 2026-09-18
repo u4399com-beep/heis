@@ -48,11 +48,12 @@ const TABS: { id: string; name: string }[] = [
   { id: 'lastupdate', name: '最近更新' },
 ]
 
-export function RankingView({ books, loading, tab, onTabChange, page, total, size, onPage }: RankingViewProps) {
+export function RankingView({ books, loading, tab, onTabChange, page, total, size, onPage, initialCategories }: RankingViewProps) {
   const { site, navigate } = usePublic()
-  const [cats, setCats] = useState<Cat[]>([])
+  const [cats, setCats] = useState<Cat[]>(() => (initialCategories || []).map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) })))
 
   useEffect(() => {
+    if (cats.length > 0) return
     let aborted = false
     fetch('/api/public/categories?limit=60')
       .then(r => r.json())
@@ -64,7 +65,7 @@ export function RankingView({ books, loading, tab, onTabChange, page, total, siz
       })
       .catch(() => { if (!aborted) setCats(DEFAULT_NAV) })
     return () => { aborted = true }
-  }, [])
+  }, [cats.length])
 
   const totalPages = Math.max(1, Math.ceil(total / size))
   const rankBooks = books.slice(0, 13)

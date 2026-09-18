@@ -1,29 +1,47 @@
 // ============================================================
 // 搜索视图 — 搜索框 + 主题化结果列表 + 相关词 + 热搜词 + 搜索历史
+// R25: clone-* 主题走 SearchViewLookup → clone-themes/<site>/SearchView
+//      SSR: page.tsx server fetch search results, 传 initialSearch 让 SSR 渲染搜索结果
 // ============================================================
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import dynamic from 'next/dynamic'
 import { Clock, Flame, History, Search, Trash2, X } from 'lucide-react'
 import { fetchSearch } from './data'
 import type { SearchData } from './types'
 import { usePublic } from './ctx'
 import { siteKeywordList, useSiteSEO, withAlpha } from './seo'
 import { generateTitle, generateMetaDescription, generateKeywords } from './auto-tdk'
-import { EmptyState, ErrorState, TagCloud } from './bits'
+import { EmptyState, ErrorState, TagCloud, BookGridSkeleton } from './bits'
 import { addSearchHistory, clearSearchHistory, getSearchHistory } from './search-history'
 
+// R25: SearchView lookup table — clone-* 主题动态加载对应 SearchView 组件, ssr=true 让 SSR 直接渲染源站 DOM
+const SearchViewLookup: Record<string, React.ComponentType<any>> = {
+  'clone-aijjxs': dynamic(() => import('./clone-themes/aijjxs').then(m => m.SearchView), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
+  'clone-ddyueshu': dynamic(() => import('./clone-themes/ddyueshu').then(m => m.SearchView), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
+  'clone-pilishuwu': dynamic(() => import('./clone-themes/pilishuwu').then(m => m.SearchView), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
+  'clone-23qb': dynamic(() => import('./clone-themes/23qb').then(m => m.SearchView), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
+  'clone-101kks': dynamic(() => import('./clone-themes/101kks').then(m => m.SearchView), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
+  'clone-huangjinwu': dynamic(() => import('./clone-themes/huangjinwu').then(m => m.SearchView), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
+  'clone-ggd66': dynamic(() => import('./clone-themes/ggd66').then(m => m.SearchView), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
+  'clone-shipsay': dynamic(() => import('./clone-themes/shipsay').then(m => m.SearchView), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
+  'clone-x2552': dynamic(() => import('./clone-themes/x2552').then(m => m.SearchView), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
+  'clone-trxsw': dynamic(() => import('./clone-themes/trxsw').then(m => m.SearchView), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
+}
 
-
-export function SearchView({ q }: { q?: string }) {
+export function SearchView({ q, initialSearch, initialCategories }: { q?: string; initialSearch?: SearchData | null; initialCategories?: any[] }) {
   const { site, theme, navigate } = usePublic()
   const v = theme.vars
   const [input, setInput] = useState(q || '')
-  const [data, setData] = useState<SearchData | null>(null)
-  const [loading, setLoading] = useState(false)
+  // R25: SSR 首载用 page.tsx server fetch 的 initialSearch 初始化, 让 SSR 时 loading=false → clone SearchView 组件渲染搜索结果
+  const [data, setData] = useState<SearchData | null>(initialSearch && initialSearch.q === q ? initialSearch : null)
+  const [loading, setLoading] = useState(!(initialSearch && initialSearch.q === q) && !!q)
   const [error, setError] = useState('')
   const [hotTags, setHotTags] = useState<string[] | null>(null)
   const [historyTick, setHistoryTick] = useState(0) // 移除/清空后强制重读 history
+  // R25: firstRender ref — SSR 首载已有 initialSearch 时跳过首次 effect 避免 client fetch 覆盖
+  const firstRender = useRef(true)
 
   // props变化时的状态调整 — 渲染期同步（React官方推荐模式）
   const [prevQ, setPrevQ] = useState(q)
@@ -33,6 +51,7 @@ export function SearchView({ q }: { q?: string }) {
     setData(null)
     setError('')
     setLoading(!!q)
+    firstRender.current = false
   }
 
   // 提交搜索: 走 navigate 触发 effect, 同时记录历史
@@ -67,6 +86,11 @@ export function SearchView({ q }: { q?: string }) {
   }, [q])
 
   useEffect(() => {
+    // R25: initialSearch 是 server fetch 首屏数据, 首次 effect 跳过避免覆盖; q 变化时重新 fetch
+    if (firstRender.current && data && data.q === q) {
+      firstRender.current = false
+      return
+    }
     if (!q) return
     let alive = true
     fetchSearch(q)
@@ -83,7 +107,7 @@ export function SearchView({ q }: { q?: string }) {
     return () => {
       alive = false
     }
-  }, [q])
+  }, [q, data, firstRender])
 
   // 触发搜索时置为loading（事件回调内setState合法）
   const startSearch = (word: string) => {
@@ -116,6 +140,19 @@ export function SearchView({ q }: { q?: string }) {
   const onClearHistory = () => {
     clearSearchHistory()
     setHistoryTick((t) => t + 1)
+  }
+
+  // R25: clone-* 主题走 SearchViewLookup, 否则走通用布局
+  const Clone = SearchViewLookup[theme.layout]
+  if (Clone) {
+    return (
+      <Clone
+        q={q || ''}
+        books={data?.books || []}
+        loading={loading}
+        initialCategories={initialCategories}
+      />
+    )
   }
 
   return (

@@ -43,6 +43,10 @@ export default function PublicSite({
   initialSites,
   initialBooks,
   initialCategories,
+  initialBook,
+  initialChapter,
+  initialSearch,
+  initialKeyword,
   onBack,
   embedMode,
 }: {
@@ -52,6 +56,10 @@ export default function PublicSite({
   initialSites?: SiteInfo[]
   initialBooks?: any[]
   initialCategories?: any[]
+  initialBook?: any
+  initialChapter?: any
+  initialSearch?: any
+  initialKeyword?: any
   onBack?: () => void
   embedMode?: boolean
 }) {
@@ -227,21 +235,21 @@ export default function PublicSite({
   const renderView = () => {
     switch (view.view) {
       case 'book':
-        return <BookView key={`book-${view.bookId || ''}-${site.id}`} bookId={view.bookId} tocPage={view.page || 1} />
+        return <BookView key={`book-${view.bookId || ''}-${site.id}`} bookId={view.bookId} tocPage={view.page || 1} initialBook={initialBook} initialCategories={initialCategories} />
       case 'read':
-        return <ReadView key={`read-${view.chapterId || ''}`} chapterId={view.chapterId} initialPage={view.page} />
+        return <ReadView key={`read-${view.chapterId || ''}`} chapterId={view.chapterId} initialPage={view.page} initialChapter={initialChapter} initialCategories={initialCategories} />
       case 'search':
-        return <SearchView key={`search-${view.q || ''}`} q={view.q} />
+        return <SearchView key={`search-${view.q || ''}`} q={view.q} initialSearch={initialSearch} initialCategories={initialCategories} />
       case 'history':
         return <HistoryView key={`history-${site.id}`} />
       case 'keyword':
-        return <KeywordView key={`kw-${view.tag || ''}`} tag={view.tag} />
+        return <KeywordView key={`kw-${view.tag || ''}`} tag={view.tag} initialKeyword={initialKeyword} initialCategories={initialCategories} />
       case 'category':
-        return <CategoryView key={`cat-${view.cat || ''}-${site.id}`} cat={view.cat} page={view.page || 1} />
+        return <CategoryView key={`cat-${view.cat || ''}-${site.id}`} cat={view.cat} page={view.page || 1} initialBooks={initialBooks ? { books: initialBooks, total: initialBooks.length, page: 1, size: 48 } : undefined} initialCategories={initialCategories} />
       case 'ranking':
-        return <RankingView key={`rank-${site.id}`} page={view.page || 1} />
+        return <RankingView key={`rank-${site.id}`} page={view.page || 1} initialBooks={initialBooks ? { books: initialBooks, total: initialBooks.length, page: 1, size: 30 } : undefined} initialCategories={initialCategories} />
       case 'fulltext':
-        return <FulltextView key={`full-${site.id}`} page={view.page || 1} />
+        return <FulltextView key={`full-${site.id}`} page={view.page || 1} initialBooks={initialBooks ? { books: initialBooks, total: initialBooks.length, page: 1, size: 24 } : undefined} initialCategories={initialCategories} />
       default:
         return <HomeView key={`home-${site.id}-${view.cat || ''}`} page={view.page || 1} cat={view.cat} initialBooks={initialBooks} initialCategories={initialCategories} />
     }

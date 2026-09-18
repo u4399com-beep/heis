@@ -26,12 +26,13 @@ const DEFAULT_NAV: Cat[] = [
   { id: '9', name: '文学名著' }, { id: '10', name: '其他' },
 ]
 
-export function SearchView({ q, books, loading }: SearchViewProps) {
+export function SearchView({ q, books, loading, initialCategories }: SearchViewProps) {
   const { site, navigate } = usePublic()
-  const [cats, setCats] = useState<Cat[]>([])
+  const [cats, setCats] = useState<Cat[]>(() => (initialCategories || []).map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) })))
 
   // 拉分类列表用于 m_menu 导航
   useEffect(() => {
+    if (cats.length > 0) return
     let aborted = false
     fetch('/api/public/categories?limit=60')
       .then(r => r.json())
@@ -43,7 +44,7 @@ export function SearchView({ q, books, loading }: SearchViewProps) {
       })
       .catch(() => { if (!aborted) setCats(DEFAULT_NAV) })
     return () => { aborted = true }
-  }, [])
+  }, [cats.length])
 
   const navCats = (cats.length ? cats : DEFAULT_NAV).slice(0, 10)
   const fmtDateShort = (d?: string) => d ? new Date(d).toISOString().slice(2, 10) : ''

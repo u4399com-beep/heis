@@ -30,12 +30,13 @@ const DEFAULT_NAV: Cat[] = [
   { id: 'gdmz', name: '文学名著' },
 ]
 
-export function BookInfo({ book, onScrollToc, onContinueRead, onGoCategory }: BookInfoProps) {
+export function BookInfo({ book, onScrollToc, onContinueRead, onGoCategory, initialCategories }: BookInfoProps) {
   const { site, navigate } = usePublic()
-  const [cats, setCats] = useState<Cat[]>([])
+  const [cats, setCats] = useState<Cat[]>(() => (initialCategories || []).map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) })))
   const [related, setRelated] = useState<BookItem[]>([])
 
   useEffect(() => {
+    if (cats.length > 0) return
     let aborted = false
     fetch('/api/public/categories?limit=60')
       .then(r => r.json())
@@ -47,7 +48,7 @@ export function BookInfo({ book, onScrollToc, onContinueRead, onGoCategory }: Bo
       })
       .catch(() => { if (!aborted) setCats(DEFAULT_NAV) })
     return () => { aborted = true }
-  }, [])
+  }, [cats.length])
 
   // 拉"猜您喜欢": 同分类前 4 本(排除当前书)
   useEffect(() => {

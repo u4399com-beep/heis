@@ -1,5 +1,11 @@
+// ============================================================
+// 全本完本小说视图 — sort=fulltext (status=completed)
+// R25: clone-* 主题走 FulltextViewLookup → clone-themes/<site>/FulltextView
+//      SSR: page.tsx server fetch books by sort=fulltext, 传 initialBooks 让 SSR 渲染全本列表
+// ============================================================
 'use client'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import dynamic from 'next/dynamic'
 import { BookCheck } from 'lucide-react'
 import { fetchBooks, type BooksData } from './data'
 import { usePublic } from './ctx'
@@ -11,19 +17,42 @@ import { formatWords } from './seo'
 import { Pagination } from './Pagination'
 import type { BookItem } from './types'
 
-export function FulltextView({ page }: { page: number }) {
+// R25: FulltextView lookup table — clone-* 主题动态加载对应 FulltextView 组件, ssr=true 让 SSR 直接渲染源站 DOM
+const FulltextViewLookup: Record<string, React.ComponentType<any>> = {
+  'clone-aijjxs': dynamic(() => import('./clone-themes/aijjxs').then(m => m.FulltextView), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
+  'clone-ddyueshu': dynamic(() => import('./clone-themes/ddyueshu').then(m => m.FulltextView), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
+  'clone-pilishuwu': dynamic(() => import('./clone-themes/pilishuwu').then(m => m.FulltextView), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
+  'clone-23qb': dynamic(() => import('./clone-themes/23qb').then(m => m.FulltextView), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
+  'clone-101kks': dynamic(() => import('./clone-themes/101kks').then(m => m.FulltextView), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
+  'clone-huangjinwu': dynamic(() => import('./clone-themes/huangjinwu').then(m => m.FulltextView), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
+  'clone-ggd66': dynamic(() => import('./clone-themes/ggd66').then(m => m.FulltextView), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
+  'clone-shipsay': dynamic(() => import('./clone-themes/shipsay').then(m => m.FulltextView), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
+  'clone-x2552': dynamic(() => import('./clone-themes/x2552').then(m => m.FulltextView), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
+  'clone-trxsw': dynamic(() => import('./clone-themes/trxsw').then(m => m.FulltextView), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
+}
+
+interface FetchState { key: string; data?: BooksData; error?: string }
+
+export function FulltextView({ page, initialBooks, initialCategories }: { page: number; initialBooks?: any; initialCategories?: any[] }) {
   const { site, theme, navigate } = usePublic()
   const v = theme.vars
-  const [state, setState] = useState<{ data?: BooksData; error?: string } | null>(null)
+  // R25: SSR 首载用 page.tsx server fetch 的 initialBooks 初始化 state, 让 SSR 时 loading=false → clone FulltextView 组件渲染全本列表
   const key = `${site.id}|fulltext|${page}`
+  const [state, setState] = useState<FetchState | null>(initialBooks && initialBooks.books ? { key, data: initialBooks as BooksData } : null)
+  // R25: firstRender ref — SSR 首载已有 initialBooks 时跳过首次 effect 避免 client fetch 覆盖
+  const firstRender = useRef(true)
   useEffect(() => {
+    if (firstRender.current && state && state.data) {
+      firstRender.current = false
+      return
+    }
     let alive = true
     fetchBooks({ site: site.id, sort: 'fulltext' as any, page, size: 24 })
-      .then(d => { if (alive) setState({ data: d }) })
-      .catch((e: Error) => { if (alive) setState({ error: e.message }) })
+      .then(d => { if (alive) setState({ key, data: d }) })
+      .catch((e: Error) => { if (alive) setState({ key, error: e.message }) })
     return () => { alive = false }
-  }, [key, site.id, page])
-  const loading = !state || !state.data
+  }, [key, site.id, page, state])
+  const loading = !state || state.key !== key
   const data = loading ? null : state.data || null
   const error = loading ? '' : state.error || ''
   useSiteSEO({
@@ -33,6 +62,21 @@ export function FulltextView({ page }: { page: number }) {
     canonicalPath: `/?view=fulltext&page=${page}&site=${site.id}`, site,
   })
   const books: BookItem[] = data?.books || []
+  // R25: clone-* 主题走 FulltextViewLookup, 否则走通用布局
+  const Clone = FulltextViewLookup[theme.layout]
+  if (Clone) {
+    return (
+      <Clone
+        books={books}
+        loading={loading}
+        page={data?.page || page}
+        total={data?.total || 0}
+        size={data?.size || 24}
+        onPage={(p: number) => navigate({ view: 'fulltext', page: p })}
+        initialCategories={initialCategories}
+      />
+    )
+  }
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6">
       <div className="mb-6 flex items-center gap-3">

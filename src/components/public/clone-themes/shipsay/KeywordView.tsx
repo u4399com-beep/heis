@@ -28,11 +28,13 @@ const DEFAULT_NAV: Cat[] = [
   { id: '7', name: '女生' }, { id: '8', name: '其他' },
 ]
 
-export function KeywordView({ tag, books, loading }: KeywordViewProps) {
+export function KeywordView({ tag, books, loading, initialCategories }: KeywordViewProps) {
   const { site, navigate } = usePublic()
-  const [cats, setCats] = useState<Cat[]>([])
+  // R25: SSR 首载用 page.tsx server fetch 的 initialCategories 初始化, 避免 SSR 时 cats=[] → navigation 没分类
+  const [cats, setCats] = useState<Cat[]>(() => (initialCategories || []).map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) })))
 
   useEffect(() => {
+    if (cats.length > 0) return
     let aborted = false
     fetch('/api/public/categories?limit=60')
       .then(r => r.json())
@@ -44,7 +46,7 @@ export function KeywordView({ tag, books, loading }: KeywordViewProps) {
       })
       .catch(() => { if (!aborted) setCats(DEFAULT_NAV) })
     return () => { aborted = true }
-  }, [])
+  }, [cats.length])
 
   const navCats = (cats.length ? cats : DEFAULT_NAV).slice(0, 8)
   // 相关标签: 从 books.keywords 拆分去重前 12 个

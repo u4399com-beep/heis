@@ -29,11 +29,12 @@ const DEFAULT_NAV: Cat[] = [
   { id: 'gdmz', name: '文学名著' },
 ]
 
-export function KeywordView({ tag, books, loading }: KeywordViewProps) {
+export function KeywordView({ tag, books, loading, initialCategories }: KeywordViewProps) {
   const { site, navigate } = usePublic()
-  const [cats, setCats] = useState<Cat[]>([])
+  const [cats, setCats] = useState<Cat[]>(() => (initialCategories || []).map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) })))
 
   useEffect(() => {
+    if (cats.length > 0) return
     let aborted = false
     fetch('/api/public/categories?limit=60')
       .then(r => r.json())
@@ -45,7 +46,7 @@ export function KeywordView({ tag, books, loading }: KeywordViewProps) {
       })
       .catch(() => { if (!aborted) setCats(DEFAULT_NAV) })
     return () => { aborted = true }
-  }, [])
+  }, [cats.length])
 
   const navCats = (cats.length ? cats : DEFAULT_NAV).slice(0, 15)
   const rankTop = books[0]

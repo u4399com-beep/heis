@@ -1101,30 +1101,42 @@ async function newStealthContext(fp: ObscuraFingerprint, level: StealthLevel = '
     // E3: Accept-Language 头按 fp.locale 动态构造(原硬编码 zh-CN 与随机 locale 池冲突)
     extraHTTPHeaders: { 'Accept-Language': acceptLanguageFor(fp.locale) },
   })
-  // R7: 按 stealth level 过滤静态脚本(lite=4 个基础, standard=全部, maximum=全部+OfflineAudio)
-  const scripts = selectStealthScripts(level)
-  for (const script of scripts) {
-    await ctx.addInitScript(script)
-  }
-  // E3: per-context 动态 init 脚本 —— 静态脚本 4 硬编码 navigator.language='zh-CN' / languages=
-  // ['zh-CN','zh','en'], 与随机 locale 池(zh-TW/en-US/en-GB)冲突会被探针暴露(语言不自洽);
-  // 按 fp.locale 覆盖 navigator.language/languages, 与 newContext(locale)(Playwright 原生)+ 头组
-  // 三方对齐。在静态脚本之后注册(覆盖其 zh-CN 定义), 在身份脚本之前注册(身份脚本不碰 language)
-  const lang = fp.locale
-  const langs = lang.startsWith('zh') ? [lang, 'zh', 'en'] : [lang, 'en', 'zh']
-  await ctx.addInitScript(
-    `(() => { try {
+  // R25-1A3 修复 P1 资源泄漏: ctx 建立后裸跑 addInitScript 循环, 任一脚本注入失败
+  // (脚本字符串语法错误/引擎异常/上下文已销毁)抛错时, ctx 既没被返回给 caller 也
+  // 没被 close, 每次失败泄漏一个空 BrowserContext (进程级 chromium 资源: 独立进程
+  // 内堆 + CDP 会话 + 至少 1 page 的内存画像). caller (createSlot/recreateSlot) 的 catch
+  // 块只覆盖 ctx.newPage/applyUaCdpOverride 失败路径 (在 try 内), newStealthContext 抛错
+  // 时 caller 的 try 块未进入, catch 不执行, ctx 永久泄漏. 改为: addInitScript 失败时
+  // 主动 close ctx 再抛, caller 的 catch 块 (若进入) close 一次幂等无害 (.catch 吞错)
+  try {
+    // R7: 按 stealth level 过滤静态脚本(lite=4 个基础, standard=全部, maximum=全部+OfflineAudio)
+    const scripts = selectStealthScripts(level)
+    for (const script of scripts) {
+      await ctx.addInitScript(script)
+    }
+    // E3: per-context 动态 init 脚本 —— 静态脚本 4 硬编码 navigator.language='zh-CN' / languages=
+    // ['zh-CN','zh','en'], 与随机 locale 池(zh-TW/en-US/en-GB)冲突会被探针暴露(语言不自洽);
+    // 按 fp.locale 覆盖 navigator.language/languages, 与 newContext(locale)(Playwright 原生)+ 头组
+    // 三方对齐。在静态脚本之后注册(覆盖其 zh-CN 定义), 在身份脚本之前注册(身份脚本不碰 language)
+    const lang = fp.locale
+    const langs = lang.startsWith('zh') ? [lang, 'zh', 'en'] : [lang, 'en', 'zh']
+    await ctx.addInitScript(
+      `(() => { try {
       Object.defineProperty(navigator, 'language', { get: function () { return ${JSON.stringify(lang)}; }, configurable: true });
       Object.defineProperty(navigator, 'languages', { get: function () { return ${JSON.stringify(langs)}; }, configurable: true });
     } catch (e) {} })();`,
-  )
-  // R7-9: per-context 屏幕/硬件/窗口位置脚本 —— 覆盖静态脚本 5/12 的 per-document random 值,
-  // 确保同 context 全 frame 拿到同一组值(跨 iframe 一致性). 在 identity 脚本之前注册
-  await ctx.addInitScript(buildPerContextScript(fp))
-  // hh-d2: 按 UA 参数化的身份脚本 —— 必须在静态脚本之后注册(覆盖其 UA/platform/vendor/
-  // maxTouchPoints/WebGL 定义), 使 JS 面与 UA 身份(含移动分支/Safari·Firefox 语义)逐 frame 自洽
-  await ctx.addInitScript(buildIdentityInitScript(fp.userAgent))
-  return ctx
+    )
+    // R7-9: per-context 屏幕/硬件/窗口位置脚本 —— 覆盖静态脚本 5/12 的 per-document random 值,
+    // 确保同 context 全 frame 拿到同一组值(跨 iframe 一致性). 在 identity 脚本之前注册
+    await ctx.addInitScript(buildPerContextScript(fp))
+    // hh-d2: 按 UA 参数化的身份脚本 —— 必须在静态脚本之后注册(覆盖其 UA/platform/vendor/
+    // maxTouchPoints/WebGL 定义), 使 JS 面与 UA 身份(含移动分支/Safari·Firefox 语义)逐 frame 自洽
+    await ctx.addInitScript(buildIdentityInitScript(fp.userAgent))
+    return ctx
+  } catch (e) {
+    try { await ctx.close().catch(() => {}) } catch { /* ignore */ }
+    throw e
+  }
 }
 
 async function createSlot(domain: string, fp: ObscuraFingerprint, level: StealthLevel = 'standard'): Promise<PoolSlot> {
@@ -1156,8 +1168,16 @@ async function createSlot(domain: string, fp: ObscuraFingerprint, level: Stealth
  *  probeOk 立即转 false, 后续请求直接走裸 Playwright 降级路径不再卡 obscura */
 async function recreateSlot(slot: PoolSlot, domain: string, fp: ObscuraFingerprint, level: StealthLevel = 'standard'): Promise<void> {
   try { await slot.ctx.close().catch(() => {}) } catch { /* ignore */ }
-  const ctx = await newStealthContext(fp, level)
+  // R25-1A3 修复 P1: newStealthContext 抛错路径漏计 consecutiveFailures ——
+  // 原实现 `const ctx = await newStealthContext(...)` 在 try 块之外, 抛错时函数直接
+  // 上抛, catch 块不执行 → slot.consecutiveFailures 不累加, 该 slot 永远不被移除
+  // (持续重试占用 MAX_CONCURRENCY 名额, 池容量被卡死). 改用 let ctx 占位 + 单 try
+  // 包裹 newStealthContext + newPage + applyUaCdpOverride 全链路, 任一步失败都走
+  // catch 累加 consecutiveFailures + 触发重探测 (达 3 次移除 slot). ctx 为 null 时
+  // 跳过 close (newStealthContext 失败, ctx 未建立, 无需回收)
+  let ctx: BrowserContext | null = null
   try {
+    ctx = await newStealthContext(fp, level)
     const page = await ctx.newPage()
     const cdp = await applyUaCdpOverride(page, fp.userAgent)
     slot.ctx = ctx
@@ -1170,8 +1190,8 @@ async function recreateSlot(slot: PoolSlot, domain: string, fp: ObscuraFingerpri
     // R3-17: 重建成功 → 清零连续失败计数
     slot.consecutiveFailures = 0
   } catch (e) {
-    // 新 ctx 已建但 newPage/CDP 失败: 关掉新 ctx 防泄漏, 旧 ctx 已关保持不变(下次获取时重建)
-    await ctx.close().catch(() => {})
+    // ctx 已建但 newPage/CDP 失败: 关掉新 ctx 防泄漏; newStealthContext 失败时 ctx=null 跳过
+    if (ctx) await ctx.close().catch(() => {})
     // R3-17: 累计失败次数, 达阈值把槽位移出 S.slots 缩减池容量, 避免持续重试占用名额
     slot.consecutiveFailures = (slot.consecutiveFailures || 0) + 1
     if (slot.consecutiveFailures >= 3) {
@@ -1215,9 +1235,20 @@ function scheduleReclaim(): void {
       if (now - slot.lastUsedAt < SLOT_IDLE_RECLAIM_MS) continue
       // 已关的 ctx 跳过(recreateSlot 失败/上次回收后未重建)
       try { if (slot.page && !slot.page.isClosed()) {
-        // 主动 close ctx 释放浏览器侧资源; ctx.close 自动级联关闭其所有 page,
-        // 槽位 page 引用随之失效, 下次 withObscuraPage 取槽时 free.page.isClosed()=true 触发 recreateSlot
-        void slot.ctx.close().catch(() => {})
+        // R25-1A3 修复 P1 竞态: 原实现 fire-and-forget `void slot.ctx.close()` 不改 busy 字段,
+        // close 是 async (playwright ctx.close 启动后级联关 page 仍需微秒级完成), 在 close
+        // 完成前 page.isClosed() 可能仍返回 false. 此时另一 caller 进入 withObscuraPage 取槽,
+        // find(!busy) 拿到该 slot, 检查 free.page.isClosed()=false 跳过 recreateSlot, 直接
+        // `slot = free; break` 后 `await fn(slot.page, slot.ctx)` 在已关 ctx 上跑抛 "Target closed".
+        // 修法: close 之前先 `slot.busy = true` 临时锁定, caller 看到 busy=true 跳过该 slot;
+        // close 完成 (或失败) 后 .finally 恢复 `slot.busy = false`, 下次 caller 取到时
+        // page.isClosed()=true 自然触发 recreateSlot 重建. 不更新 lastUsedAt (保持旧值)
+        // —— 即使 close 后 busy=false, 该 slot 仍是回收候选 (lastUsedAt 旧), 但 page.isClosed()
+        // 已 true, 下次 60s 扫描时 `!slot.page.isClosed()` 跳过, 不会重复 close
+        slot.busy = true
+        void slot.ctx.close().catch(() => {}).finally(() => {
+          slot.busy = false
+        })
       } } catch { /* 静默 */ }
     }
   }, SLOT_RECLAIM_INTERVAL_MS)
@@ -1361,6 +1392,10 @@ export async function withObscuraPage<T>(
           }
           reject(new Error('obscura slot timeout(30s): 池满且所有槽位长期被占用'))
         }, 30_000)
+        // R25-1A 修复 P2 资源泄漏: 30s 超时定时器 unref ——
+        // CLI/测试用例/进程退出时事件循环不应被 waiter 超时定时器挂住额外 30s
+        // (与 idleTimer/reclaimTimer 同口径, dev server 长跑场景仍正常 fire)
+        ;(t as unknown as { unref?: () => void }).unref?.()
         // R5-18: 用局部 const 包装, 让 waiters.push 拿到 () => void 而非可能为 null 的引用
         const r: () => void = () => {
           clearTimeout(t)
@@ -1447,10 +1482,18 @@ async function tryClickTurnstile(page: Page): Promise<void> {
     if (Date.now() >= deadline) return // 整体预算耗尽, 剩余 frame 跳过(留时间给上层循环复查)
     let frameUrl = ''
     try { frameUrl = frames[i].url() || '' } catch {}
-    const isCfFrame = /challenges\.cloudflare\.com|cdn-cgi\/challenge-platform/.test(frameUrl)
-    // 主 frame 用 .cf-turnstile 限定(避免误点站内常规 checkbox);
-    // CF 跨域 iframe 内用 input[type=checkbox](iframe 内通常仅 Turnstile 复选框)
-    const sel = isCfFrame ? 'input[type=checkbox]' : '.cf-turnstile input[type=checkbox]'
+    // R25-1A 修复 P2 误点风险: 原 main frame(isCfFrame=false)用 `.cf-turnstile input[type=checkbox]`
+    // 限定正确, 但若主 frame URL 自身含 cdn-cgi/challenge(整个页面是 CF 挑战壳, 非典型挑战 iframe)
+    // isCfFrame=true → 退化用 `input[type=checkbox]` 通用选择器, 主 frame 内任何 checkbox 都会被点
+    // (如站点自身的"我同意"Cookie 同意 checkbox), 与本函数"专点 Turnstile widget"职责相悖。
+    // 修法: isCfFrame=true 时优先用 CF widget 高特异选择器(`.cf-turnstile input[type=checkbox]`
+    // + `[name="cf-turnstile-response"]` 兄弟 checkbox); 仅当 CF iframe 跨域 frameUrl 严格匹配
+    // challenges.cloudflare.com 时(典型 Turnstile widget iframe) 才用通用 `input[type=checkbox]`
+    // (跨域 iframe 内通常只有 Turnstile widget 一个 checkbox, 无误点风险)
+    const isCfWidgetIframe = /challenges\.cloudflare\.com/.test(frameUrl)
+    const sel = isCfWidgetIframe
+      ? 'input[type=checkbox]'
+      : '.cf-turnstile input[type=checkbox], [name="cf-turnstile-response"] ~ input[type=checkbox]'
     // 单 frame click 超时不得超出整体剩余预算(避免单次 click 用尽 1500ms 后整体超 8s)
     const remaining = Math.max(200, deadline - Date.now())
     try {

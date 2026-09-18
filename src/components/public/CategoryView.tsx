@@ -24,7 +24,7 @@ import { CategoryList as CatListShipsay } from './clone-themes/shipsay'
 import { CategoryList as CatListX2552 } from './clone-themes/x2552'
 import { CategoryList as CatListTrxsw } from './clone-themes/trxsw'
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
+// R25: CatListLookup table — clone-* 主题分发到 clone-themes/<site>/CategoryList
 const CatListLookup: Record<string, any> = {
   'clone-aijjxs': CatListAijjxs, 'clone-ddyueshu': CatListDdyueshu,
   'clone-pilishuwu': CatListPilishuwu, 'clone-23qb': CatList23qb,
@@ -60,43 +60,53 @@ const CatListComponent = ({ books, loading, label, page, total, size, onPage }: 
     )
   }
 
-export function CategoryView({ cat, page }: { cat?: string; page: number }) {
+export function CategoryView({ cat, page, initialBooks, initialCategories }: { cat?: string; page: number; initialBooks?: any; initialCategories?: any[] }) {
   const { site, theme, navigate } = usePublic()
   const v = theme.vars
-  const [data, setData] = useState<BooksData | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
-  const [catName, setCatName] = useState('')
+  // R25: SSR 首载用 page.tsx server fetch 的 initialBooks 初始化 state, 让 SSR 时 loading=false → clone CategoryList 组件渲染 books 列表
   const listKey = `${site.id}|${cat || ''}|${page}`
-  const [prevKey, setPrevKey] = useState(listKey)
-  if (prevKey !== listKey) {
-    setPrevKey(listKey)
-    setData(null)
-    setError('')
-    setLoading(true)
-    setCatName('') // 同步清除上一分类的名称，避免闪烁旧分类名
+  const [state, setState] = useState<{ key: string; data?: BooksData; error?: string } | null>(() => {
+    if (initialBooks && initialBooks.books) {
+      return { key: listKey, data: { books: initialBooks.books, total: initialBooks.total || 0, page: initialBooks.page || page, size: initialBooks.size || 24 } }
+    }
+    return null
+  })
+  // R25: SSR 首载若 initialCategories 含当前 cat, 同步拿到 catName, 避免 SSR 标题闪烁
+  const resolveCatNameFromInitial = (catId?: string) => {
+    if (!catId || !initialCategories) return ''
+    const hit = initialCategories.find((c: any) => c.id === catId)
+    return hit ? (hit.name || hit.title || '') : ''
   }
-  const label = !cat ? '全部分类' : catName || '分类书籍'
+  const [catName, setCatName] = useState(resolveCatNameFromInitial(cat))
   useEffect(() => {
+    // initialBooks 是 server fetch 首屏数据, 首次 effect 跳过避免覆盖; cat/page 变化时重新 fetch
+    if (state && state.key === listKey && (state.data || state.error)) return
     let alive = true
     fetchBooks({ site: site.id, cat, page, size: 24 })
       .then((d) => {
         if (!alive) return
-        setData(d)
-        setLoading(false)
+        setState({ key: listKey, data: d })
       })
       .catch((e: Error) => {
         if (!alive) return
-        setError(e.message)
-        setLoading(false)
+        setState({ key: listKey, error: e.message })
       })
     return () => {
       alive = false
     }
-  }, [site.id, cat, page])
+  }, [listKey, site.id, cat, page, state])
+  const loading = !state || state.key !== listKey
+  const data = loading ? null : state.data || null
+  const error = loading ? '' : state.error || ''
+  const label = !cat ? '全部分类' : catName || '分类书籍'
 
   useEffect(() => {
     if (!cat) return
+    // SSR 首载若 initialCategories 已含 cat, 跳过避免覆盖
+    if (initialCategories && initialCategories.some((c: any) => c.id === cat)) {
+      setCatName(resolveCatNameFromInitial(cat))
+      return
+    }
     let alive = true
     fetchCategories()
       .then((list) => {
@@ -109,7 +119,8 @@ export function CategoryView({ cat, page }: { cat?: string; page: number }) {
     return () => {
       alive = false
     }
-  }, [cat])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cat, initialCategories])
 
   useSiteSEO({
     title: generateTitle({ category: label, siteName: site.name }),
@@ -151,9 +162,23 @@ export function CategoryView({ cat, page }: { cat?: string; page: number }) {
         <ErrorState message="分类列表加载失败" detail={error} />
       ) : (
         <>
-          {/* R20-1A: 接 CatListComponent (lookup table 在文件顶部定义, fallback aijjxs) */}
+          {/* R25: CategoryList lookup table 分发到 clone-themes/<site>/CategoryList, fallback 走 inline CatListComponent */}
           {(() => {
-                        return (
+            const CloneCatList = CatListLookup[theme.layout]
+            if (CloneCatList) {
+              return (
+                <CloneCatList
+                  books={data?.books || []}
+                  loading={loading}
+                  label={label}
+                  page={data?.page ?? page}
+                  total={data?.total ?? 0}
+                  onPage={(p) => navigate({ view: 'category', cat, page: p })}
+                  initialCategories={initialCategories}
+                />
+              )
+            }
+            return (
               <CatListComponent
                 books={data?.books || []}
                 loading={loading}

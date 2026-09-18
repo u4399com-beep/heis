@@ -175,7 +175,7 @@ import { ReadChrome as ReadChromeShipsay } from './clone-themes/shipsay'
 import { ReadChrome as ReadChromeX2552 } from './clone-themes/x2552'
 import { ReadChrome as ReadChromeTrxsw } from './clone-themes/trxsw'
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
+// R25: ReadChromeLookup table — clone-* 主题分发到 clone-themes/<site>/ReadChrome (ssr=true 让 SSR 渲染源站 DOM)
 const ReadChromeLookup: Record<string, any> = {
   'clone-aijjxs': ReadChromeAijjxs, 'clone-ddyueshu': ReadChromeDdyueshu,
   'clone-pilishuwu': ReadChromePilishuwu, 'clone-23qb': ReadChrome23qb,
@@ -200,11 +200,12 @@ const ReadChromeComponentonent = ({ children, chapterTitle, onPrev, onNext }: an
     )
   }
 
-export function ReadView({ chapterId, initialPage }: { chapterId?: string; initialPage?: number }) {
+export function ReadView({ chapterId, initialPage, initialChapter, initialCategories }: { chapterId?: string; initialPage?: number; initialChapter?: ChapterData | null; initialCategories?: any[] }) {
   const { site, theme, navigate } = usePublic()
   const v = theme.vars
-    const [data, setData] = useState<ChapterData | null>(null)
-  const [loading, setLoading] = useState(true)
+    // R25: SSR 首载用 page.tsx server fetch 的 initialChapter 初始化, 让 SSR 时 loading=false → clone ReadChrome 组件渲染章节正文
+  const [data, setData] = useState<ChapterData | null>(initialChapter || null)
+  const [loading, setLoading] = useState(!initialChapter)
   const [error, setError] = useState('')
   // feat-round-5 B3: 章节切换方向 (用于滑动动画)
   const [direction, setDirection] = useState<NavDirection>('none')
@@ -248,6 +249,8 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
   }
 
   useEffect(() => {
+    // R25: initialChapter 是 server fetch 首屏数据, 首次 effect 跳过避免覆盖; chapterId/page 变化时重新 fetch
+    if (initialChapter && data && data.chapter?.id === chapterId) return
     if (!chapterId) return
     let alive = true
     // agent-P: 站点分页开启且 page>1 时, 携带 ?page=N & ?site=
@@ -271,7 +274,7 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
     return () => {
       alive = false
     }
-  }, [chapterId, page, site.id, site.chapterPaginationMode])
+  }, [chapterId, page, site.id, site.chapterPaginationMode, initialChapter, data])
 
   // 设置持久化
   useEffect(() => {
@@ -630,16 +633,20 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
     </div>
   )
 
+  // R25: ReadChrome lookup table — clone-* 主题分发到 clone-themes/<site>/ReadChrome, fallback 走 inline ReadChromeComponentonent
+  const ReadChromeComp = ReadChromeLookup[theme.layout] || ReadChromeComponentonent
+
   if (layout === 'immersive')
     return (
       <>
         {topProgressBar}
         {(() => {
           // eslint-disable-next-line react/no-children-prop
-                    return React.createElement(ReadChromeComponentonent, {
+                    return React.createElement(ReadChromeComp, {
             chapterTitle: chapterTitleStr,
             onPrev: handlePrevChapter,
             onNext: handleNextChapter,
+            initialCategories,
             children: (
               <div key={`wrap-${wrapKey}`} className={slideClass}>
                 <ReadImmersive key={`ri-${chapterId || ''}`} {...shared} />
@@ -657,10 +664,11 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
         {topProgressBar}
         {(() => {
           // eslint-disable-next-line react/no-children-prop
-                    return React.createElement(ReadChromeComponentonent, {
+                    return React.createElement(ReadChromeComp, {
             chapterTitle: chapterTitleStr,
             onPrev: handlePrevChapter,
             onNext: handleNextChapter,
+            initialCategories,
             children: (
               <div key={`wrap-${wrapKey}`} className={slideClass}>
                 <ReadPaginated key={`rp-${chapterId || ''}`} {...shared} />
@@ -678,10 +686,11 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
         {topProgressBar}
         {(() => {
           // eslint-disable-next-line react/no-children-prop
-                    return React.createElement(ReadChromeComponentonent, {
+                    return React.createElement(ReadChromeComp, {
             chapterTitle: chapterTitleStr,
             onPrev: handlePrevChapter,
             onNext: handleNextChapter,
+            initialCategories,
             children: (
               <div key={`wrap-${wrapKey}`} className={slideClass}>
                 <ReadPili key={`rpl-${chapterId || ''}`} {...shared} />
@@ -698,10 +707,11 @@ export function ReadView({ chapterId, initialPage }: { chapterId?: string; initi
       {topProgressBar}
       {(() => {
           // eslint-disable-next-line react/no-children-prop
-                return React.createElement(ReadChromeComponentonent, {
+                return React.createElement(ReadChromeComp, {
           chapterTitle: chapterTitleStr,
           onPrev: handlePrevChapter,
           onNext: handleNextChapter,
+          initialCategories,
           children: (
             <div key={`wrap-${wrapKey}`} className={slideClass}>
               <ReadClassic key={`rc-${chapterId || ''}`} {...shared} />

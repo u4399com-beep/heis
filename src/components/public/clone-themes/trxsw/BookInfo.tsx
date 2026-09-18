@@ -33,14 +33,15 @@ const DEFAULT_NAV: Cat[] = [
   { id: 'shehui', name: '社会' }, { id: 'other', name: '其他' },
 ]
 
-export function BookInfo({ book, onScrollToc, onContinueRead, onGoCategory }: BookInfoProps) {
+export function BookInfo({ book, onScrollToc, onContinueRead, onGoCategory, initialCategories }: BookInfoProps) {
   const { site, navigate } = usePublic()
-  const [cats, setCats] = useState<Cat[]>([])
+  const [cats, setCats] = useState<Cat[]>(() => (initialCategories || []).map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) })))
   const [related, setRelated] = useState<BookItem[]>([])
   const [introExpanded, setIntroExpanded] = useState(false)
 
   // 拉分类列表用于 .nav 导航
   useEffect(() => {
+    if (cats.length > 0) return
     let aborted = false
     fetch('/api/public/categories?limit=60')
       .then(r => r.json())
@@ -52,7 +53,7 @@ export function BookInfo({ book, onScrollToc, onContinueRead, onGoCategory }: Bo
       })
       .catch(() => { if (!aborted) setCats(DEFAULT_NAV) })
     return () => { aborted = true }
-  }, [])
+  }, [cats.length])
 
   // 拉"猜您喜欢": 同分类前 8 本 (排除当前书)
   useEffect(() => {

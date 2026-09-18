@@ -15,11 +15,28 @@
 import { usePublic } from '../../ctx'
 import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
+import { addFavoriteSite, useTraditionalChinese } from '../tools'
 import type { HomeCloneProps } from '../shared'
 import type { BookItem } from '../../types'
 import { useEffect, useState } from 'react'
 
 interface Cat { id: string; name: string }
+
+// 简繁切换按钮 — pilishuwu 风格 (mod-top-nav-tool 内文字链接, 与域名发布页同行)
+function TcTogglePilishuwu() {
+  const { isTc, mounted, toggleTc } = useTraditionalChinese()
+  const label = mounted && isTc ? '简体' : '繁體'
+  return (
+    <a
+      href="#tc-toggle"
+      title="简繁切换"
+      onClick={(e) => { e.preventDefault(); toggleTc() }}
+      style={{ fontSize: 14, color: '#666' }}
+    >
+      {label}
+    </a>
+  )
+}
 
 // 源站默认 9 个导航分类 (与 probe 顺序一致, fetch 失败兜底)
 const DEFAULT_NAV: Cat[] = [
@@ -157,7 +174,12 @@ export function HomeClone({ books, loading, navCategoryCount = 8, initialCategor
               ))}
               <li id="homebox"></li>
             </ul>
-            <div className="mod-top-nav-tool ui-right" id="loginbox"></div>
+            <div className="mod-top-nav-tool ui-right" id="loginbox">
+              <a href="#favorite" title="收藏本站 (Ctrl+D)" onClick={(e) => addFavoriteSite(e)} style={{ marginRight: 12, fontSize: 14, color: '#666' }}>
+                收藏本站
+              </a>
+              <TcTogglePilishuwu />
+            </div>
             <a className="mod-top-nav-user ui-right" href="#" onClick={(e) => e.preventDefault()} title="域名发布页">域名发布页</a>
           </div>
         </div>
