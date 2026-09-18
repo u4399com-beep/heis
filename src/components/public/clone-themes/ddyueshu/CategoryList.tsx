@@ -1,30 +1,133 @@
 'use client'
-import type { CategoryListProps } from '../shared'
+// ============================================================
+// clone-ddyueshu CategoryList — 1:1 精仿 www.ddyueshu.cc 分类列表页
+// 参考: agent-ctx/probe-html2/probe-ddyueshu.html (首页 .novelslist 模式) + ddyueshu.css
+// 源站 CSS 提取: .novellist (margin 10px auto width 968px) + li float left width 20% (visited red color)
+//                .novelslist (border 3px #A6D3E8 padding 3px bg #FEF9EF width 968px) + h2 (bg #F6F8FE 30px line-height)
+// 全部用源站真实 class 名
+// ============================================================
 import { usePublic } from '../../ctx'
+import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
-const C = {"id":"ddyueshu","bg":"#E9FAFF","surface":"#fff","text":"#555","muted":"#999","primary":"#6F78A7","accent":"#88C6E5","border":"#ddd","radius":"2px","font":"宋体","maxW":1200}
+import { formatWords } from '../../seo'
+import type { CategoryListProps } from '../shared'
+
 export function CategoryList({ books, loading, label, page, total, size = 24, onPage }: CategoryListProps) {
   const { navigate } = usePublic()
-  if (loading) return <div style={{ padding: 40, textAlign: 'center', color: C.muted, fontFamily: C.font }}>加载中...</div>
-  if (!books.length) return <div style={{ padding: 40, textAlign: 'center', color: C.muted, fontFamily: C.font }}>暂无书籍</div>
-  return (
-    <div style={{ maxWidth: C.maxW, margin: '0 auto', padding: 20, fontFamily: C.font, color: C.text }}>
-      <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 16 }}>{label}</h1>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 8 }}>
-        {books.map(b => (
-          <div key={b.id} {...bookNavProps(navigate, b.id)} style={{ padding: 8, background: C.surface, border: '1px solid ' + C.border, borderRadius: C.radius, cursor: 'pointer' }}>
-            <span style={{ fontSize: 14, fontWeight: 500, color: C.primary }}>{b.name}</span>
-            <span style={{ fontSize: 12, color: C.muted, marginLeft: 8 }}>{b.author}</span>
-          </div>
-        ))}
-      </div>
-      {total > size && (
-        <div style={{ display: 'flex', justifyContent: 'center', gap: 8, marginTop: 16 }}>
-          {page > 1 && <button onClick={() => onPage(page - 1)} style={{ padding: '6px 16px', border: '1px solid ' + C.border, borderRadius: C.radius, background: C.surface, color: C.text, cursor: 'pointer' }}>上一页</button>}
-          <span style={{ padding: '6px 12px', color: C.muted }}>第 {page} 页</span>
-          {page * size < total && <button onClick={() => onPage(page + 1)} style={{ padding: '6px 16px', border: '1px solid ' + C.border, borderRadius: C.radius, background: C.surface, color: C.text, cursor: 'pointer' }}>下一页</button>}
+  if (loading) {
+    return (
+      <div id="main">
+        <div className="novelslist">
+          <h2>{label}</h2>
+          <ul><li style={{ padding: 40, textAlign: 'center' }}>加载中...</li></ul>
         </div>
-      )}
+      </div>
+    )
+  }
+  if (!books.length) {
+    return (
+      <div id="main">
+        <div className="novelslist">
+          <h2>{label}</h2>
+          <ul><li style={{ padding: 40, textAlign: 'center' }}>暂无书籍</li></ul>
+        </div>
+      </div>
+    )
+  }
+
+  const goHome = (e: React.MouseEvent) => {
+    e.preventDefault()
+    navigate({ view: 'home' })
+  }
+
+  const totalPages = Math.ceil(total / size)
+  const hasPrev = page > 1
+  const hasNext = page * size < total
+
+  return (
+    <div id="main">
+      <div className="novelslist">
+        <h2>{label}</h2>
+        <div style={{ padding: '10px' }}>
+          {/* 源站 .novelslist .content ul li 是 155px float left 文字列表; 分类页扩展为含封面的混合列表 */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 0 }}>
+            {books.map((b, i) => (
+              <div
+                key={b.id}
+                {...bookNavProps(navigate, b.id)}
+                className="novellist-item"
+                style={{
+                  width: '20%',
+                  padding: '5px',
+                  float: 'left',
+                  display: 'inline-block',
+                  cursor: 'pointer',
+                  boxSizing: 'border-box',
+                  verticalAlign: 'top',
+                }}
+              >
+                <div className="image" style={{ width: 67, height: 82, margin: '0 auto', overflow: 'hidden', border: '1px solid #DDD', padding: 1, background: '#fff' }}>
+                  <BookCover name={b.name} cover={b.cover} style={{ width: 67, height: 82 }} />
+                </div>
+                <div style={{ padding: '5px 0', textAlign: 'center', overflow: 'hidden' }}>
+                  <a style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#6F78A7', fontSize: 13 }}>{b.name}</a>
+                  <span style={{ color: '#B3B3B3', fontSize: 12 }}>
+                    {b.author} / {formatWords(b.wordCount)}
+                  </span>
+                </div>
+                {/* 索引序号 (源站 visited red 色, 此处仅装饰) */}
+                <span style={{ display: 'none' }}>{i + 1}</span>
+              </div>
+            ))}
+          </div>
+          <div className="clear" />
+        </div>
+
+        {/* 分页: 源站风格简单 "上一页/下一页" 链接 */}
+        {total > size && (
+          <div className="bottem1" style={{ clear: 'both', textAlign: 'center', width: '100%', padding: '10px 0' }}>
+            {hasPrev && (
+              <a
+                role="button"
+                tabIndex={0}
+                onClick={() => onPage(page - 1)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    onPage(page - 1)
+                  }
+                }}
+                style={{ margin: '0 10px', cursor: 'pointer', color: '#085308', fontSize: 14 }}
+              >
+                上一页
+              </a>
+            )}
+            <span style={{ color: '#B3B3B3', fontSize: 12 }}>第 {page} 页 / 共 {totalPages} 页 ({total} 本)</span>
+            {hasNext && (
+              <a
+                role="button"
+                tabIndex={0}
+                onClick={() => onPage(page + 1)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    onPage(page + 1)
+                  }
+                }}
+                style={{ margin: '0 10px', cursor: 'pointer', color: '#085308', fontSize: 14 }}
+              >
+                下一页
+              </a>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* 友情链接 + footer (保持源站页面底部结构一致) */}
+      <div id="firendlink">
+        友情链接：
+        <a href="/" onClick={goHome}>首页</a>
+      </div>
     </div>
   )
 }

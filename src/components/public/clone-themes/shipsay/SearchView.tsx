@@ -1,23 +1,159 @@
 'use client'
-import type { SearchViewProps } from '../shared'
+// ============================================================
+// clone-shipsay SearchView — 1:1 精仿 demo.shipsay.com 搜索结果页
+// 参考: public/clone-css/shipsay.css 的 .searchresult (padding-top:4px
+//       width:100%!) / .searchresult h3,p (overflow:hidden height:20px) /
+//       .searchresult .searchresult_p (height:46px line-height:24px overflow:
+//       hidden margin:10px 0 — 简介) / .searchresult h3 (font-size:1.2em) /
+//       .searchresult div (margin-top:10px) / .side_commend .lastupdate 风格
+// 复刻: header>.container.head (搜索框 defaultValue=q 预填) /
+//       .navigation>nav / .container>.section .searchresult × N (h3 书名 +
+//       p 作者/类别/字数 + p.searchresult_p 简介 + div 最新章节) +
+//       .container>.aside .popular 热门小说 + .section.link + #footer
+// CSS 由 CloneCSSLoader 加载 public/clone-css/shipsay.css, 全部用源站真实 class 名
+// ============================================================
 import { usePublic } from '../../ctx'
 import { bookNavProps } from '../../bits'
-const C = {"id":"shipsay","bg":"#f4f4f4","surface":"#fff","text":"#666","muted":"#969ba3","primary":"#ed4259","accent":"#bf2c24","border":"#e0e0e0","radius":"3px","font":"\"微软雅黑\",\"Microsoft Yahei\",sans-serif","maxW":1200}
+import { formatWords } from '../../seo'
+import type { SearchViewProps } from '../shared'
+import { useEffect, useState } from 'react'
+
+interface Cat { id: string; name: string }
+
+const DEFAULT_NAV: Cat[] = [
+  { id: '1', name: '玄幻' }, { id: '2', name: '武侠' },
+  { id: '3', name: '都市' }, { id: '4', name: '历史' },
+  { id: '5', name: '科幻' }, { id: '6', name: '游戏' },
+  { id: '7', name: '女生' }, { id: '8', name: '其他' },
+]
+
 export function SearchView({ q, books, loading }: SearchViewProps) {
-  const { navigate } = usePublic()
+  const { site, navigate } = usePublic()
+  const [cats, setCats] = useState<Cat[]>([])
+
+  useEffect(() => {
+    let aborted = false
+    fetch('/api/public/categories?limit=60')
+      .then(r => r.json())
+      .then(d => {
+        if (aborted) return
+        const arr = Array.isArray(d) ? d : (d.data?.items || d.data?.categories || d.items || d.categories || [])
+        const mapped: Cat[] = arr.map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) }))
+        setCats(mapped.length ? mapped : DEFAULT_NAV)
+      })
+      .catch(() => { if (!aborted) setCats(DEFAULT_NAV) })
+    return () => { aborted = true }
+  }, [])
+
+  const navCats = (cats.length ? cats : DEFAULT_NAV).slice(0, 8)
+  // 热门小说(侧栏): 当前结果前 12 本
+  const hotBooks = books.slice(0, 12)
+
+  const goCat = (e: React.MouseEvent, catId?: string) => {
+    e.preventDefault()
+    navigate({ view: 'category', cat: catId })
+  }
+  const goHome = (e: React.MouseEvent) => {
+    e.preventDefault()
+    navigate({ view: 'home' })
+  }
+  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault()
+    const qv = (e.currentTarget.elements.namedItem('searchkey') as HTMLInputElement)?.value?.trim()
+    if (qv) navigate({ view: 'search', q: qv })
+  }
+
   return (
-    <div style={{ maxWidth: C.maxW, margin: '0 auto', padding: 20, fontFamily: C.font, color: C.text }}>
-      <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 16 }}>搜索: {q}</h1>
-      {loading ? <div style={{ padding: 40, textAlign: 'center', color: C.muted }}>搜索中...</div> : !books.length ? <div style={{ padding: 40, textAlign: 'center', color: C.muted }}>未找到相关书籍</div> : (
-        <div style={{ display: 'grid', gap: 8 }}>
-          {books.map(b => (
-            <div key={b.id} {...bookNavProps(navigate, b.id)} style={{ padding: 12, background: C.surface, border: '1px solid ' + C.border, borderRadius: C.radius, cursor: 'pointer' }}>
-              <span style={{ fontSize: 14, fontWeight: 600, color: C.primary }}>{b.name}</span>
-              <span style={{ fontSize: 12, color: C.muted, marginLeft: 8 }}>{b.author} · {b.category}</span>
-            </div>
-          ))}
+    <>
+      {/* ============ header (搜索框预填 q) ============ */}
+      <header>
+        <div className="container head">
+          <a id="logo" href="/" onClick={goHome}>
+            <span>{site.name}</span>
+            <p>{site.domain}</p>
+          </a>
+          <form name="t_frmsearch" onSubmit={goSearch}>
+            <input id="searchkey" name="searchkey" className="search_input" placeholder="搜索书名或作者" defaultValue={q} autoComplete="off" />
+            <input type="hidden" name="searchtype" value="all" />
+            <button type="submit" id="search_btn" title="搜索"><i className="fa fa-search fa-lg" /></button>
+          </form>
+          <div className="header_right">
+            <a id="home" href="/" onClick={goHome}><i className="fa fa-home fa-lg" /><br />首页</a>
+            <a href="/sort/" onClick={(e) => goCat(e)}><i className="fa fa-book fa-lg" /><br />书库</a>
+            <a href="/quanben/sort/" onClick={(e) => { e.preventDefault(); navigate({ view: 'fulltext' }) }}><i className="fa fa-coffee fa-lg" /><br />完本</a>
+            <a href="/history.html" onClick={(e) => { e.preventDefault(); navigate({ view: 'history' }) }}><i className="fa fa-history fa-lg" /><br />足迹</a>
+          </div>
         </div>
-      )}
-    </div>
+      </header>
+
+      {/* ============ navigation ============ */}
+      <div className="navigation">
+        <nav className="container">
+          <a href="/" onClick={goHome}>首页</a>
+          {navCats.map(c => (
+            <a key={c.id} href={`/sort/${c.id}/`} onClick={(e) => goCat(e, c.id)}>{c.name}</a>
+          ))}
+          <div id="user_panel" />
+        </nav>
+      </div>
+
+      {/* ============ 搜索结果主体 ============ */}
+      <div className="container">
+        <div className="section">
+          <p className="title"><i className="fa fa-search fa-lg">&nbsp;</i>搜索：{q || ' '}</p>
+          {loading ? (
+            <div style={{ padding: 40, textAlign: 'center', color: '#969ba3' }}>搜索中...</div>
+          ) : !books.length ? (
+            <div className="msgdiv" style={{ textAlign: 'center' }}>
+              <p>未找到与 "<strong style={{ color: '#bf2c24' }}>{q}</strong>" 相关的书籍</p>
+              <a className="l_btn" href="/" onClick={goHome}>返回首页</a>
+            </div>
+          ) : (
+            books.map(b => (
+              <div className="searchresult" key={b.id}>
+                <h3><a {...bookNavProps(navigate, b.id)}>{b.name}</a></h3>
+                <p>作者：{b.author} &nbsp; 类别：{b.category || '小说'} &nbsp; 字数：{formatWords(b.wordCount)}</p>
+                <p className="searchresult_p">{b.intro || '暂无简介'}</p>
+                <div>
+                  <a className="gray" {...bookNavProps(navigate, b.id)}>最新章节：{b.latestChapter || '点击阅读'}</a>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
+        {/* 侧栏: 热门小说 */}
+        {hotBooks.length > 0 && (
+          <aside>
+            <p className="title"><i className="fa fa-fire fa-lg">&nbsp;</i>热门小说</p>
+            <ul className="popular odd">
+              {hotBooks.map(b => (
+                <li key={b.id}>
+                  <a {...bookNavProps(navigate, b.id)}>{b.name}</a>
+                  <a className="gray" href="javascript:;" onClick={(e) => { e.preventDefault(); navigate({ view: 'search', q: b.author }) }}>{b.author}</a>
+                </li>
+              ))}
+            </ul>
+          </aside>
+        )}
+      </div>
+
+      {/* ============ 友情链接 ============ */}
+      <div className="container">
+        <div className="section link">
+          <p className="title"><i className="fa fa-link">&nbsp;</i>友情链接</p>
+          <a href={site.domain ? `https://${site.domain}` : '/'} target="_blank">{site.name}</a>
+          <a href="/" onClick={goHome}>{site.name}首页</a>
+        </div>
+      </div>
+
+      {/* ============ footer ============ */}
+      <div id="footer">
+        <footer className="container">
+          <p><i className="fa fa-flag"></i>&nbsp;<a href="/" onClick={goHome}>{site.name}</a>&nbsp;书友最值得收藏的网络小说阅读网</p>
+          <p>{site.footerText || `本站所有小说为完本转载作品，所有内容版权归版权方或原作者所有。`}</p>
+        </footer>
+      </div>
+    </>
   )
 }

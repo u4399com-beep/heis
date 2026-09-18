@@ -92,6 +92,17 @@ export function HomeView({ page, cat }: { page: number; cat?: string }) {
     }], [origin, site.id, site.name, site.description]),
   })
   const books: BookItem[] = data?.books || []
+  const Clone = HomeClones[theme.layout]
+  // R24: clone-* 主题完全接管首页 — 不渲染通用 wrapper/SuggestTagCloud/CategoryShowcase/排序按钮/热门标签
+  // 源站首页有自己的 header/navigation/分类区块, 通用组件会遮盖源站布局
+  if (Clone) {
+    return (
+      <Clone books={books} loading={loading}
+        navCategoryCount={(site as any).navCategoryCount}
+        homeModuleLimit={(site as any).homeModuleLimit} />
+    )
+  }
+  // 非 clone 主题: 通用布局 (搜索推荐 + 分类导航 + 排序 + 书网格 + 热门标签)
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 sm:py-8">
       <section className="mb-5"><SuggestTagCloud count={16} refresh /></section>
@@ -112,11 +123,7 @@ export function HomeView({ page, cat }: { page: number; cat?: string }) {
           style={{ background: withAlpha(v.accent, 0.14), color: v.accent, border: `1px solid ${withAlpha(v.accent, 0.4)}` }}
           aria-label="清除分类筛选">分类：{catName} · 点击清除</button>}
       </div>
-      {error ? <ErrorState message="书籍列表加载失败" detail={error} /> : (() => {
-          const Clone = HomeClones[theme.layout]
-          if (Clone) return <Clone books={books} loading={loading} navCategoryCount={(site as any).navCategoryCount} homeModuleLimit={(site as any).homeModuleLimit} />
-          return <GenericBookGrid books={books} loading={loading} />
-        })()}
+      {error ? <ErrorState message="书籍列表加载失败" detail={error} /> : <GenericBookGrid books={books} loading={loading} />}
       {!loading && books.length > 0 && (
         <section className="pt-8" aria-label="热门标签">
           <div className="mb-3 flex items-center gap-2"><span className="text-sm font-bold tracking-widest" style={{ color: v.text }}>热门标签</span></div>

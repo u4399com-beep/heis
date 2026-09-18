@@ -52,6 +52,31 @@ export async function GET(req: Request) {
     const hasFilter = !!(q || cat || status)
     const effectiveOffset = hasFilter ? 0 : offset
 
+    // R24 修复: 站群偏移量 wrap-around — 当 offset >= total 时取模, 避免空结果
+    // (例: dewew 站 offset=4 + 全库仅 1 本 → skip 4 跳过唯一那本 → 首页空, 体验断崖)
+    // 无筛选时先 count 再 wrap, 带 filter 时 effectiveOffset 已是 0 无需 wrap
+    if (!hasFilter) {
+      const total0 = await db.book.count({ where })
+      const wrapOffset = total0 > 0 ? effectiveOffset % total0 : 0
+      const requestedSkip0 = wrapOffset + (page - 1) * size
+      const effectiveSkip0 = Math.min(requestedSkip0, 10000)
+      const skipCapped0 = requestedSkip0 > 10000
+      const books0 = await db.book.findMany({
+        where, orderBy, skip: effectiveSkip0, take: size, include: { category: true },
+      })
+      return withCache(ok({
+        total: Math.max(0, total0 - wrapOffset),
+        page, size,
+        books: skipCapped0 ? [] : books0.map((b) => ({
+          id: b.id, name: b.name, author: b.author,
+          intro: (b.intro || '').slice(0, 120), cover: b.cover, status: b.status,
+          wordCount: b.wordCount, latestChapter: b.latestChapter,
+          category: b.category?.name || '未分类', categoryId: b.categoryId, updatedAt: b.updatedAt,
+        })),
+        note: skipCapped0 ? '已超出最大可分页深度(10000), 请使用搜索或分类筛选缩小范围' : undefined,
+      }))
+    }
+
     // API-7: 公共路由 skip 上限 —— 修前 page 可达 1_000_000, 配合 size=60 形成 skip=60_000_000
     // 大跳过触发 SQLite OFFSET 全表扫描/内存膨胀(DoS); 上限 10000 即 50 万行表(size=50)的合理边界
     const requestedSkip = effectiveOffset + (page - 1) * size

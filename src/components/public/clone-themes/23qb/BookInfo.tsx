@@ -1,22 +1,189 @@
 'use client'
+// ============================================================
+// clone-23qb BookInfo — 1:1 精仿 www.23qb.net 书籍详情页
+// 参考: 23qb.css (probe-23qb-book.html 被 CF 拦截, 故按源站 CSS class 结构复刻)
+// 复刻: header(简版) / main#main.wrapper > .content > .box > .module-search-item
+//   ( .novel-cover (封面) + .novel-info (.novel-info-header h3 + .novel-info-aux 标签
+//     + .novel-info-main .novel-info-items (作者/分类/状态/字数/最新章节/更新时间)
+//     + .novel-info-content 简介 + .novel-info-footer 开始阅读按钮) )
+// ============================================================
 import type { BookInfoProps } from '../shared'
+import { usePublic } from '../../ctx'
 import { BookCover } from '../../BookCover'
-const C = {"id":"23qb","bg":"#f8f9f9","surface":"#fff","text":"#282828","muted":"#888","primary":"#ff2a14","accent":"#c01a0c","border":"#eee","radius":"5px","font":"\"Microsoft YaHei\",sans-serif","maxW":1200}
-export function BookInfo({ book, onScrollToc }: BookInfoProps) {
+import { bookNavProps } from '../../bits'
+import { formatWords, fmtDate, statusLabel } from '../../seo'
+
+export function BookInfo({ book, onScrollToc, onContinueRead, onGoCategory }: BookInfoProps) {
+  const { site, navigate } = usePublic()
   if (!book) return null
+
+  const goHome = (e: React.MouseEvent) => { e.preventDefault(); navigate({ view: 'home' }) }
+  const goCat = (e: React.MouseEvent, cat?: string) => {
+    e.preventDefault()
+    if (onGoCategory && book.categoryId) onGoCategory(book.categoryId)
+    else navigate({ view: 'category', cat: cat || book.categoryId || book.category })
+  }
+  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault()
+    const q = (e.currentTarget.elements.namedItem('searchkey') as HTMLInputElement)?.value?.trim()
+    if (q) navigate({ view: 'search', q })
+  }
+
+  // 标签: book.keywords 拆分
+  const tags = (book.keywords || '').split(/[,，、;；\s]+/).map(s => s.trim()).filter(Boolean).slice(0, 12)
+
   return (
-    <div style={{ maxWidth: C.maxW, margin: '0 auto', padding: 20, fontFamily: C.font, color: C.text }}>
-      <div style={{ display: 'flex', gap: 20, background: C.surface, border: '1px solid ' + C.border, borderRadius: C.radius, padding: 24 }}>
-        <div style={{ width: 120, height: 160, flexShrink: 0, overflow: 'hidden', borderRadius: C.radius, border: '1px solid ' + C.border }}>
-          <BookCover name={book.name} cover={book.cover} className="w-full h-full" />
+    <>
+      {/* header (简版) */}
+      <header id="header" className="wrapper">
+        <div className="header-content">
+          <div className="banyundog-com">
+            <div className="header-logo">
+              <h1 className="slogan">{site.name}</h1>
+              <div className="fixed-logo">
+                <a href="/" className="logo" title={site.name} onClick={goHome}><span>{site.name}</span></a>
+              </div>
+            </div>
+          </div>
+          <div className="nav-search">
+            <form action="/search.html" className="search-dh" onSubmit={goSearch} />
+          </div>
+          <div className="header-module">
+            <ul className="nav-menu-items">
+              <li className="nav-menu-item"><a href="/" title="首页" onClick={goHome}><span>首页</span></a></li>
+              <li className="nav-menu-item"><a href="/book/" title="书库" onClick={(e) => goCat(e)}><span>书库</span></a></li>
+            </ul>
+          </div>
         </div>
-        <div style={{ flex: 1 }}>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: C.text, marginBottom: 8 }}>{book.name}</h1>
-          <p style={{ color: C.muted, fontSize: 14, lineHeight: 2 }}>作者: {book.author} | 分类: {book.category} | 字数: {(book.wordCount / 10000).toFixed(1)}万字</p>
-          <p style={{ color: C.muted, fontSize: 13, lineHeight: 1.8, marginTop: 8 }}>{book.intro}</p>
-          <button onClick={onScrollToc} style={{ marginTop: 12, padding: '6px 16px', background: C.primary, color: '#fff', border: 'none', borderRadius: C.radius, cursor: 'pointer' }}>开始阅读</button>
+        <div id="search-content">
+          <form action="/search.html" onSubmit={goSearch}>
+            <div className="search-main">
+              <div className="search-box">
+                <input className="search-input ac_wd" id="txtKeywords" type="search" name="searchkey" autoComplete="off" placeholder="搜索喜欢的小说、作者、标签" />
+                <a href="/book/" className="search-btn search-cupfox" title="书库" onClick={(e) => goCat(e)}>书库</a>
+                <button className="search-btn search-go" type="submit"><i className="icon-search" /></button>
+                <button className="cancel-btn" type="button">取消</button>
+              </div>
+            </div>
+          </form>
         </div>
-      </div>
-    </div>
+      </header>
+
+      {/* main */}
+      <main id="main" className="wrapper">
+        <div className="content">
+          <div className="list">
+            <div className="box">
+              <div className="module-search-item">
+                {/* 封面 */}
+                <div className="novel-cover">
+                  <div className="module-item-cover">
+                    <div className="module-item-pic">
+                      <a {...bookNavProps(navigate, book.id)} title={book.name} />
+                      <BookCover name={book.name} cover={book.cover} className="lazy lazyloaded" style={{ width: '100%', height: '100%' }} />
+                      <div className="loading" />
+                    </div>
+                    <div className="module-item-caption">
+                      <span>{book.category || '小说'} {book.author}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 信息 */}
+                <div className="novel-info">
+                  <div className="novel-info-header">
+                    <h3>{book.name}</h3>
+                  </div>
+
+                  {/* 标签 */}
+                  {tags.length > 0 && (
+                    <div className="novel-info-aux">
+                      {tags.map((t, i) => (
+                        <span key={t} className={i === 0 ? 'tag-link' : 'tag-link'}>
+                          <a title={t} onClick={(e) => { e.preventDefault(); navigate({ view: 'keyword', tag: t }) }}>{t}</a>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* 元数据 */}
+                  <div className="novel-info-main">
+                    <div className="novel-info-items">
+                      <div className="novel-info-itemtitle">作者</div>
+                      <div className="novel-info-actor">{book.author}</div>
+                    </div>
+                    <div className="novel-info-items">
+                      <div className="novel-info-itemtitle">分类</div>
+                      <div className="novel-info-actor">
+                        <a title={book.category} onClick={(e) => goCat(e)}>{book.category || '小说'}</a>
+                      </div>
+                    </div>
+                    <div className="novel-info-items">
+                      <div className="novel-info-itemtitle">状态</div>
+                      <div className="novel-info-actor">{statusLabel(book.status)}</div>
+                    </div>
+                    <div className="novel-info-items">
+                      <div className="novel-info-itemtitle">字数</div>
+                      <div className="novel-info-actor">{formatWords(book.wordCount)}</div>
+                    </div>
+                    {book.latestChapter && (
+                      <div className="novel-info-items">
+                        <div className="novel-info-itemtitle">最新章节</div>
+                        <div className="novel-info-actor">
+                          <a {...bookNavProps(navigate, book.id)}>{book.latestChapter}</a>
+                        </div>
+                      </div>
+                    )}
+                    {book.updatedAt && (
+                      <div className="novel-info-items">
+                        <div className="novel-info-itemtitle">更新时间</div>
+                        <div className="novel-info-actor">{fmtDate(book.updatedAt)}</div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 简介 */}
+                  <div className="novel-info-content">
+                    <div className="novel-info-itemtitle">内容简介</div>
+                    <p>{book.intro || '暂无简介'}</p>
+                  </div>
+
+                  {/* 操作 */}
+                  <div className="novel-info-footer">
+                    <button
+                      type="button"
+                      className="btn-important"
+                      onClick={() => { if (onContinueRead) onContinueRead(); else onScrollToc() }}
+                    >
+                      <i className="icon-play" />开始阅读
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-base"
+                      onClick={onScrollToc}
+                    >
+                      <i className="icon-list" />查看目录
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+
+      {/* footer */}
+      <footer id="footer" className="wrapper pd60">
+        <p className="sitemap">
+          <span>{site.name}</span>
+          <a href="/" onClick={goHome}>RSS</a>
+          <span className="space-line-bold" />
+          <a href="/" onClick={goHome}>Google</a>
+          <span className="space-line-bold" />
+          <a href="/" onClick={goHome}>Bing</a>
+        </p>
+        <p>{site.title || site.name}</p>
+      </footer>
+    </>
   )
 }

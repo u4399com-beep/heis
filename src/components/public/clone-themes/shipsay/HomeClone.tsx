@@ -1,33 +1,172 @@
 'use client'
+// ============================================================
+// clone-shipsay HomeClone — 1:1 精仿 demo.shipsay.com 首页
+// 参考: agent-ctx/probe-html2/probe-shipsay.html (源站真实 DOM)
+// 复刻: header>.container.head / .navigation>nav / .container>.side_commend+aside / .container>.section.flex>.sortvisit
+// CSS 由 CloneCSSLoader 加载 public/clone-css/shipsay.css, 全部用源站真实 class 名
+// ============================================================
 import { usePublic } from '../../ctx'
 import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
 import { formatWords } from '../../seo'
 import type { HomeCloneProps } from '../shared'
-const C = {"id":"shipsay","bg":"#f4f4f4","surface":"#fff","text":"#666","muted":"#969ba3","primary":"#ed4259","accent":"#bf2c24","border":"#e0e0e0","radius":"3px","font":"\"微软雅黑\",\"Microsoft Yahei\",sans-serif","maxW":1200}
-export function HomeClone({ books, loading, homeModuleLimit = 20 }: HomeCloneProps) {
+import { useEffect, useState } from 'react'
+
+interface Cat { id: string; name: string }
+
+export function HomeClone({ books, loading, navCategoryCount = 8, homeModuleLimit = 6 }: HomeCloneProps) {
   const { site, navigate } = usePublic()
-  if (loading) return <div style={{ padding: 40, textAlign: 'center', color: C.muted, fontFamily: C.font }}>加载中...</div>
-  if (!books.length) return null
-  const list = books.slice(0, homeModuleLimit)
+  const [cats, setCats] = useState<Cat[]>([])
+
+  // 拉分类列表用于 navigation nav + sortvisit 分类区块标题
+  useEffect(() => {
+    let aborted = false
+    fetch('/api/public/categories?limit=60')
+      .then(r => r.json())
+      .then(d => {
+        if (aborted) return
+        // API 返回 {ok, data:{items:[{id,name,bookCount,rep}]}}
+        const arr = Array.isArray(d) ? d : (d.data?.items || d.data?.categories || d.items || d.categories || [])
+        setCats(arr.map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) })))
+      })
+      .catch(() => {})
+    return () => { aborted = true }
+  }, [])
+
+  if (loading) return <div className="container" style={{ padding: 40, textAlign: 'center' }}>加载中...</div>
+  if (!books.length) return <div className="container" style={{ padding: 40, textAlign: 'center' }}>暂无内容</div>
+
+  // 大神小说: 字数最多的前 N 本 (横向 flex 大封面)
+  const topBooks = [...books].sort((a, b) => (b.wordCount || 0) - (a.wordCount || 0)).slice(0, homeModuleLimit)
+  // 热门小说: 前 12 本 (侧边文字列表)
+  const popular = books.slice(0, 12)
+  // 分类区块: 按 categories 列出每个分类, 每区 1 大封面 + 11 本文字列表
+  const navCats = cats.slice(0, navCategoryCount)
+  const sections = (navCats.length ? navCats : [{ id: 'all', name: '全部' }]).map(c => {
+    const list = books.filter(b => (b.categoryId || b.category) === c.id || b.category === c.name)
+    const pool = list.length > 1 ? list : books
+    return { cat: c, list: pool.slice(0, 12) }
+  })
+
+  const goCat = (e: React.MouseEvent, catId?: string) => {
+    e.preventDefault()
+    navigate({ view: 'category', cat: catId })
+  }
+  const goHome = (e: React.MouseEvent) => {
+    e.preventDefault()
+    navigate({ view: 'home' })
+  }
+  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault()
+    const q = (e.currentTarget.elements.namedItem('searchkey') as HTMLInputElement)?.value?.trim()
+    if (q) navigate({ view: 'search', q })
+  }
+
   return (
-    <div style={{ maxWidth: C.maxW, margin: '0 auto', padding: 16, fontFamily: C.font, background: C.bg, color: C.text, minHeight: '100vh' }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 0', borderBottom: '2px solid ' + C.primary, marginBottom: 16 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700, color: C.text }}>{site.name}</h1>
-        <span style={{ fontSize: 13, color: C.muted }}>共 {books.length} 本</span>
-      </header>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 12 }}>
-        {list.map(b => (
-          <div key={b.id} {...bookNavProps(navigate, b.id)} style={{ cursor: 'pointer', background: C.surface, border: '1px solid ' + C.border, borderRadius: C.radius, overflow: 'hidden' }}>
-            <BookCover name={b.name} cover={b.cover} className="aspect-[3/4] w-full" />
-            <div style={{ padding: 8 }}>
-              <h3 style={{ fontSize: 14, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: C.text }}>{b.name}</h3>
-              <p style={{ fontSize: 12, color: C.muted }}>{b.author}</p>
-              <p style={{ fontSize: 11, color: C.muted }}>{formatWords(b.wordCount)}</p>
-            </div>
+    <>
+      {/* header */}
+      <header>
+        <div className="container head">
+          <a id="logo" href="/" onClick={goHome}>
+            <span>{site.name}</span>
+            <p>{site.domain}</p>
+          </a>
+          <form name="t_frmsearch" onSubmit={goSearch}>
+            <input id="searchkey" name="searchkey" className="search_input" placeholder="搜索书名或作者" autoComplete="off" />
+            <input type="hidden" name="searchtype" value="all" />
+            <button type="submit" id="search_btn" title="搜索"><i className="fa fa-search fa-lg" /></button>
+          </form>
+          <div className="header_right">
+            <a id="home" href="/" onClick={goHome}><i className="fa fa-home fa-lg" /><br />首页</a>
+            <a href="/sort/" onClick={(e) => goCat(e)}><i className="fa fa-book fa-lg" /><br />书库</a>
+            <a href="/quanben/sort/" onClick={(e) => goCat(e)}><i className="fa fa-coffee fa-lg" /><br />完本</a>
+            <a href="/history.html" onClick={(e) => { e.preventDefault(); navigate({ view: 'history' }) }}><i className="fa fa-history fa-lg" /><br />足迹</a>
           </div>
-        ))}
+        </div>
+      </header>
+
+      {/* navigation */}
+      <div className="navigation">
+        <nav className="container">
+          <a href="/" onClick={goHome}>首页</a>
+          {navCats.map(c => (
+            <a key={c.id} href={`/sort/${c.id}/`} onClick={(e) => goCat(e, c.id)}>{c.name}</a>
+          ))}
+          <div id="user_panel" />
+        </nav>
       </div>
-    </div>
+
+      {/* 大神小说 + 热门小说 */}
+      <div className="container">
+        <div className="side_commend side_commend_width">
+          <p className="title"><i className="fa fa-thumbs-o-up fa-lg">&nbsp;</i>大神小说</p>
+          <ul className="flex">
+            {topBooks.map(b => (
+              <li key={b.id}>
+                <div className="img_span">
+                  <a {...bookNavProps(navigate, b.id)}>
+                    <BookCover name={b.name} cover={b.cover} style={{ width: 120, height: 160 }} />
+                  </a>
+                  <span>{b.category || '小说'} / {b.status === 'completed' ? '完结' : '连载'}</span>
+                </div>
+                <div className="w100">
+                  <a {...bookNavProps(navigate, b.id)}><h2>{b.name}</h2></a>
+                  <p className="indent">{b.intro || '暂无简介'}</p>
+                  <div className="li_bottom">
+                    <a><i className="fa fa-user-circle-o">&nbsp;{b.author}</i></a>
+                    <div>
+                      <em className="orange">{formatWords(b.wordCount)}</em>
+                      <em className="blue">{b.updatedAt ? new Date(b.updatedAt).toISOString().slice(0, 10) : ''}</em>
+                    </div>
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+        <aside>
+          <p className="title"><i className="fa fa-fire fa-lg">&nbsp;</i>热门小说</p>
+          <ul className="popular odd">
+            {popular.map(b => (
+              <li key={b.id}>
+                <a {...bookNavProps(navigate, b.id)}>{b.name}</a>
+                <a className="gray">{b.author}</a>
+              </li>
+            ))}
+          </ul>
+        </aside>
+      </div>
+
+      {/* 分类区块 */}
+      <div className="container">
+        <div className="section flex">
+          {sections.map(({ cat, list }) => (
+            <div key={cat.id} className="sortvisit">
+              <a href={`/sort/${cat.id}/`} onClick={(e) => goCat(e, cat.id)}>{cat.name}</a>
+              <ul>
+                {list[0] && (
+                  <div>
+                    <a {...bookNavProps(navigate, list[0].id)}>
+                      <BookCover name={list[0].name} cover={list[0].cover} style={{ width: 120, height: 160 }} />
+                    </a>
+                    <p>
+                      <a {...bookNavProps(navigate, list[0].id)}>{list[0].name}</a>
+                      <i>&nbsp;/&nbsp;{list[0].author}</i>
+                      <br />&nbsp;&nbsp;&nbsp;&nbsp;{list[0].intro || '暂无简介'}
+                    </p>
+                  </div>
+                )}
+                {list.slice(1, 12).map(b => (
+                  <li key={b.id}>
+                    <a {...bookNavProps(navigate, b.id)}>{b.name}</a>
+                    <i>&nbsp;/ {b.author}</i>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+      </div>
+    </>
   )
 }

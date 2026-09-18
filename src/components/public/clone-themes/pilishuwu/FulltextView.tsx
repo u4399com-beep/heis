@@ -1,35 +1,272 @@
 'use client'
-import type { FulltextViewProps } from '../shared'
+// ============================================================
+// clone-pilishuwu FulltextView — 全本完本小说页
+// 参考: probe-pilishuwu-book.html 的 ret-search-list 结构 (源站列表页样式)
+// 复刻: .mod-top-wr header / .mod-top-nav-wr nav (全本小说 active) /
+//       .ui-wm .ret-main-wr .ret-main (.ret-search-head.clearfix
+//       ul#search-condition + .ret-head-page + .ret-result-num em) +
+//       .ret-search-result ul.ret-search-list li.ret-search-item
+//       (.ret-works-cover + .ret-works-info h3 + p + p + p + a.ret-works-view) +
+//       .ret-page-wr.mod-page #pagination2
+// CSS 由 CloneCSSLoader 加载 public/clone-css/pilishuwu.css, 全部用源站真实 class 名
+// ============================================================
 import { usePublic } from '../../ctx'
 import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
-import { formatWords } from '../../seo'
-const C = {"id":"pilishuwu","bg":"#fdf6ec","surface":"#fff","text":"#666","muted":"#999","primary":"#fd8929","accent":"#ec5245","border":"#eee","radius":"2px","font":"\"Microsoft YaHei\",sans-serif","maxW":1200}
+import { statusLabel, formatWords } from '../../seo'
+import type { FulltextViewProps } from '../shared'
+import { useEffect, useState } from 'react'
+
+interface Cat { id: string; name: string }
+
+const DEFAULT_NAV: Cat[] = [
+  { id: '0', name: '全部小说' }, { id: '1', name: '男频小说' },
+  { id: '2', name: '女频小说' }, { id: '3', name: '电子图书' },
+  { id: '4', name: '无CP小说' }, { id: '5', name: '纯爱小说' },
+  { id: '6', name: '百合小说' }, { id: '8', name: '轻小说' },
+]
+
 export function FulltextView({ books, loading, page, total, size, onPage }: FulltextViewProps) {
-  const { navigate } = usePublic()
-  if (loading) return <div style={{ padding: 40, textAlign: 'center', color: C.muted, fontFamily: C.font }}>加载中...</div>
+  const { site, navigate } = usePublic()
+  const [cats, setCats] = useState<Cat[]>([])
+
+  useEffect(() => {
+    let aborted = false
+    fetch('/api/public/categories?limit=60')
+      .then(r => r.json())
+      .then(d => {
+        if (aborted) return
+        const arr = Array.isArray(d) ? d : (d.data?.items || d.data?.categories || d.items || d.categories || [])
+        const mapped: Cat[] = arr.map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) }))
+        setCats(mapped.length ? mapped : DEFAULT_NAV)
+      })
+      .catch(() => { if (!aborted) setCats(DEFAULT_NAV) })
+    return () => { aborted = true }
+  }, [])
+
+  const navCats = (cats.length ? cats : DEFAULT_NAV).slice(0, 8)
+  const totalPages = Math.max(1, Math.ceil(total / size))
+
+  const goCat = (e: React.MouseEvent, catId?: string) => {
+    e.preventDefault()
+    navigate({ view: 'category', cat: catId })
+  }
+  const goHome = (e: React.MouseEvent) => {
+    e.preventDefault()
+    navigate({ view: 'home' })
+  }
+  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault()
+    const q = (e.currentTarget.elements.namedItem('key') as HTMLInputElement)?.value?.trim()
+    if (q) navigate({ view: 'search', q })
+  }
+  const goRanking = (e: React.MouseEvent) => {
+    e.preventDefault()
+    navigate({ view: 'ranking' })
+  }
+  const goFulltext = (e: React.MouseEvent) => {
+    e.preventDefault()
+    navigate({ view: 'fulltext' })
+  }
+  const goHistory = (e: React.MouseEvent) => {
+    e.preventDefault()
+    navigate({ view: 'history' })
+  }
+
+  // 分页
+  const renderPager = (id: string) => {
+    if (total <= size) return null
+    const start = Math.max(1, page - 4)
+    const end = Math.min(totalPages, start + 9)
+    const nums: number[] = []
+    for (let i = start; i <= end; i++) nums.push(i)
+    return (
+      <div className={id === 'pagination1' ? 'ret-head-page ui-right' : 'ret-page-wr mod-page'} id={id}>
+        {page > 1 ? (
+          <a href="javascript:void(0)" className="mod_page_next" onClick={(e) => { e.preventDefault(); onPage(page - 1) }}>上一页</a>
+        ) : (
+          <a href="javascript:alert('已经是第一页了');" className="mod_page_next" onClick={(e) => e.preventDefault()}>第一页</a>
+        )}
+        {nums.map(n => n === page ? (
+          <a key={n} href="javascript:void(0)" className="current">{n}</a>
+        ) : (
+          <a key={n} href="javascript:void(0)" onClick={(e) => { e.preventDefault(); onPage(n) }}>{n}</a>
+        ))}
+        {page < totalPages ? (
+          <a href="javascript:void(0)" className="mod_page_next" onClick={(e) => { e.preventDefault(); onPage(page + 1) }}>下一页</a>
+        ) : (
+          <a href="javascript:alert('已经是最后一页了');" className="mod_page_next" onClick={(e) => e.preventDefault()}>最后页</a>
+        )}
+      </div>
+    )
+  }
+
   return (
-    <div style={{ maxWidth: C.maxW, margin: '0 auto', padding: 20, fontFamily: C.font, color: C.text }}>
-      <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 16 }}>全本完本小说</h1>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 12 }}>
-        {books.map(b => (
-          <div key={b.id} {...bookNavProps(navigate, b.id)} style={{ cursor: 'pointer', background: C.surface, border: '1px solid ' + C.border, borderRadius: C.radius, overflow: 'hidden' }}>
-            <BookCover name={b.name} cover={b.cover} className="aspect-[3/4] w-full" />
-            <div style={{ padding: 8 }}>
-              <h3 style={{ fontSize: 14, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: C.text }}>{b.name}</h3>
-              <p style={{ fontSize: 12, color: C.muted }}>{b.author}</p>
-              <p style={{ fontSize: 11, color: C.muted }}>{formatWords(b.wordCount)}</p>
+    <>
+      {/* ============ 顶部 header ============ */}
+      <div className="mod-top-wr">
+        <div className="mod-top-frame">
+          <div className="mod-top-tool-wr ui-wm">
+            <div className="mod-top-logo-wr ui-left">
+              <h1 className="mod-top-logo ui-left ui-text-hide">
+                <a title={site.name} href="/index.html" onClick={goHome}>
+                  <span className="mod-top-logo-text" style={{ display: 'inline-block', fontSize: 22, fontWeight: 'bold', color: '#fd8929', lineHeight: '40px', padding: '0 8px' }}>{site.name}</span>
+                  <span className="ico-ani"></span>
+                </a>
+              </h1>
+              <div className="mod-top-event ui-left ui-dn"></div>
+            </div>
+            <div className="mod-top-search-wr ui-left">
+              <form action="/module/search/search.php" method="get" onSubmit={goSearch}>
+                <input type="hidden" name="module" value="novel" />
+                <input type="hidden" name="type" value="0" />
+                <div id="top-search" className="mod-top-search">
+                  <div className="mod-search-input-wr ui-left">
+                    <input className="mod-search-input" type="text" name="key" placeholder="可搜索小说名/作者名" autoComplete="off" />
+                  </div>
+                  <button className="mod-search-submit ui-left ui-text-hide" type="submit">搜索</button>
+                </div>
+              </form>
+              <ul className="mod-top-tag" id="hotWord"></ul>
             </div>
           </div>
-        ))}
-      </div>
-      {total > size && (
-        <div style={{ display: 'flex', justifyContent: 'center', gap: 8, marginTop: 16 }}>
-          {page > 1 && <button onClick={() => onPage(page - 1)} style={{ padding: '6px 16px', border: '1px solid ' + C.border, borderRadius: C.radius, cursor: 'pointer' }}>上一页</button>}
-          <span style={{ padding: '6px 12px' }}>第 {page} 页</span>
-          {page * size < total && <button onClick={() => onPage(page + 1)} style={{ padding: '6px 16px', border: '1px solid ' + C.border, borderRadius: C.radius, cursor: 'pointer' }}>下一页</button>}
         </div>
-      )}
-    </div>
+
+        <div className="mod-top-nav-wr">
+          <div className="mod-top-nav ui-wm">
+            <ul className="mod-top-nav-list ui-left">
+              <li>
+                <a className="mod-top-nav-home" href="/index.html" title="首页" onClick={goHome}>
+                  <span>首页</span>
+                </a>
+              </li>
+              <li><a href="/0/list/1.html" title="全部小说" onClick={(e) => goCat(e, undefined)}><span>全部小说</span></a></li>
+              <li><a href="/top/index.html" title="排行榜" onClick={goRanking}><span>排行榜</span></a></li>
+              {navCats.map(c => (
+                <li key={c.id}><a href={`/${c.id}/list/1.html`} title={c.name} onClick={(e) => goCat(e, c.id)}><span>{c.name}</span></a></li>
+              ))}
+              <li id="homebox"></li>
+            </ul>
+            <div className="mod-top-nav-tool ui-right" id="loginbox"></div>
+            <a className="mod-top-nav-user ui-right" href="#" onClick={(e) => e.preventDefault()} title="域名发布页">域名发布页</a>
+          </div>
+        </div>
+      </div>
+
+      {/* ============ 全本小说主体 (ret-main-wr) ============ */}
+      <div className="ui-wm ui-mb20 ui-mt40 clearfix">
+        <div className="ret-main-wr ui-mb40 ui-left" style={{ width: '100%' }}>
+          <div className="ret-main">
+            {/* 顶部标题 + 分页 + 结果数 */}
+            <div className="ret-search-head clearfix">
+              <h1 className="ui-left" style={{ fontSize: 22, fontWeight: 'bold', color: '#333', padding: '8px 0', marginRight: 20 }}>全本完本小说</h1>
+              <ul id="search-condition" className="ret-search-type ui-left">
+                <li className="active"><a className="ret-search-time" href="javascript:void(0)" onClick={(e) => e.preventDefault()}>更新</a></li>
+                <li><a className="ret-search-time" href="javascript:void(0)" onClick={(e) => e.preventDefault()}>点击</a></li>
+                <li><a className="ret-search-time" href="javascript:void(0)" onClick={(e) => e.preventDefault()}>字数</a></li>
+              </ul>
+              {renderPager('pagination1')}
+              <span className="ret-result-num ui-right">共<em>{total}</em>个结果</span>
+            </div>
+
+            {/* 全本小说列表 */}
+            <div className="ret-search-result">
+              {loading ? (
+                <div style={{ padding: 40, textAlign: 'center', color: '#999' }}>加载中...</div>
+              ) : !books.length ? (
+                <div style={{ padding: 40, textAlign: 'center', color: '#999' }}>暂无全本小说</div>
+              ) : (
+                <ul className="ret-search-list clearfix">
+                  {books.map(b => (
+                    <li className="ret-search-item clearfix" key={b.id}>
+                      <div className="ret-works-cover">
+                        <a className="mod-cover-list-thumb mod-cover-effect ui-db" title={b.name} href={`/${b.categoryId || '0'}/${b.id}/info.html`} target="_blank" {...bookNavProps(navigate, b.id)}>
+                          <BookCover name={b.name} cover={b.cover} style={{ width: 100, height: 133 }} />
+                          <span className="mod-layer-mask">&nbsp;&nbsp;</span>
+                        </a>
+                        <p className="mod-cover-list-updata">
+                          <a className="mod-cover-list-mask" href={`/${b.categoryId || '0'}/${b.id}/read/1.html`} target="_blank" {...bookNavProps(navigate, b.id)}>
+                            <span className="mod-cover-list-text">{b.latestChapter || '已完结'}</span>
+                          </a>
+                        </p>
+                      </div>
+                      <div className="ret-works-info">
+                        <h3 className="ret-works-title clearfix">
+                          <a href={`/${b.categoryId || '0'}/${b.id}/info.html`} target="_blank" title={b.name} {...bookNavProps(navigate, b.id)}>{b.name}</a>
+                        </h3>
+                        <p className="ret-works-author" title={b.author}>作者：{b.author}</p>
+                        <p className="ret-works-tags">
+                          <a href={`/${b.categoryId || '0'}/list/1.html`} target="_blank" onClick={(e) => goCat(e, b.categoryId || undefined)}>分类：{b.category || '小说'}</a>
+                          <span>点击：<em>{Math.max(1, Math.floor((b.wordCount || 0) / 1000))}</em></span>
+                          <span>字数：<em>{formatWords(b.wordCount)}</em></span>
+                          <span>状态：<em>{statusLabel(b.status)}</em></span>
+                        </p>
+                        <p className="ret-works-decs">{b.intro || '暂无简介'}</p>
+                        <a className="ret-works-view ui-btn-pink" href={`/${b.categoryId || '0'}/${b.id}/read/1.html`} target="_blank" {...bookNavProps(navigate, b.id)}>开始阅读</a>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            {/* 底部分页 */}
+            {renderPager('pagination2')}
+          </div>
+        </div>
+      </div>
+
+      {/* ============ 友情链接 + 悬浮栏 + footer ============ */}
+      <div className="linkBox">
+        <span className="linkTitle">友情链接</span>
+        <p className="linkList">
+          <a href="#" onClick={(e) => e.preventDefault()}>永久地址</a>
+          <a href="#" onClick={(e) => e.preventDefault()}>{site.name}二站</a>
+          <a href="#" onClick={(e) => e.preventDefault()}>{site.name}</a>
+        </p>
+      </div>
+
+      <div id="fixed" className="mod-fixed-top-wr">
+        <div className="mod-fixed-top ui-wm">
+          <ul className="mod-fixed-top-tags ui-left">
+            <li className="active"><a href="/index.html" onClick={goHome}>首页</a></li>
+            {navCats.slice(0, 6).map(c => (
+              <li key={c.id}><a href={`/${c.id}/list/1.html`} title={c.name} onClick={(e) => goCat(e, c.id)}>{c.name}</a></li>
+            ))}
+          </ul>
+          <div className="mod-fix-search-wr ui-left">
+            <form action="/module/search/search.php" method="post" onSubmit={goSearch}>
+              <input type="hidden" name="module" value="novel" />
+              <input type="hidden" name="type" value="0" />
+              <div>
+                <div className="mod-fix-search ui-left">
+                  <input className="mod-search-input" type="text" name="key" placeholder="可搜索小说名/作者名/标签" />
+                </div>
+                <button className="mod-search-submit ui-left" type="submit">搜索</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+
+      <div className="mod-footer-wr">
+        <div className="mod-footer-main-wr">
+          <div className="mod-footer-main ui-wm">
+            <div className="mod-footer-info">
+              {site.footerText || `本站所有小说为完本转载作品，所有内容版权归版权方或原作者所有。`}
+              <br />
+              <span style={{ display: 'inline-block', marginTop: 8 }}>
+                <a href="/index.html" onClick={goHome} style={{ marginRight: 12 }}>首页</a>
+                <a href="/0/list/1.html" onClick={(e) => goCat(e, undefined)} style={{ marginRight: 12 }}>全部小说</a>
+                <a href="/top/index.html" onClick={goRanking} style={{ marginRight: 12 }}>排行榜</a>
+                <a href="/quanben/sort/" onClick={goFulltext} style={{ marginRight: 12 }}>全本小说</a>
+                <a href="/history.html" onClick={goHistory}>阅读足迹</a>
+              </span>
+            </div>
+          </div>
+        </div>
+        <div className="mod-footer-border"></div>
+      </div>
+    </>
   )
 }
