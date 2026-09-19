@@ -775,6 +775,16 @@ export class TaskRunner {
         for (const [k, v] of Object.entries(lastChapObj)) {
           if (typeof k === 'string' && k && typeof v === 'string' && v) rt.bookLastChapters.set(k, v)
         }
+        // R32-1A 修复 P1: failedBookUrls 跨重启恢复 —— 修前 saveProgress(line 2441)把
+        // rt.failedBookUrls 落库到 progress.failedBookUrls, 但 resume 路径只恢复
+        // discovered/completed/ongoing/bookLastChapters 四项, 漏掉 failedBookUrls. 结果:
+        // 上一轮采集的瞬态失败书籍 URL 持久化了但下次启动 rt.failedBookUrls 永远空集,
+        // "仅重试失败"模式(retry-failed, mode='urls' 从 fetchOverride.urls 取)拿不到
+        // 失败列表数据. 现按与 discovered/completed/ongoing 同口径恢复, 让 failedBookUrls
+        // 真正跨重启可用. (full 模式不重置 failedBookUrls —— 见 line 753-761 注释
+        // "failedBookUrls 跨轮保留", 与本轮恢复逻辑正交)
+        const failed = Array.isArray(progress.failedBookUrls) ? progress.failedBookUrls : []
+        rt.failedBookUrls = new Set(failed.filter((u) => typeof u === 'string' && u))
         const totalResume = rt.discoveredBookUrls.size + rt.completedBookUrls.size + rt.ongoingBookUrls.size
         if (totalResume > 0) {
           await this.log(
@@ -806,7 +816,14 @@ export class TaskRunner {
         // bookQueue, 跳过 list 发现阶段; 进度立刻进入 book 处理阶段
         const urlsList = (cfg.fetchOverride.urls && Array.isArray(cfg.fetchOverride.urls) ? cfg.fetchOverride.urls : [])
           .filter((u) => typeof u === 'string' && u)
-        bookQueue = urlsList.slice()
+        // R32-1A 修复 P1: urls 模式去重 —— 修前 urlsList.slice() 保留重复 URL, 并发架构下
+        // 同一 bookUrl 会被两个 crawlBookMeta 回调并发处理: (1)两次 fetch 同一书籍页
+        // (2)db.book.findFirst/create 竞态(一成一 P2002 失败) (3)globalQueue 章节翻倍
+        // (4)finalizeBook 调两次(progress.booksDone 虚高 + fetchSuggestKeywords 重复网络
+        // 请求 + db.book.update 重复写). range 模式 line 914 已用 Array.from(new Set(sliced))
+        // 去重, single 模式天然 1 本无需去重, 本处补齐 urls 模式去重(Set 保留插入序, 与
+        // range 模式同口径, 零回归)
+        bookQueue = Array.from(new Set(urlsList))
         progress.discovered = bookQueue.length
         progress.phase = 'book'
         progress.phaseNote = `重试 ${bookQueue.length} 本失败书籍…`
@@ -1025,6 +1042,15 @@ export class TaskRunner {
                   progress.booksDone++
                   progress.currentBook = bookUrl
                   progress.phaseNote = `跳过已完结`
+                  // R32-1A 修复 P1: skip-completed 路径漏 failedBookUrls.delete ——
+                  // 原设计(TaskRuntime.failedBookUrls 注释)"crawlOneBook 返回 'ok' 时从中
+                  // 移除", 增量/跨源跳过路径(crawlBookMeta line 1843/1889)与 finalizeBook
+                  // (line 2383)都有 delete, 但 skip-completed 路径(R31-1B 并发架构从外层
+                  // crawlOneBook 拆出到 batch callback)漏掉. 修前: 一本书曾瞬态失败进
+                  // failedBookUrls, 后续轮采成功进 completedBookUrls, skip-completed 跳过
+                  // 但 failedBookUrls 残留条目, "仅重试失败"模式(未来)会重复重试已完结书.
+                  // 修后: 与其他 'ok' 返回路径同口径 delete, 保持 failedBookUrls 干净
+                  rt.failedBookUrls.delete(bookUrl)
                   await this.log(taskId, 'info', `跳过已完结: ${bookUrl}`)
                   return { status: 'ok' as const, bookUrl }
                 }
@@ -1054,14 +1080,28 @@ export class TaskRunner {
                 if (e?.isFetchTimeout) {
                   // ee-d: 书籍页级 fetch 超时 —— 计失败+可见日志, 书籍保持未完成态, 稍后增量重试可恢复
                   stats.errors++
+                  // R32-1A 修复 P1: 瞬态错误入 failedBookUrls ——
+                  // TaskRuntime.failedBookUrls 注释: "瞬态错误(超时/HostGate/抓取异常)的书籍
+                  // URL 集合, 用于'仅重试失败'模式(未来)和可见性". R31-1B 重构 crawlOneBook
+                  // 拆分时漏了 add 调用(只有 crawlBookMeta/finalizeBook 的 delete), 修前
+                  // failedBookUrls 永远为空集, "仅重试失败"模式无数据可用. 现按原设计补齐:
+                  // isFetchTimeout/HostGateTimeout/other 三类瞬态错误 add, AbortError(停止/
+                  // 换代)不 add(非瞬态, 重试无意义), 与 delete 路径(crawlBookMeta ok 跳过 +
+                  // finalizeBook ok-meta 完成)对称, 保持集合干净
+                  addToResumeSet(rt.failedBookUrls, bookUrl)
                   await this.log(taskId, 'error', `书籍抓取超时(源站在 timeout 内未响应, 书籍保持未完成): ${bookUrl.slice(0, 120)}`)
                 } else if (e?.name === 'AbortError' || e?.code === 'ABORT_ERR') {
                   // 修复(x-a): stop/换代(abortAll)造成的在途中止不再计入失败
+                  // (非瞬态错误, 不入 failedBookUrls)
                 } else if (e?.name === 'HostGateTimeout') {
                   // bb-d: 同站闸门槽满等待超时(hostGate 限流保护, 非源站故障) — 与中止同口径
+                  // R32-1A: 瞬态错误入 failedBookUrls(同 isFetchTimeout 分支)
+                  addToResumeSet(rt.failedBookUrls, bookUrl)
                   await this.log(taskId, 'warn', `书籍采集等待同站并发闸门超时(host:${hostGateKeyOf(bookUrl) || '未知'}, 该站在飞已达上限): ${bookUrl}; 书籍保持未完成, 稍后增量重试可恢复`)
                 } else {
                   stats.errors++
+                  // R32-1A: 瞬态错误(抓取异常)入 failedBookUrls(同 isFetchTimeout 分支)
+                  addToResumeSet(rt.failedBookUrls, bookUrl)
                   await this.log(taskId, 'error', `书籍采集失败 ${bookUrl}: ${e?.message}`)
                 }
                 // R31-1B: 错误隔离 —— 本书失败返回 'error' 状态, 不影响其他书的并发采集

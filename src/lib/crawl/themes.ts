@@ -20,14 +20,6 @@
 //   read             → 阅读页布局与排版参数 (经典典书版 / 沉浸暗色 / 分页横滑 / 书屋版)
 //   contentSelector  → 章节正文容器 CSS 选择器 (原站实测值, 用于 ReadView 包裹正文 id/class 复刻)
 // read 可缺省: readOf() 会按 READ_DEFAULTS 回退, 旧调用点零破坏
-//
-// R10-1A: 废弃 theme-matrix 1728 组合矩阵 + 17 旧 preset; 新增 9 套精仿 preset;
-//         getThemeById 不再回退 combo 解析器, 只查 THEMES
-// R11-1B: 新增第 10 套 clone-trxsw (天人小说)
-// R12-1: 删除 clone-trxsw (用户未指定); 重写 9 套 preset 基于真实抓取的 CSS 变量
-// R13-1B: 重新克隆 10 个站点主题 (含 trxsw): 恢复 clone-trxsw 基于 AiraBrowser 反查 DOM
-// R14-1A: 全量重克隆 10 个站点主题含子页面 DOM; 新增 contentSelector 字段, BookView 按 theme.layout
-//         区分 10 套 DOM 结构 (article.panel / #info / .detail / .book-info 等差异化)
 // ============================================================
 
 /** 阅读页布局原型 */
@@ -838,10 +830,9 @@ export function getTheme(id: string | null | undefined): ThemeDef {
   return THEMES.find((t) => t.id === id) || THEMES[0]
 }
 
-/** 主题解析入口 — R10-1A: 移除 combo 矩阵回退, 只查 THEMES 数组
+/** 主题解析入口 — PublicSite / SiteHeader / admin 校验的唯一入口
  *  - 命中 preset 即返回
- *  - 未命中返回 undefined, 由调用方决定是否回退 THEMES[0]
- *  本函数是 PublicSite / SiteHeader / admin 校验的唯一入口 */
+ *  - 未命中返回 undefined, 由调用方决定是否回退 THEMES[0] */
 export function getThemeById(id: string | null | undefined): ThemeDef | undefined {
   if (!id) return undefined
   return THEMES.find((t) => t.id === id)

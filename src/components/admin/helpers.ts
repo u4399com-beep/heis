@@ -2,8 +2,23 @@
 // 后台管理 — 共享数据层 / 类型 / 工具函数
 // 所有 API 均为相对路径, 统一返回 { ok, data, message }
 // ============================================================
+import { useEffect, useRef } from 'react'
 import type { CleanConfig, FetchConfig, FieldRule, PageRule, RuleConfig } from '@/lib/crawl/types'
 import { parseRuleConfig } from '@/lib/crawl/types'
+
+// ---------------- 挂载态 ref (StrictMode dev 兼容) ----------------
+// 用法: const aliveRef = useAliveRef(); 异步回调用 if (!aliveRef.current) return;
+// 解决 StrictMode dev 卸载→重挂载后旧 ref 仍为 false 卡 loading 的问题。
+// 注: 若卸载时需额外副作用(如 clearTimeout/abort), 请直接在调用方写 useEffect,
+//     不要用本 hook; 本 hook 仅做 alive 复位。
+export function useAliveRef() {
+  const ref = useRef(true)
+  useEffect(() => {
+    ref.current = true
+    return () => { ref.current = false }
+  }, [])
+  return ref
+}
 
 // ---------------- API 包装 ----------------
 interface Envelope<T> {

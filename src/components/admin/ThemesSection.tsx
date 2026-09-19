@@ -1,8 +1,8 @@
 'use client'
 
 // ============================================================
-// 主题模板 — 10 套精仿真实小说站点主题 (R13-1B 含 clone-trxsw 天人小说)
-// 单次加载 THEMES 数组 (R10-1A 起废弃 theme-matrix 1728 组合矩阵 + 17 旧 preset)
+// 主题模板 — 10 套精仿真实小说站点主题 (含 clone-trxsw 天人小说)
+// 单次加载 THEMES 数组
 // ============================================================
 import { useCallback, useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'

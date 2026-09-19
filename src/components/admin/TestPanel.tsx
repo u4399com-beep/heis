@@ -35,6 +35,7 @@ import {
 import { FlaskConical, Loader2, Bug, ChevronDown, MousePointerClick, Inbox, GitCompareArrows, ListChecks, XCircle } from 'lucide-react'
 import {
   api,
+  useAliveRef,
   type CleanConfig,
   type DebugMatch,
   type FetchConfig,
@@ -661,14 +662,7 @@ function CompareTestPanel({
   const [resultB, setResultB] = useState<RuleTestResult | null>(null)
   const [errorA, setErrorA] = useState('')
   const [errorB, setErrorB] = useState('')
-  const aliveRef = useRef(true)
-
-  useEffect(() => {
-    aliveRef.current = true
-    return () => {
-      aliveRef.current = false
-    }
-  }, [])
+  const aliveRef = useAliveRef()
 
   const runCompare = useCallback(async () => {
     if (!url.trim()) {
@@ -707,7 +701,7 @@ function CompareTestPanel({
     } finally {
       if (aliveRef.current) setLoading(false)
     }
-  }, [url, section, ruleA, ruleB, fetchConfig, cleanConfig])
+  }, [url, section, ruleA, ruleB, fetchConfig, cleanConfig, aliveRef])
 
   return (
     <>
@@ -872,14 +866,7 @@ function BatchTestPanel({
   const [text, setText] = useState(defaultUrl ? defaultUrl + '\n' : '')
   const [running, setRunning] = useState(false)
   const [rows, setRows] = useState<BatchRow[]>([])
-  const aliveRef = useRef(true)
-
-  useEffect(() => {
-    aliveRef.current = true
-    return () => {
-      aliveRef.current = false
-    }
-  }, [])
+  const aliveRef = useAliveRef()
 
   const urls = useMemo(
     () =>
@@ -929,7 +916,7 @@ function BatchTestPanel({
       }
     }
     setRunning(false)
-  }, [urls, section, rule, fetchConfig, cleanConfig])
+  }, [urls, section, rule, fetchConfig, cleanConfig, aliveRef])
 
   const okCount = rows.filter((r) => r.status === 'ok').length
   const errCount = rows.filter((r) => r.status === 'error').length

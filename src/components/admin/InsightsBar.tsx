@@ -39,6 +39,7 @@ import {
   fmtNum,
   fmtWords,
   safeJsonParse,
+  useAliveRef,
   type StatsData,
   type TaskRow,
   type TaskStats,
@@ -176,15 +177,8 @@ export function InsightsBar({ stats, loading, autoRefresh, onNavigate, onViewTas
   const [agg, setAgg] = useState<TasksAgg | null>(null)
   const [aggLoading, setAggLoading] = useState(true)
   const [aggRefreshing, setAggRefreshing] = useState(false)
-  const aliveRef = useRef(true)
+  const aliveRef = useAliveRef()
   const seqRef = useRef(0)
-
-  useEffect(() => {
-    aliveRef.current = true
-    return () => {
-      aliveRef.current = false
-    }
-  }, [])
 
   const loadAgg = useCallback(async (opts: { isFirst: boolean }) => {
     const seq = ++seqRef.current
@@ -202,7 +196,7 @@ export function InsightsBar({ stats, loading, autoRefresh, onNavigate, onViewTas
         setAggRefreshing(false)
       }
     }
-  }, [])
+  }, [aliveRef])
 
   // 首次挂载 + 30s 轮询 (autoRefresh=false 时仅拉一次)
   useEffect(() => {

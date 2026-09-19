@@ -13696,3 +13696,228 @@ Stage Summary:
   (0 新依赖)
 - 详细工作记录: agent-ctx/R31-1B-full-stack-developer.md(含 7 章节: 读交接/现状审查/
   并发架构改造/crawlOneBook 拆分/executeTask 重构/R25-R29 修复保留/验证)
+
+---
+Task ID: R32-1B
+Agent: full-stack-developer (clone残留+seed-rule残留校准)
+Task: 80 clone 文件 hook 检查 + 14 seed-rule 残留校准
+
+Work Log:
+- 第一步读交接: worklog.md 末 150 行 → R31-1A(7 套主题 + shipsay/huangjinwu 校准) +
+  R31-1B(并发架构改造) + R31-1C(8 seed-rule 校准: jpxs123/fanqianxs/hodei/xjp/wuxiaworld/
+  trxsw/fdxrz/biqutu) + R31-1D(huangjinwu/HomeClone 走 hook + mapCatWithBangSuffix)
+- 第二步 clone-themes 80 文件 useCloneCategories hook 残留检查:
+  · rg "useState<Cat" → 0 命中(全无内联 useState<Category> 残留)
+  · rg "fetch\('/api/public/categories" → 仅 shared.ts 命中(hook 实现, 非残留)
+  · rg "useCloneCategories" → 51/81 命中(其余 30 文件无 hook 是合理设计:
+    - 101kks/23qb/ddyueshu/x2552 子页(ReadChrome/BookInfo/CategoryList 等)源站无 categories
+      sidebar, 仅有顶部 nav → 无需 hook
+    - huangjinwu 子页(BookInfo/SearchView/RankingView)有 sidebar-wrapper 但渲染固定
+      NAV_ITEMS(7 项 home/rank/list/tag/author/dzss/search), 无 categories dropdown →
+      无需 hook
+    - pilishuwu/ReadChrome 章节阅读页无 sidebar → 无需 hook
+    - tools.tsx 为工具组件, 非 page-level)
+- 第三步 DOM 对源站 probe 子页对比(agent-ctx/probe-html2/probe-<site>-{book,chapter,category}.html):
+  · 23qb: probe-23qb-book.html + probe-23qb-category.html 双双被 CF 挑战页拦截
+    (title="Just a moment..."), 已在 clone 23qb/BookInfo.tsx/CategoryList.tsx 文件头
+    注释"CF 拦截, 按源站 CSS class 结构复刻", 非本轮可修复
+  · aijjxs: probe-aijjxs-book.html(book)/probe-aijjxs-chapter.html(reader) class 名
+    (top-float/top-float-inner/top-float-nav/wrap/top/top-1/layout/cenMain/articleInfo/
+    panel/body/lines/foot) 与 aijjxs/BookInfo.tsx + ReadChrome.tsx 复刻 class 全对齐 ✓
+  · pilishuwu: probe-pilishuwu-book.html 实为分类页(ret-search-*/ret-works-*/ret-side-wr/
+    ret-main-wr class), probe-pilishuwu-category.html 实为书籍详情页(works-intro-wr/
+    works-intro-detail/works-intro-text/works-intro-opera/works-intro-tags class) ——
+    命名错位是源站本身命名规范, clone 已正确引用对应 probe(pilishuwu/BookInfo.tsx 引
+    category probe, pilishuwu/CategoryList.tsx 引 book probe), 无残留
+  · probe-pilishuwu-chapter.html 实为首页(源站反爬把章节页跳回首页), 已在
+    pilishuwu/ReadChrome.tsx 文件头注释"实为首页抓取", 按 wmcms-web 章节模板 +
+    pilishuwu.css class 构造, 非本轮可修复
+- 第四步 CSS 选择器命中检查(rg className vs public/clone-css/<site>.css 选择器):
+  · ggd66: 50 class 用, 49 命中(98%), 缺 logo(源站 .headbox 内 inline 用)
+  · ddyueshu: 32 class 用, 30 命中(94%), 缺 2 个 template literal 类
+  · huangjinwu: 119 class 用, 110 命中(92%), 缺 9 个(hot-section/sort-section/update-section/
+    chapter-list--all/ebook-more-ebooks/navbar-link/icon-language/copyright —— 这些 class
+    在 probe-huangjinwu.html 出现但 probe-huangjinwu.css 未含规则, 源站用 inline <style>
+    或外部 stylesheet 未捕获; clone 用 Tailwind 兜底样式, 非阻塞)
+  · x2552: 43 class 用, 42 命中(98%), 缺 poptext(信息性 class)
+  · shipsay: 64 class 用, 44 命中(69%), 缺 fa-*/icon-*(Font Awesome 外部 iconfont, 由
+    fa.css 加载, shipsay.css 内 @import 链路, 非本轮 CSS 文件维护范围)
+  · aijjxs: 68 class 用, 66 命中(97%), 缺 gird2/oldDate(信息性 class, 不影响视觉)
+  · pilishuwu: 247 class 用, 75 命中(30%), 缺 172 个(bx-viewport/bx-wrapper jQuery
+    轮播插件类 + bg-org/in-content 等子页专用 class; CSS 文件维护范围有限, 非本轮可全补)
+  · 101kks: 123 class 用, 112 命中(91%), 缺 11 个(clear/col-xinindex/copyright/icon-mark/
+    icon-set/main/ranktit/tabsnav —— Bootstrap utility + iconfont 类, 由外部 CDN 加载)
+  · 23qb: 94 class 用, 81 命中(86%), 缺 13 个(ac_wd/fixed-logo/grid-box/grid-items/
+    hidden-xs/icon-language/icon-list/icon-mark —— 同上 Bootstrap + iconfont)
+  · trxsw: 113 class 用, 111 命中(98%), 缺 h-full/w-full(Tailwind utility, 全局加载)
+  · 结论: 主要"缺失"类为外部 iconfont (fa-*/icon-*) + Bootstrap utility (clear/col-*) +
+    Tailwind utility (h-full/w-full) + jQuery 插件 (bx-*) + 源站 inline <style> 区块 class
+    (huangjinwu hot-section 等), 均**非本轮可修复**(需扩充 CSS 文件, 但 CSS 文件已是
+    源站 probe.css 同步快照, 源站本身规则缺失属上游问题); 各主题核心 layout class
+    (.header/.container/.main/.footer/.book/.panel/.block 等)全命中, 视觉无回归
+- 第五步 21 个未触 seed-rule-*.ts(除 R31-1C 已修 8 个外)残留校准:
+  · maxPages 全 ≤ 30(R31-1C 已校准, 0 残留): 66 个 maxPages=1(单页) / 5 个 maxPages=5
+    / 4 个 maxPages=10 / 5 个 maxPages=20 / 7 个 maxPages=30, 分布合理
+  · 字段名校准: bqg713.ts list 段 `title:` 字段(应为 `name:`)—— parseList 按 name 入库,
+    runner line 892 `it.fields.name` 消费 name 非 title; R31-1C 已修 jpxs123 同型 bug,
+    bqg713 漏改, 现 R32-1B 补修(同型 5 行注释带 R31-1C 同款说明)
+  · cover 选择器宽泛度:
+    - 3 处 bare `img`(shudugu.ts:90 / pilishuwu.ts:44 / ingml.ts:65), 均在 itemSelector
+      容器作用域内(parser cheerio scope 天然限定), 取容器内首个 img 即封面, 工作正确,
+      非阻塞(可加 .cover img/.item img 更精确, 但非 P0/P1)
+    - 其余 cover 选择器(div.pic img / a.img img / .pic img / .image img / div.cover img /
+      img.backcover / img.thumbnail / .book-cover-large img / div.book-img img 等)均精确锚定
+  · cover attr 检查: src/data-src/data-original/style(background-image) 各按源站实测配置
+    (biqugetw.ts:data-src 懒加载 / zxcs.ts:style 背景图 / 其余 src 直 SSR), 0 错配
+  · 字段名(name/author/intro/category)校准: 全 21 seed-rule 均与 runner/parser 消费
+    字段名对齐(name/author/intro/category/cover/status/latestChapter/wordCount/
+    latestChapterUrl/updateTime/title[toc+content 段用]/url[toc+content 段用]/content[content 段用])
+- 第六步 rule-templates.ts 默认值复核:
+  · 12 模板 maxPages 全 ≤ 30(biquge:20 / xpath:30 / regex:20 / api:20 / jsRender:1 /
+    fanqie:1 / qimao:20 / tlsImpersonate+hardWafCloak+trafilatura* 沿用 biquge:20)
+  · list 段 title 残留检查: rg list 内 "title:" 0 命中(R31-1C 已清, 0 残留)
+  · book/toc/content 段 title 段使用正确(toc 段章节标题 / content 段章节标题)
+- 第七步 验证:
+  · bun run lint: 0 errors / 13 warnings(全 admin/components useCallback exhaustive-deps
+    预存在警告, 与本轮无关) ✓
+  · bunx tsc --noEmit: 0 errors in src/(仅 examples/websocket(socket.io-client 缺失) +
+    skills/image-edit + skills/stock-analysis-skill 预存在错误, 与本轮无关) ✓
+  · bunx eslint scripts/seed-rule-bqg713.ts --no-ignore: 0 errors ✓
+  · bun build scripts/seed-rule-bqg713.ts: 通过 ✓
+  · bunx eslint src/components/public/clone-themes/ src/lib/crawl/rule-templates.ts: 0 errors ✓
+  · dev.log: 0 error/exception/fail ✓
+
+Stage Summary:
+- 完成 R32-1B clone-themes 残留 + seed-rule 残留校准审计
+- 修改文件: scripts/seed-rule-bqg713.ts(+5 -1, list 段 title→name 字段)
+  · 修复 P1 残留 bug: list 段 `title: { type: 'json', expression: 'title' }` → `name:` 字段
+    (parseList 按 name 入库, runner line 892 `it.fields.name` 消费 name 非 title;
+     R31-1C 已修 jpxs123 同型 bug, bqg713 漏改, 现 R32-1B 补修, 5 行 R32-1B 注释
+     含 R31-1C 同款理由说明)
+- 残留审计结论(无需改):
+  · 80 clone-themes 文件: 51 用 useCloneCategories hook, 30 子页无 hook 是合理设计
+    (子页源站无 categories sidebar 或固定 NAV_ITEMS, 详见 Work Log 第二步)
+  · 9 套 clone CSS 选择器命中率 30%~98%, 主要"缺失"为外部 iconfont(fa-*/icon-*) +
+    Bootstrap utility(clear/col-*) + Tailwind utility(h-full/w-full) + jQuery 插件(bx-*) +
+    源站 inline <style> 区块(huangjinwu hot-section 等), 均**非本轮可修复**(CSS 文件已是
+    源站 probe.css 同步快照, 源站本身规则缺失属上游问题)
+  · 21 个未触 seed-rule: maxPages 全 ≤ 30 / cover attr 全对齐 / 字段名全对齐
+- 历史修复全部保留(零回归):
+  · R28 useCloneCategories hook(51/81 文件) ✓
+  · R29-1D huangjinwu hook + cookieJar hostname 统一 + trafilatura typo 修复 ✓
+  · R29-FINAL 10 反反爬工具评估 ✓
+  · R30 智能分类归一化 ✓
+  · R31-1A 7 套主题 1:1 校准 + shipsay/huangjinwu 修复 ✓
+  · R31-1B 并发架构改造(crawlBookMeta/crawlChapterContent/finalizeBook 三阶段) ✓
+  · R31-1C 8 seed-rule maxPages + 字段名校准 ✓
+  · R31-1D huangjinwu/HomeClone 走 hook + mapCatWithBangSuffix ✓
+- 未修改(尊重约束):
+  · src/lib/crawl/fetcher.ts/obscura.ts/runner.ts(采集核心, A agent)
+  · page.tsx/PublicSite.tsx/HomeView.tsx/BookView.tsx(主控已改)
+  · themes.ts/prisma/schema.prisma/package.json(0 新依赖)
+  · 10 套 clone-themes 主题(无 P0/P1 残留)
+  · public/clone-css/*.css(源站 probe.css 同步快照, 上游问题)
+- 详细工作记录: agent-ctx/R32-1B-full-stack-developer.md(含 7 章节: 读交接/clone hook 检查/
+  DOM 对源站 probe 子页对比/CSS 选择器命中/seed-rule 残留校准/rule-templates 复核/验证)
+
+---
+Task ID: R32-1A
+Agent: full-stack-developer (采集第六轮+并发边缘)
+Task: runner 并发架构边缘 + fetcher/obscura/cleaner 第六轮
+
+Work Log:
+- 步骤 1 读交接(worklog.md 末 200 行 + R31-1B/R31-1D agent-ctx):
+  · R31-1B 并发架构: Semaphore 类 + crawlOneBook 拆 crawlBookMeta(阶段1) +
+    crawlChapterContent(阶段2 单章) + finalizeBook(阶段3 收尾), executeTask
+    串行 for 循环 → 三阶段并发架构
+  · R31-1D 第五轮: cookieJar 5 处主罐键统一 hostname format + huangjinwu
+    HomeClone hook 重构(R29-1D worklog 文档化但代码未改, R31-1D 真正落地)
+
+- 步骤 2 第六轮深度审查:
+  · runner.ts 并发架构边缘 case:
+    - Semaphore acquire FIFO/release 唤醒队首 ✓ (JS 单线程无竞态, 许可权转交正确)
+    - 阶段 1 Promise.all 批次循环: 单本失败隔离 ✓ / BudgetExceeded 上抛 ✓ /
+      在线调参 live DB ✓ / progress.tocTotal 全局累计 ✓
+    - 阶段 2 全局 chapter queue: 跨书归属 ✓ (bookDoneMap get+set 间无 await 原子) /
+      consecutiveErrs 跨书累计 ✓ / tt-c 熔断每批次末 ✓
+    - 阶段 3 finalizeBook 串行: 不影响性能 ✓ / 单本失败隔离 ✓ /
+      BudgetExceeded 防御性上抛 ✓
+    - progress 全局对象 ++ 原子 ✓ / rt Set/Map add/delete 原子 ✓
+    - **无 P0 bug**: 并发架构在 JS 单线程模型下无竞态/死锁/数据竞争
+  · fetcher.ts 第六轮: 8 级降级链完整(native→curl→curl-impersonate-bridge→
+    fetch-relay→scrapling-static→scrapling-stealthy→Obscura→uc-bridge→moli-bridge)
+    ✓ / cookieJar 5 处主罐键 hostname format(R31-1D)✓ / 副罐条件同域不建 ✓
+  · obscura.ts 第六轮: cookie 回写池管理边界 ✓ / 长时间运行无内存泄漏
+    (MAX_CONCURRENCY=2 上限 + scheduleReclaim 60s 心跳回收 + consecutiveFailures
+    3 次移除 slot)✓
+  · cleaner.ts 第六轮: trafilatura 三层降级链(先模式/兜底模式/cheerio 链)✓ /
+    60s 缓存边界 ✓ / 10MB HTML 上限 ✓ / U+2060 控制字符剥离 ✓
+  · types.ts concurrency 钳制: safeNum(r.concurrency, 1, 10) ✓ / DEFAULT_FETCH_CONFIG
+    无 concurrency 字段(runner 兜底 3)✓ / 与 hostGateLimit 正交 ✓
+
+- 步骤 3 修复 P1×4(均为 R31-1B 重构遗漏 + 原设计未实现):
+  · P1① urls 模式 bookQueue 去重(line 809-816):
+    修前 urlsList.slice() 保留重复 URL, 并发架构下: 两次 fetch 同书籍页 +
+    db.book.findFirst/create 竞态 P2002 + globalQueue 章节翻倍 + finalizeBook
+    调两次(booksDone 虚高 + fetchSuggestKeywords 重复 + db.book.update 重复写)
+    修后 Array.from(new Set(urlsList)), 与 range 模式 line 922 同口径
+  · P1② failedBookUrls 瞬态错误 add(catch 块 line 1070-1098):
+    R31-1B 重构 crawlOneBook → crawlBookMeta 时漏了 add 调用(只有 delete 路径),
+    修前 failedBookUrls 永远空集. 修后 isFetchTimeout/HostGateTimeout/other 三类
+    瞬态错误调 addToResumeSet(rt.failedBookUrls, bookUrl), AbortError 不 add
+    (非瞬态), 与 delete 路径对称
+  · P1③ skip-completed 路径 failedBookUrls.delete(line 1035-1045):
+    R31-1B 把 skip-completed 从 crawlOneBook 拆出到 batch callback 但漏了 delete
+    (incremental/cross-source/finalizeBook 都有, 唯独 skip-completed 漏). 修后
+    与其他 'ok' 返回路径同口径 rt.failedBookUrls.delete(bookUrl)
+  · P1④ failedBookUrls 跨重启恢复(line 778-787):
+    saveProgress(line 2441)落库 progress.failedBookUrls, 但 resume 路径只恢复
+    discovered/completed/ongoing/bookLastChapters 四项, 漏掉 failedBookUrls.
+    修前 rt.failedBookUrls 永远空集(初始化 new Set() at line 602), 配合 P1②
+    后形成"写而不读"断链. 修后按同口径恢复
+    rt.failedBookUrls = new Set(failed.filter(...)). full 模式不重置
+    failedBookUrls(跨轮保留语义), 与本轮恢复正交
+
+- 步骤 4 验证:
+  · bun run lint → 0 errors / 0 warnings exit 0 ✓
+  · bunx tsc --noEmit → 0 errors in src/ ✓ (排除 examples/skills 预存在错误)
+  · dev.log → Next.js 16.1.3 ready, GET / 200, 无报错 ✓
+
+- 步骤 5 P2 已知不修(非 P0/P1, 不值得):
+  · saveProgress 并发调用 lost-update(影响重启 resume Sets 少量条目, 非正确性
+    bug, 修需 per-task mutex 串行化减慢 phase 1, 不值得)
+  · trafilatura 60s 缓存首次失败 20s 超时(可接受降级时延)
+  · obscura cookieProvider domain 收窄(跨子域跳转需重建 slot, 设计如此)
+
+Stage Summary:
+- 完成 R32-1A 第六轮深度审查 + P1×4 修复, 共 ~+35 行净增(全在 runner.ts)
+- 修改文件: src/lib/crawl/runner.ts(+35 行, 4 处 P1 修复)
+- 核心审查结论:
+  · **无 P0 bug**: R31-1B 并发架构在 JS 单线程模型下无竞态/死锁/数据竞争.
+    Semaphore acquire/release 配对正确, Promise.all 批次循环错误隔离正确,
+    全局 chapter queue 跨书归属正确, finalizeBook 串行不影响性能,
+    BudgetExceeded/isCircuitBreak 上抛路径正确, 在线调参 live DB 读无竞态,
+    progress 全局对象 ++ 原子, rt Set/Map add/delete 原子
+  · fetcher 8 级降级链核心完整保留(curl-impersonate 接入后降级链无回归) ✓
+  · obscura 池管理/心跳回收/consecutiveFailures 移除 ✓ 无内存泄漏
+  · cleaner trafilatura 三层降级 + 60s 缓存 + 10MB 上限 + U+2060 剥离 ✓
+  · types.ts concurrency 钳制 [1,10] 与 hostGateLimit 正交 ✓
+- P1 修复×4(均为 R31-1B 重构遗漏 + 原设计未实现, 非新引入 bug):
+  · ① urls 模式 bookQueue 去重(并发架构下重复 URL 放大问题)
+  · ② failedBookUrls 瞬态错误 add(R31-1B 重构遗漏, 修前永远空集)
+  · ③ skip-completed 路径 failedBookUrls.delete(R31-1B 拆出遗漏)
+  · ④ failedBookUrls 跨重启恢复(原设计 saveProgress 写但 resume 不读, "写而
+    不读"断链, 配合 P1② 后才有数据可读)
+- 历史修复全部保留(零回归): R25-1A2/R25-1A3/R26-1A/R27-1A/R27-1B/R28-1A/
+  R28-1B/R28-1C/R29-1D/R30-1A/R31-1B/R31-1D 全部不动
+- R31-1B 并发架构核心不动: Semaphore 类 + crawlBookMeta/crawlChapterContent/
+  finalizeBook 三方法 + executeTask 三阶段 + BookMetaResult/BookMetaContext/
+  ChapterTask 类型 全保留(本轮只补 failedBookUrls add/delete/resume + urls 去重)
+- 验证: bun run lint 0 errors ✓ / bunx tsc --noEmit 0 errors in src/ ✓ /
+  dev.log 无报错 ✓
+- 未修改(尊重约束): src/components/public/*(前端) + page.tsx/PublicSite.tsx
+  (主控已改) + rule-templates/seed-rules(C agent 校准) + obscura.ts/fetcher.ts/
+  cleaner.ts/types.ts(本轮无 P0/P1 bug, 不动) + prisma/schema.prisma +
+  package.json(0 新依赖)
+- 详细工作记录: agent-ctx/R32-1A-full-stack-developer.md(含 7 章节: 读交接/
+  第六轮深度审查 5 模块/修复 P1×4/验证/修改文件清单/历史保留+零回归/审查结论)

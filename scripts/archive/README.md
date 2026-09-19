@@ -13,6 +13,13 @@
 
 移动方式：`git mv`（历史以 rename 保留）。归档前交叉引用核查：`src/`、`package.json`、`install.sh`、Dockerfile/compose 对以下文件**零功能性引用**（仅注释提及，注释路径已同步）。
 
+## R32-1C 轮归档（2 个，2026-09）
+
+| 文件 | 归档依据 |
+| --- | --- |
+| test-themes-r14.ts | R14 themes 计数验证一次性脚本（与 R28-1A 删除的 test-themes-9.ts 同口径，结论已沉淀进 R14 worklog） |
+| merge-categories.cjs | R30 normalizeCategory 18→15 合并的一次性 DB 迁移脚本（已应用，rules 库已迁移到 src/lib/crawl/smart.ts normalizeCategory 实时归一化） |
+
 ### e2e-* 端到端回归（9 个）— rr 轮曾定性「成熟真网回归资产」
 
 建任务→轮询≥3章→stop→逐章质量断言（字数/junk词/FFFD/控制字符/\u0000/base64）→删任务删书还原→DB 残余核对三段齐备。因均属 aa~hh 历史轮次（超出「近三轮保留」窗口）归档于此，**复跑前需按当轮 worklog 恢复对应 seed 规则**：

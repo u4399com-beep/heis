@@ -60,6 +60,7 @@ import {
   fmtDateTime,
   fmtNum,
   fmtWords,
+  useAliveRef,
   type BookListRow,
   type CategoryRow,
 } from './helpers'
@@ -103,15 +104,7 @@ export function BooksSection({ onGoDownload }: BooksSectionProps) {
 
   const SIZE = 20
   const seqRef = useRef(0)
-  const aliveRef = useRef(true)
-
-  // 挂载/重挂载时复位 aliveRef(StrictMode dev 下会 卸载→重挂载, 旧实现只设 false 不复位 → 卡 loading)
-  useEffect(() => {
-    aliveRef.current = true
-    return () => {
-      aliveRef.current = false
-    }
-  }, [])
+  const aliveRef = useAliveRef()
 
   // 搜索防抖: 避免每次按键都发请求, 同时降低旧响应覆盖新结果的概率
   useEffect(() => {
@@ -146,7 +139,7 @@ export function BooksSection({ onGoDownload }: BooksSectionProps) {
     } finally {
       if (aliveRef.current && seq === seqRef.current) setLoading(false)
     }
-  }, [page, q, categoryId, status])
+  }, [page, q, categoryId, status, aliveRef])
 
   // feat: 客户端排序 — API 仅支持 updatedAt desc, 其余排序维度在客户端做(单页 20 行, 开销极低)
   const sortedRows = useMemo(() => {

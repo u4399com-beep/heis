@@ -16,7 +16,7 @@
 //     展示所有捕获组与匹配位置; 用户在写规则时即时反馈而无需走完整测试面板
 //   - 表达式输入框旁边增加"常用选择器片段"快捷按钮(og:title meta / .chapter-list a 等)
 // ============================================================
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -52,7 +52,7 @@ import {
   Eye,
 } from 'lucide-react'
 import { toast } from 'sonner'
-import { api, type CleanConfig, type DebugMatch, type FetchConfig, type FieldRule, type PageRule, type RuleSection, type RuleTestResult } from './helpers'
+import { api, useAliveRef, type CleanConfig, type DebugMatch, type FetchConfig, type FieldRule, type PageRule, type RuleSection, type RuleTestResult } from './helpers'
 import { DebugHtmlViewer } from './DebugHtmlViewer'
 
 interface FieldRuleEditorProps {
@@ -373,17 +373,9 @@ function FieldTestButton({ label, fieldKey, testContext }: FieldTestButtonProps)
     totalMatches: 0,
     showDebug: false,
   })
-  const aliveRef = useRef(true)
+  const aliveRef = useAliveRef()
   // 测试 URL 输入框(预填 testContext.defaultUrl, 用户可改)
   const [url, setUrl] = useState(testContext.defaultUrl || '')
-
-  // 挂载/重挂载时复位 aliveRef(与 TestPanel 同款 StrictMode 兼容做法)
-  useEffect(() => {
-    aliveRef.current = true
-    return () => {
-      aliveRef.current = false
-    }
-  }, [])
 
   // 注: 不在 effect 中同步 defaultUrl → url(避免 set-state-in-effect 反模式);
   // 改在 Popover 打开时刷新(handleOpenChange), 关闭时保留用户编辑过的 URL

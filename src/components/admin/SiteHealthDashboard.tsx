@@ -17,7 +17,7 @@ import { Badge } from '@/components/ui/badge'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Globe, HeartPulse, Loader2, RefreshCw, ShieldCheck, TriangleAlert } from 'lucide-react'
 import { toast } from 'sonner'
-import { api, fmtDateTime, type SiteRow } from './helpers'
+import { api, fmtDateTime, useAliveRef, type SiteRow } from './helpers'
 
 interface SiteProbe {
   siteId: string
@@ -49,15 +49,8 @@ export function SiteHealthDashboard({ autoRefreshMs = 60_000 }: SiteHealthDashbo
   const [probes, setProbes] = useState<Record<string, SiteProbe>>({})
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
-  const aliveRef = useRef(true)
+  const aliveRef = useAliveRef()
   const seqRef = useRef(0)
-
-  useEffect(() => {
-    aliveRef.current = true
-    return () => {
-      aliveRef.current = false
-    }
-  }, [])
 
   // 拉取站点列表
   const loadSites = useCallback(async () => {
@@ -182,7 +175,7 @@ export function SiteHealthDashboard({ autoRefreshMs = 60_000 }: SiteHealthDashbo
     } finally {
       if (aliveRef.current && seq === seqRef.current) setRefreshing(false)
     }
-  }, [sites, probeOne])
+  }, [sites, probeOne, aliveRef])
 
   // 首次加载 + 自动刷新
   useEffect(() => {

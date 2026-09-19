@@ -45,6 +45,7 @@ import {
   fmtDateTime,
   fmtNum,
   fmtWords,
+  useAliveRef,
   type BookDetailData,
   type BookTagRow,
   type CategoryRow,
@@ -108,18 +109,10 @@ export function BookDetail({ bookId, onClose, onChanged }: BookDetailProps) {
       return n
     })
 
-  const aliveRef = useRef(true)
+  const aliveRef = useAliveRef()
   const bookSeqRef = useRef(0)
   const tocSeqRef = useRef(0)
   const chSeqRef = useRef(0)
-
-  // 挂载/重挂载时复位 aliveRef(StrictMode dev 下会 卸载→重挂载, 旧实现只设 false 不复位 → 卡 loading)
-  useEffect(() => {
-    aliveRef.current = true
-    return () => {
-      aliveRef.current = false
-    }
-  }, [])
 
   // seq 卫: 快速关开切换不同书籍时, 旧书的慢响应不得覆盖新书的表单(与 loadToc 同款防线)
   const loadBook = useCallback(async (id: string) => {
@@ -139,7 +132,7 @@ export function BookDetail({ bookId, onClose, onChanged }: BookDetailProps) {
     } catch (e) {
       toast.error(e instanceof Error ? e.message : '加载书籍详情失败')
     }
-  }, [])
+  }, [aliveRef])
 
   const loadToc = useCallback(async (id: string, page: number) => {
     const seq = ++tocSeqRef.current
@@ -165,7 +158,7 @@ export function BookDetail({ bookId, onClose, onChanged }: BookDetailProps) {
     } finally {
       if (aliveRef.current && seq === tocSeqRef.current) setTocLoading(false)
     }
-  }, [])
+  }, [aliveRef])
 
   useEffect(() => {
     if (!bookId) {

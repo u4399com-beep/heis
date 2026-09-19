@@ -8,7 +8,7 @@
 // 数据源: /api/admin/rules (规则列表), /api/admin/tasks (创建 + 控制 + 状态轮询)
 // 不修改任何 API; 仅复用现有 POST/PUT/control 接口
 // ============================================================
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Dialog,
   DialogContent,
@@ -43,7 +43,7 @@ import {
   Zap,
 } from 'lucide-react'
 import { toast } from 'sonner'
-import { api, type RuleRow } from './helpers'
+import { api, useAliveRef, type RuleRow } from './helpers'
 
 interface QueueItem {
   /** 客户端临时 id (UUID 不必要, 简单计数器) */
@@ -107,14 +107,7 @@ export function BatchTaskScheduler({ open, onOpenChange, preselectRuleId, onCrea
   const [busy, setBusy] = useState(false)
   // 链执行: 失败后是否中止(true) 还是继续后续无依赖任务(false, 缺省)
   const [abortOnFail, setAbortOnFail] = useState(false)
-  const aliveRef = useRef(true)
-
-  useEffect(() => {
-    aliveRef.current = true
-    return () => {
-      aliveRef.current = false
-    }
-  }, [])
+  const aliveRef = useAliveRef()
 
   // 打开时拉规则列表, 首条预填 (来自 preselectRuleId)
   useEffect(() => {
@@ -268,7 +261,7 @@ export function BatchTaskScheduler({ open, onOpenChange, preselectRuleId, onCrea
       }
     }
     return 'error'
-  }, [fetchStatus])
+  }, [fetchStatus, aliveRef])
 
   // 执行链: 按依赖序依次创建 + 启动 + 等待
   const runChain = useCallback(async () => {
@@ -333,7 +326,7 @@ export function BatchTaskScheduler({ open, onOpenChange, preselectRuleId, onCrea
     } finally {
       setBusy(false)
     }
-  }, [validation, sortedByDependency, createOne, controlOne, waitForTerminal, patchItem, abortOnFail, onCreated])
+  }, [validation, sortedByDependency, createOne, controlOne, waitForTerminal, patchItem, abortOnFail, onCreated, aliveRef])
 
   const close = useCallback(() => {
     onOpenChange(false)

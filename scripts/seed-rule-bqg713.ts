@@ -72,7 +72,10 @@ const rule: RuleSeed = {
       itemSelector: { type: 'json', expression: 'hotlist,sort1,sort2,sort3,sort4,sort5,sort6' },
       fields: {
         id: { type: 'json', expression: 'id' },
-        title: { type: 'json', expression: 'title' },
+        // R32-1B: 字段名应为 'name'(parseList 按 name 入库, 原 'title' 不被引擎消费→
+        //   list 阶段取不到书名, 只能等 book 段补; 改为 name 后 list 段即可展示书名;
+        //   R31-1C 已修 jpxs123 同型 bug, 本规则同源笔趣阁系残留, 一并校准)
+        name: { type: 'json', expression: 'title' },
         author: { type: 'json', expression: 'author' },
         intro: { type: 'json', expression: 'intro' },
         // bookUrl 存书籍API URL(fetcher可直接抓到JSON), 不存SPA hash URL(#/book/{id} 抓回空壳)

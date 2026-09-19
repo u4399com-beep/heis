@@ -38,6 +38,7 @@ import {
   fmtDateTime,
   fmtNum,
   safeJsonParse,
+  useAliveRef,
   type BookListRow,
   type DownloadJobRow,
 } from './helpers'
@@ -98,15 +99,7 @@ export function DownloadsSection({ preselectBookId, onConsumedPreselect }: Downl
   const [batchRunning, setBatchRunning] = useState(false)
   const [batchConfirmOpen, setBatchConfirmOpen] = useState(false)
   const jobsPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const aliveRef = useRef(true)
-
-  // 挂载/重挂载时复位 aliveRef(StrictMode dev 下会 卸载→重挂载, 旧实现只设 false 不复位 → 卡 loading)
-  useEffect(() => {
-    aliveRef.current = true
-    return () => {
-      aliveRef.current = false
-    }
-  }, [])
+  const aliveRef = useAliveRef()
 
   const loadBooks = useCallback(async (q?: string) => {
     try {
@@ -116,7 +109,7 @@ export function DownloadsSection({ preselectBookId, onConsumedPreselect }: Downl
     } catch {
       if (aliveRef.current) setBooks([])
     }
-  }, [])
+  }, [aliveRef])
 
   const loadJobs = useCallback(async (silent = false) => {
     try {
@@ -126,7 +119,7 @@ export function DownloadsSection({ preselectBookId, onConsumedPreselect }: Downl
     } catch (e) {
       if (!silent && aliveRef.current) toast.error(e instanceof Error ? e.message : '加载下载任务失败')
     }
-  }, [])
+  }, [aliveRef])
 
   const loadSiteDefaults = useCallback(async () => {
     try {
@@ -138,7 +131,7 @@ export function DownloadsSection({ preselectBookId, onConsumedPreselect }: Downl
     } catch {
       /* 忽略 */
     }
-  }, [])
+  }, [aliveRef])
 
   useEffect(() => {
     loadBooks()
