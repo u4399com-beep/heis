@@ -72,3 +72,9 @@ tmp-shots/
 
 # tt 轮: .env.example 模板保留入库(.env* 规则的例外)
 !.env.example
+
+# R30: 临时文件
+.zscripts/
+__pycache__/
+*.pyc
+*.pid

@@ -13187,3 +13187,43 @@ Stage Summary:
 - 择优集成: curl-impersonate (TLS指纹, 性价比最高) + Trafilatura (正文提取, 性价比最高)
 - 验证: 2 mini-service 启动正常 + curlCffi/trafilatura 可用 + lint/tsc 0 errors
 - R29-1D: cookieJar 键统一 + huangjinwu hook + typo 修复
+
+---
+Task ID: R30-1A
+Agent: 主控 (智能分类优化+同类合并)
+Task: 用户要求优化智能分类, 避免生成过多分类名称, 需要进行同类合并
+
+Work Log:
+- 步骤 1 现状排查:
+  · DB Category 表 18 个分类, 有 3 个同类重复: "玄幻"+"玄幻小说"(重复), "历史军事"+"历史"+"军事"(历史军事应合并), "都市娱乐"+"都市"(重复)
+  · smart.ts matchCategoryByText 14 类关键词 + smartCategory source 分支用 `sc.includes(n) || n.includes(sc.slice(0,2))` 模糊匹配 — 无同类合并逻辑, 源站"玄幻小说"会创建重复分类
+  · 分类创建点: runner.ts:1202(采集 upsert) + admin/books:55(手动 upsert) + admin/categories:24
+
+- 步骤 2 smart.ts 优化 (核心):
+  · 新增 CATEGORY_ALIASES 60+ 变体 → 标准 14 分类映射 (玄幻小说/玄幻魔法/魔幻→玄幻, 都市娱乐/都市异能→都市, 历史军事/古代/架空历史→历史, 言情小说/总裁豪门/甜宠→言情, 仙侠小说/修真/修仙→仙侠, 武侠小说/传统武侠→武侠, 奇幻小说/西方奇幻→奇幻, 军事小说/战争/抗战→军事, 游戏小说/网游/电竞→游戏, 科幻小说/末世危机/机甲→科幻, 悬疑推理/推理/侦探→悬疑, 灵异鬼怪/盗墓/恐怖→灵异, 体育竞技/竞技/足球→体育, 轻文/日本轻小说→轻小说, 现实生活/职场/商战→现实)
+  · 新增 normalizeCategory(name) 函数: 1.精确别名命中 2.标准分类直接返回 3.模糊(长名 includes 短标准) 4.无法合并返回原名
+  · matchCategoryByText: existingCategories 归一化后匹配, 避免重复命中
+  · smartCategory source 分支: normalizeCategory(sourceCategory) 后匹配, 避免源站"玄幻小说"创建重复
+  · smartCategory LLM 分支: normalizeCategory(answer) 归一化 LLM 返回
+
+- 步骤 3 采集创建点归一化:
+  · runner.ts:1192 加 `if (categoryName) categoryName = normalizeCategory(categoryName)` — 采集 upsert 前归一化
+  · admin/books/route.ts:55 改用 `normalizeCategory(str(body?.categoryName, 50))` — 手动新增归一化
+  · runner.ts import 加 normalizeCategory
+
+- 步骤 4 DB 现有重复清理:
+  · scripts/merge-categories.cjs: 查所有分类 → normalizeCategory → 变体迁移 books.categoryId 到标准 → 删除变体
+  · 运行结果: 18 个分类 → 15 个标准分类
+  · 删除: "历史军事"→"历史"(0本迁移), "玄幻小说"→"玄幻"(0本迁移), "都市娱乐"→"都市"(0本迁移)
+  · 保留: 玄幻/奇幻/武侠/仙侠/都市/言情/历史/军事/游戏/科幻/悬疑/灵异/体育/轻小说/现实 (15 个标准)
+
+- 步骤 5 验证:
+  · bun run lint: 0 errors ✓
+  · bunx tsc --noEmit: 0 errors ✓
+  · DB 合并: 18 → 15 分类 ✓
+
+Stage Summary:
+- smart.ts 加 CATEGORY_ALIASES(60+ 变体) + normalizeCategory 函数, 从源头避免生成过多分类
+- runner.ts + admin/books 创建点归一化, 采集/手动新增都用标准分类
+- DB 清理: 18 → 15 分类, 删除 3 个变体(历史军事/玄幻小说/都市娱乐)
+- 效果: 未来采集源站分类名"玄幻小说"/"都市娱乐"/"历史军事"等会自动归一化到标准"玄幻"/"都市"/"历史", 不再创建重复分类

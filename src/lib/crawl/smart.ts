@@ -5,6 +5,7 @@
 import { db } from '@/lib/db'
 
 // ---------------- 智能分类 ----------------
+// 标准 14 分类 (基准, 其他变体合并到这些)
 const CATEGORY_KEYWORDS: [string, string[]][] = [
   ['玄幻', ['玄幻', '修罗', '斗气', '魔法学院', '异界', '大陆', '废材', '逆天', '神帝', '武魂']],
   ['奇幻', ['奇幻', '史诗', '骑士', '法师', '精灵', '龙族', '矮人', '魔兽']],
@@ -23,16 +24,84 @@ const CATEGORY_KEYWORDS: [string, string[]][] = [
   ['现实', ['现实', '职场', '创业', '商战', '生活', '家庭', '医生', '教师']],
 ]
 
+// R30: 同类合并映射 — 源站分类名多样("玄幻小说"/"都市娱乐"/"历史军事"等),
+// 直接创建会导致重复分类。本映射将变体合并到标准 14 分类, 避免生成过多分类名称
+const CATEGORY_ALIASES: Record<string, string> = {
+  // 玄幻
+  '玄幻小说': '玄幻', '玄幻魔法': '玄幻', '魔幻': '玄幻', '魔幻玄幻': '玄幻',
+  '异界大陆': '玄幻', '异世大陆': '玄幻', '东方玄幻': '玄幻', '异界幻想': '玄幻',
+  // 奇幻
+  '奇幻小说': '奇幻', '西方奇幻': '奇幻', '史诗奇幻': '奇幻', '奇幻魔法': '奇幻',
+  // 武侠
+  '武侠小说': '武侠', '传统武侠': '武侠', '新武侠': '武侠', '武侠仙侠': '武侠',
+  // 仙侠
+  '仙侠小说': '仙侠', '修真': '仙侠', '修仙': '仙侠', '古典仙侠': '仙侠', '现代仙侠': '仙侠',
+  '幻想仙侠': '仙侠',
+  // 都市
+  '都市娱乐': '都市', '都市异能': '都市', '都市生活': '都市', '都市言情': '都市',
+  '现代都市': '都市', '都市职业': '都市', '青春都市': '都市', '都市青春': '都市',
+  // 言情
+  '言情小说': '言情', '现代言情': '言情', '古代言情': '言情', '总裁豪门': '言情',
+  '甜宠': '言情', '豪门': '言情', '婚恋': '言情', '青春言情': '言情',
+  // 历史
+  '历史军事': '历史', '历史小说': '历史', '穿越历史': '历史', '古代': '历史',
+  '架空历史': '历史', '历史架空': '历史', '两宋元明': '历史', '历朝历代': '历史',
+  // 军事
+  '军事小说': '军事', '战争': '军事', '抗战': '军事', '军旅': '军事', '军事战争': '军事',
+  // 游戏
+  '游戏小说': '游戏', '网游': '游戏', '电竞': '游戏', '虚拟网游': '游戏', '游戏竞技': '游戏',
+  // 科幻
+  '科幻小说': '科幻', '末世危机': '科幻', '星际科幻': '科幻', '机甲': '科幻',
+  '未来科技': '科幻', '科幻末世': '科幻',
+  // 悬疑
+  '悬疑推理': '悬疑', '推理': '悬疑', '侦探': '悬疑', '恐怖悬疑': '悬疑', '刑侦': '悬疑',
+  // 灵异
+  '灵异鬼怪': '灵异', '鬼怪': '灵异', '盗墓': '灵异', '恐怖': '灵异', '诡异': '灵异',
+  // 体育
+  '体育竞技': '体育', '竞技': '体育', '足球': '体育', '篮球': '体育', '体育运动': '体育',
+  // 轻小说
+  '轻文': '轻小说', '日本轻小说': '轻小说',
+  // 现实
+  '现实生活': '现实', '职场': '现实', '商战': '现实', '社会': '现实', '现实主义': '现实',
+}
+
+/**
+ * R30: 归一化分类名 — 将源站分类变体合并到标准 14 分类
+ * 避免生成过多分类名称("玄幻小说"/"都市娱乐"/"历史军事"等 → "玄幻"/"都市"/"历史")
+ * 1. 精确别名命中 → 返回标准分类
+ * 2. 标准 14 分类直接返回
+ * 3. 模糊: 源站分类名包含标准分类名 → 合并 ("玄幻魔法" includes "玄幻" → "玄幻")
+ * 4. 无法合并 → 返回原名(让 LLM/关键词兜底)
+ */
+export function normalizeCategory(name: string): string {
+  const n = (name || '').trim()
+  if (!n) return ''
+  // 1. 精确别名命中
+  if (CATEGORY_ALIASES[n]) return CATEGORY_ALIASES[n]
+  // 2. 标准分类直接返回
+  const stdNames = CATEGORY_KEYWORDS.map(([n]) => n)
+  if (stdNames.includes(n)) return n
+  // 3. 模糊: 源站分类名包含标准分类名 → 合并 (长名合并到短标准)
+  //    例: "都市娱乐" includes "都市" → "都市"; "玄幻魔法" includes "玄幻" → "玄幻"
+  for (const std of stdNames) {
+    if (n.length > std.length && n.includes(std)) return std
+  }
+  // 4. 无法合并, 返回原名(让上层 LLM/关键词兜底)
+  return n
+}
+
 export function matchCategoryByText(text: string, existingCategories?: string[]): string | null {
   const t = (text || '').slice(0, 3000)
   if (!t) return null
-  // 1. 直接命中已有分类名
+  // 1. 直接命中已有分类名 (R30: 归一化后匹配, 避免"玄幻"+"玄幻小说"都命中)
   if (existingCategories?.length) {
-    for (const c of existingCategories) {
+    // 优先匹配标准分类(归一化后的), 再匹配原名
+    const normalized = existingCategories.map(normalizeCategory)
+    for (const c of normalized) {
       if (t.includes(c)) return c
     }
   }
-  // 2. 关键词评分
+  // 2. 关键词评分 (只返回标准 14 分类)
   let best: { name: string; score: number } | null = null
   for (const [name, kws] of CATEGORY_KEYWORDS) {
     let score = 0
@@ -53,10 +122,10 @@ export async function smartCategory(
   const cats = await db.category.findMany({ orderBy: { sortOrder: 'asc' } })
   const names = cats.map((c) => c.name)
 
-  // 1. 来源站点自带分类
+  // 1. 来源站点自带分类 (R30: 归一化合并, 避免源站"玄幻小说"创建重复分类)
   if (sourceCategory) {
-    const sc = sourceCategory.trim()
-    const hit = names.find((n) => n === sc || sc.includes(n) || n.includes(sc.slice(0, 2)))
+    const normalized = normalizeCategory(sourceCategory.trim())
+    const hit = names.find((n) => n === normalized)
     if (hit) return { category: hit, method: 'source' }
   }
 
@@ -89,7 +158,9 @@ export async function smartCategory(
         timeoutP,
       ])
       const answer = (res.choices?.[0]?.message?.content || '').trim()
-      const hit = names.find((n) => answer.includes(n))
+      // R30: LLM 返回也归一化, 避免返回"玄幻小说"创建重复
+      const normalizedAnswer = normalizeCategory(answer)
+      const hit = names.find((n) => n === normalizedAnswer || answer.includes(n))
       if (hit) return { category: hit, method: 'llm' }
     } finally {
       // LLM 早返回(success/异常)立即清 timer, 不再挂 15s 才 fire

@@ -15,7 +15,7 @@ import { parseList, parseBook, parseToc, parseContent, parseJsonBody, absolutize
 import { cleanContentHtml, cleanContentHtmlAsync, cleanIntro, cleanChapterTitle, cleanTextField, tryTrafilaturaExtract, contentPlainTextLength } from './cleaner'
 import { reorderToc } from './sorter'
 import { saveChapterTxt, saveCoverWebp, deleteBookTxt, ensureDirs } from './storage'
-import { smartCategory, smartCompleteDetect } from './smart'
+import { smartCategory, smartCompleteDetect, normalizeCategory } from './smart'
 import { fetchSuggestKeywords, mergeSuggestWords } from './suggest'
 
 type ControlAction = 'start' | 'pause' | 'stop'
@@ -1188,6 +1188,8 @@ export class TaskRunner {
         await this.log(taskId, 'info', `智能分类[${sm.method}]: ${bookName} → ${sm.category}`)
       }
     }
+    // R30: 归一化分类名, 避免源站"玄幻小说"/"都市娱乐"/"历史军事"等创建重复分类
+    if (categoryName) categoryName = normalizeCategory(categoryName)
     let categoryId: string | null = null
     if (categoryName) {
       // R4-9: category.upsert 在并行任务创建同名分类时 @@unique(name) 冲突 P2002;

@@ -2,6 +2,7 @@
 import { db } from '@/lib/db'
 import { ok, fail, readBody } from '@/lib/api'
 import { withGuard, str, likeSafe, httpUrl, clampInt } from '../../_lib/http'
+import { normalizeCategory } from '@/lib/crawl/smart'
 
 const BOOK_STATUSES = ['unknown', 'ongoing', 'completed'] as const
 
@@ -50,7 +51,8 @@ export async function POST(req: Request) {
       const cat = await db.category.findUnique({ where: { id: categoryId } })
       if (!cat) return fail('所选分类不存在', 404)
     } else {
-      const categoryName = str(body?.categoryName, 50).trim()
+      // R30: 归一化分类名, 避免手动输入"玄幻小说"等变体创建重复分类
+      const categoryName = normalizeCategory(str(body?.categoryName, 50).trim())
       if (categoryName) {
         const cat = await db.category.upsert({
           where: { name: categoryName },
