@@ -255,6 +255,13 @@ export interface FetchConfig {
   /** scrapling 桥地址(fetchMode=scrapling-* 时生效), 缺省 http://127.0.0.1:3012
    *  (可用环境变量 SCRAPLING_BRIDGE_URL 改全局缺省); 桥服务见 mini-services/scrapling-bridge */
   scraplingBridgeUrl?: string
+  /**
+   * R29-1C: trafilatura 桥地址(rule.clean.useTrafilatura=true 或 trafilaturaFallback=true
+   * 时生效), 缺省 http://127.0.0.1:3019(可用环境变量 TRAFILATURA_BRIDGE_URL 改全局缺省);
+   * 桥服务见 mini-services/trafilatura-bridge(R29-1C 新增)。
+   * 仅 http(s):// 形态 + ≤300 字符(safeSingleLine 钳制)。
+   */
+  trafilaturaBridgeUrl?: string
   /** agent-H-features(请求预算上限): 单任务 HTTP 请求总预算上限, 0/未设=不限。
    *  正常值范围 100~1_000_000(整数); runner.gateFetch 每次入口检查 requestCount > maxRequests
    *  即抛 BudgetExceeded 终止任务, 防失控脚本/递归 mirror 域烧站点/IP。
@@ -379,6 +386,38 @@ export interface FetchConfig {
    *  与 inflightMap(在途去重) 互补: inflightMap 合并并发请求为单次, responseCache
    *  合并 TTL 内串行请求为单次。多任务采集同站目录页/书籍页时显著降负载。 */
   responseCacheTtlMs?: number
+  // ---------- R29-1A/R29-1B: 反反爬工具择优集成字段(均可选, 缺省零回归) ----------
+  /** R29-1A: curl-impersonate 二进制级 TLS 指纹模拟 profile(可选)。
+   *  'chrome' / 'firefox' / 'safari' / undefined。配置后 fetchViaCurl 在二进制可寻时
+   *  切换 spawn 目标为 curl-impersonate-{profile}(lwthiker/curl-impersonate C 编译版,
+   *  替换 OpenSSL 为 BoringSSL+nghttp2, 完整模拟目标浏览器 TLS ClientHello / JA3/JA4
+   *  指纹 + HTTP/2 SETTINGS 帧 + 头组顺序); 不可寻时静默降级到系统 curl(零回归)。
+   *  与 R29-1B 的 curl-impersonate-bridge(端口 3018, Python curl_cffi 绑定)互补:
+   *  本字段走二进制级集成(轻量, 4GB 沙箱友好), R29-1B 走库级集成(细版本控制,
+   *  curl_cffi 提供 chrome99~131/firefox102~120/safari15_3~17_2_ios 精确版本号)。
+   *  两者均能绕过 JA3-strict WAF, R29-1A 优先(二进制可寻时), R29-1B 兜底(二进制
+   *  不可寻时由 fetcher.ts fetchHttpWithCurlSingle 在 curl 失败后自动调用桥降级) */
+  curlImpersonateProfile?: 'chrome' | 'firefox' | 'safari'
+  /** R29-1A: cloak-browser 桥地址(fetchMode='cloak-browser' 时生效)。
+   *  缺省 http://127.0.0.1:3020 (mini-services/cloak-browser, puppeteer-extra +
+   *  stealth plugin 3-tier 隐身: lite/standard/maximum; 与 scrapling-stealthy/
+   *  uc-bridge/Obscura 互补, 作为 fetchMode 显式 opt-in 通道, 不参与 native 8 级降级链) */
+  cloakBrowserUrl?: string
+  /** R29-1A: cloak-browser 隐身档位(fetchMode='cloak-browser' 时生效)。
+   *  - 'lite' (缺省): 仅 puppeteer-extra-stealth 基础隐身(低安全站点)
+   *  - 'standard': + canvas/audio noise + WebGL spoof + CDP UA override(CF 站点)
+   *  - 'maximum': + request interception + font/screen color + hardware concurrency
+   *               + device memory + IMEI-like device ID(hard WAF: hetushu/shucong) */
+  cloakTier?: 'lite' | 'standard' | 'maximum'
+  /** R29-1A: trafilatura 正文提取桥地址(R29-1A "兜底"模式用, 与 R29-1C useTrafilatura
+   *  "先"模式互补)。缺省 http://127.0.0.1:3019 (mini-services/trafilatura-bridge,
+   *  纯 Python + lxml, ~10MB RSS, 4GB 沙箱友好)。仅当 cfg.clean.trafilaturaFallback=true
+   *  时启用。配置后 cleaner 在标准 CSS/XPath 清洗产出过短(<200 字符)且原 HTML 较长
+   *  (>2KB)时, 调本桥做规则无关兜底; 桥结果 >2x cleaner 结果才采纳(防误判)
+   *  R29-1D: 修复端口 3019(原注释误写 3021, 实际 trafilatura-bridge 占用 3019) */
+  // 注: 本字段与 line 264 的 trafilaturaBridgeUrl 重复(R29-1C 已在 line 264 定义),
+  // R29-1D 修复去重: 删除本重复定义, 统一用 line 264 的版本(语义一致, 仅注释口径不同)
+  // trafilaturaBridgeUrl?: string
 }
 
 /**
@@ -403,6 +442,40 @@ export interface CleanConfig {
   bannedWords?: string[]
   /** R7-26: 违禁词处理方式: skip=跳过全书(默认) / mask=替换为***继续 */
   bannedAction?: 'skip' | 'mask'
+  /**
+   * R29-1C: Trafilatura 正文提取接入(可选, 默认 false=关闭)
+   * - true 时 cleanContentHtml 入口先调 trafilatura-bridge(端口 3019)做正文提取,
+   *   由 Trafilatura 算法自动剥离广告/导航/侧栏/友链/水印段, 输出干净文本;
+   *   cleaner 再把 trafilatura 输出文本喂入既有 plainText 段落规整链(removeAdLines +
+   *   缩进规整 + 控制字符剥离 + 繁简转换), 跳过 cheerio DOM 剥壳阶段(已剥离干净)
+   * - false 时走原 cheerio DOM 剥壳链(removeSelectors + adPatterns + 白名单剥壳 +
+   *   段落规整), 与 R29-1C 之前完全一致(零回归)
+   * - 桥不可达/桥内异常/提取空文本 → 自动降级回 cheerio 链(零回归)
+   * - 适用: 结构复杂/无清晰容器/混杂标签的源站 — Trafilatura 段落分类算法优于
+   *   手动 CSS 选择器; 简单源站建议保持 false(cheerio 链更可控)
+   */
+  useTrafilatura?: boolean
+  /**
+   * R29-1C: Trafilatura pruneXPath 列表(可选)
+   * - 在 trafilatura 正文提取前从 DOM 删除这些 XPath 节点(与 removeSelectors 互补:
+   *   removeSelectors 在 cheerio DOM 阶段剥, pruneXPath 在 trafilatura 算法阶段剥)
+   * - 仅当 useTrafilatura=true 时生效; 不配则传空给 trafilatura
+   * - 例: ['//div[@class="ad"]', '//nav'] — 删广告与导航后再做正文提取
+   * - 上限: 单条 ≤200 字符, 总数 ≤30 条(safeStrArr 30/200 闸门同 removeSelectors)
+   */
+  trafilaturaPruneXPath?: string[]
+  /**
+   * R29-1A → R29-1C 修复: Trafilatura 兜底模式(可选, 默认 false=关闭)
+   * - 与 useTrafilatura(先模式) 互补: trafilaturaFallback=true 时, runner 在 sync
+   *   cleanContentHtml 后, 若结果过短(<200 字符)且原 HTML 较长(>2KB), 调本桥做规则
+   *   无关兜底; 桥结果 >2x cleaner 结果才采纳(防误判)
+   * - 适合: 规则选择器易失效的站点(源站改版频繁/反爬诱饵内容); 不适合: 结构清晰的
+   *   站点(直接用 useTrafilatura=true 走 trafilatura first)
+   * - R29-1A 原字段名 trafilaturaFallback(拼写错误 "o" 非 "i") — R29-1C 修正为
+   *   trafilaturaFallback(拼写正确); 既有规则配置的旧字段名 trafilaturaFallback
+   *   在 sanitize 层不再被识别(自动 fallback 为 false, 零回归)
+   */
+  trafilaturaFallback?: boolean
 }
 
 /** 完整规则配置 */
@@ -474,6 +547,11 @@ export const DEFAULT_CLEAN_CONFIG: CleanConfig = {
   whitelist: ['p', 'br', 'b', 'strong', 'em', 'i', 'u', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'],
   normalize: true,
   plainText: false,
+  // R29-1C: Trafilatura 默认关闭(零回归; 仅特定规则模板/手动开启时使用)
+  useTrafilatura: false,
+  trafilaturaPruneXPath: undefined,
+  // R29-1A → R29-1C: 兜底模式默认关闭
+  trafilaturaFallback: false,
 }
 
 export function defaultRuleConfig(): RuleConfig {
@@ -835,6 +913,14 @@ export function sanitizeFetchConfig(v: unknown): Partial<FetchConfig> {
   if (scraplingBridgeUrlRaw !== undefined) {
     const scraplingBridgeUrl = safeSingleLine(scraplingBridgeUrlRaw)
     if (scraplingBridgeUrl && /^https?:\/\/\S+$/i.test(scraplingBridgeUrl)) out.scraplingBridgeUrl = scraplingBridgeUrl
+  }
+  // R29-1C: trafilatura 桥地址 — 同 scraplingBridgeUrl 同口径消毒
+  // (http(s) URL + ≤300 字符 + 单行化; 用于 rule.clean.useTrafilatura=true 或
+  // trafilaturaFallback=true 时桥定位; 缺省走 TRAFILATURA_BRIDGE_URL env / 3019)
+  const trafilaturaBridgeUrlRaw = safeStr(r.trafilaturaBridgeUrl, 300)
+  if (trafilaturaBridgeUrlRaw !== undefined) {
+    const trafilaturaBridgeUrl = safeSingleLine(trafilaturaBridgeUrlRaw)
+    if (trafilaturaBridgeUrl && /^https?:\/\/\S+$/i.test(trafilaturaBridgeUrl)) out.trafilaturaBridgeUrl = trafilaturaBridgeUrl
   }
   // agent-H-features(请求预算): maxRequests 钳制 [100, 1_000_000], 0/未设=不限;
   // runner.gateFetch 检查 requestCount > maxRequests 抛 BudgetExceeded 终止任务
@@ -1248,6 +1334,14 @@ export function sanitizeCleanConfig(v: unknown): CleanConfig | undefined {
     plainText: safeBool(r.plainText) ?? false,
     bannedWords: safeStrArr(r.bannedWords, 200, 50) ?? undefined,
     bannedAction: r.bannedAction === 'mask' ? 'mask' : 'skip',
+    // R29-1C: Trafilatura 接入开关 + pruneXPath 列表消毒
+    // safeBool 仅接受真布尔(防 "false" 字符串恒真); 不配则 undefined → cleaner
+    // 走 safeBool ?? false 即 cheerio 链(零回归)
+    useTrafilatura: safeBool(r.useTrafilatura) ?? false,
+    trafilaturaPruneXPath: safeStrArr(r.trafilaturaPruneXPath, 30, 200) ?? undefined,
+    // R29-1A → R29-1C 修复: trafilaturaFallback (修正拼写错误 "o" → "i")
+    // R29-1A 的 trafilaturaFallback 字段名不再被识别(自动 fallback 为 false, 零回归)
+    trafilaturaFallback: safeBool(r.trafilaturaFallback) ?? false,
   }
   return out
 }

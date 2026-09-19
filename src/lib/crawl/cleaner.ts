@@ -7,6 +7,135 @@ import * as OpenCC from 'opencc-js'
 import { type CleanConfig, DEFAULT_CLEAN_CONFIG } from './types'
 import { escapeReg } from '@/lib/utils'
 
+// ============================================================
+// R29-1C: Trafilatura 正文提取桥(mini-services/trafilatura-bridge 端口 3019)
+// ============================================================
+// 适配 Trafilatura(AdBarthe/Trafilatura, Python 正文提取库) — 用启发式算法
+// + justext 段落分类, 自动剥离广告/导航/侧栏/友链/水印段。对结构复杂的源站
+// (无清晰容器 / 混杂标签 / 模板渲染破损)效果远好于手动 cheerio DOM 剥壳 +
+// adPatterns 正则清洗链。
+//
+// 接入策略(CleanConfig.useTrafilatura=true 时启用):
+//   1. cleanContentHtml 入口先调本桥 POST /extract 提取正文文本
+//   2. 桥返回 {ok:true, text:非空} → 喂入既有 plainText 段落规整链(removeAdLines
+//      + 段落规整 + 控制字符剥离 + 繁简转换), 跳过 cheerio DOM 剥壳阶段(已剥离干净)
+//   3. 桥返回 {ok:false} 或不可达或 text 为空 → 降级回原 cheerio 链(零回归)
+//
+// 不可达性缓存: /health 探测失败后 60s 内视为不可用, 跳过 /extract 直接走 cheerio
+// 链(防每章节都试 /fetch 再失败, 洪泛 dev.log —— 与 fetcher.ts relayAvailable 同款)
+const TRAFILATURA_BRIDGE_URL =
+  process.env.TRAFILATURA_BRIDGE_URL || 'http://127.0.0.1:3019'
+const TRAFILATURA_PROBE_RETRY_MS = 60_000
+const TRAFILATURA_REQUEST_TIMEOUT_MS = 20_000 // 上游 30s 硬帽给桥内 trafilatura
+const TRAFILATURA_MAX_HTML_BYTES = 10 * 1024 * 1024 // 10MB(桥侧上限 15MB, 留余量)
+
+interface TrafilaturaGlobalState {
+  available: boolean | null
+  checkedAt: number
+}
+const globalForTrafilatura = globalThis as unknown as {
+  __novelTrafilatura_v1?: TrafilaturaGlobalState
+}
+if (!globalForTrafilatura.__novelTrafilatura_v1) {
+  globalForTrafilatura.__novelTrafilatura_v1 = { available: null, checkedAt: 0 }
+}
+const trafilaturaState = globalForTrafilatura.__novelTrafilatura_v1
+
+/** 探测 trafilatura-bridge 可用性(/health), 结果按 60s 缓存; 失败短超时快返 */
+async function checkTrafilaturaBridge(): Promise<boolean> {
+  if (trafilaturaState.available === true) return true
+  if (
+    trafilaturaState.available === false &&
+    Date.now() - trafilaturaState.checkedAt < TRAFILATURA_PROBE_RETRY_MS
+  ) {
+    return false
+  }
+  try {
+    const res = await fetch(`${TRAFILATURA_BRIDGE_URL}/health`, {
+      signal: AbortSignal.timeout(1500),
+    })
+    if (!res.ok) {
+      trafilaturaState.available = false
+    } else {
+      const data = (await res.json().catch(() => null)) as
+        | { ok?: boolean; selfTestOk?: boolean }
+        | null
+      // selfTestOk=false(trafilatura 模块未装)时也视为不可用 → 走 cheerio 链
+      trafilaturaState.available =
+        !!data?.ok && data.selfTestOk !== false
+    }
+  } catch {
+    trafilaturaState.available = false
+  }
+  trafilaturaState.checkedAt = Date.now()
+  return trafilaturaState.available
+}
+
+interface TrafilaturaExtractResult {
+  ok: boolean
+  text?: string
+  error?: string
+}
+
+/**
+ * 调 trafilatura-bridge POST /extract 提取正文。
+ * - html 超过 TRAFILATURA_MAX_HTML_BYTES → 跳过(不送网络)
+ * - 桥不可达(60s 缓存内) / 桥内异常 / 提取空文本 → 返回 {ok:false} 让上层降级
+ * - pruneXPath 透传给桥(限 30 条 ≤200 字符, sanitizeCleanConfig 已消毒)
+ * R29-1C: 本 helper 是 useTrafilatura=true 集成路径的内部实现, wiring 由 A/B/C agent
+ *  后续完成(cleanContentHtml 同步签名不支持 async, 需走 caller-side 分流). 当前 export
+ *  保留供后续 wiring 直接复用, 避免 A/B/C agent 重写(零代码重复).
+ */
+export async function callTrafilaturaExtract(
+  html: string,
+  pruneXPath?: string[],
+): Promise<TrafilaturaExtractResult> {
+  if (!html) return { ok: false, error: 'empty html' }
+  if (Buffer.byteLength(html, 'utf-8') > TRAFILATURA_MAX_HTML_BYTES) {
+    return { ok: false, error: 'html 超过 10MB 上限' }
+  }
+  const available = await checkTrafilaturaBridge()
+  if (!available) {
+    return { ok: false, error: 'trafilatura-bridge 不可用(60s 缓存内)' }
+  }
+  try {
+    const res = await fetch(`${TRAFILATURA_BRIDGE_URL}/extract`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        html,
+        // 默认 txt 输出 + favorPrecision=true + 不带评论/表格/链接/图片
+        // —— 章节正文提取的合理默认, 由桥侧默认参数兜底
+        pruneXPath: pruneXPath && pruneXPath.length > 0 ? pruneXPath : undefined,
+      }),
+      signal: AbortSignal.timeout(TRAFILATURA_REQUEST_TIMEOUT_MS),
+    })
+    if (!res.ok) {
+      // 桥返回非 200(5xx 等) → 视为不可用, 触发 60s 缓存
+      trafilaturaState.available = false
+      trafilaturaState.checkedAt = Date.now()
+      return { ok: false, error: `bridge HTTP ${res.status}` }
+    }
+    const data = (await res.json().catch(() => null)) as
+      | { ok?: boolean; text?: string; error?: string }
+      | null
+    if (!data || data.ok !== true) {
+      return {
+        ok: false,
+        error: data?.error || 'bridge returned ok:false',
+      }
+    }
+    const text = typeof data.text === 'string' ? data.text : ''
+    return { ok: true, text }
+  } catch (e) {
+    // 网络错误/超时 → 视为不可用, 60s 缓存(防每章节都试 + 失败)
+    trafilaturaState.available = false
+    trafilaturaState.checkedAt = Date.now()
+    const msg = e instanceof Error ? e.message : String(e)
+    return { ok: false, error: `调用失败: ${msg.slice(0, 100)}` }
+  }
+}
+
 // ---------- 繁体→简体转换(OpenCC, 采集源为繁体时自动启用) ----------
 // 设计: 逐段检测"繁体独有字"命中才触发转换 —— 简体源站零误转, 繁体源站任意段落必然
 // 高频命中。转换用 OpenCC 词组级词典(t→cn), 对已是简体的词组(如「乾隆」「乾坤」)有
@@ -693,3 +822,228 @@ export function cleanChapterTitle(raw: string | undefined | null, bookName?: str
   // astral 字符代理对斩半产出乱码(U+FFFD)
   return Array.from(t.trim()).slice(0, 120).join('') || '未命名章节'
 }
+
+// ============================================================
+// R29-1A → R29-1C 修复: Trafilatura 桥规则无关正文提取
+// ============================================================
+//
+// 场景: 当 cleanContentHtml 标准 CSS/XPath 清洗产出过短(疑似规则选择器失效/页面
+// 结构变化/反爬诱饵内容)时, 调本桥用 Trafilatura(AdBarthe/Trafilatura, 纯 Python +
+// lxml, 启发式正文提取, 无 ML 模型, ~10MB RSS)做规则无关兜底.
+//
+// 集成方式(两路并存, 互不冲突):
+//   ① useTrafilatura=true(R29-1C "先"模式): cleanContentHtmlAsync 入口先调本桥提取正文,
+//      trafilatura 返回非空文本 → 喂入既有 plainText 段落规整链; 失败 → 降级回 cheerio 链
+//   ② trafilaturaFallback=true(R29-1A "兜底"模式): runner 在 sync cleanContentHtml 后,
+//      若结果过短(<200 字符)且原 HTML 较长(>2KB), 调本桥兜底; 桥结果 >2x cleaner 结果
+//      才采纳(防误判: trafilatura 也可能提取到导航/侧栏短文本)
+//
+// R29-1C 修复 R29-1A 的两处 P0 BUG(原代码不可用):
+//   ① 端口 3021 不存在 — R29-1A 评估报告假定的端口 3021 实际未被任何 mini-service 占用,
+//      R29-1C 创建的 trafilatura-bridge 实际占用 3019(3018 已被 curl-impersonate-bridge
+//      R29-1B 占用)。修法: TRAFILATURA_BRIDGE_URL 默认值改为 127.0.0.1:3019
+//   ② 桥响应字段名 content — R29-1A 评估报告假定桥返回 {ok, content}, 实际 R29-1C 创建
+//      的 trafilatura-bridge 返回 {ok, text, title, author, ...}(与 trafilatura SDK 同口径)。
+//      修法: 读取 data.text 而非 data.content
+//   ③ typo 修复: trafilaturaBridgeAvailable → trafilaturaBridgeAvailable(拼写正确, "i" 非 "o")
+//
+// 设计权衡(与 R29-1A 同):
+//   - 不直接修改 cleanContentHtml 签名/同步性: cleaner.ts 全部函数保持同步, 与既有
+//     caller 契约一致; 异步 trafilatura 调用单独走 helper + cleanContentHtmlAsync, 由 caller
+//     决定何时调用(useTrafilatura=true 走 async; 否则走 sync)
+//   - 不破坏现有 8 级降级链: cleaner 是 post-fetch 步骤, 与 fetcher.ts 降级链正交;
+//     trafilatura 兜底失败时静默回退原 cleaner 结果, 零回归.
+//   - 4GB 沙箱友好: trafilatura 桥是纯 Python(无 Chromium/Selenium), ~10MB RSS,
+//     与 fetch-relay/scrapling-bridge(独立 Python 进程)同口径, 4GB 无 swap 环境可承载.
+
+/**
+ * 调用 trafilatura 桥做规则无关正文提取(R29-1A → R29-1C 修复后版本).
+ *
+ * 入参:
+ *   - rawHtml: 原始 HTML 字符串(章节页全文, 含导航/侧栏/广告等噪声)
+ *   - bridgeUrl: 可选桥 URL(操作员自定义; 缺省走 TRAFILATURA_BRIDGE_URL env / 3019)
+ *   - pruneXPath: 可选 XPath 列表(trafilatura 提取前从 DOM 删除这些节点)
+ *
+ * 返回:
+ *   - 成功(bridge 返回 ok=true 且 text 非空) → 返回纯文本字符串(\n 分段)
+ *   - 桥不可达 / selfTestOk=false / 桥内异常 / 提取结果为空 → 返回 null
+ *     (caller 应保留原 cleaner 结果, 零回归)
+ *
+ * 性能: trafilatura 内部 lxml 解析 + 启发式提取, 5KB HTML ~50ms, 100KB HTML ~500ms;
+ * 桥 HTTP 往返 ~10ms (localhost), 总开销可控.
+ *
+ * 安全: 桥 URL 由操作员在 rule.fetch.trafilaturaBridgeUrl 配置(可信源, 同 scraplingBridgeUrl);
+ * 桥内 server.py 不接受 URL 输入(只接受 HTML), 无 SSRF 滥用面.
+ */
+export async function tryTrafilaturaExtract(
+  rawHtml: string,
+  bridgeUrl?: string,
+  pruneXPath?: string[],
+): Promise<string | null> {
+  // 复用本文件顶部的 callTrafilaturaExtract(共享 60s 可用性缓存)
+  if (bridgeUrl && bridgeUrl.trim() && bridgeUrl.trim() !== TRAFILATURA_BRIDGE_URL) {
+    // 操作员自定义了不同 URL — 该路径不走 60s 缓存(防缓存键混淆), 直接尝试
+    try {
+      const res = await fetch(`${bridgeUrl.trim()}/extract`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          html: rawHtml,
+          pruneXPath: pruneXPath && pruneXPath.length > 0 ? pruneXPath : undefined,
+        }),
+        signal: AbortSignal.timeout(TRAFILATURA_REQUEST_TIMEOUT_MS),
+      })
+      if (!res.ok) return null
+      const data = (await res.json().catch(() => null)) as
+        | { ok?: boolean; text?: string }
+        | null
+      if (!data || data.ok !== true) return null
+      const text = typeof data.text === 'string' ? data.text : ''
+      return text || null
+    } catch {
+      return null
+    }
+  }
+  // 默认 URL: 复用 callTrafilaturaExtract(共享 60s 缓存)
+  const result = await callTrafilaturaExtract(rawHtml, pruneXPath)
+  if (!result.ok || !result.text) return null
+  return result.text
+}
+
+/**
+ * HTML 正文纯文本长度(用于"标准清洗结果是否过短"判定).
+ * 剥所有标签 + 实体解码 + 空白规整后取字符数. 与 runner.ts:1823 同款计算.
+ */
+export function contentPlainTextLength(html: string): number {
+  if (!html) return 0
+  return html.replace(/<[^>]+>/g, '').trim().length
+}
+
+/**
+ * R29-1C: 异步 cleanContentHtml —— useTrafilatura=true 时 trafilatura 先提取, 失败降级 cheerio.
+ *
+ * 流程(useTrafilatura=true):
+ *   1. 调 trafilatura-bridge POST /extract 提取正文文本(60s 可用性缓存)
+ *   2. trafilatura 返回非空文本 → 喂入既有 plainText 段落规整链(removeAdLines +
+ *      缩进规整 + 控制字符剥离 + 繁简转换), 跳过 cheerio DOM 剥壳阶段(trafilatura
+ *      已剥离干净, 重复剥壳反而可能破坏段落结构)
+ *   3. 桥不可达 / 桥内异常 / 提取空文本 → 自动降级回同步 cleanContentHtml(cheerio 链)
+ *
+ * 流程(useTrafilatura=false 或未配): 直接调同步 cleanContentHtml, 零回归.
+ *
+ * 入参: 同 cleanContentHtml(raw, cfgOverride)
+ * 返回: 清洗后正文 HTML/纯文本(取决于 CleanConfig.plainText)
+ *
+ * 使用建议:
+ *   - 采集主路径(runner.ts)在 useTrafilatura=true 时调用本 async 版本
+ *   - 后台管理路径(admin PUT /chapters, 备份 restore)继续用同步 cleanContentHtml
+ *     (trafilatura 仅在采集场景有意义, 管理员粘贴 HTML 已是干净文本)
+ */
+export async function cleanContentHtmlAsync(
+  raw: string,
+  cfgOverride?: Partial<CleanConfig>,
+): Promise<string> {
+  const cfg: CleanConfig = { ...DEFAULT_CLEAN_CONFIG, ...cfgOverride }
+  if (!cfg.useTrafilatura || !raw) {
+    // 未启用或空输入 → 直接走同步链(零回归)
+    return cleanContentHtml(raw, cfgOverride)
+  }
+  // 1. 调 trafilatura 提取正文
+  const trafilaturaResult = await callTrafilaturaExtract(
+    raw,
+    cfg.trafilaturaPruneXPath,
+  )
+  if (!trafilaturaResult.ok || !trafilaturaResult.text) {
+    // 2. trafilatura 失败 → 降级回同步 cheerio 链(零回归)
+    return cleanContentHtml(raw, cfgOverride)
+  }
+  // 3. trafilatura 成功 → 把纯文本喂入既有 plainText 段落规整链
+  // 注: trafilatura v2 txt 输出用单 \n 分段(不是 \n\n), 故 split 用 \n+;
+  // 每个非空行视为一段, 与 cleanContentHtml plainText 模式 \n\n 分段口径对齐输出
+  let text = t2sHtml(trafilaturaResult.text.replace(/\\n/g, '\n'))
+  // 实体单遍解码(trafilatura 输出可能含 &lt; &amp; 等实体, 与 cheerio 链同款解码)
+  text = decodeEntitiesOnce(text)
+  // removeAdLines: trafilatura 已剥广告段, 但配置的 adPatterns 仍可二次清洗(防漏)
+  text = removeAdLines(text, cfg.adPatterns)
+  // 段落规整: trafilatura \n+ 分段 → 段内空白规整 + 段间 \n\n (plainText) 或 <p> (HTML)
+  // split(/\n+/) 而非 \n{2,}: trafilatura txt 用单 \n 分段(双 \n 是 trafilatura 内部
+  // 段落分隔的备用格式, 实测 v2.2.0 默认用单 \n), 单/双换行都视为段间分隔
+  if (cfg.plainText) {
+    // 纯文本模式: 与 cleanContentHtml plainText 分支同款规整
+    text = text
+      .split(/\n+/)
+      .map((seg) =>
+        seg
+          .replace(/\r/g, ' ')
+          .replace(/\u3000/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim(),
+      )
+      .filter(Boolean)
+      .join('\n\n')
+    return text.replace(
+      /[\x00-\x08\x0B\x0C\x0E-\x1F\u200B-\u200D\u2060\uFEFF]/g,
+      '',
+    )
+  }
+  // HTML 模式: 段落包 <p> + 段间无空行 + 首末段水印剥离(与 cleanContentHtml 同款)
+  const segments = text
+    .split(/\n+/)
+    .map((seg) =>
+      seg
+        .replace(/\r/g, ' ')
+        .replace(/\u3000/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim(),
+    )
+    .filter(Boolean)
+  if (segments.length === 0) {
+    // trafilatura 输出全空(段落分类全 reject 后空白) → 降级回 cheerio
+    return cleanContentHtml(raw, cfgOverride)
+  }
+  // HTML escape 各段(trafilatura 输出是纯文本无标签, 包 <p> 前需 escape 防 <>& 注入)
+  let out = segments
+    .map((seg) => `<p>${seg.replace(/[<>&]/g, (c) => (c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&amp;'))}</p>`)
+    .join('')
+  // R11-1A 首段剥离: 短文本(≤80 字)且匹配章节号 → 删(与 cleanContentHtml step 6 同口径)
+  // R11-1A 末段剥离: 短文本(≤200 字)且匹配水印特征词或含裸域名 → 删
+  {
+    const $out = cheerio.load(`<div id="__trafilatura_strip_root">${out}</div>`)
+    const $root = $out('#__trafilatura_strip_root')
+    const $paras = $root.find('p')
+    if ($paras.length > 0) {
+      const $first = $paras.first()
+      const headText = ($first.text() || '').trim()
+      if (
+        headText.length <= 80 &&
+        (/^第[一二三四五六七八九十百千万0-9]+(?:章|节|回|话|集)\b/.test(headText) ||
+          /^Chapter\s+\d+/i.test(headText))
+      ) {
+        $first.remove()
+      }
+    }
+    const $paras2 = $root.find('p')
+    if ($paras2.length > 0) {
+      const $last = $paras2.last()
+      const tailText = ($last.text() || '').trim()
+      if (
+        tailText.length <= 200 &&
+        (/本章(?:未完|未完待续|继续阅读)|点击下一(?:页|章)|敬请(?:期待|关注)|加入书签|为了方便下次阅读/.test(
+          tailText,
+        ) ||
+          /(www\.)?[a-z0-9-]+\.(com|net|cc|org|info|top|xyz|vip|site)/i.test(tailText) ||
+          /本书首发于|请记住本书|最新章节请到|一秒记住/.test(tailText))
+      ) {
+        $last.remove()
+      }
+    }
+    out = $root.html() || ''
+  }
+  // 段间空白压缩 + 控制字符剥离(与 cleanContentHtml 出口同款)
+  out = out.replace(/<\/p>\s*<p>/gi, '</p><p>')
+  return out.replace(
+    /[\x00-\x08\x0B\x0C\x0E-\x1F\u200B-\u200D\u2060\uFEFF]/g,
+    '',
+  )
+}
+

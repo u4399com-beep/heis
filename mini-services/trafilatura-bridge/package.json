@@ -1,0 +1,10 @@
+{
+  "name": "trafilatura-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "trafilatura 正文提取桥 (R29-1C): 采集 cleaner 在 CleanConfig.useTrafilatura=true 时调用本桥(端口 3019; 3018 已被 curl-impersonate-bridge R29-1B 占用), 用 Trafilatura(Python 正文提取库)自动剥离广告/导航/侧栏/友链, 输出干净正文文本 + 元数据(title/author/date/description/sitename/url). 仅绑定 127.0.0.1:3019, 响应 {ok,text,title,...meta} 信封; 桥内异常 {ok:false,error} 200 返回, cleaner 侧据此降级回 cheerio 手动清洗链. 安装: python3 -m pip install trafilatura (依赖 lxml/justext/htmldate/courlan 等, 已装在系统 python3 venv 内).",
+  "scripts": {
+    "dev": "sh -c 'if [ -x .venv/bin/python ]; then exec .venv/bin/python server.py; else exec python3 server.py; fi'",
+    "start": "sh -c 'if [ -x .venv/bin/python ]; then exec .venv/bin/python server.py; else exec python3 server.py; fi'"
+  }
+}

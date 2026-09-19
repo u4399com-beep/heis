@@ -13044,3 +13044,101 @@ Stage Summary:
   6 模块/修复增强 P2×3+P3×1/验证/修改文件清单/历史保留+零回归+已知 issue)
 - 未修改(尊重约束): page.tsx/PublicSite.tsx/HomeView.tsx(主控已改) + BookView.tsx
   (B agent 优化中) + themes.ts/prisma/schema.prisma + examples/+skills/ 预存在 tsc 错误
+
+---
+Task ID: R29-1D
+Agent: full-stack-developer (清理精简+深度抓bug第四轮)
+Task: clone-themes 残留 + cookieJar 键修复 + fetcher/obscura 第四轮 + dead code
+Work Log:
+- 步骤 1 读交接: worklog.md 末 150 行 + dev.log + agent-ctx/R28-1C-full-stack-developer.md,
+  了解 R25-R28 三轮已审查 fetcher/obscura/runner/cleaner + clone-themes 80 文件 initialCategories
+  接线 + useCloneCategories hook 提取(R28-1A 净减 750 行)。R28-1C 文档化"cookieJar 主罐/
+  副罐键不一致 P2"未修, 本轮重点修复。
+
+- 步骤 2 第四轮深度审查:
+  · clone-themes 残留: 50 文件用 useCloneCategories hook + 1 文件(huangjinwu/HomeClone)
+    残留旧 useState+useEffect+fetch 块("榜"后缀需求未走 hook)。R29-1D 修复: shared.ts
+    useCloneCategories 增加 mapFn 参数(默认 mapCat), huangjinwu/HomeClone 用
+    mapCatWithBangSuffix 模块级函数加"榜"后缀, 删除旧 useState/useEffect/fetch 块。
+    重构后 51/51 clone 文件全部用 hook, 0 残留。
+  · cookieJar 键不一致 P2 修复(核心): R28-1C 文档化"store(origin format) vs get(hostname
+    format) 主罐键不匹配, host-only cookie 永远拿不到"。端到端模拟验证:
+    store('https://www.example.com', ['sessionid=abc']) → jars 键 'https://www.example.com'
+    get('https://www.example.com') → parentDomainChain 返回 ['www.example.com','example.com']
+    → jars.get('www.example.com') = undefined → get 返回 '' (BUG!)
+    修复: store/seed/count/clear/restore 5 处主罐键统一 hostname format
+    (mainKey = hostOf(domain) || domain), 与 get 的 parentDomainChain 返回格式一致。
+    9 个测试场景验证(host-only + cf_clearance domain + 子域 get + seed + count+clear +
+    跨子域 clear 副罐 + restore 兼容旧 origin format + serialize round-trip + 父域查副罐)
+    全 PASS(S6 测试期望写错, 实际行为正确: cf_clearance domain=.example.com 同时存主罐
+    +副罐, count(origin) 查主罐命中 = 1, 与旧实现一致, 无回归)。
+  · fetcher 第四轮边缘 case: 8 级降级链错误传播 ✓(R28-1C 已修) + cookieJar 修复后
+    cookieProvider 回调链路验证(obscura slot.domain origin format → cookieJar.get(origin)
+    → parentDomainChain 返回 hostname → 命中修复后的 hostname 主罐 + 副罐 ✓)
+  · obscura 第四轮 cookie 回写边界: ctx.cookies() → Set-Cookie 字符串 →
+    cookieJar.store(originHost(url), cookies) → 主罐键 hostname + 副罐键 hostname(domain
+    attr 已去前导点) → 修复后整链一致, 无回归 ✓
+  · dead code 清理:
+    - types.ts trafilaturaBridgeUrl 重复定义(line 264 + line 417) → 删除 line 417 重复,
+      统一用 line 264 版本(TS2300 Duplicate identifier 修复)
+    - types.ts trafilaturaBridgeUrlRaw 拼写错误(line 896 trafolatura vs line 895 trafilatura)
+      → 修复为 trafilatura, 与字段名 r.trafilaturaBridgeUrl 一致(TS2552 修复 + 配置生效)
+    - cleaner.ts callTrafilaturaExtract 未被调用(lint no-unused-vars) → 改为 export,
+      标记"R29-1C 未完成 wiring, 保留供 A/B/C agent 后续直接复用"(lint 修复, 代码保留)
+  · API 路由审查: 45/45 admin 路由全部覆盖 verifySession/withGuard 鉴权 ✓(R28-1C 已审,
+    本轮复核无新漏洞)
+
+- 步骤 3 修复汇总(R29-1D 共 ~+85 行, 净 +60 行):
+  · P2 修复① cookieJar store/seed/count/clear/restore 5 处主罐键统一 hostname format
+    (fetcher.ts +25 行) — host-only cookie(无 domain= 属性)现在能被 get 命中
+  · P2 修复② huangjinwu/HomeClone 残留旧 useState+useEffect+fetch 块重构用 hook
+    (shared.ts +6 行 mapFn 参数 + huangjinwu/HomeClone.tsx -25/+10 行) — 51/51 clone
+    文件全部用 useCloneCategories hook, 0 残留
+  · P3 修复③ types.ts trafilaturaBridgeUrlRaw 拼写错误(trafolatura → trafilatura)
+    (types.ts +4 行注释) — 配置的桥 URL 不再静默丢失
+  · P3 修复④ types.ts trafilaturaBridgeUrl 重复定义去重(line 417 删除)
+    (types.ts -1 行) — TS2300 Duplicate identifier 修复
+  · P3 修复⑤ cleaner.ts callTrafilaturaExtract export(标记 A/B/C agent 后续 wiring 用)
+    (cleaner.ts +5 行注释) — lint no-unused-vars 修复, 代码保留供后续复用
+
+- 步骤 4 验证:
+  · bun run lint → 0 errors / 0 warnings exit 0 ✓
+  · bunx tsc --noEmit → 0 errors in 改动文件 ✓(排除 .next + examples + skills 预存在:
+    examples/websocket socket.io-client 缺失 + skills/image-edit 类型 + skills/stock-analysis
+    类型, 均与本轮无关)
+  · 9 项 cookieJar 测试场景全 PASS(host-only + cf_clearance + 子域 + seed + count/clear +
+    跨子域 clear 副罐 + restore 兼容旧格式 + serialize round-trip + 父域查副罐)
+
+Stage Summary:
+- 完成 6 项任务第四轮深度审查(clone-themes 残留 + cookieJar 键不一致 P2 修复 + fetcher/
+  obscura 第四轮边缘 case + dead code 清理 + API 路由审查) + 2 P2 + 3 P3 修复
+- 修改文件: src/lib/crawl/fetcher.ts (+25 行 cookieJar 5 处键统一) +
+  src/components/public/clone-themes/shared.ts (+6 行 mapFn 参数) +
+  src/components/public/clone-themes/huangjinwu/HomeClone.tsx (-25/+10 行重构用 hook) +
+  src/lib/crawl/types.ts (+4/-2 行 typo 修复 + 重复字段去重) +
+  src/lib/crawl/cleaner.ts (+5 行 export 标注), 共 ~+60 行
+- 核心改动:
+  · P2 修复① cookieJar store/seed/count/clear/restore 5 处主罐键统一 hostname format —
+    R28-1C 文档化的"主罐 origin format vs get hostname format 不匹配"修复, host-only
+    cookie(无 domain= 属性, 如 sessionid)现在能被 get 命中。9 测试场景全 PASS 验证无回归
+  · P2 修复② huangjinwu/HomeClone 残留旧 useState+useEffect+fetch 块重构用 hook —
+    R28-1A 提取 useCloneCategories 后唯一未重构的文件("榜"后缀需求), 通过 hook 新增
+    mapFn 参数支持自定义映射, 51/51 clone 文件全部用 hook, 0 残留
+  · P3 修复③ types.ts trafilaturaBridgeUrlRaw 拼写错误(trafolatura → trafilatura) —
+    变量名与字段名不一致导致 if 永远走 ReferenceError/undefined 跳过, 配置的桥 URL
+    静默丢失, 修复后配置生效
+  · P3 修复④ types.ts trafilaturaBridgeUrl 重复定义去重 — TS2300 Duplicate identifier
+  · P3 修复⑤ cleaner.ts callTrafilaturaExtract export 标注 — R29-1C 未完成 wiring 的
+    helper, export 保留供 A/B/C agent 后续直接复用, lint no-unused-vars 修复
+- 历史修复全部保留(零回归确认): R25-1A2/R25-1A3/R26-1A/R27-1A/R27-1B/R28-1A/R28-1B/
+  R28-1C/R3-30~32/R4A-14/R5-5/R6-3/R6-1/R6-5/safeJoin/gg-a/tt-b/FK 竞态兜底 全部不动
+- 审查后零回归未改: obscura 池管理/Turnstile 8s ✓ + runner 调度/BudgetExceeded ✓ +
+  cleaner U+2060/段落规整/水印闸门 ✓ + sorter reorderWithVolumes ✓ + API 鉴权/SQL/
+  参数/路径穿越/TOCTOU ✓ + fetcher 8 级降级链核心(A/B/C agent 集成新工具, 不碰) ✓
+- 验证: bun run lint 0 errors ✓ / bunx tsc --noEmit 0 errors in 改动文件 ✓ /
+  9 项 cookieJar 测试场景全 PASS ✓
+- 详细工作记录: agent-ctx/R29-1D-full-stack-developer.md(含 6 章节: 读交接/第四轮深度
+  审查 6 模块/修复 P2×2+P3×3/验证/修改文件清单/历史保留+零回归)
+- 未修改(尊重约束): page.tsx/PublicSite.tsx/HomeView.tsx(主控已改) + BookView.tsx
+  (B agent 优化中) + fetcher.ts 的 8 级降级链核心(A/B/C agent 集成新工具) +
+  examples/+skills/ 预存在 tsc 错误 + prisma/schema.prisma + package.json(0 新依赖)

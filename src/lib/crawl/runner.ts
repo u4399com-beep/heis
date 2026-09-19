@@ -12,7 +12,7 @@ import { type RuleConfig, type TocItem, type FetchConfig, parseRuleConfig, sanit
 import { fetchPage, fetchBinary, checkBrowser, type FetchResult, effectiveHostGateLimit, adaptiveMinGapMs } from './fetcher'
 import { acquireHostGate, releaseHostGate, reportHostSuccess, reportHostFailure, reportHostRateLimited, hostGateSnapshot, hostGateKeyOf } from './hostgate'
 import { parseList, parseBook, parseToc, parseContent, parseJsonBody, absolutize } from './parser'
-import { cleanContentHtml, cleanIntro, cleanChapterTitle, cleanTextField } from './cleaner'
+import { cleanContentHtml, cleanContentHtmlAsync, cleanIntro, cleanChapterTitle, cleanTextField, tryTrafilaturaExtract, contentPlainTextLength } from './cleaner'
 import { reorderToc } from './sorter'
 import { saveChapterTxt, saveCoverWebp, deleteBookTxt, ensureDirs } from './storage'
 import { smartCategory, smartCompleteDetect } from './smart'
@@ -1819,7 +1819,42 @@ export class TaskRunner {
             // 疑似被拦不入库: 保持 fetched=false, 下次增量自动重试; 合法JSON体是API数据非挑战页, 放行
             if (pageRes.blocked && parseJsonBody(pageRes.html) === undefined) throw new Error('章节页疑似被拦截(验证码/JS挑战)')
             const parsedC = await parseContent(q.url, pageRes.html, rule.content, contentFetchCfg)
-            const cleaned = cleanContentHtml(parsedC.content, rule.clean)
+            // R29-1C: useTrafilatura=true 走 trafilatura first 模式(异步 cleanContentHtmlAsync,
+            // trafilatura 失败自动降级回同步 cheerio 链)。否则走同步 cleanContentHtml + 可选
+            // trafilatura 兜底(仅结果过短时)。两种模式互斥: useTrafilatura=true 时
+            // trafilaturaFallback 字段被忽略(先模式优先于兜底模式)。
+            let cleaned: string
+            if (rule.clean.useTrafilatura === true) {
+              cleaned = await cleanContentHtmlAsync(parsedC.content, rule.clean)
+            } else {
+              cleaned = cleanContentHtml(parsedC.content, rule.clean)
+              // R29-1A → R29-1C 修复: trafilatura 桥兜底 —— 当标准清洗产出过短(<200 字符)且
+              // 原 HTML 较长(>2KB)且 rule.clean.trafilaturaFallback=true 时, 调 trafilatura 桥做
+              // 规则无关提取. 触发条件保守: 仅在标准结果疑似失效时启用, 桥不可达/失败 →
+              // 静默回退原结果(零回归). 详见 cleaner.ts tryTrafilaturaExtract 段注释。
+              if (
+                rule.clean.trafilaturaFallback === true &&
+                contentPlainTextLength(cleaned) < 200 &&
+                pageRes.html && pageRes.html.length > 2000
+              ) {
+                const trafilaturaText = await tryTrafilaturaExtract(
+                  pageRes.html,
+                  rule.fetch.trafilaturaBridgeUrl,
+                ).catch(() => null)
+                // 仅当 trafilatura 结果明显更长时采用(防误判: trafilatura 也可能提取到导航/侧栏短文本)
+                if (trafilaturaText && trafilaturaText.length > contentPlainTextLength(cleaned) * 2) {
+                  // 把 trafilatura 纯文本按 cleaner plainText 模式同款规整(段间 \n\n, 控制字符剥离)
+                  // 输出格式与 storageMode='txt' 入库路径对齐(runner.ts:1834 同款 .replace 链)
+                  cleaned = trafilaturaText
+                    .split(/\n{2,}/)
+                    .map((seg) => seg.replace(/\s+/g, ' ').trim())
+                    .filter(Boolean)
+                    .map((seg) => `<p>${seg.replace(/[<>&]/g, (c) => (c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&amp;'))}</p>`)
+                    .join('')
+                  console.warn(`[runner] trafilatura 兜底生效(标准结果过短, 用桥提取替代): ${q.url.slice(0, 120)}`)
+                }
+              }
+            }
             const plainLen = cleaned.replace(/<[^>]+>/g, '').length
             const chId0 = q.chId || idMap.get(q.url)
             let rel: string | null = null

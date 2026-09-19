@@ -553,9 +553,158 @@ const qimaoStyleTemplate: RuleTemplate = {
   notes: 'tokenUrl 钩子只适配"可预取 token"形态(会话级/短时级 token); 按章变化的加密参数型(如 bqg713 AES-CBC 签名)需外置转换代理(tokenUrl 可用 {url} 占位符对接, 见 mini-services/bqg713-proxy)。预取结果 30s 进程内缓存, 缓存键含 real URL 防逐章串台。',
 }
 
+// ============================================================
+// 模板 9: TLS 指纹伪装 (tls-impersonate)  R29-1A 新增
+// 适用: WAF 按 JA3/JA4 TLS 指纹封锁常见 HTTP 客户端的站点(uukanshu.cc / DataDome /
+//       Akamai 等)。引擎 fetchViaCurl 在 cfg.fetch.curlImpersonateProfile='chrome' 时,
+//       若系统已装 curl-impersonate-chrome 二进制则切换(完整模拟 Chrome TLS 握手);
+//       未装则静默降级系统 curl(零回归)。
+// 注: 与 R29-1B curl-impersonate-bridge(3018 Python curl_cffi)互补 —— 本模板走二进制级
+//       集成(0 额外进程, 4GB 沙箱友好), R29-1B 走 Python 桥级集成(更细版本控制)
+// ============================================================
+const tlsImpersonateTemplate: RuleTemplate = {
+  id: 'tls-impersonate',
+  name: 'TLS 指纹伪装(curl-impersonate)',
+  description: 'WAF 按 JA3/JA4 TLS 指纹封锁的站点(uukanshu/DataDome/Akamai 系)。引擎在 curl 链切换为 curl-impersonate-chrome 二进制, 完整模拟 Chrome TLS ClientHello + HTTP/2 SETTINGS 帧。二进制未装时静默降级系统 curl, 失败后再降级到 curl-impersonate 桥(Python curl_cffi, 端口 3018)。',
+  category: 'custom',
+  tags: ['TLS指纹', 'curl-impersonate', 'JA3', 'JA4', 'WAF', 'Chrome伪装'],
+  difficulty: 'medium',
+  config: (() => {
+    const cfg = biqugeStandardTemplate.config
+    const copy: RuleConfig = JSON.parse(JSON.stringify(cfg))
+    // R29-1A 核心: 在 fetchViaCurl 层切换二进制(系统 curl → curl-impersonate-chrome)
+    // 二进制可寻性由 fetcher.pickCurlBinary 探测 + 60s 缓存, 不可寻时静默降级(零回归)
+    copy.fetch.curlImpersonateProfile = 'chrome'
+    // R29-1B 核心: 配 tlsProfile='chrome120' 让 curl-impersonate 桥(curl_cffi Python 绑定)
+    // 在 R29-1A 二进制不可寻 / curl 失败后自动启用时使用 Chrome 120 的 TLS 指纹
+    // (curl_cffi 提供 chrome99~131 精确版本号, 与 R29-1A 二进制的 chrome profile 互补)
+    // 形成双保险: 二进制可寻 → R29-1A 走二进制(0 进程开销); 不可寻 → R29-1B 走 Python 桥
+    // (curl_cffi 库, 30s 超时上限, 桥内 venv 自带无需系统装二进制)
+    copy.fetch.tlsProfile = 'chrome120'
+    // 同站并发收敛到 2(TLS-strict WAF 对并发敏感, 高并发易触发 IP 封禁)
+    copy.fetch.hostGateLimit = 2
+    copy.fetch.perHostConcurrency = 2
+    // 退避策略: 403 直接升级浏览器(TLS 指纹虽伪装但源站仍可能用其他维度判爬)
+    copy.fetch.smartBackoff = true
+    // 指纹抖动启用(每请求 sec-ch-ua 末位版本号随机, 防 WAF 字面精确匹配)
+    copy.fetch.fingerprintJitter = true
+    return copy
+  })(),
+  notes: `依赖: ①系统装 curl-impersonate-chrome 二进制(R29-1A 走二进制路径, 0 额外进程, 4GB 沙箱友好, 见 lwthiker/curl-impersonate); ②mini-services/curl-impersonate-bridge:3018 + .venv 装 curl_cffi(R29-1B 走 Python 桥, curl_cffi 库提供 chrome99~131/firefox102~120/safari15_3~17_2_ios 精确版本号)。两者互补: 二进制可寻时 R29-1A 优先(更省内存), 不可寻时 R29-1B 兜底; 任一可用即可绕过 JA3-strict WAF。两者都不可用时不破坏 8 级降级链(静默降级 fetch-relay/scrapling/Obscura/uc-bridge/moli-bridge)。tlsProfile="chrome120" 同时被 R29-1B fetchViaCurlImpersonate(桥内 curl_cffi)与引擎既有的 h2Fingerprint observe-vs-expected 对照消费。`,
+}
+
+// ============================================================
+// 模板 10: Hard-WAF 站点 (hard-waf-cloak)  R29-1A 新增
+// 适用: Obscura / uc-bridge / scrapling-stealthy 都失败的 hard-WAF 站点
+//       (hetushu/shucong/wanbenshenzhan 系)。显式 fetchMode='cloak-browser' 走
+//       puppeteer-extra + stealth plugin + 自研 12 stealth flags(3-tier 隐身)。
+// 注: cloak-browser 是 opt-in 通道, 不参与 native 8 级降级链(操作员显式选择)
+// ============================================================
+const hardWafCloakTemplate: RuleTemplate = {
+  id: 'hard-waf-cloak',
+  name: 'Hard-WAF 站点(cloak-browser 最大档)',
+  description: 'Obscura/uc-bridge/scrapling-stealthy 都失败的 hard-WAF 站(hetushu/shucong 系)。显式 fetchMode=cloak-browser 走 puppeteer-extra + stealth plugin + 3-tier 隐身(canvas/audio/WebGL/IMEI-like device ID noise)。cloak-browser 端口 3020。',
+  category: 'custom',
+  tags: ['WAF', 'cloak-browser', 'puppeteer', 'stealth', 'CF挑战', 'hard-WAF'],
+  difficulty: 'hard',
+  config: (() => {
+    const cfg = biqugeStandardTemplate.config
+    const copy: RuleConfig = JSON.parse(JSON.stringify(cfg))
+    // R29-1A 核心: 显式 opt-in cloak-browser 引擎(与 moli/scrapling-* 同级并列)
+    // 不破坏 8 级降级链: fetchMode='cloak-browser' 时整次抓取走桥, 桥不可达/失败 → 落 native 链一次
+    copy.fetch.fetchMode = 'cloak-browser'
+    // maximum 档: 12 stealth flags 全开(canvas/audio/WebGL noise + request 拦截 +
+    //   font/screen color 指纹 + hardware concurrency + device memory + IMEI-like device ID)
+    // 适用: hetushu/shucong/wanbenshenzhan 等 DataDome/CF Pro 级 WAF
+    copy.fetch.cloakTier = 'maximum'
+    // 浏览器渲染慢, 加大超时到 60s(maximum 档含 request 拦截 + 挑战求解常需 10~25s)
+    copy.fetch.timeout = 60000
+    copy.fetch.retries = 1
+    // 同站并发收敛到 1(cloak-browser MAX_CONCURRENT=2, hard WAF 站点对并发极敏感)
+    copy.fetch.hostGateLimit = 1
+    copy.fetch.perHostConcurrency = 1
+    // 浏览器路径不需要 fallbackStatus 升级(已经是最高级引擎)
+    copy.fetch.browserFallbackStatus = []
+    // 指纹轮换: 每 50 请求换 UA + viewport + timezone + language
+    copy.fetch.fingerprintRotationInterval = 50
+    // 思考时间: 模拟人类阅读节奏(每请求前 1~3s 随机等待)
+    copy.fetch.thinkTimeMs = 3000
+    return copy
+  })(),
+  notes: '依赖: mini-services/cloak-browser(端口 3020, R29-1A 修复原与 uc-bridge 3016 端口冲突 → 3020)。puppeteer + puppeteer-extra + puppeteer-extra-plugin-stealth 全装在 mini-services/cloak-browser/。cloak-browser 用持久 browser 实例 + per-session 噪声种子 + LRU 200 会话上限防内存泄漏(4GB 沙箱友好)。3-tier 档位: lite(快, 低安全站点) / standard(中, CF 站点) / maximum(慢, hard WAF); 本模板用 maximum。cloak-browser 失败时降级 native 链一次(零回归)。',
+}
+
+// ============================================================
+// 模板 11: Trafilatura 正文兜底 (trafilatura-fallback)  R29-1A 新增, R29-1C 修复
+// 适用: 规则选择器易失效的站点(源站改版频繁 / 反爬诱饵内容 / 模板变更未及时更新规则)。
+//       cleaner 标准清洗产出过短(<200 字符)时, 调 trafilatura 桥做规则无关提取兜底。
+// 注: 与标准 cleaner 互补 —— 规则命中走规则(保真度最高), 规则失效走 trafilatura(启发式
+//     兜底), 避免规则未及时更新导致整章节空入库。
+// R29-1C 修复: 字段名 trafilaturaFallback → trafilaturaFallback(修正 R29-1A 拼写错误
+//   "o"→"i") + 桥 URL 3021 → 3019(R29-1C 实际占用 3019, 3018 已被 curl-impersonate 占)
+// ============================================================
+const trafilaturaFallbackTemplate: RuleTemplate = {
+  id: 'trafilatura-fallback',
+  name: 'Trafilatura 正文兜底',
+  description: '规则选择器易失效的站点(源站改版频繁/反爬诱饵内容)。cleaner 标准清洗产出过短(<200 字符)时, 调 trafilatura 桥(端口 3019)做规则无关提取兜底。规则命中走规则, 规则失效走 trafilatura, 避免空入库。',
+  category: 'custom',
+  tags: ['trafilatura', '正文提取', '规则无关', '兜底', '反爬诱饵', '源站改版'],
+  difficulty: 'medium',
+  config: (() => {
+    const cfg = biqugeStandardTemplate.config
+    const copy: RuleConfig = JSON.parse(JSON.stringify(cfg))
+    // R29-1A → R29-1C 修复: 启用 trafilatura 兜底开关(修正拼写错误 "o"→"i")
+    // rule.clean.trafilaturaFallback=true 时, runner 在 cleanContentHtml 调用后,
+    // 若 plain text length < 200 且原 HTML > 2KB, 调 tryTrafilaturaExtract 兜底.
+    // 桥返回的纯文本(显著长于标准结果 2 倍以上)→ 转 <p> 包裹后入库
+    copy.clean.trafilaturaFallback = true
+    // 桥 URL 可显式覆盖(缺省 http://127.0.0.1:3019, 由 mini-services/trafilatura-bridge 提供)
+    // R29-1C 修正端口 3021 → 3019(实际占用, 3018 已被 curl-impersonate-bridge R29-1B 占)
+    copy.fetch.trafilaturaBridgeUrl = 'http://127.0.0.1:3019'
+    return copy
+  })(),
+  notes: '依赖: mini-services/trafilatura-bridge(端口 3019, R29-1C 新增; 纯 Python + lxml, ~10MB RSS, 4GB 沙箱友好)。trafilatura 已装在系统 Python 3.12(v2.2.0+), 桥启动命令 `bash mini-services/start-all.sh` 自动拉起。触发条件保守: 仅在标准结果疑似失效时启用(plain text < 200 + 原 HTML > 2KB), 桥不可达/失败 → 静默回退原结果(零回归)。采用条件: trafilatura 结果 > 标准结果 2 倍以上才用(防误判: trafilatura 也可能提取到导航/侧栏短文本)。R29-1C 修复 R29-1A 两处 P0 BUG: ① 字段名 trafilaturaFallback(拼写错误 "o"→"i" 修正)② 桥端口 3021 → 3019(实际占用)。',
+}
+
+// ============================================================
+// 模板 12: Trafilatura 正文优先 (trafilatura-first)  R29-1C 新增
+// 适用: 结构复杂 / 无清晰容器 / 混杂标签 / 模板渲染破损的源站 — Trafilatura 段落分类
+//       算法优于手动 cheerio DOM 剥壳 + adPatterns 正则清洗链。cleanContentHtmlAsync
+//       入口先调 trafilatura 桥提取正文, 失败 → 自动降级回 cheerio 链(零回归)。
+// 注: 与 trafilatura-fallback 模板互补:
+//   - 本模板(useTrafilatura=true "先"模式): trafilatura first, cheerio fallback
+//   - trafilatura-fallback(trafilaturaFallback=true "兜底"模式): cheerio first,
+//     trafilatura 仅在结果过短时兜底
+// 适合"trafilatura 比 cleaner 更准"的源站; 不适合简单结构源站(cheerio 链更可控)
+// ============================================================
+const trafilaturaFirstTemplate: RuleTemplate = {
+  id: 'trafilatura-first',
+  name: 'Trafilatura 正文优先',
+  description: '结构复杂/无清晰容器/混杂标签/模板渲染破损的源站。Trafilatura 启发式段落分类算法优于手动 cheerio DOM 剥壳 + adPatterns 正则清洗链。cleanContentHtmlAsync 入口先调 trafilatura 桥(端口 3019)提取正文, 失败自动降级回 cheerio 链(零回归)。',
+  category: 'custom',
+  tags: ['trafilatura', '正文提取', '规则无关', '先模式', '混杂HTML', '模板破损'],
+  difficulty: 'medium',
+  config: (() => {
+    const cfg = biqugeStandardTemplate.config
+    const copy: RuleConfig = JSON.parse(JSON.stringify(cfg))
+    // R29-1C 核心: 启用 trafilatura 先模式(useTrafilatura=true)
+    // runner 在 cleanContentHtmlAsync 入口先调 trafilatura 桥提取正文;
+    // 桥返回非空文本 → 喂入既有 plainText 段落规整链(跳过 cheerio DOM 剥壳)
+    // 桥不可达/失败/空文本 → 自动降级回同步 cleanContentHtml(cheerio 链)
+    copy.clean.useTrafilatura = true
+    // pruneXPath: 可选预剥常见噪声节点(与 removeSelectors 互补; trafilatura 在算法
+    // 阶段剥, cheerio 在 DOM 阶段剥; 两者叠加防遗漏)
+    // 不在此模板默认配 pruneXPath(留给操作员按站点实际配置), 仅启用 useTrafilatura
+    // 桥 URL 可显式覆盖(缺省 http://127.0.0.1:3019)
+    copy.fetch.trafilaturaBridgeUrl = 'http://127.0.0.1:3019'
+    return copy
+  })(),
+  notes: '依赖: mini-services/trafilatura-bridge(端口 3019, R29-1C 新增)。trafilatura 已装在系统 Python 3.12(v2.2.0+)。Trafilatura 是 Leipzig 信息学院开源的纯 Python + lxml 正文提取库, 无 ML 模型, ~10MB RSS, 4GB 沙箱友好。cleanContentHtmlAsync 走 trafilatura first 时: ① 调桥 POST /extract 提取正文文本(60s 可用性缓存)② 把纯文本喂入既有 plainText 段落规整链(removeAdLines + 缩进规整 + 控制字符剥离 + 繁简转换)③ 跳过 cheerio DOM 剥壳阶段(trafilatura 已剥离干净, 重复剥壳反而破坏段落结构)。桥不可达/失败/空文本 → 降级回 cheerio 链(零回归)。与 trafilatura-fallback 模板互斥: useTrafilatura=true 时 trafilaturaFallback 字段被忽略(先模式优先)。可选 cfg.clean.trafilaturaPruneXPath 配置 XPath 列表(如 ["//div[@class=ad]", "//nav"])让 trafilatura 在正文提取前从 DOM 删除指定节点(与 cfg.clean.removeSelectors 互补, 防遗漏)。',
+}
+
 /**
- * 全部规则模板(8 个)
- * 顺序即模板库 UI 展示顺序: 易→难, CSS→XPath→正则→JSON→JS渲染→具体站点风格
+ * 全部规则模板(12 个, R29-1A 新增 3 个反反爬增强模板 + R29-1C 新增 1 个 trafilatura 先模式)
+ * 顺序即模板库 UI 展示顺序: 易→难, CSS→XPath→正则→JSON→JS渲染→具体站点风格→反反爬增强
  */
 export const RULE_TEMPLATES: RuleTemplate[] = [
   biqugeStandardTemplate,
@@ -566,6 +715,10 @@ export const RULE_TEMPLATES: RuleTemplate[] = [
   jsRenderTemplate,
   fanqieStyleTemplate,
   qimaoStyleTemplate,
+  tlsImpersonateTemplate,
+  hardWafCloakTemplate,
+  trafilaturaFallbackTemplate,
+  trafilaturaFirstTemplate,
 ]
 
 /** 按分类筛选 + 关键字搜索(name/description/tags 任意命中) */

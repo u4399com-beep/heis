@@ -2,7 +2,9 @@
 //
 // 作为 Obscura 引擎的补充, 处理 Obscura 无法突破的 CF/WAF 站点(hetushu/shucong 等 hard WAF)
 //
-// 端口: 3016
+// 端口: 3020 (R29-1A: 原 3016 与 uc-bridge 冲突, 改为 3020; cloakBrowser 是 Obscura 之外的
+//           第二个 puppeteer-extra 隐身栈, 与 scrapling-stealthy/uc-bridge/Obscura 共存,
+//           作为 fetcher.ts fetchMode='cloak-browser' 显式 opt-in 通道, 不参与 native 8 级降级链)
 // 端点:
 //   GET  /health → 健康检查
 //   POST /fetch  → { url, tier?: 'lite'|'standard'|'maximum', timeoutMs? }
@@ -45,7 +47,7 @@ import { createBridgeServer, json } from '../_shared/server'
 
 puppeteer.use(StealthPlugin())
 
-const PORT = Number(process.env.PORT) || 3016
+const PORT = Number(process.env.PORT) || 3020
 const MAX_CONCURRENT = 2
 
 // ---------- 隐身层级类型 ----------

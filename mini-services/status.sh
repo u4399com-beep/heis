@@ -22,6 +22,11 @@ declare -a NAMES=(
   "qimao-proxy|3013"
   "deqixs-proxy|3014"
   "xjp-proxy|3015"
+  "uc-bridge|3016"
+  "moli-bridge|3017"
+  "curl-impersonate-bridge|3018"
+  "trafilatura-bridge|3019"
+  "cloak-browser|3020"
 )
 
 # 表头
@@ -92,7 +97,7 @@ done
 
 echo ""
 if [ "$exit_code" = "0" ]; then
-  echo "[status] All 6 services healthy."
+  echo "[status] All 11 services healthy."
 else
   echo "[status] Some services unhealthy — check logs at $LOG_DIR/*.log"
 fi

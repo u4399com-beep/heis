@@ -22,9 +22,12 @@ declare -a NAMES=(
   "qimao-proxy|3013"
   "deqixs-proxy|3014"
   "xjp-proxy|3015"
+  "uc-bridge|3016"
+  "moli-bridge|3017"
+  "trafilatura-bridge|3019"
 )
 
-echo "[stop-all] $(date +'%Y-%m-%d %H:%M:%S') stopping 6 mini-services..."
+echo "[stop-all] $(date +'%Y-%m-%d %H:%M:%S') stopping 9 mini-services..."
 
 for entry in "${NAMES[@]}"; do
   IFS='|' read -r name port <<< "$entry"

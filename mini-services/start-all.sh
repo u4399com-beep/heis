@@ -19,7 +19,10 @@ LOG_DIR="$PROJECT_ROOT/.zscripts"
 
 mkdir -p "$LOG_DIR"
 
-# 服务名 → (端口, 启动目录, 启动命令) — 顺序与端口 3010-3017 一致
+# 服务名 → (端口, 启动目录, 启动命令) — 顺序与端口 3010-3020 一致
+# R29-1A: 新增 cloak-browser(端口 3020, 修复原与 uc-bridge 3016 端口冲突)
+# R29-1B: 新增 curl-impersonate-bridge(端口 3018, Python curl_cffi 绑定)
+# R29-1C: 新增 trafilatura-bridge(端口 3019, Trafilatura 正文提取桥)
 declare -a SERVICES=(
   "bqg713-proxy|3010|$MINI_ROOT/bqg713-proxy|bun run dev"
   "fetch-relay|3011|$MINI_ROOT/fetch-relay|bun run dev"
@@ -29,9 +32,12 @@ declare -a SERVICES=(
   "xjp-proxy|3015|$MINI_ROOT/xjp-proxy|bun run dev"
   "uc-bridge|3016|$MINI_ROOT/uc-bridge|python3 server.py"
   "moli-bridge|3017|$MINI_ROOT/moli-bridge|bun run dev"
+  "curl-impersonate-bridge|3018|$MINI_ROOT/curl-impersonate-bridge|python3 server.py"
+  "trafilatura-bridge|3019|$MINI_ROOT/trafilatura-bridge|python3 server.py"
+  "cloak-browser|3020|$MINI_ROOT/cloak-browser|bun run dev"
 )
 
-echo "[start-all] $(date +'%Y-%m-%d %H:%M:%S') starting 8 mini-services..."
+echo "[start-all] $(date +'%Y-%m-%d %H:%M:%S') starting 11 mini-services..."
 
 for entry in "${SERVICES[@]}"; do
   IFS='|' read -r name port dir cmd <<< "$entry"

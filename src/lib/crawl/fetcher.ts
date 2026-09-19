@@ -9,6 +9,16 @@ import iconv from 'iconv-lite'
 import { type FetchConfig, DEFAULT_FETCH_CONFIG, isValidMirrorHost } from './types'
 import { obscuraFetch, checkObscuraAvailable, clickSelectorAnywhere, buildIdentityInitScript, applyUaCdpOverride, setObscuraCookieProvider } from './obscura'
 import { reportHostRateLimited } from './hostgate'
+// R29-1B: curl-impersonate TLS 指纹模拟降级层(mini-services/curl-impersonate-bridge:3018)
+// —— curl(OpenSSL 栈)被 JA3-strict WAF 拦截后, 调用本桥用 curl_cffi 模拟 Chrome/
+// Firefox/Safari 真实 TLS ClientHello + HTTP/2 SETTINGS 帧指纹 + 浏览器头组顺序, 绕过
+// WAF 按 TLS 指纹封锁。桥不可达 / curl_cffi 未装 → 抛错走原错误传播路径(零回归)。
+// 与 R29-1A 的 curlImpersonateProfile(二进制级集成, 在 fetchViaCurl 内联切换)互补关系:
+//   - R29-1A 本字段: 二进制级集成(curl-impersonate-{profile} 系统二进制, 4GB 沙箱友好)
+//   - R29-1B 桥: Python 级集成(curl_cffi 库, 提供更丰富的精确版本号 impersonate 选项
+//     chrome99~131/firefox102~120/safari15_3~17_2_ios, 适合需要特定版本指纹的场景)
+// 两者均能用, R29-1A 优先(轻量), R29-1B 兜底(覆盖面广, 不依赖系统装二进制)
+import { fetchViaCurlImpersonate, tlsProfileToImpersonate, CurlImpersonateError } from './fetcher-curl-impersonate'
 
 // ---------- UA 池 ----------
 // C.3(y-a重放): Chrome 系版本升级至当前稳定段 137~140(原池 118~131 过旧, 属明显
@@ -2080,7 +2090,10 @@ function loopbackBypassAllowed(url: string, cfg: FetchConfig): boolean {
   //   uc-bridge (undetected-chromedriver) 服务监听 127.0.0.1:3016, 规则若把 tokenUrl 或
   //   contentProxyUrl 指向 127.0.0.1:3016 会触发 SSRF 拒绝, uc-bridge 在生产路径上坏的
   //   (与 deqixs 3014 / xjp 3015 同口径豁免, 全 8 个 mini-services 3010~3017 端口齐全)
-  const KNOWN_MINI_SERVICE_PORTS = new Set(['3010', '3011', '3012', '3013', '3014', '3015', '3016', '3017'])
+  // R29-1B: 端口 3018 (curl-impersonate-bridge) 由 B agent 新增 — 同口径豁免
+  // R29-1C: 端口 3019 (trafilatura-bridge) — 同口径豁免; 规则若把 contentProxyUrl 配置为
+  //   127.0.0.1:3019/extract 不会被 SSRF 守卫拒(实际不会被如此配, 但与 3018 同口径文档化)
+  const KNOWN_MINI_SERVICE_PORTS = new Set(['3010', '3011', '3012', '3013', '3014', '3015', '3016', '3017', '3018', '3019'])
   if (KNOWN_MINI_SERVICE_PORTS.has(uPort)) return true
   const matches = (rawUrl: string): boolean => {
     try {
@@ -2931,6 +2944,121 @@ async function checkCurl(): Promise<boolean> {
   return curlAvailable
 }
 
+// ---------- R29-1A: curl-impersonate 二进制可选切换(TLS 指纹模拟) ----------
+/**
+ * curl-impersonate (lwthiker/curl-impersonate) 是 curl 的编译版变种, 用 BoringSSL + nghttp2
+ * 替换 OpenSSL, 并定制 TLS ClientHello(CipherSuites + Extensions + Curves)与 HTTP/2 SETTINGS
+ * 帧指纹, 完整模拟 Chrome/Firefox/Safari 真实浏览器 TLS 握手(JA3/JA4 hash)。
+ *
+ * 与 R29-1B curl-impersonate-bridge(端口 3018, Python curl_cffi 绑定)互补关系:
+ *   - R29-1A 本字段(cfg.fetch.curlImpersonateProfile): 二进制级集成, 在 fetchViaCurl 内联切换
+ *     spawn 目标为 curl-impersonate-{profile}, 0 额外进程开销, 适合常规 TLS 伪装
+ *   - R29-1B 桥: Python 级集成, curl_cffi 库提供更丰富的 impersonate 选项(精确版本号 chrome120/
+ *     firefox121/safari17 等, 完整 HTTP/2 SETTINGS 帧指纹对照), 适合需要细粒度版本控制的场景
+ *
+ * 二进制可寻性:
+ *   - 系统装 curl-impersonate 后通常提供多个二进制: curl_chrome116 / curl_chrome124 /
+ *     curl_firefox133 / curl_safari17 等(版本号随上游更新)
+ *   - 本函数按 profile(chrome/firefox/safari)在 PATH 中寻找任一匹配二进制, 找不到返回 null
+ *   - 结果按 CURL_IMPERSONATE_PROBE_RETRY_MS 缓存(60s), 避免每请求重复探测
+ *   - 找不到时 fetchViaCurl 静默降级系统 curl + warn 一次(零回归, 既有行为不变)
+ *
+ * 与 scrapling-bridge 的 curl_cffi 重叠关系:
+ *   - scrapling-static 模式走 Python 桥(独立进程 ~30MB RSS, curl_cffi 库级集成)
+ *   - 本字段走二进制(0 额外进程, 5MB 二进制常驻 PATH)
+ *   - 4GB 沙箱无 swap 环境优先本字段(更省内存); 需要完整 HTTP/2 指纹对照时走 scrapling-static
+ *   - 两者均能在 TLS-strict WAF(uukanshu.cc / DataDome 等)下绕过封锁
+ */
+const CURL_IMPERSONATE_PROBE_RETRY_MS = 60_000
+interface CurlImpersonateBinary { binary: string; profile: 'chrome' | 'firefox' | 'safari'; version: string }
+let curlImpersonateBinary: CurlImpersonateBinary | null | undefined = undefined
+let curlImpersonateCheckedAt = 0
+
+/**
+ * 探测可用的 curl-impersonate 二进制; 按 cfg.curlImpersonateProfile 选择对应 profile 的二进制.
+ * 返回 null = 未找到可用二进制(走系统 curl 兜底); 返回对象 = 找到的二进制名.
+ * 缓存窗口 60s; 找到后缓存有效结果不再重复探测(直到进程重启或 HMR 重求值).
+ *
+ * 探测策略(保守): 用 `which`/`command -v` 在 PATH 中寻找. curl-impersonate 项目发布的二进制
+ * 命名规范为 curl_{browser}{version}(如 curl_chrome116). 本函数按 profile 前缀匹配, 取首个
+ * 找到的版本号(不挑剔具体版本号 —— JA3 指纹的浏览器版本号差异对 WAF 检测意义不大,
+ * Chrome 116 与 Chrome 124 的 TLS 指纹差异远小于 Chrome vs Firefox).
+ */
+async function probeCurlImpersonate(profile: 'chrome' | 'firefox' | 'safari'): Promise<CurlImpersonateBinary | null> {
+  // 快路径①: 之前找到过且 profile 相同 → 直接返回缓存
+  if (curlImpersonateBinary && curlImpersonateBinary.profile === profile) return curlImpersonateBinary
+  // 快路径②: 之前探测失败(null)且在缓存窗口内 → 直接返回 null(避免每请求重复探测)
+  // (不同 profile 互不缓存, 60s 失败窗口内一律返回 null; 实际部署中 profile 极少运行时切换)
+  if (curlImpersonateBinary === null && curlImpersonateCheckedAt > 0 &&
+      Date.now() - curlImpersonateCheckedAt < CURL_IMPERSONATE_PROBE_RETRY_MS) {
+    return null
+  }
+  const candidates: string[] = []
+  // curl-impersonate 项目历史命名规范(curl_chrome116, curl_firefox133, curl_safari17 等);
+  // 部分发行版也提供 curl-impersonate-chrome / curl-impersonate-firefox 别名(同一二进制)
+  if (profile === 'chrome') {
+    candidates.push('curl_chrome116', 'curl_chrome124', 'curl_chrome131', 'curl_chrome99',
+      'curl-impersonate-chrome', 'curl-impersonate-chrome116')
+  } else if (profile === 'firefox') {
+    candidates.push('curl_firefox133', 'curl_firefox120', 'curl_firefox104',
+      'curl-impersonate-firefox', 'curl-impersonate-firefox133')
+  } else if (profile === 'safari') {
+    candidates.push('curl_safari17', 'curl_safari16',
+      'curl-impersonate-safari', 'curl-impersonate-safari17')
+  }
+  for (const bin of candidates) {
+    try {
+      const { spawn } = await import('node:child_process')
+      const ok = await new Promise<boolean>((resolve) => {
+        // 用 --version 探测二进制存在性 + 可执行性; 1.5s 超时避免卡 CLI
+        const child = spawn(bin, ['--version'], { stdio: ['ignore', 'ignore', 'ignore'] })
+        const t = setTimeout(() => {
+          try { child.kill() } catch { /* ignore */ }
+          resolve(false)
+        }, 1500)
+        ;(t as unknown as { unref?: () => void }).unref?.()
+        child.on('error', () => { clearTimeout(t); resolve(false) })
+        child.on('close', (code) => { clearTimeout(t); resolve(code === 0) })
+      })
+      if (ok) {
+        // 从二进制名提取版本号(若可); 否则用 profile 占位
+        const vm = bin.match(/(\d+)(?:[._]|$)/)
+        const version = vm ? vm[1] : '0'
+        const result: CurlImpersonateBinary = { binary: bin, profile, version }
+        curlImpersonateBinary = result
+        curlImpersonateCheckedAt = Date.now()
+        return result
+      }
+    } catch {
+      // 继续尝试下一个候选
+    }
+  }
+  curlImpersonateBinary = null
+  curlImpersonateCheckedAt = Date.now()
+  return null
+}
+
+/**
+ * 按 cfg.curlImpersonateProfile 选择实际要 spawn 的二进制名:
+ *   - 未配置(undefined) → 返回 'curl' (零回归, 系统原 curl 行为)
+ *   - 配置但二进制未装 → 返回 'curl' + warn 一次(缓存窗口 60s 内不再刷屏)
+ *   - 配置且二进制已装 → 返回 impersonate 二进制名(如 'curl_chrome116')
+ * 由 fetchViaCurl 在 spawn 前调用, 不修改其他参数/头组顺序(argv 兼容性:
+ * curl-impersonate 是 drop-in curl 替换, 标准 -sS -L -H 等参数完全支持).
+ */
+async function pickCurlBinary(cfg: FetchConfig): Promise<string> {
+  const profile = cfg.curlImpersonateProfile
+  if (!profile) return 'curl'
+  const found = await probeCurlImpersonate(profile)
+  if (found) return found.binary
+  // 找不到二进制: 缓存窗口内只 warn 一次, 之后静默降级(零回归)
+  if (Date.now() - curlImpersonateCheckedAt > CURL_IMPERSONATE_PROBE_RETRY_MS) {
+    console.warn(`[fetcher] curl-impersonate-${profile} 二进制未安装, 静默降级系统 curl(零回归); 安装方法见 lwthiker/curl-impersonate 项目文档`)
+    curlImpersonateCheckedAt = Date.now()
+  }
+  return 'curl'
+}
+
 /** curl 子进程传输(内部实现, 导出仅供诊断/冒烟脚本直接复用)
  *  proxy(dd-a): 非空时以 -x 透传(http/https/socks5(h)/socks4(a) 全形态, 内联凭证
  *  http://u:p@host:port 原生支持; 值清洗控制字符防 curl 参数注入) */
@@ -2964,8 +3092,12 @@ export async function fetchViaCurl(url: string, cfg: FetchConfig, ua: string, pr
   const { spawn } = await import('node:child_process')
   const { readFile, unlink } = await import('node:fs/promises')
 
+  // R29-1A: 按 cfg.curlImpersonateProfile 选择 spawn 二进制(系统 curl 或 curl-impersonate-{profile}).
+  // 二进制不可寻时静默降级 'curl'(零回归, 详见 pickCurlBinary 注释)
+  const curlBin = await pickCurlBinary(cfg)
+
   return await new Promise<string>((resolve, reject) => {
-    const child = spawn('curl', args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn(curlBin, args, { stdio: ['ignore', 'pipe', 'pipe'] })
     const chunks: Buffer[] = []
     let total = 0
     const MAX_HTML_BYTES = 10 * 1024 * 1024
@@ -3413,7 +3545,24 @@ async function fetchViaScraplingBridge(url: string, cfg: FetchConfig, mode: Scra
 /** 单代理(或直连)单次尝试: bun fetch 失败(网络错误/4xx/5xx)时自动落 curl 子进程。
  *  超时(AbortError)不落 curl: 同超时下 curl 也救不了, 白等。
  *  挑战壳(200+JS跳转)不在此处理, 由上层 Cookie 重试/浏览器升级链负责。
- *  代理尝试在 node 运行时直接走 curl(undici 静默忽略 proxy, 见 PROXY_FETCH_SUPPORTED) */
+ *  代理尝试在 node 运行时直接走 curl(undici 静默忽略 proxy, 见 PROXY_FETCH_SUPPORTED)
+ *
+ *  R29-1B: curl-impersonate TLS 指纹模拟降级层(curl(OpenSSL 栈)失败后的第三条出路)。
+ *  完整 8 级降级链(修后):
+ *    native(bun/node fetch, BoringSSL/undici) → curl(系统 curl 或 curl-impersonate-{profile}
+ *    二进制, OpenSSL/BoringSSL) → curl-impersonate-bridge(curl_cffi 模拟 Chrome/Firefox/Safari
+ *    TLS ClientHello + HTTP/2 SETTINGS 帧 + 头组顺序) → fetch-relay(bun, BoringSSL) →
+ *    scrapling-static(curl_cffi) → scrapling-stealthy(patchright) → Obscura →
+ *    uc-bridge(undetected-chromedriver) → moli-bridge(Rust AI 浏览器)
+ *  其中 native/curl/fetch-relay 的 TLS 栈 ClientHello 指纹(JA3/JA4)固定, 部分 WAF
+ *  (Akamai/Cloudflare/DataDome/PerimeterX/某些自建 GoEdge)按 JA3 hash 拦截常见 HTTP
+ *  客户端, 即使 UA + Client Hints + Sec-Fetch-* 头组完全自洽, TLS 握手阶段就被拒连/
+ *  403。R29-1A 的 curlImpersonateProfile 走二进制级集成(若系统装了 curl-impersonate-
+ *  chrome/firefox/safari 二进制则 fetchViaCurl 内联切换); R29-1B 桥走 Python curl_cffi
+ *  绑定(无需系统装二进制, 桥内 venv 自带), 两者互补: 二进制不可寻时仍可走桥。桥不可达
+ *  (curl_cffi 未装 / 进程未启 / 60s 缓存窗口内)→ 走原错误传播路径(零回归)。
+ *  目标侧 HTTP 响应(4xx/5xx)在 ok:true 信封内如实透传, 上层 fallbackStatus/Cookie 挑战
+ *  重试判定可消费; 桥内异常(ok:false, 网络层失败/SSRF/超时)→ 走原错误传播路径(零回归)。 */
 async function fetchHttpWithCurlSingle(url: string, cfg: FetchConfig, ua: string, proxy: string): Promise<string> {
   if (proxy && !PROXY_FETCH_SUPPORTED) {
     // node 运行时 + 代理: 内置 fetch 不支持 proxy 选项(静默忽略→伪装直连)。
@@ -3429,7 +3578,23 @@ async function fetchHttpWithCurlSingle(url: string, cfg: FetchConfig, ua: string
         console.warn('[fetcher] 中继桥失败, 落 curl 链:', String(e?.message || e).slice(0, 140))
       }
     }
-    return fetchViaCurl(url, cfg, ua, proxy)
+    // R29-1B: curl(OpenSSL 或 R29-1A 的 curl-impersonate-{profile} 二进制)失败 → 试
+    // curl-impersonate 桥(Python curl_cffi 绑定, 模拟 Chrome/Firefox/Safari 真实 ClientHello
+    // + HTTP/2 SETTINGS 帧 + 头组顺序), 绕过 JA3-strict WAF; 桥不可达/桥内异常 →
+    // 重抛 curl 错误(原行为, 零回归)
+    try {
+      return await fetchViaCurl(url, cfg, ua, proxy)
+    } catch (curlErr: any) {
+      console.warn('[fetcher] curl 传输未成(node+proxy), 试 curl-impersonate 桥:', String(curlErr?.message || curlErr).slice(0, 140))
+      try {
+        return await fetchViaCurlImpersonateFallback(url, cfg, ua, proxy)
+      } catch (impErr: any) {
+        // curl-impersonate 拿到目标侧 HTTP 响应(4xx/5xx, status>0)时透传(优于 curl 的
+        // 网络层错误无 status); 桥不可达/桥内异常(status=0)→ 重抛 curl 错误(原行为, 零回归)
+        if (impErr instanceof CurlImpersonateError && impErr.status > 0) throw impErr
+        throw curlErr
+      }
+    }
   }
   try {
     return await fetchHttp(url, cfg, ua, proxy)
@@ -3454,6 +3619,19 @@ async function fetchHttpWithCurlSingle(url: string, cfg: FetchConfig, ua: string
       return await fetchViaCurl(url, cfg, ua, proxy)
     } catch (curlErr: any) {
       console.warn('[fetcher] curl 传输未成:', String(curlErr?.message || curlErr).slice(0, 140))
+      // R29-1B: curl(OpenSSL 或 R29-1A 二进制)失败 → 试 curl-impersonate 桥 TLS 指纹模拟
+      // 降级层(mini-services/curl-impersonate-bridge:3018, curl_cffi 模拟 Chrome/Firefox/Safari
+      // 真实 TLS ClientHello + HTTP/2 SETTINGS 帧指纹 + 头组顺序, 绕过 JA3-strict WAF)。
+      // 桥不可达/桥内异常 → 保留原错误传播语义(零回归: 与改前完全一致); 目标侧 HTTP
+      // 响应(4xx/5xx)→ 透传 curl-impersonate 错误(优于 curl 的网络层错误, 保留 bodyHtml
+      // 供上层 fallbackStatus/Cookie 挑战重试判定消费)
+      try {
+        return await fetchViaCurlImpersonateFallback(url, cfg, ua, proxy)
+      } catch (impErr: any) {
+        // curl-impersonate 拿到目标侧 HTTP 响应(4xx/5xx, status>0)时透传(优于 curl 的
+        // 纯网络层错误无 status); 桥不可达/桥内异常(status=0)→ 走原错误传播路径(零回归)
+        if (impErr instanceof CurlImpersonateError && impErr.status > 0) throw impErr
+      }
       // 原错误是 HTTP 状态错误(带 status)时仍抛原错误保留 bodyHtml 语义;
       // 原错误是纯网络层失败(无 status, 如 TLS 指纹被 WAF 拒连)时改抛 curl 的错误 ——
       // 它带 status/bodyHtml, 上层 fetchPage 的 fallbackStatus/Cookie 挑战重试判定依赖这些字段,
@@ -3462,6 +3640,43 @@ async function fetchHttpWithCurlSingle(url: string, cfg: FetchConfig, ua: string
       throw curlErr || e
     }
   }
+}
+
+/**
+ * R29-1B: curl-impersonate 桥调用包装 —— 构造与 fetchViaCurl 同口径的指纹头组(含 UA
+ * 轮换 / Client Hints / Sec-Fetch-* / Cookie / Referer), 把 cfg.tlsProfile 映射为
+ * curl_cffi impersonate 字符串, 调用 fetcher-curl-impersonate.ts 的 fetchViaCurlImpersonate。
+ * 桥返回的目标侧 Set-Cookie(cf_clearance 等挑战凭证)写回 CookieJar, 后续 HTTP 直连复用
+ * (与 fetchViaUcBridge / obscuraFetch cookies 回写同口径)。失败语义由调用方判定:
+ *   - 成功 → 返回 html 字符串
+ *   - 桥拿到目标侧 HTTP 响应(4xx/5xx)→ 抛 CurlImpersonateError(status>0, bodyHtml),
+ *     调用方据 status>0 透传(优于 curl 的网络层错误)
+ *   - 桥不可达/桥内异常 → 抛 CurlImpersonateError(status=0), 调用方走原错误传播路径(零回归)
+ *
+ * 与 R29-1A 的 curlImpersonateProfile(二进制级)互补: R29-1A 在 fetchViaCurl 内联切换
+ * curl-impersonate-{profile} 系统二进制(若装了), R29-1B 在 curl 失败后兜底调 Python 桥
+ * (curl_cffi 库, 无需系统装二进制)。两者均能用时 R29-1A 优先(轻量), R29-1A 二进制不可
+ * 寻时 R29-1B 桥兜底, 形成"二进制级 + 库级"双保险。
+ */
+async function fetchViaCurlImpersonateFallback(url: string, cfg: FetchConfig, ua: string, proxy: string): Promise<string> {
+  // 指纹头组与 fetchViaCurl 同口径(HTTP 内容链专用, 双传输一致指纹, 防降级后头组消失露馅)
+  const headers = buildHeaders(url, cfg, ua, { fingerprint: true })
+  // Cookie 收敛(与 fetchHttp 同口径): cookieJar.get 取该域已种下的 cf_clearance 等会话凭证,
+  // 让 curl-impersonate 桥复用既有挑战凭证(避免挑战重新求解)
+  const cookieStr = cookieJar.get(originHost(url))
+  if (cookieStr && !headers.Cookie) headers.Cookie = cookieStr
+  const result = await fetchViaCurlImpersonate({
+    url,
+    headers,
+    proxy: proxy || undefined,
+    timeoutMs: cfg.timeout && cfg.timeout > 0 ? cfg.timeout : 20000,
+    // cfg.tlsProfile → curl_cffi impersonate 字符串(chrome120/firefox120/safari17_0;
+    // 缺省 chrome120 最通用, Chrome 占浏览器市占 70%+)
+    impersonate: tlsProfileToImpersonate(cfg.tlsProfile),
+  })
+  // cookies 回写: 桥返回的 cf_clearance 等挑战凭证写回 CookieJar —— 打通 HTTP 引擎后续直连
+  if (result.setCookies.length) cookieJar.store(originHost(url), result.setCookies)
+  return result.html
 }
 
 /**
@@ -4133,6 +4348,32 @@ async function fetchPageOnce(url: string, cfg: FetchConfig): Promise<FetchResult
     console.warn(`[fetcher] moli 降级到 native: ${url.slice(0, 120)}`)
   }
 
+  // R29-1A: cloak-browser 引擎(puppeteer-extra + stealth 3-tier) — hard-WAF 站显式 opt-in 通道。
+  // 与 moli / scrapling-* 同级: 显式 fetchMode='cloak-browser' 时分流; 桥不可达/失败 → 落 native
+  // 链一次(零回归, 不破坏现有 8 级降级链)。bridge 默认 http://127.0.0.1:3020, 见 fetchViaCloakBrowser.
+  // 详见 R29-1A 评估报告(agent-ctx/R29-1A-full-stack-developer.md §2 工具评估)
+  if (cfg.fetchMode === 'cloak-browser') {
+    const cloakResult = await fetchViaCloakBrowser(url, cfg)
+    if (cloakResult) {
+      // cookies 回写(cf_clearance 等): 与 moli / scrapling / uc-bridge 同口径,
+      // 引擎层 CookieJar 持久凭证 → 后续 native HTTP 链复用, 避免挑战重新求解
+      if (cloakResult.cookies.length) cookieJar.store(originHost(url), cloakResult.cookies)
+      const captchaType = looksLikeCaptcha(cloakResult.html)
+      if (captchaType) {
+        markCaptchaEncountered(url, captchaType, resolveCaptchaCooldownMs(cfg))
+        console.warn(`[fetcher] cloak-browser 命中验证码 ${captchaType}: ${url.slice(0, 160)}`)
+        return { html: cloakResult.html, engine: 'browser', blocked: true, captchaDetected: true, captchaType }
+      }
+      const blocked = looksBlocked(cloakResult.html, { status: cloakResult.status })
+      if (blocked) {
+        console.warn(`[fetcher] cloak-browser 内容疑似被拦截(HTTP ${cloakResult.status}): ${url.slice(0, 160)}`)
+      }
+      return { html: cloakResult.html, engine: 'browser', blocked }
+    }
+    // cloak-browser 失败 → 降级 native 链
+    console.warn(`[fetcher] cloak-browser 降级到 native: ${url.slice(0, 120)}`)
+  }
+
   const slMode = scraplingModeOf(cfg.fetchMode)
   if (slMode) {
     const bridged = await fetchViaScraplingBridge(url, cfg, slMode)
@@ -4777,6 +5018,154 @@ async function fetchViaUcBridge(url: string, cfg: FetchConfig): Promise<{ html: 
     }
   } catch (e) {
     console.warn(`[fetcher] uc-bridge 异常: ${(e as Error).message?.slice(0, 120)}: ${url.slice(0, 120)}`)
+    return null
+  }
+}
+
+// ---------- cloak-browser (R29-1A: puppeteer-extra + stealth 隐身, 第三个浏览器桥) ----------
+/**
+ * cloak-browser (mini-services/cloak-browser, 端口 3020): puppeteer-extra + stealth plugin
+ * + 自研 12 stealth flags(canvas/audio/WebGL/permissions/languages noise + IMEI-like device ID
+ * + CDP UA override + 3-tier 隐身(lite/standard/maximum))。
+ *
+ * 与现有 8 级降级链的关系: 本桥为【显式 opt-in】通道(fetchMode='cloak-browser'), 与
+ * scrapling-stealthy / moli / uc-bridge 同级并列, 不参与 native 8 级降级链(保持链稳定)。
+ * 操作员在规则 fetch.fetchMode='cloak-browser' 时启用, 适合:
+ *   - Obscura / uc-bridge 都失败的 hard-WAF 站(hetushu/shucong 系)
+ *   - 需要 3-tier 隐身档位切换的站点(低安全用 lite 省 CPU, 高安全用 maximum 加 request 拦截)
+ *   - puppeteer 生态优势场景(puppeteer-extra-plugin-stealth 是社区维护最广的反检测插件)
+ *
+ * 与现有工具的重叠关系(详见 R29-1A 评估报告):
+ *   - 与 Obscura(自研 playwright --stealth): 重叠度高, 但 Obscura 是页面池常驻(2 并发),
+ *     cloak-browser 是 per-request launch(内存 ~150MB per browser, 4GB 沙箱下并发=2);
+ *   - 与 scrapling-stealthy: 重叠度中, scrapling 用 patchright + CF 挑战自动求解,
+ *     cloak-browser 用 puppeteer-extra-stealth + 自研 canvas/audio 噪声;
+ *   - 与 uc-bridge: 重叠度低, uc-bridge 是 undetected-chromedriver(基于 selenium), cloak-browser
+ *     是 puppeteer(基于 CDP), 两套不同的反检测栈, 互补性强.
+ *
+ * 协议(mini-services/cloak-browser/index.ts):
+ *   POST /fetch  body: { url, tier?: 'lite'|'standard'|'maximum', timeoutMs?, cookies? }
+ *                → 200 { ok: true, html, status, finalUrl, cookies, tier }  目标侧任何响应
+ *                  (含 3xx/4xx/5xx)都算 ok:true 如实透传(与 fetchViaMoli / fetchViaUcBridge
+ *                  / fetchViaScraplingBridge 同契约), 引擎侧不再对目标双发请求
+ *                → 200 { ok: false, error }  桥内异常(url 非法 / Chrome 不可用 / 浏览器启动
+ *                  失败 / 网络层失败 / 超时), 引擎侧据此降级 native 链一次
+ *   GET  /health → 200 { ok, browserReady, inFlight, sessions, tiers }
+ *
+ * 安全模型: 与 fetchViaMoli / fetchViaUcBridge 同口径 —— CLOAK_BROWSER_URL 由操作员在 env
+ *   配置(可信源), 裸 fetch 直连桥端点; assertSafeTarget 在 fetchPage 入口已校验目标 url 合法性.
+ *
+ * 失败语义(照 fetchViaMoli / fetchViaUcBridge 先例): 桥进程不可达/桥内异常 → 返回 null
+ *   → fetchPageOnce 顶部 fetchMode 分流后落 native 链一次(warn 已在此打).
+ *   目标侧响应(含 4xx/5xx)在 ok:true 信封内如实透传 —— 仅传输层失败触发降级, 目标请求不双发.
+ *   cookies 回写: cloak-browser 返回 cf_clearance 等挑战凭证 → 写回 CookieJar → 后续 HTTP 直连复用,
+ *   与 Obscura / uc-bridge 路径 cookies 回写同口径.
+ *
+ * 性能与 4GB 沙箱友好性: cloak-browser 用持久 browser 实例 + MAX_CONCURRENT=2(与 Obscura 一致),
+ *   per-session 噪声种子(同 host 复用, 维持会话内指纹一致性), LRU 200 会话上限防内存泄漏.
+ *   3-tier 隐身档位: lite 仅 stealth plugin(快); standard 加 noise 层(中); maximum 加 request
+ *   interception + font/screen 指纹(慢, 用于 hard WAF).
+ */
+const CLOAK_BROWSER_URL = process.env.CLOAK_BROWSER_URL || 'http://127.0.0.1:3020'
+const CLOAK_BROWSER_PROBE_RETRY_MS = 60_000
+let cloakBrowserAvailable: boolean | null = null
+let cloakBrowserCheckedAt = 0
+
+/**
+ * cloak-browser 可用性探测(/health), 结果按 CLOAK_BROWSER_PROBE_RETRY_MS 缓存(与 checkRelay /
+ * checkUcBridge 同口径). 失败短超时快返: 桥不在时每请求 ECONNREFUSED ~50ms, 60s 内缓存避免叠加.
+ * /health 响应只看 HTTP 200(不解析 selfTestOk —— cloak-browser 的 selfTestOk 字段不存在,
+ * 浏览器实例是惰性首次 /fetch 时拉起, /health 探测时未必已 launch; 真实可用性由首次 /fetch
+ * 实测兜底).
+ */
+async function checkCloakBrowser(): Promise<boolean> {
+  if (cloakBrowserAvailable === true) return true
+  if (cloakBrowserAvailable === false && Date.now() - cloakBrowserCheckedAt < CLOAK_BROWSER_PROBE_RETRY_MS) return false
+  try {
+    const res = await fetch(`${CLOAK_BROWSER_URL}/health`, { signal: AbortSignal.timeout(1500) })
+    cloakBrowserAvailable = res.ok
+  } catch {
+    cloakBrowserAvailable = false
+  }
+  cloakBrowserCheckedAt = Date.now()
+  return cloakBrowserAvailable
+}
+
+/**
+ * 经 cloak-browser 抓取一次: 成功返回 {html, status, cookies}; 桥不可达/桥内失败返回 null
+ *  (调用方 fetchPageOnce 顶部 fetchMode='cloak-browser' 分流后落 native 链一次).
+ *  目标侧响应(含 4xx/5xx)在 ok:true 信封内如实透传 —— 与 fetchViaMoli / fetchViaUcBridge
+ *  契约同向, 仅传输层失败触发降级.
+ *  返回的 cookies (cf_clearance 等)由 fetchPageOnce 写回 CookieJar, 供后续 HTTP 链复用.
+ *  R29-1A 修复 P1: 原 cloak-browser 端口与 uc-bridge 冲突(都 3016), 已改为 3020;
+ *  本函数与 fetchViaUcBridge 实现高度同构(契约一致, 仅字段名/路径不同).
+ */
+async function fetchViaCloakBrowser(url: string, cfg: FetchConfig): Promise<{ html: string; status: number; cookies: string[] } | null> {
+  if (!(await checkCloakBrowser())) return null
+  const timeoutMs = cfg.timeout && cfg.timeout > 0 ? cfg.timeout : 20000
+  // 3-tier 隐身档位: 与 scraplingModeOf 同口径从 cfg 读取, 缺省 lite(轻量, 低安全站点默认)
+  const tier = cfg.cloakTier === 'standard' || cfg.cloakTier === 'maximum' ? cfg.cloakTier : 'lite'
+  // 桥 URL 可由 cfg.cloakBrowserUrl 覆盖(操作员自定义, 同 scraplingBridgeUrl 同口径)
+  const bridge = (cfg.cloakBrowserUrl || '').trim() || CLOAK_BROWSER_URL
+  try {
+    const body: Record<string, unknown> = {
+      url,
+      tier,
+      // cloak-browser 硬超时上限 120s(server.ts hardTimeout, 详见 cloak-browser/index.ts);
+      // 客户端护栏 timeoutMs + 冗余 15s, 下限 45s(maximum 档含 request 拦截 + CF 挑战求解常需 10~25s)
+      timeoutMs: Math.min(timeoutMs, 120_000),
+    }
+    // 透传现有 cookies (cf_clearance 等)给 cloak-browser, 让 puppeteer 复用已通过的挑战凭证
+    // (与 obscuraFetch / fetchViaUcBridge 同口径: 引擎层 cookies → 浏览器层, 避免挑战重新求解)
+    const existingCookies = cookieJar.get(originHost(url))
+    if (existingCookies) body.cookies = existingCookies
+    const res = await fetch(`${bridge}/fetch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      // 客户端护栏只防桥进程僵死(桥自身对目标限时 120s); 冗余 15s, 下限 45s(stealthy 首启 +
+      // CF 挑战求解耗时, 与 fetchViaScraplingBridge 同口径)
+      signal: AbortSignal.timeout(Math.max(timeoutMs + 15_000, 45_000)),
+    })
+    if (!res.ok) {
+      // 503 = 并发已满(MAX_CONCURRENT=2), 视为瞬时失败不更新可用性缓存(下次重试)
+      console.warn(`[fetcher] cloak-browser 返回 ${res.status}: ${url.slice(0, 120)}`)
+      return null
+    }
+    const data = await res.json() as {
+      ok: boolean; html?: string; status?: number; cookies?: Array<{ name?: string; value?: string; domain?: string } | string>; finalUrl?: string; error?: string
+    }
+    if (!data.ok || !data.html) {
+      // ok=false → 桥内异常; ok=true + html='' → 目标侧空响应(罕见, 与 fetchViaUcBridge 同口径透传)
+      if (data.ok && !data.html) {
+        return {
+          html: '',
+          status: data.status || 200,
+          cookies: [],
+        }
+      }
+      console.warn(`[fetcher] cloak-browser 失败: ${data.error || 'unknown'}: ${url.slice(0, 120)}`)
+      return null
+    }
+    // cookies 重组: cloak-browser 返回 cookie 对象数组(含 name/value/domain), 转 "k=v" 字符串数组
+    // 与 CookieJar.store(originHost, cookies[]) 兼容(后者接收 "k=v" 字符串数组, 见 cookieJar.store)
+    const cookieStrs: string[] = []
+    if (Array.isArray(data.cookies)) {
+      for (const c of data.cookies) {
+        if (typeof c === 'string') {
+          cookieStrs.push(c)
+        } else if (c && typeof c === 'object' && typeof c.name === 'string' && typeof c.value === 'string') {
+          cookieStrs.push(`${c.name}=${c.value}`)
+        }
+      }
+    }
+    return {
+      html: data.html,
+      status: data.status || 200,
+      cookies: cookieStrs,
+    }
+  } catch (e) {
+    console.warn(`[fetcher] cloak-browser 异常: ${(e as Error).message?.slice(0, 120)}: ${url.slice(0, 120)}`)
     return null
   }
 }
