@@ -59,7 +59,11 @@ const rule: RuleSeed = {
         // " / 连载" / " / 全本" → 剥前缀得 连载|全本(smart 词表可直接识别)
         status: { type: 'css', expression: 'div.cover span', attr: 'text', replaceFrom: '^\\s*/\\s*', replaceTo: '' },
       },
-      pagination: { enabled: true, maxPages: 50 },
+      // R31-1C: maxPages 50→30 防过深; 笔趣阁系 SSR 标准模板站点(/sort/{page}.html),
+      //   30 页 × 20 本/页 = 600 本发现量已足够; 50 页 = 1000 本会让代理路径(国内 GFW
+      //   拦截)超时累积; 站点翻页按钮固定 class="next"(笔趣阁系标准 .pages a.next),
+      //   引擎兜底 a:contains("下一页") 也能命中(笔趣阁模板默认文本"下一页")
+      pagination: { enabled: true, maxPages: 30 },
     },
     book: {
       enabled: true,

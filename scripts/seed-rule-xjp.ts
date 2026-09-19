@@ -95,10 +95,13 @@ export const ruleConfig = {
     },
     // 目录翻页锚同为 onclick 形态: <span class="right"><a onclick="location.href='/txt/oaa/list-N.html'">下一页</a></span>
     // 末页"没有了"无 onclick → 提取空 → absolutize 过滤空 → 停翻(自引用锚也被引擎同源同路径守卫拦)
+    // R31-1C: maxPages 130→30 防过深(100 章/页 × 30 页 = 3000 章足够覆盖绝大多数小说;
+    //   130 页 = 13000 章不现实, 会让长任务死循环风险; onclick 解密代理正文层 30 页 ×
+    //   3s/页 ≈ 90s 单书目录抓取已偏长, 130 页会触发代理超时)
     pagination: {
       enabled: true,
       nextLink: { type: 'css', expression: 'span.right a', attr: 'onclick', replaceFrom: "^location\\.href='(.+)'$", replaceTo: '$1' },
-      maxPages: 130,
+      maxPages: 30,
     },
   },
   content: {

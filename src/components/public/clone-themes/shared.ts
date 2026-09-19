@@ -85,17 +85,27 @@ export function clonePageItems(page: number, total: number, size: number, window
 // ============================================================
 export interface CloneCategory { id: string; name: string }
 
-function mapCat(c: any): CloneCategory {
+// 默认 category 映射: id 取 c.id||c.slug||c.name, name 取 c.name||c.title||String(c)
+export function mapCat(c: any): CloneCategory {
   return { id: c.id || c.slug || c.name, name: c.name || c.title || String(c) }
 }
 
+// huangjinwu 专用映射: 给 name 加“榜”后缀 (源站 sort-section 标题需“榜”后缀)
+export function mapCatWithBangSuffix(c: any): CloneCategory {
+  return { id: c.id || c.slug || c.name, name: (c.name || c.title || String(c)) + '榜' }
+}
+
+// R31-1D 修复: useCloneCategories 增加 mapFn 参数 (R29-1D worklog 文档化此增强但代码
+//  未实际改动, huangjinwu/HomeClone 仍手写 useState+useEffect+fetch 块; 现 R31-1D 真正落地).
+// mapFn 默认 mapCat, huangjinwu 传 mapCatWithBangSuffix.
 export function useCloneCategories(
   initialCategories?: any[],
   fallback: CloneCategory[] = [],
   limit = 60,
+  mapFn: (c: any) => CloneCategory = mapCat,
 ): CloneCategory[] {
   const [cats, setCats] = useState<CloneCategory[]>(() =>
-    (initialCategories || []).map(mapCat),
+    (initialCategories || []).map(mapFn),
   )
   useEffect(() => {
     if (cats.length > 0) return
@@ -105,12 +115,12 @@ export function useCloneCategories(
       .then(d => {
         if (aborted) return
         const arr = Array.isArray(d) ? d : (d.data?.items || d.data?.categories || d.items || d.categories || [])
-        const mapped = arr.map(mapCat)
+        const mapped = arr.map(mapFn)
         if (mapped.length) setCats(mapped)
         else if (fallback.length) setCats(fallback)
       })
       .catch(() => { if (!aborted && fallback.length) setCats(fallback) })
     return () => { aborted = true }
-  }, [cats.length, fallback, limit])
+  }, [cats.length, fallback, limit, mapFn])
   return cats
 }

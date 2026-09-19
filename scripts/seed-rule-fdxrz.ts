@@ -83,7 +83,12 @@ const rule: RuleSeed = {
           flags: 'i',
         },
       },
-      pagination: { enabled: true, maxPages: 50 },
+      // R31-1C: maxPages 50→30 防过深; 站点 /xuanhuan/{page}/ 共 11933 页但每页 30 本,
+      //   30 页 = 900 本发现量已足够覆盖大部分书源(且 fdxrz.com 直连无 WAF, 30 页
+      //   响应快); 50 页会让列表阶段抓 25 分钟(每页 ~30s 含 rotate UA + autoCookie);
+      //   站点无显式翻页按钮 class(Bootstrap 表格分页用 ul.pagination li a), 引擎
+      //   兜底 a:contains("下一页") 命中("下一页"文本即源站 ul.pagination 末项链接)
+      pagination: { enabled: true, maxPages: 30 },
     },
     book: {
       enabled: true,

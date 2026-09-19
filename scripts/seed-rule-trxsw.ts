@@ -84,7 +84,11 @@ const rule: RuleSeed = {
         name: { type: 'css', expression: 'a', attr: 'text' },
         bookUrl: { type: 'css', expression: 'a', attr: 'href' },
       },
-      pagination: { enabled: true, maxPages: 50 },
+      // R31-1C: maxPages 50→30 防过深; 站点已过期但保留规则, 实测时若恢复仍可能带 CF 防护,
+      //   30 页 × {每页 ~20 本} = 600 本发现量已足够, 50 页会让 scrapling-static 路径多
+      //   抓 20 页拉长任务时长; AiraBrowser 反查未给 nextLink class, 引擎兜底 a:contains
+      //   ("下一页") 在 .vlist 模板上自然命中(中文笔趣阁系惯例)
+      pagination: { enabled: true, maxPages: 30 },
     },
     book: {
       enabled: true,

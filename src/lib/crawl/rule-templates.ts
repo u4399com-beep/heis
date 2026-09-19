@@ -60,9 +60,15 @@ const biqugeStandardTemplate: RuleTemplate = {
       name: { type: 'css', expression: '.title a', attr: 'text' },
       bookUrl: { type: 'css', expression: '.image a', attr: 'href' },
       author: { type: 'css', expression: '.info .author', attr: 'text' },
+      // R31-1C: 笔趣阁系标准 .image img 直接 SSR src; 懒加载站点(用 jquery.lazyload.js)
+      //   改 attr 为 'data-original', lazysizes.js 站点改 attr 为 'data-src'; 实采前
+      //   在测试面板核对封面 URL 是否为占位图(nocover.svg/blank.gif 即懒加载未触发)
       cover: { type: 'css', expression: '.image img', attr: 'src' },
       intro: { type: 'css', expression: '.intro', attr: 'text' },
     }
+    // R31-1C: 笔趣阁系标准翻页按钮 = .pages a.next(文本"下一页"), 引擎兜底
+    //   a:contains("下一页") 同样命中(中文站点惯例); maxPages 20 适中, 过深会触发
+    //   部分笔趣阁系站点 IP 限流(单 IP 连续抓 50+ 页易被 nginx 限速 429)
     cfg.list.pagination = { enabled: true, maxPages: 20 }
     // 书籍页: 经典 .info 块, #intro 简介, #fmimg 封面
     cfg.book.fields = {
@@ -164,6 +170,10 @@ const xpathStructuredTemplate: RuleTemplate = {
       cover: { type: 'xpath', expression: './/img/@src' },
       intro: { type: 'xpath', expression: './/p[@class="intro"]/text()' },
     }
+    // R31-1C: 结构化站点翻页按钮常为 ul.pagination li a.next(Bootstrap 系) 或
+    //   .pager a.next(自建 CMS); 引擎兜底 a:contains("Next") 命中英文站; 中文站
+    //   a:contains("下一页") 命中. maxPages 30 适中(英文站常无 WAF, 30 页 ×
+    //   50 本/页 = 1500 本发现量充足)
     cfg.list.pagination = { enabled: true, maxPages: 30 }
     cfg.book.fields = {
       name: { type: 'xpath', expression: '//h1[@class="book-title"]/text()' },
@@ -227,6 +237,9 @@ const regexFallbackTemplate: RuleTemplate = {
       bookUrl: { type: 'regex', expression: '<h3[^>]*><a[^>]+href="([^"]+)"', flags: 'is' },
       author: { type: 'regex', expression: '作者[：:]\\s*([^<\\s]+)', flags: 'is' },
     }
+    // R31-1C: 正则兜底模板翻页按钮无固定 class(站点 HTML 不规范, 翻页按钮各异);
+    //   引擎兜底 a:contains("下一页") 命中绝大多数中文站; maxPages 20 适中(此模板
+    //   用于 HTML 极不规范站, 翻页链常畸形, 过深易触发死循环保护)
     cfg.list.pagination = { enabled: true, maxPages: 20 }
     cfg.book.fields = {
       name: { type: 'regex', expression: '<h1[^>]*>([^<]+)</h1>', flags: 'is' },
@@ -300,6 +313,10 @@ const apiJsonTemplate: RuleTemplate = {
       // const 模板合成书籍 API URL: {id} 替换为同作用域提取的 id 字段
       bookUrl: { type: 'const', expression: 'https://example.com/api/book?id={id}' },
     }
+    // R31-1C: JSON API 列表通常单页返回固定量(bqg713 /api/index 单页 58 本, fanqie
+    //   search 单页 10 本); 启用翻页需源站支持 ?page={page} 分页参数, 但 jqg713 类
+    //   并集 hotlist,sort1~6 一次返回无分页 → 默认关闭. 若源站真分页(如七猫 rank
+    //   page 参数被忽略也是单页), 操作员改 enabled:true + maxPages:20 即可
     cfg.list.pagination = { enabled: false, maxPages: 20 }
     // 书籍 API: { data: { title, author, category, intro, cover, status, latest_chapter } }
     cfg.book.fields = {
@@ -498,6 +515,11 @@ const qimaoStyleTemplate: RuleTemplate = {
       cover: { type: 'json', expression: 'cover' },
       bookUrl: { type: 'const', expression: 'https://example.com/api/book/info?book_id={id}' },
     }
+    // R31-1C: 七猫 rank/leader-board 类 API 的 page 参数实测被忽略(单页 50 本), 但
+    //   模板默认 enabled=true + maxPages:20 留作通用配置: 若操作员对接真实分页 API
+    //   (?page={page} 真翻页)可保留; 若发现 page 参数无效(单页重复)可关掉. 引擎
+    //   R3-24 同 path 不同 query 5 次累计即停, 防过深. JSON API 无 HTML 翻页按钮,
+    //   pagination.nextLink 不配置, 引擎只跑 maxPages 次同模板 URL(每页 {page} 替换)
     cfg.list.pagination = { enabled: true, maxPages: 20 }
     // 书籍详情 API
     cfg.book.fields = {

@@ -33,6 +33,8 @@ export function HomeClone({ books, loading, navCategoryCount = 8, homeModuleLimi
   const { site, navigate } = usePublic()
   // R28-1A: 复用 useCloneCategories (SSR initialCategories 优先 + 空时 fetch)
   const cats = useCloneCategories(initialCategories)
+  // 简繁切换状态 setTc (用于 footer 简体版/繁体版 zh_click 链接)
+  const { setTc } = useTraditionalChinese()
 
   if (loading) return <div className="container" style={{ padding: 40, textAlign: 'center' }}>加载中...</div>
   if (!books.length) return <div className="container" style={{ padding: 40, textAlign: 'center' }}>暂无内容</div>
@@ -158,6 +160,69 @@ export function HomeClone({ books, loading, navCategoryCount = 8, homeModuleLimi
             </div>
           ))}
         </div>
+      </div>
+
+      {/* 最新章节 + 最新小说 (源站 .lastupdate + aside 结构) */}
+      <div className="container">
+        {/* .lastupdate 最新章节列表 (源站 ul.odd li: span cat + a 书名 + a.gray 章节 + span>a.gray 作者 + 日期) */}
+        <div className="lastupdate">
+          <p className="title"><i className="fa fa-clock-o fa-lg">&nbsp;</i>最新章节</p>
+          <ul className="odd">
+            {books.slice(0, 30).map(b => {
+              const cat = (b.category || '小说').slice(0, 2)
+              const dateStr = b.updatedAt ? new Date(b.updatedAt).toISOString().slice(5, 10).replace('-', '-') : ''
+              return (
+                <li key={b.id}>
+                  <span>「{cat}」</span>
+                  <a href={`/book/${b.id}/`} {...bookNavProps(navigate, b.id)}>{b.name}</a>
+                  <a className="gray" href={`/read/${b.id}/${b.id}.html`} {...bookNavProps(navigate, b.id)}>{b.latestChapter || '最新章节'}</a>
+                  <span>
+                    <a className="gray" href="#author" onClick={(e) => { e.preventDefault(); navigate({ view: 'search', q: b.author }) }}>{b.author}</a>
+                    &nbsp;&nbsp;{dateStr}
+                  </span>
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+
+        {/* aside 最新小说 (源站 ul.popular.odd li: a 书名 + a.gray 作者) */}
+        <aside>
+          <p className="title"><i className="fa fa-pencil fa-lg">&nbsp;</i>最新小说</p>
+          <ul className="popular odd">
+            {books.slice(0, 18).map(b => (
+              <li key={b.id}>
+                <a href={`/book/${b.id}/`} {...bookNavProps(navigate, b.id)}>{b.name}</a>
+                <a className="gray" href="#author" onClick={(e) => { e.preventDefault(); navigate({ view: 'search', q: b.author }) }}>{b.author}</a>
+              </li>
+            ))}
+          </ul>
+        </aside>
+      </div>
+
+      {/* 友情链接 (源站 .container > .section.link) */}
+      <div className="container">
+        <div className="section link">
+          <p className="title"><i className="fa fa-link">&nbsp;</i>友情链接</p>
+          <a href="/" onClick={goHome} target="_blank" rel="noopener">{site.name}</a>
+          <a href="/" onClick={goHome} target="_blank" rel="noopener">无弹窗小说</a>
+        </div>
+      </div>
+
+      {/* footer (源站 #footer > footer.container > p × 2, 含 fa-flag + zh_click 简繁切换) */}
+      <div id="footer">
+        <footer className="container">
+          <p>
+            <i className="fa fa-flag"></i>&nbsp;
+            <a href="/" onClick={goHome}>{site.name}</a>
+            &nbsp;书友最值得收藏的网络小说阅读网
+          </p>
+          <p>
+            <a href="javascript:;" className="zh_click" id="zh_click_s" onClick={(e) => { e.preventDefault(); setTc(false) }}>简体版</a>
+            {' · '}
+            <a href="javascript:;" className="zh_click" id="zh_click_t" onClick={(e) => { e.preventDefault(); setTc(true) }}>繁體版</a>
+          </p>
+        </footer>
       </div>
     </>
   )

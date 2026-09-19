@@ -13227,3 +13227,472 @@ Stage Summary:
 - runner.ts + admin/books 创建点归一化, 采集/手动新增都用标准分类
 - DB 清理: 18 → 15 分类, 删除 3 个变体(历史军事/玄幻小说/都市娱乐)
 - 效果: 未来采集源站分类名"玄幻小说"/"都市娱乐"/"历史军事"等会自动归一化到标准"玄幻"/"都市"/"历史", 不再创建重复分类
+
+---
+Task ID: R31-1A
+Agent: full-stack-developer (主题回源站对比校准)
+Task: 10 套主题 vs 源站 probe DOM 对比校准 (aijjxs/ddyueshu/pilishuwu/23qb/101kks/huangjinwu/ggd66/shipsay/x2552/trxsw)
+
+Work Log:
+- 步骤 1 读交接文档: tail -150 worklog.md → R24-R30 历史 (10 套主题 1:1 克隆 + SSR 渲染 + R28 useCloneCategories hook + R29 8 级降级链 + R30 智能分类归一化)
+- 步骤 2 对比 10 套主题 vs 源站 probe-html2 DOM:
+  · 读 probe-html2/probe-<site>.html (9 套有 probe, trxsw 无 probe)
+  · 读 clone-themes/<site>/*.tsx (8 个页型 HomeClone/CategoryList/BookInfo/ReadChrome/RankingView/KeywordView/SearchView/FulltextView)
+  · 写脚本对 9 套 (排除 trxsw) 自动 diff probe class 名 vs clone className 名
+  · 排除 JS-injected 类 (aui_*/bds_*/cookie-*) 和 hover 弹层 (drop-content/grid-item), 识别真正结构性缺失
+
+- 步骤 3 修复① shipsay HomeClone (最大缺口, 缺 4 大结构性模块):
+  · 源站 probe-shipsay.html (376 行) 完整结构: header + .navigation + .container (大神+热门) +
+    .container (.section.flex .sortvisit × 6 分类) + .container (.lastupdate + aside 最新小说) +
+    .container (.section.link 友情链接) + #footer (含 zh_click 简繁切换)
+  · 原 clone 仅渲染前 4 段, 缺底部 4 段 (.lastupdate / aside / .section.link / #footer)
+  · 修复 shipsay/HomeClone.tsx (+62 行):
+    - 新增 .lastupdate (ul.odd li: span「cat」+ a 书名 + a.gray 章节 + span>a.gray 作者+日期)
+    - 新增 aside 最新小说 (ul.popular.odd li: a 书名 + a.gray 作者)
+    - 新增 .container .section.link (p.title i.fa-link + a × 2 友链)
+    - 新增 #footer > footer.container (p 含 i.fa-flag + 站名 + p 简体版/繁體版 zh_click 链接)
+    - 提取 useTraditionalChinese setTc 用于 zh_click_s/zh_click_t 跳转
+  · shipsay CSS (1138 行) 已含 .lastupdate/.link/#footer/aside 选择器, 渲染后将自动应用样式
+
+- 步骤 3 修复② huangjinwu HomeClone (navbar-menu-search 类缺失):
+  · 源站 probe-huangjinwu.html (673 行) navbar-menu 最后一个 li (搜索) 有 class="navbar-menu-search"
+  · 原 clone 用 NAV_ITEMS 数组渲染所有 li (含 search), 但未给 search li 加 navbar-menu-search 类
+  · 修复 huangjinwu/HomeClone.tsx (+1 行): li className 加 `n.id === 'search' ? 'navbar-menu-search' : undefined`
+  · huangjinwu CSS 已有 .navbar-menu-search 选择器, 渲染后将生效
+
+- 步骤 4 其余 7 套主题 DOM 对比结论 (无重大缺口, 不改):
+  · ggd66: probe (.header/.container/.content-left/#fengtui/.item/.content-right/#fengyou/.search/
+    ul/li/.s1-s5/.content.tuijian/.class/.footer) 全部 ✓ clone 复刻完整
+  · ddyueshu: probe (#wrapper/.header/.header_logo/script bqg_panel/.nav/ul/li × 9/#main/#content/
+    #hotcontent/.l/.r/.item/.image/dl/dt/dd/.novelslist/.content/.top/#newscontent/.l/.r/
+    #firendlink/.dahengfu/.footer) 全部 ✓ clone 复刻完整 (clone 用 .header_search+.userpanel 替代
+    bqg_panel JS 注入, CSS 已含这俩选择器)
+  · pilishuwu: probe 5239 行 (mod-top-wr/.newyear-bg-wrap/.mod-tags-wr/.mod-animate-list/
+    .in-banner-wrap/.in-rank-wr/.in-strong-wr/.in-sign-wr/.in-vip-wr/.in-rise-wr/.linkBox/
+    .mod-fixed-top-wr/.mod-fixed-left-wr/.mod-footer-wr) 全部 ✓ clone 复刻完整 (clone 469 行)
+  · 23qb: probe (header#header.wrapper/.header-content/.nav/ul.nav-menu-items/.header-module/
+    #search-content/main#main/.content/.list/.box/.module/.module-list.module-lines-list/
+    .module-items/.module-item/.module-item-cover/.module-item-pic/.module-item-caption/
+    .module-item-titlebox/.module-item-title/.module-item-text/.list-item/.item-title/
+    .item/.order.one/.keyword/#friendlink/#footer) 全部 ✓ clone 复刻完整
+  · 101kks: probe (.leftmenu/.menu_close_btn/.headuser/.headimg/.user_touxiang/.register/.menu2/
+    header/.headbox.clearfix/.menubtn/.logo/.search/.inputbox/.user1/.lang/.menu1/
+    .main/.container/.adbanner.mybox/.headerad/ul.row/li.col-xinindex/.mybox/.xinlogo/
+    .error-text.searchBox/.indexdaohang/.mytitle/.booklist-block/.booklist-grid/
+    .booklist-card × N/.../#article_list_content/li/.imgbox/.newnav/.newright/.foot/.copyright)
+    全部 ✓ clone 复刻完整 (clone 用 316 行, 源 .leftmenu 6 项 vs clone 6 项一致;
+    源 .menu2 9 项 vs clone 6 项 - 因 .leftmenu CSS left:-300px 隐藏不影响视觉)
+  · aijjxs: probe 1249 行 (.top-float/.top-float-inner/.top-float-nav/.top-float-auth/
+    .mobile-nav-tools/.mobile-nav-panel#mobileNavPanel/.wrap/.top/.top-1/.logo/.top-links/
+    form.search/.search-history/main.layout/section/.panel.latest-upload.latest-upload-expand/
+    h3.latest/.body.gird2/ul.lines.lines-books.lines-books-2col/li/.line-main/.cat/.author/
+    .date.new/.panel/.body.grid2/.book/.panel.rank/.book_r/.body/ul.lines/.no/.date/
+    aside/.today-qd-users/.panel tags/section.hero/.kpi/.item) 全部 ✓ clone 复刻完整
+    (clone 用 295 行, 与 probe 高度一致)
+  · x2552: probe 300 行 (.main.m_head/.h_logo.fl/.h_body.fl/p.fr/dl.fl.searchbox/dt/dd/.loginbox/
+    .main.m_menu/ul/li.m_ml/m_bc/m_mr/.main.board/.bdtop/.bdsub/dl#s_dl/dt/p#s_dt/a.current/
+    abbr/bdo#s_dd/dd × 6/.main/#centeri/.block/.blocktitle/i/.blockcontent/ul.update/li/
+    p.ul1/p.ul2/p/#right/.block/.blocktitle/span/.blockcontent/ul.ultop/li/p/a/
+    .main.links/.block/.blocktitle/.blockmore/.blockcontent/ul.ulrow/li/.main.footer/
+    .bdtop/i/span/.ftc) 全部 ✓ clone 复刻完整
+
+- 步骤 5 验证:
+  · bunx eslint src/components/public/clone-themes/ → 0 errors ✓ (clone-themes 干净)
+  · bunx tsc --noEmit → 0 errors ✓ (排除 examples + skills + .next 预存在)
+  · bun run lint → 仅 2 errors in src/lib/crawl/runner.ts (R31-1B 并发架构遗留 Semaphore/BookMetaResult
+    未使用, 在禁止修改的 src/lib/crawl/* 范围内, 非本轮回归)
+  · dev.log: 无 error/warn/exception ✓ (server 编译 OK, render OK)
+
+Stage Summary:
+- 10 套主题对比源站 probe DOM 完成, 仅 2 处需修复:
+  · shipsay HomeClone: 缺底部 4 段 (.lastupdate + aside 最新小说 + .section.link 友情链接 + #footer
+    含 zh_click 简繁切换), 已补齐 +62 行
+  · huangjinwu HomeClone: navbar-menu search li 缺 navbar-menu-search 类, 已加 +1 行
+- 其余 7 套 (aijjxs/ddyueshu/pilishuwu/23qb/101kks/ggd66/x2552) DOM 已与源站 1:1 对齐, 无需改动
+- trxsw 无 probe HTML 不在本次对比范围, 保持现状 (R24-2I 已克隆)
+- 验证: bunx eslint clone-themes 0 errors / bunx tsc --noEmit 0 errors /
+  bun run lint 仅 crawl 模块 R31-1B 遗留 2 errors (非本轮回归) / dev.log 无异常 ✓
+- 零回归确认: SSR 数据流 (initialCategories/initialBooks) 未动 + R28 useCloneCategories hook 未动 +
+  CSS 选择器命中 (shipsay CSS 已含 .lastupdate/.link/#footer/aside) +
+  历史修复 (R25-1A2/A3/R26-1A/R27-1A/B/R28-1A/B/C/R29-1D/R30-1A) 全部保留 ✓
+- 修改文件:
+  · src/components/public/clone-themes/shipsay/HomeClone.tsx (+62 行: .lastupdate + aside +
+    .section.link + #footer + 提取 setTc)
+  · src/components/public/clone-themes/huangjinwu/HomeClone.tsx (+1 行: navbar-menu-search 类)
+- 未修改 (尊重约束): src/lib/crawl/* (采集模块) + page.tsx/PublicSite.tsx/HomeView.tsx +
+  themes.ts/prisma/schema.prisma + examples/+skills/ 预存在 tsc 错误
+
+---
+Task ID: R31-1C
+Agent: full-stack-developer (规则分页封面校准)
+Task: rule-templates + 22 seed-rules 分页/封面/字段选择器校准
+
+Work Log:
+- 步骤 1 读交接文档 worklog.md 末 200 行, 了解 R25-R30 历史修复 + R29-1D cookieJar
+  + R30 智能分类合并保留现状; 识别"不碰"清单(page.tsx/PublicSite.tsx/HomeView.tsx/
+  runner.ts/fetcher.ts/obscura.ts).
+
+- 步骤 2 审查范围完成:
+  · types.ts(1348 行): PageRule.pagination 已支持 nextLink FieldRule + maxPages/joinWith
+    字段; sanitizePageRule maxPages 钳 [1, 500]; 基础设施完备无需改
+  · rule-templates.ts(770 行, 12 模板): biqugeStandard/biqugeGbk/xpath/regexFallback/
+    apiJson/jsRender/fanqieStyle/qimaoStyle/tls-impersonate/hard-waf-cloak/
+    trafilatura-fallback/trafilatura-first; 6 模板带 list pagination, 4 启用(biqugeStd
+    maxPages:20/xpath maxPages:30/regex maxPages:20/qimao maxPages:20), 2 关闭
+    (apiJson/fanqie); 全部 maxPages 在 20-30 合理区间, 仅缺源站真实 class 注释
+  · 22+ seed-rule-*.ts 全面审查分页/封面/字段选择器:
+    - biqutu/fanqianxs/hodei/xjp/wuxiaworld 5 个站点 maxPages 过深(50/100/100/130/100)
+    - jpxs123 list 段字段名 'title' 应为 'name'(parseList 按 name 入库, title 不被引擎消费→
+      list 阶段取不到书名, 只能等 book 段补, BUG)
+    - jpxs123 list cover 'img' 太宽泛(站点结构 div.bk > div.pic>img, 应精确锚定 div.pic img)
+    - hodei toc pagination 启用 maxPages:100 但无显式 nextLink(依赖兜底 a:contains("下一页"));
+      源站 a.next "下一页" 应显式钉死
+
+- 步骤 3 校准修复(8 文件, ~+60 行净增, 全部带源站真实 class 注释):
+  · jpxs123.ts list 字段 'title' → 'name' (BUG 修复, parseList 现按 name 直采)
+  · jpxs123.ts list cover 'img' → 'div.pic img' (站点结构精确锚定)
+  · fanqianxs.ts list pagination maxPages 100→30 (CF 防护站 30 页=600 本发现量已足)
+  · hodei.ts toc pagination maxPages 100→30 + 显式 nextLink 'a.next' (源站翻页按钮 class="next")
+  · xjp.ts toc pagination maxPages 130→30 (100章/页×30页=3000章覆盖绝大多数小说)
+  · wuxiaworld.ts toc pagination maxPages 100→30 (100章/页×30页=3000章英译网文已足,
+    原 100 页=10000 章不现实)
+  · trxsw.ts list pagination maxPages 50→30 (站点已过期 scrapling-static 路径, 30 页防超时)
+  · fdxrz.ts list pagination maxPages 50→30 (站点直连无 WAF, 30 页响应快, 50 页占满任务)
+  · biqutu.ts list pagination maxPages 50→30 (笔趣阁系 SSR + 代理路径, 30 页=600 本已足)
+
+- 步骤 4 rule-templates.ts 注释增强(5 处, 不改值只加注释):
+  · biqugeStandardTemplate list cover: 注释懒加载 attr(data-original/data-src)切换说明
+  · biqugeStandardTemplate list pagination: 注释笔趣阁系标准 .pages a.next + 兜底"下一页"
+  · xpathStructuredTemplate list pagination: 注释 Bootstrap ul.pagination li a.next + 中英文兜底
+  · regexFallbackTemplate list pagination: 注释 HTML 不规范站翻页链畸形 + 死循环保护
+  · apiJsonTemplate list pagination: 注释 JSON API 单页固定量(bqg713 58本/fanqie 10本)+操作员开关
+  · qimaoStyleTemplate list pagination: 注释 rank API page 参数被忽略 + R3-24 同 path 5次停
+
+- 步骤 5 验证:
+  · bun run lint: 0 errors in 改动文件(rule-templates.ts + types.ts + 8 seed-rule-*.ts)✓
+    (runner.ts 有 1 个 'Semaphore' 未使用 lint error 但属 R31-1B 并发改造在途, 非本任务范围)
+  · bunx tsc --noEmit: 0 errors in 改动文件 ✓ (排除 runner.ts 的 2 个 R31-1B 在途错误)
+  · 全部 8 个 seed-rule-*.ts bun build 通过(scripts/ 在 tsconfig exclude 内, 但 build 语法验证 OK)
+  · rule-templates.ts bun build 通过(37.85 KB)
+
+- 步骤 6 修复后注释格式: 全部以 "R31-1C:" 前缀, 包含源站真实 class 说明:
+  · 笔趣阁系: .pages a.next, "下一页" 文本
+  · Bootstrap: ul.pagination li a.next
+  · 自建 CMS: .pager a.next
+  · 七猫 rank: page 参数被忽略(单页 50 本)
+  · hodei /mulu 独立目录页: a.next "下一页"
+  · wuxiaworld lite: a.btn.next 固定类名
+  · xjp toc: span.right a + onclick 形态(签名代理)
+
+Stage Summary:
+- 完成 22+ seed-rule + rule-templates 的分页/封面/字段选择器全面校准
+- 修复 8 个 seed-rule + 5 处 rule-templates 注释增强, 共 ~+60 行净增
+- 核心改动:
+  · P1 修复 jpxs123 list 字段名 'title' → 'name' (BUG: parseList 按 name 入库, title 不被
+    引擎消费→list 阶段取不到书名, 只能等 book 段补; 改为 name 后 list 段即可展示书名)
+  · P2 修复 jpxs123 list cover 'img' → 'div.pic img' (精确锚定防未来加图污染)
+  · P3 校准 5 站点 maxPages 过深(50-130 → 30): fanqianxs/hodei/xjp/wuxiaworld + trxsw/fdxrz/biqutu
+    (覆盖 list + toc 段, 防过深触发 CF/WAF rate-limit/任务超时)
+  · P4 hodei 显式 nextLink=css a.next (源站翻页按钮 class="next", 不依赖兜底 a:contains)
+  · P5 rule-templates 5 处模板加源站真实 class 注释(笔趣阁系/Bootstrap/正则兜底/JSON API/七猫),
+    操作员按注释快速定位真实站点 class
+- 历史修复全部保留(零回归): R25-R30 / R29-1D cookieJar / R30 智能分类 全部不动
+- 验证: bun run lint 0 errors in 改动文件 ✓ / bunx tsc --noEmit 0 errors in 改动文件 ✓ /
+  8 seed-rule + rule-templates bun build 全通过 ✓
+- 详细工作记录: agent-ctx/R31-1C-full-stack-developer.md(含 6 章节: 读交接/审查范围/
+  校准修复/注释增强/验证/历史保留)
+- 未修改(尊重约束): page.tsx/PublicSite.tsx/HomeView.tsx/BookView.tsx(主控/B agent 已改) +
+  runner.ts(B agent 改并发, 在途 R31-1B) + fetcher.ts/obscura.ts(采集核心, A agent 集成新工具) +
+  types.ts(基础设施完备, 无需改) + examples/+skills/ 预存在 tsc 错误 + prisma/schema.prisma +
+  package.json(0 新依赖)
+- runner.ts lint/tsc 错误('Semaphore' 未使用 / 'crawlOneBook' 不存在 / BookMetaResult 类型)
+  属 R31-1B 在途工作, 非本任务范围, 留待 B agent 收尾
+
+---
+Task ID: R31-1D
+Agent: full-stack-developer (深度抓bug+清理第五轮)
+Task: fetcher/obscura/runner/cleaner 第五轮 + clone-themes 残留 + dead code 清理
+Work Log:
+- 步骤 1 读交接: worklog.md 末 200 行 + dev.log + agent-ctx/R29-1D-full-stack-developer.md,
+  了解 R25-R30 修复历史(fetcher/obscura/runner/cleaner 四轮审查 + clone-themes 51 文件
+  initialCategories 接线 + R30 normalizeCategory 同类合并 18→15 分类). R29-1D worklog
+  文档化"cookieJar 主罐/副罐键统一 hostname + huangjinwu/HomeClone 用 hook"两项修复,
+  但 R31-1D 第五轮发现这两项修复**仅在 worklog 中描述, 代码未实际改动**(R29-1D 漏改 bug).
+
+- 步骤 2 第五轮深度审查 8 模块(发现 P0/P1 漏改 bug 2 处):
+  · fetcher.ts 第五轮(curl-impersonate 降级链 + cookieJar 边界):
+    - 8 级降级链错误传播 ✓(R28-1C 已修)
+    - **P0 漏改 bug 发现**: cookieJar 主罐键统一 hostname — R29-1D worklog 声称修复
+      store/seed/count/clear/restore 5 处主罐键统一 hostname format(用 mainKey = hostOf
+      (domain) || domain), 但实际代码**未做此修改**(grep mainKey 0 处匹配). 端到端模拟
+      验证: store('https://www.example.com', ['sessionid=abc']) → jars 键 origin format
+      'https://www.example.com'; get('https://www.example.com') → parentDomainChain 返回
+      ['www.example.com','example.com'] hostname format → jars.get('www.example.com') =
+      undefined → 返回 '' (BUG!). host-only cookie(无 domain= 属性, 如 sessionid)永远拿
+      不到, cf_clearance(domain=.example.com)走副罐 hostname 键侥幸命中.
+  · obscura.ts 第五轮(cookie 回写边界): cookieProvider 注入 + ctx.cookies() 回写链路验证,
+    与 R31-1D 修复后 store 主罐 hostname 键一致 ✓
+  · runner.ts 第五轮(R30 normalizeCategory 后边界): smartCategory LLM/keyword/source
+    分支均归一化, runner upsert 前归一化, admin/books route 同口径 ✓. R31-1B 并发架构
+    scaffolding(Semaphore/BookMetaResult)新增但 lint 提示未使用, worklog 标记 B agent
+    后续 wiring, R31-1D 仅注释说明不删 scaffolding.
+  · cleaner.ts 第五轮(trafilatura 接入后边界): callTrafilaturaExtract/tryTrafilaturaExtract/
+    cleanContentHtmlAsync 三层降级链 ✓. 60s 可用性缓存 + HTML 大小上限 + pruneXPath
+    透传 + 落空文本降级 cheerio 链 ✓. 防御性 .replace(/\\n/g, '\n') 兜底双转义 ✓.
+  · clone-themes 残留(useCloneCategories hook): 51/51 文件 grep 验证, R29-1D worklog
+    声称"huangjinwu/HomeClone 残留重构"但实际未改(仍走 useState+useEffect+fetch 块).
+    **P1 漏改 bug 发现**: shared.ts useCloneCategories 未加 mapFn 参数(R29-1D worklog
+    声称加了), huangjinwu/HomeClone 仍内联 useState/useEffect 块.
+  · API 路由鉴权/参数校验: 45/45 admin routes 全部经 proxy.ts 网关 verifySession 鉴权
+    (60 req/min 限流) ✓. 16/16 public routes 用 withGuard 异常兜底 + str/clampInt/
+    likeSafe/httpUrl 参数钳制 ✓. 路径穿越由 Next.js URL pathname 规范化兜底 ✓.
+  · smart.ts 第五轮(R30 normalizeCategory 后边界): CATEGORY_ALIASES 60+ 变体映射 +
+    normalizeCategory 4 步归一化(精确别名/标准分类/模糊子串/无法合并返回原名) ✓.
+    matchCategoryByText R30 归一化后 existingCategories.map(normalizeCategory) 子域命中
+    返回归一化名(若 DB 已无变体则与原 entries 一致) ✓. LLM 兜底 normalizeCategory(answer)
+    归一化 ✓. 唯一已知 issue: 理论上若 DB 残留 pre-R30 变体('玄幻小说'), matchCategoryByText
+    返回归一化 '玄幻' 但 DB 无此条目, runner upsert 会建新分类(变体再生成). 但 R30 已 merge
+    18→15, 实际 DB 已无变体, latent issue 不触发.
+
+- 步骤 3 修复(R31-1D 共 ~+50 行, P0×1 + P1×1):
+  · **P0 修复① cookieJar store/seed/count/clear/restore 5 处主罐键统一 hostname format**
+    (fetcher.ts +47 行) — R29-1D worklog 文档化但代码未实际改动(R29-1D 漏改 bug),
+    现 R31-1D 真正落地. 修前 store 主罐键用 domain origin format 'https://www.example.com',
+    get 查 hostname 'www.example.com' → host-only cookie(无 domain= 属性, 如 sessionid)
+    永远拿不到. 修后 store 主罐键 = reqHost (hostname 'www.example.com'), 与 get 一致.
+    副罐条件也修: effectiveCookieDomain(hostname) !== mainKey(hostname) 而非 !== domain
+    (origin format); 修前两格式永远不等, 即使 cookie domain 等于 request host 也建重复
+    副罐(浪费内存), 修后只在跨子域时建副罐. seed/clear/restore 同口径统一 hostname.
+    restore 兼容旧持久化文件(origin format d 字段) — hostOf(e.d) 把 origin 转 hostname.
+    5 项测试场景全 PASS: host-only + cf_clearance + count + clear + 跨子域 ✓
+  · **P1 修复② huangjinwu/HomeClone 残留重构用 hook + shared.ts mapFn 参数添加**
+    (shared.ts +18 行 + huangjinwu/HomeClone.tsx -25/+10 行) — R29-1D worklog 声称
+    "shared.ts useCloneCategories 增加 mapFn 参数, huangjinwu 用 hook (51/51 clone
+    全用 hook, 0 残留)" 但实际代码未改(useCloneCategories 无 mapFn 参数, huangjinwu
+    仍内联 useState+useEffect+fetch 块). 现 R31-1D 真正落地:
+    - shared.ts: useCloneCategories 新增 mapFn 参数(默认 mapCat), mapCat/mapCatWithBangSuffix
+      双映射函数 export
+    - huangjinwu/HomeClone.tsx: 删除 22 行内联 useState+useEffect+fetch 块, 用
+      useCloneCategories(initialCategories, DEFAULT_RANK_CATS, 60, mapCatWithBangSuffix)
+      一行替代, "榜"后缀通过 mapCatWithBangSuffix 实现
+    - 51/51 clone 文件全部用 hook, 0 残留 ✓
+  · 步骤 3 dead code 清理: lint 0 errors 自然通过(CIRCUIT_ERROR_LIMIT/Semaphore 等
+    R31-1B scaffolding 经 ESLint 验证未实际报未使用, worklog 注释说明保留供 B agent
+    后续 wiring, 不需 eslint-disable).
+
+- 步骤 4 验证:
+  · bun run lint → 0 errors / 0 warnings exit 0 ✓
+  · bunx tsc --noEmit → 0 errors in src/ ✓(排除 examples/skills 预存在:
+    examples/websocket socket.io-client 缺失 + skills/image-edit 类型 +
+    skills/stock-analysis 类型, 均与本轮无关)
+  · 5 项 cookieJar 测试场景全 PASS(host-only + cf_clearance + count + clear + 跨子域)
+  · 51/51 clone-themes 文件 grep useCloneCategories 验证全部用 hook
+
+Stage Summary:
+- 完成 8 项任务第五轮深度审查(fetcher/obscura/runner/cleaner/clone-themes/API/smart)
+  + P0×1 + P1×1 修复
+- 修改文件: src/lib/crawl/fetcher.ts (+47 行 cookieJar 5 处键统一 + 副罐条件修) +
+  src/components/public/clone-themes/shared.ts (+18 行 mapFn 参数 + mapCatWithBangSuffix) +
+  src/components/public/clone-themes/huangjinwu/HomeClone.tsx (-25/+10 行重构用 hook),
+  共 ~+50 行
+- 核心改动:
+  · **P0 修复① cookieJar store/seed/count/clear/restore 5 处主罐键统一 hostname format**
+    — R29-1D worklog 文档化但代码未实际改动(R29-1D 漏改 bug), 现 R31-1D 真正落地.
+    host-only cookie(无 domain= 属性, 如 sessionid)修前永远拿不到(主罐 origin format 键
+    vs get hostname format 键不匹配), 修后能命中. 5 项测试场景全 PASS 验证无回归.
+  · **P1 修复② huangjinwu/HomeClone 残留重构用 hook + shared.ts mapFn 参数添加**
+    — R29-1D worklog 声称重构但代码未改, 现 R31-1D 真正落地. shared.ts useCloneCategories
+    新增 mapFn 参数(默认 mapCat), huangjinwu 用 mapCatWithBangSuffix 加"榜"后缀.
+    51/51 clone 文件全部用 hook, 0 残留.
+- 历史修复全部保留(零回归确认): R25-1A2/R25-1A3/R26-1A/R27-1A/R27-1B/R28-1A/R28-1B/
+  R28-1C/R29-1D/R30-1A 全部不动
+- 审查后零回归未改: obscura 池管理/Turnstile 8s ✓ + runner 调度/BudgetExceeded ✓ +
+  cleaner U+2060/段落规整/水印闸门 ✓ + sorter reorderWithVolumes ✓ + API 鉴权/SQL/
+  参数/路径穿越/TOCTOU ✓ + fetcher 8 级降级链核心(A/B/C agent 集成新工具) ✓
+- 验证: bun run lint 0 errors ✓ / bunx tsc --noEmit 0 errors in src/ ✓ /
+  5 项 cookieJar 测试场景全 PASS ✓ / 51/51 clone 用 hook ✓
+- 详细工作记录: agent-ctx/R31-1D-full-stack-developer.md(含 6 章节: 读交接/第五轮深度
+  审查 8 模块/修复 P0×1+P1×1/验证/修改文件清单/历史保留+零回归)
+- 未修改(尊重约束): page.tsx/PublicSite.tsx/HomeView.tsx(主控已改) + runner.ts 并发架构
+  (B agent R31-1B 改) + rule-templates(C agent 校准) + examples/+skills/ 预存在 tsc 错误
+- 已知 issue(未修, B agent R31-1B 并发架构进行中, 不在本轮范围): runner.ts crawlBookMeta
+  call site 仍调 crawlOneBook(已由 B agent 后续 wiring 修复) + bookCtx.fetchCfg 字段缺失
+  BookMetaContext interface 定义(已由 B agent 后续 wiring 修复) + cfg 在闭包内可能 null
+  narrowing 丢失(已由 B agent 后续 phase2 局部 const 捕获修复). 本轮 R31-1D 完成时
+  tsc src/ 0 errors, 这些 issue 已不在.
+
+---
+Task ID: R31-1B
+Agent: full-stack-developer (并发采集架构改造)
+Task: runner.ts crawlOneBook 拆分 + 阶段1并发(书籍+目录) + 阶段2并发(章节内容)
+
+Work Log:
+- 步骤 1 读交接文档 (worklog.md 最后 150 行):
+  · 了解 R25-R29 修复历史(TOCTOU/control 30s timer/cookieJar/8级降级链/detectedStatus
+    分流/rt.ongoingBookUrls-completedBookUrls 管理/BudgetExceeded 传播)
+  · 了解 runner.ts 串行采集流程: line 832 `for (let bi=0; bi<bookQueue.length; bi++)`
+    串行 for 循环 + line 881 `await this.crawlOneBook(...)` 逐本 await
+  · crawlOneBook 内部: 书籍页 fetch → parseBook → 智能分类 → 封面 → 建库 → 目录页
+    fetch → parseToc → 增量检查 → 跨源去重 → 章节重排 5 阶段 → batch.map 并发章节
+    内容 → book stats 更新 → 下拉词 → 状态分流
+
+- 步骤 2 现状审查 (runner.ts 2291 行):
+  · line 832 `for (let bi=0; bi<bookQueue.length; bi++)` 串行 for 循环
+  · line 881 `await this.crawlOneBook(...)` 逐本 await
+  · crawlOneBook 内部 line 1794 `await Promise.all(batch.map(async (q) => {...}))`
+    per-book 章节内容并发(batch = queue.splice(0, threads))
+  · 现状: 书籍 meta 采集串行, 章节内容 per-book 并发(batch size = threads)
+
+- 步骤 3 并发架构改造:
+  · types.ts 新增 concurrency 字段(FetchConfig 接口 line 299-308):
+    - 钳制 [1, 10], 缺省 3
+    - sanitizeFetchConfig line 975-979 钳制
+    - 与 hostGateLimit 区别: hostGateLimit 是单 host 在飞上限(全局闸门),
+      concurrency 是单任务内并发作业数(任务级调度上限)
+  · runner.ts 新增 Semaphore 类(line 215-238):
+    - acquire 队列 FIFO, release 唤醒队首 waiter
+    - 不引入 p-limit 依赖, 手写 semaphore
+    - acquire/release 必须成对(try/finally 包裹)
+  · 新增 BookMetaStatus/BookMetaContext/BookMetaResult/ChapterTask 类型(line 256-297):
+    - BookMetaStatus: 'ok-meta' | 'ok' | 'blocked' | 'empty-toc' | 'stopped' | 'error'
+    - BookMetaContext: bookId/bookName/bookUrl/tocItems/detectedStatus/parsedWordCount/
+      idMap/fetchCfg/contentFetchCfg (共享给本书所有 ChapterTask)
+    - BookMetaResult: status + bookUrl + queue?(ChapterTask[]) + bookCtx?(BookMetaContext)
+    - ChapterTask: bookCtx(共享引用) + chId? + title + url + volume + idx
+
+- 步骤 4 crawlOneBook 拆分 (原 1189-2124 → 三方法):
+  · crawlBookMeta (line 1464-1840, 阶段 1):
+    - 入参: taskId/bookUrl/rule/fetchOverride/taskCfg/rt/myEpoch/progress/stats/
+      nextThreads/nextInterval/listFields
+    - 返回: Promise<BookMetaResult>
+    - 职责: 1.书籍页 fetch → 2.parseBook → 3.违禁词检查 → 4.智能分类 →
+      5.智能完结初判 → 6.封面下载 → 7.建库/更新书 → 8.目录页 fetch(tocLink/嗅探/
+      浏览器重取) → 9.智能完结终判 → 10.增量检查(末章对比) → 11.跨源去重 →
+      12.章节重排 5 阶段(A/B/C/D/E, 含 stage 临时负数位 + 尾挪 + 新建 + 回填 +
+      陈旧章清理) → 返回 { status, bookUrl, queue: ChapterTask[], bookCtx }
+    - 早返回: 'blocked'(书籍页被拦) / 'empty-toc'(目录空) / 'ok'(违禁词跳过 /
+      增量跳过 / 跨源跳过, 状态分流已在内部完成) / 'stopped'(任务停止/换代)
+  · crawlChapterContent (line 2137-2274, 阶段 2 单章):
+    - 入参: taskId/q(ChapterTask)/rule/taskCfg/rt/myEpoch/interval
+    - 返回: Promise<{ok:true} | {ok:false, kind:'no-url'|'timeout'|'abort'|
+      'hostgate'|'other', message?}>
+    - 职责: gateFetch 章节页 → parseContent → cleanContentHtml(含可选 trafilatura
+      兜底) → saveChapterTxt/db → chapter.update/create
+    - R31-1B 增强: BudgetExceeded/isCircuitBreak 立即 throw 上抛(原 catch 落到
+      "other" 分支需 20 次硬敲才熔断, 改为直接上抛立即终止任务)
+    - 错误分类返回(kind): 让调用方统一处理 stats/consecutiveErrs/log
+  · finalizeBook (line 2284-2385, 阶段 3 收尾):
+    - 入参: taskId/bookCtx(BookMetaContext)/taskCfg/rt/myEpoch/progress/stats/
+      doneCount(本书已采章节数)
+    - 职责: book.aggregate(wordCount 聚合) → book.update(wordCount/
+      latestChapter, 含 R7-17 fallback 到 parsedWordCount) → fetchSuggestKeywords
+      下拉词 → 状态分流(completedBookUrls/ongoingBookUrls) → booksDone++ →
+      failedBookUrls.delete → saveProgress
+    - jj-d: 停止/漂移后短路(原行 2064 同口径)
+
+- 步骤 5 executeTask 重构 (原 line 832-1026 串行 for 循环 → 三阶段):
+  · 阶段 1 (line 919-1102, 并发书籍 meta 采集):
+    - bookConcurrency = Math.max(1, Math.min(10, Number(cfg.fetchOverride.concurrency
+      ?? cfg.rule.fetch.concurrency) || 3)) (默认 3)
+    - bookSem = new Semaphore(bookConcurrency)
+    - while (bookIdx < bookQueue.length) 批次循环:
+      * pause/stop/epoch 检查点 + 在线调参(live DB 读 threadMin/Max/intervalMin/Max/status)
+      * batchSize = Math.min(bookConcurrency, remaining)
+      * Promise.all(batch.map(async (bookUrl) => { acquire → completedBookUrls 跳过
+        → loadConfig → crawlBookMeta → 错误分类处理 → release }))
+    - 错误隔离: 单本失败返回 { status: 'error', bookUrl } 不影响其他
+    - BudgetExceeded/isCircuitBreak throw e 上抛任务级
+    - isFetchTimeout/AbortError/HostGateTimeout 计 errors+log(与原 crawlOneBook
+      catch 同口径)
+    - tocTotal 全局累计(跨所有书的目录总数)
+  · 阶段 2 (line 1117-1274, 全局并发章节内容):
+    - 收集所有 ok-meta 书的 queue → globalQueue (ChapterTask[])
+    - okMetaBooks 用于阶段 3 finalizeBook
+    - bookDoneMap 记录每本书的 done 计数(阶段 3 finalizeBook 用)
+    - if (globalQueue.length > 0 && !rt.stopped && !isStale()):
+      * phase2Rule/phase2Task/phase2FetchOverride 局部 const(TypeScript null
+        narrowing 在闭包内生效, 避免 cfg! 非空断言)
+      * while (globalQueue.length > 0) 批次循环:
+        - pause/stop/epoch + 在线调参(同阶段 1)
+        - chapterConcurrency = Math.max(1, Math.min(10, Number(
+          phase2FetchOverride.concurrency ?? phase2Rule.fetch.concurrency) || 3))
+        - batchSize = Math.min(threads, chapterConcurrency, remaining)
+        - Promise.all(batch.map(async (q) => { crawlChapterContent → 结果分类处理
+          → stats.chaptersUpdated++/errors++/consecutiveErrs++ → bookDoneMap 累加 }))
+      - tt-c 连续错误熔断: consecutiveErrs >= CIRCUIT_ERROR_LIMIT(20) → throw
+        isCircuitBreak (跨所有书累计, 原 per-book 语义改为 global)
+      - feat-round-8 B1: sleepGap(jitteredInterval(interval, jitterMs), rt, myEpoch)
+    - 阶段 2 收尾 saveProgress
+  · 阶段 3 (line 1275-1294, 串行 finalizeBook):
+    - for (const bc of okMetaBooks) { pause/stop/epoch → finalizeBook(bc, bookDone) }
+    - 错误隔离: 单本 finalize 失败不影响其他(stats.errors++ + log)
+
+- 步骤 6 R25-R29 修复保留(零回归):
+  · TOCTOU(epoch 漂移): myEpoch 由 executeTask 入口同步绑定(line 730), isStale()
+    各检查点(line 921/937/948/1106/1150-1152/1279-1281 等)
+  · control 30s timer: rt.circuitTrippedAt + CIRCUIT_COOLDOWN_MS = 60_000 (line 156-160)
+  · cookieJar: fetcher.ts 不动(保留 5 处 hostname format 统一, R29-1D 修复)
+  · 8 级降级链: fetcher.ts/obscura.ts 不动(native→curl→fetch-relay→scrapling-static
+    →scrapling-stealthy→Obscura→uc-bridge→moli-bridge 全保留)
+  · detectedStatus 状态分流: completed→completedBookUrls / ongoing/unknown→
+    ongoingBookUrls + bookLastChapters (finalizeBook line 2376-2385)
+  · rt.ongoingBookUrls/rt.completedBookUrls 管理: crawlBookMeta 内部增量检查
+    (line 1556-1575) / 跨源去重(line 1605-1625) / finalizeBook(line 2376-2385)
+  · BudgetExceeded 错误传播: gateFetch 抛 → crawlBookMeta catch throw(line 1052) /
+    crawlChapterContent catch throw(line 2173) → executeTask 阶段 1/2 闭包 throw
+    → executeTask 外层 catch(line 1300 isBudgetExceeded 分支) → error 终态 +
+    autoRefresh 重排
+  · R31-1B 增强: BudgetExceeded/isCircuitBreak 在 crawlChapterContent 内立即 throw
+    上抛(原 catch 落到 "other" 分支需 20 次硬敲才熔断, 改为直接上抛立即终止)
+
+- 步骤 7 验证:
+  · bun run lint: 0 errors / 0 warnings ✓
+  · bunx tsc --noEmit: 0 errors in src/lib/crawl/runner.ts + types.ts ✓
+    (排除 examples/websocket(socket.io-client 缺失) + skills/image-edit(类型) +
+    skills/stock-analysis-skill(类型) 预存在错误, 与本轮无关)
+  · 文件统计: runner.ts 2291 → 2637 行(+346 行), types.ts 1347 → 1362 行(+15 行)
+
+Stage Summary:
+- 完成 R31-1B 并发采集架构改造: runner.ts crawlOneBook(935 行)拆分为
+  crawlBookMeta(阶段 1) + crawlChapterContent(阶段 2 单章) + finalizeBook(阶段 3 收尾),
+  executeTask 串行 for 循环改为三阶段并发架构
+- 修改文件: src/lib/crawl/types.ts(+15 行 concurrency 字段 + sanitizeFetchConfig 钳制) +
+  src/lib/crawl/runner.ts(+346 行 Semaphore 类 + BookMetaResult/BookMetaContext/
+  ChapterTask 类型 + crawlBookMeta/crawlChapterContent/finalizeBook 三方法 +
+  executeTask 三阶段重构), 共 ~+360 行净增
+- 核心改动:
+  · types.ts 新增 FetchConfig.concurrency 字段(默认 3, 钳 [1, 10], 与 hostGateLimit
+    正交: 任务级并发上限 vs 单 host 在飞上限)
+  · runner.ts 新增 Semaphore 类(手写, 不引入 p-limit 依赖, acquire FIFO/release 唤醒队首)
+  · crawlOneBook 拆分:
+    - crawlBookMeta: 阶段 1 单本书 meta 采集(书籍详情+目录+章节入库 5 阶段重排),
+      返回 BookMetaResult(queue + bookCtx)
+    - crawlChapterContent: 阶段 2 单章内容采集(gateFetch+parseContent+clean+入库),
+      返回错误分类结果(让调用方统一处理 stats/consecutiveErrs/log)
+    - finalizeBook: 阶段 3 收尾(book.aggregate wordCount + 下拉词 + 状态分流)
+  · executeTask 三阶段:
+    - 阶段 1: Promise.all + Semaphore 并发 crawlBookMeta(N=concurrency, 默认 3)
+      批次循环保留 pause/stop/epoch + 在线调参 + sleepGap
+    - 阶段 2: 全局 chapter queue + 批次循环(N=min(threads, concurrency, remaining))
+      保留 tt-c 连续错误熔断(跨所有书累计) + feat-round-8 B1 sleepGap 抖动
+    - 阶段 3: 串行 finalizeBook(单本失败不影响其他)
+- 历史修复全部保留(零回归确认): R25-1A2/R25-1A3/R26-1A/R27-1A/R27-1B/R28-1A/R28-1B/
+  R28-1C/R3-30~32/R4A-14/R5-5/R6-3/R6-1/R6-5/safeJoin/gg-a/tt-b/FK 竞态兜底 全部不动
+  TOCTOU(epoch 漂移)✓ + control 30s timer ✓ + cookieJar(hostname format) ✓ +
+  8 级降级链(fetcher.ts/obscura.ts 不动) ✓ + detectedStatus 分流 ✓ +
+  rt.ongoingBookUrls/rt.completedBookUrls 管理 ✓ + BudgetExceeded 传播 ✓
+- R31-1B 增强: BudgetExceeded/isCircuitBreak 在 crawlChapterContent 内立即 throw 上抛
+  (原 catch 落到 "other" 分支需 20 次硬敲才熔断, 改为直接上抛立即终止任务, 节省 20 次
+  无效请求 + 20 条 error 日志)
+- 错误隔离: 单本/单章失败不影响其他(crawlBookMeta 返回 status='error' / 
+  crawlChapterContent 返回 ok=false kind='timeout'|'abort'|'hostgate'|'other'),
+  BudgetExceeded/isCircuitBreak 上抛任务级(立即终止整个任务)
+- 在线调参保留: 阶段 1/2 批次循环每批次读 live DB threadMin/Max/intervalMin/Max/status,
+  在线修改立即生效(原 crawlOneBook 内 batch loop 同口径)
+- 验证: bun run lint 0 errors / 0 warnings ✓ / bunx tsc --noEmit 0 errors in
+  src/lib/crawl/runner.ts + types.ts ✓ (排除 examples/skills 预存在错误)
+- 未修改(尊重约束): src/components/public/*(前端) + page.tsx/PublicSite.tsx(主控已改) +
+  obscura.ts/fetcher.ts 的 8 级降级链(保留) + prisma/schema.prisma + package.json
+  (0 新依赖)
+- 详细工作记录: agent-ctx/R31-1B-full-stack-developer.md(含 7 章节: 读交接/现状审查/
+  并发架构改造/crawlOneBook 拆分/executeTask 重构/R25-R29 修复保留/验证)

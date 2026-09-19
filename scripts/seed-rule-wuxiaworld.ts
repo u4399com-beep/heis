@@ -69,8 +69,12 @@ const rule: RuleSeed = {
         title: { type: 'css', expression: 'a', attr: 'text' },
         url: { type: 'css', expression: 'a', attr: 'href' },
       },
-      // ?toc=N 标准页码分页(每页约100章); 超长书(2000+章)按 100 章上限放宽
-      pagination: { enabled: true, maxPages: 100, joinWith: '', nextLink: { type: 'css', expression: 'a.btn.next', attr: 'href' } },
+      // ?toc=N 标准页码分页(每页约100章);
+      // R31-1C: maxPages 100→30 防过深(100章/页 × 30 页 = 3000 章足够覆盖英译网文,
+      //   原 100 页 = 10000 章不现实会让任务运行多小时 + 触发 lite.wuxiaworld.com
+      //   站点限流); nextLink=css a.btn.next 钉死源站真实翻页按钮 class(btn.next,
+      //   wuxiaworld lite 站的分页按钮固定类名)
+      pagination: { enabled: true, maxPages: 30, joinWith: '', nextLink: { type: 'css', expression: 'a.btn.next', attr: 'href' } },
     },
     content: {
       enabled: true,

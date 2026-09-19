@@ -296,6 +296,16 @@ export interface FetchConfig {
    *  独立于 hostGateLimit 的"绝对天花板", 即使 hostGate 因连续成功回升到更高, 也以本字段为准;
    *  用于 ops 严格限制单站并发(过盾站点对并发敏感, 高并发触发 WAF) */
   perHostConcurrency?: number
+  /** R31-1B: 任务级采集并发度上限(并发采集架构改造)。
+   *  控制两阶段的并发数: 阶段 1 = 同时在飞的"书籍 meta 采集"(书籍详情页+目录页)数量;
+   *  阶段 2 = 同时在飞的"章节内容页"数量。缺省 3; 钳 [1, 10]。
+   *  与 hostGateLimit 的区别: hostGateLimit 是【单 host 在飞上限】(全局闸门),
+   *  本字段是【单任务内并发作业数】(任务级调度上限, 多任务间不共享)。
+   *  - 太低(1)→ 等同串行采集, 收敛慢
+   *  - 太高(10)→ 单任务瞬间在飞 10 个 HTTP 请求, 即便 hostGate 限制同 host 至 3,
+   *    多 host 仍可同时 10 个连接 + 单 host 排队堆积(被风控概率上升)
+   *  默认 3 与 hostGateLimit 缺省值一致, 在"采集效率"与"风控风险"间取平衡 */
+  concurrency?: number
   /** 全局速率上限 req/min(agent-K): 0=不限(零回归); >0 时所有 host 合计不得超过本值,
    *  超出请求在 fetchPage 入口 sleep 节流。滑窗 60s 计数, 防采集洪水打爆出口 IP */
   globalRateLimitPerMin?: number
@@ -962,6 +972,11 @@ export function sanitizeFetchConfig(v: unknown): Partial<FetchConfig> {
   // 单 host 并发硬上限: 1~10 钳制(与 hostGateLimit 同口径)
   const perHostConcurrency = safeNum(r.perHostConcurrency, 1, 10)
   if (perHostConcurrency !== undefined) out.perHostConcurrency = perHostConcurrency
+  // R31-1B: 任务级采集并发度上限(并发采集架构改造); 缺省 3, 钳 [1, 10]。
+  // 阶段 1 = 同时在飞的书籍 meta 采集数, 阶段 2 = 同时在飞的章节内容页数。
+  // 与 hostGateLimit(单 host 在飞上限, 全局闸门)正交: 本字段是单任务内调度上限
+  const concurrency = safeNum(r.concurrency, 1, 10)
+  if (concurrency !== undefined) out.concurrency = concurrency
   // 全局速率上限 req/min: 0=不限; >0 时钳 [10, 100_000] 防误填过大或过小
   const globalRateLimitPerMin = safeNum(r.globalRateLimitPerMin, 0, 100_000)
   if (globalRateLimitPerMin !== undefined) out.globalRateLimitPerMin = globalRateLimitPerMin

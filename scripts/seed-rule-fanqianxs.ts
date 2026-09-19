@@ -94,7 +94,10 @@ const rule: RuleSeed = {
         // "连载中" / "已完结" / "太监" 等原文, 交 smartCompleteDetect 归一化
         status: { type: 'css', expression: '.s6', attr: 'text' },
       },
-      pagination: { enabled: true, maxPages: 100 },
+      // R31-1C: maxPages 100→30 防过深; 源站无显式翻页链(class a.next 或类似), 引擎
+      //   兜底 a:contains("下一页") 在 JIEQI CMS 模板上自然命中; CF 防护站响应慢, 30 页
+      //   已覆盖 ~600 本发现量(每页 20 本), 100 页会触发 CF rate-limit/占满任务时长
+      pagination: { enabled: true, maxPages: 30 },
     },
     book: {
       enabled: true,

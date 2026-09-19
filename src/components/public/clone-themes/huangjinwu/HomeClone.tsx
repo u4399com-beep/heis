@@ -17,11 +17,8 @@ import { bookNavProps } from '../../bits'
 import { formatWords } from '../../seo'
 import { addFavoriteSite, useTraditionalChinese } from '../tools'
 import type { HomeCloneProps } from '../shared'
-import { cloneNavHandlers } from '../shared'
+import { cloneNavHandlers, useCloneCategories, mapCatWithBangSuffix, type CloneCategory } from '../shared'
 import type { BookItem } from '../../types'
-import { useEffect, useState } from 'react'
-
-interface Cat { id: string; name: string }
 
 // 源站 navbar-menu 7 项固定导航
 const NAV_ITEMS: { id: string; name: string; icon: string }[] = [
@@ -35,7 +32,8 @@ const NAV_ITEMS: { id: string; name: string; icon: string }[] = [
 ]
 
 // 源站首页 6 个分类排行榜 (与 .sort-section 中 .ranking-module 一一对应)
-const DEFAULT_RANK_CATS: Cat[] = [
+// R31-1D: 改为 CloneCategory 类型 (与 useCloneCategories hook 返回值一致)
+const DEFAULT_RANK_CATS: CloneCategory[] = [
   { id: 'xuanhuan', name: '玄幻小说榜' },
   { id: 'xianxia', name: '仙侠小说榜' },
   { id: 'dushi', name: '都市小说榜' },
@@ -74,26 +72,11 @@ function TcToggleHuangjinwu() {
 
 export function HomeClone({ books, loading, navCategoryCount = 8, homeModuleLimit = 12, initialCategories }: HomeCloneProps) {
   const { site, navigate } = usePublic()
-  // R24: SSR 首载用 page.tsx server fetch 的 initialCategories 初始化, 避免 SSR 时 cats=[] → navigation 没分类
-  // huangjinwu 的 sort-section 标题需加“榜”后缀, 与 client fetch 逻辑保持一致
-  const [cats, setCats] = useState<Cat[]>(() => (initialCategories || []).map((c: any) => ({ id: c.id || c.slug || c.name, name: (c.name || c.title || String(c)) + '榜' })))
-
-  // 拉分类列表用于 sort-section 排行榜标题
-  // R24: cats 为空时才 fetch, 避免覆盖 SSR initialCategories 数据
-  useEffect(() => {
-    if (cats.length > 0) return
-    let aborted = false
-    fetch('/api/public/categories?limit=60')
-      .then(r => r.json())
-      .then(d => {
-        if (aborted) return
-        const arr = Array.isArray(d) ? d : (d.data?.items || d.data?.categories || d.items || d.categories || [])
-        const mapped: Cat[] = arr.map((c: any) => ({ id: c.id || c.slug || c.name, name: (c.name || c.title || String(c)) + '榜' }))
-        setCats(mapped.length ? mapped : DEFAULT_RANK_CATS)
-      })
-      .catch(() => { if (!aborted) setCats(DEFAULT_RANK_CATS) })
-    return () => { aborted = true }
-  }, [cats.length])
+  // R31-1D 修复: 用 useCloneCategories hook + mapCatWithBangSuffix 映射
+  // R29-1D worklog 声称重构了本文件, 但实际未改 (仍走 useState+useEffect+fetch);
+  // 现 R31-1D 真正落地, 51/51 clone 全部走 hook, 0 残留.
+  // huangjinwu 的 sort-section 标题需加“榜”后缀, 通过 mapCatWithBangSuffix 实现
+  const cats = useCloneCategories(initialCategories, DEFAULT_RANK_CATS, 60, mapCatWithBangSuffix)
 
   if (loading) return <div className="main-content"><div className="container" style={{ padding: 40, textAlign: 'center' }}>加载中...</div></div>
   if (!books.length) return <div className="main-content"><div className="container empty-state"><p>暂无内容</p></div></div>
@@ -183,7 +166,7 @@ export function HomeClone({ books, loading, navCategoryCount = 8, homeModuleLimi
                 </div>
                 <ul className="navbar-menu" id="navbarMenu">
                   {NAV_ITEMS.map(n => (
-                    <li key={n.id}>
+                    <li key={n.id} className={n.id === 'search' ? 'navbar-menu-search' : undefined}>
                       <a href={n.id === 'home' ? '/' : `/${n.id}`} onClick={(e) => goNav(e, n.id)}>
                         <span className={`menu-icon iconfont ${n.icon}`}></span>
                         <span className="menu-text">{n.name}</span>

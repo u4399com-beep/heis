@@ -72,8 +72,15 @@ const rule: RuleSeed = {
         title: { type: 'css', expression: 'a', attr: 'text' },
         url: { type: 'css', expression: 'a', attr: 'href' },
       },
-      // 目录页 a.next "下一页" → /mulu/{id}.html?page=N; parser 默认 a:contains("下一页") 兜底命中
-      pagination: { enabled: true, maxPages: 100 },
+      // 目录页 a.next "下一页" → /mulu/{id}.html?page=N;
+      // R31-1C: 显式 nextLink=css a.next 钉死源站真实翻页按钮 class(hodei 站
+      //   独立目录页 /mulu/{id}.html 的分页按钮 class="next", 文本"下一页");
+      //   maxPages 100→30 防过深(50章/页 × 30 页 = 1500 章足够, 100 页会占满任务时长)
+      pagination: {
+        enabled: true,
+        maxPages: 30,
+        nextLink: { type: 'css', expression: 'a.next', attr: 'href' },
+      },
     },
     content: {
       enabled: true,

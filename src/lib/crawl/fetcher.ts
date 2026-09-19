@@ -468,9 +468,13 @@ class CookieJar {
     if (merged.size === 0) return ''
     return Array.from(merged.entries()).map(([k, v]) => `${k}=${v}`).join('; ')
   }
-  /** 当前域名已存(未过期)cookie 数(用于判断本次响应是否刚种下新 Cookie) */
+  /** 当前域名已存(未过期)cookie 数(用于判断本次响应是否刚种下新 Cookie)
+   *  R31-1D 修复: 主罐键统一 hostname format(与 get() 的 parentDomainChain 返回格式
+   *  一致)。R29-1D worklog 文档化此修复但代码未实际改动(漏改); 现 R31-1D 真正落地。
+   *  domain 参数仍是 origin format(调用方传 originHost(url)), 内部转 hostname 后查罐 */
   count(domain: string): number {
-    const jar = this.jars.get(domain)
+    const key = hostOf(domain) || domain
+    const jar = this.jars.get(key)
     if (!jar) {
       this.prune()
       return 0
@@ -479,7 +483,7 @@ class CookieJar {
     for (const [k, e] of jar) {
       if (this.fresh(jar, k, e)) n++
     }
-    if (jar.size === 0) this.jars.delete(domain)
+    if (jar.size === 0) this.jars.delete(key)
     else this.prune()
     return n
   }
@@ -541,12 +545,20 @@ class CookieJar {
       }
       const cookieKey = pair.slice(0, idx).trim()
       const cookieVal = pair.slice(idx + 1).trim()
-      // 主罐: 按调用方传入的 request host 存
-      let jar = this.jars.get(domain)
-      if (!jar) { jar = new Map(); this.jars.set(domain, jar) }
+      // R31-1D 修复: 主罐键统一 hostname format(= reqHost, 与 get 的 parentDomainChain 返回
+      //  格式一致)。R29-1D worklog 文档化此修复但代码未实际改动(漏改), 现 R31-1D 真正落地。
+      //  修前: 主罐键用 domain origin format 'https://www.example.com', 而 get 查 hostname
+      //  'www.example.com' → host-only cookie(无 domain= 属性, 如 sessionid)永远拿不到。
+      //  修后: 主罐键 = reqHost (hostname 'www.example.com'), 与 get 一致, host-only 命中。
+      const mainKey = reqHost || domain
+      let jar = this.jars.get(mainKey)
+      if (!jar) { jar = new Map(); this.jars.set(mainKey, jar) }
       jar.set(cookieKey, { v: cookieVal, at: Date.now(), src })
       // 副罐: cookie 自身 domain 属性指定的域(跨子域场景); R6-5 已校验为合法父域
-      if (effectiveCookieDomain && effectiveCookieDomain !== domain) {
+      // R31-1D: 副罐条件比较 effectiveCookieDomain(hostname) !== mainKey(hostname) 而非 domain
+      //  (origin format)。修前两个格式永远不等 → 即使 cookie domain 等于 request host 也会
+      //  建重复副罐(浪费内存)。修后只在跨子域时建副罐(同域不建, 节省内存)。
+      if (effectiveCookieDomain && effectiveCookieDomain !== mainKey) {
         let jar2 = this.jars.get(effectiveCookieDomain)
         if (!jar2) { jar2 = new Map(); this.jars.set(effectiveCookieDomain, jar2) }
         jar2.set(cookieKey, { v: cookieVal, at: Date.now(), src })
@@ -557,14 +569,16 @@ class CookieJar {
   }
   seed(domain: string, cookieStr?: string) {
     if (!cookieStr) return
-    let jar = this.jars.get(domain)
-    if (!jar) { jar = new Map(); this.jars.set(domain, jar) }
+    // R31-1D 修复: 主罐键统一 hostname format(与 store/get/count/clear 一致)
+    const mainKey = hostOf(domain) || domain
+    let jar = this.jars.get(mainKey)
+    if (!jar) { jar = new Map(); this.jars.set(mainKey, jar) }
     // R3-2: 应用与 store() 同口径的 ATTR_NAMES 过滤 —— 否则 seed('Path=/; Secure; HttpOnly')
     // 形态会把"Path/Secure/HttpOnly"当 cookie 名塞进罐, 后续 buildHeaders 拼出 "Path=/; Secure=..."
     // 头发送给服务端, 触发 400。手工 seed 多见于规则配置的 starter cookies, 字面量常含属性声明
     const ATTR_NAMES = new Set(['path', 'domain', 'expires', 'max-age', 'secure', 'httponly', 'samesite'])
     // agent-A-fetcher Bug B48: 同 store() 记录 src, 让 clear() 能精确清扫 seed 的 cookies
-    const src = hostOf(domain) || domain
+    const src = mainKey
     for (const pair of cookieStr.split(';')) {
       const idx = pair.indexOf('=')
       if (idx <= 0) continue
@@ -583,8 +597,9 @@ class CookieJar {
    *  由各自 src 引入的同名 cookie */
   clear(domain: string) {
     const targetSrc = hostOf(domain) || domain
-    // 主罐直接整体删除(本域所有条目 src 都是本域, 不必逐条过滤)
-    this.jars.delete(domain)
+    // R31-1D 修复: 主罐键统一 hostname format(= targetSrc, 与 store 一致)。修前用 domain
+    //  origin format, 与 store 修后的 hostname 主罐键不匹配, clear 不会真正删主罐。
+    this.jars.delete(targetSrc)
     // 副罐: 遍历所有罐, 删除 src 匹配的条目(仅这些是 clear 调用方引入的)
     for (const [, jar] of this.jars) {
       if (jar.size === 0) continue
@@ -629,8 +644,12 @@ class CookieJar {
       if (typeof e.at !== 'number' || typeof e.src !== 'string') continue
       // 跨重启的过期条目跳过(不必恢复又被立刻删除)
       if (Date.now() - e.at >= COOKIE_SESSION_TTL_MS) continue
-      let jar = this.jars.get(e.d)
-      if (!jar) { jar = new Map(); this.jars.set(e.d, jar) }
+      // R31-1D 修复: 主罐键统一 hostname format。旧持久化文件 d 字段可能是 origin format
+      //  (R29-1D 之前 serialize 直接写 domain origin format 键), 现 restore 兼容两种:
+      //  hostOf(e.d) 把 origin 转 hostname; e.d 已是 hostname 时 hostOf 返回自身(catch 分支)。
+      const mainKey = hostOf(e.d) || e.d
+      let jar = this.jars.get(mainKey)
+      if (!jar) { jar = new Map(); this.jars.set(mainKey, jar) }
       jar.set(e.k, { v: e.v, at: e.at, src: e.src })
     }
   }

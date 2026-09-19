@@ -30,7 +30,9 @@ const rule = {
       urlTemplate: 'https://jpxs123.com/',
       itemSelector: { type: 'css', expression: 'div.bk' },
       fields: {
-        title: { type: 'css', expression: 'h3', attr: 'text' },
+        // R31-1C: 字段名应为 'name'(parseList 按 name 入库, 原 'title' 不被引擎消费→
+        //   list 阶段取不到书名, 只能等 book 段补; 改为 name 后 list 段即可展示书名)
+        name: { type: 'css', expression: 'h3', attr: 'text' },
         bookUrl: { type: 'css', expression: 'a', attr: 'href' },
         author: {
           type: 'css', expression: '.booknews', attr: 'text',
@@ -40,7 +42,9 @@ const rule = {
           type: 'css', expression: 'div.infos > p', attr: 'text',
           replaceFrom: '^(简介|簡介)[:：]\\s*', replaceTo: '',
         },
-        cover: { type: 'css', expression: 'img', attr: 'src' },
+        // R31-1C: cover 选择器 'img' 太宽泛(整 div.bk 内首个 img); 站点结构 div.bk > div.pic>img
+        //   为封面, 改为 div.pic img 精确锚定防未来加作者头像/广告图污染
+        cover: { type: 'css', expression: 'div.pic img', attr: 'src' },
       },
       pagination: { enabled: false, maxPages: 1 },
     },
