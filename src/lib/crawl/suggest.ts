@@ -226,10 +226,11 @@ function cacheWrite<T>(cache: Map<string, CacheEntry<T>>, key: string, value: T,
   }
 }
 
-/** 清空 PSEO 缓存(测试/手动刷新用) */
-export function clearPSEOCache(): void {
-  pseoCache.clear()
-}
+// R34-1C 清理: 删除 clearPSEOCache() — 0 外部调用, force 重抓统一走
+// clearPSEOCacheForBook (R13-1C P2 fix 后 clearPSEOCache 全清缓存的设计已弃用,
+// 仅 pseo/route.ts 注释中提及历史 bug 路径). clearPSEOCacheForBook 按 cacheKey 精确
+// 删除, 不会让其他书的 PSEO 落地页失效, 是 force 重抓的唯一正确入口.
+// export function clearPSEOCache(): void { pseoCache.clear() }
 
 /**
  * P2 fix (R13-1C): 仅清空指定书籍的 PSEO 缓存条目(按 cacheKey 精确删除)。
@@ -380,66 +381,9 @@ export async function fetchSuggestKeywordsForBook(
   return result
 }
 
-/**
- * 输出 PSEO 长尾词列表(用于批量生成 landing page)
- * 与 fetchSuggestKeywordsForBook 同源, 但:
- *  - 优先过滤与书名重复的纯词(留作扩展词, 如"凡人修仙传 全文阅读" 等)
- *  - 给每个词的 score 加 PSEO 长尾权重(扩展型词 +5)
- *
- * @param bookName 书名
- * @param author 作者
- * @param category 分类
- * @param limit 返回数量, 默认 30
- */
-export function generatePSEOKeywords(
-  bookName: string,
-  author?: string,
-  category?: string,
-  limit = 30
-): PSEOKeyword[] {
-  // 同步函数: 直接读缓存(若已有 fetchSuggestKeywordsForBook 异步结果), 否则生成基础词
-  // 注: 本函数不主动调引擎(同步要求), 仅在缓存命中时返回缓存结果
-  const cacheKey = `${bookName.trim()}|${(author || '').trim()}|${limit}|${(category || '').trim()}`
-  const cached = cacheRead(pseoCache, cacheKey)
-  if (cached && cached.length > 0) {
-    return cached
-  }
-
-  // 缓存未命中: 生成基础 PSEO 长尾词(无网络请求, 仅本地组合)
-  const name = bookName.trim().slice(0, 30)
-  if (!name) return []
-
-  const templates: { kw: string; src: string; score: number }[] = [
-    { kw: `${name} 小说`, src: 'local', score: 60 },
-    { kw: `${name} 全文阅读`, src: 'local', score: 55 },
-    { kw: `${name} TXT下载`, src: 'local', score: 55 },
-    { kw: `${name} 在线阅读`, src: 'local', score: 50 },
-    { kw: `${name} 最新章节`, src: 'local', score: 50 },
-    { kw: `${name} 无弹窗`, src: 'local', score: 45 },
-    { kw: `${name} 完结`, src: 'local', score: 45 },
-    { kw: `${name} 笔趣阁`, src: 'local', score: 40 },
-    { kw: `${name} 百度云`, src: 'local', score: 40 },
-    { kw: `${name} 下载`, src: 'local', score: 40 },
-  ]
-  if (author && author.trim() && author !== '佚名') {
-    templates.push({ kw: `${name} ${author.trim().slice(0, 20)}`, src: 'local', score: 50 })
-    templates.push({ kw: `${name} ${author.trim().slice(0, 20)} 小说`, src: 'local', score: 48 })
-  }
-  if (category && category.trim()) {
-    templates.push({ kw: `${name} ${category.trim().slice(0, 10)}`, src: 'local', score: 38 })
-    templates.push({ kw: `${category.trim().slice(0, 10)} ${name}`, src: 'local', score: 38 })
-  }
-
-  const seen = new Set<string>()
-  const result: PSEOKeyword[] = []
-  for (const t of templates) {
-    if (isLowQualityKeyword(t.kw)) continue
-    if (seen.has(t.kw)) continue
-    seen.add(t.kw)
-    result.push({ keyword: t.kw, source: t.src, count: 1, score: t.score })
-  }
-  return result.slice(0, limit)
-}
+// R34-1C 清理: 删除 generatePSEOKeywords() 同步版本 — 0 外部调用;
+// pseo/route.ts 自带 generateLocalPSEOTemplate (本地模板兜底, 同等逻辑但独立无缓存).
+// 异步入口 generatePSEOKeywordsAsync 仍保留 (走 fetchSuggestKeywordsForBook 引擎聚合).
 
 /**
  * 异步生成 PSEO 关键词列表(优先用网络聚合结果, 失败回退本地组合)

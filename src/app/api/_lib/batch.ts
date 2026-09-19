@@ -4,10 +4,13 @@
 // ============================================================
 import { isPlainObject } from './http'
 
+// R34-1C 清理: BATCH_MAX_IDS / BATCH_ID_MAX_LEN 改为模块级私有常量
+// (0 外部引用, 仅 parseBatchBody 内部消费; export 仅暴露 API 形状给调用方,
+// 实际边界值变更不应被外部直接 import — 内部消费即可)
 /** 单次批量操作 id 上限 */
-export const BATCH_MAX_IDS = 500
+const BATCH_MAX_IDS = 500
 /** 单个 id 最大长度(全库主键均为 cuid, 64 字符已远超需要) */
-export const BATCH_ID_MAX_LEN = 64
+const BATCH_ID_MAX_LEN = 64
 
 export interface BatchParseOk {
   ok: true

@@ -2245,12 +2245,30 @@ export class TaskRunner {
             // 修前 /\n{2,}/ 只在双换行处分段, trafilatura 单 \n 段落被并成一段 → 整章
             // 内容被压缩成单个 <p> 标签, 段落结构丢失. 现与 cleanContentHtmlAsync 同款
             // split(/\n+/), 单/双换行都视为段间分隔
-            cleaned = trafilaturaText
+            // R34-1B: ① 输出格式按 cfg.plainText 分流(与 cleanContentHtmlAsync 同款, 修前
+            //   一律产 <p>seg</p> HTML, plainText=true 时与 cleanContentHtml 输出口径不一致,
+            //   db 存储 + 公开 read API 直接渲染纯文本会看到 <p> 字面量). ② 空段兜底: 桥
+            //   返回全空白文本(trafilatura 也可能 reject 所有段后返回 ' \n ' 等), split +
+            //   filter(Boolean) 后 segments.length=0, 修前 cleaned 被置为空串 → 原始 cheerio
+            //   结果被静默丢弃. 现先验空, 若全空白不采纳, 保留原始 cleaned(零回归).
+            const segments = trafilaturaText
               .split(/\n+/)
               .map((seg) => seg.replace(/\s+/g, ' ').trim())
               .filter(Boolean)
-              .map((seg) => `<p>${seg.replace(/[<>&]/g, (c) => (c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&amp;'))}</p>`)
-              .join('')
+            if (segments.length === 0) {
+              // 桥返回全空白(段落分类全 reject 后输出 ' \n ' 等): 不采纳, 保留原 cleaned
+              console.warn(`[runner] trafilatura 兜底: 桥返回空白文本(段落全 reject), 不采纳: ${q.url.slice(0, 120)}`)
+            } else if (rule.clean.plainText) {
+              // plainText 模式: 段间 \n\n + 控制字符剥离(与 cleanContentHtml plainText 出口同款)
+              cleaned = segments
+                .join('\n\n')
+                .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\u200B-\u200D\u2060\uFEFF]/g, '')
+            } else {
+              // HTML 模式: 段落包 <p> + 段间无空行 + <>& HTML escape(防注入)
+              cleaned = segments
+                .map((seg) => `<p>${seg.replace(/[<>&]/g, (c) => (c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&amp;'))}</p>`)
+                .join('')
+            }
             console.warn(`[runner] trafilatura 兜底生效(标准结果过短, 用桥提取替代): ${q.url.slice(0, 120)}`)
           }
         }
@@ -2264,7 +2282,23 @@ export class TaskRunner {
       // create 自身失败仍走外层 catch 计 error(真 DB 故障不吞)
       let chId: string | null | undefined = chId0
       if (taskCfg.storageMode === 'txt') {
-        rel = await saveChapterTxt(bookId, q.idx, q.title, cleaned.replace(/<[^>]+>/g, '').replace(/\n{3,}/g, '\n\n'))
+        // R34-1B: HTML→纯文本段落保真 —— 修前 `cleaned.replace(/<[^>]+>/g, '')` 直接剥
+        // 所有标签, cheerio HTML 模式输出 `<p>seg1</p><p>seg2</p>` 中相邻 <p> 间无 \n
+        // (cheerio $.html() 序列化不插空白), 剥后变 `seg1seg2` 段落粘连 → TXT 整章
+        // 内容压成单行, 公开 read API(public/chapter/route.ts line 103 split /\n{2,}/)
+        // 拿不到段间分隔, 整章进单个 <p>. 现 </p>/<div|h[1-6]|li|tr> 等块级闭合标签
+        // 先转 \n\n (段落分隔, 与公开 read API split 口径对齐), <br> 转 \n (段内换行),
+        // 再剥剩余 inline 标签 + 压 3+ 换行为 \n\n. plainText 模式 cleaned 已含 \n\n 分隔,
+        // 走此链零变化(无 <p>/<br> 命中, replace 链幂等). 零回归.
+        // 注: 与 admin/chapters/[id]/route.ts PUT 行 73-78 略有差异(后者 </p> → \n 单换行,
+        // admin GET 视为纯文本展示单换行可读; 但公开 read API split 期望 \n\n, 单换行
+        // 整章压一 <p>, 故 runner 落盘路径必须用 \n\n — 公开 API 兼容优先).
+        const plainBody = cleaned
+          .replace(/<\s*br\s*\/?\s*>/gi, '\n')
+          .replace(/<\/(p|div|h[1-6]|li|tr)>/gi, '\n\n')
+          .replace(/<[^>]+>/g, '')
+          .replace(/\n{3,}/g, '\n\n')
+        rel = await saveChapterTxt(bookId, q.idx, q.title, plainBody)
         if (chId) {
           const updated = await db.chapter.update({
             where: { id: chId },

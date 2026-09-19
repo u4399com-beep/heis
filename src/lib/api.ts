@@ -90,8 +90,6 @@ export class BodyTooLargeError extends Error {
   }
 }
 
-export function num(v: any, def: number): number {
-  if (v == null || v === '') return def
-  const n = Number(v)
-  return isNaN(n) ? def : n
-}
+// R34-1C 清理: 删除 export function num(v, def) — 0 外部 + 0 内部 调用;
+// TaskDialog/TaskWizard/CalibrateDialog 各自有 local num(v) 仅 Number.isFinite 兜底
+// (与本函数语义不同, 无 def 参数); 旧 admin 表单字段已迁移到 _lib/http clampInt + str 消毒.

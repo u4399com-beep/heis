@@ -16,20 +16,40 @@ import { formatWords } from './seo'
 import type { BookItem } from './types'
 
 
-// R24: clone-themes dynamic import 显式 ssr=true — SSR 渲染 clone 组件 DOM (不只 loading fallback)
-// 之前 ssr:false → SSR skeleton + 客户端 JS OOM = 用户看到空白
-// 现在 ssr:true → SSR await chunk 编译 + 渲染 clone 组件 (loading=true 时渲染"加载中", 客户端 hydration 后 useEffect fetch books)
-const HomeClones: Record<string, React.ComponentType<any>> = {
-  'clone-aijjxs': dynamic(() => import('./clone-themes/aijjxs').then(m => m.HomeClone), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
-  'clone-ddyueshu': dynamic(() => import('./clone-themes/ddyueshu').then(m => m.HomeClone), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
-  'clone-pilishuwu': dynamic(() => import('./clone-themes/pilishuwu').then(m => m.HomeClone), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
-  'clone-23qb': dynamic(() => import('./clone-themes/23qb').then(m => m.HomeClone), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
-  'clone-101kks': dynamic(() => import('./clone-themes/101kks').then(m => m.HomeClone), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
-  'clone-huangjinwu': dynamic(() => import('./clone-themes/huangjinwu').then(m => m.HomeClone), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
-  'clone-ggd66': dynamic(() => import('./clone-themes/ggd66').then(m => m.HomeClone), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
-  'clone-shipsay': dynamic(() => import('./clone-themes/shipsay').then(m => m.HomeClone), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
-  'clone-x2552': dynamic(() => import('./clone-themes/x2552').then(m => m.HomeClone), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
-  'clone-trxsw': dynamic(() => import('./clone-themes/trxsw').then(m => m.HomeClone), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
+// R34-1A: clone-themes 按需 dynamic import — 只为当前请求的 layout 创建 dynamic 组件 wrapper
+// 之前: 模块顶层 10 个 dynamic() 立刻求值 → 每次 HomeView 模块加载都创建 10 个 wrapper (内存浪费)
+// 现在: cloneLoaders 只是个函数引用表 (零开销), getClone(layout) 首次调用才 dynamic() 并缓存
+// SSR 行为不变 (ssr=true 让 SSR 渲染 clone DOM, 防 ssr=false 客户端 JS OOM 空白);
+// webpack 仍会为 10 个 import() 各建一个 async chunk (源码静态分析必要), 但模块
+// 顶层求值从 10 次 dynamic() 调用降到 0, 渲染时也只创建 1 个 wrapper (per layout 缓存)
+type CloneHomeModule = { HomeClone: React.ComponentType<any> }
+const cloneLoaders: Record<string, () => Promise<CloneHomeModule>> = {
+  'clone-aijjxs': () => import('./clone-themes/aijjxs'),
+  'clone-ddyueshu': () => import('./clone-themes/ddyueshu'),
+  'clone-pilishuwu': () => import('./clone-themes/pilishuwu'),
+  'clone-23qb': () => import('./clone-themes/23qb'),
+  'clone-101kks': () => import('./clone-themes/101kks'),
+  'clone-huangjinwu': () => import('./clone-themes/huangjinwu'),
+  'clone-ggd66': () => import('./clone-themes/ggd66'),
+  'clone-shipsay': () => import('./clone-themes/shipsay'),
+  'clone-x2552': () => import('./clone-themes/x2552'),
+  'clone-trxsw': () => import('./clone-themes/trxsw'),
+}
+const cloneHomeCache = new Map<string, React.ComponentType<any>>()
+function getCloneHome(layout: string): React.ComponentType<any> | undefined {
+  const loader = cloneLoaders[layout]
+  if (!loader) return undefined
+  let cached = cloneHomeCache.get(layout)
+  if (!cached) {
+    // dynamic() 接收的 loader 必须 return 模块 (含 default 或具名 export);
+    // cloneLoaders 返回 { HomeClone } 具名 export → unwrap 出来给 dynamic
+    cached = dynamic(() => loader().then(m => m.HomeClone), {
+      ssr: true,
+      loading: () => <BookGridSkeleton count={12} />,
+    })
+    cloneHomeCache.set(layout, cached)
+  }
+  return cached
 }
 
 interface FetchState { key: string; data?: BooksData; error?: string }
@@ -97,11 +117,14 @@ export function HomeView({ page, cat, initialBooks, initialCategories }: { page:
     }], [origin, site.id, site.name, site.description]),
   })
   const books: BookItem[] = data?.books || []
-  const Clone = HomeClones[theme.layout]
+  // R34-1A: getCloneHome 在 cloneHomeCache (module 级 Map) 缓存, 同 layout 跨渲染返回同一实例
+  // (不会每次渲染重建 → state 不重置); 首次调用时 dynamic() 创建 wrapper 是 lazy init 模式
+  const Clone = getCloneHome(theme.layout)
   // R24: clone-* 主题完全接管首页 — 不渲染通用 wrapper/SuggestTagCloud/CategoryShowcase/排序按钮/热门标签
   // 源站首页有自己的 header/navigation/分类区块, 通用组件会遮盖源站布局
   if (Clone) {
     return (
+      // eslint-disable-next-line react-hooks/static-components -- Clone 来自 module 级缓存, 同 layout 跨渲染稳定
       <Clone books={books} loading={loading}
         navCategoryCount={(site as any).navCategoryCount}
         homeModuleLimit={(site as any).homeModuleLimit}

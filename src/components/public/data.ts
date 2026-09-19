@@ -118,17 +118,10 @@ export function fetchBookPSEOKeywords(bookId: string): Promise<BookPSEOData> {
   return get<BookPSEOData>(`/api/public/keyword?book=${encodeURIComponent(bookId)}`)
 }
 
-/** R13-1A: 关键词聚合 — 调用 suggest 引擎返回某词的相关搜索词(用于 KeywordView 底部"相关搜索") */
-export async function fetchRelatedKeywords(keyword: string): Promise<string[]> {
-  try {
-    const res = await fetch(`/api/public/keyword/suggest?kw=${encodeURIComponent(keyword)}`, { cache: 'no-store' })
-    const j: { ok?: boolean; data?: { words?: unknown } } = await res.json().catch(() => null)
-    if (!j?.ok || !j.data || !Array.isArray(j.data.words)) return []
-    return (j.data.words as unknown[]).filter((t): t is string => typeof t === 'string' && !!t.trim()).slice(0, 12)
-  } catch {
-    return []
-  }
-}
+// R34-1C 清理: 删除 fetchRelatedKeywords() — 0 外部调用;
+// 历史功能 (R13-1A 引入, 供 KeywordView 底部"相关搜索"使用) 后被
+// fetchKeyword 的 related 字段 + TagCloud 渲染替代, 现在 KeywordView 不再调用本函数.
+// export async function fetchRelatedKeywords(keyword: string): Promise<string[]> { ... }
 
 // ---------------- 页脚友链/链轮 ----------------
 

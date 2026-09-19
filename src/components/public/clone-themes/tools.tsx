@@ -5,7 +5,7 @@
 'use client'
 
 import { useCallback, useEffect, useSyncExternalStore } from 'react'
-import { s2t, t2s } from './s2t-table'
+import { s2t } from './s2t-table'
 
 // ============================================================
 // 收藏本站 — 跨浏览器 addFavorite + 兜底 alert
@@ -30,9 +30,6 @@ export function addFavoriteSite(e?: React.MouseEvent | React.FormEvent | React.K
   const key = isMac ? '⌘+D' : 'Ctrl+D'
   alert(`请按下 ${key} 收藏本站 (将本页加入浏览器书签)`)
 }
-
-/** 给 <a> 加 onClick, 同时设置 href="#favorite" 防止跳转, 屏蔽 SSR `window` 访问 */
-export const favoriteClick = (e: React.MouseEvent) => addFavoriteSite(e)
 
 // ============================================================
 // 简繁切换 Hook — localStorage 持久化偏好 + body 文字节点替换
@@ -75,14 +72,14 @@ function restoreTextSimplified(t: Text): void {
   if (orig !== undefined && t.nodeValue !== orig) t.nodeValue = orig
 }
 
-// 全 body 应用繁体
-export function applyTraditionalToBody(): void {
+// 全 body 应用繁体 (R34-1C: 内部使用, 不需 export)
+function applyTraditionalToBody(): void {
   if (typeof document === 'undefined' || !document.body) return
   walkTextNodes(document.body, convertTextTc)
 }
 
-// 全 body 恢复简体
-export function restoreSimplifiedFromBody(): void {
+// 全 body 恢复简体 (R34-1C: 内部使用, 不需 export)
+function restoreSimplifiedFromBody(): void {
   if (typeof document === 'undefined' || !document.body) return
   walkTextNodes(document.body, restoreTextSimplified)
 }
@@ -196,73 +193,7 @@ function getTcServerSnapshot(): boolean {
 }
 
 // ============================================================
-// 可复用工具按钮 — 各主题可选用, 也可直接调用 addFavoriteSite/useTraditionalChinese
-// 默认样式偏简体站点风格, 各主题可 wrap 改 className
-// ============================================================
-
-/** 收藏本站 (Ctrl+D) 按钮 — 默认渲染成 <a href> 文字链接 */
-export function FavoriteLink({
-  children = '收藏本站',
-  className,
-  title = '收藏本站 (Ctrl+D)',
-  href = '#favorite',
-}: {
-  children?: React.ReactNode
-  className?: string
-  title?: string
-  href?: string
-}) {
-  return (
-    <a href={href} title={title} onClick={favoriteClick} className={className}>
-      {children}
-    </a>
-  )
-}
-
-/** 简繁切换按钮 — 默认渲染成 <a href> 文字链接, 标签随状态切换 */
-export function TcToggleLink({
-  className,
-  tcLabel = '简体',
-  scLabel = '繁體',
-  title = '简繁切换',
-  href = '#tc-toggle',
-}: {
-  className?: string
-  /** 处于繁体时显示的文案 (点击切回简体) */
-  tcLabel?: string
-  /** 处于简体时显示的文案 (点击切到繁体) */
-  scLabel?: string
-  title?: string
-  href?: string
-}) {
-  const { isTc, mounted, toggleTc } = useTraditionalChinese()
-  // SSR/CSR 一致: 简体时显示 scLabel (繁體), 繁体时显示 tcLabel (简体)
-  // mount 前永远显示简体态 (scLabel), 避免水合不匹配
-  const label = mounted && isTc ? tcLabel : scLabel
-  return (
-    <a
-      href={href}
-      title={title}
-      onClick={(e) => { e.preventDefault(); toggleTc() }}
-      className={className}
-      data-tc-state={mounted && isTc ? '1' : '0'}
-    >
-      {label}
-    </a>
-  )
-}
-
-/** 给 101kks/x2552 等已存在 .lang .zh_click DOM 的主题: 调用 setTc(false/true) */
-export function useTcControls() {
-  const { setTc, isTc, mounted } = useTraditionalChinese()
-  return {
-    isTc,
-    mounted,
-    toSimplified: () => setTc(false),
-    toTraditional: () => setTc(true),
-    toggle: () => setTc(!isTc),
-  }
-}
-
-// 供需要反向转换 (繁体站正文) 时用
-export { s2t, t2s }
+// R34-1C 清理: 删除 FavoriteLink / TcToggleLink / useTcControls / favoriteClick /
+//              export { s2t, t2s } 重导出 — 0 外部引用, 各 clone-* 主题自行用 <a onClick={...}
+//              inline 实现收藏/简繁切换按钮 (1:1 复刻源站 DOM 结构).
+//              addFavoriteSite / useTraditionalChinese 仍 export 供各主题使用.

@@ -11,8 +11,8 @@
 //   5) child(bindings) → 子 logger 注入额外上下文 (如 {module:'fetcher'})
 //   6) globalThis.__heisLogger 单例 (Next.js dev HMR 安全, 模块热重载不重建)
 //
-// 通过 LOG_LEVEL 环境变量控制输出层级
-// (默认 dev=debug, prod=info; setLogLevel 可运行时调整)
+// 通过 LOG_LEVEL 环境变量控制输出层级 (默认 dev=debug, prod=info)
+// R34-1C: 删除 setLevel/getLevel class method + standalone export child() — 0 外部调用
 // ============================================================
 
 export enum LogLevel {
@@ -131,15 +131,6 @@ export class Logger {
     this.bindings = bindings
   }
 
-  /** 调整日志级别 (运行时; 也可通过 LOG_LEVEL 环境变量初始化) */
-  setLevel(level: LogLevel): void {
-    this.level = level
-  }
-
-  getLevel(): LogLevel {
-    return this.level
-  }
-
   /** 创建子 logger: 注入额外上下文字段 (合并父 bindings) */
   child(bindings: Record<string, unknown>): Logger {
     return new Logger(this.level, { ...this.bindings, ...bindings })
@@ -203,7 +194,6 @@ export function withReqId(reqId: string): Logger {
   return logger.withReqId(reqId)
 }
 
-/** 创建携带额外上下文的子 logger (如 logger.child({ module: 'fetcher' })) */
-export function child(bindings: Record<string, unknown>): Logger {
-  return logger.child(bindings)
-}
+// R34-1C 清理: 删除 standalone export function child(bindings) — 0 外部调用;
+// class method Logger.child 仍保留 (withReqId 内部用 this.child({reqId}));
+// 外部代码直接用 logger.child({...}) 或 withReqId(reqId) 走 class 方法即可.

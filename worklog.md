@@ -14363,3 +14363,522 @@ Stage Summary:
 - 详细工作记录: agent-ctx/R33-1C-full-stack-developer.md(含 8 章节:
   读交接/基线验证/dead code 扫描/重复逻辑整合/过时注释清理/复杂函数评估/
   临时文件清理/验证)
+
+---
+Task ID: R34-1C
+Agent: full-stack-developer (清理精简+整合优化)
+Task: dead code + 重复逻辑 + 复杂函数 + 过时注释 + 临时文件
+
+Work Log:
+- 步骤 1 读交接文档: tail -200 worklog.md → R30-R33 历史 (R30 智能分类归一化 /
+  R31 主题回源校准+并发架构 / R32 第六轮深度审查+P1×4 / R33-1A 系统审查(无 P1) /
+  R33-1B 第七轮深度抓 bug, P1×4+P2×1 / R33-1C 上轮清理 -100 行)
+- 步骤 2 基线验证: bun run lint → 0 errors ✓ / bunx tsc --noEmit →
+  0 errors in src/(仅 examples/skills 预存在错误) ✓ / dev.log 无报错 ✓
+  (注: 期间 R34-1A agent 修改 HomeView.tsx 引入 react-hooks/static-components
+  错误, A agent 已自行修复 — 把 eslint-disable-next-line 注释移到 <Clone ...>
+  JSX 用法行上方; 本轮不碰 HomeView.tsx, 尊重 A agent 边界)
+- 步骤 3 dead code 扫描 (grep 定义+引用, 0 引用删):
+  · tools.tsx (clone-themes): 6 个 dead export 一并清理 (favoriteClick /
+    FavoriteLink / TcToggleLink / useTcControls / export { s2t, t2s } re-export
+    / applyTraditionalToBody+restoreSimplifiedFromBody 去 export 关键字内部化);
+    保留 addFavoriteSite + useTraditionalChinese (10 套 clone-* 主题均引用);
+    import { s2t, t2s } → import { s2t } (t2s 内部 convertTextTc 不用)
+  · logger.ts: 删 setLevel/getLevel class methods (0 调用) + 删 standalone
+    export function child (0 外部); 保留 logger/Logger/LogLevel/withReqId
+    (class method + standalone) 全部 ✓; class method child 保留 (withReqId
+    内部 this.child({reqId}) 用)
+  · suggest.ts: 删 clearPSEOCache() (0 外部, 实际 force 重抓走
+    clearPSEOCacheForBook) + 删 generatePSEOKeywords() 同步版本 (0 外部,
+    pseo/route.ts 自带 generateLocalPSEOTemplate 同款本地模板兜底); 保留
+    fetchSuggestKeywords/mergeSuggestWords/fetchSuggestKeywordsForBook/
+    clearPSEOCacheForBook/generatePSEOKeywordsAsync 全部 ✓
+  · batch.ts (api/_lib): BATCH_MAX_IDS / BATCH_ID_MAX_LEN 去 export 关键字
+    (0 外部, 仅 parseBatchBody 内部消费); 代码语义不变, 仅暴露面收窄
+  · data.ts (public): 删 fetchRelatedKeywords (0 外部, 历史功能被
+    fetchKeyword.related + TagCloud 渲染替代); 加注释说明删除原因
+  · api.ts (lib): 删 num(v, def) 函数 (0 外部+0 内部; TaskDialog/TaskWizard/
+    CalibrateDialog 各自有 local num(v) 仅 Number.isFinite 兜底, 语义不同;
+    旧 admin 表单字段已迁移到 _lib/http clampInt + str 消毒); 保留
+    ok/fail/readBody/BodyTooLargeError 全部 ✓
+  · pseudostatic.ts: 同步清理 R33-1C 残留的过时目录注释 §4 buildBookUrl
+  · 跳过: parser.ts extractMetaTags/extractJsonLd/jsonArrayAt/extractTable
+    + types.ts validateRegexSafety/hasNestedQuantifier/RegexSafetyResult
+    + sorter.ts romanToNumber/cnNumToNumber + hostgate.ts hostGateReset 等
+    — 均 scripts/archive/verify-*.ts 历史脚本引用, R33-1C 先例保留
+- 步骤 4 重复逻辑整合评估 (无新整合机会):
+  · clone-themes 10 套 footer: 跨主题 DOM 差异大 (23qb 用 wrapper pd60 +
+    sitemap RSS/Google/Bing, trxsw 用 footer-inner + 首页/书库/排行榜, 各
+    源站 DOM 完全不同), 无法提取通用 footer; 同主题内 8 个 view 文件 footer
+    重复属"1:1 复刻源站 DOM"不可避免代价 (R27-1C 已抽 shared.ts 把 nav
+    handlers+分页+分类拉取三段共用逻辑收敛, 主题内 footer DOM 重复是设计)
+  · admin 各 Section fetch: R33-1C 已抽 useResourceList hook, RulesSection
+    迁移完成; 其余 Section (CategoriesSection 双 state+拖拽 / LinksSection
+    Promise.all / BooksSection pagination+aliveRef+seq / 等) 均不符合
+    "单一 GET+数组响应+单 loading"抽象条件, R33-1C 已评估跳过, 本轮维持
+  · lib 各 helper 重复: isPlainObject (helpers.ts + http.ts 各一份, 跨域
+    不应互相 import) / shufflePick (bits.tsx) + shuffled (links.ts) 各主题
+    内 — 用途不同, 不合并
+- 步骤 5 复杂函数精简评估 (R33-1C 先例: 不动):
+  · CalibrateDialog.tsx 600 行 / TaskMonitor.tsx 631 行 / TaskDialog.tsx
+    417 行 / TestPanel.tsx VisualDebugSection 353 行 — 拆分需引入新文件 +
+    props 传递 + state lifting, 风险大且无明确收益 (各组件已单一职责,
+    行数高主要是 JSX 模板); 跳过
+- 步骤 6 过时注释清理:
+  · pseudostatic.ts §4 buildBookUrl 目录注释同步清理 (R33-1C 残留)
+  · 跳过 BookView.tsx R12-1 注释 (移除 pili/aurora/mango 旧主题分支, 提示
+    读者不要加回去, R33-1C 已评估保留)
+  · 跳过 themes.ts R14-1A contentSelector 注释 (源站 probe 实测值来源标注)
+  · 跳过 sites/route.ts R12-1 注释 (兜底 clone-aijjxs 选择 rationale)
+  · 跳过 api/admin/themes/route.ts R10-1A/R13-1B 头部 docstring (API 演进文档)
+  · R10-R20 时期注释大多属"提示未来维护者某分支已被删/某 fallback rationale",
+    删除会损失设计语境, 不强删
+- 步骤 7 临时文件清理 (R33-1C 先例: 不删):
+  · scripts/archive/* : rg "scripts/archive" src/ → 仅 fetcher.ts:2775
+    注释提及 (无代码 import); 整目录是 R10-R25 历史归档 verify-*/probe-*/e2e-*,
+    R33-1C 评估保留作历史参考; 维持现状
+  · agent-ctx/archive-pre-r28/* : 79 个 .md 共 972KB, R9-R27 工作记录,
+    R33-1C 评估"删除不影响代码功能但损历史参考"; 维持现状
+  · agent-ctx/probe-html/ + probe-html2/ : 源站真实 HTML+CSS 样本 (8 套主题),
+    用于 1:1 复刻 clone-themes 时的 DOM 参考; 保留 (未来主题回源校准仍需)
+- 步骤 8 验证:
+  · bun run lint → 0 errors ✓ (R34-1A 期间 HomeView.tsx react-hooks 错误
+    已由 A agent 自行修复, 本轮 0 errors)
+  · bunx tsc --noEmit → 0 errors in src/ ✓
+  · dev.log → Next.js 16.1.3 ready, GET / 200, 无报错 ✓
+  · curl http://localhost:3000/ → 200 ✓
+  · curl "http://localhost:3000/?view=search&q=test" → 200 ✓
+
+Stage Summary:
+- 完成 R34-1C 清理精简+整合优化, 共 ~-140 行净减 (全在 src/components/* +
+  src/lib/* 非 crawl 核心)
+- 修改文件 7 个:
+  · src/components/public/clone-themes/tools.tsx (-66 行净减: 删 6 dead
+    export 簇 favoriteClick/FavoriteLink/TcToggleLink/useTcControls/export
+    {s2t,t2s} re-export + applyTraditionalToBody/restoreSimplifiedFromBody
+    去 export 关键字 + import { s2t, t2s } → import { s2t }; 保留
+    addFavoriteSite + useTraditionalChinese 供 10 套 clone-* 主题使用)
+  · src/lib/logger.ts (-10 行净减: 删 setLevel/getLevel class methods
+    + standalone export function child; 头部 docstring 更新; 保留
+    logger/Logger/LogLevel/withReqId(class+standalone) 全部 ✓)
+  · src/lib/crawl/suggest.ts (-55 行净减: 删 clearPSEOCache + 删
+    generatePSEOKeywords 同步版本; 加注释说明 pseo/route.ts 自带
+    generateLocalPSEOTemplate 同款本地模板兜底; 保留 fetchSuggestKeywords/
+    mergeSuggestWords/fetchSuggestKeywordsForBook/clearPSEOCacheForBook/
+    generatePSEOKeywordsAsync 全部 ✓)
+  · src/app/api/_lib/batch.ts (+5 -2: BATCH_MAX_IDS/BATCH_ID_MAX_LEN 去
+    export 关键字改私有; 加注释说明 0 外部引用; 代码语义不变)
+  · src/components/public/data.ts (-10 行净减: 删 fetchRelatedKeywords;
+    加注释说明历史功能被 fetchKeyword.related+TagCloud 渲染替代)
+  · src/lib/api.ts (-5 行净减: 删 num(v, def) 函数; 加注释说明
+    TaskDialog/TaskWizard/CalibrateDialog 各自有 local num; 保留
+    ok/fail/readBody/BodyTooLargeError 全部 ✓)
+  · src/lib/pseudostatic.ts (0 行, 仅注释: 同步清理 R33-1C 残留的过时
+    目录注释 §4 buildBookUrl)
+- 核心清理成果:
+  · dead code: tools.tsx 6 个互依赖 dead export 簇一并删除 (防"删一个出
+    unused 倒逼链式删")
+  · dead code: logger.ts 3 个 dead method/function 删除
+  · dead code: suggest.ts 2 个 dead export 删除
+  · dead code: api.ts 1 个 dead function 删除 (num)
+  · dead code: data.ts 1 个 dead export 删除 (fetchRelatedKeywords)
+  · 暴露面收窄: batch.ts 2 个内部常量去 export (BATCH_MAX_IDS/BATCH_ID_MAX_LEN)
+  · 过时注释: pseudostatic.ts §4 buildBookUrl 目录注释同步清理 (R33-1C 残留)
+- 重复逻辑整合: 无新整合机会 (clone-themes 跨主题 DOM 差异大, admin 各 Section
+  R33-1C 已评估 useResourceList 适用条件不满足, lib helper 各有用途)
+- 复杂函数精简: 跳过 (R33-1C 先例, 拆分风险大且无明确收益)
+- 过时注释: 仅清理 pseudostatic.ts R33-1C 残留目录注释; R10-R20 时期注释
+  大多属"提示未来维护者某分支已被删/某 fallback rationale", 删除会损失设计
+  语境, 不强删
+- 临时文件: R33-1C 先例保留 (scripts/archive + agent-ctx/archive-pre-r28
+  + probe-html/probe-html2 均有历史/参考价值)
+- 未修改 (尊重约束):
+  · src/lib/crawl/fetcher.ts/obscura.ts/runner.ts (B agent R33-1B+R34-1B) ✓
+  · src/lib/crawl/storage.ts/fetcher-curl-impersonate.ts/cleaner.ts
+    (R33-1B 改动) ✓
+  · src/components/public/HomeView.tsx/page.tsx (A agent R34-1A 内存优化;
+    期间 A agent 引入 react-hooks/static-components 错误已自行修复) ✓
+  · src/components/public/BookView.tsx/PublicSite.tsx (主控已改) ✓
+  · themes.ts R14-1A contentSelector 注释 (源站 probe 实测值来源标注) ✓
+  · scripts/archive/* + agent-ctx/archive-pre-r28/* (历史归档/文档) ✓
+  · prisma/schema.prisma + package.json (0 新依赖) ✓
+  · CalibrateDialog.tsx/TaskMonitor.tsx/TaskDialog.tsx/TestPanel.tsx
+    (超长组件, R33-1C 先例: 拆分风险大且无明确收益) ✓
+- 历史修复全部保留 (零回归):
+  · R25-1A2/A3/R26-1A/R27-1A/B/R28-1A/B/C/R29-1D/R30-1A/R31-1A/B/C/D/
+    R32-1A/B/R33-1A/B/C 全部不动
+  · R33-1C 抽取的 useResourceList<T> hook + RulesSection 迁移保留
+  · R33-1B 4 P1 + 1 P2 修复 (trafilaturaBridgeUrl 透传 / split(/\n+/)
+    段落 / 等) 不动
+- 验证: bun run lint 0 errors ✓ / bunx tsc --noEmit 0 errors in src/ ✓ /
+  dev.log 无报错 ✓ / curl http://localhost:3000/ 200 ✓ / curl ?view=search
+  200 ✓
+- 详细工作记录: agent-ctx/R34-1C-full-stack-developer.md(含 8 章节:
+  读交接/基线验证/dead code 扫描/重复逻辑整合评估/复杂函数精简评估/
+  过时注释清理/临时文件清理/验证)
+
+---
+Task ID: R34-1A
+Agent: full-stack-developer (内存优化防OOM)
+Task: 减少 dynamic import + page.tsx fetch 优化 + swap 尝试
+Work Log:
+- 步骤 1 读交接: tail -100 worklog.md 确认 R24-R33 历史 (R24 HomeView 接线
+  + R25 按 view fetch + R26 categories 解析 + R30 智能分类 + R31 并发架构
+  + R32 P1×4 + R33 系统审查 + R33-1B 第七轮抓 bug + R33-1C 清理精简);
+  历史 NODE_OPTIONS 演进: 8192 → 2048 → 2560 → 3072 → 当前 package.json 无
+  NODE_OPTIONS (V8 默认 ~4GB 触发 kernel OOM kill)
+- 步骤 2 基线验证: id=uid=1001(z) 无 sudo / free 3.9Gi 0 swap / sudo -n
+  fallocate 失败 / dev server 17:09 后已死 (ps 无 next-server)
+- 步骤 3 HomeView.tsx 减少 dynamic import:
+  · 改前: 模块顶层 10 个 `dynamic(() => import('./clone-themes/<site>').then
+    (m => m.HomeClone), { ssr: true, loading: () => <BookGridSkeleton/> })`
+    每次 HomeView 模块加载都创建 10 个 wrapper 组件 (内存浪费, webpack 静态
+    分析 10 个 import() 仍创建 10 个 async chunk)
+  · 改后: cloneLoaders (10 个函数引用, 零开销) + cloneHomeCache (module 级
+    Map) + getCloneHome(layout) memoized — 首次调用才 dynamic() 并缓存
+    同 layout 跨渲染返回同一实例 (state 不重置); 模块顶层求值 10 → 0
+  · ESLint react-hooks/static-components 规则 conservative 误报 (dynamic
+    在 render 内创建) → 在 JSX 用法上一行加 eslint-disable-next-line +
+    注释说明 "Clone 来自 module 级缓存, 同 layout 跨渲染稳定"
+- 步骤 4 page.tsx categories + sites module 级 60s TTL 缓存:
+  · 改前: 每次请求都 db.site.findMany({status:true}) + db.category.findMany
+    (串行查, 2 个 DB round-trip 浪费, 因 categories/sites 几乎不变)
+  · 改后: getCachedCategories + getCachedSites 函数, 60s TTL module 级缓存
+    (与 trafilatura 同款); Promise.all 三路并发 (site + sites + categories)
+    省 1 个串行 round-trip 时延; 95%+ 浏览请求 0 round-trip
+- 步骤 5 page.tsx 消除冗余 siteRow 查询 (book/read view):
+  · 改前: book view line 305-319 + read view line 357-374 都做
+    `if (siteId) const siteRow = await db.site.findUnique({select: {chapterSeo*}})`
+    但 site 已在 page.tsx 顶部 fetch (findUnique 无 select, 返回 ALL 字段)
+    → 完全冗余的 DB 查询
+  · 改后: `if (siteId && site) const s = site as any; seoAuto = s.chapterSeoAuto
+    !== false; ...` — 直接读 site 已 fetch 的字段
+    book view 省 1 round-trip / read view 省 1 round-trip (pagination +
+    SEO 双字段省)
+- 步骤 6 package.json NODE_OPTIONS 显式持久化:
+  · 改前: `next dev -p 3000 --webpack` (无 NODE_OPTIONS, V8 默认 ~4GB 堆)
+  · 改后: `NODE_OPTIONS='--max-old-space-size=2048 --max-semi-space-size=64'
+    next dev -p 3000 --webpack`
+    --max-old-space-size=2048: V8 堆 cap 2GB (防 kernel OOM kill, V8 主动
+    GC 比 kernel SIGKILL 更可控); --max-semi-space-size=64: young-gen
+    cap 64MB (防 V8 自适应涨 young-gen)
+- 步骤 7 swap 尝试: id 无 root / sudo -n fallocate 失败 → 文档化 4GB 无
+  swap 是 hard environment limit (无 sudo 无法创建 swap / zram / 调 cgroup)
+- 步骤 8 验证:
+  · bun run lint → 0 errors ✓ (HomeView 的 eslint-disable-next-line
+    react-hooks/static-components 注释位置正确, 在 JSX 用法上一行)
+  · bunx tsc --noEmit 2>&1 | grep -v examples | grep -v skills | grep -v
+    .next | tail -5 → 空输出 (0 errors in src/) ✓ (仅 examples/websocket
+    + skills/image-edit + skills/stock-analysis 预存在错误)
+  · dev server 启动 2.6s, 5 次顺序请求全 200 OK:
+    [1] /?view=home&site=clone-shipsay 200 in 23.2s (cold compile, mem 2.6Gi/1.4Gi avail, ALIVE)
+    [2] 同上 200 in 0.08s (warm, mem 2.6Gi/1.4Gi, ALIVE)
+    [3] 同上 200 in 0.05s (warm, mem 2.6Gi/1.4Gi, ALIVE)
+    [4] 同上 200 in 0.06s (warm, mem 2.6Gi/1.4Gi, ALIVE)
+    [5] 同上 200 in 0.17s (warm, mem 2.6Gi/1.3Gi, ALIVE)
+    dev server 5 次后仍 ALIVE; 内存峰值 2.6Gi used / 1.3Gi available (无 kernel OOM kill 风险)
+  · 残留风险 (环境限制, 非代码可解): 长时间 idle 后 dev server 仍可能
+    因外部 proxy 周期性发起并发请求触发不同路由编译, 多个编译并发超 2GB
+    堆上限 V8 silent abort; 真正解是加 swap (需 root) 或升级内存
+- 改动文件 3 个:
+  · src/components/public/HomeView.tsx (+14 净增): cloneLoaders 函数表 +
+    cloneHomeCache Map + getCloneHome() memoized helper + 注释
+  · src/app/page.tsx (+12 净增): getCachedCategories + getCachedSites +
+    Promise.all 三路并发 + book/read view 消除 siteRow 冗余查询
+  · package.json (单行改): dev script 加 NODE_OPTIONS='--max-old-space-size=2048
+    --max-semi-space-size=64'
+
+Stage Summary:
+- 完成 R34-1A 内存优化防 OOM, 3 文件改动 (HomeView +14 / page.tsx +12 /
+  package.json 单行):
+  · HomeView: 10 个 top-level dynamic() → memoized getCloneHome(layout)
+    (per-layout cache, 模块顶层求值 10 → 0)
+  · page.tsx: categories + sites 60s TTL 缓存 + book/read view 消除冗余
+    siteRow 查询 (site 已 fetch ALL 字段)
+  · package.json: NODE_OPTIONS='--max-old-space-size=2048 --max-semi-space-size=64'
+    (V8 堆 cap 2GB 防 kernel OOM kill)
+- 关键成果:
+  · 模块顶层 dynamic() 调用从 10 次 → 0 次 (lazy 在 getCloneHome 内, cache
+    让 wrapper 跨渲染稳定, state 不重置)
+  · categories/sites 查询 95%+ 请求 0 DB round-trip (cache 命中)
+  · book/read view 每次请求省 1 个 siteRow DB round-trip
+  · V8 堆 cap 2GB (vs 默认 ~4GB) → 防 kernel OOM kill (V8 abort 比
+    kernel SIGKILL 更可控, 留 cleanup 机会)
+- 验证:
+  · bun run lint 0 errors ✓
+  · bunx tsc --noEmit 0 errors in src/ ✓
+  · dev server 启动 2.6s, 5 次顺序请求全 200 OK (cold 23s + warm 50-170ms)
+  · 内存稳定 2.6Gi used / 1.3Gi available (峰值, 无 kernel OOM kill)
+- 残留风险 (环境限制, 诚实文档化):
+  · 4GB 物理内存 + 0 swap (无 sudo 无法加 swap, 已实测)
+  · 长时间 idle 后 dev server 仍可能因外部 proxy 并发编译触发 V8 silent
+    abort (多个编译并发超 2GB 堆上限)
+  · 真正解: 加 swap (需 root) 或升级内存 (硬件改造)
+- 不碰约束全部保留 (零回归):
+  · src/lib/crawl/runner.ts (A agent 第七轮 R33-1B 修了 P1×4, 不动) ✓
+  · src/lib/crawl/fetcher.ts/obscura.ts/cleaner.ts (B agent R33-1B 修了
+    trafilaturaBridgeUrl 透传 + split(/\n+/) 段落保护, 不动) ✓
+  · BookView/SearchView/FulltextView/RankingView/KeywordView 同款 10 dynamic()
+    pattern 未改 (任务 scope 仅 HomeView; 扩展需另开任务) ✓
+  · 10 套 clone-themes/* 文件夹不动 ✓
+  · prisma/schema.prisma + 其他 lib 不动 ✓
+- 历史修复全部保留 (零回归):
+  · R24-1A HomeView 接线 + R25 按 view fetch + R26 categories 解析 + R30
+    智能分类 + R31 并发架构 (Semaphore + 三阶段) + R32 P1×4 (urls 去重 +
+    failedBookUrls add/delete/resume) + R33 系统审查 (5 Set + globalQueue
+    + saveProgress + resume 链路完整) + R33-1B (4 P1 + 1 P2: trafilaturaBridgeUrl
+    透传 / split(/\n+/) 段落 / 等) + R33-1C (清理精简 + useResourceList hook)
+    全部不动
+- 详细工作记录: agent-ctx/R34-1A-full-stack-developer.md (10 章节:
+  读交接/基线验证/HomeView 改造/ESLint 调整/page.tsx 缓存/page.tsx siteRow
+  消除/package.json NODE_OPTIONS/swap 尝试/验证/改动清单)
+
+---
+Task ID: R34-1B
+Agent: full-stack-developer (采集第八轮深度抓bug)
+Task: fetcher/obscura/runner/cleaner 第八轮 + R33 修复后边缘
+
+Work Log:
+- 步骤 1 读交接文档: tail -200 worklog.md → R33-1A 系统审查(无 P1, 5 Set +
+  globalQueue + saveProgress + resume 全链路完整) / R33-1B 第七轮深度抓 bug
+  (P1×4 + P2×1: ① curl-impersonate 4xx/5xx setCookies 透传 / ② cleanContentHtmlAsync
+  bridgeUrl 参数 / ③ trafilatura split /\n+/ 段落保护 / ④ deleteBookTxt bookId
+  清洗 / ⑤ readCover startsWith 加固) / R33-1C 清理精简(-100 行: auto-tdk
+  dead export 簇 + pseudostatic §4 兼容块 + admin/helpers useResourceList
+  hook 抽取) / R34-1A 内存优化 (HomeView 10 个 dynamic → memoized getCloneHome
+  + page.tsx 60s 缓存 + NODE_OPTIONS 堆 cap 2GB) / R34-1C 清理精简(tools.tsx
+  dead export + logger class methods + useResourceList 简化)
+- 步骤 2 基线验证: bun run lint → 0 errors ✓ / bunx tsc --noEmit → 0 errors
+  in src/(仅 examples/skills 预存在错误) ✓ / dev.log Next.js 16.1.3 ready, 无报错 ✓
+
+- 步骤 3 第八轮深度审查 11 模块:
+  · fetcher.ts 第八轮(5208 行):
+    - 8 级降级链完整: native → curl → curl-impersonate-bridge → fetch-relay →
+      scrapling-static/stealthy → Obscura → uc-bridge → moli-bridge
+    - fetchHttpWithCurlSingle 两路径(proxy/no-proxy): curl-impersonate 接入后
+      降级链无回归, R33-1B P1① setCookies 透传完整保留(try/catch 包裹 +
+      cookieJar.store 在 rethrow 前)✓
+    - cookieJar.store 8 处全口径(originHost 键): R31-1D hostname 统一保留,
+      R33-1B 4xx/5xx 错误 cookie 写回保留, 跨域重定向 cookie 归属问题(curl-impersonate
+      桥返回扁平数组无 per-host attribution, 既有局限非新增)
+  · obscura.ts 第八轮(1766 行):
+    - scheduleReclaim 心跳回收: 60s 扫 + 10min idle close ctx, R25-1A3 P1
+      busy=true 锁定防并发抢空槽 保留 ✓
+    - consecutiveFailures 计数: 3 次移除 slot 缩减池容量 ✓
+    - restoreCookiesToContext(R28-1C): createSlot/recreateSlot 后同步 cookieJar
+      凭证, 失败静默降级 ✓
+    - parseCookieHeaderToPlaywright: domain=`.${hostname}` 子域共享语义 ✓
+    - shutdownObscura: shuttingDown 标志 + splice 全部 + waiter 全 reject ✓
+    - 审查结论: obscura 池管理无内存泄漏, R33 后无回归
+  · cleaner.ts 第八轮(1096 行):
+    - callTrafilaturaExtract 三层降级: useTrafilatura=true 先 / trafilaturaFallback=true
+      兜底 / 同步 cheerio ✓
+    - 60s 缓存(checkTrafilaturaBridge): available=true 永久, false 60s ✓
+    - HTML 大小上限 10MB ✓
+    - R33-1B bridgeUrl 参数 + 自定义 URL 跳过 60s 缓存(防键混淆)✓
+    - cleanContentHtmlAsync: plainText/HTML 分流, segments.length===0 降级 cheerio ✓
+    - R26-1A U+2060 控制字符剥离 ✓
+    - 审查结论: cleaner 三层降级 + 60s 缓存 + 10MB 上限无 P0/P1, R33 后无回归
+  · runner.ts 第八轮(2719 行):
+    - R31-1B 并发架构(Semaphore + crawlBookMeta/crawlChapterContent/finalizeBook
+      三阶段)完整保留 ✓
+    - R32-1A failedBookUrls 三路径对称(add/delete/resume)保留 ✓
+    - R33-1B P1② bridgeUrl 透传(useTrafilatura=true 路径)保留 ✓
+    - R33-1B P1③ split /\n+/ 段落保护保留 ✓
+    - **发现 P1 bug**: 修前 line 2267 `cleaned.replace(/<[^>]+>/g, '')`
+      直接剥所有标签, cheerio HTML 模式输出 `<p>seg1</p><p>seg2</p>` 中相邻
+      <p> 间无 \n(cheerio $.html() 序列化不插空白), 剥后变 `seg1seg2` 段落
+      粘连 → TXT 整章内容压成单行, 公开 read API(public/chapter/route.ts
+      line 103 split /\n{2,}/)拿不到段间分隔, 整章进单个 <p>(详见修复①)
+    - **发现 P2 bug A**: 修前 trafilatura 兜底路径(line 2248-2253)一律产
+      `<p>seg</p>` HTML, 不检查 cfg.plainText; plainText=true 时与
+      cleanContentHtml 输出口径不一致, db 存储 + 公开 read API 渲染纯文本
+      会看到 <p> 字面量(详见修复②)
+    - **发现 P2 bug B**: 修前 trafilatura 兜底路径未处理空白文本边缘:
+      桥返回全空白(段落分类全 reject 后输出 ' \n ' 等), split + filter(Boolean)
+      后 segments.length=0, 修前 cleaned 被置为空串 → 原始 cheerio 结果被
+      静默丢弃(详见修复②)
+  · types.ts 第八轮(1363 行):
+    - FetchConfig.concurrency?: number(line 308)✓ 缺省 3, 钳 [1,10]
+    - sanitizeFetchConfig line 978-979 safeNum(r.concurrency, 1, 10)✓
+    - trafilaturaBridgeUrl?: string(line 264) + sanitize line 930-934
+      (http(s) URL + ≤300 字符 + 单行化 + 白名单 regex)✓
+    - useTrafilatura/trafilaturaPruneXPath/trafilaturaFallback CleanConfig
+      三字段定义齐全, 文档注明生效条件 ✓
+    - 审查结论: types.ts 无 P0/P1
+  · sorter.ts 第八轮(385 行):
+    - reorderToc 去重 + 分卷上下文检测 + 重排 ✓
+    - reorderWithVolumes 分卷感知(字段定卷 + 锚点开新卷 + 卷间排序 + 卷内
+      sortByChapterNo)✓
+    - extractChapterNo 多模式(中文/阿拉伯/罗马/混合)✓
+    - extractVolumeAnchor 卷锚点识别 ✓
+    - normalizeUrlKey 用 url.origin + 排序 query 参数 ✓
+    - 审查结论: sorter 无 P0/P1
+  · storage.ts 第八轮(196 行):
+    - saveChapterTxt: bookId 清洗(R26-1A P1)+ 原子写入(.tmp+rename, PID+random)
+      ✓
+    - readChapterTxt: startsWith(DATA_ROOT + path.sep) sibling-prefix 加固 ✓
+    - deleteBookTxt: R33-1B P1④ bookId 清洗(与 saveChapterTxt 同款)✓
+    - readCover: R33-1B P2⑤ startsWith(COVERS_DIR + path.sep)加固 ✓
+    - openDownloadTxtWriter: 流式写入 + abort 卫生 ✓
+    - 审查结论: storage 无 P0/P1
+  · hostgate.ts 第八轮(647 行):
+    - 计账式闸门 + FIFO 无 barge ✓
+    - 降额/回升(3 连败降一档, 10 连胜回一档)✓
+    - 速率节流(zz-b minGapMs 跟随最近 acquire)✓
+    - 限流冷却(zz-b rateLimitedUntil 推后)✓
+    - LRU 治理(HOSTS_CAP=1000 + sweepIdleHosts)✓
+    - hostGateReset(R4-15 waiter.timer 清 + reject)✓
+    - 审查结论: hostgate 无 P0/P1
+  · downloader.ts 第八轮(252 行):
+    - generateBookTxt 流式写入(openDownloadTxtWriter 逐段 append)✓
+    - 中途失败 abort()(删半成品)✓
+    - finish() 失败也 abort()(R26-1A P1)✓
+    - adInterval=0 显式关广告(Bug 20)✓
+    - 卷头判重 lastEmittedVolume(qq-e)✓
+    - ZW_CHARS 含 U+2060 ✓
+    - 审查结论: downloader 无 P0/P1
+  · calibrate.ts 第八轮(598 行):
+    - 三阶段探测(并发梯 1→10 + 间隔梯 2000→150ms + 验证档)✓
+    - SSRF 守卫(R4-16 引擎侧也校验 siteBase)✓
+    - 韧性重试(zz-a2 首档撞封禁期冷却后重探)✓
+    - 死循环防护(R5-14 stageVerify 120s 截止 + chainUrls 取尽 break)✓
+    - probeFetch 响应体 cancel()(R26-1A P2)✓
+    - 3xx 视为失败(Bug 17)✓
+    - 审查结论: calibrate 无 P0/P1
+  · fetcher-curl-impersonate.ts 第八轮(389 行):
+    - checkCurlImpersonateBridge 60s 缓存 + 5min 永久失败窗口 ✓
+    - 流式读 + 计数 CURL_IMPERSONATE_MAX_JSON_BYTES=20MB ✓
+    - 桥响应形态校验 ok:true/false/非 200 三路径 ✓
+    - bodyB64 解码 ✓
+    - WAF 头透传 server/cf-ray/cf-mitigated/retry-after ✓
+    - R33-1B P1① setCookies 透传 throw 前赋值 ✓
+    - 审查结论: 无 P0/P1, R33-1B 后无回归
+
+- 步骤 4 特别关注项验证(R33-1B 修复后的边缘):
+  · R33-1B P1① curl-impersonate setCookies 字段:
+    - CurlImpersonateError.setCookies?: string[] 字段定义 ✓
+    - throw 前赋值 err.setCookies = setCookies ✓
+    - fetchViaCurlImpersonateFallback catch 中 e instanceof CurlImpersonateError
+      && e.setCookies && e.setCookies.length → cookieJar.store ✓
+    - status=0(桥不可达)无 setCookies → 直接 rethrow 零回归 ✓
+    - 跨域重定向 cookie 归属问题(扁平数组无 per-host attribution)是既有
+      局限(curl-impersonate-bridge 协议未返回 per-host cookies), 非新增
+  · R33-1B P1② callTrafilaturaExtract bridgeUrl 参数:
+    - callTrafilaturaExtract(html, pruneXPath?, bridgeUrl?) 签名 ✓
+    - 自定义 URL 跳过 60s 缓存直接尝试 /extract ✓
+    - 默认 URL 复用 60s 缓存 ✓
+    - cleanContentHtmlAsync 透传 bridgeUrl 给 callTrafilaturaExtract ✓
+    - runner.ts useTrafilatura=true 路径传 rule.fetch.trafilaturaBridgeUrl ✓
+    - 与 trafilaturaFallback=true 兜底路径行为对齐 ✓
+  · R33-1B P1③ trafilatura split /\n+/ 段分隔正确性:
+    - cleanContentHtmlAsync line 1020/1037 split /\n+/ ✓
+    - runner.ts line 2255 split /\n+/ ✓
+    - trafilatura v2 txt 单 \n 分段, 单/双换行都视为段间分隔 ✓
+    - **发现 P1 下游 bug**: split 正确但 HTML 输出 `<p>seg1</p><p>seg2</p>`
+      存储为 txt 时段落粘连(详见修复①)
+  · R33-1B P1④ deleteBookTxt bookId 清洗:
+    - 与 saveChapterTxt 同款 replace [\\/\x00\s.]+ → _ + 去首尾_ ✓
+    - 空串兜底 'unknown_book' ✓
+    - API 路由层有 db.book.findUnique 守卫只允许真实 cuid 通过, 但防御性
+      Coding 在源头 ✓
+  · R33-1B P2⑤ readCover path.sep 后缀:
+    - full !== COVERS_DIR && !full.startsWith(COVERS_DIR + path.sep) return null ✓
+    - 与 readChapterTxt line 76 同口径 ✓
+
+- 步骤 5 修复(P1×1 + P2×2, 共 ~+42 行净增):
+  · P1 ① runner.ts txt 存储段落保真(line 2284-2301):
+    修前: `cleaned.replace(/<[^>]+>/g, '').replace(/\n{3,}/g, '\n\n')` 直接
+    剥所有标签, cheerio HTML 模式输出 `<p>seg1</p><p>seg2</p>` 中相邻 <p>
+    间无 \n(cheerio $.html() 序列化不插空白), 剥后变 `seg1seg2` 段落粘连
+    → TXT 整章内容压成单行, 公开 read API(public/chapter/route.ts line 103
+    split /\n{2,}/)拿不到段间分隔, 整章进单个 <p>.
+    修后: `</p>/<div|h[1-6]|li|tr>` 等块级闭合标签先转 `\n\n` (段落分隔,
+    与公开 read API split 口径对齐), `<br>` 转 `\n` (段内换行), 再剥剩余
+    inline 标签 + 压 3+ 换行为 `\n\n`. plainText 模式 cleaned 已含 `\n\n`
+    分隔, 走此链零变化(无 <p>/<br> 命中, replace 链幂等). 零回归.
+    注: 与 admin/chapters/[id]/route.ts PUT 行 73-78 略有差异(后者 `</p>`
+    → `\n` 单换行, admin GET 视为纯文本展示单换行可读; 但公开 read API
+    split 期望 `\n\n`, 单换行整章压一 `<p>`, 故 runner 落盘路径必须用
+    `\n\n` — 公开 API 兼容优先).
+  · P2 ② runner.ts trafilatura 兜底路径分流 cfg.plainText(line 2248-2271):
+    修前: 一律产 `<p>seg</p>` HTML, 不检查 cfg.plainText; plainText=true
+    时与 cleanContentHtml 输出口径不一致(db 存储 + 公开 read API 渲染纯文本
+    会看到 `<p>` 字面量).
+    修后: segments.length === 0 时跳过(保留原 cleaned); else if plainText
+    产 `\n\n`-分隔纯文本 + 控制字符剥离; else 产 `<p>seg</p>` HTML(原行为).
+    与 cleanContentHtmlAsync(line 1017-1053)同款分流.
+  · P2 ③ runner.ts trafilatura 兜底空白文本边缘(line 2258-2260):
+    修前: 桥返回全空白文本(trafilatura 也可能 reject 所有段后返回 ' \n ' 等),
+    split + filter(Boolean) 后 segments.length=0, cleaned 被置为空串 → 原始
+    cheerio 结果被静默丢弃.
+    修后: 先验 segments.length === 0, 若全空白不采纳, 保留原 cleaned, 加
+    warn 日志提示. 零回归.
+
+- 步骤 6 验证:
+  · bun run lint → 0 errors ✓
+  · bunx tsc --noEmit → 0 errors in src/ ✓ (排除 examples/skills 预存在:
+    examples/websocket socket.io-client 缺失 + skills/image-edit 类型 +
+    skills/stock-analysis 类型, 均与本轮无关)
+  · dev.log → Next.js 16.1.3 ready, ✓ Ready in 2.6s, 无报错 ✓
+  · 段落保真回归测试(node 实证):
+    - cheerio HTML `<p>seg1</p><p>seg2</p><p>seg3</p>` → TXT `seg1\n\nseg2\n\nseg3\n\n`
+    - 公开 read API split /\n{2,}/ → [seg1, seg2, seg3] → 3 个 <p> ✓
+    - trafilatura plainText 模式 → `seg1\n\nseg2\n\nseg3` ✓
+    - trafilatura HTML 模式 → `<p>seg1</p><p>seg2</p><p>seg3</p>` ✓ (与
+      cleanContentHtmlAsync HTML 模式同款)
+    - trafilatura 空白文本(' \n ') → segments.length=0 → 保留原 cleaned ✓
+
+Stage Summary:
+- 完成 R34-1B 第八轮深度审查 + P1×1 + P2×2 修复, 共 ~+42 行净增(全在
+  src/lib/crawl/runner.ts)
+- 修改文件 1 个:
+  · src/lib/crawl/runner.ts (+42 行净增):
+    - line 2248-2271: trafilatura 兜底路径分流 cfg.plainText + 空段兜底
+      (P2 ②③)
+    - line 2284-2301: TXT 存储路径 </p> → \n\n 块级闭合标签段落保真(P1 ①)
+- 核心审查结论:
+  · **无 P0 bug**: 第八轮深度审查 11 模块(fetcher/obscura/cleaner/runner/
+    types/sorter/storage/hostgate/downloader/calibrate + fetcher-curl-impersonate)
+    在 R25-R33 七轮修复后无 P0 问题. R33-1B 四个 P1 + 一个 P2 修复全保留,
+    R34-1A 内存优化 + R34-1C 清理精简均与本轮正交
+  · fetcher 8 级降级链 + R33-1B setCookies 透传保留 ✓
+  · obscura 池管理/心跳回收/consecutiveFailures/restoreCookiesToContext 全保留 ✓
+  · cleaner trafilatura 三层降级 + 60s 缓存 + 10MB 上限 + bridgeUrl 透传 ✓
+  · runner R31-1B 并发架构 + R32-1A failedBookUrls 三路径对称 + R33-1B
+    bridgeUrl 透传 + split /\n+/ 全保留 ✓
+  · types.ts concurrency 钳 [1,10] + trafilaturaBridgeUrl sanitize 白名单 ✓
+  · sorter reorderWithVolumes 分卷感知 + extractChapterNo 多模式 ✓
+  · storage saveChapterTxt/deleteBookTxt/readChapterTxt/readCover 全口径
+    路径穿越防御 ✓
+  · hostgate 计账式闸门 + FIFO 无 barge + LRU 治理 ✓
+  · downloader 流式写入 + abort 卫生 + ZW_CHARS 含 U+2060 ✓
+  · calibrate 三阶段探测 + SSRF 守卫 + 死循环防护 ✓
+  · fetcher-curl-impersonate 60s 缓存 + 5min 永久失败窗口 + 流式读计数 ✓
+- P1 修复 ×1 + P2 修复 ×2:
+  · ① runner TXT 存储段落粘连(cheerio HTML <p> 相邻无 \n, 剥后变 seg1seg2,
+    公开 read API 整章进单 <p>, 与 admin/chapters PUT 略有差异但公开 API
+    兼容优先 — 必须用 \n\n 段间分隔)
+  · ② runner trafilatura 兜底不分流 cfg.plainText(一律产 HTML, plainText=true
+    时与 cleanContentHtml 输出口径不一致, db 存储 + 公开 read API 渲染纯文本
+    会看到 <p> 字面量)
+  · ③ runner trafilatura 兜底空白文本边缘(桥返回 ' \n ' 等, split + filter
+    后 segments.length=0, cleaned 被置空串 → 原始 cheerio 结果静默丢失)
+- 历史修复全部保留(零回归): R25-1A2/R25-1A3/R26-1A/R27-1A/R27-1B/R28-1A/
+  R28-1B/R28-1C/R29-1D/R30-1A/R31-1B/R31-1D/R32-1A/R33-1A/R33-1B/R33-1C/
+  R34-1A/R34-1C 全部不动
+- R31-1B 并发架构核心不动: Semaphore + crawlBookMeta/crawlChapterContent/
+  finalizeBook 三方法 + executeTask 三阶段 全保留
+- R32-1A failedBookUrls 三路径对称(add/delete/resume)全保留
+- R33-1B 四个 P1 + 一个 P2 修复(setCookies 透传 / bridgeUrl 透传 / split
+  /\n+/ / deleteBookTxt 清洗 / readCover 加固)全保留
+- 未修改(尊重约束):
+  · HomeView.tsx/page.tsx (A agent R34-1A 内存优化, 不动)✓
+  · src/components/public/clone-themes/* (C agent R34-1C 清理, 不动)✓
+  · prisma/schema.prisma + package.json(0 新依赖)✓
+  · rule-templates/seed-rules (C agent 校准, 不动)✓
+- 验证: bun run lint 0 errors ✓ / bunx tsc --noEmit 0 errors in src/ ✓ /
+  dev.log Next.js 16.1.3 ready 无报错 ✓ / 段落保真回归测试 node 实证通过 ✓
+- 详细工作记录: agent-ctx/R34-1B-full-stack-developer.md(含 8 章节:
+  读交接/第八轮深度审查 11 模块/特别关注项验证/修复 P1×1+P2×2/验证/
+  修改文件清单/历史保留+零回归+审查结论)

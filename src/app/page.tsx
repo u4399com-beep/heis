@@ -37,6 +37,35 @@ type PublicViewObj = {
   theme?: string
 }
 
+// R34-1A: module-level cache for stable lookups (60s TTL, 与 trafilatura 同款)
+// - categories: 所有页型 navigation 都用 (header/nav 渲染), 每次请求都查 DB 浪费
+// - sites (status:true): 站点选择器 + 站群导航用, 增删频率低, 60s 缓存可接受
+// 内存开销: categories ~60 行 + sites ~数十行, 极小; 命中率: 高 (95%+ 请求是浏览)
+// 失效: 自动 TTL 60s + 下次 admin 改完 site/category 60s 内会自然刷新
+type CachedRow = { data: any; ts: number }
+let categoriesCache: CachedRow | null = null
+let sitesCache: CachedRow | null = null
+const LOOKUP_CACHE_TTL_MS = 60_000
+
+async function getCachedCategories(): Promise<{ id: string; name: string }[]> {
+  if (categoriesCache && Date.now() - categoriesCache.ts < LOOKUP_CACHE_TTL_MS) {
+    return categoriesCache.data as { id: string; name: string }[]
+  }
+  const rows = await db.category.findMany({ orderBy: { sortOrder: 'asc' }, take: 60 })
+  const data = rows.map((c: any) => ({ id: c.id, name: c.name }))
+  categoriesCache = { data, ts: Date.now() }
+  return data
+}
+
+async function getCachedSites() {
+  if (sitesCache && Date.now() - sitesCache.ts < LOOKUP_CACHE_TTL_MS) {
+    return sitesCache.data
+  }
+  const data = await db.site.findMany({ where: { status: true } })
+  sitesCache = { data, ts: Date.now() }
+  return data
+}
+
 /** 复用 books API 的 SORT_MAP (避免书籍排序注入) — server 端只允许白名单字段 */
 const SORT_MAP: Record<string, Record<string, 'asc' | 'desc'>> = {
   latest: { updatedAt: 'desc' },
@@ -141,19 +170,17 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ [
   if (isSite && publicView) {
     // R25: server 端 fetch site + sites + (categories always; books always when home/category/ranking/fulltext)
     // + 按 view 类型 fetch 对应数据 (book detail / chapter content / search / keyword)
+    // R34-1A: sites + categories 走 module-level 60s TTL 缓存, 减少每次请求 DB round-trip
     const siteId = publicView.site
-    const [site, sites] = await Promise.all([
+    const [site, sites, categories] = await Promise.all([
       siteId
         ? db.site.findUnique({ where: { id: siteId } })
         : db.site.findFirst({ where: { isDefault: true } }),
-      db.site.findMany({ where: { status: true } }),
+      getCachedSites(),
+      getCachedCategories(),
     ])
     const offset = (site as any)?.offset || 0
     const themeId = (site as any)?.themeId || 'aurora'
-
-    // R25: categories — 所有页型都用 (navigation nav)
-    const categories0 = await db.category.findMany({ orderBy: { sortOrder: 'asc' }, take: 60 })
-    const categories = categories0.map((c: any) => ({ id: c.id, name: c.name }))
 
     // 视图相关数据按 view 类型 fetch
     let initialBooks: any[] | undefined
@@ -271,24 +298,17 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ [
             : [],
         ])
         // SEO 配置 (与 book API 同口径)
+        // R34-1A: site 已在 page.tsx 顶部 fetch (含 chapterSeo* 字段), 不必再查一次 db.site
         let seoAuto = true
         let seoTitleTemplate = ''
         let seoDescTemplate = ''
         let seoKeywordsTemplate = ''
-        if (siteId) {
-          const siteRow = await db.site.findUnique({
-            where: { id: siteId },
-            select: {
-              chapterSeoAuto: true, chapterSeoTitleTemplate: true,
-              chapterSeoDescTemplate: true, chapterSeoKeywordsTemplate: true,
-            },
-          })
-          if (siteRow) {
-            seoAuto = siteRow.chapterSeoAuto !== false
-            seoTitleTemplate = siteRow.chapterSeoTitleTemplate || ''
-            seoDescTemplate = siteRow.chapterSeoDescTemplate || ''
-            seoKeywordsTemplate = siteRow.chapterSeoKeywordsTemplate || ''
-          }
+        if (siteId && site) {
+          const s = site as any
+          seoAuto = s.chapterSeoAuto !== false
+          seoTitleTemplate = s.chapterSeoTitleTemplate || ''
+          seoDescTemplate = s.chapterSeoDescTemplate || ''
+          seoKeywordsTemplate = s.chapterSeoKeywordsTemplate || ''
         }
         initialBook = {
           book: {
@@ -327,6 +347,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ [
           db.chapter.findFirst({ where: { bookId: ch.bookId, idx: { gt: ch.idx } }, orderBy: { idx: 'asc' }, select: { id: true, title: true } }),
         ])
         // 站点分页配置 (与 chapter API 同口径)
+        // R34-1A: site 已在 page.tsx 顶部 fetch (含 chapterPagination*/chapterSeo* 字段), 不必再查一次 db.site
         let mode = 'off'
         let wordsPerPage = 3000
         let totalPagesTarget = 3
@@ -334,24 +355,15 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ [
         let chapterSeoTitleTemplate = ''
         let chapterSeoDescTemplate = ''
         let chapterSeoKeywordsTemplate = ''
-        if (siteId) {
-          const siteRow = await db.site.findUnique({
-            where: { id: siteId },
-            select: {
-              chapterPaginationMode: true, chapterPaginationWords: true, chapterPaginationPages: true,
-              chapterSeoAuto: true, chapterSeoTitleTemplate: true,
-              chapterSeoDescTemplate: true, chapterSeoKeywordsTemplate: true,
-            },
-          })
-          if (siteRow) {
-            mode = siteRow.chapterPaginationMode || 'off'
-            wordsPerPage = siteRow.chapterPaginationWords || 3000
-            totalPagesTarget = siteRow.chapterPaginationPages || 3
-            chapterSeoAuto = siteRow.chapterSeoAuto !== false
-            chapterSeoTitleTemplate = siteRow.chapterSeoTitleTemplate || ''
-            chapterSeoDescTemplate = siteRow.chapterSeoDescTemplate || ''
-            chapterSeoKeywordsTemplate = siteRow.chapterSeoKeywordsTemplate || ''
-          }
+        if (siteId && site) {
+          const s = site as any
+          mode = s.chapterPaginationMode || 'off'
+          wordsPerPage = s.chapterPaginationWords || 3000
+          totalPagesTarget = s.chapterPaginationPages || 3
+          chapterSeoAuto = s.chapterSeoAuto !== false
+          chapterSeoTitleTemplate = s.chapterSeoTitleTemplate || ''
+          chapterSeoDescTemplate = s.chapterSeoDescTemplate || ''
+          chapterSeoKeywordsTemplate = s.chapterSeoKeywordsTemplate || ''
         }
         let renderedContent = content
         let totalPages = 1
