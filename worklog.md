@@ -13921,3 +13921,445 @@ Stage Summary:
   package.json(0 新依赖)
 - 详细工作记录: agent-ctx/R32-1A-full-stack-developer.md(含 7 章节: 读交接/
   第六轮深度审查 5 模块/修复 P1×4/验证/修改文件清单/历史保留+零回归/审查结论)
+
+---
+Task ID: R33-1A
+Agent: full-stack-developer (add/delete/save/resume 全链路审查)
+Task: 系统审查 5 Set + globalQueue + saveProgress + resume 所有分支配对
+
+Work Log:
+- 步骤 1 读交接(worklog.md 末 200 行 + R32-1A agent-ctx):
+  · R31-1B 并发架构: Semaphore 类 + crawlBookMeta(阶段1)/crawlChapterContent
+    (阶段2 单章)/finalizeBook(阶段3 收尾), executeTask 三阶段并发架构
+  · R32-1A 第六轮: 无 P0 bug; 4 P1 修复(① urls 模式 bookQueue 去重 /
+    ② failedBookUrls 瞬态错误 add / ③ skip-completed 路径 failedBookUrls
+    .delete / ④ failedBookUrls 跨重启恢复); P2 已知不修(saveProgress 并发
+    lost-update / trafilatura 60s 缓存首次失败 20s 超时 / obscura cookieProvider
+    domain 收窄)
+
+- 步骤 2 系统审查范围(runner.ts 8 类对象):
+  1. rt.discoveredBookUrls(已发现书籍 URL, 跳过列表页重复发现)
+  2. rt.completedBookUrls(已完结书籍 URL, 整体跳过)
+  3. rt.ongoingBookUrls(连载中书籍 URL, 增量检查新章节)
+  4. rt.failedBookUrls(瞬态失败书籍 URL, 重试模式恢复)
+  5. rt.bookLastChapters(书籍末章 URL 映射, 增量检测)
+  6. globalQueue(阶段 2 全局章节队列, 局部变量)
+  7. saveProgress(落库到 task.progress, 5 Set 全部 + 任务快照字段)
+  8. resume(executeTask 内, 从 progress 重建 5 Set)
+
+- 步骤 3 逐分支审查 add/delete 配对 + save/resume 链路完整性:
+  · discoveredBookUrls: add 1 处(line 902), delete 0 处, save line 2446,
+    resume line 766 → **append-only 设计(INTENTIONAL, 非 bug)**: 注释明确
+    "已在列表页发现过的书籍不再加入 bookQueue(节省书籍页抓取/解析/数据库
+    写入)"; addToResumeSet FIFO 淘汰防 OOM; line 892-905 二级跳过(Set 命中
+    → 查 DB 有无章节 → 有=真跳过 / 无=重新加入队列, Set 条目保留 add 幂等)
+  · completedBookUrls: add 3 处(line 1876/1921/2414), delete 0 处, save
+    line 2447, resume line 767 → **append-only 设计(INTENTIONAL)**: 注释
+    明确"完结书不会再有新章节, 重启时整体跳过"; ongoing→completed 状态
+    跃迁由 ongoingBookUrls.delete(line 1877/1922/2415)+bookLastChapters
+    .delete(line 1878/1923/2416)处理, completedBookUrls 只增不删; full
+    模式清空实现重采语义
+  · ongoingBookUrls: add 3 处(line 1880/1925/2419), delete 3 处(line
+    1877/1922/2415, 均在同分支配 completedBookUrls.add), save line 2449,
+    resume line 770 → **完全配对, 零回归**: 状态分流对称(completed→add
+    completed + delete ongoing + delete bookLastChapters / 否则→add ongoing
+    + set bookLastChapters)
+  · failedBookUrls: add 3 处(line 1091/1099/1104, R32-1A 修复②), delete
+    4 处(line 1053 skip-completed R32-1A 修复③ + line 1883/1929/2423
+    pre-existing), save line 2451, resume line 787(R32-1A 修复④) →
+    **R32-1A 修复完整, 复核确认零回归**: 3 add 配 4 delete(skip-completed
+    多一处因 R31-1B 拆出遗漏); AbortError 不 add(非瞬态); 'blocked'/
+    'empty-toc' 不调 delete(INTENTIONAL, 拦截/解析失败可能持续, 留在
+    failedBookUrls 待用户解决后重试)
+  · bookLastChapters: set 3 处(line 1881/1927/2421, 均配 ongoingBookUrls
+    .add 在同分支), delete 3 处(line 1878/1923/2416, 均配 ongoingBookUrls
+    .delete 在同分支), get 1 处(line 1579, 配 isOngoingRecheck 防孤儿),
+    save line 2454-2461 Map→Object, resume line 774-777 Object→Map →
+    **完全配对, 零回归**: 与 ongoingBookUrls 完全对称; addToBookLastChapters
+    FIFO 淘汰最旧 10% 防OOM 保留最新连载书; isOngoingRecheck `&& has`
+    防孤儿条目误用
+  · globalQueue: push 1 处(line 1152, 收集所有 ok-meta 书的 queue), splice
+    1 处(line 1230, 阶段 2 每批次切出), filter 0 处, length 检查 4 处 →
+    **不持久化(INTENTIONAL)**: 局部变量, 重启从 bookQueue 重建,
+    chapter.fetched=false 留 DB 待下次增量 existUrlMap 跳过已采章 +
+    重新入 queue 未采章; 跨书归属正确(ChapterTask.bookCtx 共享引用,
+    bookDoneMap 按 bookId 累加 JS 单线程原子, R32-1A 已审查)
+  · saveProgress: 调用点 16 处, 5 Set 全部落库(line 2446-2461) + 任务
+    快照字段(requestCount/bytesFetched/runStartedAt/currentUrl/recentLogs
+    /memBooksInQueue/memChaptersInQueue/memResumeSetsSize)→ **5 Set 全部
+    落库, 零回归**: 每次 Set 修改后立刻 saveProgress(line 914/1885/1931/
+    2424)防内存与 DB 状态分裂; 任务快照字段是可见性字段不参与 resume(在
+    control('start') 重置 line 653-656); slice(0, MAX_RESUME_SET_SIZE)
+    是冗余兜底(Set 已由 addToResumeSet 即时淘汰)
+  · resume: line 746-796, full 模式清空 4 Set + progress 同步空数组(line
+    753-761), 非 full 模式从 progress 重建 5 Set(line 766-787)→ **5 Set
+    全部恢复, 零回归**: 类型校验严密(Array.isArray + filter typeof string
+    + 非空); R32-1A 修复 failedBookUrls 恢复(line 787); full 模式不重置
+    failedBookUrls(INTENTIONAL, 诊断可见性 + retry-failed 数据源, 与本轮
+    恢复逻辑正交)
+
+- 步骤 4 修复发现的不完整链路: **0 处修复**
+  · 经系统审查 5 Set + globalQueue + saveProgress + resume 全部分支的
+    add/delete 配对 + save/resume 链路完整性, R32-1A 的 4 个 P1 修复已
+    完整覆盖 failedBookUrls 链路; 其他对象的 add/delete 配对完整、
+    save/resume 链路无断点
+  · discoveredBookUrls 与 completedBookUrls 的"add 无 delete"是
+    append-only 设计(INTENTIONAL, 非内存泄漏): 注释明确语义; full 模式
+    启动时清空实现重采语义; Set.add 幂等 + addToResumeSet FIFO 淘汰防 OOM
+  · 'blocked'/'empty-toc' 路径不调 failedBookUrls.delete(INTENTIONAL,
+    拦截/解析失败可能持续, 留在 failedBookUrls 待用户解决后重试); P2
+    边缘 case 非阻塞性
+
+- 步骤 5 验证:
+  · bun run lint → 0 errors / 0 warnings exit 0 ✓
+  · bunx tsc --noEmit → 0 errors in src/ ✓ (排除 examples/skills 预存在
+    错误: examples/websocket socket.io-client 缺失 + skills/image-edit 类型
+    + skills/stock-analysis 类型, 均与本轮无关)
+  · dev.log → Next.js 16.1.3 ready, GET / 200, 无报错 ✓
+
+Stage Summary:
+- 完成 R33-1A add/delete/save/resume 全链路系统审查(8 类对象 5 Set +
+  globalQueue + saveProgress + resume 所有分支配对)
+- 修改文件: **0 个**(系统审查结论: 无 P1 bug 可修)
+- 核心审查结论:
+  · **无 P0/P1 bug 可修**: R32-1A 的 4 个 P1 修复已完整覆盖 failedBookUrls
+    的 add/delete/save/resume 全链路; 其他对象的 add/delete 配对完整、
+    save/resume 链路无断点
+  · discoveredBookUrls 与 completedBookUrls 是 append-only 设计
+    (INTENTIONAL, 非内存泄漏): 注释明确语义; full 模式清空实现重采
+    语义; addToResumeSet FIFO 淘汰防 OOM, 内存上限与持久化上限对齐
+  · failedBookUrls R32-1A 修复完整: 3 add(catch 块瞬态错误) 配 4 delete
+    (skip-completed/incremental/cross-source/finalizeBook); save 配 resume;
+    full 模式跨轮保留(INTENTIONAL, 诊断可见性 + retry-failed 数据源)
+  · ongoingBookUrls 与 bookLastChapters 完全对称: 3 add 配 3 delete(状态
+    跃迁 ongoing→completed 时同步移除); 3 set 配 3 delete(bookLastChapters
+    与 ongoingBookUrls 同步); isOngoingRecheck `&& has` 防孤儿条目误用
+  · globalQueue 不持久化(INTENTIONAL): 局部变量, 重启从 bookQueue 重建,
+    chapter.fetched=false 留 DB 待下次增量 existUrlMap 跳过已采章 + 重新
+    入 queue 未采章
+  · saveProgress 5 Set 全部落库: 每次 Set 修改后立刻 saveProgress 防内存
+    与 DB 状态分裂; 任务快照字段是可见性字段不参与 resume
+  · resume 5 Set 全部恢复: 类型校验严密(Array.isArray + filter typeof
+    string + 非空); R32-1A 修复 failedBookUrls 恢复
+- P2 已知不修(边缘 case, 非阻塞性):
+  · 'blocked'/'empty-toc' 路径不调 failedBookUrls.delete(INTENTIONAL,
+    拦截/解析失败可能持续)
+  · completed→ongoing 反向跃迁不主动 delete completedBookUrls(罕见,
+    配 DB 二级验证 fall-through 兜底)
+  · saveProgress 并发 lost-update(R32-1A 已记, 影响少量 resume 条目,
+    非正确性 bug)
+  · addToResumeSet/addToBookLastChapters 独立 FIFO 淘汰可能暂时不一致
+    (跨 Set, isOngoingRecheck `&& has` 兜底)
+- 历史修复全部保留(零回归): R25-1A2/R25-1A3/R26-1A/R27-1A/R27-1B/R28-1A/
+  R28-1B/R28-1C/R29-1D/R30-1A/R31-1B/R31-1D/R32-1A 全部不动
+- R32-1A 的 4 个 P1 修复(① urls 模式 bookQueue 去重 / ② failedBookUrls
+  瞬态错误 add / ③ skip-completed 路径 failedBookUrls.delete / ④
+  failedBookUrls 跨重启恢复)全部保留, 本轮复核确认完整
+- R31-1B 并发架构核心不动: Semaphore 类 + crawlBookMeta/crawlChapterContent/
+  finalizeBook 三方法 + executeTask 三阶段 + BookMetaResult/BookMetaContext/
+  ChapterTask 类型 全保留
+- 验证: bun run lint 0 errors ✓ / bunx tsc --noEmit 0 errors in src/ ✓ /
+  dev.log 无报错 ✓
+- 未修改(尊重约束): src/components/public/*(前端) + page.tsx/PublicSite.tsx
+  (主控已改) + rule-templates/seed-rules(C agent 校准) + obscura.ts/fetcher.ts/
+  cleaner.ts/types.ts(本轮无 P0/P1 bug, 不动) + prisma/schema.prisma +
+  package.json(0 新依赖)
+- 详细工作记录: agent-ctx/R33-1A-full-stack-developer.md(含 8 章节: 读交接/
+  审查范围/逐分支审查 8 类对象/边缘 case 审查/修改文件清单/历史保留+零回归/
+  验证/审查结论)
+
+---
+Task ID: R33-1B
+Agent: full-stack-developer (采集第七轮深度抓bug)
+Task: fetcher/obscura/cleaner/types/sorter/storage 第七轮
+
+Work Log:
+- 步骤 1 读交接(worklog.md 末 200 行 + R32-1A/R32-1B agent-ctx):
+  · R32-1A: 第六轮深度审查 + P1×4 修复(urls 去重 + failedBookUrls add/delete/resume)
+  · R32-1B: clone-themes 残留 + seed-rule 残留校准审计
+  · R31-1B: 并发架构改造(Semaphore + crawlBookMeta/crawlChapterContent/finalizeBook 三阶段)
+  · R31-1D: 第五轮 cookieJar 5 处主罐键统一 hostname format
+
+- 步骤 2 第七轮深度审查:
+  · fetcher.ts 第七轮: 8 级降级链完整(native→curl→curl-impersonate-bridge→
+    fetch-relay→scrapling-static→scrapling-stealthy→Obscura→uc-bridge→moli-bridge)
+    ✓ / cookieJar 5 处主罐键 hostname format(R31-1D)✓ / fetcher-curl-impersonate
+    桥响应处理 ✓ —— 但发现 P1 bug: 4xx/5xx 响应携带的 Set-Cookie 被丢弃(见修复①)
+  · obscura.ts 第七轮: cookie 回写后的池管理 ✓ / scheduleReclaim 心跳回收 60s ✓
+    / consecutiveFailures 3 次移除 slot ✓ / Turnstile 8s 截止 ✓ / MAX_CONCURRENCY=2 ✓
+    / restoreCookiesToContext 在 createSlot/recreateSlot 后调用 ✓ —— 无 P0/P1 bug
+  · cleaner.ts 第七轮: trafilatura 三层降级链(先模式/兜底模式/cheerio 链)✓ /
+    60s 缓存 ✓ / 10MB HTML 上限 ✓ / U+2060 剥离 ✓ —— 但发现 P1 bug:
+    callTrafilaturaExtract 不接受 bridgeUrl 参数(见修复②)
+  · types.ts 第七轮: FetchConfig.concurrency 钳 [1,10] ✓ / trafilaturaBridgeUrl
+    配置 ✓ —— 文档注明"useTrafilatura=true 或 trafilaturaFallback=true 时生效"
+  · sorter.ts 第七轮: reorderWithVolumes 分卷感知 ✓ / 卷间排序+无号卷归位 ✓ /
+    卷内章号排序 ✓ —— 无 P0/P1 bug
+  · storage.ts 第七轮: bookId 路径穿越 ✓(saveChapterTxt 已清洗) —— 但发现
+    P1 bug: deleteBookTxt 未做同款清洗(见修复④) / readCover startsWith 检查
+    过弱(见修复⑤) / 原子写入 ✓(saveChapterTxt .tmp + rename)
+  · hostgate.ts/downloader.ts/calibrate.ts 第七轮:
+    - hostgate.ts: 计账式闸门 + FIFO 无 barge ✓ / 降额/回升 ✓ / 速率节流 ✓ /
+      限流冷却 ✓ / LRU 治理(HOSTS_CAP=1000 + sweepIdleHosts)✓ —— 无 P0/P1 bug
+    - downloader.ts: 流式写入(openDownloadTxtWriter)✓ / 中途失败 abort() ✓ /
+      finish() 失败也 abort() ✓ / adInterval=0 显式关广告 ✓ —— 无 P0/P1 bug
+    - calibrate.ts: 三阶段探测(并发→速率→验证)✓ / SSRF 守卫 ✓ / 韧性重试
+      (临时封禁残余)✓ / 死循环防护(120s 截止 + chainUrls 取尽 break)✓ /
+      probeFetch 响应体 cancel() 释放连接 ✓ —— 无 P0/P1 bug
+
+- 步骤 3 特别关注项验证:
+  · R31-1B 并发架构后的采集流程: crawlBookMeta/crawlChapterContent/finalizeBook
+    三阶段 ✓ / Semaphore acquire/release 配对 ✓ / Promise.all 批次隔离 ✓ /
+    全局 chapter queue 跨书归属 ✓ / 串行 finalizeBook ✓
+  · R32-1A failedBookUrls 修复后的边界: add/delete/resume 三路径全对称 ✓ /
+    skip-completed 路径 delete ✓ / AbortError 不 add ✓ / full 模式不重置 ✓
+  · R30 normalizeCategory 后的分类: 精确别名 + 标准 14 分类 + 模糊包含匹配 ✓ /
+    LLM 返回也归一化 ✓ / 关键词评分用归一化后分类 ✓
+
+- 步骤 4 修复 P1×4 + P2×1(共 ~+90 行):
+
+  · P1 修复① fetcher-curl-impersonate.ts: 4xx/5xx 响应 Set-Cookie 透传到错误对象
+    修前: fetchViaCurlImpersonate 在 status>=400 时抛 CurlImpersonateError 但
+    直接丢弃 setCookies(桥返回的 cf_clearance 等挑战凭证). 上层 Cookie 挑战
+    重试链路拿到 403 但 cookieJar 没有挑战凭证 → 重试仍 403(curl-impersonate
+    桥拿到的挑战信号等同虚设). 与 fetchViaCurl 在 rounds 循环中 per-round
+    store 不一致(fetchViaCurl 在 status>=400 检查前已 store 所有 round 的
+    setCookies).
+    修后: CurlImpersonateError 新增 setCookies?: string[] 字段, throw 前赋值
+    err.setCookies = setCookies. 调用方 fetchViaCurlImpersonateFallback 用
+    try/catch 捕获, 若 e instanceof CurlImpersonateError && e.setCookies?.length
+    先 cookieJar.store 再 rethrow, 与 fetchViaCurl 同口径. 桥不可达/桥内异常
+    (status=0, 无 setCookies)无 cookie 可写, 直接 rethrow(零回归)
+
+  · P1 修复② cleaner.ts: callTrafilaturaExtract 接受 bridgeUrl 参数
+    修前: cleanContentHtmlAsync(useTrafilatura=true 路径)调 callTrafilaturaExtract
+    不传 bridgeUrl, 只走模块级 TRAFILATURA_BRIDGE_URL(env / 默认 3019). 操作员
+    配置的 rule.fetch.trafilaturaBridgeUrl 在 useTrafilatura=true 路径下被静默
+    忽略. types.ts 文档注明该字段"useTrafilatura=true 或 trafilaturaFallback=true
+    时生效", 但实际只在兜底路径(tryTrafilaturaExtract)生效. 两条路径行为不对齐.
+    修后: callTrafilaturaExtract 新增 bridgeUrl?: string 参数. 自定义 URL(与
+    默认 TRAFILATURA_BRIDGE_URL 不同)时跳过 60s 缓存直接尝试 /extract(与
+    tryTrafilaturaExtract 同款逻辑, 防缓存键混淆). 默认 URL 复用 60s 缓存.
+    cleanContentHtmlAsync 新增 bridgeUrl?: string 参数, 透传给
+    callTrafilaturaExtract. runner.ts 在 useTrafilatura=true 路径传
+    rule.fetch.trafilaturaBridgeUrl, 与兜底路径行为对齐
+
+  · P1 修复③ runner.ts: trafilatura 兜底路径 split 用 /\n+/ 而非 /\n{2,}/
+    修前: trafilatura 兜底路径(fallback=true)用 .split(/\n{2,}/) 分段. 但
+    trafilatura v2 txt 输出用单 \n 分段(cleaner.ts cleanContentHtmlAsync
+    line 999 注释明确: "trafilatura v2 txt 输出用单 \n 分段(不是 \n\n),
+    故 split 用 \n+"). 修前 /\n{2,}/ 只在双换行处分段, trafilatura 单 \n
+    段落被并成一段 → 整章内容被压缩成单个 <p> 标签, 段落结构完全丢失.
+    修后: .split(/\n+/), 与 cleanContentHtmlAsync 同款逻辑, 单/双换行都视为
+    段间分隔
+
+  · P1 修复④ storage.ts: deleteBookTxt bookId 路径穿越防御(与 saveChapterTxt 同款)
+    修前: deleteBookTxt 直接 fs.rm(path.join(NOVELS_DIR, bookId), {recursive:true,
+    force:true}) 不做 bookId 清洗. 传入 '../../etc' 等恶意 ID 会递归删除
+    NOVELS_DIR 外的目录. API 路由层有 db.book.findUnique 守卫只允许真实 cuid
+    通过, 但防御性 Coding 在源头: saveChapterTxt 已做同款清洗, deleteBookTxt
+    应同步. 
+    修后: 与 saveChapterTxt 同款 .replace(/[\\/\x00\s.]+/g, '_').replace(/^_+|_+$/g, '')
+    空串兜底 'unknown_book'
+
+  · P2 修复⑤ storage.ts: readCover startsWith 检查加固(防 sibling-prefix 绕过)
+    修前: readCover 用 `full.startsWith(COVERS_DIR)` 检查, 存在同级目录前缀
+    绕过: 若 COVERS_DIR 是 `/data/covers`, 则 `/data/covers-backup/secret.webp`
+    也会通过 startsWith 检查(字符串前缀匹配). path.basename 已剥目录组件,
+    但防御性 Coding 要求 startsWith 必须以 path.sep 结尾才算真正落在目录内.
+    修后: `full !== COVERS_DIR && !full.startsWith(COVERS_DIR + path.sep)` return null
+    与 readChapterTxt line 76 同口径
+
+- 步骤 5 验证:
+  · bun run lint → 0 errors / 0 warnings exit 0 ✓
+  · bunx tsc --noEmit → 0 errors in src/ ✓(排除 examples/skills 预存在:
+    examples/websocket socket.io-client 缺失 + skills/image-edit 类型 +
+    skills/stock-analysis 类型, 均与本轮无关)
+  · dev.log → Next.js 16.1.3 ready, GET / 200, 无报错 ✓
+
+Stage Summary:
+- 完成 R33-1B 第七轮深度审查 + P1×4 + P2×1 修复, 共 ~+90 行净增
+- 修改文件:
+  · src/lib/crawl/fetcher-curl-impersonate.ts(+18 行, P1 ①: CurlImpersonateError
+    新增 setCookies 字段, throw 前赋值)
+  · src/lib/crawl/fetcher.ts(+18 行, P1 ①: fetchViaCurlImpersonateFallback
+    try/catch 包裹 + 错误 cookie 写回 cookieJar)
+  · src/lib/crawl/cleaner.ts(+40 行, P1 ②: callTrafilaturaExtract 新增 bridgeUrl
+    参数 + 自定义 URL 分支 + cleanContentHtmlAsync 新增 bridgeUrl 参数透传)
+  · src/lib/crawl/runner.ts(+10 行, P1 ②③: cleanContentHtmlAsync 传 bridgeUrl +
+    split /\n+/)
+  · src/lib/crawl/storage.ts(+12 行, P1 ④ + P2 ⑤: deleteBookTxt bookId 清洗 +
+    readCover startsWith 加固)
+- 核心审查结论:
+  · **无 P0 bug**: 第七轮深度审查 8 模块(fetcher/obscura/cleaner/types/sorter/
+    storage/hostgate/downloader/calibrate + fetcher-curl-impersonate)在 R25-R32
+    六轮修复后无 P0 问题. R31-1B 并发架构稳定, R32-1A failedBookUrls 三路径
+    对称, R30 normalizeCategory 分类归一化正确
+  · fetcher 8 级降级链核心保留(curl-impersonate 接入后降级链无回归)✓
+  · obscura 池管理/心跳回收/consecutiveFailures 移除 ✓ 无内存泄漏
+  · cleaner trafilatura 三层降级 + 60s 缓存 + 10MB 上限 + U+2060 剥离 ✓
+  · types.ts concurrency 钳 [1,10] 与 hostGateLimit 正交 ✓
+  · sorter reorderWithVolumes 分卷感知 + 卷间排序 + 卷内章号排序 ✓
+  · hostgate 计账式闸门 + FIFO 无 barge + 降额/回升 + LRU 治理 ✓
+  · downloader 流式写入 + abort 卫生语义 + finish 失败也 abort ✓
+  · calibrate 三阶段探测 + SSRF 守卫 + 韧性重试 + 死循环防护 ✓
+- P1 修复×4 + P2 修复×1:
+  · ① curl-impersonate 4xx/5xx Set-Cookie 丢弃(挑战 cookie 重试链路断链)
+  · ② cleanContentHtmlAsync 不接受 bridgeUrl(useTrafilatura 路径操作员配置
+    被静默忽略, 与文档注明"useTrafilatura=true 时生效"不符)
+  · ③ runner trafilatura 兜底路径 split /\n{2,}/ 错误(trafilatura v2 单 \n
+    分段, 整章被压缩成单个 <p>, 段落结构丢失)
+  · ④ deleteBookTxt bookId 路径穿越(与 saveChapterTxt 不对齐, 防御性 Coding
+    在源头)
+  · ⑤ readCover startsWith 检查过弱(sibling-prefix 绕过, path.basename 已
+    兜底但防御性加固)
+- 历史修复全部保留(零回归): R25-1A2/R25-1A3/R26-1A/R27-1A/R27-1B/R28-1A/
+  R28-1B/R28-1C/R29-1D/R30-1A/R31-1B/R31-1D/R32-1A 全部不动
+- R31-1B 并发架构核心不动: Semaphore 类 + crawlBookMeta/crawlChapterContent/
+  finalizeBook 三方法 + executeTask 三阶段 + BookMetaResult/BookMetaContext/
+  ChapterTask 类型 全保留
+- R32-1A failedBookUrls 修复核心不动: add(catch 块)/delete(skip-completed +
+  crawlBookMeta ok 跳过 + finalizeBook ok-meta 完成)/resume(跨重启恢复)三路径
+  全对称保留
+- 验证: bun run lint 0 errors ✓ / bunx tsc --noEmit 0 errors in src/ ✓ /
+  dev.log 无报错 ✓
+- 未修改(尊重约束): runner.ts 并发架构(A agent 审查 add/delete/save/resume) +
+  src/components/public/*(前端) + page.tsx/PublicSite.tsx(主控已改) +
+  rule-templates/seed-rules(C agent 校准) + prisma/schema.prisma +
+  package.json(0 新依赖)
+- 详细工作记录: agent-ctx/R33-1B-full-stack-developer.md(含 7 章节: 读交接/
+  第七轮深度审查 8 模块/特别关注项验证/修复 P1×4+P2×1/验证/修改文件清单/
+  历史保留+零回归+审查结论)
+
+---
+Task ID: R33-1C
+Agent: full-stack-developer (清理精简+整合优化)
+Task: dead code + 重复逻辑 + 复杂函数 + 过时注释 + 临时文件
+
+Work Log:
+- 步骤 1 读交接文档: tail -150 worklog.md → R30-R33 历史 (R30 智能分类归一化 /
+  R31 主题回源校准+并发架构 / R32 第六轮深度审查+P1×4+clone-themes 校准 /
+  R33-1A 5 Set + globalQueue + saveProgress + resume 全链路审查(无 P1)/
+  R33-1B 第七轮深度抓 bug, 修 P1×4 + P2×1)
+- 步骤 2 基线验证: bun run lint → 0 errors ✓ / bunx tsc --noEmit →
+  0 errors in src/(仅 examples/skills 预存在错误) ✓ / dev.log 无报错 ✓
+- 步骤 3 dead code 扫描(grep 定义 + 引用, 0 引用删):
+  · auto-tdk.ts: getRandomTDKPreset / renderTDKByPreset / getTDKPreset /
+    TDK_PRESET_MAP / renderTemplate / TDKRenderContext 6 个 export/函数
+    全部 0 外部引用, 互为依赖簇一并删除 (-64 行净减)
+  · pseudostatic.ts: buildBookUrl / PSEUDOSTATIC_ENABLED / BookUrlStyle
+    仅内部使用(实际链接生成走 buildViewUrl), 删 export + §4 兼容旧接口块
+    (-20 行净减)
+  · links.ts: normalizeSiteDomain / pickRandomBooks 仅内部使用(computeWheelLinks
+    内部调用), 删 export 关键字保留实现
+  · batch.tsx: BatchSkipped interface 仅 BatchOutcome.skipped 内部引用,
+    删 export 关键字 + 注释说明
+  · 跳过 sorter.ts/hostgate.ts: extractChapterNo / extractVolumeAnchor /
+    hostGateReset 等被 scripts/archive/verify-*.ts 历史脚本引用, 删 export
+    会破坏 archive 脚本; 保留现状
+- 步骤 4 重复逻辑整合 (R33-1C useResourceList 抽取):
+  · 审查 admin 各 Section load 模式: RulesSection/CategoriesSection/
+    LinksSection/SitesSection/ThemesSection/SeoAuditSection/BooksSection/
+    TasksSection/FeedbackSection/DownloadsSection 10 个 Section 的 load
+    模式分析 → 仅 RulesSection 完美匹配"单一 GET + 数组响应 + 单 loading"
+    抽象(CategoriesSection 双 state; LinksSection/SitesSection/ThemesSection
+    Promise.all; BooksSection/TasksSection pagination+aliveRef+seq;
+    FeedbackSection 多 set; DownloadsSection 3 个独立 load)
+  · admin/helpers.ts 新增 useResourceList<T>(url, errMsg) hook:
+    封装 useState([]) + useState(true) + useCallback(load) + useEffect([load])
+    四件套; 返回 { rows, setRows, loading, reload }
+  · admin/RulesSection.tsx 迁移到 useResourceList<RuleRow>:
+    删 useState/useCallback/useEffect 三段 14 行 + toast 已迁移至 hook;
+    import 调整加 useResourceList, 删 useCallback; reload alias load 保留
+    所有调用点(load() / await load() / onClick={load} / onSaved={load} 全兼容)
+- 步骤 5 过时注释清理:
+  · links.ts computeWheelLinks 注释: "地址 = https://{domain}{buildBookUrl(id)}"
+    → "地址 = https://{domain}{buildViewUrl({view:'book',bookId:id})}"
+    (注释引用的 buildBookUrl 已被步骤 3 删除, 实际代码 line 199 用
+    buildViewUrl, 注释更新与代码对齐)
+  · 跳过 themes.ts R14-1A contentSelector 注释: 这些是源站 probe 实测值
+    的来源标注, 保留对未来维护者重要(知道值怎么来的)
+  · 跳过 BookView.tsx R12-1 历史叙述: "移除 pili/aurora/mango 旧主题分支"
+    注释虽是历史, 但提示读者不要把分支加回去, 有微弱设计价值; 不强删
+- 步骤 6 复杂函数精简评估(均不动, 风险过高):
+  · CalibrateDialog.tsx CalibrateDialog 600 行(主组件含大量 state + JSX)
+  · TaskMonitor.tsx TaskMonitor 631 行(同上)
+  · TaskDialog.tsx TaskDialog 417 行(同上)
+  · TestPanel.tsx VisualDebugSection 353 行(单组件)
+  拆分需抽取 state + refs + JSX 块, 风险大且无明确收益, 跳过
+- 步骤 7 临时文件清理:
+  · scripts/archive/* : rg "scripts/archive" src/ → 仅 fetcher.ts 注释
+    提及, 无代码 import; 整目录是历史归档, 不强删(保留历史参考)
+  · agent-ctx/archive-pre-r28/* : 同上, 全是 .md 文档, 删除不影响代码
+    功能, 但删历史文档对未来回溯不利; 跳过
+- 步骤 8 验证:
+  · bun run lint → 0 errors ✓ (auto-tdk 删 6 export 后初次 lint 报 2
+    unused var, 删 TDK_PRESET_MAP + renderTemplate 后 0 errors)
+  · bunx tsc --noEmit → 0 errors in src/ ✓
+  · dev.log → Next.js 16.1.3 ready, GET / 200, 无报错 ✓
+  · RulesSection 行为兼容性: load() 函数语义保留(reload alias),
+    toggleEnabled/copyRule/exportRules/deleteRule/importRules 等所有调用
+    点不变; onClick={load} 兼容 Promise<void> 返回类型; toast.error
+    错误消息字面量从 RulesSection 迁移到 hook errMsg 参数, 文案一致
+
+Stage Summary:
+- 完成 R33-1C 清理精简+整合优化, 共 ~-100 行净减(全在 src/components/ +
+  src/lib/(非 crawl 核心))
+- 修改文件 6 个:
+  · src/components/public/auto-tdk.ts (-64 行: 删 6 dead export 函数/接口/
+    Map; 保留 randomCombineTDK 唯一外部消费方 + TDK_PRESETS 预设表)
+  · src/lib/pseudostatic.ts (-20 行: 删 §4 兼容旧接口块 BookUrlStyle +
+    PSEUDOSTATIC_ENABLED + buildBookUrl; 保留 buildViewUrl/parseViewPath/
+    pseudoStaticRewrites 主接口)
+  · src/lib/links.ts (-2 行 export 关键字 +1 行注释更新: normalizeSiteDomain
+    + pickRandomBooks 改私有; computeWheelLinks 注释 buildBookUrl→buildViewUrl)
+  · src/components/admin/batch.tsx (-2 行注释 +1 行 export 删: BatchSkipped
+    interface 改私有, 加注释说明仅供 BatchOutcome.skipped 用)
+  · src/components/admin/helpers.ts (+38 行: 新增 useResourceList<T>
+    hook + 注释 + 适用条件说明; 引入 useCallback/useState/Dispatch/
+    SetStateAction + toast 依赖)
+  · src/components/admin/RulesSection.tsx (-13 行净减: 删 useState×2 +
+    useCallback(load) + useEffect([load]) 14 行; 加 useResourceList
+    调用 + 注释 3 行; 删 useCallback import; 加 useResourceList import)
+- 核心清理成果:
+  · dead code: auto-tdk.ts 6 个互依赖 dead export 簇一并删除(防"删一个
+    出 unused 倒逼链式删", 一次清理彻底)
+  · dead code: pseudostatic.ts 兼容旧接口块整体删除(§4 标题保留原意,
+    注释明确"新代码用 buildViewUrl")
+  · dead code: links.ts / batch.tsx 内部 helper 去 export(代码语义不变,
+    仅暴露面收窄)
+  · 重复逻辑: admin/helpers.ts 新增 useResourceList<T> hook 抽取
+    RulesSection 同款 load 四件套; RulesSection 迁移演示; hook 注释
+    明确"复杂场景(Promise.all/pagination/aliveRef/silent)请直接写 load,
+    不要强行迁移" — 留给未来简单 Section 复用
+  · 过时注释: links.ts computeWheelLinks buildBookUrl 注释更新为
+    buildViewUrl (代码实际用 buildViewUrl, 注释与代码对齐)
+- 未修改(尊重约束):
+  · src/lib/crawl/runner.ts (A agent 第七轮 R33-1B 修了 P1×4, 与本轮正交) ✓
+  · src/lib/crawl/fetcher.ts/obscura.ts/cleaner.ts (B agent 第七轮 R33-1B
+    修了 trafilaturaBridgeUrl 透传 + split(/\n+/) 段落保护, 与本轮正交) ✓
+  · src/lib/crawl/storage.ts/fetcher-curl-impersonate.ts (R33-1B 改动,
+    与本轮正交) ✓
+  · page.tsx/PublicSite.tsx/HomeView.tsx/BookView.tsx (主控已改,
+    本轮 BookView R12-1 注释虽是历史叙述但提示设计取舍, 不强删) ✓
+  · themes.ts R14-1A contentSelector 注释 (源站 probe 实测值来源标注,
+    保留) ✓
+  · scripts/archive/* + agent-ctx/archive-pre-r28/* (历史归档/文档,
+    删除无功能收益但损历史参考, 保留) ✓
+  · prisma/schema.prisma + package.json + 10 套 clone-themes (本轮不动) ✓
+- 历史修复全部保留(零回归):
+  · R25-1A2/A3/R26-1A/R27-1A/B/R28-1A/B/C/R29-1D/R30-1A/R31-1A/B/C/D/
+    R32-1A/B/R33-1A/R33-1B 全部不动
+  · R31-1B 并发架构核心 (Semaphore + crawlBookMeta/crawlChapterContent/
+    finalizeBook 三方法) 保留
+  · R32-1A 的 4 个 P1 修复 (urls 去重 + failedBookUrls add/delete/resume)
+    保留, R33-1A 系统审查结论 (5 Set + globalQueue + saveProgress + resume
+    链路完整) 保留
+  · R33-1B 的 4 P1 + 1 P2 修复 (trafilaturaBridgeUrl 透传 / split(/\n+/)
+    段落 / 等) 不动
+- 验证: bun run lint 0 errors ✓ / bunx tsc --noEmit 0 errors in src/ ✓ /
+  dev.log 无报错 ✓ / RulesSection 迁移后所有调用点 (load/reload/setRows/
+  onClick={load}/onSaved={load}/toast 文案) 行为兼容 ✓
+- 详细工作记录: agent-ctx/R33-1C-full-stack-developer.md(含 8 章节:
+  读交接/基线验证/dead code 扫描/重复逻辑整合/过时注释清理/复杂函数评估/
+  临时文件清理/验证)

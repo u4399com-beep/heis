@@ -85,15 +85,53 @@ interface TrafilaturaExtractResult {
  * R29-1C: 本 helper 是 useTrafilatura=true 集成路径的内部实现, wiring 由 A/B/C agent
  *  后续完成(cleanContentHtml 同步签名不支持 async, 需走 caller-side 分流). 当前 export
  *  保留供后续 wiring 直接复用, 避免 A/B/C agent 重写(零代码重复).
+ * R33-1B: bridgeUrl 参数 —— 操作员自定义了不同 URL(同 tryTrafilaturaExtract 同口径)
+ *  时, 该路径不走 60s 缓存(防缓存键混淆), 直接尝试 /extract. 修前: useTrafilatura=true
+ *  走 cleanContentHtmlAsync → callTrafilaturaExtract(无 bridgeUrl 参数), 操作员配置的
+ *  rule.fetch.trafilaturaBridgeUrl 被静默忽略(只走 env / 默认 3019). 现按 tryTrafilaturaExtract
+ *  同款逻辑支持自定义桥 URL, 与 trafilaturaFallback=true 兜底路径行为对齐.
  */
 export async function callTrafilaturaExtract(
   html: string,
   pruneXPath?: string[],
+  bridgeUrl?: string,
 ): Promise<TrafilaturaExtractResult> {
   if (!html) return { ok: false, error: 'empty html' }
   if (Buffer.byteLength(html, 'utf-8') > TRAFILATURA_MAX_HTML_BYTES) {
     return { ok: false, error: 'html 超过 10MB 上限' }
   }
+  // R33-1B: 操作员自定义了不同 URL — 该路径不走 60s 缓存(防缓存键混淆), 直接尝试
+  // (与 tryTrafilaturaExtract 同款逻辑, useTrafilatura=true 与 trafilaturaFallback=true
+  // 两条路径行为对齐)
+  const customBridge = bridgeUrl && bridgeUrl.trim() && bridgeUrl.trim() !== TRAFILATURA_BRIDGE_URL
+    ? bridgeUrl!.trim()
+    : ''
+  if (customBridge) {
+    try {
+      const res = await fetch(`${customBridge}/extract`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          html,
+          pruneXPath: pruneXPath && pruneXPath.length > 0 ? pruneXPath : undefined,
+        }),
+        signal: AbortSignal.timeout(TRAFILATURA_REQUEST_TIMEOUT_MS),
+      })
+      if (!res.ok) return { ok: false, error: `bridge HTTP ${res.status}` }
+      const data = (await res.json().catch(() => null)) as
+        | { ok?: boolean; text?: string; error?: string }
+        | null
+      if (!data || data.ok !== true) {
+        return { ok: false, error: data?.error || 'bridge returned ok:false' }
+      }
+      const text = typeof data.text === 'string' ? data.text : ''
+      return { ok: true, text }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return { ok: false, error: `调用失败: ${msg.slice(0, 100)}` }
+    }
+  }
+  // 默认 URL: 复用 60s 可用性缓存
   const available = await checkTrafilaturaBridge()
   if (!available) {
     return { ok: false, error: 'trafilatura-bridge 不可用(60s 缓存内)' }
@@ -934,6 +972,12 @@ export function contentPlainTextLength(html: string): number {
  * 入参: 同 cleanContentHtml(raw, cfgOverride)
  * 返回: 清洗后正文 HTML/纯文本(取决于 CleanConfig.plainText)
  *
+ * R33-1B: bridgeUrl 参数 —— 操作员自定义 trafilatura 桥 URL(来自 rule.fetch.trafilaturaBridgeUrl,
+ *  types.ts 文档注明"useTrafilatura=true 或 trafilaturaFallback=true 时生效"). 修前
+ *  cleanContentHtmlAsync 未接收 bridgeUrl, useTrafilatura=true 路径下操作员配置的
+ *  rule.fetch.trafilaturaBridgeUrl 被静默忽略(只走 env / 默认 3019). 现透传给
+ *  callTrafilaturaExtract 与 trafilaturaFallback=true 兜底路径行为对齐.
+ *
  * 使用建议:
  *   - 采集主路径(runner.ts)在 useTrafilatura=true 时调用本 async 版本
  *   - 后台管理路径(admin PUT /chapters, 备份 restore)继续用同步 cleanContentHtml
@@ -942,16 +986,18 @@ export function contentPlainTextLength(html: string): number {
 export async function cleanContentHtmlAsync(
   raw: string,
   cfgOverride?: Partial<CleanConfig>,
+  bridgeUrl?: string,
 ): Promise<string> {
   const cfg: CleanConfig = { ...DEFAULT_CLEAN_CONFIG, ...cfgOverride }
   if (!cfg.useTrafilatura || !raw) {
     // 未启用或空输入 → 直接走同步链(零回归)
     return cleanContentHtml(raw, cfgOverride)
   }
-  // 1. 调 trafilatura 提取正文
+  // 1. 调 trafilatura 提取正文(R33-1B: 透传 bridgeUrl, 操作员自定义桥 URL)
   const trafilaturaResult = await callTrafilaturaExtract(
     raw,
     cfg.trafilaturaPruneXPath,
+    bridgeUrl,
   )
   if (!trafilaturaResult.ok || !trafilaturaResult.text) {
     // 2. trafilatura 失败 → 降级回同步 cheerio 链(零回归)

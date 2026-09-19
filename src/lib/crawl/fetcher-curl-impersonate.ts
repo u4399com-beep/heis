@@ -173,6 +173,11 @@ export class CurlImpersonateError extends Error {
   serverHeader?: string
   cfRay?: string
   cfMitigated?: string
+  /** R33-1B: 目标侧 Set-Cookie 头(与 fetchViaCurl 错误对象同口径) —— 桥拿到 4xx/5xx
+   *  响应(如 CF 403 挑战 + Set-Cookie: cf_clearance=...)时, 调用方 fetchViaCurlImpersonateFallback
+   *  须先把这些凭证写回 cookieJar 再 rethrow, 否则上层 Cookie 挑战重试链路拿到 403 但
+   *  cookieJar 没有挑战凭证, 重试仍 403(curl-impersonate 桥的 cf_clearance 凭证丢失) */
+  setCookies?: string[]
   constructor(message: string) {
     super(message)
     this.name = 'CurlImpersonateError'
@@ -354,6 +359,12 @@ export async function fetchViaCurlImpersonate(opts: CurlImpersonateOptions): Pro
     const err = new CurlImpersonateError(`HTTP ${status}(curl-impersonate)`)
     err.status = status
     err.bodyHtml = html
+    // R33-1B: 把目标侧 Set-Cookie 头透传到错误对象, 让调用方 fetchViaCurlImpersonateFallback
+    // 在 rethrow 前把它们写回 cookieJar(与 fetchViaCurl 在 rounds 循环中 per-round store
+    // 同口径). 修前: 4xx/5xx 响应携带的 cf_clearance 等挑战凭证被直接丢弃, 上层 Cookie
+    // 挑战重试链路拿不到凭证 → 重试仍 403(curl-impersonate 桥的 cf_clearance 凭证丢失),
+    // 桥拿到的挑战信号等同虚设. 现透传 setCookies 让调用方先写 cookieJar 再 rethrow
+    err.setCookies = setCookies
     // 解析 WAF 头(与 fetchViaCurl 同口径: server/cf-ray/cf-mitigated/retry-after)
     for (const [k, v] of headers) {
       const lk = String(k).toLowerCase()

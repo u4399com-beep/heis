@@ -400,26 +400,6 @@ function parseDir(path: string): ViewPathParams | null {
   return null
 }
 
-// ============================================================
-// §4  兼容旧接口
-// ============================================================
-
-export type BookUrlStyle = 'id' | 'query'
-
-/** 伪静态是否已启用 (配置 /book/* rewrite 后置 true, 见 next.config.ts rewrites) */
-export const PSEUDOSTATIC_ENABLED = false
-
-/**
- * 构建书籍页路径 (不含域名) — 兼容旧调用方(links.ts)。
- * 新代码应使用 buildViewUrl。
- */
-export function buildBookUrl(bookId: string, style: BookUrlStyle = 'id'): string {
-  const id = (bookId || '').trim()
-  if (!id) return '/'
-  if (style === 'id' && PSEUDOSTATIC_ENABLED) return `/book/${encodeURIComponent(id)}.html`
-  return `/?view=book&id=${encodeURIComponent(id)}`
-}
-
 /**
  * Next.js rewrites 规则 — 把伪静态路径转发到查询串风格。
  * 在 next.config.ts 的 rewrites() 中调用。

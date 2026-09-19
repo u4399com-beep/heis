@@ -57,7 +57,7 @@ const DOMAIN_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])
  * 用于把 DB 中的 domain 兜底成纯 host 再拼跨站绝对地址; 非法返回 ''(调用方跳过该站)。
  * 例: "https://www.a.com/path?x=1" → "www.a.com"; "www.B.com:3000/" → "www.b.com:3000"
  */
-export function normalizeSiteDomain(raw: string): string {
+function normalizeSiteDomain(raw: string): string {
   let s = (raw || '').trim().toLowerCase()
   if (!s) return ''
   // 保险 1: URL 解析取 host(含端口)
@@ -87,7 +87,7 @@ export interface WheelBook {
  *  改为单次 findMany take need*3(冗余应对 excludeIds 命中) → JS 侧洗牌 + 去重, 单次查询替代 N×M 次串行查询。
  *  书库不足 take 时 findMany 返回全部行, 链位填不满则少给(宁缺毋滥语义不变)。
  */
-export async function pickRandomBooks(need: number, excludeIds: string[] = []): Promise<WheelBook[]> {
+async function pickRandomBooks(need: number, excludeIds: string[] = []): Promise<WheelBook[]> {
   const out: WheelBook[] = []
   if (need <= 0) return out
   const excludeSet = new Set(excludeIds)
@@ -136,7 +136,7 @@ function shuffled<T>(arr: T[]): T[] {
  *  2. 槽位规划: home=全主页槽 / book=全书籍槽 / mixed=主页·书籍交替
  *  3. 主页槽: 沿洗牌序轮转, 每站最多贡献一条主页链
  *  4. 书籍槽: 从主页槽消费完的位置继续轮转站点(同站可贡献不同书),
- *     每槽随机挑一本全局不重复的书, 地址 = https://{domain}{buildBookUrl(id)}
+ *     每槽随机挑一本全局不重复的书, 地址 = https://{domain}{buildViewUrl({view:'book',bookId:id})}
  *  5. 书库不足: 剩余书籍槽回退为「未用过」站点的主页链(每站一条)
  *  6. 任何 URL/域名不重复, 填不满就少给(宁缺毋滥)
  */

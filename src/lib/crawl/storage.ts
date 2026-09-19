@@ -82,7 +82,15 @@ export async function readChapterTxt(relPath: string): Promise<string | null> {
 
 export async function deleteBookTxt(bookId: string) {
   try {
-    await fs.rm(path.join(NOVELS_DIR, bookId), { recursive: true, force: true })
+    // R26-1A P1 修复(本块同款): bookId 路径穿越防御. saveChapterTxt 已对 bookId 做同款
+    // 清洗(replace [\\/\x00\s.]+ → _ + 去首尾_), 防 caller 侧误传 / DB 迁移 / 手工
+    // 调用传入非法 ID 造成越出 NOVELS_DIR. 但 deleteBookTxt 此前未做同款清洗 ——
+    // 配合 fs.rm({recursive:true, force:true}) 时, 传入 '../../etc' 等恶意 ID 会
+    // 递归删除 NOVELS_DIR 外的目录(API 路由层有 db.book.findUnique 守卫只允许真实
+    // cuid 通过, 但防御性 Coding 在源头: 与 saveChapterTxt 同款清洗后再拼路径).
+    // 同口径剥除所有路径分隔符与父目录指针字符后, 才拼路径; 空串兜底 'unknown_book'.
+    const safeBookId = String(bookId || '').replace(/[\\/\x00\s.]+/g, '_').replace(/^_+|_+$/g, '') || 'unknown_book'
+    await fs.rm(path.join(NOVELS_DIR, safeBookId), { recursive: true, force: true })
   } catch { /* ignore */ }
 }
 
@@ -127,7 +135,12 @@ export async function readCover(fileName: string): Promise<Buffer | null> {
   try {
     const safe = path.basename(fileName)
     const full = path.join(COVERS_DIR, safe)
-    if (!full.startsWith(COVERS_DIR)) return null
+    // R33-1B: 同款 sibling-prefix 绕过防御(与 readChapterTxt 同口径) ——
+    // 修前 `full.startsWith(COVERS_DIR)` 存在同级目录前缀绕过: 若 COVERS_DIR 是
+    // `/data/covers`, 则 `/data/covers-backup/secret.webp` 也会通过 startsWith 检查
+    // (字符串前缀匹配). path.basename 已剥目录组件, 但防御性 Coding 要求 startsWith
+    // 必须以 path.sep 结尾才算真正落在目录内(同 readChapterTxt line 76 口径)
+    if (full !== COVERS_DIR && !full.startsWith(COVERS_DIR + path.sep)) return null
     return await fs.readFile(full)
   } catch {
     return null

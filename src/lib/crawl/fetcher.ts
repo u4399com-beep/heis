@@ -3684,15 +3684,33 @@ async function fetchViaCurlImpersonateFallback(url: string, cfg: FetchConfig, ua
   // 让 curl-impersonate 桥复用既有挑战凭证(避免挑战重新求解)
   const cookieStr = cookieJar.get(originHost(url))
   if (cookieStr && !headers.Cookie) headers.Cookie = cookieStr
-  const result = await fetchViaCurlImpersonate({
-    url,
-    headers,
-    proxy: proxy || undefined,
-    timeoutMs: cfg.timeout && cfg.timeout > 0 ? cfg.timeout : 20000,
-    // cfg.tlsProfile → curl_cffi impersonate 字符串(chrome120/firefox120/safari17_0;
-    // 缺省 chrome120 最通用, Chrome 占浏览器市占 70%+)
-    impersonate: tlsProfileToImpersonate(cfg.tlsProfile),
-  })
+  // R33-1B: try/catch 包裹 fetchViaCurlImpersonate —— 桥拿到 4xx/5xx 响应时会抛
+  // CurlImpersonateError(status>0, setCookies=...), 修前直接上抛, setCookies 中携带的
+  // cf_clearance 等挑战凭证被丢弃, 上层 Cookie 挑战重试链路拿到 403 但 cookieJar
+  // 没有凭证 → 重试仍 403(curl-impersonate 桥拿到的挑战信号等同虚设). 现 try/catch
+  // 捕获后先把 setCookies 写回 cookieJar(与 fetchViaCurl 在 rounds 循环中 per-round
+  // store 同口径), 再 rethrow. 桥不可达/桥内异常(status=0, 无 setCookies)无 cookie
+  // 可写, 直接 rethrow(零回归)
+  let result: Awaited<ReturnType<typeof fetchViaCurlImpersonate>>
+  try {
+    result = await fetchViaCurlImpersonate({
+      url,
+      headers,
+      proxy: proxy || undefined,
+      timeoutMs: cfg.timeout && cfg.timeout > 0 ? cfg.timeout : 20000,
+      // cfg.tlsProfile → curl_cffi impersonate 字符串(chrome120/firefox120/safari17_0;
+      // 缺省 chrome120 最通用, Chrome 占浏览器市占 70%+)
+      impersonate: tlsProfileToImpersonate(cfg.tlsProfile),
+    })
+  } catch (e) {
+    // R33-1B: 4xx/5xx 响应携带的 Set-Cookie 写回 cookieJar, 让上层 Cookie 挑战重试
+    // 链路可消费(与 fetchViaCurl 同口径). 桥不可达/桥内异常(status=0, 无 setCookies)
+    // 无 cookie 可写, 直接 rethrow(零回归)
+    if (e instanceof CurlImpersonateError && e.setCookies && e.setCookies.length) {
+      cookieJar.store(originHost(url), e.setCookies)
+    }
+    throw e
+  }
   // cookies 回写: 桥返回的 cf_clearance 等挑战凭证写回 CookieJar —— 打通 HTTP 引擎后续直连
   if (result.setCookies.length) cookieJar.store(originHost(url), result.setCookies)
   return result.html

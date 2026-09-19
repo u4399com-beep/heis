@@ -18,8 +18,9 @@ import { api } from './helpers'
 
 // ---------------- 结果类型 ----------------
 
-/** 服务端批量结果的跳过项 */
-export interface BatchSkipped {
+/** 服务端批量结果的跳过项 (内部类型, 仅供 BatchOutcome.skipped 使用;
+ *  外部消费方按结构推断类型, 不需要直接 import) */
+interface BatchSkipped {
   name?: string
   reason: string
 }

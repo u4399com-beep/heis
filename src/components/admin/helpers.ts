@@ -2,7 +2,9 @@
 // 后台管理 — 共享数据层 / 类型 / 工具函数
 // 所有 API 均为相对路径, 统一返回 { ok, data, message }
 // ============================================================
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type { Dispatch, SetStateAction } from 'react'
+import { toast } from 'sonner'
 import type { CleanConfig, FetchConfig, FieldRule, PageRule, RuleConfig } from '@/lib/crawl/types'
 import { parseRuleConfig } from '@/lib/crawl/types'
 
@@ -18,6 +20,43 @@ export function useAliveRef() {
     return () => { ref.current = false }
   }, [])
   return ref
+}
+
+// ---------------- 通用列表加载 Hook (R33-1C 抽取) ----------------
+// 重复模式: RulesSection / CategoriesSection 等的列表加载都遵循:
+//   1) useState< T[]>([]) + useState(true)loading
+//   2) useCallback(async () => { setLoading; try { api.get → setRows } catch toast; finally setLoading(false) }, [])
+//   3) useEffect(() => load(), [load])
+// 抽取后调用方:
+//   const { rows, setRows, loading, reload } = useResourceList<RuleRow>('/api/admin/rules', '加载规则失败')
+// 适用条件: 单一 GET 端点 + 数组响应 + 单一 loading 态; 复杂场景(Promise.all/pagination/
+//   aliveRef/seq guard/ silent param)请直接写 load, 不要强行迁移。
+export function useResourceList<T>(
+  url: string,
+  errMsg: string,
+): {
+  rows: T[]
+  setRows: Dispatch<SetStateAction<T[]>>
+  loading: boolean
+  reload: () => Promise<void>
+} {
+  const [rows, setRows] = useState<T[]>([])
+  const [loading, setLoading] = useState(true)
+  const reload = useCallback(async () => {
+    setLoading(true)
+    try {
+      const data = await api.get<T[]>(url)
+      setRows(Array.isArray(data) ? data : [])
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : errMsg)
+    } finally {
+      setLoading(false)
+    }
+  }, [url, errMsg])
+  useEffect(() => {
+    reload()
+  }, [reload])
+  return { rows, setRows, loading, reload }
 }
 
 // ---------------- API 包装 ----------------

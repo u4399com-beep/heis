@@ -7,7 +7,7 @@
 // 导入/导出: JSON 文件下载 / 上传解析后逐条 POST (feat-round-6)
 // 复制增强: 复制后滚动到新行并高亮闪烁 (feat-round-6)
 // ============================================================
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -26,7 +26,15 @@ import {
   runBatch,
   useBatchSelection,
 } from './batch'
-import { api, fmtDateTime, safeJsonParse, parseRuleConfig, type RuleConfig, type RuleRow } from './helpers'
+import {
+  api,
+  fmtDateTime,
+  safeJsonParse,
+  parseRuleConfig,
+  useResourceList,
+  type RuleConfig,
+  type RuleRow,
+} from './helpers'
 
 // ---- 导入规则条目形态 (导出/导入共用) ----
 interface RuleImportItem {
@@ -45,8 +53,12 @@ const FLASH_STYLE = `
 `
 
 export function RulesSection() {
-  const [rows, setRows] = useState<RuleRow[]>([])
-  const [loading, setLoading] = useState(true)
+  // R33-1C: 复用通用列表加载 hook (rules 是单一 GET 端点 + 数组响应 + 单一 loading 态,
+  //          完美匹配 useResourceList 抽象)
+  const { rows, setRows, loading, reload: load } = useResourceList<RuleRow>(
+    '/api/admin/rules',
+    '加载规则失败',
+  )
   const [keyword, setKeyword] = useState('')
   const [editorOpen, setEditorOpen] = useState(false)
   const [editing, setEditing] = useState<RuleRow | null>(null)
@@ -71,22 +83,6 @@ export function RulesSection() {
   // ---- 复制后高亮闪烁 (feat-round-6) ----
   const [flashId, setFlashId] = useState<string | null>(null)
   const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const data = await api.get<RuleRow[]>('/api/admin/rules')
-      setRows(Array.isArray(data) ? data : [])
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : '加载规则失败')
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    load()
-  }, [load])
 
   // feat-round-6: 卸载时清掉闪烁定时器, 避免设置已卸载组件状态
   useEffect(() => {

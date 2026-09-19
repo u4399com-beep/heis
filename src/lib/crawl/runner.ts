@@ -2214,9 +2214,13 @@ export class TaskRunner {
       // trafilatura 失败自动降级回同步 cheerio 链)。否则走同步 cleanContentHtml + 可选
       // trafilatura 兜底(仅结果过短时)。两种模式互斥: useTrafilatura=true 时
       // trafilaturaFallback 字段被忽略(先模式优先于兜底模式)。
+      // R33-1B: 两条路径均透传 rule.fetch.trafilaturaBridgeUrl(操作员自定义桥 URL),
+      // 与 types.ts 文档注明"useTrafilatura=true 或 trafilaturaFallback=true 时生效"对齐.
+      // 修前: useTrafilatura=true 路径不透传 bridgeUrl, 操作员配置的桥 URL 被静默忽略
+      // (只走 env / 默认 3019). 现与兜底路径行为对齐.
       let cleaned: string
       if (rule.clean.useTrafilatura === true) {
-        cleaned = await cleanContentHtmlAsync(parsedC.content, rule.clean)
+        cleaned = await cleanContentHtmlAsync(parsedC.content, rule.clean, rule.fetch.trafilaturaBridgeUrl)
       } else {
         cleaned = cleanContentHtml(parsedC.content, rule.clean)
         // R29-1A → R29-1C 修复: trafilatura 桥兜底 —— 当标准清洗产出过短(<200 字符)且
@@ -2236,8 +2240,13 @@ export class TaskRunner {
           if (trafilaturaText && trafilaturaText.length > contentPlainTextLength(cleaned) * 2) {
             // 把 trafilatura 纯文本按 cleaner plainText 模式同款规整(段间 \n\n, 控制字符剥离)
             // 输出格式与 storageMode='txt' 入库路径对齐(原 runner.ts 同款 .replace 链)
+            // R33-1B: split 用 /\n+/ 而非 /\n{2,}/ —— trafilatura v2 txt 输出用单 \n 分段
+            // (cleaner.ts cleanContentHtmlAsync line 999 注释 + tryTrafilaturaExtract 同口径),
+            // 修前 /\n{2,}/ 只在双换行处分段, trafilatura 单 \n 段落被并成一段 → 整章
+            // 内容被压缩成单个 <p> 标签, 段落结构丢失. 现与 cleanContentHtmlAsync 同款
+            // split(/\n+/), 单/双换行都视为段间分隔
             cleaned = trafilaturaText
-              .split(/\n{2,}/)
+              .split(/\n+/)
               .map((seg) => seg.replace(/\s+/g, ' ').trim())
               .filter(Boolean)
               .map((seg) => `<p>${seg.replace(/[<>&]/g, (c) => (c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&amp;'))}</p>`)
