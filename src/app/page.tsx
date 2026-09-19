@@ -21,7 +21,9 @@ import { headers } from 'next/headers'
 import type { SiteInfo } from '@/components/public/types'
 import { readChapterTxt } from '@/lib/crawl/storage'
 
-export const dynamic = 'force-dynamic'
+// R26: 去掉 force-dynamic — Next.js 16 用 searchParams 的 route 自动 dynamic;
+// force-dynamic 导致响应头 Cache-Control: no-store, 预览面板可能因此不断 reload (后台一闪一闪)
+// export const dynamic = 'force-dynamic'
 
 type PublicViewObj = {
   view: 'home' | 'book' | 'read' | 'search' | 'keyword' | 'category' | 'history' | 'ranking' | 'fulltext'

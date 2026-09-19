@@ -11,21 +11,15 @@
 // ============================================================
 import { usePublic } from '../../ctx'
 import type { ReadChromeProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 import { useEffect, useState } from 'react'
 
 export function ReadChrome({ children, chapterTitle, onPrev, onNext }: ReadChromeProps) {
   const { site, navigate } = usePublic()
   const [fontSize, setFontSize] = useState(14)
 
-  const goHome = (e: React.MouseEvent) => {
-    e.preventDefault()
-    navigate({ view: 'home' })
-  }
-  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const q = (e.currentTarget.elements.namedItem('searchkey') as HTMLInputElement)?.value?.trim()
-    if (q) navigate({ view: 'search', q })
-  }
+  // R27-1C: 复用 cloneNavHandlers
+  const { goHome, goSearch } = cloneNavHandlers(navigate, 'searchkey')
   const goFulltext = (e: React.MouseEvent) => {
     e.preventDefault()
     navigate({ view: 'fulltext' })

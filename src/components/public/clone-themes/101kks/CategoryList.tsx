@@ -16,18 +16,13 @@ import { usePublic } from '../../ctx'
 import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
 import type { CategoryListProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 import type { BookItem } from '../../types'
 
 export function CategoryList({ books, loading, label, page, total, size = 24, onPage }: CategoryListProps) {
   const { site, navigate } = usePublic()
-
-  const goHome = (e: React.MouseEvent) => { e.preventDefault(); navigate({ view: 'home' }) }
-  const goCat = (e: React.MouseEvent) => { e.preventDefault(); navigate({ view: 'category' }) }
-  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const q = (e.currentTarget.elements.namedItem('searchkey') as HTMLInputElement)?.value?.trim()
-    if (q) navigate({ view: 'search', q })
-  }
+  // R27-1C: 复用 cloneNavHandlers
+  const { goHome, goSearch, goCat } = cloneNavHandlers(navigate, 'searchkey')
 
   // 分页区间: 当前页 ± 2, 最少 5 页 (源站 .pagelink 显示 1..10 + pgroup + next + ngroup)
   const totalPages = Math.max(1, Math.ceil(total / size))

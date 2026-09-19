@@ -13,6 +13,7 @@ import { bookNavProps } from '../../bits'
 import { formatWords } from '../../seo'
 import { addFavoriteSite, useTraditionalChinese } from '../tools'
 import type { HomeCloneProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 import { useEffect, useState } from 'react'
 
 interface Cat { id: string; name: string }
@@ -78,10 +79,8 @@ export function HomeClone({ books, loading, navCategoryCount = 8, initialCategor
     e.preventDefault()
     navigate({ view: 'category', cat: catId })
   }
-  const goHome = (e: React.MouseEvent) => {
-    e.preventDefault()
-    navigate({ view: 'home' })
-  }
+  // R27-1C: 复用 cloneNavHandlers
+  const { goHome, goSearch } = cloneNavHandlers(navigate, 'searchkey')
   const goRank = (e: React.MouseEvent) => {
     e.preventDefault()
     navigate({ view: 'ranking' })
@@ -94,12 +93,6 @@ export function HomeClone({ books, loading, navCategoryCount = 8, initialCategor
     e.preventDefault()
     navigate({ view: 'history' })
   }
-  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const q = (e.currentTarget.elements.namedItem('searchkey') as HTMLInputElement)?.value?.trim()
-    if (q) navigate({ view: 'search', q })
-  }
-
   // 将 6 个 sections 切成两行 .novelslist (每行 3 个 .content)
   const row1 = sections.slice(0, 3)
   const row2 = sections.slice(3, 6)

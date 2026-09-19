@@ -18,6 +18,7 @@ import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
 import { formatWords, statusLabel, fmtDate } from '../../seo'
 import type { KeywordViewProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 import type { BookItem } from '../../types'
 
 const NAV_ITEMS = [
@@ -42,10 +43,8 @@ export function KeywordView({ tag, books, loading }: KeywordViewProps) {
     })
   )).filter(t => t && t !== tag).slice(0, 16)
 
-  const goHome = (e: React.MouseEvent) => {
-    e.preventDefault()
-    navigate({ view: 'home' })
-  }
+  // R27-1C: 复用 cloneNavHandlers
+  const { goHome, goSearch } = cloneNavHandlers(navigate, 'keyword')
   const goNav = (e: React.MouseEvent, id: string) => {
     e.preventDefault()
     if (id === 'home') navigate({ view: 'home' })
@@ -54,11 +53,6 @@ export function KeywordView({ tag, books, loading }: KeywordViewProps) {
     else if (id === 'search') navigate({ view: 'search' })
     else if (id === 'tag') navigate({ view: 'keyword', tag: '小说' })
     else if (id === 'author') navigate({ view: 'search' })
-  }
-  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const kw = (e.currentTarget.elements.namedItem('keyword') as HTMLInputElement)?.value?.trim()
-    if (kw) navigate({ view: 'search', q: kw })
   }
   const goTag = (e: React.MouseEvent, t: string) => {
     e.preventDefault()

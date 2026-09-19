@@ -7,6 +7,7 @@
 //     ( .novel-cover (封面) + .novel-info (.novel-info-header h3 + .novel-info-items 元数据 + .novel-info-content 简介) ) )
 // ============================================================
 import type { SearchViewProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 import { usePublic } from '../../ctx'
 import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
@@ -14,13 +15,8 @@ import { formatWords, statusLabel, fmtDate } from '../../seo'
 
 export function SearchView({ q, books, loading }: SearchViewProps) {
   const { site, navigate } = usePublic()
-
-  const goHome = (e: React.MouseEvent) => { e.preventDefault(); navigate({ view: 'home' }) }
-  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const v = (e.currentTarget.elements.namedItem('searchkey') as HTMLInputElement)?.value?.trim()
-    if (v) navigate({ view: 'search', q: v })
-  }
+  // R27-1C: 复用 cloneNavHandlers
+  const { goHome, goSearch } = cloneNavHandlers(navigate, 'searchkey')
 
   return (
     <>

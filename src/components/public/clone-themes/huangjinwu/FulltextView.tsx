@@ -17,6 +17,7 @@ import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
 import { formatWords, statusLabel, fmtDate } from '../../seo'
 import type { FulltextViewProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 import { useEffect, useState } from 'react'
 
 interface Cat { id: string; name: string }
@@ -63,10 +64,8 @@ export function FulltextView({ books, loading, page, total, size, onPage, initia
   const navCats = cats.length ? cats : DEFAULT_NAV
   const totalPages = Math.max(1, Math.ceil(total / size))
 
-  const goHome = (e: React.MouseEvent) => {
-    e.preventDefault()
-    navigate({ view: 'home' })
-  }
+  // R27-1C: 复用 cloneNavHandlers
+  const { goHome, goSearch } = cloneNavHandlers(navigate, 'keyword')
   const goNav = (e: React.MouseEvent, id: string) => {
     e.preventDefault()
     if (id === 'home') navigate({ view: 'home' })
@@ -80,12 +79,6 @@ export function FulltextView({ books, loading, page, total, size, onPage, initia
     e.preventDefault()
     navigate({ view: 'category', cat: catId })
   }
-  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const q = (e.currentTarget.elements.namedItem('keyword') as HTMLInputElement)?.value?.trim()
-    if (q) navigate({ view: 'search', q })
-  }
-
   const renderPager = () => {
     if (total <= size) return null
     const start = Math.max(1, page - 4)

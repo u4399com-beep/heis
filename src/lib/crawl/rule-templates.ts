@@ -109,7 +109,7 @@ const biqugeStandardTemplate: RuleTemplate = {
     cfg.clean.plainText = false
     return cfg
   })(),
-  notes: '使用前必改: cfg.list.urlTemplate 改成目标站列表页 URL; 站点若是 GBK 编码请改用「笔趣阁GBK变体」模板; 章节分卷结构需自行扩展 toc.fields.volume 字段。',
+  notes: '使用前必改: cfg.list.urlTemplate 改成目标站列表页 URL; 站点若是 GBK 编码请改用「笔趣阁GBK变体」模板。R27-1A: 章节分卷结构(源站目录显示卷标题分组)时, 在 cfg.toc.fields 添加 volume 字段提取卷名, 例: volume: { type: "css", expression: ".volume-name", attr: "text" }; 卷名随章节落库后, BookView 目录会按卷分组渲染(卷头独立区块 + 卷内 3 列剧集列表)。',
 }
 
 // ============================================================
@@ -243,8 +243,13 @@ const regexFallbackTemplate: RuleTemplate = {
     }
     cfg.toc.pagination = { enabled: false, maxPages: 20 }
     // 正文: <div id="content">...</div> 非贪婪
+    // R27-1B 修复 P2: 原正则 `<div[^>]*id="content"[^>]*>([\\s\\S]*?)</div>\\s*<div` 要求
+    // 在 </div> 之后必须有另一个 <div, 章末 EOF(</body></html>) 场景匹配失败 → 内容提取
+    // 空字符串, 用户看到"四段测试全部 0 字"误以为规则写错。修法: 用非捕获 alternation
+    // 允许 </div> 之后跟: 另一个 <div(原语义), </body(常见 EOF 结构), 或 $(EOF)。
+    // 嵌套 div 内容选择器仍走原语义(第一个 </div>+<div 之间); EOF 兜底仅在末尾 div 场景触发
     cfg.content.fields = {
-      content: { type: 'regex', expression: '<div[^>]*id="content"[^>]*>([\\s\\S]*?)</div>\\s*<div', flags: 'is' },
+      content: { type: 'regex', expression: '<div[^>]*id="content"[^>]*>([\\s\\S]*?)</div>(?:\\s*<div|\\s*</body|$)', flags: 'is' },
     }
     cfg.content.pagination = { enabled: false, maxPages: 10, joinWith: '<br/>' }
     cfg.fetch.engine = 'auto'
@@ -428,6 +433,13 @@ const fanqieStyleTemplate: RuleTemplate = {
         type: 'const',
         expression: '/api/content?tab=%E5%B0%8F%E8%AF%B4&item_id={itemId}&bid={q.book_id}',
       },
+      // R27-1A: 分卷名提取 —— * 递归展平后, 章节对象本身的 volume_name 字段会被保留(同名
+      // 卷下每章同名, 重复无害; 不同卷的章带不同卷名 → 在 BookView.tsx 按 volume 字段连续
+      // 相同分组显示卷头). 真实番茄 API 若 chapter 对象无 volume_name 字段(平行数组
+      // volumeNameList[] 模式), 需自定义转换层(mini-services 重组 JSON 把卷名注入每章);
+      // 当前模板按 verify-ll-c-listfields.ts 验证过的模式配置, 待 API 恢复后按实际响应调整.
+      // 不配置此字段时, 章节落库 volume 为空 → BookView 渲染为单卷不分组的目录(零回归)
+      volume: { type: 'json', expression: 'volume_name' },
     }
     cfg.toc.pagination = { enabled: false, maxPages: 1 }
     // 正文 API: data.content 是 \n 分段纯文本
@@ -458,7 +470,7 @@ const fanqieStyleTemplate: RuleTemplate = {
     cfg.clean.plainText = true
     return cfg
   })(),
-  notes: '引擎扩展依赖(Task cc-c): ①json [k=v] 过滤算子(search_tabs[tab_type=3]); ②map-collect 非数字段作用在数组上(跨元素取属性展平一层); ③* 段递归展平(chapterListWithVolume.* → 章节平面); ④runner {offset:N} = (page-1)*N。详见 scripts/seed-rule-fanqie.ts。',
+  notes: '引擎扩展依赖(Task cc-c): ①json [k=v] 过滤算子(search_tabs[tab_type=3]); ②map-collect 非数字段作用在数组上(跨元素取属性展平一层); ③* 段递归展平(chapterListWithVolume.* → 章节平面); ④runner {offset:N} = (page-1)*N。详见 scripts/seed-rule-fanqie.ts。R27-1A: 已预置 toc.fields.volume(volume_name 字段提取)以保留分卷名, 真实 API 若章节对象本身无 volume_name(平行 volumeNameList[] 模式)需改用 mini-services 转换层重组 JSON。',
 }
 
 // ============================================================

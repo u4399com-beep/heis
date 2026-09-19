@@ -16,6 +16,7 @@ import { usePublic } from '../../ctx'
 import { bookNavProps } from '../../bits'
 import { formatWords } from '../../seo'
 import type { SearchViewProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 import { useEffect, useState } from 'react'
 
 interface Cat { id: string; name: string }
@@ -51,19 +52,8 @@ export function SearchView({ q, books, loading, initialCategories }: SearchViewP
   // 热门小说(侧栏): 当前结果前 12 本
   const hotBooks = books.slice(0, 12)
 
-  const goCat = (e: React.MouseEvent, catId?: string) => {
-    e.preventDefault()
-    navigate({ view: 'category', cat: catId })
-  }
-  const goHome = (e: React.MouseEvent) => {
-    e.preventDefault()
-    navigate({ view: 'home' })
-  }
-  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const qv = (e.currentTarget.elements.namedItem('searchkey') as HTMLInputElement)?.value?.trim()
-    if (qv) navigate({ view: 'search', q: qv })
-  }
+  // R27-1C: 复用 cloneNavHandlers
+  const { goHome, goSearch, goCat } = cloneNavHandlers(navigate, 'searchkey')
 
   return (
     <>

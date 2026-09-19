@@ -210,6 +210,10 @@ function naturalCompare(a: string, b: string): number {
  * 3. 提取序号成功比例高 → 按序号排序
  * 4. 检测倒序(前几项序号递减) → 翻转
  * 5. 无序号的保持相对顺序排后
+ *
+ * R27-1A 复核确认: 分卷感知重排已完整覆盖 —— 卷间按卷号升序+无号卷按 firstIdx 装配式
+ *   归位(qq-e2 修复番外尾归); 卷内走 sortByChapterNo(章号升序+倒序检测); 纯卷标题
+ *   锚定卷首不拍平。本函数对单卷/多卷/无卷/乱序章四种组合均输出正确目录顺序, 不需修改。
  */
 export function reorderToc(items: TocItem[]): TocItem[] {
   // ---- 去重 ----

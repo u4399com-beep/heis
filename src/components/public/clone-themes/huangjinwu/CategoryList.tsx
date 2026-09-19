@@ -18,6 +18,7 @@ import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
 import { formatWords, statusLabel, fmtDate } from '../../seo'
 import type { CategoryListProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 import { useEffect, useState } from 'react'
 
 interface Cat { id: string; name: string }
@@ -68,10 +69,8 @@ export function CategoryList({ books, loading, label, page, total, size = 24, on
     e.preventDefault()
     navigate({ view: 'category', cat: catId })
   }
-  const goHome = (e: React.MouseEvent) => {
-    e.preventDefault()
-    navigate({ view: 'home' })
-  }
+  // R27-1C: 复用 cloneNavHandlers
+  const { goHome, goSearch } = cloneNavHandlers(navigate, 'keyword')
   const goNav = (e: React.MouseEvent, id: string) => {
     e.preventDefault()
     if (id === 'home') navigate({ view: 'home' })
@@ -81,12 +80,6 @@ export function CategoryList({ books, loading, label, page, total, size = 24, on
     else if (id === 'tag') navigate({ view: 'keyword', tag: '小说' })
     else if (id === 'author') navigate({ view: 'search' })
   }
-  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const q = (e.currentTarget.elements.namedItem('keyword') as HTMLInputElement)?.value?.trim()
-    if (q) navigate({ view: 'search', q })
-  }
-
   // 分页: 上一页 / 1..N / 下一页
   const renderPager = () => {
     if (total <= size) return null

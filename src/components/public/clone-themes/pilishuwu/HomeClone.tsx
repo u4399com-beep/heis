@@ -17,6 +17,7 @@ import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
 import { addFavoriteSite, useTraditionalChinese } from '../tools'
 import type { HomeCloneProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 import type { BookItem } from '../../types'
 import { useEffect, useState } from 'react'
 
@@ -92,19 +93,8 @@ export function HomeClone({ books, loading, navCategoryCount = 8, initialCategor
   // 最新更新表格 in-rise-ta: 剩余本数 (取 24 行)
   const latestUpdates = books.slice(0, 24)
 
-  const goCat = (e: React.MouseEvent, catId?: string) => {
-    e.preventDefault()
-    navigate({ view: 'category', cat: catId })
-  }
-  const goHome = (e: React.MouseEvent) => {
-    e.preventDefault()
-    navigate({ view: 'home' })
-  }
-  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const q = (e.currentTarget.elements.namedItem('key') as HTMLInputElement)?.value?.trim()
-    if (q) navigate({ view: 'search', q })
-  }
+  // R27-1C: 复用 cloneNavHandlers
+  const { goHome, goSearch, goCat } = cloneNavHandlers(navigate, 'key')
   const goRanking = (e: React.MouseEvent) => {
     e.preventDefault()
     navigate({ view: 'ranking' })

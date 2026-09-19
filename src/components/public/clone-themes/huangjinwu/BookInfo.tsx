@@ -19,6 +19,7 @@ import { usePublic } from '../../ctx'
 import { BookCover } from '../../BookCover'
 import { formatWords, statusLabel, fmtDate } from '../../seo'
 import type { BookInfoProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 import { useState } from 'react'
 
 const NAV_ITEMS = [
@@ -51,15 +52,8 @@ export function BookInfo({ book, onScrollToc, onContinueRead, onGoCategory }: Bo
     if (onGoCategory && catId) onGoCategory(catId)
     else navigate({ view: 'category', cat: catId })
   }
-  const goHome = (e: React.MouseEvent) => {
-    e.preventDefault()
-    navigate({ view: 'home' })
-  }
-  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const q = (e.currentTarget.elements.namedItem('keyword') as HTMLInputElement)?.value?.trim()
-    if (q) navigate({ view: 'search', q })
-  }
+  // R27-1C: 复用 cloneNavHandlers
+  const { goHome, goSearch } = cloneNavHandlers(navigate, 'keyword')
 
   // 拆分 keywords 字段为标签数组
   const tags = (book.keywords || '').split(/[,，、;；\s]+/).filter(Boolean).slice(0, 12)

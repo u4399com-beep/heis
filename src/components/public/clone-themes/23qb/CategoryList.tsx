@@ -6,6 +6,7 @@
 //   ( .module.module-list.module-lines-list.module-items 网格 + #page 分页 )
 // ============================================================
 import type { CategoryListProps } from '../shared'
+import { cloneNavHandlers, clonePageItems } from '../shared'
 import { usePublic } from '../../ctx'
 import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
@@ -13,20 +14,9 @@ import { formatWords } from '../../seo'
 
 export function CategoryList({ books, loading, label, page, total, size = 24, onPage }: CategoryListProps) {
   const { site, navigate } = usePublic()
-
-  const goHome = (e: React.MouseEvent) => { e.preventDefault(); navigate({ view: 'home' }) }
-  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const q = (e.currentTarget.elements.namedItem('searchkey') as HTMLInputElement)?.value?.trim()
-    if (q) navigate({ view: 'search', q })
-  }
-
-  // 分页区间: 显示当前页 ± 2, 最少 5 页
-  const totalPages = Math.max(1, Math.ceil(total / size))
-  const from = Math.max(1, page - 2)
-  const to = Math.min(totalPages, from + 4)
-  const pageItems: number[] = []
-  for (let i = from; i <= to; i++) pageItems.push(i)
+  // R27-1C: 复用 cloneNavHandlers + clonePageItems
+  const { goHome, goSearch } = cloneNavHandlers(navigate, 'searchkey')
+  const { totalPages, pageItems } = clonePageItems(page, total, size)
 
   return (
     <>

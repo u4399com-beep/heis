@@ -17,6 +17,7 @@ import { bookNavProps } from '../../bits'
 import { formatWords } from '../../seo'
 import { addFavoriteSite, useTraditionalChinese } from '../tools'
 import type { HomeCloneProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 import type { BookItem } from '../../types'
 import { useEffect, useState } from 'react'
 
@@ -121,19 +122,8 @@ export function HomeClone({ books, loading, navCategoryCount = 8, homeModuleLimi
     else if (id === 'tag') navigate({ view: 'keyword', tag: '小说' })
     else if (id === 'author') navigate({ view: 'search' })
   }
-  const goCat = (e: React.MouseEvent, catId?: string) => {
-    e.preventDefault()
-    navigate({ view: 'category', cat: catId })
-  }
-  const goHome = (e: React.MouseEvent) => {
-    e.preventDefault()
-    navigate({ view: 'home' })
-  }
-  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const q = (e.currentTarget.elements.namedItem('keyword') as HTMLInputElement)?.value?.trim()
-    if (q) navigate({ view: 'search', q })
-  }
+  // R27-1C: 复用 cloneNavHandlers
+  const { goHome, goSearch, goCat } = cloneNavHandlers(navigate, 'keyword')
 
   // 渲染单个 .book-card (无图, 仅文字 + 简介的卡片, 复刻源站 .book-card 结构)
   const renderBookCard = (b: BookItem) => (

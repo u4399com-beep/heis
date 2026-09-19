@@ -13,6 +13,7 @@ import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
 import { statusLabel } from '../../seo'
 import type { KeywordViewProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 import type { BookItem } from '../../types'
 import { useEffect, useState } from 'react'
 
@@ -57,19 +58,8 @@ export function KeywordView({ tag, books, loading, initialCategories }: KeywordV
     books.slice(0, 24).flatMap(b => (b as any).keywords ? String((b as any).keywords).split(/[,，\s]+/).filter(Boolean) : [])
   )).slice(0, 12)
 
-  const goCat = (e: React.MouseEvent, catId?: string) => {
-    e.preventDefault()
-    navigate({ view: 'category', cat: catId })
-  }
-  const goHome = (e: React.MouseEvent) => {
-    e.preventDefault()
-    navigate({ view: 'home' })
-  }
-  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const kw = (e.currentTarget.elements.namedItem('keyboard') as HTMLInputElement)?.value?.trim()
-    if (kw) navigate({ view: 'search', q: kw })
-  }
+  // R27-1C: 复用 cloneNavHandlers
+  const { goHome, goSearch, goCat } = cloneNavHandlers(navigate, 'keyboard')
 
   const fmtSize = (n?: number) => {
     if (!n) return '0 KB'

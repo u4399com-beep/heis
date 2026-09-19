@@ -12,6 +12,7 @@ import { usePublic } from '../../ctx'
 import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
 import type { RankingViewProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 import { useEffect, useState } from 'react'
 
 interface Cat { id: string; name: string }
@@ -62,19 +63,8 @@ export function RankingView({ books, loading, tab, onTabChange, page, total, siz
   const topAuthors: string[] = Array.from(new Set(books.slice(0, 24).map(b => b.author).filter(Boolean)).values()).slice(0, 10)
   const totalPages = Math.max(1, Math.ceil(total / size))
 
-  const goCat = (e: React.MouseEvent, catId?: string) => {
-    e.preventDefault()
-    navigate({ view: 'category', cat: catId })
-  }
-  const goHome = (e: React.MouseEvent) => {
-    e.preventDefault()
-    navigate({ view: 'home' })
-  }
-  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const q = (e.currentTarget.elements.namedItem('keyboard') as HTMLInputElement)?.value?.trim()
-    if (q) navigate({ view: 'search', q })
-  }
+  // R27-1C: 复用 cloneNavHandlers
+  const { goHome, goSearch, goCat } = cloneNavHandlers(navigate, 'keyboard')
 
   const fmtSize = (n?: number) => {
     if (!n) return '0 KB'

@@ -19,6 +19,7 @@ import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
 import { formatWords, statusLabel, fmtDate } from '../../seo'
 import type { SearchViewProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 
 const NAV_ITEMS = [
   { id: 'home', name: '首页', icon: 'icon-book' },
@@ -33,10 +34,8 @@ const NAV_ITEMS = [
 export function SearchView({ q, books, loading }: SearchViewProps) {
   const { site, navigate } = usePublic()
 
-  const goHome = (e: React.MouseEvent) => {
-    e.preventDefault()
-    navigate({ view: 'home' })
-  }
+  // R27-1C: 复用 cloneNavHandlers
+  const { goHome, goSearch } = cloneNavHandlers(navigate, 'keyword')
   const goNav = (e: React.MouseEvent, id: string) => {
     e.preventDefault()
     if (id === 'home') navigate({ view: 'home' })
@@ -46,12 +45,6 @@ export function SearchView({ q, books, loading }: SearchViewProps) {
     else if (id === 'tag') navigate({ view: 'keyword', tag: '小说' })
     else if (id === 'author') navigate({ view: 'search' })
   }
-  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const kw = (e.currentTarget.elements.namedItem('keyword') as HTMLInputElement)?.value?.trim()
-    if (kw) navigate({ view: 'search', q: kw })
-  }
-
   return (
     <>
       {/* 顶部 header (玻璃 header) */}

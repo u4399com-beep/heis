@@ -17,6 +17,7 @@ import { usePublic } from '../../ctx'
 import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
 import type { RankingViewProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 import type { BookItem } from '../../types'
 
 const TABS = [
@@ -28,13 +29,8 @@ const TABS = [
 
 export function RankingView({ books, loading, tab, onTabChange, page, total, size, onPage }: RankingViewProps) {
   const { site, navigate } = usePublic()
-
-  const goHome = (e: React.MouseEvent) => { e.preventDefault(); navigate({ view: 'home' }) }
-  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const q = (e.currentTarget.elements.namedItem('searchkey') as HTMLInputElement)?.value?.trim()
-    if (q) navigate({ view: 'search', q })
-  }
+  // R27-1C: 复用 cloneNavHandlers
+  const { goHome, goSearch } = cloneNavHandlers(navigate, 'searchkey')
 
   // 分页区间: 当前页 ± 2, 最少 5 页 (源站 .pagelink 1..10 + pgroup/next/ngroup)
   const totalPages = Math.max(1, Math.ceil(total / size))

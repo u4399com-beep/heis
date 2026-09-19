@@ -16,6 +16,7 @@ import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
 import { statusLabel, formatWords } from '../../seo'
 import type { SearchViewProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 import { useEffect, useState } from 'react'
 
 interface Cat { id: string; name: string }
@@ -48,19 +49,8 @@ export function SearchView({ q, books, loading, initialCategories }: SearchViewP
 
   const navCats = (cats.length ? cats : DEFAULT_NAV).slice(0, 8)
 
-  const goCat = (e: React.MouseEvent, catId?: string) => {
-    e.preventDefault()
-    navigate({ view: 'category', cat: catId })
-  }
-  const goHome = (e: React.MouseEvent) => {
-    e.preventDefault()
-    navigate({ view: 'home' })
-  }
-  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const v = (e.currentTarget.elements.namedItem('key') as HTMLInputElement)?.value?.trim()
-    if (v) navigate({ view: 'search', q: v })
-  }
+  // R27-1C: 复用 cloneNavHandlers
+  const { goHome, goSearch, goCat } = cloneNavHandlers(navigate, 'key')
   const goRanking = (e: React.MouseEvent) => {
     e.preventDefault()
     navigate({ view: 'ranking' })

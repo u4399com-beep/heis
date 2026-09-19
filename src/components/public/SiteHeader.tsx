@@ -14,7 +14,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { getTheme } from '@/lib/crawl/themes'
-import { fetchCategories } from './data'
+import { fetchCategories, fetchSuggestTags } from './data'
 import { usePublic } from './ctx'
 import { withAlpha } from './seo'
 import type { CategoryItem } from './types'
@@ -58,24 +58,15 @@ const SUGGEST_LIMIT = 8
 
 function useSuggestPool() {
   const [pool, setPool] = useState<string[] | null>(null)
+  // R27-1C: 复用 fetchSuggestTags (data.ts 已含 60s TTL + in-flight 去重, 避免重复 fetch)
   useEffect(() => {
     let alive = true
-    fetch('/api/public/tags?n=24', { cache: 'no-store' })
-      .then((r) => r.json().catch(() => null))
-      .then((j: { ok?: boolean; data?: { tags?: unknown } } | null) => {
+    fetchSuggestTags()
+      .then((entry) => {
         if (!alive) return
-        if (!j?.ok || !j.data) {
-          setPool([])
-          return
-        }
-        const tags = Array.isArray(j.data.tags)
-          ? (j.data.tags as unknown[]).filter((t): t is string => typeof t === 'string' && !!t.trim())
-          : []
-        setPool(tags)
+        setPool(entry ? entry.tags.slice(0, 24) : [])
       })
-      .catch(() => {
-        if (alive) setPool([])
-      })
+      .catch(() => { if (alive) setPool([]) })
     return () => {
       alive = false
     }

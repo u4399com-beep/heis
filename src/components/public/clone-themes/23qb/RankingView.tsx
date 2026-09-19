@@ -6,6 +6,7 @@
 //   ( .module-tab .module-tab-items (Tab 切换) + .list .list-item .item × N (排名项) + #page 分页 )
 // ============================================================
 import type { RankingViewProps } from '../shared'
+import { cloneNavHandlers, clonePageItems } from '../shared'
 import { usePublic } from '../../ctx'
 import { bookNavProps } from '../../bits'
 import { formatWords } from '../../seo'
@@ -22,19 +23,9 @@ const TABS = [
 
 export function RankingView({ books, loading, tab, onTabChange, page, total, size, onPage }: RankingViewProps) {
   const { site, navigate } = usePublic()
-
-  const goHome = (e: React.MouseEvent) => { e.preventDefault(); navigate({ view: 'home' }) }
-  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const q = (e.currentTarget.elements.namedItem('searchkey') as HTMLInputElement)?.value?.trim()
-    if (q) navigate({ view: 'search', q })
-  }
-
-  const totalPages = Math.max(1, Math.ceil(total / size))
-  const from = Math.max(1, page - 2)
-  const to = Math.min(totalPages, from + 4)
-  const pageItems: number[] = []
-  for (let i = from; i <= to; i++) pageItems.push(i)
+  // R27-1C: 复用 cloneNavHandlers + clonePageItems
+  const { goHome, goSearch } = cloneNavHandlers(navigate, 'searchkey')
+  const { totalPages, pageItems } = clonePageItems(page, total, size)
 
   // 分段排名: 前 10 大封面网格 + 后续 list-item 排名
   const top = books.slice(0, 10)

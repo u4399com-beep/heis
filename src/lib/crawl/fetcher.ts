@@ -4626,16 +4626,56 @@ async function fetchViaMoli(url: string, cfg: FetchConfig): Promise<{ html: stri
  */
 const UC_BRIDGE_URL = process.env.UC_BRIDGE_URL || 'http://127.0.0.1:3016'
 const UC_BRIDGE_PROBE_RETRY_MS = 60_000
+// R27-1B 修复 P1: 永久性失败(xvfb/pyvirtualdisplay 未装 / No module)的缓存窗口
+// 5 分钟 — 防止每章节请求都试 /fetch 再失败, 洪泛 dev.log(修前实测: 万章任务在
+// uc-bridge xvfb 坏掉场景产生万级 "uc-bridge 失败: xvfb..." warn 日志, 拖慢采集 +
+// 污染日志可观测性). 永久失败需操作员介入(安装 pyvirtualdisplay), 5 分钟足够
+// 长以避免反复撞, 又不致永久禁用(操作员装好模块后 5 分钟内自愈)
+const UC_BRIDGE_PERMANENT_FAIL_MS = 5 * 60_000
 let ucBridgeAvailable: boolean | null = null
 let ucBridgeCheckedAt = 0
+// R27-1B: 永久性失败截止时刻(0=无永久失败). 命中时 checkUcBridge 立即返回 false 不
+// 再发 /health 探测(否则 /health 仍 200 + selfTestOk:false, 探测结果无意义且每请求
+// 50ms ECONNREFUSED-叠加)
+let ucBridgePermanentFailUntil = 0
 
-/** uc-bridge 可用性探测(/health), 结果按 UC_BRIDGE_PROBE_RETRY_MS 缓存(与 checkRelay 同口径) */
+/**
+ * uc-bridge 可用性探测(/health), 结果按 UC_BRIDGE_PROBE_RETRY_MS 缓存(与 checkRelay 同口径)。
+ * R27-1B 修复 P1: 原实现只看 HTTP 200 不解析 body 中的 selfTestOk 字段 —— 桥进程在跑
+ * 但 pyvirtualdisplay/xvfb 未装时 /health 仍返回 200 + {ok:true, selfTestOk:false},
+ * checkUcBridge 误判为可用 → 每章节都试 /fetch 再失败(xvfb 启动失败), 洪泛 dev.log
+ * 万级 warn("uc-bridge 失败: xvfb(pyvirtualdisplay) 启动失败: No module named 'pyvirtualdisplay'")。
+ * 修法: 解析 /health body, selfTestOk===false 视为永久失败, 设 5 分钟缓存窗口不再撞桥。
+ */
 async function checkUcBridge(): Promise<boolean> {
   if (ucBridgeAvailable === true) return true
+  // R27-1B: 永久失败窗口内立即返回 false, 跳过 /health 探测
+  if (ucBridgePermanentFailUntil > 0 && Date.now() < ucBridgePermanentFailUntil) return false
   if (ucBridgeAvailable === false && Date.now() - ucBridgeCheckedAt < UC_BRIDGE_PROBE_RETRY_MS) return false
   try {
     const res = await fetch(`${UC_BRIDGE_URL}/health`, { signal: AbortSignal.timeout(1500) })
-    ucBridgeAvailable = res.ok
+    if (!res.ok) {
+      ucBridgeAvailable = false
+    } else {
+      // R27-1B: 解析 /health body, 检查 selfTestOk 字段
+      // 协议: GET /health → 200 { ok: true, selfTestOk: boolean, versions: ... }
+      // selfTestOk=false 表示桥进程在跑但底层依赖坏(xvfb/pyvirtualdisplay/Chrome 不可用等),
+      // 调用 /fetch 必然失败; 视为永久失败设 5 分钟窗口, 不再撞桥
+      let selfTestOk = true
+      try {
+        const data = await res.json() as { ok?: unknown; selfTestOk?: unknown }
+        if (data && data.selfTestOk === false) selfTestOk = false
+      } catch {
+        // /health body 非 JSON(老版本桥) → 兼容默认 selfTestOk=true, 由 /fetch 实测兜底
+      }
+      if (!selfTestOk) {
+        ucBridgeAvailable = false
+        ucBridgePermanentFailUntil = Date.now() + UC_BRIDGE_PERMANENT_FAIL_MS
+        console.warn(`[fetcher] uc-bridge /health selfTestOk=false(底层依赖坏: xvfb/Chrome/undetected-chromedriver 未装?), 桥降级 ${UC_BRIDGE_PERMANENT_FAIL_MS / 1000}s 后重探`)
+      } else {
+        ucBridgeAvailable = true
+      }
+    }
   } catch {
     ucBridgeAvailable = false
   }
@@ -4679,7 +4719,29 @@ async function fetchViaUcBridge(url: string, cfg: FetchConfig): Promise<{ html: 
       ok: boolean; html?: string; status?: number; cookies?: string[]; finalUrl?: string; error?: string
     }
     if (!data.ok || !data.html) {
-      console.warn(`[fetcher] uc-bridge 失败: ${data.error || 'unknown'}: ${url.slice(0, 120)}`)
+      // R27-1B 修复 P1: data.ok=false 时检测永久性错误模式, 标记桥为永久失败
+      // 5 分钟不再撞桥。修前: uc-bridge 可用性缓存(/health 200 OK)仍是 true,
+      // checkUcBridge() 短路返回 true, 每章节都试 /fetch 再失败, 万章任务产生
+      // 万级 "uc-bridge 失败: xvfb(pyvirtualdisplay) 启动失败" warn 日志洪泛 dev.log。
+      // 永久错误特征(源于 server.py 抛 RuntimeError / Python ImportError 等):
+      //   - "No module named" / "ImportError" → Python 依赖未装
+      //   - "RuntimeError" → 桥内运行时异常(常含 xvfb 启动失败等)
+      //   - "xvfb" / "pyvirtualdisplay" / "Xvfb" / "display" → 显示服务器未装
+      //   - "chromedriver" / "Chrome" / "chrome" / "undetected_chromedriver" → UC 依赖坏
+      //   - "selenium" / "webdriver" → Selenium 生态坏
+      // 非永久错误(超时/网络抖动/目标 5xx 等)不更新缓存, 让下次请求重试
+      const errStr = String(data.error || '').slice(0, 300)
+      const isPermanentFailure = /No module named|ImportError|RuntimeError|xvfb|pyvirtualdisplay|Xvfb|chromedriver|undetected_chromedriver|selenium|webdriver/i.test(errStr)
+      if (isPermanentFailure) {
+        ucBridgeAvailable = false
+        ucBridgePermanentFailUntil = Date.now() + UC_BRIDGE_PERMANENT_FAIL_MS
+        // 永久失败只 warn 一次(下次 checkUcBridge 立即返回 false 不再调 /fetch,
+        // 此 warn 5 分钟内不再刷屏); 错误全文带出便于操作员定位
+        console.warn(`[fetcher] uc-bridge 永久性失败(5分钟内不再撞桥, 降级裸 Playwright): ${errStr.slice(0, 200)}`)
+      } else {
+        // 瞬时错误(目标 5xx / 网络抖动 / 解析异常等)沿用原口径 warn 每次出
+        console.warn(`[fetcher] uc-bridge 失败: ${data.error || 'unknown'}: ${url.slice(0, 120)}`)
+      }
       return null
     }
     return {

@@ -20,6 +20,7 @@ import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
 import { statusLabel, formatWords } from '../../seo'
 import type { CategoryListProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 import { useEffect, useState } from 'react'
 
 interface Cat { id: string; name: string }
@@ -56,19 +57,8 @@ export function CategoryList({ books, loading, label, page, total, size = 24, on
   // 左侧月点击排行: 前 10 本 (第 1 名带 rank-img + rank-s 简介, 2-10 名只显示文字)
   const rankTop10 = books.slice(0, 10)
 
-  const goCat = (e: React.MouseEvent, catId?: string) => {
-    e.preventDefault()
-    navigate({ view: 'category', cat: catId })
-  }
-  const goHome = (e: React.MouseEvent) => {
-    e.preventDefault()
-    navigate({ view: 'home' })
-  }
-  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const q = (e.currentTarget.elements.namedItem('key') as HTMLInputElement)?.value?.trim()
-    if (q) navigate({ view: 'search', q })
-  }
+  // R27-1C: 复用 cloneNavHandlers
+  const { goHome, goSearch, goCat } = cloneNavHandlers(navigate, 'key')
   const goRanking = (e: React.MouseEvent) => {
     e.preventDefault()
     navigate({ view: 'ranking' })

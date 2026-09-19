@@ -1,9 +1,7 @@
 // ============================================================
 // 书籍详情视图 — 封面/信息/状态徽章/简介/目录(分页)/标签云
-// R12-1: 清理 pili/aurora/paper/mango/bamboo/rose/magazine/theater 旧主题分支
-//        clone-* 10 套主题统一走默认渲染分支 + 通用 EpisodeListSkeleton
-// R19-1B: 信息区按 theme.layout 分发到 clone-themes/<site>/BookInfo (lookup table),
-//         fallback 走 aijjxs; 章节正文 contentSelector 由 theme 透传给 ReadView (复刻原站 DOM)
+// 信息区按 theme.layout 分发到 clone-themes/<site>/BookInfo (lookup table),
+// fallback 走 aijjxs; 章节正文 contentSelector 由 theme 透传给 ReadView (复刻原站 DOM)
 // R22-1A: 清理 — 删除已退役的 BookInfoLayout.tsx (R20 误回滚的孤儿文件, 全域 0 引用)
 // ============================================================
 'use client'
@@ -628,8 +626,11 @@ export function BookView({ bookId, tocPage, initialBook, initialCategories }: { 
       )
     }
 
-    // 分卷分组(kk-a): 仅当目录出现卷名才启用(连续相同 volume 一组, 空卷归「正文」);
+    // 分卷分组(kk-a + R27-1A): 仅当目录出现卷名才启用(连续相同 volume 一组, 空卷归「正文」);
     // 旧书全空卷 → volGroups=null → 渲染与改前完全一致(零回归)
+    // R27-1A 优化: 卷头改为卡片式独立区块(左侧色块 + 卷名 + 章数徽章), 视觉权重提升;
+    //   多卷(≥3)场景顶部追加卷索引条, 点击锚定到对应卷头(快速跳转, 万章多卷书尤其重要);
+    //   空卷组(无卷名)统一显示「正文」标签前置, 与有卷名组视觉差异
     const hasVolumes = chapters.some((c) => c.volume)
     const volGroups: { volume: string; chapters: TocChapter[] }[] | null = hasVolumes
       ? (() => {
@@ -645,19 +646,52 @@ export function BookView({ bookId, tocPage, initialBook, initialCategories }: { 
       : null
 
     if (volGroups) {
+      // R27-1A: 多卷场景(≥3 卷)卷索引条 — 平铺卷头跳转 chip, 移动端横向滚动
+      const showVolIndex = volGroups.length >= 3
+      const volAnchor = (gi: number) => `vol-anchor-${gi}`
       return (
-        <div className="space-y-6">
+        <div className="space-y-5">
+          {showVolIndex && (
+            <nav aria-label="卷索引" className="flex gap-2 overflow-x-auto pb-2" style={{ borderBottom: `1px dashed ${withAlpha(v.border, 0.5)}` }}>
+              {volGroups.map((g, gi) => (
+                <a
+                  key={`vol-idx-${gi}`}
+                  href={`#${volAnchor(gi)}`}
+                  onClick={(e) => {
+                    e.preventDefault()
+                    if (typeof document !== 'undefined') {
+                      const el = document.getElementById(volAnchor(gi))
+                      el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                    }
+                  }}
+                  className="shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors hover:opacity-80"
+                  style={{
+                    background: withAlpha(v.primary, theme.dark ? 0.14 : 0.08),
+                    color: v.text,
+                    border: `1px solid ${withAlpha(v.border, 0.7)}`,
+                  }}
+                  title={`${g.volume || '正文'} · ${g.chapters.length} 章`}
+                >
+                  <span style={{ color: v.primary }}>{g.volume || '正文'}</span>
+                  <span className="ml-1 tabular-nums opacity-70">{g.chapters.length}</span>
+                </a>
+              ))}
+            </nav>
+          )}
           {volGroups.map((g, gi) => (
-            <div key={`vol-${gi}-${g.volume}`}>
-              <div data-vol-head className="mb-3 flex items-center gap-2.5">
-                <span className="min-w-0 break-all text-xs font-bold tracking-[0.2em]" style={{ color: v.primary, fontFamily: v.titleFont }}>
+            <section key={`vol-${gi}-${g.volume}`} id={volAnchor(gi)} className="scroll-mt-6">
+              {/* R27-1A: 卷头卡片化 — 左侧色块 + 卷名 + 章数徽章 + 分隔线, 与卷内 grid 视觉隔离 */}
+              <div data-vol-head className="mb-3 flex items-center gap-3 rounded-md px-3 py-2" style={{ background: withAlpha(v.primary, theme.dark ? 0.1 : 0.06), borderLeft: `3px solid ${v.primary}` }}>
+                <span className="shrink-0 text-xs font-bold tracking-[0.15em]" style={{ color: v.primary, fontFamily: v.titleFont }}>
                   {g.volume || '正文'}
                 </span>
                 <span className="h-px flex-1" style={{ background: withAlpha(v.border, 0.9) }} aria-hidden />
-                <span className="text-[10px] tabular-nums" style={{ color: v.textMuted }}>{g.chapters.length} 章</span>
+                <span className="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold tabular-nums" style={{ background: withAlpha(v.primary, 0.15), color: v.primary }}>
+                  {g.chapters.length} 章
+                </span>
               </div>
               {renderChapterList(g.chapters)}
-            </div>
+            </section>
           ))}
         </div>
       )

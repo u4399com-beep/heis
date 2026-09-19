@@ -8,7 +8,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import dynamic from 'next/dynamic'
 import { Clock, Flame, History, Search, Trash2, X } from 'lucide-react'
-import { fetchSearch } from './data'
+import { fetchSearch, fetchSuggestTags } from './data'
 import type { SearchData } from './types'
 import { usePublic } from './ctx'
 import { siteKeywordList, useSiteSEO, withAlpha } from './seo'
@@ -61,25 +61,16 @@ export function SearchView({ q, initialSearch, initialCategories }: { q?: string
   }, [q])
 
   // 仅在 q 为空(初始态)时拉一次热搜词池
+  // R27-1C: 复用 fetchSuggestTags (data.ts 已含 60s TTL + in-flight 去重, 避免重复 fetch)
   useEffect(() => {
     if (q) return
     let alive = true
-    fetch('/api/public/tags?n=20', { cache: 'no-store' })
-      .then((r) => r.json().catch(() => null))
-      .then((j: { ok?: boolean; data?: { tags?: unknown } } | null) => {
+    fetchSuggestTags()
+      .then((entry) => {
         if (!alive) return
-        if (!j?.ok || !j.data) {
-          setHotTags([])
-          return
-        }
-        const tags = Array.isArray(j.data.tags)
-          ? (j.data.tags as unknown[]).filter((t): t is string => typeof t === 'string' && !!t.trim())
-          : []
-        setHotTags(tags)
+        setHotTags(entry ? entry.tags.slice(0, 20) : [])
       })
-      .catch(() => {
-        if (alive) setHotTags([])
-      })
+      .catch(() => { if (alive) setHotTags([]) })
     return () => {
       alive = false
     }

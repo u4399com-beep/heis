@@ -8,6 +8,7 @@
 //     + .novel-info-content 简介 + .novel-info-footer 开始阅读按钮) )
 // ============================================================
 import type { BookInfoProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 import { usePublic } from '../../ctx'
 import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
@@ -17,16 +18,12 @@ export function BookInfo({ book, onScrollToc, onContinueRead, onGoCategory }: Bo
   const { site, navigate } = usePublic()
   if (!book) return null
 
-  const goHome = (e: React.MouseEvent) => { e.preventDefault(); navigate({ view: 'home' }) }
+  // R27-1C: 复用 cloneNavHandlers (goCat 为本主题特殊逻辑: 优先 onGoCategory 回调, 否则 navigate)
+  const { goHome, goSearch } = cloneNavHandlers(navigate, 'searchkey')
   const goCat = (e: React.MouseEvent, cat?: string) => {
     e.preventDefault()
     if (onGoCategory && book.categoryId) onGoCategory(book.categoryId)
     else navigate({ view: 'category', cat: cat || book.categoryId || book.category })
-  }
-  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const q = (e.currentTarget.elements.namedItem('searchkey') as HTMLInputElement)?.value?.trim()
-    if (q) navigate({ view: 'search', q })
   }
 
   // 标签: book.keywords 拆分

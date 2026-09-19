@@ -16,6 +16,7 @@
 // ============================================================
 import { usePublic } from '../../ctx'
 import type { ReadChromeProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 import { useEffect, useState } from 'react'
 
 const DEFAULT_NAV = [
@@ -32,18 +33,11 @@ export function ReadChrome({ children, chapterTitle, onPrev, onNext }: ReadChrom
   const fontSizes = [16, 19, 22]
   const fontSize = fontSizes[sizeIdx]
 
-  const goHome = (e: React.MouseEvent) => {
-    e.preventDefault()
-    navigate({ view: 'home' })
-  }
+  // R27-1C: 复用 cloneNavHandlers
+  const { goHome, goSearch } = cloneNavHandlers(navigate, 'searchkey')
   const goCat = (e: React.MouseEvent, catId?: string) => {
     e.preventDefault()
     navigate({ view: 'category', cat: catId })
-  }
-  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const q = (e.currentTarget.elements.namedItem('searchkey') as HTMLInputElement)?.value?.trim()
-    if (q) navigate({ view: 'search', q })
   }
   const goTop = () => { if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' }) }
 

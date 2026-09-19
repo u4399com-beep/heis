@@ -14,6 +14,7 @@
 // ============================================================
 import { usePublic } from '../../ctx'
 import type { ReadChromeProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 import { useEffect, useState } from 'react'
 
 interface Cat { id: string; name: string }
@@ -61,19 +62,8 @@ export function ReadChrome({ children, chapterTitle, onPrev, onNext, initialCate
     if (typeof window !== 'undefined') window.scrollTo(0, 0)
   }, [chapterTitle])
 
-  const goCat = (e: React.MouseEvent, catId?: string) => {
-    e.preventDefault()
-    navigate({ view: 'category', cat: catId })
-  }
-  const goHome = (e: React.MouseEvent) => {
-    e.preventDefault()
-    navigate({ view: 'home' })
-  }
-  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const q = (e.currentTarget.elements.namedItem('searchkey') as HTMLInputElement)?.value?.trim()
-    if (q) navigate({ view: 'search', q })
-  }
+  // R27-1C: 复用 cloneNavHandlers
+  const { goHome, goSearch, goCat } = cloneNavHandlers(navigate, 'searchkey')
   const goRanking = (e: React.MouseEvent) => {
     e.preventDefault()
     navigate({ view: 'ranking' })

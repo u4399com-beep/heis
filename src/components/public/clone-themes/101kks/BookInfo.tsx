@@ -27,6 +27,7 @@ import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
 import { formatWords, statusLabel } from '../../seo'
 import type { BookInfoProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 import type { BookItem } from '../../types'
 import { useEffect, useState } from 'react'
 
@@ -54,7 +55,8 @@ export function BookInfo({ book, onScrollToc, onContinueRead, onGoCategory }: Bo
 
   if (!book) return null
 
-  const goHome = (e: React.MouseEvent) => { e.preventDefault(); navigate({ view: 'home' }) }
+  // R27-1C: 复用 cloneNavHandlers (goCat 本主题特殊逻辑: 优先 onGoCategory 回调, 否则 navigate)
+  const { goHome, goSearch } = cloneNavHandlers(navigate, 'searchkey')
   const goCat = (e: React.MouseEvent) => {
     e.preventDefault()
     if (onGoCategory) onGoCategory(book.categoryId || book.category)
@@ -63,11 +65,6 @@ export function BookInfo({ book, onScrollToc, onContinueRead, onGoCategory }: Bo
   const goRead = (e: React.MouseEvent) => {
     e.preventDefault()
     if (onContinueRead) onContinueRead()
-  }
-  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const q = (e.currentTarget.elements.namedItem('searchkey') as HTMLInputElement)?.value?.trim()
-    if (q) navigate({ view: 'search', q })
   }
 
   // 拆分 keywords (源站 .tagul li a, 每个标签可跳 keyword 落地页)

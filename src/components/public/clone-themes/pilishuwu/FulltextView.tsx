@@ -15,6 +15,7 @@ import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
 import { statusLabel, formatWords } from '../../seo'
 import type { FulltextViewProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 import { useEffect, useState } from 'react'
 
 interface Cat { id: string; name: string }
@@ -48,19 +49,8 @@ export function FulltextView({ books, loading, page, total, size, onPage, initia
   const navCats = (cats.length ? cats : DEFAULT_NAV).slice(0, 8)
   const totalPages = Math.max(1, Math.ceil(total / size))
 
-  const goCat = (e: React.MouseEvent, catId?: string) => {
-    e.preventDefault()
-    navigate({ view: 'category', cat: catId })
-  }
-  const goHome = (e: React.MouseEvent) => {
-    e.preventDefault()
-    navigate({ view: 'home' })
-  }
-  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const q = (e.currentTarget.elements.namedItem('key') as HTMLInputElement)?.value?.trim()
-    if (q) navigate({ view: 'search', q })
-  }
+  // R27-1C: 复用 cloneNavHandlers
+  const { goHome, goSearch, goCat } = cloneNavHandlers(navigate, 'key')
   const goRanking = (e: React.MouseEvent) => {
     e.preventDefault()
     navigate({ view: 'ranking' })

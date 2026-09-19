@@ -19,19 +19,13 @@ import { usePublic } from '../../ctx'
 import { bookNavProps } from '../../bits'
 import { formatWords } from '../../seo'
 import type { SearchViewProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 
 export function SearchView({ q, books, loading }: SearchViewProps) {
   const { navigate } = usePublic()
 
-  const goHome = (e: React.MouseEvent) => {
-    e.preventDefault()
-    navigate({ view: 'home' })
-  }
-  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const kw = (e.currentTarget.elements.namedItem('searchkey') as HTMLInputElement)?.value?.trim()
-    if (kw) navigate({ view: 'search', q: kw })
-  }
+  // R27-1C: 复用 cloneNavHandlers
+  const { goHome, goSearch } = cloneNavHandlers(navigate, 'searchkey')
 
   return (
     <div id="main">

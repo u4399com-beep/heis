@@ -12,9 +12,7 @@ import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
 import { addFavoriteSite, useTraditionalChinese } from '../tools'
 import type { HomeCloneProps } from '../shared'
-import { useEffect, useState } from 'react'
-
-interface Cat { id: string; name: string }
+import { cloneNavHandlers, useCloneCategories } from '../shared'
 
 // 简繁切换按钮 — 23qb 风格 (iconfont icon-language + 文字)
 function TcToggle23qb() {
@@ -35,25 +33,10 @@ function TcToggle23qb() {
 
 export function HomeClone({ books, loading, navCategoryCount = 13, homeModuleLimit = 16, initialCategories }: HomeCloneProps) {
   const { site, navigate } = usePublic()
-  // R24: SSR 首载用 page.tsx server fetch 的 initialCategories 初始化, 避免 SSR 时 cats=[] → navigation 没分类
-  const [cats, setCats] = useState<Cat[]>(() => (initialCategories || []).map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) })))
-
-  // 拉分类列表用于 nav + list-item 分类区块标题
-  // R24: cats 为空时才 fetch, 避免覆盖 SSR initialCategories 数据
-  useEffect(() => {
-    if (cats.length > 0) return
-    let aborted = false
-    fetch('/api/public/categories?limit=60')
-      .then(r => r.json())
-      .then(d => {
-        if (aborted) return
-        // API 返回 {ok, data:{items:[{id,name,bookCount,rep}]}}
-        const arr = Array.isArray(d) ? d : (d.data?.items || d.data?.categories || d.items || d.categories || [])
-        setCats(arr.map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) })))
-      })
-      .catch(() => {})
-    return () => { aborted = true }
-  }, [cats.length])
+  // R27-1C: 复用 useCloneCategories (SSR initialCategories 优先 + cats 为空时 fetch)
+  const cats = useCloneCategories(initialCategories)
+  // R27-1C: 复用 cloneNavHandlers
+  const { goHome, goSearch, goCat } = cloneNavHandlers(navigate, 'searchkey')
 
   if (loading) return <div className="wrapper"><div className="content" style={{ padding: 40, textAlign: 'center' }}>加载中...</div></div>
   if (!books.length) return <div className="wrapper"><div className="content" style={{ padding: 40, textAlign: 'center' }}>暂无内容</div></div>
@@ -67,20 +50,6 @@ export function HomeClone({ books, loading, navCategoryCount = 13, homeModuleLim
     const pool = list.length > 1 ? list : books
     return { cat: c, list: pool.slice(0, 10) }
   })
-
-  const goCat = (e: React.MouseEvent, catId?: string) => {
-    e.preventDefault()
-    navigate({ view: 'category', cat: catId })
-  }
-  const goHome = (e: React.MouseEvent) => {
-    e.preventDefault()
-    navigate({ view: 'home' })
-  }
-  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const q = (e.currentTarget.elements.namedItem('searchkey') as HTMLInputElement)?.value?.trim()
-    if (q) navigate({ view: 'search', q })
-  }
 
   return (
     <>

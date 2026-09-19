@@ -7,17 +7,13 @@
 //     + .chepnav (底部上下章按钮) )
 // ============================================================
 import type { ReadChromeProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 import { usePublic } from '../../ctx'
 
 export function ReadChrome({ children, chapterTitle, onPrev, onNext }: ReadChromeProps) {
   const { site, navigate } = usePublic()
-
-  const goHome = (e: React.MouseEvent) => { e.preventDefault(); navigate({ view: 'home' }) }
-  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const q = (e.currentTarget.elements.namedItem('searchkey') as HTMLInputElement)?.value?.trim()
-    if (q) navigate({ view: 'search', q })
-  }
+  // R27-1C: 复用 cloneNavHandlers (10 套主题共享 goHome/goSearch 逻辑)
+  const { goHome, goSearch } = cloneNavHandlers(navigate, 'searchkey')
 
   return (
     <>

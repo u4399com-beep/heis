@@ -17,6 +17,7 @@ import { usePublic } from '../../ctx'
 import { bookNavProps } from '../../bits'
 import { formatWords } from '../../seo'
 import type { KeywordViewProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 import { useEffect, useState } from 'react'
 
 interface Cat { id: string; name: string }
@@ -61,19 +62,8 @@ export function KeywordView({ tag, books, loading, initialCategories }: KeywordV
   // 热门小说(侧栏)
   const hotBooks = books.slice(0, 12)
 
-  const goCat = (e: React.MouseEvent, catId?: string) => {
-    e.preventDefault()
-    navigate({ view: 'category', cat: catId })
-  }
-  const goHome = (e: React.MouseEvent) => {
-    e.preventDefault()
-    navigate({ view: 'home' })
-  }
-  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const q = (e.currentTarget.elements.namedItem('searchkey') as HTMLInputElement)?.value?.trim()
-    if (q) navigate({ view: 'search', q })
-  }
+  // R27-1C: 复用 cloneNavHandlers
+  const { goHome, goSearch, goCat } = cloneNavHandlers(navigate, 'searchkey')
   const goKeyword = (t: string) => navigate({ view: 'keyword', tag: t })
 
   return (

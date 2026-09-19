@@ -24,10 +24,8 @@ import { bookNavProps } from '../../bits'
 import { formatWords } from '../../seo'
 import { addFavoriteSite, useTraditionalChinese } from '../tools'
 import type { HomeCloneProps } from '../shared'
+import { cloneNavHandlers, useCloneCategories } from '../shared'
 import type { BookItem } from '../../types'
-import { useEffect, useState } from 'react'
-
-interface Cat { id: string; name: string }
 
 // 源站 .menu1 顶部固定 6 个导航项 (与 probe-101kks.html 顺序一致)
 const TOP_NAV: { id: string; name: string; view: 'home' | 'ranking' | 'fulltext' | 'history' | 'category' }[] = [
@@ -50,35 +48,10 @@ export function HomeClone({ books, loading, homeModuleLimit = 20, initialCategor
   const { site, navigate } = usePublic()
   // 简繁切换: 状态 + toggle + 显式 setTc
   const { isTc, mounted, toggleTc, setTc } = useTraditionalChinese()
-  // R24: SSR 首载用 page.tsx server fetch 的 initialCategories 初始化, 避免 SSR 时 cats=[] → navigation 没分类
-  const [cats, setCats] = useState<Cat[]>(() => (initialCategories || []).map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) })))
-
-  // 拉分类列表用于 .menu1 分類链接 + 备用书单标题
-  // R24: cats 为空时才 fetch, 避免覆盖 SSR initialCategories 数据
-  useEffect(() => {
-    if (cats.length > 0) return
-    let aborted = false
-    fetch('/api/public/categories?limit=60')
-      .then(r => r.json())
-      .then(d => {
-        if (aborted) return
-        // API 返回 {ok, data:{items:[{id,name,bookCount,rep}]}}
-        const arr = Array.isArray(d) ? d : (d.data?.items || d.data?.categories || d.items || d.categories || [])
-        setCats(arr.map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) })))
-      })
-      .catch(() => {})
-    return () => { aborted = true }
-  }, [cats.length])
-
-  if (loading) return <div className="main"><div className="container"><div className="mybox" style={{ padding: 40, textAlign: 'center' }}>載入中...</div></div></div>
-  if (!books.length) return <div className="main"><div className="container"><div className="mybox" style={{ padding: 40, textAlign: 'center' }}>暫無內容</div></div></div>
-
-  // 熱門書單: 取前 6 本, 每本作为一张 booklist-card (cover-stack 用本封面 + 2 个其它书的封面堆叠)
-  const featured = books.slice(0, 6)
-  // 最新更新: 取前 homeModuleLimit 本作为 .newbox #article_list_content 列表
-  const latest = books.slice(0, homeModuleLimit)
-
-  const goHome = (e: React.MouseEvent) => { e.preventDefault(); navigate({ view: 'home' }) }
+  // R27-1C: 复用 useCloneCategories (SSR initialCategories 优先 + cats 为空时 fetch)
+  const cats = useCloneCategories(initialCategories)
+  // R27-1C: 复用 cloneNavHandlers (goCat 为本主题 curried 设计, 保留)
+  const { goHome, goSearch } = cloneNavHandlers(navigate, 'searchkey')
   const goView = (view: 'home' | 'ranking' | 'fulltext' | 'history' | 'category') => (e: React.MouseEvent) => {
     e.preventDefault()
     navigate({ view })
@@ -87,11 +60,14 @@ export function HomeClone({ books, loading, homeModuleLimit = 20, initialCategor
     e.preventDefault()
     navigate({ view: 'category', cat: catId })
   }
-  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const q = (e.currentTarget.elements.namedItem('searchkey') as HTMLInputElement)?.value?.trim()
-    if (q) navigate({ view: 'search', q })
-  }
+
+  if (loading) return <div className="main"><div className="container"><div className="mybox" style={{ padding: 40, textAlign: 'center' }}>載入中...</div></div></div>
+  if (!books.length) return <div className="main"><div className="container"><div className="mybox" style={{ padding: 40, textAlign: 'center' }}>暫無內容</div></div></div>
+
+  // 熱門書單: 取前 6 本, 每本作为一张 booklist-card (cover-stack 用本封面 + 2 个其它书的封面堆叠)
+  const featured = books.slice(0, 6)
+  // 最新更新: 取前 homeModuleLimit 本作为 .newbox #article_list_content 列表
+  const latest = books.slice(0, homeModuleLimit)
 
   // 渲染 .booklist-card (熱門書單推薦区, 每张含 3 个封面堆叠)
   const renderBooklistCard = (b: BookItem, idx: number) => {

@@ -12387,3 +12387,308 @@ Stage Summary:
   suggest.ts / smart.ts (R25-1D2 已审) / rule-templates.ts (规则模板, 不在审查范围) /
   src/components/public/* (前端) / src/app/page.tsx/PublicSite.tsx (主控已改) / src/app/api/*
   (API 路由) / mini-services/* (mini 服务) / prisma/schema.prisma / package.json (0 新依赖)
+
+---
+Task ID: R27-1A
+Agent: full-stack-developer (分卷设置+目录分栏)
+Task: 采集解析 volume + 乱序重排考虑分卷 + 章节目录分栏显示调整
+
+Work Log:
+
+- 第一步: 读交接文档(worklog.md 最后 150 行)
+  · R26-1A 完成 8 个 crawl 模块全量审查(5436 行)+ 3 个 P1 bug 修复 + 4 处 P2 增强
+  · 关键基础设施: Chapter.volume 字段已存在(prisma/schema.prisma:71, kk-a 番茄规则提取)
+  · cleaner.ts:665 已剥离章节标题"第N卷 卷名"前缀(保留给 volume 字段单独存)
+  · downloader.ts:213-216 已在卷变化处插入卷标题行『══════ 卷名 ══════』(kk-d 分卷结构)
+  · parser.ts:1142-1148 已支持 toc.fields.volume 提取(const 型字段补提 ll-c)
+  · sorter.ts reorderWithVolumes 已实现分卷感知重排(kk-a + qq-e2 修复尾部番外归位)
+
+- 第二步: 现状审查(4 维度)
+
+  · 2.1 采集解析 volume 完整性
+    - parser.ts (1484 行): HTML 模式(line 1206-1248)+ JSON 模式(line 1142-1148)均已支持
+      toc.fields.volume 提取, 含 required 校验, 无遗漏 ✓
+    - rule-templates.ts (592 行): 8 个模板中只有 fanqie-style 用 chapterListWithVolume.*
+      递归展平, 但 toc.fields 配置无 volume 字段 — 卷名静默丢失(原注释"卷名不表达(留档)")
+    - scripts/seed-rule-fanqie.ts 注释 line 22-24 明确说明 * 递归展平后卷名不表达
+    - 历史 verify-ll-c-listfields.ts archived 验证: chapter 对象带 volume_name 字段时
+      `volume: { type: 'json', expression: 'volume_name' }` 提取模式已验证可行
+
+  · 2.2 乱序重排(sorter.ts)
+    - reorderToc(line 218)+ reorderWithVolumes(line 283-360) 完整覆盖:
+      * 字段定卷(item.volume)聚合 byKey Map + 标题锚点开新卷
+      * 卷间排序: 有号卷按卷号升序, 无号卷按 firstIdx 装配式归位(qq-e2)
+      * 卷内排序: 锚点条目排卷首, 其余按 sortByChapterNo 算法
+    - R26-1A 审查结论: "分卷感知重排完整, 无 P0/P1 bug"
+    - 本次复核确认零修改需求, 仅添加 R27-1A 复核注释
+
+  · 2.3 章节目录分栏显示(BookView.tsx line 631-665)
+    - 已有 volGroups 分组逻辑: hasVolumes 检测 → 连续相同 volume 一组 → 卷头 thin line +
+      卷名 + "N 章" → renderChapterList 3 列 grid
+    - 可优化点:
+      1) 卷头视觉权重过低(只有一根细线 + 一行字), 多卷场景视觉层次混乱
+      2) 多卷场景(>5 卷)无快速跳转, 用户得手动滚
+      3) 卷头与卷内 grid 同级 flex, 视觉分组不够强
+      4) 缺少卷头 chip 风格(源站 aijjxs/23qb 等都用明显的卷头样式)
+
+  · 2.4 10 套 clone-themes BookInfo 验证
+    - 全部 10 个 BookInfo.tsx(aijjxs/ddyueshu/pilishuwu/23qb/101kks/huangjinwu/ggd66/
+      shipsay/x2552/trxsw)都是书籍详情面板(封面/书名/作者/简介/相关推荐/猜您喜欢),
+      不渲染章节目录; 目录由 BookView 父级 renderToc 统一渲染;
+      内含"查看完整目录"/"查看完整章节目录"按钮 → onScrollToc 滚动到父级 TOC 区
+    - 结论: 10 套 BookInfo 无需添加分卷显示, 分卷统一在 BookView renderToc 渲染
+
+- 第三步: 实施修改(3 个文件, 仅增量注释 + 1 个文件实质改动)
+
+  · src/lib/crawl/sorter.ts (381 → 388, +7):
+    - reorderToc 函数注释追加 R27-1A 复核说明: 分卷感知重排已完整覆盖, 单卷/多卷/无卷/
+      乱序章四种组合均输出正确目录顺序, 不需修改
+
+  · src/lib/crawl/rule-templates.ts (592 → 606, +14):
+    - fanqie-style 模板 toc.fields 添加 volume 字段:
+      `volume: { type: 'json', expression: 'volume_name' }`, R27-1A 注释说明 * 递归展平后
+      章节对象的 volume_name 字段会被保留; 真实番茄 API 若 chapter 对象无 volume_name
+      (平行 volumeNameList[] 模式)需自定义转换层(mini-services 重组 JSON); 不配置时
+      章节落库 volume 为空 → BookView 渲染为单卷不分组的目录(零回归)
+    - fanqie-style notes 追加 R27-1A 说明: 已预置 toc.fields.volume 保留分卷名
+    - biquge-standard notes 更新: 原"章节分卷结构需自行扩展 toc.fields.volume 字段"改为
+      详细说明 — 在 cfg.toc.fields 添加 volume 字段提取卷名, 例:
+      `volume: { type: "css", expression: ".volume-name", attr: "text" }`; 卷名随章节落库后
+      BookView 目录会按卷分组渲染(卷头独立区块 + 卷内 3 列剧集列表)
+
+  · src/components/public/BookView.tsx (823 → 868, +45):
+    - renderToc 分卷分组渲染优化(R27-1A):
+      1) 卷头卡片化: 原 thin line + 卷名 + "N 章" → 改为左 3px 主色块边框 + 主色半透明
+         背景 padding 卡片, 章数改为圆形徽章; 视觉权重显著提升
+      2) 多卷场景(≥3 卷)卷索引条: 顶部追加 nav 平铺卷头跳转 chip(主色半透明背景 +
+         主色边框), 点击 scrollIntoView 锚定到对应卷头; 移动端横向滚动(overflow-x-auto);
+         底部加 dashed 分隔线
+      3) 卷组改用 <section> 语义标签 + id 锚点 + scroll-mt-6(锚定偏移顶栏高度)
+      4) 卷间距由 space-y-6 改为 space-y-5(更紧凑, 与卷头卡片化配套)
+
+- 第四步: 验证
+  · bun run lint → 0 errors / 0 warnings exit 0 ✓
+  · bunx tsc --noEmit → 0 errors in 改动文件 ✓ (排除 .next 自动生成+examples+skills)
+  · dev server log: GET / 200 OK ✓
+
+Stage Summary:
+
+- 完成 R27-1A 三任务: 采集解析 volume 完善 + 乱序重排复核 + 章节目录分栏显示优化
+- 修改文件: src/lib/crawl/sorter.ts (381→388, +7 注释) + rule-templates.ts
+  (592→606, +14) + BookView.tsx (823→868, +45), 共 +66 行
+- 核心改动:
+  · 采集解析(rule-templates.ts): fanqie-style 模板 toc.fields 添加 volume 字段
+    (`volume: { type: 'json', expression: 'volume_name' }`), 与 verify-ll-c-listfields.ts
+    历史验证模式同口径; 注释说明真实 API 若 chapter 对象无 volume_name(平行数组模式)
+    需 mini-services 转换层重组 JSON; biquge-standard notes 补充 volume 字段提取示例
+  · 乱序重排(sorter.ts): R26-1A 已审无 P0/P1 bug, 本次仅添加 R27-1A 复核注释, 零修改代码
+  · 章节目录分栏(BookView.tsx renderToc): 卷头卡片化(左色块+主色背景+章数徽章)+
+    多卷场景(≥3)卷索引条(顶部 chip 平铺+横向滚动+scrollIntoView 锚定)+ section 语义标签+
+    id 锚点+scroll-mt-6; 单卷/无卷场景零回归(volGroups=null 走原 renderChapterList 分支)
+- 10 套 clone-themes BookInfo 验证: 全部不渲染章节目录(目录由 BookView 父级 renderToc
+  统一渲染), 分卷显示通过 BookView volGroups 对所有主题生效(包括 clone-* 与默认主题)
+- 历史修复全部保留(零回归确认):
+  · cleaner.ts 卷标题"第N卷 卷名"前缀剥离(R11-1A)+ U+2060 零宽字符剥离(R26-1A)
+  · downloader.ts 卷变化处插入卷标题行『══════ 卷名 ══════』(kk-d)+ qq-e 卷头判重
+    基准改为 lastEmittedVolume(防重复卷头)
+  · parser.ts toc.fields.volume 提取(HTML/JSON 双模式, 含 const 型字段补提 ll-c +
+    required 校验 agent-N)
+  · sorter.ts reorderWithVolumes(kk-a: 卷号升序+无号卷首现序 + qq-e2: 无号卷装配式
+    归位, 尾部番外跟最后一卷而非插最前)
+  · prisma Chapter.volume String @default("") 字段已存在, 不需 schema 变更
+- 验证: bun run lint 0 errors / 0 warnings ✓ / bunx tsc --noEmit 0 errors in 改动文件 ✓
+  (排除 .next 自动生成+examples+skills 预存在) / dev server 200 OK ✓
+- 详细工作记录: agent-ctx/R27-1A-full-stack-developer.md (含 5 章节: 读交接/4 维度审查/
+  3 文件实施/验证/历史保留+已知限制)
+- 未修改(尊重约束): src/lib/crawl/fetcher.ts/obscura.ts/runner.ts(R25-1A2/A3 已审) /
+  themes.ts / prisma/schema.prisma(Chapter.volume 已有) / page.tsx/PublicSite.tsx(主控已改) /
+  10 套 clone-themes BookInfo.tsx(详情面板非目录, 无需分卷) / mini-services/* /
+  package.json(0 新依赖)
+
+---
+Task ID: R27-1B
+Agent: full-stack-developer (采集增强+深度抓bug第二轮)
+Task: fetcher/obscura/runner/cleaner 第二轮边缘 bug + rule-templates + API 路由审查
+
+Work Log:
+- 步骤 1 读交接文档: 读 worklog.md 末 200 行(R25-1A2 fetcher 8 级降级链 + Referer 修复 +
+  sleepUnref; R25-1A3 obscura 3 P1 + runner 2 P2; R25-1B 其他页型 SSR 接线; R25-1C 主题
+  工具栏收藏/繁体/记录; R25-1D2 智能 TDK/SEO/搜索下拉/分类; R26-1A 8 个剩余 crawl 模块
+  全量审查 + 3 P1 + 4 P2 修复)
+- 步骤 2 第二轮深度审查(找边缘 bug):
+  · fetcher.ts 第二轮 (4600~4700 行 uc-bridge 段): 发现 P1 BUG① checkUcBridge 忽略
+    /health body 中的 selfTestOk 字段 — 协议规范 /health → 200 { ok:true, selfTestOk:bool,
+    versions, ... }, 修前仅看 HTTP 状态码 res.ok. 当桥进程在跑但 pyvirtualdisplay/xvfb 未装
+    时 /health 返回 200+selfTestOk:false, checkUcBridge 误判为可用 → 每章节都调 /fetch 再
+    失败("xvfb(pyvirtualdisplay) 启动失败: No module named 'pyvirtualdisplay'") → dev.log
+    洪泛万级 warn(万章任务实测 1 万次失败 warn), 拖慢采集+污染日志可观测性. 发现 P1 BUG②
+    fetchViaUcBridge data.ok=false 不更新可用性缓存 — /fetch 返回 { ok:false, error:"xvfb
+    启动失败..." } 时仅 console.warn + return null, ucBridgeAvailable 仍 true. 下次请求
+    checkUcBridge() 短路返回 true 直接调 /fetch 再失败 — 与 BUG① 同根因的洪泛. cookies
+    回写完整性 ✓ (line 1666/1687 cookieJar.store 同口径). 8 级降级链错误传播 ✓ (每级
+    返回 null 继续降级, 目标侧 4xx/5xx 在 ok:true 信封内如实透传不双发).
+  · obscura.ts 第二轮 (940~1700 行池管理+Turnstile 段): 池管理并发安全 ✓ (R25-1A3 已修
+    3 P1, 第二轮再查 withObscuraPage 信号量+30s waiter 超时 unref+TDZ 兜底+createSlot 失败
+    wakeNext+shutdownObscura shuttingDown 守卫+scheduleReclaim 定时器 unref 全部正确).
+    Turnstile 8s 截止边界 ✓ (deadline = Date.now()+8000, 每 frame 检查 Date.now() >=
+    deadline 早退, per-frame click 超时 Math.min(1500, remaining) 不超剩余预算, isCfWidgetIframe
+    严格匹配 challenges.cloudflare.com 跨域 iframe 才用通用 input[type=checkbox]). 挑战
+    等待循环 40s + goto timeout 20s 共 60s 上限合理. cookie 回传 ctx.cookies() 全量 ✓.
+    settle 采样 AJAX 增量阈值合理 (Math.abs(len-lastLen) <= Math.max(64, lastLen*0.005)).
+  · runner.ts 第二轮 (200~500 行 control+executeTask 段): control() 30s timer 边界 ✓
+    (R3-13+R14-1B+R25-1A 修复链: prev 链串行化+Promise.race 30s 超时+raceTimer try/finally
+    clearTimeout 释放+raceTimer.unref). raceTimer 闭包声明在 inner() 之外, prev.then 内
+    赋值, 时机正确(prev settled 后才进入 inner()). 任务调度竞态 ✓ (executeTask 入口同步
+    捕获 myEpoch=rt.epoch ll-c 修防 await 窗口被新 start 漂移, isStale()=rt.epoch!==myEpoch
+    在每个 await 后检查; control('stop') 仅设 rt.stopped=true 不 bump epoch 让旧循环自检
+    退出; control('start') bump epoch=epoch+1 让旧循环看到漂移即退出 jj-d). serializeStatusWrite
+    per-task 串行 db.task.update(status) 保证序 (R4-8 修复保留). scheduleAutoRefresh timer
+    unref + clamp [5,1440] 分钟 + 触发时复核状态(done/error 才重采, stopped 不参与 R3-14).
+    BudgetExceeded 错误传播 ✓ (gateFetch 入口 rt.maxRequests > 0 && requestCount 超限抛
+    BudgetExceeded → executeTask catch 内 isStale()/BudgetExceeded/isCircuitBreak 分支向上
+    抛走外层 catch → error 终态 + autoRefresh 重排, agent-Q-deep-audit 修复保留).
+  · cleaner.ts 第二轮 (200~690 行清洗出口): U+2060 剥离完整性 ✓ (R26-1A 已在 4 出口追加
+    U+2060, 第二轮再查 4 处正则均含 U+2060: cleanContentHtml plainText 212 / cleanContentHtml
+    HTML 461 / cleanTextField 569 / cleanIntro 608). 段落规整边界 ✓ (cleanIntro split(/\n{2,}/)
+    按双换行分段, 段内 \r→空格+\n→空格+\u3000→空格+\s+ 收敛+trim, filter(Boolean)join('\n')
+    重组, 段间单换行与正文 \n\n 双换行差异化). 水印段落 120 字长度闸门+6 类水印词任一命中
+    才剥防误伤叙事段 ✓. 乱序段落重排 DOM 节点移动(appendChild 非字符串重组)不吞夹带兄弟
+    节点 ✓. 白名单剥壳 contents() 移动原节点(非字符串重 parse)防迭代快照失效泄漏内层标签
+    + 白名单属性消毒 a[href]+img[src] 仅 http(s) 绝对地址+img[alt] 任意文本其余属性一律剥
+    防存储型 XSS ✓. cleanChapterTitle 卷剥离懒惰正则+切割点从垃圾关键词起点(qq-e)+量词
+    必须懒惰防贪婪取最右关键词残留域名+按码点截断 120 字(Array.from 防代理对斩半)✓.
+  · rule-templates.ts (591 行) + 各 seed-rule-*.ts 审查: 8 模板完整性 ✓
+    (biqugeStandard/biqugeGbk/xpathStructured/regexFallback/apiJson/jsRender/fanqieStyle/
+    qimaoStyle). 字段提取安全性 ✓ (FieldRule 四类 css/xpath/regex/json/const 与 types.ts
+    sanitizeFieldRule 白名单一致; regex 入口 collectRegexIssues 四入口预审). 发现 P2 BUG③
+    regexFallback content 正则要求 `</div>\s*<div` 终止, 章末 EOF(</body></html>) 场景匹配
+    失败 → 内容提取空字符串, 用户看到"四段测试全部 0 字"误以为规则写错. tokenUrl 钩子
+    安全性 ✓ (qimaoStyle tokenUrl + {url} 占位符全量替换 + tokenHeaderName [\r\n\0:]+ 剥离
+    防 HTTP smuggling + token 值 [\x00-\x1f\x7f] 剥离防 bun fetch Headers TypeError).
+    fanqieStyle map-collect + * 递归展平 + tab_type=3 过滤算子 ✓. seed-rule-bqg713
+    tokenUrl 对接 mini-services/bqg713-proxy:3010 /rewrite?url={url} 钩子 ✓.
+  · API 路由审查 (admin/* + public/*):
+    鉴权链完整 ✓ (proxy.ts Next 16 中间件对 /api/admin/* 强制 verifySession HMAC-SHA256
+    + timingSafeEqual + payload 白名单 {exp,nonce} 两键 + nonce 16B hex 正则校验; R4A-14
+    JSON.parse null/对象校验; R3-32 payload 仅允许 {exp,nonce} 两键防伪造塞额外字段).
+    /api/public/* 无鉴权但每 IP 120 req/min 令牌桶限流; /api/auth/* 60 req/min + login
+    自带 5 次/60s 滑窗(R3-31 FIFO 上限 1 万+周期清扫). SQL 注入面闭合 ✓ (所有 findMany/
+    updateMany/upsert 走 Prisma 参数化无字符串拼接 orderBy; 排序白名单 SORT_MAP R17 修防
+    orderBy 注入任意字段; 搜索 q 走 likeSafe() 剥 %_\\ 防 LIKE 通配符注入; 状态/分类/枚举全
+    走 Set 白名单). 参数校验 ✓ (clampInt 钳制分页 page≥1/size 1~60/200 等, 缺省值兜底,
+    NaN/Infinity 回退, 防 skip/take 负数导致 Prisma 500; API-7/A-4/A-16 skip 上限 10000 防
+    OFFSET 全表扫描 DoS; API-12 take 500 上限防大表 findMany 拉回内存撑爆). 路径穿越防护 ✓
+    (safeJoin path.resolve+startsWith(root+path.sep) 防 ../+%2e%2e+前缀碰撞; download 路由
+    DOWNLOADS_DIR 限定; chapter 路由 NOVELS_DIR 限定; cover 路由 /^\w[\w.-]*\.webp$/ 正则
+    + readCover basename 双重防护). TOCTOU 防护 ✓ (download 路由 fh.open 后 fh.stat 再
+    fh.createReadStream fd 全程持有不放 API-8; saveChapterTxt 先 .tmp 落盘再 rename 原子写
+    R26-1A + chapter PUT; books batch t2s 先 .tmp 落盘 DB update 成功后 rename R4A-17).
+    FK 竞态兜底 ✓ (全 admin 路由 try/catch 包 db.create/update/delete, P2003→409 友好提示,
+    P2025→404; tt-b errText 消毒 e.message 防 Prisma 查询原文泄漏). body 大小防护 ✓
+    (readBody 默认 5MB + chunked 形态流式读取+字节计数+超限中止 R6-3; restore 200MB
+    R4A-9; feedback 100KB R5-4 公开路由). 发现 P2 BUG④ public/feedback siteId FK 未校验 —
+    siteId 不存在时 db.feedback.create 抛 P2003 外键约束错, withGuard 兜底为 500 "服务器
+    内部错误" 误导用户(看似服务器故障, 实则是页面站点 ID 失效 — 站点被管理员删除/前端 URL
+    ?site= 参数失效后用户仍可填反馈).
+
+- 步骤 3 修复 + 增强:
+  · fetcher.ts (~+80 行): P1 修复① checkUcBridge 解析 /health selfTestOk + P1 修复②
+    fetchViaUcBridge data.ok=false 永久错误检测. 新增 UC_BRIDGE_PERMANENT_FAIL_MS=5*60_000
+    (5 分钟永久失败缓存窗口) + 全局 ucBridgePermanentFailUntil 时间戳. checkUcBridge()
+    改为: ① 永久失败窗口内(Date.now() < ucBridgePermanentFailUntil)立即返回 false 不再发
+    /health 探测; ② /health 200 时解析 body JSON 检查 selfTestOk 字段, selfTestOk===false
+    视为永久失败(桥进程在跑但底层依赖坏: xvfb/pyvirtualdisplay/Chrome/undetected-chromedriver
+    未装)设 ucBridgeAvailable=false + ucBridgePermanentFailUntil = Date.now()+5 分钟不再撞桥;
+    老版本桥 body 非 JSON 兼容默认 selfTestOk=true 由 /fetch 实测兜底; ③ /health 非 200
+    (网络层不可达)走原 60s 重试窗口不升级到 5 分钟(可能操作员重启桥进程后即恢复).
+    fetchViaUcBridge 在 if (!data.ok || !data.html) 分支新增错误模式检测: 取 errStr =
+    String(data.error || '').slice(0, 300) 截断; 正则匹配永久错误模式 "No module named"/
+    "ImportError"/"RuntimeError"/"xvfb"/"pyvirtualdisplay"/"Xvfb"/"chromedriver"/
+    "undetected_chromedriver"/"selenium"/"webdriver"(源于 server.py 抛 RuntimeError / Python
+    ImportError 等). 永久失败设 ucBridgeAvailable=false + ucBridgePermanentFailUntil =
+    Date.now()+5 分钟, 只 warn 一次(下次 checkUcBridge 立即返回 false 不再调 /fetch,
+    此 warn 5 分钟内不再刷屏); 错误全文带出便于操作员定位. 瞬时错误(目标 5xx/网络抖动/解析
+    异常等)沿用原口径 warn 每次出不更新缓存让下次请求重试.
+  · rule-templates.ts (+6 行): P2 修复③ regexFallback content 正则允许 EOF. 原
+    `<div[^>]*id="content"[^>]*>([\\s\\S]*?)</div>\\s*<div` 要求 </div> 后必须有另一个
+    <div. 改为 `<div[^>]*id="content"[^>]*>([\\s\\S]*?)</div>(?:\\s*<div|\\s*</body|$)`,
+    非捕获 alternation 允许 </div> 后跟: 另一个 <div(原语义, 防嵌套 div 内容截断) / </body
+    (常见 EOF 结构) / $(EOF 字符串结尾). node 实测验证 3 场景全过: Case 1 EOF 场景匹配
+    ✓(修前 NO MATCH), Case 2 next-div 原语义保留 ✓, Case 3 嵌套 div 内容截取到首
+    </div>+<div 之间 ✓. 非捕获组 (?:...) 不带量词, 不触发 hasNestedQuantifier + branches
+    HavePrefixAmbiguity 安全闸门(q=0 跳过, 形态检查 [+*]\s*\)\s*[+*{] 不命中).
+  · public/feedback/route.ts (+12 行): P2 修复④ siteId FK P2003 处理为 400 友好提示. 原
+    `const fb = await db.feedback.create(...)` 由 withGuard 兜底 P2003 为 500 "服务器内部
+    错误" 误导用户. 改为 `let fb; try { fb = await db.feedback.create(...) } catch (e) {
+    if (e?.code === 'P2003') return fail('站点不存在或已被删除, 请刷新页面后再提交', 400);
+    throw e }` 友好 400 提示引导用户重置页面状态后重试. 与 admin 路由 FK 竞态兜底(tt-b)
+    同口径, 但语义不同(公开路由用户不能预期站点 ID 失效, 应明确告知).
+
+- 步骤 4 验证:
+  · bun run lint → 0 errors / 0 warnings exit 0 ✓ (连跑 3 次稳定 0 错误)
+  · bunx tsc --noEmit → 0 errors in 改动文件 ✓ (排除 .next 自动生成 + examples + skills
+    预存在错误)
+  · regex 安全闸门验证: 新正则 `<div[^>]*id="content"[^>]*>([\\s\\S]*?)</div>(?:\\s*<div|
+    \\s*</body|$)` 经 node 实测编译 ✓, hasNestedQuantifier 形态检查不命中 ✓,
+    branchesHavePrefixAmbiguity 不触发(q=0 跳过)✓
+  · dev server log: 全部 200 OK, 无 uc-bridge 错误洪泛(实测环境 uc-bridge 正常, 但修复
+    覆盖 dev.log 历史报错场景 "uc-bridge 失败: xvfb(pyvirtualdisplay) 启动失败: No module
+    named 'pyvirtualdisplay'")
+
+Stage Summary:
+- 完成 6 项任务第二轮深度审查(fetcher/obscura/runner/cleaner 第二轮边缘 bug + rule-templates
+  + API 路由审查)+ 2 个 P1 bug 修复 + 2 个 P2 bug 修复
+- 修改文件: 仅 src/lib/crawl/fetcher.ts (~+80 行) + src/lib/crawl/rule-templates.ts (+6 行) +
+  src/app/api/public/feedback/route.ts (+12 行), 共 ~+98 行
+- 核心改动:
+  · P1 修复① fetcher checkUcBridge 解析 /health selfTestOk — 原 /health 200 OK + selfTestOk:
+    false 时(桥进程在跑但 pyvirtualdisplay/xvfb 未装)误判为可用, 每章节都调 /fetch 再失败
+    洪泛 dev.log 万级 warn. 改为解析 body JSON, selfTestOk===false 视为永久失败设 5 分钟
+    缓存窗口不再撞桥. 老版本桥 body 非 JSON 兼容默认 selfTestOk=true 由 /fetch 实测兜底.
+  · P1 修复② fetcher fetchViaUcBridge data.ok=false 永久错误检测 — 原 /fetch 返回
+    { ok:false, error:"xvfb(pyvirtualdisplay) 启动失败..." } 时仅 console.warn + return null,
+    ucBridgeAvailable 仍 true, 下次请求 checkUcBridge() 短路返回 true 直接调 /fetch 再失败
+    — 与 P1 修复① 同根因的洪泛. 改为正则匹配永久错误模式(No module named/ImportError/
+    RuntimeError/xvfb/pyvirtualdisplay/Xvfb/chromedriver/undetected_chromedriver/selenium/
+    webdriver), 永久失败设 ucBridgeAvailable=false + ucBridgePermanentFailUntil = Date.now()
+    +5 分钟, 只 warn 一次(下次 checkUcBridge 立即返回 false 不再调 /fetch, 此 warn 5 分钟
+    内不再刷屏); 瞬时错误沿用原口径 warn 每次出不更新缓存让下次请求重试.
+  · P2 修复③ rule-templates regexFallback content 正则允许 EOF — 原 `</div>\\s*<div` 要求
+    </div> 后必须有另一个 <div, 章末 EOF(</body></html>)场景匹配失败 → 内容提取空字符串,
+    用户看到"四段测试全部 0 字"误以为规则写错. 改为非捕获 alternation
+    `(?:\\s*<div|\\s*</body|$)` 允许 EOF 兜底. 3 场景实测验证全过, 安全闸门不触发.
+  · P2 修复④ public/feedback siteId FK P2003 处理为 400 友好提示 — 原 db.feedback.create
+    抛 P2003 由 withGuard 兜底为 500 "服务器内部错误" 误导用户. 改为 try/catch P2003 →
+    400 "站点不存在或已被删除, 请刷新页面后再提交" 引导用户重置页面状态后重试.
+- 历史修复全部保留(零回归确认):
+  · R25-1A2 fetcher 8 级降级链(native→curl→fetch-relay→scrapling-static→scrapling-stealthy
+    →Obscura→uc-bridge→moli-bridge) + Referer 修复 + sleepUnref + 8 级端口白名单(3010~3017)
+  · R25-1A3 obscura 3 P1(cookie domain 校验+newStealthContext 资源泄漏+recreateSlot
+    consecutiveFailures 累加漏路径) + runner 2 P2(raceTimer unref+waiter 30s 超时 unref)
+  · R26-1A cleaner 4 出口 U+2060 + storage saveChapterTxt 原子写 + writer.finish try/catch
+    + calibrate probeFetch cancel + types safeStr 码点安全截断
+  · R3-30 clientIp 优先 req.ip 防 XFF 伪造 + R3-31 loginAttempts Map FIFO+周期清扫
+  · R3-32 verifySession payload 白名单 {exp,nonce} + R4A-14 JSON.parse null/对象校验
+  · API-7/A-4/A-16 skip 上限 10000 防 OFFSET 全表扫描 DoS + API-12 take 500 上限
+  · R5-5 readBody 5MB + chunked 流式 + R6-3 字节计数 + 超限中止
+  · safeJoin path.resolve+startsWith(root+path.sep) 防 ../+%2e%2e+前缀碰撞
+  · gg-a collectRegexIssues 四入口预审 + ReDoS 闸门 hasNestedQuantifier+
+    branchesHavePrefixAmbiguity+validateRegexSafety
+  · tt-b errText 消毒 e.message 防 Prisma 查询原文泄漏到客户端信封
+  · FK 竞态兜底 P2003→409 / P2025→404 全 admin 路由覆盖
+- 审查后零回归未改的文件:
+  · obscura.ts (1692 行): 第二轮审查后无 P0/P1 bug(池管理并发安全 ✓ + Turnstile 8s 截止边界 ✓
+    + cookie 回传完整性 ✓ + settle 采样边界 ✓ + isChallengeUIVisible 异常保守 ✓)
+  · runner.ts (2238 行): 第二轮审查后无 P0/P1 bug(control() 30s timer 边界 ✓ + 任务调度
+    竞态 ✓ + serializeStatusWrite 串行化 ✓ + scheduleAutoRefresh timer unref ✓ +
+    BudgetExceeded 错误传播 ✓ + gateFetch hostGate 释放 ✓)
+  · cleaner.ts (696 行): 第二轮审查后无 P0/P1 bug(U+2060 剥离完整性 ✓ + 段落规整边界 ✓ +
+    水印段落长度闸门 ✓ + 乱序段落重排 DOM 节点移动 ✓ + 白名单剥壳 contents() 移动节点 ✓ +
+    cleanChapterTitle 卷剥离 ✓)
+- 验证: bun run lint 0 errors / 0 warnings ✓ / bunx tsc --noEmit 0 errors in 改动文件 ✓
+  (排除 .next 自动生成+examples+skills 预存在) / dev server 200 OK ✓ / regex 安全闸门实测 ✓
+- 详细工作记录: agent-ctx/R27-1B-full-stack-developer.md (含 6 章节: 读交接/第二轮深度审查
+  6 模块/修复增强 P1×2+P2×2/验证/修改文件清单/历史保留+零回归未改文件)
+- 未修改(尊重约束): src/components/public/clone-themes/* (A agent 负责) / page.tsx/
+  PublicSite.tsx/HomeView.tsx (主控已改) / themes.ts / prisma/schema.prisma / package.json
+  (0 新依赖)

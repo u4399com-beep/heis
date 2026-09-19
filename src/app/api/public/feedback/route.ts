@@ -83,19 +83,29 @@ export async function POST(req: Request) {
       if (cnt >= IP_HOUR_LIMIT) return fail('提交过于频繁, 请稍后再试', 429)
     }
 
-    const fb = await db.feedback.create({
-      data: {
-        type,
-        contact: contact || null,
-        content,
-        url: feedbackUrl || null,
-        siteId,
-        userAgent,
-        ip: ip || null,
-        status: 'new',
-      },
-      select: { id: true },
-    })
+    // R27-1B 修复 P2: siteId FK 不存在时 Prisma 抛 P2003 外键约束错; 原实现由 withGuard
+    // 兜底为 500 "服务器内部错误" 误导用户(看起来是服务器故障, 实则是页面站点 ID 失效 —
+    // 站点被管理员删除/前端 URL ?site= 参数失效后用户仍可填反馈)。改为捕获 P2003 → 400
+    // 友好提示 "站点不存在, 请刷新页面后再提交", 引导用户重置页面状态后重试
+    let fb
+    try {
+      fb = await db.feedback.create({
+        data: {
+          type,
+          contact: contact || null,
+          content,
+          url: feedbackUrl || null,
+          siteId,
+          userAgent,
+          ip: ip || null,
+          status: 'new',
+        },
+        select: { id: true },
+      })
+    } catch (e: any) {
+      if (e?.code === 'P2003') return fail('站点不存在或已被删除, 请刷新页面后再提交', 400)
+      throw e
+    }
 
     return ok({ id: fb.id })
   })

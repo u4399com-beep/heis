@@ -12,6 +12,7 @@ import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
 import { statusLabel, formatWords } from '../../seo'
 import type { RankingViewProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 import type { BookItem } from '../../types'
 import { useEffect, useState } from 'react'
 
@@ -67,12 +68,8 @@ export function RankingView({ books, loading, tab, onTabChange, page, total, siz
     e.preventDefault()
     navigate({ view: 'category', cat: catId })
   }
-  const goHome = (e: React.MouseEvent) => { e.preventDefault(); navigate({ view: 'home' }) }
-  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const q = (e.currentTarget.elements.namedItem('q') as HTMLInputElement)?.value?.trim()
-    if (q) navigate({ view: 'search', q })
-  }
+  // R27-1C: 复用 cloneNavHandlers
+  const { goHome, goSearch } = cloneNavHandlers(navigate, 'q')
   const goRanking = (e: React.MouseEvent) => { e.preventDefault(); navigate({ view: 'ranking' }) }
   const goFulltext = (e: React.MouseEvent) => { e.preventDefault(); navigate({ view: 'fulltext' }) }
   const goHistory = (e: React.MouseEvent) => { e.preventDefault(); navigate({ view: 'history' }) }

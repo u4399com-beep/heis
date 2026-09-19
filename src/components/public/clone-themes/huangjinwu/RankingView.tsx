@@ -16,6 +16,7 @@
 import { usePublic } from '../../ctx'
 import { bookNavProps } from '../../bits'
 import type { RankingViewProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 
 const TABS = [
   { id: 'allvisit', name: '总点击' },
@@ -49,10 +50,8 @@ export function RankingView({ books, loading, tab, onTabChange, page, total, siz
   const { site, navigate } = usePublic()
   const totalPages = Math.max(1, Math.ceil(total / size))
 
-  const goHome = (e: React.MouseEvent) => {
-    e.preventDefault()
-    navigate({ view: 'home' })
-  }
+  // R27-1C: 复用 cloneNavHandlers
+  const { goHome, goSearch } = cloneNavHandlers(navigate, 'keyword')
   const goNav = (e: React.MouseEvent, id: string) => {
     e.preventDefault()
     if (id === 'home') navigate({ view: 'home' })
@@ -66,12 +65,6 @@ export function RankingView({ books, loading, tab, onTabChange, page, total, siz
     e.preventDefault()
     navigate({ view: 'category', cat: catId })
   }
-  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const q = (e.currentTarget.elements.namedItem('keyword') as HTMLInputElement)?.value?.trim()
-    if (q) navigate({ view: 'search', q })
-  }
-
   // 6 个分类排行榜: 每个模块按 categoryId 过滤, fallback 全集
   const rankSections = RANK_MODULES.map((m, i) => {
     const list = books.filter(b => b.categoryId === m.id || (b.category || '') === m.name.replace(/小说榜$/, ''))

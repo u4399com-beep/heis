@@ -14,6 +14,7 @@
 // ============================================================
 import { usePublic } from '../../ctx'
 import type { ReadChromeProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 
 const NAV_ITEMS = [
   { id: 'home', name: '首页', icon: 'icon-book' },
@@ -37,15 +38,8 @@ export function ReadChrome({ children, chapterTitle, onPrev, onNext }: ReadChrom
     else if (id === 'tag') navigate({ view: 'keyword', tag: '小说' })
     else if (id === 'author') navigate({ view: 'search' })
   }
-  const goHome = (e: React.MouseEvent) => {
-    e.preventDefault()
-    navigate({ view: 'home' })
-  }
-  const goSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const q = (e.currentTarget.elements.namedItem('keyword') as HTMLInputElement)?.value?.trim()
-    if (q) navigate({ view: 'search', q })
-  }
+  // R27-1C: 复用 cloneNavHandlers
+  const { goHome, goSearch } = cloneNavHandlers(navigate, 'keyword')
 
   return (
     <>
