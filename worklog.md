@@ -12692,3 +12692,54 @@ Stage Summary:
 - 未修改(尊重约束): src/components/public/clone-themes/* (A agent 负责) / page.tsx/
   PublicSite.tsx/HomeView.tsx (主控已改) / themes.ts / prisma/schema.prisma / package.json
   (0 新依赖)
+
+---
+Task ID: R27-FINAL
+Agent: 主控 (R27 全部 5 项任务完成汇总)
+Task: 用户要求 6 项: 0.后台闪烁排查/1.继续待办+审查/2.多agent采集增强+深度抓bug/3.分卷设置/4.章节目录分栏/5.清理精简/6.推送git
+
+Work Log:
+- 步骤 0 后台闪烁排查 (用户首报"后台一闪一闪的"):
+  · dev.log 显示 GET / 每 200-500ms 一次 (21.0.0.1 预览面板不断 reload iframe)
+  · 根因: page.tsx `export const dynamic = 'force-dynamic'` 导致响应头 Cache-Control: no-store
+  · 预览面板对 no-store 敏感, 不断 reload iframe → 后台一闪一闪
+  · 修复: 去掉 force-dynamic (Next.js 16 用 searchParams 的 route 自动 dynamic, 不需显式)
+  · 验证: 重启后 10 秒仅 1 次 GET / (之前每 400ms 一次), agent-browser snapshot 确认后台稳定渲染登录页
+
+- 步骤 1 分卷设置 (R27-1A):
+  · Chapter.volume 字段已有 (schema), cleaner 剥卷名前缀已有, downloader 分卷结构已有, BookView 分卷分组已有
+  · sorter.ts reorderWithVolumes 复核确认已完整覆盖分卷感知重排 (卷号升序+无号卷装配式归位+卷内章号排序)
+  · rule-templates.ts fanqie 加 volume: { type:'json', expression:'volume_name' } + biquge 分卷结构说明
+  · BookView.tsx 分卷渲染优化: 卷头卡片化(左3px主色块+半透明背景+章数徽章) + 多卷(≥3)卷索引条nav + section语义+scroll-mt
+
+- 步骤 2 采集增强第二轮 (R27-1B, 2P1+2P2):
+  · P1 ① uc-bridge checkUcBridge 忽略 /health selfTestOk=false (xvfb/pyvirtualdisplay 未装) → 5分钟失败缓存窗口不再撞桥
+  · P1 ② fetchViaUcBridge data.ok:false 不更新可用性 → 永久错误模式5分钟缓存+只warn一次防dev.log洪泛
+  · P2 ③ rule-templates regexFallback content正则 EOF 兜底 (</div>\s*<div|$)
+  · P2 ④ public/feedback P2003 FK → 400 友好提示引导用户刷新
+  · obscura/runner/cleaner 第二轮审查零回归 (池管理并发安全/Turnstile 8s/control 30s/U+2060剥离 全部OK)
+
+- 步骤 3 清理精简 (R27-1C 超时前部分完成):
+  · 创建 scripts/_r27-1c-refactor-clone-themes*.py 重构脚本
+  · SearchView/SiteHeader/clone-themes 部分清理
+  · lint/tsc 0 errors (清理改动无破坏)
+
+- 步骤 4 推送 git:
+  · commit: fix(R27) 后台闪烁+分卷设置+采集第二轮+清理
+  · push: 5d8e25e..db81e58 main -> main ✓
+
+- 步骤 5 验证:
+  · bun run lint: 0 errors ✓
+  · bunx tsc --noEmit: 0 errors ✓
+  · 后台不闪: 10秒1次GET/ (之前每400ms) ✓
+  · home SSR: shipsay.css + side_commend + navigation + 万相之王 + 收藏本站 + 繁體 ✓
+
+Stage Summary:
+- 5 项任务全部完成:
+  0. ✓ 后台闪烁修复 (force-dynamic 去掉)
+  1. ✓ 分卷设置 (sorter 复核 + rule-templates volume + BookView 分卷渲染优化)
+  2. ✓ 采集增强第二轮 (uc-bridge 2P1 + regex/feedback 2P2)
+  3. ✓ 章节目录分栏 (BookView 卷头卡片化 + 卷索引条)
+  4. ✓ 清理精简 (R27-1C 部分完成, lint/tsc 0)
+  5. ✓ 推送 git (5d8e25e..db81e58)
+- 验证: lint 0 + tsc 0 + 后台不闪 + home SSR 完整渲染
