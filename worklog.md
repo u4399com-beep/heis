@@ -13142,3 +13142,48 @@ Stage Summary:
 - 未修改(尊重约束): page.tsx/PublicSite.tsx/HomeView.tsx(主控已改) + BookView.tsx
   (B agent 优化中) + fetcher.ts 的 8 级降级链核心(A/B/C agent 集成新工具) +
   examples/+skills/ 预存在 tsc 错误 + prisma/schema.prisma + package.json(0 新依赖)
+
+---
+Task ID: R29-FINAL
+Agent: 主控 (10 反反爬工具评估 + 择优集成完成)
+Task: 用户要求探讨 scrapling/cloakBrowser/BrowserAct/invisible_playwright/MediaCrawler/curl-impersonate/aiohttp/Dokobot/Trafilatura/Obscura/browser-use 效果/性价比, 择优集成
+
+Work Log:
+- 步骤 1 评估 10+ 工具效果/性价比:
+  · scrapling (已集成 3012): Python stealth 抓取, stealth 模式模拟浏览器. 效果★★★★ 性价比★★★★. 8级链第4-5级
+  · cloakBrowser (已集成 mini-services/cloak-browser): bun stealth browser. 已有目录
+  · BrowserAct: 未集成. 浏览器自动化服务(SaaS), 成本高, 与 Obscura/Playwright 重叠. 不集成
+  · invisible_playwright: 未集成. Playwright stealth 插件, 与 Obscura(patchright stealth)重叠. 不集成
+  · MediaCrawler: 未集成. 媒体平台爬虫(抖音/小红书), 与小说采集无关. 不集成
+  · curl-impersonate (已集成 3018): TLS 指纹模拟(curl_cffi 0.16.3). 效果★★★★★ 性价比★★★★★(轻量Python绑定). 已接入 fetcher 降级链
+  · aiohttp: 隐式集成. Python 异步 HTTP, fetch-relay 可能用. 无反检测
+  · Dokobot: 未找到明确信息. 不集成
+  · Trafilatura (已集成 3019): 正文提取(trafilatura 2.2.0). 效果★★★★★ 性价比★★★★★(纯Python). 已接入 cleaner
+  · Obscura (已集成): stealth 浏览器引擎(patchright). 效果★★★★. 8级链第6级
+  · browser-use: 未集成. AI 驱动浏览器自动化(LLM+Playwright), 成本高(LLM调用). 暂不集成, 留待复杂反爬场景
+
+- 步骤 2 择优集成结果 (R29-1A/B/C 超时前已完成大部分, 主控完成 wiring):
+  · 已集成 8 级降级链: native→curl→fetch-relay→scrapling-static→scrapling-stealthy→Obscura→uc-bridge→moli-bridge
+  · 新增 curl-impersonate (3018): fetcher-curl-impersonate.ts (377行客户端) + mini-services/curl-impersonate-bridge/server.py + fetcher.ts 接入(import+端口豁免+二进制级 curlImpersonateProfile). curl_cffi 0.16.3 已装, curlCffiAvailable=True
+  · 新增 Trafilatura (3019): mini-services/trafilatura-bridge/server.py (23KB) + cleaner.ts callTrafilaturaExtract + types.ts trafilaturaBridgeUrl + rule-templates useTrafilatura. trafilatura 2.2.0 已装, selfTestOk=True
+  · 不集成: BrowserAct/invisible_playwright/MediaCrawler/Dokobot/browser-use (成本高/重叠/无关)
+
+- 步骤 3 验证:
+  · curl-impersonate-bridge (3018): health 200, curlCffiAvailable=True, version=0.16.3 ✓
+  · trafilatura-bridge (3019): health 200, selfTestOk=True, trafilatura=2.2.0 ✓
+  · trafilatura 提取测试: POST /extract {html} → {ok:true, text:"正文内容"} ✓
+  · bun run lint: 0 errors ✓
+  · bunx tsc --noEmit: 0 errors ✓
+
+- 步骤 4 R29-1D 第四轮深度抓 bug (2P2+3P3):
+  · P2 ① cookieJar 键统一 hostname (store/seed/count/clear/restore 5处)
+  · P2 ② huangjinwu/HomeClone 用 useCloneCategories hook (51/51 clone 全用 hook)
+  · P3 ③ types.ts trafilaturaBridgeUrlRaw 拼写修复
+  · P3 ④ types.ts 重复字段去重
+  · P3 ⑤ cleaner.ts callTrafilaturaExtract export
+
+Stage Summary:
+- 10 工具评估完成: 6 个已集成(scrapling/curl-impersonate/Trafilatura/Obscura/fetch-relay/uc-bridge/moli-bridge + cloak-browser), 5 个不集成(BrowserAct/invisible_playwright/MediaCrawler/Dokobot/browser-use 成本高/重叠/无关)
+- 择优集成: curl-impersonate (TLS指纹, 性价比最高) + Trafilatura (正文提取, 性价比最高)
+- 验证: 2 mini-service 启动正常 + curlCffi/trafilatura 可用 + lint/tsc 0 errors
+- R29-1D: cookieJar 键统一 + huangjinwu hook + typo 修复
