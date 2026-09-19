@@ -13,8 +13,7 @@ import { usePublic } from '../../ctx'
 import { bookNavProps } from '../../bits'
 import { formatWords } from '../../seo'
 import type { CategoryListProps } from '../shared'
-import { cloneNavHandlers } from '../shared'
-import { useEffect, useState } from 'react'
+import { cloneNavHandlers, useCloneCategories } from '../shared'
 
 interface Cat { id: string; name: string }
 
@@ -29,23 +28,10 @@ const DEFAULT_NAV: Cat[] = [
 
 export function CategoryList({ books, loading, label, page, total, size = 24, onPage, initialCategories }: CategoryListProps) {
   const { site, navigate } = usePublic()
-  const [cats, setCats] = useState<Cat[]>(() => (initialCategories || []).map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) })))
+  // R28-1A: 复用 useCloneCategories (SSR initialCategories 优先 + 空时 fetch + DEFAULT_NAV 兜底)
+  const cats = useCloneCategories(initialCategories, DEFAULT_NAV)
 
   // 拉分类列表用于 m_menu 导航
-  useEffect(() => {
-    if (cats.length > 0) return
-    let aborted = false
-    fetch('/api/public/categories?limit=60')
-      .then(r => r.json())
-      .then(d => {
-        if (aborted) return
-        const arr = Array.isArray(d) ? d : (d.data?.items || d.data?.categories || d.items || d.categories || [])
-        const mapped: Cat[] = arr.map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) }))
-        setCats(mapped.length ? mapped : DEFAULT_NAV)
-      })
-      .catch(() => { if (!aborted) setCats(DEFAULT_NAV) })
-    return () => { aborted = true }
-  }, [cats.length])
 
   const navCats = (cats.length ? cats : DEFAULT_NAV).slice(0, 10)
   const totalPages = Math.max(1, Math.ceil(total / size))

@@ -11,10 +11,7 @@ import { bookNavProps } from '../../bits'
 import { formatWords } from '../../seo'
 import { addFavoriteSite, useTraditionalChinese } from '../tools'
 import type { HomeCloneProps } from '../shared'
-import { cloneNavHandlers } from '../shared'
-import { useEffect, useState } from 'react'
-
-interface Cat { id: string; name: string }
+import { cloneNavHandlers, useCloneCategories } from '../shared'
 
 // 简繁切换按钮 — shipsay 风格 (fa fa-language + br + 文案)
 function TcToggleShip() {
@@ -34,24 +31,8 @@ function TcToggleShip() {
 
 export function HomeClone({ books, loading, navCategoryCount = 8, homeModuleLimit = 6, initialCategories }: HomeCloneProps) {
   const { site, navigate } = usePublic()
-  // R24: SSR 首载用 page.tsx server fetch 的 initialCategories 初始化, 避免 SSR 时 cats=[] → navigation 没分类
-  const [cats, setCats] = useState<Cat[]>(() => (initialCategories || []).map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) })))
-
-  // client 端补充: initialCategories 缺失或为空时 fetch
-  useEffect(() => {
-    if (cats.length > 0) return
-    let aborted = false
-    fetch('/api/public/categories?limit=60')
-      .then(r => r.json())
-      .then(d => {
-        if (aborted) return
-        // API 返回 {ok, data:{items:[{id,name,bookCount,rep}]}}
-        const arr = Array.isArray(d) ? d : (d.data?.items || d.data?.categories || d.items || d.categories || [])
-        setCats(arr.map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) })))
-      })
-      .catch(() => {})
-    return () => { aborted = true }
-  }, [cats.length])
+  // R28-1A: 复用 useCloneCategories (SSR initialCategories 优先 + 空时 fetch)
+  const cats = useCloneCategories(initialCategories)
 
   if (loading) return <div className="container" style={{ padding: 40, textAlign: 'center' }}>加载中...</div>
   if (!books.length) return <div className="container" style={{ padding: 40, textAlign: 'center' }}>暂无内容</div>

@@ -18,6 +18,7 @@ import { usePublic } from '../../ctx'
 import { bookNavProps } from '../../bits'
 import { formatWords } from '../../seo'
 import type { RankingViewProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 
 const TABS = [
   { id: 'allvisit', name: '总点击榜' },
@@ -29,10 +30,8 @@ const TABS = [
 export function RankingView({ books, loading, tab, onTabChange, page, total, size, onPage }: RankingViewProps) {
   const { navigate } = usePublic()
 
-  const goHome = (e: React.MouseEvent) => {
-    e.preventDefault()
-    navigate({ view: 'home' })
-  }
+  // R28-1A: 复用 cloneNavHandlers (goHome 共享, 本页无搜索表单)
+  const { goHome } = cloneNavHandlers(navigate, 'searchkey')
 
   const totalPages = Math.ceil(total / size)
   const hasPrev = page > 1

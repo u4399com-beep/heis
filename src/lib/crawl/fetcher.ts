@@ -7,7 +7,7 @@
 // ============================================================
 import iconv from 'iconv-lite'
 import { type FetchConfig, DEFAULT_FETCH_CONFIG, isValidMirrorHost } from './types'
-import { obscuraFetch, checkObscuraAvailable, clickSelectorAnywhere, buildIdentityInitScript, applyUaCdpOverride } from './obscura'
+import { obscuraFetch, checkObscuraAvailable, clickSelectorAnywhere, buildIdentityInitScript, applyUaCdpOverride, setObscuraCookieProvider } from './obscura'
 import { reportHostRateLimited } from './hostgate'
 
 // ---------- UA 池 ----------
@@ -635,6 +635,16 @@ export const cookieJar = validJar(globalForJar.__novelCookieJar_v3)
   ? globalForJar.__novelCookieJar_v3
   : new CookieJar()
 globalForJar.__novelCookieJar_v3 = cookieJar
+
+// R28-1C 修复 P2: 注入 cookieJar.get 到 Obscura 引擎, 让 Obscura 槽位重建/新建时
+// 把 cookieJar 中该域的 cf_clearance 等挑战凭证同步到新 BrowserContext.
+// 避免循环依赖: obscura.ts 不直接 import fetcher.ts(已有 fetcher→obscura 单向依赖);
+// 改为注入式, fetcher.ts 模块加载时调一次 setup 即可. setup 幂等(globalThis 标记防 HMR 重复)
+const globalForObscuraCookieSetup = globalThis as unknown as { __novelObscuraCookieSetup_v1?: boolean }
+if (!globalForObscuraCookieSetup.__novelObscuraCookieSetup_v1) {
+  globalForObscuraCookieSetup.__novelObscuraCookieSetup_v1 = true
+  setObscuraCookieProvider((originHost: string) => cookieJar.get(originHost))
+}
 
 // ---------- agent-EE-crawl-phase7: Cookie 持久化到磁盘(可选, 操作员配置) ----------
 // 设计要点:
@@ -4719,6 +4729,22 @@ async function fetchViaUcBridge(url: string, cfg: FetchConfig): Promise<{ html: 
       ok: boolean; html?: string; status?: number; cookies?: string[]; finalUrl?: string; error?: string
     }
     if (!data.ok || !data.html) {
+      // R28-1C 修复 P3: 区分"桥内异常(ok:false)"与"目标侧空响应(ok:true+empty html)"
+      // 旧实现: `if (!data.ok || !data.html)` 把 ok:true + html='' 也归入失败分支 →
+      //   调用 renderWithBrowserRaw 重新抓取(同样会拿到空响应/挑战页), 浪费一次浏览器
+      //   启动 + 把目标侧 4xx/5xx 空响应误当桥故障降级. 实际语义:
+      //   - ok=false → 桥内异常(传输层失败), 应降级
+      //   - ok=true + html='' → 桥成功但目标侧返回空 body(罕见: 204/某些 5xx 无 body)
+      //     应原样透传(让上层 looksBlocked 检测后处理, 与 native 链同口径)
+      // 改法: 仅 ok=false 走永久失败检测 + 降级; ok=true + html='' 直接返回空结果
+      if (data.ok && !data.html) {
+        // 目标侧空响应: 透传空 html + 真实 status, 让 caller 处理(looksBlocked('')=true 走降级链)
+        return {
+          html: '',
+          status: data.status || 200,
+          cookies: Array.isArray(data.cookies) ? data.cookies : [],
+        }
+      }
       // R27-1B 修复 P1: data.ok=false 时检测永久性错误模式, 标记桥为永久失败
       // 5 分钟不再撞桥。修前: uc-bridge 可用性缓存(/health 200 OK)仍是 true,
       // checkUcBridge() 短路返回 true, 每章节都试 /fetch 再失败, 万章任务产生

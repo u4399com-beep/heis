@@ -471,7 +471,24 @@ export class TaskRunner {
     void tail.then(() => {
       if (this.controlChains.get(taskId) === tail) this.controlChains.delete(taskId)
     })
-    return run
+    // R28-1C 修复 P2: control() 30s 超时 rejection 上抛让 withGuard 兜底为 500
+    // "服务器内部错误" 误导用户 — 看似服务器故障, 实则是 SQLite busy 锁等待/单次
+    // controlInner 卡死. 调用方(admin/tasks/[id]/control/route.ts)按 `if (!res.ok)
+    // return fail(res.message)` 消费, 期望要么 {ok:true} 要么 {ok:false, message};
+    // 30s 超时让 run reject → route await 抛 → withGuard catch 500, 用户看到"服务器
+    // 内部错误"无任何 actionable 信息. 改为 catch 拒绝并返回 {ok:false, message} 友好
+    // 信封, route 把超时原因透出给用户(明确告知"操作超时, 请稍后重试"), 与 controlInner
+    // 内已存在的 {ok:false, message:'熔断冷却中'} 同口径. 内部异常仍在 logger 留底
+    // (route 的 withGuard 不再吞成 500, 也不再把 control timeout 暴露为崩溃).
+    // 注: 30s 超时下底层 controlInner 可能仍在跑(快路径已被 race 抢先), 但 controlChains
+    // 链已 tail.catch 吞错释放, 下次 control 不被卡; 旧 controlInner 完成时其 db 写入
+    // 仍会落库(serializeStatusWrite 串行化保护写序). 此处仅修复"用户看不到超时原因"UX
+    return run.catch((e: any) => {
+      const msg = e?.message?.slice(0, 200) || 'control failed'
+      // 内部异常留 logger 警告(不依赖 route 的 withGuard 兜底, 简化可观测性)
+      try { console.warn(`[runner] control(${action}) 失败: ${msg}`) } catch { /* ignore */ }
+      return { ok: false, message: msg }
+    })
   }
 
   private async controlInner(taskId: string, action: ControlAction): Promise<{ ok: boolean; message: string }> {

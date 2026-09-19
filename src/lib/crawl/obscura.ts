@@ -1034,6 +1034,75 @@ function originOf(url: string): string {
   try { return new URL(url).origin } catch { return '' }
 }
 
+// R28-1C 修复 P2: Cookie 凭证回写到新建 Obscura BrowserContext(避免槽位回收后重新撞盾)
+// ----------------------------------------------------------------------------
+// 背景: Obscura 槽位空闲 10min 后被 scheduleReclaim 心跳回收 ctx.close()(槽位本身
+// 保留, 下次获取时 page.isClosed()=true 触发 recreateSlot 重建). 重建后的新 ctx
+// 【不带任何 cookies】, 但 cookieJar 里可能已有上次成功通过挑战的 cf_clearance
+// 等凭证. 旧实现: cf_clearance 仅写入 cookieJar(HTTP 层), 不写回 Obscura 新 ctx;
+// 新 ctx 用 page.goto 访问盾站时无 cf_clearance → 必然再次被盾挑战 → 等待
+// challengeWaitMs 40s 后超时返回挑战页 → fetcher.looksBlocked=true 走降级链 →
+// 即便 uc-bridge/裸 Playwright 也无 cf_clearance(因 renderWithBrowserRaw 的
+// extraHTTPHeaders.Cookie 走 buildHeaders 注入, 但 Obscura 路径下 challenge
+// 已触发, 屏障重置, 凭证失效). 净效果: 长任务持续运行(>10min 空闲)的站点
+// 反复撞盾, cf_clearance 凭证等同虚设.
+//
+// 修法: 注入 cookieProvider 回调(由 fetcher.ts 初始化, 注入 cookieJar.get),
+// withObscuraPage 在 createSlot/recreateSlot 成功后调用 restoreCookiesToContext
+// 把 cookieJar 中该域的凭证同步到新 ctx(供 page.goto 直接带凭证过盾). 注入式
+// 避免循环依赖(obscura ↔ fetcher 互相 import), fetcher 顶层调一次 setup 即可.
+// 安全: cookieProvider 注入的字符串经 parseCookieHeaderToPlaywright 严格解析
+// (key=value 形态, 拒绝 ATTR_NAMES 属性名), 与 cookieJar.store 同口径防伪 cookie
+// 污染. domain 派生为 .hostname(允许子域共享, 与真实浏览器同站 cookie 行为一致)
+type CookieProvider = (originHost: string) => string
+let cookieProvider: CookieProvider | null = null
+
+/** 注入 cookieJar 凭证提供器(由 fetcher.ts 初始化, 传入 cookieJar.get) */
+export function setObscuraCookieProvider(fn: CookieProvider | null): void {
+  cookieProvider = fn
+}
+
+/** 把 "k1=v1; k2=v2" 形态的 Cookie 头解析为 Playwright cookie 对象数组
+ *  domain 派生: 从 originHost(https://www.example.com) 提取 hostname 并加前导点
+ *  (.www.example.com), 与 Playwright 的"父域 cookie 子域共享"语义对齐;
+ *  HttpOnly/Secure/path 等属性在此不指定(走默认, ctx 自身管理)*/
+function parseCookieHeaderToPlaywright(cookieStr: string, originHost: string): Array<{ name: string; value: string; domain: string; path: string }> {
+  if (!cookieStr) return []
+  let hostname = ''
+  try { hostname = new URL(originHost).hostname } catch { /* originHost 非 URL 形态 */ }
+  if (!hostname) return []
+  // ATTR_NAMES 与 fetcher CookieJar.store 同口径(防 "Path=/; Secure" 形态被当 cookie 名)
+  const ATTR_NAMES = new Set(['path', 'domain', 'expires', 'max-age', 'secure', 'httponly', 'samesite'])
+  const out: Array<{ name: string; value: string; domain: string; path: string }> = []
+  for (const pair of cookieStr.split(';')) {
+    const idx = pair.indexOf('=')
+    if (idx <= 0) continue
+    const name = pair.slice(0, idx).trim().toLowerCase()
+    if (!name || ATTR_NAMES.has(name)) continue
+    const value = pair.slice(idx + 1).trim()
+    if (!value) continue
+    out.push({ name, value, domain: `.${hostname}`, path: '/' })
+  }
+  return out
+}
+
+/** 把 cookieProvider 返回的凭证同步到 slot.ctx(新建 ctx 没有任何 cookies)
+ *  幂等: 多次调用 addCookies 同名 cookie 后值覆盖, 不影响后续; 失败静默降级
+ *  (cookies 不可用时仍能跑, 只是首次 goto 无 cf_clearance 等凭证) */
+async function restoreCookiesToContext(slot: PoolSlot): Promise<void> {
+  if (!cookieProvider) return
+  if (!slot.domain) return
+  try {
+    const cookieStr = cookieProvider(slot.domain)
+    if (!cookieStr) return
+    const cookies = parseCookieHeaderToPlaywright(cookieStr, slot.domain)
+    if (cookies.length === 0) return
+    await slot.ctx.addCookies(cookies)
+  } catch {
+    // 静默降级: cookies 同步失败不阻塞主流程(浏览器仍可跑, 只是首次 goto 无凭证)
+  }
+}
+
 /** hh-d2: CDP Network.setUserAgentOverride(+userAgentMetadata) —— 网络层 sec-ch-ua* 头与原生 JS
  *  userAgentData 由 metadata 驱动(route 改写删不掉引擎原生 CH 头, CDP 是唯一通路, 实验证据
  *  tmp/hh-d/baseline.json experiments.cdpMetadata: headerApplied=true + jsBrandsOk=true)。
@@ -1338,6 +1407,9 @@ export async function withObscuraPage<T>(
         if (free.domain !== domain || free.page.isClosed()) {
           try {
             await recreateSlot(free, domain, randomFingerprint({ userAgent: opts.userAgent }), level)
+            // R28-1C: 槽位重建后是新 ctx, 同步 cookieJar 中该域的 cf_clearance 等凭证
+            // (失败静默降级, 不阻塞主流程)
+            await restoreCookiesToContext(free)
           } catch (e) {
             free.busy = false // 重建失败归还槽位(旧 ctx 已关, 下次获取时会再次重建)
             // 修复: 失败路径也必须唤醒一个等待者, 否则排队的请求会永久饥饿挂起
@@ -1352,6 +1424,8 @@ export async function withObscuraPage<T>(
         S.pendingCreates++
         try {
           slot = await createSlot(domain, randomFingerprint({ userAgent: opts.userAgent }), level)
+          // R28-1C: 新建槽位同样需要同步 cookieJar 凭证(首次访问该域)
+          await restoreCookiesToContext(slot)
         } finally {
           S.pendingCreates--
           // 建槽失败时容量已释放, 唤醒一个等待者去重试(否则等待队列可能永久挂起)

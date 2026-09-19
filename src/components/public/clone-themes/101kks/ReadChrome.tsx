@@ -23,12 +23,14 @@
 // CSS 由 CloneCSSLoader 加载 public/clone-css/101kks.css
 // ============================================================
 import type { ReadChromeProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 import { usePublic } from '../../ctx'
 
 export function ReadChrome({ children, chapterTitle, onPrev, onNext }: ReadChromeProps) {
   const { site, navigate } = usePublic()
 
-  const goHome = (e: React.MouseEvent) => { e.preventDefault(); navigate({ view: 'home' }) }
+  // R28-1A: 复用 cloneNavHandlers (goHome 共享, 本页无搜索表单)
+  const { goHome } = cloneNavHandlers(navigate, 'searchkey')
 
   // 上一章/下一章: 源站 .page1 a (width 100% text-align center line-height 48px)
   const navBtnProps = (handler?: () => void) => ({

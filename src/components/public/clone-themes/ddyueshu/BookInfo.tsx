@@ -13,15 +13,14 @@ import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
 import { formatWords, statusLabel } from '../../seo'
 import type { BookInfoProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 
 export function BookInfo({ book, onScrollToc, onGoCategory }: BookInfoProps) {
   const { navigate } = usePublic()
   if (!book) return null
 
-  const goHome = (e: React.MouseEvent) => {
-    e.preventDefault()
-    navigate({ view: 'home' })
-  }
+  // R28-1A: 复用 cloneNavHandlers (goHome 共享, 本页无搜索表单)
+  const { goHome } = cloneNavHandlers(navigate, 'searchkey')
   const goCat = (e: React.MouseEvent) => {
     e.preventDefault()
     if (onGoCategory) onGoCategory(book.categoryId || book.category)

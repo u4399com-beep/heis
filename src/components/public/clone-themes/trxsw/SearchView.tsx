@@ -12,9 +12,8 @@ import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
 import { statusLabel, formatWords } from '../../seo'
 import type { SearchViewProps } from '../shared'
-import { cloneNavHandlers } from '../shared'
+import { cloneNavHandlers, useCloneCategories } from '../shared'
 import type { BookItem } from '../../types'
-import { useEffect, useState } from 'react'
 
 interface Cat { id: string; name: string }
 
@@ -34,22 +33,8 @@ const HOT_KEYWORDS = ['末日', '白月光', '末世', '直播', '万人迷', '�
 
 export function SearchView({ q, books, loading, initialCategories }: SearchViewProps) {
   const { site, navigate } = usePublic()
-  const [cats, setCats] = useState<Cat[]>(() => (initialCategories || []).map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) })))
-
-  useEffect(() => {
-    if (cats.length > 0) return
-    let aborted = false
-    fetch('/api/public/categories?limit=60')
-      .then(r => r.json())
-      .then(d => {
-        if (aborted) return
-        const arr = Array.isArray(d) ? d : (d.data?.items || d.data?.categories || d.items || d.categories || [])
-        const mapped: Cat[] = arr.map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) }))
-        setCats(mapped.length ? mapped : DEFAULT_NAV)
-      })
-      .catch(() => { if (!aborted) setCats(DEFAULT_NAV) })
-    return () => { aborted = true }
-  }, [cats.length])
+  // R28-1A: 复用 useCloneCategories (SSR initialCategories 优先 + 空时 fetch + DEFAULT_NAV 兜底)
+  const cats = useCloneCategories(initialCategories, DEFAULT_NAV)
 
   const navCats = (cats.length ? cats : DEFAULT_NAV).slice(0, 12)
   const hotTop10 = books.slice(0, 10)

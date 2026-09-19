@@ -13,10 +13,7 @@ import { bookNavProps } from '../../bits'
 import { formatWords } from '../../seo'
 import { addFavoriteSite, useTraditionalChinese } from '../tools'
 import type { HomeCloneProps } from '../shared'
-import { cloneNavHandlers } from '../shared'
-import { useEffect, useState } from 'react'
-
-interface Cat { id: string; name: string }
+import { cloneNavHandlers, useCloneCategories } from '../shared'
 
 // 简繁切换按钮 — ddyueshu 风格 (.userpanel 内 a 链接, 无图标)
 function TcToggleDdyueshu() {
@@ -36,25 +33,8 @@ function TcToggleDdyueshu() {
 
 export function HomeClone({ books, loading, navCategoryCount = 8, initialCategories }: HomeCloneProps) {
   const { site, navigate } = usePublic()
-  // R24: SSR 首载用 page.tsx server fetch 的 initialCategories 初始化, 避免 SSR 时 cats=[] → navigation 没分类
-  const [cats, setCats] = useState<Cat[]>(() => (initialCategories || []).map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) })))
-
-  // 拉分类列表用于 nav 导航 + novelslist 分类区块标题
-  // R24: cats 为空时才 fetch, 避免覆盖 SSR initialCategories 数据
-  useEffect(() => {
-    if (cats.length > 0) return
-    let aborted = false
-    fetch('/api/public/categories?limit=60')
-      .then(r => r.json())
-      .then(d => {
-        if (aborted) return
-        // API 返回 {ok, data:{items:[{id,name,bookCount,rep}]}}
-        const arr = Array.isArray(d) ? d : (d.data?.items || d.data?.categories || d.items || d.categories || [])
-        setCats(arr.map((c: any) => ({ id: c.id || c.slug || c.name, name: c.name || c.title || String(c) })))
-      })
-      .catch(() => {})
-    return () => { aborted = true }
-  }, [cats.length])
+  // R28-1A: 复用 useCloneCategories (SSR initialCategories 优先 + 空时 fetch)
+  const cats = useCloneCategories(initialCategories)
 
   if (loading) return <div id="main" style={{ padding: 40, textAlign: 'center' }}>加载中...</div>
   if (!books.length) return <div id="main" style={{ padding: 40, textAlign: 'center' }}>暂无内容</div>
@@ -75,12 +55,8 @@ export function HomeClone({ books, loading, navCategoryCount = 8, initialCategor
   // 热门推荐 → #newscontent .r (.s1类别/.s2书名/.s5日期)
   const hot = books.slice(0, 15)
 
-  const goCat = (e: React.MouseEvent, catId?: string) => {
-    e.preventDefault()
-    navigate({ view: 'category', cat: catId })
-  }
-  // R27-1C: 复用 cloneNavHandlers
-  const { goHome, goSearch } = cloneNavHandlers(navigate, 'searchkey')
+  // R28-1A: 复用 cloneNavHandlers (goHome/goSearch/goCat 共享)
+  const { goHome, goSearch, goCat } = cloneNavHandlers(navigate, 'searchkey')
   const goRank = (e: React.MouseEvent) => {
     e.preventDefault()
     navigate({ view: 'ranking' })

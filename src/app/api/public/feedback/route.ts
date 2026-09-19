@@ -83,10 +83,24 @@ export async function POST(req: Request) {
       if (cnt >= IP_HOUR_LIMIT) return fail('提交过于频繁, 请稍后再试', 429)
     }
 
-    // R27-1B 修复 P2: siteId FK 不存在时 Prisma 抛 P2003 外键约束错; 原实现由 withGuard
-    // 兜底为 500 "服务器内部错误" 误导用户(看起来是服务器故障, 实则是页面站点 ID 失效 —
-    // 站点被管理员删除/前端 URL ?site= 参数失效后用户仍可填反馈)。改为捕获 P2003 → 400
-    // 友好提示 "站点不存在, 请刷新页面后再提交", 引导用户重置页面状态后重试
+    // R28-1C 修复 P2: siteId 显式校验存在性(R27-1B P2003 catch 是 dead code).
+    // 审 schema.prisma Feedback 模型发现: siteId String? 字段【无 @relation 声明】,
+    // prisma db execute 实测 sqlite_master 显示 Feedback 表 siteId 列无 FK 约束
+    // (CREATE TABLE 仅 "siteId" TEXT, 无 REFERENCES Site(id)). 故 db.feedback.create
+    // 用任意 siteId 都静默成功, R27-1B 的 P2003 catch 永不触发(死代码无害保留作安全网,
+    // 防未来 schema 加 FK 后回归). 改为显式查 db.site.findUnique 校验存在性:
+    // ① siteId 不存在 → 400 友好提示, 引导用户刷新页面后再提交(场景: 站点被管理员删除 /
+    //    前端 ?site= 参数失效 / 用户 URL 拷贝后过时)
+    // ② siteId 存在 → 正常入库; siteId=null(无 ?site= 参数, 站群默认站未指定)允许直入
+    //    (兼容旧前端不带 ?site= 提交的链路)
+    if (siteId) {
+      const site = await db.site.findUnique({
+        where: { id: siteId },
+        select: { id: true },
+      })
+      if (!site) return fail('站点不存在或已被删除, 请刷新页面后再提交', 400)
+    }
+
     let fb
     try {
       fb = await db.feedback.create({
@@ -103,6 +117,7 @@ export async function POST(req: Request) {
         select: { id: true },
       })
     } catch (e: any) {
+      // R27-1B 安全网: schema 当前无 FK 约束(死代码), 但若未来加 FK 则 P2003 转 400 友好提示
       if (e?.code === 'P2003') return fail('站点不存在或已被删除, 请刷新页面后再提交', 400)
       throw e
     }

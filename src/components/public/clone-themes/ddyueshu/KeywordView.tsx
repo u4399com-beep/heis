@@ -19,14 +19,13 @@ import { usePublic } from '../../ctx'
 import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
 import type { KeywordViewProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 
 export function KeywordView({ tag, books, loading }: KeywordViewProps) {
   const { navigate } = usePublic()
 
-  const goHome = (e: React.MouseEvent) => {
-    e.preventDefault()
-    navigate({ view: 'home' })
-  }
+  // R28-1A: 复用 cloneNavHandlers (goHome 共享, 本页无搜索表单)
+  const { goHome } = cloneNavHandlers(navigate, 'searchkey')
   const goKeyword = (kw: string) => (e: React.MouseEvent) => {
     e.preventDefault()
     navigate({ view: 'keyword', tag: kw })

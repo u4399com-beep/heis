@@ -16,14 +16,13 @@ import { BookCover } from '../../BookCover'
 import { bookNavProps } from '../../bits'
 import { formatWords } from '../../seo'
 import type { FulltextViewProps } from '../shared'
+import { cloneNavHandlers } from '../shared'
 
 export function FulltextView({ books, loading, page, total, size, onPage }: FulltextViewProps) {
   const { navigate } = usePublic()
 
-  const goHome = (e: React.MouseEvent) => {
-    e.preventDefault()
-    navigate({ view: 'home' })
-  }
+  // R28-1A: 复用 cloneNavHandlers (goHome 共享, 本页无搜索表单)
+  const { goHome } = cloneNavHandlers(navigate, 'searchkey')
 
   const totalPages = Math.ceil(total / size)
   const hasPrev = page > 1

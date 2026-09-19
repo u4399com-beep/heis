@@ -189,6 +189,29 @@
   background: transparent;
 }
 
+/* R28-1B: 章节目录长列表滚动条 — 比 reader-scroll-fine 略宽, hover 加深 */
+.toc-scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(128, 128, 128, 0.4) transparent;
+}
+.toc-scroll-thin::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.toc-scroll-thin::-webkit-scrollbar-thumb {
+  background: rgba(128, 128, 128, 0.35);
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background-clip: padding-box;
+}
+.toc-scroll-thin::-webkit-scrollbar-thumb:hover {
+  background: rgba(128, 128, 128, 0.55);
+  background-clip: padding-box;
+}
+.toc-scroll-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 /* ============================================================
  * feat-round-7 S1: 反馈悬浮按钮 (feedback-fab)
  * 桌面 48px, 移动端 40px (右下 16px 边距), 紫色脉冲 3s 间隔

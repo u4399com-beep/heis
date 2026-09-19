@@ -497,6 +497,20 @@ export function BookView({ bookId, tocPage, initialBook, initialCategories }: { 
   const tags: BookTagHit[] = data?.tags || []
   const chapters: TocChapter[] = data?.chapters || []
 
+  // R28-1B: 自动滚动当前章节到可见区域 — 数据加载完成且 currentChapterId 命中时,
+  // 找到目录中 aria-current="true" 的章节按钮, 滚动到 nearest 位置(若已在视口内不滚动)
+  // 场景: 用户从 ReadView 跳回 BookView(?chapter=<id>) 时, 目录应定位到上次阅读位置
+  useEffect(() => {
+    if (loading || !chapters.length || !currentChapterId) return
+    if (typeof document === 'undefined') return
+    // raf 等 DOM 渲染完成再查询, 避免 renderToc 还没 paint 时找不到元素
+    const raf = window.requestAnimationFrame(() => {
+      const el = tocRef.current?.querySelector('button[aria-current="true"]') as HTMLElement | null
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    })
+    return () => window.cancelAnimationFrame(raf)
+  }, [loading, chapters.length, currentChapterId])
+
   // R10-1C: SEO 模板渲染(同 ReadView renderSeoTemplate, 兼容 site.chapterSeoAuto 开关)
   // auto=true(默认): 走 generateTDK 自动模式; auto=false: 走 site.chapterSeo*Template 模板
   const seoCtx = {
@@ -589,6 +603,7 @@ export function BookView({ bookId, tocPage, initialBook, initialCategories }: { 
   if (error) return <ErrorState message="书籍不存在" detail={error} />
 
   /* ---------- 目录面板（clone-* 9 套主题统一走默认 3 列剧集列表） ---------- */
+  // R28-1B 优化: 长列表(>50 章)启用滚动容器 + sticky 卷头; 自动滚动当前章节到可见区域
   const renderToc = () => {
     if (loading) return <TocSkeleton themeId={theme.id} />
     if (!chapters.length) return <EmptyState text="暂无章节" />
@@ -597,31 +612,36 @@ export function BookView({ bookId, tocPage, initialBook, initialCategories }: { 
     const go = (ch: TocChapter) => navigate({ view: 'read', bookId: book?.id || bookId, chapterId: ch.id })
 
     /** 主题统一章节列表渲染 (R12-1: 移除 pili/aurora/paper/mango/bamboo/rose 旧主题分支
-     *  9 套 clone-* 主题统一走默认 3 列剧集列表 + EP 编号 + 字数, 移动端 1 列, 平板 2 列, 桌面 3 列) */
+     *  9 套 clone-* 主题统一走默认 3 列剧集列表 + EP 编号 + 字数, 移动端 1 列, 平板 2 列, 桌面 3 列)
+     *  R28-1B: 列间距 gap-x-6(原 8 偏挤), 按钮加 min-h-[44px] 触摸友好; 显式 aria-label 让屏幕阅读器朗读状态 */
     const renderChapterList = (list: TocChapter[]) => {
       // clone-* 9 套主题统一 — 剧集列表 3 列
       return (
-        <div className="grid grid-cols-1 gap-x-8 sm:grid-cols-2 lg:grid-cols-3">
-          {list.map((ch) => (
-            <TocChapterButton
-              key={ch.id}
-              ch={ch}
-              current={ch.id === currentChapterId}
-              cache={previewCacheRef}
-              onClick={() => go(ch)}
-              className="flex w-full items-center gap-3 border-b py-2.5 text-left transition-colors hover:bg-white/5"
-              style={{ borderColor: withAlpha(v.border, 0.7), background: ch.id === currentChapterId ? withAlpha(v.primary, theme.dark ? 0.18 : 0.1) : undefined }}
-            >
-              <span
-                className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold tabular-nums"
-                style={{ background: withAlpha(v.primary, 0.18), color: v.primary }}
+        <div className="grid grid-cols-1 gap-x-6 sm:grid-cols-2 lg:grid-cols-3">
+          {list.map((ch) => {
+            const isCurrent = ch.id === currentChapterId
+            return (
+              <TocChapterButton
+                key={ch.id}
+                ch={ch}
+                current={isCurrent}
+                cache={previewCacheRef}
+                onClick={() => go(ch)}
+                className="flex min-h-[44px] w-full items-center gap-3 border-b py-2.5 text-left transition-colors hover:bg-white/5"
+                style={{ borderColor: withAlpha(v.border, 0.7), background: isCurrent ? withAlpha(v.primary, theme.dark ? 0.18 : 0.1) : undefined }}
+                ariaLabel={`阅读 ${ch.title}${isCurrent ? ' (当前章节)' : ''}`}
               >
-                EP{String(ch.idx).padStart(2, '0')}
-              </span>
-              <span className="line-clamp-1 flex-1 text-sm" style={{ color: ch.id === currentChapterId ? v.primary : v.text }}>{ch.title}</span>
-              <span className="shrink-0 text-[10px] tabular-nums" style={{ color: v.textMuted }}>{formatWords(ch.wordCount)}</span>
-            </TocChapterButton>
-          ))}
+                <span
+                  className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold tabular-nums"
+                  style={{ background: withAlpha(v.primary, 0.18), color: v.primary }}
+                >
+                  EP{String(ch.idx).padStart(2, '0')}
+                </span>
+                <span className="line-clamp-1 flex-1 text-sm" style={{ color: isCurrent ? v.primary : v.text }}>{ch.title}</span>
+                <span className="shrink-0 text-[10px] tabular-nums" style={{ color: v.textMuted }}>{formatWords(ch.wordCount)}</span>
+              </TocChapterButton>
+            )
+          })}
         </div>
       )
     }
@@ -631,6 +651,8 @@ export function BookView({ bookId, tocPage, initialBook, initialCategories }: { 
     // R27-1A 优化: 卷头改为卡片式独立区块(左侧色块 + 卷名 + 章数徽章), 视觉权重提升;
     //   多卷(≥3)场景顶部追加卷索引条, 点击锚定到对应卷头(快速跳转, 万章多卷书尤其重要);
     //   空卷组(无卷名)统一显示「正文」标签前置, 与有卷名组视觉差异
+    // R28-1B 优化: 长列表(>50 章)启用滚动容器(max-h-[640px] overflow-y-auto + 自定义滚动条),
+    //   滚动容器内卷头 sticky top-0 z-10 + backdrop-blur 保持常驻可见, 提升长目录导航体验
     const hasVolumes = chapters.some((c) => c.volume)
     const volGroups: { volume: string; chapters: TocChapter[] }[] | null = hasVolumes
       ? (() => {
@@ -644,6 +666,12 @@ export function BookView({ bookId, tocPage, initialBook, initialCategories }: { 
           return gs
         })()
       : null
+
+    // R28-1B: 长列表滚动容器 — 章节超过 50 时启用, 防止页面拉很长 + 卷头可 sticky 常驻
+    const useScrollContainer = chapters.length > 50
+    const scrollCls = useScrollContainer
+      ? 'max-h-[640px] overflow-y-auto overscroll-contain pr-1 [scrollbar-width:thin] toc-scroll-thin'
+      : ''
 
     if (volGroups) {
       // R27-1A: 多卷场景(≥3 卷)卷索引条 — 平铺卷头跳转 chip, 移动端横向滚动
@@ -664,7 +692,7 @@ export function BookView({ bookId, tocPage, initialBook, initialCategories }: { 
                       el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
                     }
                   }}
-                  className="shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors hover:opacity-80"
+                  className="inline-flex min-h-[36px] shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors hover:opacity-80"
                   style={{
                     background: withAlpha(v.primary, theme.dark ? 0.14 : 0.08),
                     color: v.text,
@@ -673,30 +701,42 @@ export function BookView({ bookId, tocPage, initialBook, initialCategories }: { 
                   title={`${g.volume || '正文'} · ${g.chapters.length} 章`}
                 >
                   <span style={{ color: v.primary }}>{g.volume || '正文'}</span>
-                  <span className="ml-1 tabular-nums opacity-70">{g.chapters.length}</span>
+                  <span className="tabular-nums opacity-70">{g.chapters.length}</span>
                 </a>
               ))}
             </nav>
           )}
-          {volGroups.map((g, gi) => (
-            <section key={`vol-${gi}-${g.volume}`} id={volAnchor(gi)} className="scroll-mt-6">
-              {/* R27-1A: 卷头卡片化 — 左侧色块 + 卷名 + 章数徽章 + 分隔线, 与卷内 grid 视觉隔离 */}
-              <div data-vol-head className="mb-3 flex items-center gap-3 rounded-md px-3 py-2" style={{ background: withAlpha(v.primary, theme.dark ? 0.1 : 0.06), borderLeft: `3px solid ${v.primary}` }}>
-                <span className="shrink-0 text-xs font-bold tracking-[0.15em]" style={{ color: v.primary, fontFamily: v.titleFont }}>
-                  {g.volume || '正文'}
-                </span>
-                <span className="h-px flex-1" style={{ background: withAlpha(v.border, 0.9) }} aria-hidden />
-                <span className="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold tabular-nums" style={{ background: withAlpha(v.primary, 0.15), color: v.primary }}>
-                  {g.chapters.length} 章
-                </span>
-              </div>
-              {renderChapterList(g.chapters)}
-            </section>
-          ))}
+          <div className={scrollCls}>
+            {volGroups.map((g, gi) => (
+              <section key={`vol-${gi}-${g.volume}`} id={volAnchor(gi)} className="scroll-mt-6">
+                {/* R27-1A: 卷头卡片化 — 左侧色块 + 卷名 + 章数徽章 + 分隔线, 与卷内 grid 视觉隔离
+                    R28-1B: 滚动容器内 sticky top-0 + backdrop-blur 让卷名常驻可见 */}
+                <div
+                  data-vol-head
+                  className={`mb-3 flex items-center gap-3 rounded-md px-3 py-2 ${useScrollContainer ? 'sticky top-0 z-10' : ''}`}
+                  style={{
+                    background: withAlpha(v.primary, theme.dark ? 0.12 : 0.08),
+                    borderLeft: `3px solid ${v.primary}`,
+                    backdropFilter: useScrollContainer ? 'blur(6px)' : undefined,
+                    WebkitBackdropFilter: useScrollContainer ? 'blur(6px)' : undefined,
+                  }}
+                >
+                  <span className="shrink-0 text-xs font-bold tracking-[0.15em]" style={{ color: v.primary, fontFamily: v.titleFont }}>
+                    {g.volume || '正文'}
+                  </span>
+                  <span className="h-px flex-1" style={{ background: withAlpha(v.border, 0.9) }} aria-hidden />
+                  <span className="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold tabular-nums" style={{ background: withAlpha(v.primary, 0.15), color: v.primary }}>
+                    {g.chapters.length} 章
+                  </span>
+                </div>
+                {renderChapterList(g.chapters)}
+              </section>
+            ))}
+          </div>
         </div>
       )
     }
-    return renderChapterList(chapters)
+    return <div className={scrollCls}>{renderChapterList(chapters)}</div>
   }
 
   /* ---------- 信息区封面尺寸/面板（按主题差异化） ---------- */

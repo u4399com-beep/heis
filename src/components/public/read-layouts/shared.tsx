@@ -11,12 +11,13 @@
 // ============================================================
 'use client'
 
-import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, RefObject } from 'react'
 import {
   Bookmark,
   BookmarkCheck,
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Clock,
@@ -992,6 +993,25 @@ export function TocDrawer({
   // feat-round-10 B2: 书签 id 集合 (render-time 推导, 不需额外 state)
   const bookmarkIds = new Set(bookmarks.map((b) => b.chapterId))
 
+  // R28-1B: 卷折叠状态 — Set<volKey>, 默认全展开; volKey = `vol-${gi}` (卷索引)
+  // 用户可点击卷头 chevron 折叠/展开; 抽屉关闭时状态保留(下次打开恢复)
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set())
+  const toggleVol = useCallback((volKey: string) => {
+    setCollapsed(prev => {
+      const next = new Set(prev)
+      if (next.has(volKey)) next.delete(volKey)
+      else next.add(volKey)
+      return next
+    })
+  }, [])
+  // R28-1B: 抽屉关闭/章节切换时, 重置"已自动滚动"标记 — 下次 open 时重新执行 auto-scroll
+  const scrolledForOpenRef = useRef(false)
+  useEffect(() => {
+    if (!open) scrolledForOpenRef.current = false
+  }, [open, activeChapterId])
+  // R28-1B: 滚动容器 ref — 供 scrollIntoView({ block:'nearest' }) 查询当前章节按钮
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null)
+
   useEffect(() => {
     if (!open || !bookId) return
     let alive = true
@@ -1020,6 +1040,73 @@ export function TocDrawer({
   const entries = loaded && loaded.page === page ? loaded.entries : null
   const totalPages = loaded && loaded.page === page ? loaded.totalPages : 1
   const total = loaded && loaded.page === page ? loaded.total : 0
+
+  // R28-1B: 卷分组 memo — 复用 entries 派生, 避免每次 render 新建数组导致 effect deps 失效;
+  // 仅当本页 entries 至少含一个 volume 字段才启用分组(空卷归「正文」, 与渲染口径一致)
+  const volGroups = useMemo(() => {
+    if (!entries || !entries.some((e) => e.volume)) return null
+    const gs: { volume: string; entries: TocEntry[] }[] = []
+    for (const e of entries) {
+      const vol = e.volume || ''
+      const last = gs[gs.length - 1]
+      if (last && last.volume === vol) last.entries.push(e)
+      else gs.push({ volume: vol, entries: [e] })
+    }
+    return gs
+  }, [entries])
+
+  // R28-1B: 抽屉打开 + entries 加载完成 + 当前章节存在时, 自动展开当前章节所在卷
+  // 使用 render-time 检测模式(与上方 prevRefresh 同款, 避免 effect 内同步 setState 触发
+  // react-hooks/set-state-in-effect 告警); 当 open/activeChapterId/volGroups 变化时执行一次
+  // 不依赖 collapsed, 防止用户手动折叠后立即被自动重展开
+  const autoExpandTarget = (() => {
+    if (!open || tab !== 'toc' || !volGroups || !activeChapterId) return null
+    const gi = volGroups.findIndex((g) => g.entries.some((e) => e.id === activeChapterId))
+    if (gi < 0) return null
+    return { chapterId: activeChapterId, volKey: `vol-${gi}` }
+  })()
+  const autoExpandKey = autoExpandTarget ? `${autoExpandTarget.chapterId}|${autoExpandTarget.volKey}` : ''
+  const [prevAutoExpand, setPrevAutoExpand] = useState<{ chapterId: string; volKey: string } | null>(null)
+  const prevAutoExpandKey = prevAutoExpand ? `${prevAutoExpand.chapterId}|${prevAutoExpand.volKey}` : ''
+  if (autoExpandKey !== prevAutoExpandKey) {
+    setPrevAutoExpand(autoExpandTarget)
+    if (autoExpandTarget) {
+      // 展开当前章节所在卷(若被折叠)
+      setCollapsed((prev) => {
+        if (!prev.has(autoExpandTarget.volKey)) return prev
+        const next = new Set(prev)
+        next.delete(autoExpandTarget.volKey)
+        return next
+      })
+    }
+  }
+
+  // R28-1B: 派生 — 当前章节所在卷的折叠状态(boolean), 用于 effect 2 依赖
+  // (直接依赖 collapsed Set 会被 lint 误报为 unnecessary; 派生 boolean 后 lint 满意且语义不变)
+  const activeVolKey = useMemo(() => {
+    if (!volGroups || !activeChapterId) return null
+    const gi = volGroups.findIndex((g) => g.entries.some((e) => e.id === activeChapterId))
+    return gi < 0 ? null : `vol-${gi}`
+  }, [volGroups, activeChapterId])
+  const activeVolCollapsed = activeVolKey ? collapsed.has(activeVolKey) : false
+
+  // R28-1B: 自动滚动当前章节到可见区域 — 抽屉打开 + entries 渲染后, scrollIntoView({ block:'nearest' })
+  // 仅在每次抽屉 open 周期内执行一次(scrolledForOpenRef 防重入); 用户手动折叠/展开非当前卷时
+  // 不会被强制滚回(因 block:'nearest' 元素已在视口内时 scrollIntoView 不移动, 仍属可接受 UX)
+  useEffect(() => {
+    if (!open || tab !== 'toc' || !volGroups || !activeChapterId) return
+    if (scrolledForOpenRef.current) return
+    if (!activeVolKey) return
+    if (activeVolCollapsed) return // 还在折叠, 等待 render-time auto-expand 后下次 render 再次触发
+    const raf = window.requestAnimationFrame(() => {
+      const el = scrollContainerRef.current?.querySelector('button[aria-current="true"]') as HTMLElement | null
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+        scrolledForOpenRef.current = true
+      }
+    })
+    return () => window.cancelAnimationFrame(raf)
+  }, [open, tab, volGroups, activeChapterId, activeVolKey, activeVolCollapsed])
 
   // feat-round-10 B2/B3: 阅读进度 (已读 / 总章数, 钳制 0-100)
   const readCount = readSet.size
@@ -1175,7 +1262,7 @@ export function TocDrawer({
           </div>
         </header>
 
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-2">
+        <div ref={scrollContainerRef} className="toc-scroll-thin min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-2">
           {tab === 'bookmark' ? (
             bookmarks.length === 0 ? (
               <div className="px-3 py-12 text-center text-xs opacity-60">
@@ -1293,31 +1380,50 @@ export function TocDrawer({
                   )
                 }
 
-                // 分卷分组(kk-a): 仅当本页出现卷名才启用(连续相同 volume 一组);
-                // 旧书全空卷 → 平铺与改前完全一致(零回归)
-                if (!entries.some((e) => e.volume)) return entries.map(renderEntry)
-                const gs: { volume: string; entries: TocEntry[] }[] = []
-                for (const e of entries) {
-                  const vol = e.volume || ''
-                  const last = gs[gs.length - 1]
-                  if (last && last.volume === vol) last.entries.push(e)
-                  else gs.push({ volume: vol, entries: [e] })
-                }
-                return gs.map((g, gi) => (
-                  <Fragment key={`vol-${gi}-${g.volume}`}>
-                    <li data-vol-head className="list-none">
-                      <div className="flex items-center gap-2 px-2.5 pb-1 pt-3">
-                        {/* min-w-0+break-all: 抽屉窄容器下超长卷名可断行, 防溢出 */}
-                        <span className="min-w-0 break-all text-[11px] font-bold tracking-[0.2em]" style={{ color: v.primary }}>
-                          {g.volume || '正文'}
-                        </span>
-                        <span className="h-px flex-1" style={{ background: withAlpha(v.primary, dark ? 0.25 : 0.18) }} aria-hidden />
-                        <span className="text-[10px] tabular-nums opacity-50">{g.entries.length}章</span>
-                      </div>
-                    </li>
-                    {g.entries.map(renderEntry)}
-                  </Fragment>
-                ))
+                // 分卷分组(kk-a + R28-1B): volGroups 已在组件顶部 useMemo 计算好, 直接复用;
+                //   旧书全空卷 → volGroups=null → 走 entries.map(renderEntry) 平铺(与改前完全一致)
+                // R28-1B: 卷头改为 role=button 可点击整行折叠/展开 + 键盘 Enter/Space 支持;
+                //   卷折叠时只渲染卷头不渲染 entries; volKey=`vol-${gi}` 与 collapsed Set 一致
+                if (!volGroups) return entries.map(renderEntry)
+                return volGroups.map((g, gi) => {
+                  const volKey = `vol-${gi}`
+                  const isCollapsed = collapsed.has(volKey)
+                  return (
+                    <Fragment key={volKey}>
+                      <li data-vol-head className="list-none">
+                        <div
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => toggleVol(volKey)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault()
+                              toggleVol(volKey)
+                            }
+                          }}
+                          className="flex min-h-[44px] cursor-pointer items-center gap-2 rounded px-2.5 pb-1 pt-3 outline-none transition-colors hover:bg-black/5 focus-visible:ring-2"
+                          style={{ outlineColor: withAlpha(v.primary, 0.6) }}
+                          aria-label={isCollapsed ? `展开卷 ${g.volume || '正文'}` : `折叠卷 ${g.volume || '正文'}`}
+                          aria-expanded={!isCollapsed}
+                        >
+                          {/* R28-1B: chevron 折叠/展开图标 — 展开 ChevronDown(向下), 折叠 ChevronRight(向右) */}
+                          {isCollapsed ? (
+                            <ChevronRight className="h-3.5 w-3.5 shrink-0" style={{ color: v.primary }} aria-hidden />
+                          ) : (
+                            <ChevronDown className="h-3.5 w-3.5 shrink-0" style={{ color: v.primary }} aria-hidden />
+                          )}
+                          {/* min-w-0+break-all: 抽屉窄容器下超长卷名可断行, 防溢出 */}
+                          <span className="min-w-0 break-all text-[11px] font-bold tracking-[0.2em]" style={{ color: v.primary }}>
+                            {g.volume || '正文'}
+                          </span>
+                          <span className="h-px flex-1" style={{ background: withAlpha(v.primary, dark ? 0.25 : 0.18) }} aria-hidden />
+                          <span className="shrink-0 text-[10px] tabular-nums opacity-50">{g.entries.length}章</span>
+                        </div>
+                      </li>
+                      {!isCollapsed && g.entries.map(renderEntry)}
+                    </Fragment>
+                  )
+                })
               })()}
             </ol>
           )}

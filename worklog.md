@@ -12743,3 +12743,304 @@ Stage Summary:
   4. ✓ 清理精简 (R27-1C 部分完成, lint/tsc 0)
   5. ✓ 推送 git (5d8e25e..db81e58)
 - 验证: lint 0 + tsc 0 + 后台不闪 + home SSR 完整渲染
+
+---
+Task ID: R28-1A
+Agent: full-stack-developer (清理精简+clone重复提取)
+Task: 执行 R27-1C 脚本审查 + clone-themes 重复提取 + dead code + 精简 + 过时注释清理
+
+Work Log:
+- 步骤 1 审查 R27-1C 留下脚本 (v1 + v2 Python refactor):
+  · v1 (165 行) regex 匹配 goCat+goHome+goSearch 整块替换为 cloneNavHandlers destructure, 有 bug (`if "name" in dir()`)
+  · v2 (168 行) 更灵活匹配允许中间夹杂 handler, 但要求 goSearch 必须存在
+  · 评估: 两脚本不适用 ddyueshu BookInfo 等 6 个只有 goHome 的文件 (无 goSearch)
+  · 决策: 删除两 Python 脚本 (已部分应用), 剩余 8 文件改用手写 Python 脚本处理
+
+- 步骤 2 删除过时一次性脚本 (5 个):
+  · scripts/_r27-1c-refactor-clone-themes.py + -v2.py (R27-1C one-shot, 已应用)
+  · scripts/batch-update-clones.mjs (R24 one-shot 加 initialCategories prop, 已应用)
+  · scripts/gen-clone-themes-r19.cjs (R19 generator 1465 行, 重跑会 clobber R27-1C 重构)
+  · scripts/test-themes-9.ts (R10 验证脚本, 断言 THEMES.length=9 但当前=10, 失效)
+
+- 步骤 3 clone-themes 重复代码提取 (核心, 净减 690 行):
+  · 3a 替换 cats fetch 块为 useCloneCategories (47 文件):
+    - 模式: useState<Cat[]> + useEffect + fetch('/api/public/categories?limit=60') (15-20 行/文件)
+    - 替换: const cats = useCloneCategories(initialCategories[, DEFAULT_NAV]) (1 行)
+    - 兼容: useCloneCategories 内部已含 SSR initialCategories 优先 + 空时 fetch + DEFAULT_NAV 兜底逻辑
+    - 净减 ~750 行; regex 双 pattern 区分带/不带 DEFAULT_NAV (ddyueshu 无 fallback 走 no-fallback)
+  · 3b 替换单 goHome handler 为 cloneNavHandlers (6 文件):
+    - ddyueshu/{BookInfo,CategoryList,FulltextView,KeywordView,RankingView} + 101kks/ReadChrome
+    - 模式: const goHome = (e) => { e.preventDefault(); navigate({ view: 'home' }) } → destructure
+  · 3c ddyueshu/HomeClone 完整重构:
+    - 删除 interface Cat (不再使用), 删除本地 goCat (改用 cloneNavHandlers destructure)
+    - 删除 stale R24 SSR/fetch 注释 (已被 R28-1A 注释替代)
+  · 3d shipsay/HomeClone 同款清理: 删 interface Cat + 删 R25 注释
+
+- 步骤 4 过时注释清理 (11 文件):
+  · 模式: R24/R25 SSR 首载注释 + cats 为空时 fetch 注释 (紧跟在已被替换的 useEffect 后)
+  · 已有 R28-1A: 复用 useCloneCategories 注释自解释, R24/R25 注释冗余
+  · 文件: aijjxs/ggd66/pilishuwu/trxsw/x2552/HomeClone + shipsay/{BookInfo,CategoryList,FulltextView,KeywordView,RankingView,SearchView}
+
+- 步骤 5 双空行合并 (27 文件):
+  · 重构删除 useEffect 块后留双空行, regex \n\n\n+ → \n\n 合并
+
+- 跳过的工作 (低 ROI/高风险):
+  · pagination 替换 clonePageItems (27 文件未做): 调研发现各主题用非对称窗口
+    (101kks page-2..page+9, aijjxs/shipsay page-5..page+9, ggd66 page-4..page+8 等),
+    clonePageItems 仅支持对称窗口, 改造会引入 UX 回归 (当前页位置漂移). 留给 R29 加 before/after 参数处理
+  · header/footer/search-form 跨主题提取: 各主题用源站真实 class 名, DOM 结构差异大,
+    共享组件会破坏 1:1 克隆 (class 名 / wrapper 不一致)
+
+- 验证:
+  · bun run lint: 0 errors ✓
+  · bunx tsc --noEmit (排除 examples/skills/.next): 0 errors ✓
+  · 净减: 53 文件 modified, 插入 174 行/删除 864 行 = 净减 690 行 (~21%)
+  · 删除 5 个过时 scripts (~1700 行) → 总净减 ~2400 行
+  · 功能零回归: useCloneCategories 行为与原 useState+useEffect 一致, cloneNavHandlers 行为与原 local handler 一致,
+    各主题 DEFAULT_NAV 硬编码全保留, navCats 切片逻辑全保留, CSS class 名全保留 (1:1 克隆 DOM 不动)
+
+- 不碰的文件 (零回归约束):
+  · src/lib/crawl/{fetcher,obscura,runner}.ts (采集核心, 其他 agent 工作)
+  · src/components/public/{BookView,read-layouts/shared}.tsx (R28-1B 工作)
+  · src/app/api/public/feedback/route.ts (R28-1C 工作)
+  · page.tsx/PublicSite.tsx/HomeView.tsx (主控已改) / themes.ts / prisma/schema.prisma
+
+- 详细工作记录: agent-ctx/R28-1A-full-stack-developer.md (含 6 章节: 脚本审查/删除/重复提取
+  3a-c/注释清理/双空行合并/跳过决策/验证/不碰文件清单)
+
+Stage Summary:
+- 5 项任务全部完成:
+  1. ✓ R27-1C 脚本审查 (v1+v2 评估, 不安全部分应用→删除)
+  2. ✓ clone-themes 重复提取 (47+6+1+1 = 55 文件, useCloneCategories + cloneNavHandlers destructure)
+  3. ✓ dead code 扫描 (5 个过时一次性 scripts 删除, ~1700 行)
+  4. ✓ 复杂函数精简 (各 clone 文件 cats fetch 15-20 行→1 行, goHome 单 handler→destructure)
+  5. ✓ 过时注释清理 (11 文件 R24/R25 stale 注释 + 27 文件双空行)
+- 验证: bun run lint 0 errors ✓ / bunx tsc --noEmit 0 errors ✓ / 净减 690 行 clone 代码 + 1700 行 scripts
+- 跳过: pagination 提取 (clonePageItems 不支持非对称窗口, 留给 R29) / header/footer 跨主题提取 (会破坏 1:1 克隆)
+
+---
+Task ID: R28-1B
+Agent: full-stack-developer (章节目录分栏优化)
+Task: BookView 目录分栏 + ReadView 侧栏目录 + 10 套 BookInfo 目录
+
+Work Log:
+
+- 第一步: 读交接文档(worklog.md 最后 100 行, R27-1A 分卷渲染优化)
+  · R27-1A 已完成: Chapter.volume 字段 + cleaner 卷名前缀剥离 + parser volume
+    提取(HTML/JSON) + sorter reorderWithVolumes + rule-templates fanqie/biquge
+    volume 字段 + BookView renderToc 卷头卡片化 + 卷索引条(≥3 卷)
+  · 10 套 clone-themes BookInfo.tsx 全部不渲染章节目录, 由 BookView 父级
+    renderToc 统一渲染(已确认 R27-1A); 分卷显示对全部 9 套 clone-* + 默认主题生效
+
+- 第二步: 现状审查(4 个文件)
+  · BookView.tsx renderToc (line 591-700): R27-1A 卷头卡片化已就位; 可优化点
+    长列表(>50 章)无滚动容器 + 卷头不能 sticky 常驻 + 无自动滚动当前章节 +
+    章节按钮无 min-h-[44px] 触摸目标 + 无显式 aria-label
+  · shared.tsx TocDrawer (line 944-1363): 已有分卷分组(kk-a); 可优化点
+    卷头无折叠/展开按钮 + 无自动滚动到当前章节 + 滚动容器无自定义细滚动条
+  · 10 套 clone-themes BookInfo.tsx: 全部确认是详情面板, 不渲染章节目录,
+    通过 onScrollToc 滚动到父级 TOC 区; 结论无需单独修改
+  · read-layouts/ReadClassic/Immersive/Pili/Paginated.tsx: 全部使用 shared.tsx
+    TocDrawer 组件, 我的 TocDrawer 改动自动对 4 种阅读布局生效
+
+- 第三步: 实施修改(3 个文件, 共 +170 行)
+  · src/app/globals.css (282 → 305, +23): 新增 .toc-scroll-thin CSS 类
+    (8px 滚动条 + thumb rgba(128,128,128,0.35) + hover 加深 0.55 + track 透明)
+  · src/components/public/BookView.tsx (856 → 897, +41):
+    - 新增 useEffect: 数据加载 + currentChapterId 命中时, raf 等 DOM 渲染完成,
+      querySelector button[aria-current="true"] 调 scrollIntoView({block:'nearest'})
+      (用户从 ReadView 跳回 BookView ?chapter=<id> 时目录自动定位到上次阅读位置)
+    - renderChapterList: 列间距 gap-x-8→gap-x-6(原 8 偏挤); 章节按钮加
+      min-h-[44px] 触摸目标; 显式 ariaLabel prop 让屏幕阅读器朗读 "(当前章节)"
+    - 长列表滚动容器: chapters.length > 50 时启用 max-h-[640px] overflow-y-auto
+      + overscroll-contain + pr-1 + [scrollbar-width:thin] + toc-scroll-thin
+    - 卷头 sticky: 滚动容器内卷头加 sticky top-0 z-10 + backdrop-filter:blur(6px)
+      + WebkitBackdropFilter 兼容 Safari; 背景透明度 0.06→0.08 配合 blur 提升可读性
+    - 卷索引条 chip 加 inline-flex min-h-[36px] items-center; 去掉 ml-1 用 gap-1
+    - 单卷/无卷场景零回归(volGroups=null 走原 renderChapterList 分支)
+  · src/components/public/read-layouts/shared.tsx (1364 → 1470, +106):
+    - imports: 加 useMemo(React) + ChevronDown(lucide-react)
+    - 新增 state: collapsed: Set<string>(默认空集合=全展开, volKey=`vol-${gi}`)
+      + toggleVol useCallback + scrolledForOpenRef(useRef boolean 防重入)
+      + scrollContainerRef(useRef<HTMLDivElement>)
+    - volGroups useMemo: 复用 entries 派生, 避免每次 render 新建数组导致
+      useEffect deps 失效; 仅当本页至少含一个 volume 字段才启用分组
+    - 自动展开当前章节所在卷(render-time 检测模式, 与上方 prevRefresh 同款, 避免
+      react-hooks/set-state-in-effect 告警): 计算 autoExpandTarget = 当前章节
+      所在卷 key, 与 prevAutoExpand 比较不一致则 setCollapsed 删除 volKey;
+      不依赖 collapsed 防止用户手动折叠后立即被自动重展开
+    - 派生 activeVolKey(useMemo) + activeVolCollapsed(boolean): 用 boolean 派生
+      而非直接依赖 collapsed Set, 避免 lint 误报 unnecessary dep
+    - 自动滚动 effect: open=true + tab=toc + volGroups + activeChapterId +
+      activeVolKey + activeVolCollapsed=false 时, raf 等 DOM 渲染完成 →
+      querySelector button[aria-current="true"] → scrollIntoView({block:'nearest'})
+      → scrolledForOpenRef.current=true 防重入(下次 open 才再次触发)
+    - 滚动容器: 加 ref={scrollContainerRef} + toc-scroll-thin 类
+    - 卷头折叠/展开渲染: 卷头改为 role=button div + tabIndex=0 + onClick
+      + onKeyDown(Enter/Space) + aria-label/aria-expanded, 整行可点击 + 键盘可达;
+      加 ChevronDown(展开)/ChevronRight(折叠)图标(主色); 卷头加 min-h-[44px]
+      cursor-pointer focus-visible:ring-2 outline-none;
+      折叠时只渲染卷头不渲染 entries({!isCollapsed && g.entries.map(renderEntry)})
+    - 单卷/无卷场景零回归(volGroups=null 走 entries.map(renderEntry) 平铺)
+
+- 第四步: 验证
+  · bun run lint → 0 errors / 0 warnings exit 0 ✓
+  · bunx tsc --noEmit → 0 errors in 改动文件 ✓ (排除 .next/examples/skills 预存在)
+  · dev server: GET / 200 OK ✓ (Ready in 1286ms)
+
+Stage Summary:
+
+- 完成 R28-1B 三任务:
+  1. ✓ BookView 目录分栏: 长列表(>50 章)滚动容器 + sticky 卷头 backdrop-blur 常驻 +
+     auto-scroll 当前章节到可见区域(用户从 ReadView 跳回 BookView 时自动定位) +
+     章节按钮 min-h-[44px] 触摸目标 + 显式 aria-label 屏幕阅读器友好
+  2. ✓ ReadView 侧栏目录(TocDrawer): 卷折叠/展开(role=button div + ChevronDown/
+     ChevronRight 图标 + Enter/Space 键盘支持) + auto-expand 当前章节所在卷 +
+     auto-scroll 当前章节到可见区域 + toc-scroll-thin 自定义细滚动条
+  3. ✓ 10 套 clone-themes BookInfo: 全部确认不渲染章节目录, 通过 onScrollToc
+     滚动到父级 TOC 区; 分卷显示通过 BookView renderToc 对全部 9 套 clone-* +
+     默认主题统一生效(R27-1A 已确认, R28-1B 沿用)
+- 修改文件: globals.css (+23) + BookView.tsx (+41) + shared.tsx (+106),
+  共 +170 行
+- 核心改动:
+  · globals.css: .toc-scroll-thin 自定义细滚动条(8px width + thumb hover 加深)
+  · BookView renderToc: 长列表(>50 章)启用 max-h-[640px] overflow-y-auto +
+    toc-scroll-thin; 滚动容器内卷头 sticky top-0 z-10 + backdrop-blur(6px)
+    常驻可见; 新增 useEffect 自动滚动 aria-current=true 章节到 nearest 位置;
+    章节按钮加 min-h-[44px] 触摸目标 + 显式 ariaLabel
+  · shared.tsx TocDrawer: collapsed: Set<string> 卷折叠状态(volKey=vol-${gi}) +
+    toggleVol useCallback; 卷头 role=button 整行可点击 + ChevronDown/ChevronRight
+    图标 + 键盘 Enter/Space 支持 + aria-expanded; volGroups useMemo 复用 entries
+    派生; auto-expand render-time 检测模式(与 prevRefresh 同款, 避免
+    set-state-in-effect 告警); auto-scroll effect 用 scrolledForOpenRef 防重入,
+    每次 open 周期只触发一次; 滚动容器加 ref + toc-scroll-thin 类
+- 零回归确认:
+  · 单卷/无卷场景: BookView volGroups=null 走原 renderChapterList 分支,
+    TocDrawer volGroups=null 走 entries.map(renderEntry) 平铺, 均与改前完全一致
+  · R27-1A 卷头卡片化 + 卷索引条(≥3 卷): 完全保留, 仅追加 sticky/backdrop-blur/
+    scrollCls + chevron 折叠
+  · 历史修复保留: cleaner.ts 卷名前缀剥离 + U+2060; downloader.ts 卷变化处
+    卷标题行 + lastEmittedVolume 判重; parser.ts toc.fields.volume 提取;
+    sorter.ts reorderWithVolumes(kk-a + qq-e2); prisma Chapter.volume 字段
+- 验证: bun run lint 0 errors / 0 warnings ✓ / bunx tsc --noEmit 0 errors in
+  改动文件 ✓ (排除 .next/examples/skills 预存在) / dev server 200 OK ✓
+- 详细工作记录: agent-ctx/R28-1B-full-stack-developer.md (含 5 章节: 读交接+
+  现状审查 4 文件/3 文件实施/验证/修改文件清单/历史保留)
+- 未修改(尊重约束): src/lib/crawl/* (采集模块, 非本任务范围) / page.tsx/
+  PublicSite.tsx/HomeView.tsx (主控已改) / fetcher/obscura/runner (R25-R27
+  已审, 零回归) / 10 套 clone-themes BookInfo.tsx (详情面板非目录, 分卷由
+  BookView 父级统一渲染) / read-layouts/ReadClassic/Immersive/Pili/Paginated.tsx
+  (使用 TocDrawer, 改动自动生效) / prisma/schema.prisma (Chapter.volume 已有) /
+  package.json (0 新依赖)
+
+---
+Task ID: R28-1C
+Agent: full-stack-developer (采集第三轮+clone残留bug)
+Task: fetcher/obscura/runner 第三轮 + clone-themes 残留 bug + API 路由
+Work Log:
+- 步骤 1 读交接: worklog.md 末 200 行 + dev.log + R27-1B-full-stack-developer.md, 了解
+  R25-R27 三轮已审查 fetcher/obscura/runner/cleaner/parser/sorter 等. R27-1B 修复
+  fetcher uc-bridge P1×2 + rule-templates regexFallback EOF + public/feedback P2003
+  catch.
+- 步骤 2 第三轮深度审查:
+  · fetcher.ts 第三轮: 8 级降级链错误传播完整性 ✓ + UA 轮换/Referer 边界 ✓ + cookies
+    回写/session 复用 ⚠(发现 cookieJar 主罐/副罐键不一致 P2, 文档化未修) + uc-bridge
+    边缘 case(发现 ok=true+empty html 误判 P3, R28-1C 修复)
+  · obscura.ts 第三轮: 池管理内存泄漏 ✓(R25-1A3 已修) + Turnstile 8s 截止 ✓(R25-1A
+    已修) + Cookies 回写到新 ctx 缺失 ❌ P2(R28-1C 修复: 注入 cookieProvider 回调)
+  · runner.ts 第三轮: 任务调度死锁 ✓(ll-c epoch + serializeStatusWrite 已修) +
+    BudgetExceeded 错误传播 ✓(agent-Q-deep-audit 已修) + control() 30s 超时上抛 500
+    ❌ P2(R28-1C 修复: 返回 {ok:false, message} 信封)
+  · cleaner.ts 第三轮: 段落规整边界 ✓(R17-1A 已修) + 水印误判 ✓(R11-1A 长度闸门 +
+    设计权衡可接受) + U+2060 剥离完整性 ✓(R26-1A 已修)
+  · clone-themes 80 文件: initialCategories prop 接线 ✓(page.tsx→PublicSite→HomeView
+    →Clone 全链路) + useState 初始值/useEffect 条件 ✓(8 套 inline + 2 套 useCloneCategories
+    hook, 行为一致) + SSR 数据流 ✓(page.tsx SSR fetch categories 60 条 → HomeClone
+    useState 初始化 → SSR 时 cats 已有数据 → useEffect cats.length>0 跳过 fetch 避免覆盖)
+  · API 路由审查: 鉴权链 ✓(verifySession HMAC + nonce + payload 白名单) + SQL 注入面 ✓
+    (Prisma 参数化 + SORT_MAP 白名单 + likeSafe 剥 %_\\) + 参数校验 ✓(clampInt + skip
+    上限 10000 + take 500) + 错误兜底 ✓(withGuard 500 + BodyTooLargeError 413 + FK
+    竞态 P2003→409/P2025→404) + 路径穿越 ✓(safeJoin path.resolve+startsWith) +
+    TOCTOU ✓(download fh.open 后 fh.stat 再 createReadStream)
+  · dev.log: uc-bridge 当前正常(dev.log 无报错), 但修复覆盖历史 xvfb/pyvirtualdisplay
+    未装场景; sorter reorderWithVolumes 分卷感知重排复核 ✓(R27-1A 已完整覆盖)
+  · 采集规则字段提取安全性 ✓(FieldRule 四类 css/xpath/regex/json/const + types.ts
+    sanitizeFieldRule 白名单 + regex 入口 collectRegexIssues 四入口预审)
+  · 乱序重排分卷感知 ✓(sorter reorderWithVolumes: 卷号升序+无号卷装配式归位+卷内
+    章号排序+纯卷标题锚定卷首不拍平)
+- 步骤 3 修复 + 增强(R28-1C 共 ~+102 行):
+  · P2 修复① public/feedback siteId 显式校验(+15 行): R27-1B P2003 catch 是 dead code
+    (schema.prisma Feedback 模型 siteId 字段无 @relation 声明, sqlite_master 实测 Feedback
+    表 siteId 列无 FK 约束). db.feedback.create 用任意 siteId 静默成功. 改为
+    db.site.findUnique 显式校验: ① siteId 不存在 → 400 "站点不存在或已被删除, 请刷新
+    页面后再提交"; ② siteId=null(无 ?site= 参数)允许直入兼容旧前端; ③ R27-1B P2003
+    catch 保留作安全网(若未来 schema 加 FK 则兜底). 实测: nonexistent site-id → 400
+    友好提示; valid site → 200 ok + 入库 + 自动清理.
+  · P2 修复② runner.ts control() 30s 超时不再传播 500(+9 行): 原 `return run` 让
+    rejection 上抛到 route → withGuard catch 500 "服务器内部错误". 改为
+    `return run.catch((e) => ({ ok:false, message: e?.message?.slice(0,200) ||
+    'control failed' }))` 把超时原因透出给用户. 与 controlInner 内 {ok:false, message:
+    '熔断冷却中'} 同口径, route 的 `if (!res.ok) return fail(res.message)` 直接消费.
+    实测: control('nonexistent-id', 'start') → {ok:false, message:'任务不存在'} 不再 throw.
+  · P2 修复③ obscura.ts Cookie 凭证回写到新 BrowserContext(+68 行): 槽位空闲 10min 被
+    scheduleReclaim 回收 ctx.close() 后, 下次 recreateSlot 重建新 ctx 不带任何 cookies.
+    cookieJar 里可能已有上次成功通过挑战的 cf_clearance 凭证, 但旧实现只写不读回
+    Obscura → 首次 page.goto 必然再被盾挑战 → challengeWaitMs 40s 超时 → 走降级链 →
+    长任务持续运行站点反复撞盾, cf_clearance 凭证等同虚设. 修法: 注入 cookieProvider
+    回调(避免 obscura ↔ fetcher 循环依赖), fetcher.ts 模块加载时调
+    setObscuraCookieProvider((originHost) => cookieJar.get(originHost)) 一次性 setup
+    (globalThis 标记防 HMR 重复). obscura.ts 新增:
+    - parseCookieHeaderToPlaywright(cookieStr, originHost): "k1=v1; k2=v2" → Playwright
+      cookie 对象数组, hostname 派生加前导点(.www.example.com)允许子域共享, ATTR_NAMES
+      与 cookieJar.store 同口径防伪 cookie 污染
+    - restoreCookiesToContext(slot): 调 cookieProvider(slot.domain) → 解析 →
+      ctx.addCookies, 失败静默降级
+    - withObscuraPage 在 createSlot/recreateSlot 成功后 await restoreCookiesToContext(slot)
+    实测: cookieJar.seed cf_clearance → cookieJar.get → parseCookieHeaderToPlaywright
+    正确解析 → ctx.addCookies 注入新 ctx.
+  · P3 修复④ fetcher.ts fetchViaUcBridge 区分 ok=true+empty 与 ok=false(+9 行): 原
+    `if (!data.ok || !data.html)` 把 ok=true + html='' 也归入失败分支 → 调用
+    renderWithBrowserRaw 重新抓(同样空响应), 浪费浏览器启动 + 目标侧 4xx/5xx 空响应
+    误当桥故障降级. 改为: 仅 ok=false 走永久失败检测 + 降级; ok=true + html='' 直接
+    返回空结果(让上层 looksBlocked 检测后处理, 与 native 链同口径).
+- 步骤 4 验证:
+  · bun run lint → 0 errors / 0 warnings exit 0 ✓
+  · bunx tsc --noEmit → 0 errors in 改动文件 ✓(排除 .next + examples + skills 预存在:
+    examples/websocket socket.io-client 缺失 + skills/image-edit 类型 + skills/stock
+    analysis 类型, 均与本轮无关)
+  · 4 项实测验证: feedback nonexistent site-id → 400 ✓; feedback valid site → 200 ✓;
+    runner control nonexistent-id → {ok:false} 不再 throw ✓; cookieJar provider 集成
+    parseCookieHeaderToPlaywright 解析正确 ✓
+
+Stage Summary:
+- 完成 6 项任务第三轮深度审查(fetcher/obscura/runner/cleaner 第三轮边缘 bug + clone-themes
+  残留 bug + API 路由审查) + 2 P2 + 1 P3 修复(注: P2 修复②③ 都属于本轮发现, 共 3 个修复)
+- 修改文件: src/app/api/public/feedback/route.ts (+15 行) + src/lib/crawl/runner.ts (+9 行)
+  + src/lib/crawl/obscura.ts (+68 行) + src/lib/crawl/fetcher.ts (+10 行), 共 ~+102 行
+- 核心改动:
+  · P2 修复① public/feedback siteId 显式校验 — schema Feedback 表 siteId 列无 FK 约束
+    (R27-1B P2003 catch 是 dead code), 改为 db.site.findUnique 显式校验存在性, 不存在→400
+  · P2 修复② runner.ts control() 30s 超时不再传播 500 — 改为返回 {ok:false, message}
+    信封, route 直接 fail(res.message) 透出超时原因, 不再让 withGuard 兜底为 500
+  · P2 修复③ obscura.ts Cookie 凭证回写到新 BrowserContext — 槽位 10min 空闲回收后
+    recreateSlot 新 ctx 不带 cookies, cookieJar 中 cf_clearance 凭证未注入导致首次
+    page.goto 必然再被盾挑战. 注入 cookieProvider 回调(避免循环依赖), fetcher 模块
+    加载时 setup, withObscuraPage 在 createSlot/recreateSlot 成功后 restoreCookiesToContext
+    把 cookieJar 中该域凭证同步到新 ctx
+  · P3 修复④ fetcher fetchViaUcBridge 区分 ok=true+empty 与 ok=false — 原误归入失败分支
+    浪费浏览器启动, 改为仅 ok=false 走永久失败检测, ok=true+empty 直接透传空结果
+- 历史修复全部保留(零回归确认): R25-1A2/R25-1A3/R26-1A/R27-1A/R27-1B/R3-30~32/R4A-14/
+  R5-5/R6-3/safeJoin/gg-a/tt-b/FK 竞态兜底 全部不动
+- 审查后零回归未改: obscura 池管理/Turnstile 8s ✓ + runner 调度/BudgetExceeded ✓ +
+  cleaner U+2060/段落规整/水印闸门 ✓ + sorter reorderWithVolumes ✓ + API 鉴权/SQL/参数/
+  路径穿越/TOCTOU ✓ + clone-themes 80 文件 initialCategories/SSR 数据流 ✓
+- 验证: bun run lint 0 errors ✓ / bunx tsc --noEmit 0 errors in 改动文件 ✓ / 4 项实测全过 ✓
+- 已知 issue(未修, 文档化): cookieJar 主罐/副罐键不一致 P2(host-only cookies 丢失, 主罐键
+  用 origin format, get() 走 parentDomainChain 返回 hostname format, 不匹配. 对于典型
+  cf_clearance `domain=.example.com` 模式无影响走副罐, host-only 会话 cookie 丢失影响小).
+  留作下一轮单独修复(改 store/seed/count/clear 4 处键格式统一为 hostname + 配 cookieJar
+  单元测试覆盖)
+- 详细工作记录: agent-ctx/R28-1C-full-stack-developer.md(含 6 章节: 读交接/第三轮深度审查
+  6 模块/修复增强 P2×3+P3×1/验证/修改文件清单/历史保留+零回归+已知 issue)
+- 未修改(尊重约束): page.tsx/PublicSite.tsx/HomeView.tsx(主控已改) + BookView.tsx
+  (B agent 优化中) + themes.ts/prisma/schema.prisma + examples/+skills/ 预存在 tsc 错误
