@@ -78,6 +78,9 @@ const rule: RuleSeed = {
         name: { type: 'json', expression: 'title' },
         author: { type: 'json', expression: 'author' },
         intro: { type: 'json', expression: 'intro' },
+        // 封面图: list API JSON 无 cover, 但站点 SPA 用固定路径 /bookimg/0/{id}.jpg
+        // (agent-browser 实测 + curl 验证全 200; {id}=list段fields.id值, 同 bookUrl 模式)
+        cover: { type: 'const', expression: 'https://www.bqg713.cc/bookimg/0/{id}.jpg' },
         // bookUrl 存书籍API URL(fetcher可直接抓到JSON), 不存SPA hash URL(#/book/{id} 抓回空壳)
         bookUrl: { type: 'const', expression: 'https://www.bqg713.cc/api/book?id={id}' },
       },
@@ -90,6 +93,10 @@ const rule: RuleSeed = {
         author: { type: 'json', expression: 'author' },
         category: { type: 'json', expression: 'sortname' },
         intro: { type: 'json', expression: 'intro' },
+        // 封面图: API JSON 无 cover 字段, 但站点 SPA 用固定路径 /bookimg/0/{id}.jpg
+        // (agent-browser 实测 bqg713.cc/#/book/1/ 页面 img.src = bqg616.cc/bookimg/0/1.jpg,
+        //  curl 验证 /bookimg/0/{1,2,3,100}.jpg 全 200; 0=默认分区, {q.id}=书籍页URL查询参数id)
+        cover: { type: 'const', expression: 'https://www.bqg713.cc/bookimg/0/{q.id}.jpg' },
         // "连载"/"已经完本" 原文透传 → runner smartCompleteDetect 词表命中(ongoing/completed)
         status: { type: 'json', expression: 'full' },
         latestChapter: { type: 'json', expression: 'lastchapter' },

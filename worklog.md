@@ -15266,3 +15266,38 @@ Stage Summary:
 - 详细工作记录: agent-ctx/R35-1B-full-stack-developer.md(含 6 章节:
   读交接/第九轮深度审查 11 模块+API 路由/特别关注项验证/修复 P1×2+P2×1/验证/
   修改文件清单/历史保留+零回归+审查结论)
+
+---
+Task ID: R36-1A
+Agent: 主控 (bqg713 封面图获取修复)
+Task: 用户问 bqg713.cc/#/book/1/ 有封面图但规则获取不到
+
+Work Log:
+- 步骤 1 实地排查:
+  · agent-browser 访问 bqg713.cc/#/book/1/ → 实际重定向 bqg616.cc, 页面 img.src = bqg616.cc/bookimg/0/1.jpg
+  · curl 验证 /bookimg/0/{1,2,3,100}.jpg 全 200, /bookimg/1/1.jpg 也 200 (0=默认分区, 1 也行)
+  · curl /api/book?id=1 JSON 字段: id/title/sortname/author/full/intro/lastchapterid/lastchapter/lastupdate/dirid — 无 cover 字段!
+  · 封面图是固定路径 /bookimg/0/{id}.jpg, 不在 API JSON 里
+
+- 步骤 2 根因发现:
+  · DB 规则 book.fields.cover 用了 {floor:id/1000} 非标准占位符 (parser 不支持 floor: 函数)
+  · cover URL 模板渲染失败 → 获取不到封面图
+  · list 段无 cover 字段
+
+- 步骤 3 修复:
+  · list.fields.cover 加: {type:'const', expression:'https://www.bqg713.cc/bookimg/0/{id}.jpg'} ({id}=list段fields.id值, 同 bookUrl 模式)
+  · book.fields.cover 修正: 从 {floor:id/1000} 改为 {q.id} (书籍页URL查询参数id, 同 toc 段 {q.id} 模式)
+  · seed-rule-bqg713.ts 文件同步更新 (list + book 段都加 cover, 注释说明路径来源)
+  · DB 规则 Prisma 直接更新 (dev server 不稳定, 不走 API)
+
+- 步骤 4 验证:
+  · DB list.fields.cover: {type:'const', expression:'https://www.bqg713.cc/bookimg/0/{id}.jpg'} ✓
+  · DB book.fields.cover: {type:'const', expression:'https://www.bqg713.cc/bookimg/0/{q.id}.jpg'} ✓
+  · curl /bookimg/0/{id}.jpg 全 200 ✓
+  · bun run lint 0 + bunx tsc 0 ✓
+  · dev server 200 ✓
+
+Stage Summary:
+- 根因: book.fields.cover 用 {floor:id/1000} 非标准占位符, parser 不支持 → cover URL 渲染失败
+- 修复: list + book 段都加 cover, 用固定路径 /bookimg/0/{id}.jpg (agent-browser 实测 + curl 验证)
+- 教训: 规则字段占位符需用 parser 支持的标准占位符({id}/{q.id}/{index} 等), 不能用未实现的函数(floor:)
