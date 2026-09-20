@@ -25,18 +25,38 @@ const RANKING_TABS = [
   { id: 'lastupdate', name: '最近更新' },
 ] as const
 
-// R25: RankingView lookup table — clone-* 主题动态加载对应 RankingView 组件, ssr=true 让 SSR 直接渲染源站 DOM
-const RankingViewLookup: Record<string, React.ComponentType<any>> = {
-  'clone-aijjxs': dynamic(() => import('./clone-themes/aijjxs').then(m => m.RankingView), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
-  'clone-ddyueshu': dynamic(() => import('./clone-themes/ddyueshu').then(m => m.RankingView), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
-  'clone-pilishuwu': dynamic(() => import('./clone-themes/pilishuwu').then(m => m.RankingView), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
-  'clone-23qb': dynamic(() => import('./clone-themes/23qb').then(m => m.RankingView), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
-  'clone-101kks': dynamic(() => import('./clone-themes/101kks').then(m => m.RankingView), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
-  'clone-huangjinwu': dynamic(() => import('./clone-themes/huangjinwu').then(m => m.RankingView), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
-  'clone-ggd66': dynamic(() => import('./clone-themes/ggd66').then(m => m.RankingView), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
-  'clone-shipsay': dynamic(() => import('./clone-themes/shipsay').then(m => m.RankingView), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
-  'clone-x2552': dynamic(() => import('./clone-themes/x2552').then(m => m.RankingView), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
-  'clone-trxsw': dynamic(() => import('./clone-themes/trxsw').then(m => m.RankingView), { ssr: true, loading: () => <BookGridSkeleton count={12} /> }),
+// R35-1A: clone-themes 按需 dynamic import — 只为当前请求的 layout 创建 dynamic 组件 wrapper
+// 之前: 模块顶层 10 个 dynamic() 立刻求值 → 每次 RankingView 模块加载都创建 10 个 wrapper (内存浪费)
+// 现在: cloneRankLoaders 只是个函数引用表 (零开销), getCloneRank(layout) 首次调用才 dynamic() 并缓存
+// SSR 行为不变 (ssr=true 让 SSR 渲染 clone DOM, 防 ssr=false 客户端 JS OOM 空白);
+// webpack 仍会为 10 个 import() 各建一个 async chunk (源码静态分析必要), 但模块
+// 顶层求值从 10 次 dynamic() 调用降到 0, 渲染时也只创建 1 个 wrapper (per layout 缓存)
+type CloneRankModule = { RankingView: React.ComponentType<any> }
+const cloneRankLoaders: Record<string, () => Promise<CloneRankModule>> = {
+  'clone-aijjxs': () => import('./clone-themes/aijjxs'),
+  'clone-ddyueshu': () => import('./clone-themes/ddyueshu'),
+  'clone-pilishuwu': () => import('./clone-themes/pilishuwu'),
+  'clone-23qb': () => import('./clone-themes/23qb'),
+  'clone-101kks': () => import('./clone-themes/101kks'),
+  'clone-huangjinwu': () => import('./clone-themes/huangjinwu'),
+  'clone-ggd66': () => import('./clone-themes/ggd66'),
+  'clone-shipsay': () => import('./clone-themes/shipsay'),
+  'clone-x2552': () => import('./clone-themes/x2552'),
+  'clone-trxsw': () => import('./clone-themes/trxsw'),
+}
+const cloneRankCache = new Map<string, React.ComponentType<any>>()
+function getCloneRank(layout: string): React.ComponentType<any> | undefined {
+  const loader = cloneRankLoaders[layout]
+  if (!loader) return undefined
+  let cached = cloneRankCache.get(layout)
+  if (!cached) {
+    cached = dynamic(() => loader().then(m => m.RankingView), {
+      ssr: true,
+      loading: () => <BookGridSkeleton count={12} />,
+    })
+    cloneRankCache.set(layout, cached)
+  }
+  return cached
 }
 
 interface FetchState { key: string; data?: BooksData; error?: string }
@@ -72,9 +92,11 @@ export function RankingView({ page, initialBooks, initialCategories }: { page: n
   })
   const books: BookItem[] = data?.books || []
   // R25: clone-* 主题走 RankingViewLookup, 否则走通用布局
-  const Clone = RankingViewLookup[theme.layout]
+  // R35-1A: RankingViewLookup 已重命名为 getCloneRank, per-layout cache (module 级 Map)
+  const Clone = getCloneRank(theme.layout)
   if (Clone) {
     return (
+      // eslint-disable-next-line react-hooks/static-components -- Clone 来自 module 级缓存, 同 layout 跨渲染稳定
       <Clone
         books={books}
         loading={loading}

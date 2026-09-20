@@ -68,11 +68,16 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
       const title = newTitle ?? exist.title
       let bodyText: string
       if (newContent !== null) {
-        // API-4: 正确的 HTML→文本转换 —— 块级闭合标签先转 \n, 否则 <p>aaa</p><p>bbb</p> 会被
-        // 压成 aaabbb(段落粘连); br 单独处理; 最后剥剩余 inline 标签并规范连续空行
+        // API-4 + R35-1B: 正确的 HTML→文本转换 —— 块级闭合标签先转 \n\n(段落分隔, 与 runner.ts
+        // R34-1B 同口径), 否则 <p>aaa</p><p>bbb</p> 会被压成 aaabbb(段落粘连); br 单独处理
+        // (段内换行); 最后剥剩余 inline 标签并规范连续空行. 修前用单 \n 致 admin 编辑
+        // 后的 TXT 章节经公开 read API(public/chapter/route.ts line 103 split /\n{2,}/)
+        // 拿不到段间分隔, 整章压成单个 <p>. 现对齐 runner.ts R34-1B 用 \n\n, 公开 API
+        // 兼容优先; admin GET 仅 split('\n').slice(1).join('\n') 不在乎 \n vs \n\n,
+        // \n\n 在 admin 编辑器 textarea 显示为空行可读性更佳(零回归)
         bodyText = newContent
           .replace(/<\s*br\s*\/?>/gi, '\n')
-          .replace(/<\/(p|div|h[1-6]|li|tr)>/gi, '\n')
+          .replace(/<\/(p|div|h[1-6]|li|tr)>/gi, '\n\n')
           .replace(/<[^>]+>/g, '')
           .replace(/\n{3,}/g, '\n\n')
           .trim()

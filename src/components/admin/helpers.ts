@@ -22,7 +22,7 @@ export function useAliveRef() {
   return ref
 }
 
-// ---------------- 通用列表加载 Hook (R33-1C 抽取) ----------------
+// ---------------- 通用列表加载 Hook (R33-1C 抽取 / R35-1C 扩展 onLoaded) ----------------
 // 重复模式: RulesSection / CategoriesSection 等的列表加载都遵循:
 //   1) useState< T[]>([]) + useState(true)loading
 //   2) useCallback(async () => { setLoading; try { api.get → setRows } catch toast; finally setLoading(false) }, [])
@@ -31,9 +31,13 @@ export function useAliveRef() {
 //   const { rows, setRows, loading, reload } = useResourceList<RuleRow>('/api/admin/rules', '加载规则失败')
 // 适用条件: 单一 GET 端点 + 数组响应 + 单一 loading 态; 复杂场景(Promise.all/pagination/
 //   aliveRef/seq guard/ silent param)请直接写 load, 不要强行迁移。
+// R35-1C 扩展 onLoaded: 可选回调, fetch 成功后调 (在 setRows 之后, finally 之前);
+//   适用于 CategoriesSection 那种"rows 同步到 localRows 拖拽副本"场景; 调用方仍可
+//   用 setRows 直接 mutate rows (不会触发 onLoaded — 后者仅 reload 路径触发)。
 export function useResourceList<T>(
   url: string,
   errMsg: string,
+  onLoaded?: (rows: T[]) => void,
 ): {
   rows: T[]
   setRows: Dispatch<SetStateAction<T[]>>
@@ -42,11 +46,16 @@ export function useResourceList<T>(
 } {
   const [rows, setRows] = useState<T[]>([])
   const [loading, setLoading] = useState(true)
+  // onLoaded 通过 ref 透传: 避免回调变化触发 reload useCallback 重建 → useEffect 二次拉取
+  const onLoadedRef = useRef(onLoaded)
+  onLoadedRef.current = onLoaded
   const reload = useCallback(async () => {
     setLoading(true)
     try {
       const data = await api.get<T[]>(url)
-      setRows(Array.isArray(data) ? data : [])
+      const safe = Array.isArray(data) ? data : []
+      setRows(safe)
+      onLoadedRef.current?.(safe)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : errMsg)
     } finally {
@@ -402,7 +411,8 @@ export interface RestoreResult {
 }
 
 /** SEO 体检 — 单条问题 */
-export interface SeoAuditIssue {
+// R35-1C: 去 export 关键字 — 仅 SeoAuditSite.issues 内部用 (0 外部引用)
+interface SeoAuditIssue {
   severity: 'error' | 'warning' | 'info'
   category: 'tdk' | 'domain' | 'content' | 'links' | 'theme' | 'geo' | 'sitemap' | 'offset' | 'tech'
   message: string
@@ -483,7 +493,8 @@ export interface RuleTestResult {
 // ---------------- feat-b: 健康监控 (与 /api/admin/health 响应一致) ----------------
 export type HealthStatus = 'healthy' | 'degraded' | 'unhealthy'
 
-export interface HealthService {
+// R35-1C: 去 export 关键字 — 仅 HealthData.services 内部用 (0 外部引用)
+interface HealthService {
   reachable: boolean
   selfTestOk?: boolean
   note?: string
@@ -605,7 +616,8 @@ export function arrayToLines(arr?: string[] | null): string {
 }
 
 // ---------------- 状态徽章映射 ----------------
-export interface StatusMeta {
+// R35-1C: 去 export 关键字 — 仅 TASK_STATUS_META/BOOK_STATUS_META 内部用 (0 外部引用)
+interface StatusMeta {
   label: string
   className: string
 }

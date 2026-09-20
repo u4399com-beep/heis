@@ -16,18 +16,38 @@ import { ErrorState, Sk, TagCloud, BookGridSkeleton } from './bits'
 import { BookCover } from './BookCover'
 import { formatWords } from './seo'
 
-// R25: KeywordView lookup table — clone-* 主题动态加载对应 KeywordView 组件, ssr=true 让 SSR 直接渲染源站 DOM
-const KeywordViewLookup: Record<string, React.ComponentType<any>> = {
-  'clone-aijjxs': dynamic(() => import('./clone-themes/aijjxs').then(m => m.KeywordView), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
-  'clone-ddyueshu': dynamic(() => import('./clone-themes/ddyueshu').then(m => m.KeywordView), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
-  'clone-pilishuwu': dynamic(() => import('./clone-themes/pilishuwu').then(m => m.KeywordView), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
-  'clone-23qb': dynamic(() => import('./clone-themes/23qb').then(m => m.KeywordView), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
-  'clone-101kks': dynamic(() => import('./clone-themes/101kks').then(m => m.KeywordView), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
-  'clone-huangjinwu': dynamic(() => import('./clone-themes/huangjinwu').then(m => m.KeywordView), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
-  'clone-ggd66': dynamic(() => import('./clone-themes/ggd66').then(m => m.KeywordView), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
-  'clone-shipsay': dynamic(() => import('./clone-themes/shipsay').then(m => m.KeywordView), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
-  'clone-x2552': dynamic(() => import('./clone-themes/x2552').then(m => m.KeywordView), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
-  'clone-trxsw': dynamic(() => import('./clone-themes/trxsw').then(m => m.KeywordView), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
+// R35-1A: clone-themes 按需 dynamic import — 只为当前请求的 layout 创建 dynamic 组件 wrapper
+// 之前: 模块顶层 10 个 dynamic() 立刻求值 → 每次 KeywordView 模块加载都创建 10 个 wrapper (内存浪费)
+// 现在: cloneKeywordLoaders 只是个函数引用表 (零开销), getCloneKeyword(layout) 首次调用才 dynamic() 并缓存
+// SSR 行为不变 (ssr=true 让 SSR 渲染 clone DOM, 防 ssr=false 客户端 JS OOM 空白);
+// webpack 仍会为 10 个 import() 各建一个 async chunk (源码静态分析必要), 但模块
+// 顶层求值从 10 次 dynamic() 调用降到 0, 渲染时也只创建 1 个 wrapper (per layout 缓存)
+type CloneKeywordModule = { KeywordView: React.ComponentType<any> }
+const cloneKeywordLoaders: Record<string, () => Promise<CloneKeywordModule>> = {
+  'clone-aijjxs': () => import('./clone-themes/aijjxs'),
+  'clone-ddyueshu': () => import('./clone-themes/ddyueshu'),
+  'clone-pilishuwu': () => import('./clone-themes/pilishuwu'),
+  'clone-23qb': () => import('./clone-themes/23qb'),
+  'clone-101kks': () => import('./clone-themes/101kks'),
+  'clone-huangjinwu': () => import('./clone-themes/huangjinwu'),
+  'clone-ggd66': () => import('./clone-themes/ggd66'),
+  'clone-shipsay': () => import('./clone-themes/shipsay'),
+  'clone-x2552': () => import('./clone-themes/x2552'),
+  'clone-trxsw': () => import('./clone-themes/trxsw'),
+}
+const cloneKeywordCache = new Map<string, React.ComponentType<any>>()
+function getCloneKeyword(layout: string): React.ComponentType<any> | undefined {
+  const loader = cloneKeywordLoaders[layout]
+  if (!loader) return undefined
+  let cached = cloneKeywordCache.get(layout)
+  if (!cached) {
+    cached = dynamic(() => loader().then(m => m.KeywordView), {
+      ssr: true,
+      loading: () => <BookGridSkeleton count={6} />,
+    })
+    cloneKeywordCache.set(layout, cached)
+  }
+  return cached
 }
 
 export function KeywordView({ tag, initialKeyword, initialCategories }: { tag?: string; initialKeyword?: KeywordData | null; initialCategories?: any[] }) {
@@ -59,11 +79,13 @@ export function KeywordView({ tag, initialKeyword, initialCategories }: { tag?: 
   })
 
   // R25: clone-* 主题走 KeywordViewLookup
-  const Clone = KeywordViewLookup[theme.layout]
+  // R35-1A: KeywordViewLookup 已重命名为 getCloneKeyword, per-layout cache (module 级 Map)
+  const Clone = getCloneKeyword(theme.layout)
   if (Clone) {
     // 把 KeywordData 转成 books[] 数组传给 clone 组件
     const books = data?.book ? [data.book, ...data.otherBooks.map((b) => ({ ...b, cover: '', status: 'unknown', wordCount: 0, category: '', intro: '' }))] : []
     return (
+      // eslint-disable-next-line react-hooks/static-components -- Clone 来自 module 级缓存, 同 layout 跨渲染稳定
       <Clone
         tag={tag || ''}
         books={books}

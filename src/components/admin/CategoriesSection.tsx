@@ -4,7 +4,7 @@
 // 分类管理 — 简单 CRUD
 // 批量操作: 全选/行复选框 + 批量删除(强制删除勾选) + 按勾选顺序重排
 // ============================================================
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -38,11 +38,19 @@ import {
   runBatch,
   useBatchSelection,
 } from './batch'
-import { api, fmtDateTime, type CategoryRow } from './helpers'
+import { api, fmtDateTime, useResourceList, type CategoryRow } from './helpers'
 
 export function CategoriesSection() {
-  const [rows, setRows] = useState<CategoryRow[]>([])
-  const [loading, setLoading] = useState(true)
+  // feat-bb-2: 拖拽重排 — localRows 与 rows 同步但允许拖拽调整; dragIndex/dropIndex 用于视觉反馈
+  // R35-1C: rows/loading/load 由 useResourceList 抽出; localRows 通过 onLoaded 回调与 rows 同步
+  //   (reload 路径触发; 拖拽只 mutate localRows 不动 rows, orderDirty 由二者差异检测)
+  const [localRows, setLocalRows] = useState<CategoryRow[]>([])
+  const { rows, loading, reload: load } = useResourceList<CategoryRow>(
+    '/api/admin/categories',
+    '加载分类失败',
+    setLocalRows, // onLoaded: fetch 成功后同步 rows → localRows (拖拽副本)
+  )
+
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<CategoryRow | null>(null)
   const [name, setName] = useState('')
@@ -56,29 +64,10 @@ export function CategoriesSection() {
   const [batchConfirmOpen, setBatchConfirmOpen] = useState(false)
   const [batchForce, setBatchForce] = useState(false)
 
-  // feat-bb-2: 拖拽重排 — localRows 与 rows 同步但允许拖拽调整; dragIndex/dropIndex 用于视觉反馈
-  const [localRows, setLocalRows] = useState<CategoryRow[]>([])
+  // 拖拽视觉态
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [dropIndex, setDropIndex] = useState<number | null>(null)
   const [reorderSaving, setReorderSaving] = useState(false)
-
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const data = await api.get<CategoryRow[]>('/api/admin/categories')
-      const safeRows = Array.isArray(data) ? data : []
-      setRows(safeRows)
-      setLocalRows(safeRows)
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : '加载分类失败')
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    load()
-  }, [load])
 
   // feat-bb-2: 拖拽处理函数
   const onDragStart = useCallback((e: React.DragEvent, idx: number) => {

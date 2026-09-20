@@ -8,7 +8,8 @@ import type { CSSProperties } from 'react'
 import type { ThemeDef } from '@/lib/crawl/themes'
 import type { SiteInfo } from './types'
 
-export interface SeoOptions {
+// R35-1C: 去 export — 仅 useSiteSEO 参数 (0 外部 import; 结构类型推断生效)
+interface SeoOptions {
   /** 页面标题；不传则跳过 document.title（由子视图负责，避免父子互相覆盖） */
   title?: string
   description?: string

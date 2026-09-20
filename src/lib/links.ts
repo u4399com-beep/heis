@@ -22,21 +22,22 @@ export interface WheelConfig {
   count: number
 }
 
-/** 链位数量边界 */
-export const WHEEL_COUNT_MIN = 1
-export const WHEEL_COUNT_MAX = 30
+/** 链位数量边界 (R35-1C: 去 export — 0 外部引用; LinksSection 有自己的本地常量) */
+const WHEEL_COUNT_MIN = 1
+const WHEEL_COUNT_MAX = 30
 /** 链轮配置在 Setting 表中的 key */
 export const WHEEL_SETTING_KEY = 'linkwheel'
 
 const WHEEL_MODES: readonly WheelMode[] = ['home', 'book', 'mixed']
 /** 链位数量缺省值 */
-export const WHEEL_COUNT_DEFAULT = 6
+const WHEEL_COUNT_DEFAULT = 6
 
 /**
  * 链轮配置消毒: 任意来源(JSON/表单) → 合法 WheelConfig。
  * enabled 仅认 false 为关; mode 白名单外回退 home; count 钳制 1~30。
  */
-export function sanitizeWheelConfig(raw: unknown): WheelConfig {
+// R35-1C: 去 export — 0 外部引用 (LinksSection 有本地同语义消毒; public/links/route.ts 走 getWheelConfig)
+function sanitizeWheelConfig(raw: unknown): WheelConfig {
   const o = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {}
   const mode = String(o.mode ?? '')
   const n = typeof o.count === 'number' ? o.count : Number(o.count)
@@ -75,7 +76,8 @@ function normalizeSiteDomain(raw: string): string {
 
 // ---------------- 链轮随机书籍 ----------------
 
-export interface WheelBook {
+// R35-1C: 去 export 关键字 — 仅 pickRandomBooks 返回类型 (0 外部引用)
+interface WheelBook {
   id: string
   name: string
 }

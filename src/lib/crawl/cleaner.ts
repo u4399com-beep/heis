@@ -1014,25 +1014,13 @@ export async function cleanContentHtmlAsync(
   // 段落规整: trafilatura \n+ 分段 → 段内空白规整 + 段间 \n\n (plainText) 或 <p> (HTML)
   // split(/\n+/) 而非 \n{2,}: trafilatura txt 用单 \n 分段(双 \n 是 trafilatura 内部
   // 段落分隔的备用格式, 实测 v2.2.0 默认用单 \n), 单/双换行都视为段间分隔
-  if (cfg.plainText) {
-    // 纯文本模式: 与 cleanContentHtml plainText 分支同款规整
-    text = text
-      .split(/\n+/)
-      .map((seg) =>
-        seg
-          .replace(/\r/g, ' ')
-          .replace(/\u3000/g, ' ')
-          .replace(/\s+/g, ' ')
-          .trim(),
-      )
-      .filter(Boolean)
-      .join('\n\n')
-    return text.replace(
-      /[\x00-\x08\x0B\x0C\x0E-\x1F\u200B-\u200D\u2060\uFEFF]/g,
-      '',
-    )
-  }
-  // HTML 模式: 段落包 <p> + 段间无空行 + 首末段水印剥离(与 cleanContentHtml 同款)
+  // R35-1B P1: 修前 plainText 分支直接 split.map.filter.join, 未先验 segments.length===0
+  // —— 桥返回全空白(段落分类全 reject 后输出 ' \n ' 等)时 split+filter 产出空数组,
+  // join('') 产出空串, 函数 return '' 致 caller runner.ts line 2223 cleaned='' 章节
+  // 内容静默丢失. HTML 分支已有 segments.length===0 降级回 cheerio 守卫(line 1046),
+  // plainText 分支漏同款守卫. 现两分支共用 segments 计算, 统一走空段降级(零回归:
+  // 空白桥输出本就无内容可采, 降级 cheerio 链拿原始 parseContent 结果, 与 HTML 模式
+  // 同口径, 不丢章节内容)
   const segments = text
     .split(/\n+/)
     .map((seg) =>
@@ -1045,8 +1033,19 @@ export async function cleanContentHtmlAsync(
     .filter(Boolean)
   if (segments.length === 0) {
     // trafilatura 输出全空(段落分类全 reject 后空白) → 降级回 cheerio
+    // (plainText + HTML 两模式共用本守卫; 修前 plainText 分支漏此守卫致章节内容丢失)
     return cleanContentHtml(raw, cfgOverride)
   }
+  if (cfg.plainText) {
+    // 纯文本模式: 与 cleanContentHtml plainText 分支同款规整
+    return segments
+      .join('\n\n')
+      .replace(
+        /[\x00-\x08\x0B\x0C\x0E-\x1F\u200B-\u200D\u2060\uFEFF]/g,
+        '',
+      )
+  }
+  // HTML 模式: 段落包 <p> + 段间无空行 + 首末段水印剥离(与 cleanContentHtml 同款)
   // HTML escape 各段(trafilatura 输出是纯文本无标签, 包 <p> 前需 escape 防 <>& 注入)
   let out = segments
     .map((seg) => `<p>${seg.replace(/[<>&]/g, (c) => (c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&amp;'))}</p>`)

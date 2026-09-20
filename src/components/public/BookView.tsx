@@ -21,20 +21,38 @@ import { EmptyState, ErrorState, SecTitle, Sk, TagCloud, ChapterListSkeleton, Bo
 import type { BookItem, BookTagHit, TocChapter } from './types'
 import { getReadPos } from './read-layouts/reading-memory'
 
-// R25: BookInfo lookup table — clone-* 主题动态加载对应 BookInfo 组件, ssr=true 让 SSR 直接渲染源站 DOM
-// 之前 BookView 只有 inline BookInfoComponent 兜底 fallback, 没有走 clone-themes 路由表
-// → 现在 clone-* 主题的 BookInfo 组件被使用, 源站 class 命中 shipsay.css / aijjxs.css 等
-const BookInfoLookup: Record<string, React.ComponentType<any>> = {
-  'clone-aijjxs': dynamic(() => import('./clone-themes/aijjxs').then(m => m.BookInfo), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
-  'clone-ddyueshu': dynamic(() => import('./clone-themes/ddyueshu').then(m => m.BookInfo), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
-  'clone-pilishuwu': dynamic(() => import('./clone-themes/pilishuwu').then(m => m.BookInfo), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
-  'clone-23qb': dynamic(() => import('./clone-themes/23qb').then(m => m.BookInfo), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
-  'clone-101kks': dynamic(() => import('./clone-themes/101kks').then(m => m.BookInfo), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
-  'clone-huangjinwu': dynamic(() => import('./clone-themes/huangjinwu').then(m => m.BookInfo), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
-  'clone-ggd66': dynamic(() => import('./clone-themes/ggd66').then(m => m.BookInfo), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
-  'clone-shipsay': dynamic(() => import('./clone-themes/shipsay').then(m => m.BookInfo), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
-  'clone-x2552': dynamic(() => import('./clone-themes/x2552').then(m => m.BookInfo), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
-  'clone-trxsw': dynamic(() => import('./clone-themes/trxsw').then(m => m.BookInfo), { ssr: true, loading: () => <BookGridSkeleton count={6} /> }),
+// R35-1A: clone-themes 按需 dynamic import — 只为当前请求的 layout 创建 dynamic 组件 wrapper
+// 之前: 模块顶层 10 个 dynamic() 立刻求值 → 每次 BookView 模块加载都创建 10 个 wrapper (内存浪费)
+// 现在: cloneBookInfoLoaders 只是个函数引用表 (零开销), getCloneBookInfo(layout) 首次调用才 dynamic() 并缓存
+// SSR 行为不变 (ssr=true 让 SSR 渲染 clone DOM, 防 ssr=false 客户端 JS OOM 空白);
+// webpack 仍会为 10 个 import() 各建一个 async chunk (源码静态分析必要), 但模块
+// 顶层求值从 10 次 dynamic() 调用降到 0, 渲染时也只创建 1 个 wrapper (per layout 缓存)
+type CloneBookInfoModule = { BookInfo: React.ComponentType<any> }
+const cloneBookInfoLoaders: Record<string, () => Promise<CloneBookInfoModule>> = {
+  'clone-aijjxs': () => import('./clone-themes/aijjxs'),
+  'clone-ddyueshu': () => import('./clone-themes/ddyueshu'),
+  'clone-pilishuwu': () => import('./clone-themes/pilishuwu'),
+  'clone-23qb': () => import('./clone-themes/23qb'),
+  'clone-101kks': () => import('./clone-themes/101kks'),
+  'clone-huangjinwu': () => import('./clone-themes/huangjinwu'),
+  'clone-ggd66': () => import('./clone-themes/ggd66'),
+  'clone-shipsay': () => import('./clone-themes/shipsay'),
+  'clone-x2552': () => import('./clone-themes/x2552'),
+  'clone-trxsw': () => import('./clone-themes/trxsw'),
+}
+const cloneBookInfoCache = new Map<string, React.ComponentType<any>>()
+function getCloneBookInfo(layout: string): React.ComponentType<any> | undefined {
+  const loader = cloneBookInfoLoaders[layout]
+  if (!loader) return undefined
+  let cached = cloneBookInfoCache.get(layout)
+  if (!cached) {
+    cached = dynamic(() => loader().then(m => m.BookInfo), {
+      ssr: true,
+      loading: () => <BookGridSkeleton count={6} />,
+    })
+    cloneBookInfoCache.set(layout, cached)
+  }
+  return cached
 }
 
 
@@ -763,8 +781,9 @@ export function BookView({ bookId, tocPage, initialBook, initialCategories }: { 
       ) : (
         <>
           {/* R25: BookInfo lookup table 分发到 clone-themes/<site>/BookInfo (ssr=true), fallback 走 inline BookInfoComponent */}
+          {/* R35-1A: BookInfoLookup 已重命名为 getCloneBookInfo, per-layout cache (module 级 Map) */}
           {(() => {
-            const CloneBookInfo = BookInfoLookup[theme.layout]
+            const CloneBookInfo = getCloneBookInfo(theme.layout)
             if (CloneBookInfo) {
               return (
                 <CloneBookInfo

@@ -22,7 +22,8 @@ function foldDigits(s: string): string {
 const ROMAN_VAL: Record<string, number> = { I: 1, V: 5, X: 10, L: 50, C: 100, D: 500, M: 1000 }
 
 /** 罗马数字 → 阿拉伯数字(减前缀法; 大小写/Unicode 罗马字符经 NFKC 归一; 非法形态返回 NaN) */
-export function romanToNumber(s: string): number {
+// R35-1C: 去 export 关键字 — 仅 volTokenToNumber 内部调用 (0 外部引用)
+function romanToNumber(s: string): number {
   const u = (s || '').trim().normalize('NFKC').toUpperCase()
   if (!u || !/^[IVXLCDM]+$/.test(u)) return NaN
   let total = 0
@@ -44,7 +45,8 @@ function volTokenToNumber(token: string): number {
 }
 
 /** 中文数字 → 阿拉伯数字 (支持 十/百/千/万/亿 与 "一零二四"式位值连写) */
-export function cnNumToNumber(cn: string): number {
+// R35-1C: 去 export 关键字 — 仅 volTokenToNumber + extractChapterNo + extractVolumeAnchor 内部 (0 外部引用)
+function cnNumToNumber(cn: string): number {
   if (!cn) return NaN
   let total = 0
   let section = 0 // 万以下当前段
@@ -91,7 +93,8 @@ export function cnNumToNumber(cn: string): number {
 }
 
 /** 从标题提取章节序号 */
-export function extractChapterNo(title: string): number {
+// R35-1C: 去 export 关键字 — 仅 naturalCompare/sortByChapterNo 内部 (0 外部引用)
+function extractChapterNo(title: string): number {
   if (!title) return NaN
   const t = foldDigits(title.trim())
   // ll-c 修复: 单位类拆两级 —— 章节单位([章节回集])优先于卷级单位([卷篇])。原实现单类
@@ -151,7 +154,8 @@ export function extractChapterNo(title: string): number {
  * 用途: reorderToc 分卷感知重排 —— 修前纯卷标题会走 extractChapterNo 被拍平进全局
  * 章号空间("第五卷"no=5 排到第5章旁, 多卷书目录被卷标题彻底打乱)。
  */
-export function extractVolumeAnchor(title: string): { no: number; name: string } | null {
+// R35-1C: 去 export 关键字 — 仅 reorderToc + groupByVolume 内部 (0 外部引用)
+function extractVolumeAnchor(title: string): { no: number; name: string } | null {
   if (!title) return null
   const t = foldDigits(title.trim())
   // 同时含章节单位 → 是章节标题, 不是卷锚点("第一卷 第1章 xxx"属章节)

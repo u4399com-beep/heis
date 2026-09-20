@@ -55,7 +55,8 @@ function topKeywords(tokens: string[], n: number): string[] {
 }
 
 /** 从文本提取关键词 */
-export function extractKeywords(text: string, maxCount = 8): string[] {
+// R35-1C: 去 export — 仅 generateKeywords 内部调用 (0 外部引用)
+function extractKeywords(text: string, maxCount = 8): string[] {
   if (!text || text.trim().length === 0) return []
   const tokens = tokenize(text)
   if (tokens.length === 0) return []
@@ -63,7 +64,8 @@ export function extractKeywords(text: string, maxCount = 8): string[] {
 }
 
 /** 从章节内容生成描述(取前 N 个有效段落, 拼接为摘要) */
-export function generateDescription(
+// R35-1C: 去 export — 仅 generateMetaDescription 内部调用 (0 外部引用)
+function generateDescription(
   content: string,
   maxLength = 150,
 ): string {
@@ -197,7 +199,8 @@ function formatWordCount(n: number): string {
 }
 
 /** 统一 TDK 生成入口 */
-export interface TDKResult {
+// R35-1C: 去 export — generateTDK 返回类型推断生效 (0 外部 import)
+interface TDKResult {
   title: string
   description: string
   keywords: string
@@ -230,7 +233,8 @@ export function generateTDK(opts: {
 // ============================================================
 
 /** 18 种 SEO TDK 预设 ID */
-export type TDKPresetId =
+// R35-1C: 去 export — randomCombineTDK 返回字段类型推断生效 (0 外部 import)
+type TDKPresetId =
   | 'classic-seo' | 'keyword-rich' | 'question-form' | 'list-style'
   | 'brand-first' | 'chapter-focus' | 'category-first' | 'author-first'
   | 'download-focus' | 'read-online' | 'latest-chapter' | 'complete-status'
@@ -238,7 +242,8 @@ export type TDKPresetId =
   | 'long-tail' | 'minimal'
 
 /** 单个 TDK 预设结构 */
-export interface TDKPreset {
+// R35-1C: 去 export — TDK_PRESETS 内部用 (0 外部 import)
+interface TDKPreset {
   id: TDKPresetId
   name: string
   titleTemplate: string
@@ -247,7 +252,8 @@ export interface TDKPreset {
 }
 
 /** 18 种 SEO TDK 预设表 */
-export const TDK_PRESETS: TDKPreset[] = [
+// R35-1C: 去 export — randomCombineTDK 内部采样 (0 外部 import)
+const TDK_PRESETS: TDKPreset[] = [
   {
     id: 'classic-seo',
     name: '经典 SEO',

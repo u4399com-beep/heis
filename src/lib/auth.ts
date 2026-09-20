@@ -16,7 +16,8 @@
 import { createHmac, timingSafeEqual, randomBytes } from 'node:crypto'
 
 export const SESSION_COOKIE_NAME = 'heis_admin'
-export const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000 // 12h
+// R35-1C: 去 export 关键字 — 仅 createSession 内部用 (0 外部引用)
+const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000 // 12h
 
 // ---- 登录尝试限流 (in-process, per IP) ----
 const MAX_LOGIN_ATTEMPTS = 5

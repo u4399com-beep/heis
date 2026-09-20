@@ -2255,6 +2255,12 @@ export class TaskRunner {
               .split(/\n+/)
               .map((seg) => seg.replace(/\s+/g, ' ').trim())
               .filter(Boolean)
+            // R35-1B P2: 修前 "兜底生效" 日志位于 if/else if/else 链之后无条件打出,
+            // segments.length===0(桥返回全空白)分支已显式不采纳(保留原 cleaned)却仍打
+            // "生效" 误导运维. 现用 adopted 标志仅在真正采纳(else if/else 分支)时打
+            // "生效", 空段分支只打 "不采纳" (口径与 cleanContentHtmlAsync line 1046
+            // "降级回 cheerio" 同向, 但 runner 兜底路径保留原 cleaned 而非降级 cheerio)
+            let trafilaturaAdopted = false
             if (segments.length === 0) {
               // 桥返回全空白(段落分类全 reject 后输出 ' \n ' 等): 不采纳, 保留原 cleaned
               console.warn(`[runner] trafilatura 兜底: 桥返回空白文本(段落全 reject), 不采纳: ${q.url.slice(0, 120)}`)
@@ -2263,13 +2269,17 @@ export class TaskRunner {
               cleaned = segments
                 .join('\n\n')
                 .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\u200B-\u200D\u2060\uFEFF]/g, '')
+              trafilaturaAdopted = true
             } else {
               // HTML 模式: 段落包 <p> + 段间无空行 + <>& HTML escape(防注入)
               cleaned = segments
                 .map((seg) => `<p>${seg.replace(/[<>&]/g, (c) => (c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&amp;'))}</p>`)
                 .join('')
+              trafilaturaAdopted = true
             }
-            console.warn(`[runner] trafilatura 兜底生效(标准结果过短, 用桥提取替代): ${q.url.slice(0, 120)}`)
+            if (trafilaturaAdopted) {
+              console.warn(`[runner] trafilatura 兜底生效(标准结果过短, 用桥提取替代): ${q.url.slice(0, 120)}`)
+            }
           }
         }
       }
