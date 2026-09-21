@@ -32,8 +32,8 @@
 
 // agent-F: 改用 _shared/server 的 assertSafeSsrfTarget 做桥内 SSRF 守卫
 // (与引擎侧 assertSafeTarget 双重防线)。默认拒绝 localhost/私网/链路本地/元数据端点;
-// BRIDGE_SSRF_ALLOW_LOOPBACK=1 时放行 127.0.0.1/::1(供 scripts/archive/verify-gg-d-relay-token
-// 等回环测试场景, 生产部署不应设此环境变量)。
+// BRIDGE_SSRF_ALLOW_LOOPBACK=1 时放行 127.0.0.1/::1(原供 scripts/archive/verify-gg-d-relay-token 等
+// 回环测试场景, R41-1C 归档删除该历史脚本, 结论沉淀于此; 生产部署不应设此环境变量)。
 import {
   assertSafeSsrfTarget,
   createBridgeServer,

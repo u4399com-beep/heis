@@ -106,6 +106,8 @@ var (
         chapterPathRe            = regexp.MustCompile(`^/txt/[A-Za-z0-9]+/[A-Za-z0-9]+(?:_\d+)?\.html$`)
         nextPageHrefRe           = regexp.MustCompile(`<a[^>]+href=["']([^"']+)["'][^>]*>\s*(?:下一页|下页|下壹頁|下一頁)\s*</a>`)
         nextPageClassRe          = regexp.MustCompile(`<a[^>]+class=["'][^"']*(?:nextpage|page-next|next-page|nexturl)[^"']*["'][^>]*href=["']([^"']+)["']`)
+        // R41-1C: 跨页合并后用 — 折叠 3+ 换行为 2 个(原 multiNLRe 同款, htmlToText 已收口到 bridgeserver)
+        multi3PlusRe             = regexp.MustCompile(`\n{3,}`)
 )
 
 type extractResult struct {
@@ -141,38 +143,6 @@ func extractChapterInner(html string) extractResult {
 }
 
 // htmlToText — HTML 片段 → 纯文本(同 deqixs-proxy, &amp; 最后解码)。
-func htmlToText(html string) string {
-        t := brRe.ReplaceAllString(html, "\n")
-        t = closePTDivRe.ReplaceAllString(t, "\n")
-        t = tagRe.ReplaceAllString(t, "")
-        t = nbspRe.ReplaceAllString(t, " ")
-        t = ltRe.ReplaceAllString(t, "<")
-        t = gtRe.ReplaceAllString(t, ">")
-        t = quotRe.ReplaceAllString(t, "\"")
-        t = aposRe.ReplaceAllString(t, "'")
-        t = ampRe.ReplaceAllString(t, "&")
-        lines := strings.Split(t, "\n")
-        for i, l := range lines {
-                lines[i] = strings.TrimSpace(l)
-        }
-        out := strings.Join(lines, "\n")
-        out = multiNLRe.ReplaceAllString(out, "\n\n")
-        return strings.TrimSpace(out)
-}
-
-var (
-        brRe         = regexp.MustCompile(`(?i)<br\s*/?>`)
-        closePTDivRe = regexp.MustCompile(`(?i)</(?:p|div)>`)
-        tagRe        = regexp.MustCompile(`<[^>]+>`)
-        nbspRe       = regexp.MustCompile(`(?i)&nbsp;`)
-        ltRe         = regexp.MustCompile(`(?i)&lt;`)
-        gtRe         = regexp.MustCompile(`(?i)&gt;`)
-        quotRe       = regexp.MustCompile(`(?i)&quot;`)
-        aposRe       = regexp.MustCompile(`(?i)&#39;|&apos;`)
-        ampRe        = regexp.MustCompile(`(?i)&amp;`)
-        multiNLRe    = regexp.MustCompile(`\n{3,}`)
-)
-
 // ---------- 启动自检 ----------
 func selfTest() bool {
         fails := []string{}
@@ -199,7 +169,7 @@ func selfTest() bool {
         c := base64.StdEncoding.EncodeToString([]byte(s))
         round := safeDecryptC(c)
         if round != plain {
-                fails = append(fails, "合成c回环("+truncStr(round, 30)+")")
+                fails = append(fails, "合成c回环("+bridgeserver.TruncStr(round, 30)+")")
         }
         // ② 边界校验: n 越界(099)应拒绝
         badSB := strings.Builder{}
@@ -216,7 +186,7 @@ func selfTest() bool {
                 fails = append(fails, "n<100 未拒绝")
         }
         // ③ HTML→文本
-        conv := htmlToText("<p>你好</p><p>　世界&nbsp;x</p><p></p><p>尾段</p>")
+        conv := bridgeserver.HTMLToText("<p>你好</p><p>　世界&nbsp;x</p><p></p><p>尾段</p>")
         if !strings.HasPrefix(conv, "你好\n世界 x\n") {
                 fails = append(fails, "HTML→文本("+conv+")")
         }
@@ -313,7 +283,7 @@ func getRes(targetURL string, headers map[string]string) getResResult {
                 resp, err := client.Do(req)
                 if err != nil {
                         if attempt == 2 {
-                                return getResResult{OK: false, Status: -1, Error: truncStr(err.Error(), 120)}
+                                return getResResult{OK: false, Status: -1, Error: bridgeserver.TruncStr(err.Error(), 120)}
                         }
                         time.Sleep(600 * time.Millisecond)
                         continue
@@ -442,7 +412,7 @@ type onePageResult struct {
 func fetchOnePage(pageURL, pagePath string) onePageResult {
         res := getRes(pageURL, chapterHeaders())
         if !res.OK {
-                return onePageResult{OK: false, Error: fmt.Sprintf("章节页上游失败(%d%s)", res.Status, ifStr(res.Error != "", " "+res.Error, ""))}
+                return onePageResult{OK: false, Error: fmt.Sprintf("章节页上游失败(%d%s)", res.Status, bridgeserver.IfStr(res.Error != "", " "+res.Error, ""))}
         }
         html := string(res.Buf)
         // ① 前半: #chaptercontent 内层(已摘 morecontent 占位)
@@ -460,7 +430,7 @@ func fetchOnePage(pageURL, pagePath string) onePageResult {
                 return onePageResult{OK: false, Error: "var c 解密失败(算法失配/样本异常)"}
         }
         // ③ 合并 → 纯文本
-        content := htmlToText(got.Inner + part2)
+        content := bridgeserver.HTMLToText(got.Inner + part2)
         // ④ 探测下一页
         nextURL := findNextPageUrl(html, pagePath)
         return onePageResult{OK: true, Content: content, NextURL: nextURL}
@@ -469,7 +439,7 @@ func fetchOnePage(pageURL, pagePath string) onePageResult {
 func fetchContent(chapterURL string) contentResult {
         pc := parseChapterURL(chapterURL)
         if !pc.OK {
-                return contentResult{OK: false, Error: fmt.Sprintf("u 必须为 xinjianpan 章节页 URL(/txt/{code}/{page}.html), 收到: %s", truncStr(chapterURL, 120))}
+                return contentResult{OK: false, Error: fmt.Sprintf("u 必须为 xinjianpan 章节页 URL(/txt/{code}/{page}.html), 收到: %s", bridgeserver.TruncStr(chapterURL, 120))}
         }
         var allParts []string
         pages := 0
@@ -508,16 +478,9 @@ func fetchContent(chapterURL string) contentResult {
                 pagesTruncated = true
         }
         merged := strings.Join(allParts, "\n\n")
-        merged = multiNLRe.ReplaceAllString(merged, "\n\n")
+        merged = multi3PlusRe.ReplaceAllString(merged, "\n\n")
         merged = strings.TrimSpace(merged)
         return contentResult{OK: true, Content: merged, Pages: pages, PagesTruncated: pagesTruncated}
-}
-
-func ifStr(cond bool, t, f string) string {
-        if cond {
-                return t
-        }
-        return f
 }
 
 // ---------- 健康检查 ----------
@@ -555,9 +518,14 @@ func healthCheck() (map[string]any, error) {
         } else {
                 probeMu2.Unlock()
         }
+        // R41-1B: 复制 snapshot 后返回, 防止读时另一线程写入造成数据竞争
+        probeMu2.Lock()
+        reachSnap := upstreamReach2
+        statusSnap := upstreamStatus2
+        probeMu2.Unlock()
         return map[string]any{
-                "upstreamReachable": upstreamReach2,
-                "upstream":          upstreamStatus2,
+                "upstreamReachable": reachSnap,
+                "upstream":          statusSnap,
         }, nil
 }
 
@@ -591,16 +559,9 @@ func handle(w http.ResponseWriter, r *http.Request) {
         })
 }
 
-func truncStr(s string, n int) string {
-        if len(s) <= n {
-                return s
-        }
-        return s[:n]
-}
-
 func main() {
         stOk := selfTest()
-        fmt.Printf("[xjp-proxy] self-test: %s port=%d\n", boolStr(stOk), PORT)
+        fmt.Printf("[xjp-proxy] self-test: %s port=%d\n", bridgeserver.BoolStr(stOk), PORT)
         bs := bridgeserver.New(bridgeserver.BridgeServerOptions{
                 Name:            "xjp-proxy",
                 Port:            PORT,
@@ -618,11 +579,4 @@ func main() {
                 },
         })
         bs.ListenAndServe()
-}
-
-func boolStr(b bool) string {
-        if b {
-                return "PASS"
-        }
-        return "FAIL"
 }

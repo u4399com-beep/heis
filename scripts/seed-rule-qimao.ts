@@ -4,7 +4,7 @@
 // 幂等: 同名规则先删后建; export{} + import.meta.main 守卫(可被 verify 脚本 import 规则配置)
 //
 // ================= 结构依据(Legado 书源反译, 真网实测) =================
-// 参考 scripts/archive/reference-shuyuan-7698-qimao.json — yckceo 7698.json
+// 原参考 scripts/archive/reference-shuyuan-7698-qimao.json — yckceo 7698.json (R41-1C 归档已删, 结论沉淀于本脚本逻辑)
 // 「⭐七猫[官方]v3.1✨」(bookSourceUrl=https://api-bc.wtzw.com#七猫官方API)。
 // 官方双域 API: api-bc.wtzw.com(search/detail/leader-board) + api-ks.wtzw.com(toc/content)。
 //

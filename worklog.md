@@ -16281,3 +16281,168 @@ Work Log:
 
 Stage Summary:
 - 完成 R40-1B admin 后台 8 个新页面 + 13 个 API 路由 Go 端完整实现. 与 TS 端契约 (URL/方法/字段消毒/响应格式/错误码) 1:1 对齐. 与 R39-1C 既有 6 页面 (dashboard/tasks/books/rules/sites/layout) 风格统一 (深色主题 + 表格卡 + Modal + Toast). admin 路由体系扩展到 13 页面 + 24 API endpoint. 编译 0 errors, 全部 HTTP 200, 9 个 CRUD 流程测试通过. 与 R38-1C 采集引擎 + R39-1C admin DBClient 适配器零冲突. 修改 3 文件 (admin.go +1906 行/main.go +89 行/layout.html +9 nav), 新增 8 模板 (1019 行). 详细工作记录: agent-ctx/R40-1B-full-stack-developer.md
+
+---
+Task ID: R41-1A
+Agent: full-stack-developer (Go采集引擎深度抓bug+反反爬)
+Task: crawl/ 8 模块深度审查 + 反反爬增强
+
+Work Log:
+- 读交接: worklog.md 末 200 行 (R39-1C adminDB 适配器 + R39-1A 5×7 页型模板 + R40-1B
+  admin 8 页面) + R38-1C Go 采集引擎 7063 行 8 模块. TS 端采集引擎历史 (8 级降级链 +
+  并发架构 + cookieJar + cleaner trafilatura + R25-R34 多轮修复).
+- 逐行深度审查 go-backend/crawl/ 8 模块 (7064 行):
+  · fetcher.go (1689) — 8 级降级链 + UA 池 + CookieJar + SSRF 守卫
+  · parser.go (1608) — HTML/JSON + goquery
+  · cleaner.go (705) — trafilatura 桥 + 零宽字符
+  · runner.go (1324) — Semaphore + 三阶段并发 + BudgetExceeded
+  · smart.go (291) — normalizeCategory
+  · storage.go (363) — 路径穿越 + 原子写入
+  · types.go (706) — 类型 + 默认值
+  · hostgate.go (378) — 同 host 并发 + 速率闸门
+- 抓 P0/P1 bug 共 7 大类 + 反反爬增强 7 大类, 修复全部落地:
+
+P0 严重 bug (并发安全 + 资源泄漏):
+- P0-1 hostgate.go pump 槽位泄漏:
+  · pump() 第 211 行 st.inFlight++ 后, 第 213-218 行的 select { case w.ch<-struct{}{}:
+    default: continue } 若命中 default (waiter 已超时), inFlight 已增但 Release 永不被
+    调用 → 槽位永久泄漏, 该 host 最终死锁.
+  · 修复: default 分支回滚 st.inFlight-- + 前置检查 waiter ctx 是否已取消 (避免无谓
+    send + 避免 inFlight 增后回滚).
+- P0-2 hostgate.go Acquire ctx2.Done() 与 pump 竞态泄漏:
+  · Acquire 等待时, pump 可能在 ctx2 即将 Done 的瞬间成功 send 到 w.ch (buffered chan
+    容量 1). 此时 Acquire 的 select 若选中 ctx2.Done() 分支, inFlight 已增但 Release
+    永不调用 → 槽位泄漏.
+  · 修复: ctx2.Done() 分支非阻塞 drain w.ch; 若有值则视为成功 admit, 返回 ticket (调用
+    方会正常 Release).
+- P0-3 runner.go 章节 goroutine 数据竞态:
+  · 阶段 2 章节 goroutine (858-893 行) 写多个共享变量无锁: stats.ChaptersUpdated++ /
+    stats.Errors++ / consecutiveErrs = 0 / consecutiveErrs++ / done++ /
+    progress.ContentDone = done / bookDoneMap[q.BookCtx.BookID]++ (map 并发写 panic
+    风险). 阶段 1 书籍 goroutine (752 行) stats.Errors++ 也竞态.
+  · 修复: 引入 batchMu sync.Mutex (章节阶段) + bookBatchMu sync.Mutex (书籍阶段) 保护
+    所有共享计数器 / map 写.
+- P0-4 runner.go rt.maxRequests 写入竞态:
+  · rt.maxRequests = cfg.MaxRequests (624 行) 在 tr.runtimes[taskID] = rt (612 行) 之后,
+    无同步, admin Snapshot 调 rt.Snapshot() 时可能读到零值.
+  · SetMaxRequests 用 atomic.StoreInt64(&rt.epoch, rt.epoch) 做 "memory barrier" 是错的
+    (epoch 自存自不构成 barrier).
+  · 修复: maxRequests 写入移到 MarkRunning / registration 之前 (happens-before 关系保证
+    admin Snapshot 看到非零值). SetMaxRequests 改用 rt.mu 锁保护写入.
+- P0-5 fetcher.go brotli 不解压:
+  · Accept-Encoding: gzip, deflate, br — Go net/http 自动解 gzip 但不解 brotli. 服务器返
+    br 时 body 是原始 brotli 字节, parser 全炸.
+  · 修复: 改 Accept-Encoding: gzip, deflate (curl --compressed 自动解全栈).
+- P0-6 fetcher.go curl --no-keepalive 浪费:
+  · --no-keepalive 禁用 TCP keep-alive, 每请求新建连接, 浪费 + 慢 + 易触发频控.
+  · 修复: 移除该 flag (curl 默认开 keepalive), 改注入 -H "Connection: keep-alive".
+- P0-7 fetcher.go parentDomainChain 包含 TLD:
+  · 函数生成 [a.b.example.com, b.example.com, example.com, com] 末尾含 TLD "com". 若任
+    一调用方 Store(domain="com", ...) 会污染所有 *.com 请求.
+  · 修复: 跳过末段 (TLD), 不入 hosts (cookie 跨子域合并不覆盖 TLD 级).
+
+P1 正确性 bug:
+- P1-1 fetcher.go decodeBody 不识别 GBK:
+  · 许多中文小说站用 GBK / GB2312 / GB18030, 当前直接 string(body) 会乱码.
+  · 修复: 用 golang.org/x/text/encoding/htmlindex (已在 go.mod) 按 Content-Type charset
+    + <meta charset> 自动解码. 验证解码后是合法 UTF-8.
+- P1-2 fetcher.go 每请求新建 Transport 浪费:
+  · fetchHttp 每次创建 transport + client, 无连接复用, 高并发下 TCP 句柄爆炸.
+  · 修复: 进程级单例 globalTransport (MaxIdleConnsPerHost 16 + IdleConnTimeout 90s +
+    ForceAttemptHTTP2) + transportWithProxy (克隆挂代理, 不污染全局). callBridge 也改用
+    globalHttp (原 http.DefaultClient).
+- P1-3 fetcher.go curl 自定义 headers 无控制字符剥离:
+  · cfg.Headers 注入 curl args 时不剥控制字符, 与 buildHeaders (net/http 路径) 不对称,
+    可能注入非法 header.
+  · 修复: 用同款 stripControlChars 剥离.
+- P1-4 fetcher.go IsJSChallenge 逻辑混乱:
+  · if len(html) > 20000 分支恒返回 false (因 && len(html) < 5000 永远不成立), 代码可读
+    性差.
+  · 修复: 简化为 if len(html) > 20000 { return false }; return jsChallengeRe.MatchString(html).
+- P1-5 fetcher.go proxyInst.useCount 无界增长:
+  · 代理 useCount map 只增不减, 长跑进程内存泄漏.
+  · 修复: 新增 lastSweptAt 字段, 每 5min 周期性清扫 (清当前 pool 之外的条目 + 过期失败冷却).
+- P1-6 fetcher.go dead code min 函数:
+  · 文件末 min(a, b int) int 函数在 IsJSChallenge 简化后不再被调用. Go 1.21+ 有 builtin
+    min, 包级 min 阴影 builtin 无意义.
+  · 修复: 删除.
+
+反反爬增强 (7 大类):
+- Enh-1 UA 池扩充 16 → 31 个:
+  · Chrome 137-143 desktop (Win/Mac/Linux, 9 个)
+  · Edge 137-142 (3 个)
+  · Firefox 125-131 desktop (Win/Mac/Linux/Ubuntu, 7 个)
+  · Safari 17.4-18.2 desktop (4 个)
+  · Mobile: iPhone 17.4/18.0/18.2 + iPad 17.4 + Android Pixel 8 / SM-S926B / SM-S931B (7 个)
+- Enh-2 Sec-Ch-Ua 头族 (按 UA 品牌自动注入):
+  · Chrome / Edge → Sec-Ch-Ua: "Not?A_Brand";v="8", "Chromium";v="137" (含主版本号) +
+    Sec-Ch-Ua-Mobile (?0/?1) + Sec-Ch-Ua-Platform ("Windows"/"macOS"/"Linux"/"Android")
+  · Firefox / Safari 不发 Sec-Ch-Ua (避免暴露不一致指纹)
+  · 同时注入 Sec-Fetch-Dest=document / Sec-Fetch-Mode=navigate / Sec-Fetch-Site=none /
+    Sec-Fetch-User=?1 (代表顶层文档导航)
+  · 注入 Priority: u=0, i (HTTP/2 priority hint)
+  · 注入 DNT: 1 (反追踪标识, 与浏览器等同)
+  · buildHeaders + fetchViaCurl 两路径对称注入 (防 curl 路径暴露指纹)
+- Enh-3 Per-host Referer 记忆 (反反爬核心增强):
+  · 真实浏览器会以"上一页 URL"作为下个请求的 Referer (而非目标站 origin).
+  · 缺失该记忆 → 反爬易识别为非浏览器 (Referer 恒为 origin / 用户配置).
+  · 新增 hostRefererState (per-host 最近内部页 URL, 5min TTL, 1000 host 软上限):
+    SetHostReferer(rawURL) / GetHostReferer(host) / ClearHostReferer(host)
+  · fetchHttp / fetchViaCurl 成功后 SetHostReferer (供下次同站请求作 Referer).
+  · buildHeaders / fetchViaCurl Referer 优先级: cfg.RefererURL > hostRefererMap > 目标站
+    origin.
+- Enh-4 随机延迟 (per-host jitter):
+  · 请求前 sleep 随机 [0, JitterMs) 毫秒, 避免请求间隔恒定易被识别.
+  · 新增 jitterSleep(ctx, jitterMs) 函数; fetchHttp / fetchViaCurl 入口调用.
+- Enh-5 重试退避 (full jitter exponential):
+  · fetchHttp 内置重试 (cfg.Retries 次, 钳 [0,5]):
+    - 网络层错误 (timeout / connection reset / EOF / i/o timeout 等) 重试
+    - 429 / 500 / 502 / 503 / 504 / 408 重试 (服务端临时不可用)
+    - context.Canceled 不重试 (调用方主动取消)
+    - 退避: full jitter (0 ~ 1.5s×2^attempt, 封顶 8s); 4xx/5xx 优先尊重 Retry-After 头
+- Enh-6 全局 HTTP Transport (性能优化):
+  · 进程级单例 globalTransport (MaxIdleConns 200 + MaxIdleConnsPerHost 16 +
+    IdleConnTimeout 90s + ResponseHeaderTimeout 30s + ForceAttemptHTTP2)
+  · transportWithProxy (克隆挂代理, 不污染全局)
+  · callBridge 改用 globalHttp (原 http.DefaultClient 无连接池优化)
+- Enh-7 GBK / GB18030 charset 自动解码:
+  · decodeBody 用 golang.org/x/text/encoding/htmlindex 按 Content-Type charset + <meta
+    charset> 自动解码. 验证解码后是合法 UTF-8.
+  · 中文站 GBK / GB2312 / GB18030 不再乱码.
+
+文件改动统计 (crawl/ 7064 → 7614 行, +550 行):
+- fetcher.go: 1689 → 2199 (+510 行) — UA 扩充 + Referer 记忆 + jitter + 全局 transport +
+  重试退避 + Sec-Ch-Ua + GBK 解码 + curl 修复 + proxyState sweep + 删 dead min + callBridge
+  改 globalHttp
+- runner.go: 1324 → 1342 (+18 行) — maxRequests 写入提前 + batchMu / bookBatchMu 保护
+  goroutine 共享变量 + SetMaxRequests 改用 rt.mu 锁
+- hostgate.go: 378 → 402 (+24 行) — pump 回滚 inFlight + 前置检查 waiter ctx 取消 +
+  Acquire ctx2.Done() 分支 drain w.ch
+- 其他模块 (parser / cleaner / smart / storage / types) 0 改动 (深度审查无 P0/P1 bug)
+
+未修改 (尊重约束):
+- go-backend/main.go (B agent 负责) ✓
+- go-backend/admin.go (B agent 负责) ✓
+- go-backend/templates/* (已完成) ✓
+- go-backend/services/* (R41-1B agent 并行改 SSRF, 不动) ⚠
+- src/* (旧 TS 代码, C agent 清理) ✓
+
+验证:
+- go build -o heis-backend . → 0 errors, binary 21,902,228 bytes (21.9MB)
+- go vet ./crawl/... → 0 warnings (crawl 包 + main 包全 pass)
+- go vet ./... → services/moli-bridge + services/deqixs-proxy 有 R41-1B 并行未完成的
+  httpURLRe / bridgeserver.IfStr 编译错误, 非 R41-1A 范围 (services/* 是 R41-1B scope)
+- bun run lint → 0 errors
+- dev.log 无 panic / fatal
+
+Stage Summary:
+- Go 采集引擎深度审查 8 模块 7064 行, 抓 P0/P1 bug 7 大类 + 反反爬增强 7 大类, 全部修
+  复落地. 编译 0 errors, crawl 包 + main 包 vet 0 warnings, binary 21.9MB. 核心保留 8 级
+  降级链 + Semaphore + 三阶段并发架构 + CookieJar + cleaner trafilatura 桥 + BudgetExceeded
+  上抛路径 + SSRF 守卫 + 路径穿越防御. fetcher.go +510 行 (UA 池 16→31, 新增 Sec-Ch-Ua /
+  Sec-Fetch-* / Priority / DNT 头族, per-host Referer 记忆, jitter sleep, 重试退避, 全局
+  transport, GBK charset 解码, brotli 修复, curl --no-keepalive 移除, parentDomainChain
+  TLD 修复, proxyState sweep, dead min 删除). runner.go +18 行 (maxRequests 写入提前 +
+  batchMu 保护 goroutine 共享变量 + SetMaxRequests 改用锁). hostgate.go +24 行 (pump
+  inFlight 回滚 + 前置检查 waiter ctx + Acquire drain w.ch). 详细工作记录:
+  agent-ctx/R41-1A-full-stack-developer.md

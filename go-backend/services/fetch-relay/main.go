@@ -25,10 +25,12 @@
 package main
 
 import (
+        "context"
         "encoding/base64"
         "encoding/json"
         "fmt"
         "io"
+        "net"
         "net/http"
         "net/url"
         "os"
@@ -51,7 +53,6 @@ const (
 )
 
 var (
-        httpURLRe    = regexp.MustCompile(`^https?://`)
         proxySpecRe  = regexp.MustCompile(`^(https?|socks5h?|socks4a?)://[^\s,]+$`)
         ssrfAllowLB = os.Getenv("BRIDGE_SSRF_ALLOW_LOOPBACK") == "1"
 )
@@ -81,7 +82,7 @@ func handle(w http.ResponseWriter, r *http.Request) {
                 return
         }
         u := body.URL
-        if !httpURLRe.MatchString(u) || len(u) > 2048 {
+        if !bridgeserver.HTTPURLRe.MatchString(u) || len(u) > 2048 {
                 bridgeserver.WriteJSON(w, http.StatusBadGateway, map[string]any{"relayError": "url 非法(仅 http/https)"})
                 return
         }
@@ -216,14 +217,14 @@ func buildTransport(proxyStr string) (*http.Transport, error) {
                 if err != nil {
                         return nil, fmt.Errorf("socks5 dialer: %w", err)
                 }
-                tr.Dial = dialer.Dial
+                tr.DialContext = wrapDialContext(dialer)
         case "socks4", "socks4a":
                 // socks4 通过 socks5 包近似(实际生产用 socks4 比例低, 此处宽松接受)
                 dialer, err := proxy.SOCKS5("tcp", u.Host, nil, proxy.Direct)
                 if err != nil {
                         return nil, fmt.Errorf("socks4 dialer: %w", err)
                 }
-                tr.Dial = dialer.Dial
+                tr.DialContext = wrapDialContext(dialer)
         default:
                 return nil, fmt.Errorf("unsupported proxy scheme: %s", u.Scheme)
         }
@@ -236,6 +237,22 @@ func passFromURL(u *url.URL) string {
         }
         p, _ := u.User.Password()
         return p
+}
+
+// wrapDialContext — 将 proxy.Dialer(仅 Dial) 适配为 DialContext 签名.
+// 优先用 ContextDialer 实现(socks5 dialer 实际实现); 否则 fallback 不响应 ctx 取消.
+// R41-1C: 收口 tr.Dial(Go 1.7 deprecated SA1019) → tr.DialContext.
+func wrapDialContext(d proxy.Dialer) func(ctx context.Context, network, addr string) (net.Conn, error) {
+        if cd, ok := d.(proxy.ContextDialer); ok {
+                return cd.DialContext
+        }
+        return func(ctx context.Context, network, addr string) (net.Conn, error) {
+                // 不阻塞 ctx 取消 — 调用方在 tr.ResponseHeaderTimeout / 总 30s 帽做兜底
+                if ctx.Err() != nil {
+                        return nil, ctx.Err()
+                }
+                return d.Dial(network, addr)
+        }
 }
 
 // collectHeaders — 把 http.Header 展开为 [k,v] 对(排除 Set-Cookie, 由专用通道)。

@@ -46,6 +46,10 @@ import (
         "strings"
         "sync"
         "time"
+        "unicode/utf8"
+
+        "golang.org/x/text/encoding/htmlindex"
+        "golang.org/x/text/transform"
 )
 
 // ---------- 常量 ----------
@@ -58,23 +62,43 @@ const (
 )
 
 // UA_POOL — 与 TS 端 fetcher.ts UA_POOL 同款 (Chrome 137~142 / Firefox 125~130 / Safari 17.4~18.0).
+// R41-1A: 扩充到 24 个 (新增 Chrome 143 / Firefox 129-131 / Safari 18.1-18.2 / Edge 142 / Chrome on macOS ARM / Linux Firefox).
 var UA_POOL = []string{
+        // Chrome 137-143 desktop
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36 Edg/137.0.0.0",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
-        "Mozilla/5.0 (iPad; CPU OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
-        "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+        // Edge 137-142 (Chromium engine)
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36 Edg/137.0.0.0",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36 Edg/142.0.0.0",
+        // Firefox 125-131 desktop
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:128.0) Gecko/20100101 Firefox/128.0",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.5; rv:131.0) Gecko/20100101 Firefox/131.0",
+        "Mozilla/5.0 (X11; Linux x86_64; rv:129.0) Gecko/20100101 Firefox/129.0",
+        "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0",
+        // Safari 17.4-18.2 desktop
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
-        "Mozilla/5.0 (Linux; Android 14; SM-S926B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15",
+        // Mobile UAs
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
         "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Mobile/15E148 Safari/604.1",
+        "Mozilla/5.0 (iPad; CPU OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
+        "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36",
+        "Mozilla/5.0 (Linux; Android 14; SM-S926B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36",
+        "Mozilla/5.0 (Linux; Android 15; SM-S931B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36",
 }
 
 // RandomUA — 随机 UA (UA 池随机选).
@@ -82,9 +106,50 @@ func RandomUA() string {
         return UA_POOL[rand.Intn(len(UA_POOL))]
 }
 
+// mobileUARe — 移动 UA 识别正则 (R41-1A: 提为包级, 避免 IsMobileUA 每次重新编译).
+var mobileUARe = regexp.MustCompile(`iPhone|iPad|Android|Mobile Safari|;\s*Mobile/`)
+
 // IsMobileUA — UA 移动性判定.
 func IsMobileUA(ua string) bool {
-        return regexp.MustCompile(`iPhone|iPad|Android|Mobile Safari|;\s*Mobile/`).MatchString(ua)
+        return mobileUARe.MatchString(ua)
+}
+
+// IsFirefoxUA — UA Firefox 浏览器判定 (Sec-Ch-Ua 头族差异).
+func IsFirefoxUA(ua string) bool {
+        return strings.Contains(ua, "Gecko/") && strings.Contains(ua, "Firefox/")
+}
+
+// IsSafariUA — UA Safari 浏览器判定 (非 Chrome, 非 Firefox, 含 Version/ + Safari/).
+func IsSafariUA(ua string) bool {
+        if !strings.Contains(ua, "Safari/") {
+                return false
+        }
+        if strings.Contains(ua, "Chrome/") || strings.Contains(ua, "Chromium/") {
+                return false
+        }
+        return strings.Contains(ua, "Version/")
+}
+
+// chromeVerRe — 提取 Chrome 主版本号 (Sec-Ch-Ua 头需精确品牌+版本).
+var chromeVerRe = regexp.MustCompile(`Chrome/(\d+)`)
+
+// extractChromeVer — 从 UA 提取 Chrome 主版本号, 失败返回 0.
+func extractChromeVer(ua string) int {
+        m := chromeVerRe.FindStringSubmatch(ua)
+        if len(m) < 2 {
+                return 0
+        }
+        var n int
+        fmt.Sscanf(m[1], "%d", &n)
+        return n
+}
+
+// intToStrOr — 整数转字符串, 0 时返回 fallback.
+func intToStrOr(n int, fallback string) string {
+        if n <= 0 {
+                return fallback
+        }
+        return fmt.Sprintf("%d", n)
 }
 
 // ---------- CookieJar (per-domain, 跨子域合并) ----------
@@ -148,6 +213,8 @@ func (j *CookieJar) prune() {
 
 // parentDomainChain — 域名父域链 (a.b.example.com → [a.b.example.com, b.example.com, example.com]).
 // IP / localhost 不做父域遍历 (不是 DNS 层级结构).
+// R41-1A: 修复 TLD 误入 hosts 的 bug — 原实现 append 在 break 之前, 把末段 "com" 也加入 hosts,
+//          若任一调用方 Store(domain="com", ...) 会污染所有 *.com 请求. 改为不 append 末段.
 func parentDomainChain(domain string) []string {
         domain = strings.ToLower(strings.TrimSpace(domain))
         if domain == "" {
@@ -168,12 +235,12 @@ func parentDomainChain(domain string) []string {
                 maxLevels = 5
         }
         for i := 0; i < maxLevels; i++ {
-                h := strings.Join(parts[i:], ".")
-                hosts = append(hosts, h)
-                // 末段是 TLD, 不继续
+                // 末段是 TLD, 不入 hosts (不参与 cookie 跨子域合并)
                 if len(parts[i:]) == 1 {
                         break
                 }
+                h := strings.Join(parts[i:], ".")
+                hosts = append(hosts, h)
         }
         return hosts
 }
@@ -437,6 +504,172 @@ func ClearDomainUA(domain string) {
         domainUa.Delete(domain)
 }
 
+// ---------- Per-host Referer 记忆 (反反爬增强 R41-1A) ----------
+//
+// 真实浏览器会以"上一页 URL"作为下个请求的 Referer (而非目标站 origin).
+// 例: 用户从 a.com/list 翻到 a.com/book/1, 下个章节 a.com/chapter/1 的 Referer 应是 a.com/book/1.
+// 缺失该记忆 → 反爬易识别为非浏览器 (Referer 恒为 origin / 用户配置).
+// 实现: per-host 最近内部页 URL (LMFU, 5min TTL, 1000 host 软上限).
+
+type hostRefererState struct {
+        mu       sync.Mutex
+        recent   map[string]hostRefererEntry
+        lastSwept int64
+}
+
+type hostRefererEntry struct {
+        url string
+        at  int64
+}
+
+const (
+        HostRefererTTLms    = 5 * 60 * 1000 // 5min
+        HostRefererCap      = 1000
+        HostRefererSweepEvery = 50
+)
+
+var hostRefererInst = &hostRefererState{recent: map[string]hostRefererEntry{}}
+
+// SetHostReferer — 记录某 host 的最近内部页 URL (作为后续请求的 Referer).
+// 仅接受 http(s) + 非回环 (避免本地桥 URL 污染).
+func SetHostReferer(rawURL string) {
+        u, err := url.Parse(rawURL)
+        if err != nil || u.Host == "" {
+                return
+        }
+        if u.Scheme != "http" && u.Scheme != "https" {
+                return
+        }
+        if IsLoopbackTarget(rawURL) {
+                return
+        }
+        host := strings.ToLower(u.Host)
+        now := time.Now().UnixMilli()
+        hostRefererInst.mu.Lock()
+        defer hostRefererInst.mu.Unlock()
+        // 周期性 sweep (惰性)
+        if hostRefererInst.lastSwept == 0 || now-hostRefererInst.lastSwept > HostRefererSweepEvery*1000 {
+                hostRefererInst.lastSwept = now
+                for k, e := range hostRefererInst.recent {
+                        if now-e.at > HostRefererTTLms {
+                                delete(hostRefererInst.recent, k)
+                        }
+                }
+        }
+        // 软上限
+        if len(hostRefererInst.recent) > HostRefererCap {
+                // 驱逐一个最旧的
+                oldestKey := ""
+                oldestAt := int64(0)
+                for k, e := range hostRefererInst.recent {
+                        if oldestAt == 0 || e.at < oldestAt {
+                                oldestAt = e.at
+                                oldestKey = k
+                        }
+                }
+                if oldestKey != "" {
+                        delete(hostRefererInst.recent, oldestKey)
+                }
+        }
+        hostRefererInst.recent[host] = hostRefererEntry{url: rawURL, at: now}
+}
+
+// GetHostReferer — 取某 host 的最近内部页 URL (作 Referer 用). 无则 "".
+func GetHostReferer(host string) string {
+        host = strings.ToLower(strings.TrimSpace(host))
+        if host == "" {
+                return ""
+        }
+        hostRefererInst.mu.Lock()
+        defer hostRefererInst.mu.Unlock()
+        e, ok := hostRefererInst.recent[host]
+        if !ok {
+                return ""
+        }
+        if time.Now().UnixMilli()-e.at > HostRefererTTLms {
+                delete(hostRefererInst.recent, host)
+                return ""
+        }
+        return e.url
+}
+
+// ClearHostReferer — 失败时清掉陈旧 referer, 下次换新.
+func ClearHostReferer(host string) {
+        host = strings.ToLower(strings.TrimSpace(host))
+        if host == "" {
+                return
+        }
+        hostRefererInst.mu.Lock()
+        defer hostRefererInst.mu.Unlock()
+        delete(hostRefererInst.recent, host)
+}
+
+// ---------- 随机延迟 (per-host jitter, R41-1A) ----------
+//
+// 反频控: 请求前 sleep 随机毫秒 (0 ~ JitterMs), 避免请求间隔恒定易被识别.
+// 仅在 cfg.JitterMs > 0 时生效. 同 host 多请求也会自然节流 (hostGate 已有 minGapMs).
+
+// jitterSleep — sleep 随机 [0, jitterMs) 毫秒. ctx 取消立即返回.
+func jitterSleep(ctx context.Context, jitterMs int) {
+        if jitterMs <= 0 {
+                return
+        }
+        d := time.Duration(rand.Intn(jitterMs)) * time.Millisecond
+        if d <= 0 {
+                return
+        }
+        select {
+        case <-time.After(d):
+        case <-ctx.Done():
+        }
+}
+
+// ---------- 全局 HTTP Transport (R41-1A 性能优化) ----------
+//
+// 原实现每请求新建 transport, 无连接复用, 高并发下 TCP 句柄爆炸.
+// 改为进程级单例 transport (含 keep-alive + TLS 复用 + 代理动态注入).
+//
+// 注意: net/http 自动解 gzip 但不解 brotli. 故 Accept-Encoding 仅声明 gzip, deflate.
+
+var globalTransport = func() *http.Transport {
+        t := &http.Transport{
+                TLSClientConfig:       &tls.Config{InsecureSkipVerify: false},
+                DisableKeepAlives:     false,
+                MaxIdleConns:          200,
+                MaxIdleConnsPerHost:   16,
+                MaxConnsPerHost:       0, // 不限
+                IdleConnTimeout:       90 * time.Second,
+                ResponseHeaderTimeout: 30 * time.Second,
+                ExpectContinueTimeout: 1 * time.Second,
+                ForceAttemptHTTP2:     true,
+        }
+        return t
+}()
+
+// globalHttp — 全局 client (无 proxy); proxy 走 transport.Clone + Proxy.
+var globalHttp = &http.Client{
+        Transport: globalTransport,
+        // 不自动跟随重定向 (与 TS 端 Bug 17 同口径, 3xx 视为失败)
+        CheckRedirect: func(req *http.Request, via []*http.Request) error {
+                return http.ErrUseLastResponse
+        },
+}
+
+// transportWithProxy — 给全局 transport 临时挂代理 (返回新实例, 不污染全局).
+func transportWithProxy(proxy string) *http.Transport {
+        if proxy == "" {
+                return globalTransport
+        }
+        p, err := url.Parse(proxy)
+        if err != nil {
+                return globalTransport
+        }
+        // 克隆全局 transport 并设代理
+        t2 := globalTransport.Clone()
+        t2.Proxy = http.ProxyURL(p)
+        return t2
+}
+
 // ---------- 拦截识别 ----------
 
 var (
@@ -446,11 +679,11 @@ var (
 )
 
 // IsJSChallenge — JS 挑战壳判定 (CF/just a moment/enable JS).
+// R41-1A: 简化逻辑. 真实页面 >20KB 不会是挑战壳 (挑战壳都是几百字节的 stub), 直接返回 false.
+//   <20KB 时全字符扫挑战词.
 func IsJSChallenge(html string) bool {
         if len(html) > 20000 {
-                // 真实页面可能含 cloudflare 字样, 但太长不是挑战壳
-                // 仅短页面 (<20KB) 命中挑战词才视为挑战壳
-                return jsChallengeRe.MatchString(html[:min(5000, len(html))]) && len(html) < 5000
+                return false
         }
         return jsChallengeRe.MatchString(html)
 }
@@ -644,28 +877,75 @@ func abs(x int) int {
 // ---------- HTTP 请求 (native: net/http) ----------
 
 // buildHeaders — 构造请求头 (UA / Referer / Cookie / 自定义 headers).
+// R41-1A 反反爬增强:
+//   - Accept-Encoding 改为 "gzip, deflate" (Go net/http 不解 brotli, 服务器返 br 会乱码)
+//   - 新增 Sec-Ch-Ua 头族 (按 UA 品牌自动注入, Chrome / Edge / Firefox / Safari 各异)
+//   - 新增 Sec-Fetch-* 头族 (Site=none 表示非同源非用户导航, Mode/Read/Dest=doc)
+//   - 新增 Priority: u=0, i (HTTP/2 priority hint)
+//   - Referer 优先级: cfg.RefererURL > hostRefererMap > 目标站 origin
+//   - DNT: 1 (反追踪标识, 与浏览器等同)
 func buildHeaders(cfg FetchConfig, ua, rawURL, referer string) http.Header {
         h := http.Header{}
         h.Set("User-Agent", ua)
-        h.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        h.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7")
+        // R41-1A: 仅声明 gzip / deflate. Go net/http 自动解 gzip, 不解 brotli.
+        // 服务器返 br 时 body 是原始 brotli 字节, parser 全炸.
+        h.Set("Accept-Encoding", "gzip, deflate")
         h.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-        h.Set("Accept-Encoding", "gzip, deflate, br")
         h.Set("Connection", "keep-alive")
         h.Set("Upgrade-Insecure-Requests", "1")
+        // DNT (Do Not Track) - 浏览器等同标识
+        h.Set("DNT", "1")
 
-        // Referer
-        if cfg.Referer && referer != "" {
-                h.Set("Referer", referer)
-        } else if cfg.Referer {
-                // 回退到目标站点首页 origin
-                if u, err := url.Parse(rawURL); err == nil {
+        // Sec-Ch-Ua 头族 (Chromium 品牌 + Grease 标识 + Platform + Mobile)
+        // Firefox / Safari 不发 Sec-Ch-Ua, 留空跳过即可 (避免暴露不一致指纹).
+        if !IsFirefoxUA(ua) && !IsSafariUA(ua) {
+                ver := extractChromeVer(ua)
+                brand := `"Chromium";v="` + intToStrOr(ver, "137") + `"`
+                grease := `"Not?A_Brand";v="8"` // Chrome 用 "Not_A Brand" / "Not?A_Brand" / "Not"A?Brand"
+                if strings.Contains(ua, "Edg/") {
+                        brand = `"Microsoft Edge";v="` + intToStrOr(ver, "137") + `"`
+                        grease = `"Not_A Brand";v="8"`
+                }
+                h.Set("Sec-Ch-Ua", grease+`, `+brand)
+                if IsMobileUA(ua) {
+                        h.Set("Sec-Ch-Ua-Mobile", "?1")
+                        h.Set("Sec-Ch-Ua-Platform", `"Android"`)
+                } else if strings.Contains(ua, "Windows") {
+                        h.Set("Sec-Ch-Ua-Mobile", "?0")
+                        h.Set("Sec-Ch-Ua-Platform", `"Windows"`)
+                } else if strings.Contains(ua, "Macintosh") || strings.Contains(ua, "Mac OS X") {
+                        h.Set("Sec-Ch-Ua-Mobile", "?0")
+                        h.Set("Sec-Ch-Ua-Platform", `"macOS"`)
+                } else if strings.Contains(ua, "Linux") {
+                        h.Set("Sec-Ch-Ua-Mobile", "?0")
+                        h.Set("Sec-Ch-Ua-Platform", `"Linux"`)
+                }
+        }
+
+        // Sec-Fetch-* 头族 (代表顶层文档导航)
+        h.Set("Sec-Fetch-Dest", "document")
+        h.Set("Sec-Fetch-Mode", "navigate")
+        h.Set("Sec-Fetch-Site", "none") // none = 用户输入 URL / 书签
+        h.Set("Sec-Fetch-User", "?1")
+
+        // Priority: u=0, i (HTTP/2 priority hint, 浏览器默认)
+        h.Set("Priority", "u=0, i")
+
+        // Referer 优先级: cfg.RefererURL > per-host 记忆 > 目标站 origin
+        domain := originHost(rawURL)
+        if cfg.Referer {
+                if referer != "" {
+                        h.Set("Referer", referer)
+                } else if rh := GetHostReferer(domain); rh != "" {
+                        h.Set("Referer", rh)
+                } else if u, err := url.Parse(rawURL); err == nil {
                         h.Set("Referer", u.Scheme+"://"+u.Host+"/")
                 }
         }
 
         // Cookie (用户配置 + CookieJar 合并)
         cookieJar := GetCookieJar()
-        domain := originHost(rawURL)
         jarCookies := cookieJar.Get(domain)
         if cfg.Cookies != "" {
                 if jarCookies != "" {
@@ -729,7 +1009,19 @@ func (e *HTTPError) Error() string {
 
 // fetchHttp — native HTTP 请求 (Go net/http + http.Client).
 // 返回响应体 (解码为 UTF-8). 失败抛 HTTPError (含状态码 / Set-Cookie / WAF 头).
+//
+// R41-1A 改造:
+//   - 复用全局 transport (避免每请求新建 transport + 连接复用)
+//   - 请求前 jitterSleep (反频控, 仅 cfg.JitterMs > 0 时)
+//   - 重试退避 (full jitter exponential, cfg.Retries 次, 1.5s×2^n 封顶 8s)
+//     仅对网络层 / 429 / 5xx 重试 (4xx 不重试, 因 curl 同样会失败)
+//   - 成功后 SetHostReferer (供下次请求作 Referer)
+//   - 失败时 ClearHostReferer (避免污染下次请求)
+//   - decodeBody 识别 GBK / GB18030 (用 golang.org/x/text)
 func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy string) (string, error) {
+        // 请求前 jitter (反频控)
+        jitterSleep(ctx, cfg.JitterMs)
+
         // 超时
         timeoutMs := cfg.Timeout
         if timeoutMs <= 0 {
@@ -738,17 +1030,8 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
         ctx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond)
         defer cancel()
 
-        transport := &http.Transport{
-                TLSClientConfig:    &tls.Config{InsecureSkipVerify: false},
-                DisableKeepAlives:  false,
-                MaxIdleConnsPerHost: 10,
-                IdleConnTimeout:    30 * time.Second,
-        }
-        if proxy != "" {
-                if p, err := url.Parse(proxy); err == nil {
-                        transport.Proxy = http.ProxyURL(p)
-                }
-        }
+        // 复用全局 transport; 代理则克隆挂载
+        transport := transportWithProxy(proxy)
         client := &http.Client{
                 Transport: transport,
                 // 不自动跟随重定向 (3xx 视为失败, 与 TS 端 Bug 17 同口径)
@@ -761,55 +1044,196 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
         if cfg.RefererChain && cfg.RefererURL != "" {
                 referer = cfg.RefererURL
         }
-        req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
-        if err != nil {
-                return "", &HTTPError{Err: err}
-        }
-        req.Header = buildHeaders(cfg, ua, rawURL, referer)
 
-        resp, err := client.Do(req)
-        if err != nil {
-                return "", &HTTPError{Err: err}
+        // 重试退避 (full jitter exponential)
+        retries := cfg.Retries
+        if retries < 0 {
+                retries = 0
         }
-        defer resp.Body.Close()
-
-        bodyBytes, err := io.ReadAll(resp.Body)
-        if err != nil {
-                return "", &HTTPError{StatusCode: resp.StatusCode, Err: err}
+        if retries > 5 {
+                retries = 5
         }
-        body := decodeBody(resp, bodyBytes)
-
-        // Set-Cookie 处理 (autoCookie)
-        if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
-                GetCookieJar().Store(originHost(rawURL), resp.Header["Set-Cookie"])
-        }
-
-        // 3xx / 4xx / 5xx 视为失败 (与 TS 端 Bug 17 同口径)
-        if resp.StatusCode >= 300 {
-                herr := &HTTPError{
-                        StatusCode:   resp.StatusCode,
-                        Body:         body,
-                        ServerHeader: resp.Header.Get("Server"),
-                        CfRay:        resp.Header.Get("Cf-Ray"),
-                        CfMitigated:  resp.Header.Get("Cf-Mitigated"),
-                        SetCookies:   resp.Header["Set-Cookie"],
+        var lastErr error
+        for attempt := 0; attempt <= retries; attempt++ {
+                req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
+                if err != nil {
+                        return "", &HTTPError{Err: err}
                 }
-                if ra := resp.Header.Get("Retry-After"); ra != "" {
-                        herr.RetryAfterMs = parseRetryAfterMs(ra)
+                req.Header = buildHeaders(cfg, ua, rawURL, referer)
+
+                resp, err := client.Do(req)
+                if err != nil {
+                        lastErr = &HTTPError{Err: err}
+                        // 仅网络层错误重试 (4xx/5xx 在下面分支处理)
+                        if !isRetriableNetErr(err) || attempt == retries {
+                                return "", lastErr
+                        }
+                        // 退避 (full jitter: 0 ~ base*2^attempt, 封顶 8s)
+                        backoffMs := 1500 * (1 << uint(attempt)) // 1.5s, 3s, 6s
+                        if backoffMs > 8000 {
+                                backoffMs = 8000
+                        }
+                        jitter := rand.Intn(backoffMs + 1)
+                        select {
+                        case <-time.After(time.Duration(jitter) * time.Millisecond):
+                        case <-ctx.Done():
+                                return "", ctx.Err()
+                        }
+                        continue
                 }
-                return "", herr
+
+                bodyBytes, err := io.ReadAll(resp.Body)
+                _ = resp.Body.Close()
+                if err != nil {
+                        lastErr = &HTTPError{StatusCode: resp.StatusCode, Err: err}
+                        if !isRetriableNetErr(err) || attempt == retries {
+                                return "", lastErr
+                        }
+                        continue
+                }
+                body := decodeBody(resp, bodyBytes)
+
+                // Set-Cookie 处理 (autoCookie)
+                if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
+                        GetCookieJar().Store(originHost(rawURL), resp.Header["Set-Cookie"])
+                }
+
+                // 3xx / 4xx / 5xx 视为失败 (与 TS 端 Bug 17 同口径)
+                if resp.StatusCode >= 300 {
+                        herr := &HTTPError{
+                                StatusCode:   resp.StatusCode,
+                                Body:         body,
+                                ServerHeader: resp.Header.Get("Server"),
+                                CfRay:        resp.Header.Get("Cf-Ray"),
+                                CfMitigated:  resp.Header.Get("Cf-Mitigated"),
+                                SetCookies:   resp.Header["Set-Cookie"],
+                        }
+                        if ra := resp.Header.Get("Retry-After"); ra != "" {
+                                herr.RetryAfterMs = parseRetryAfterMs(ra)
+                        }
+                        // 429 / 503 / 502 / 504 可重试 (服务端临时不可用)
+                        if isRetriableStatus(resp.StatusCode) && attempt < retries {
+                                // 退避 (尊重 Retry-After, 否则 full jitter)
+                                waitMs := herr.RetryAfterMs
+                                if waitMs <= 0 {
+                                        waitMs = 1500 * (1 << uint(attempt))
+                                        if waitMs > 8000 {
+                                                waitMs = 8000
+                                        }
+                                        waitMs = rand.Intn(waitMs + 1)
+                                }
+                                select {
+                                case <-time.After(time.Duration(waitMs) * time.Millisecond):
+                                case <-ctx.Done():
+                                        return "", ctx.Err()
+                                }
+                                lastErr = herr
+                                continue
+                        }
+                        return "", herr
+                }
+
+                // 成功: 记 per-host Referer (下次同站请求可作 Referer)
+                SetHostReferer(rawURL)
+                return body, nil
         }
-        return body, nil
+        if lastErr != nil {
+                return "", lastErr
+        }
+        return "", errors.New("fetchHttp: 重试耗尽")
+}
+
+// isRetriableNetErr — 网络层错误是否可重试 (超时 / 连接重置 / EOF / context).
+func isRetriableNetErr(err error) bool {
+        if err == nil {
+                return false
+        }
+        s := err.Error()
+        if strings.Contains(s, "timeout") || strings.Contains(s, "context deadline exceeded") ||
+                strings.Contains(s, "connection reset") || strings.Contains(s, "EOF") ||
+                strings.Contains(s, "broken pipe") || strings.Contains(s, "no such host") ||
+                strings.Contains(s, "connection refused") || strings.Contains(s, "i/o timeout") {
+                return true
+        }
+        // context 取消不可重试 (调用方主动取消)
+        if errors.Is(err, context.Canceled) {
+                return false
+        }
+        return true // 默认重试
+}
+
+// isRetriableStatus — HTTP 状态码是否可重试 (429 / 5xx 临时性失败).
+func isRetriableStatus(code int) bool {
+        switch code {
+        case 429, 500, 502, 503, 504, 408:
+                return true
+        }
+        return false
 }
 
 // decodeBody — 按 charset 解码响应体 (Content-Type / meta charset).
-// Go 默认按 UTF-8 解, 非 UTF-8 (GBK) 用 mahonia 库解码. 此处仅做 UTF-8 路径 + BOM 剥离.
+// R41-1A: 用 golang.org/x/text/encoding/htmlindex 按 charset 自动解码 (GBK / GB18030 / UTF-8 / latin1).
+// Go 默认按 UTF-8 解, 中文站 GBK / GB2312 / GB18030 直接 string(body) 会乱码.
 func decodeBody(resp *http.Response, body []byte) string {
         // 剥 BOM
         if len(body) >= 3 && body[0] == 0xEF && body[1] == 0xBB && body[2] == 0xBF {
                 body = body[3:]
+                return string(body) // UTF-8 BOM 后默认 UTF-8
         }
-        return string(body)
+        // 1. 优先看 Content-Type: charset=...
+        charset := ""
+        ct := resp.Header.Get("Content-Type")
+        if ct != "" {
+                charset = extractCharset(ct)
+        }
+        // 2. 兜底看 HTML 头 <meta charset=...>
+        if charset == "" && len(body) > 0 && len(body) < 8192 {
+                // 只在头部 4KB 找 meta charset, 节省扫描
+                head := body
+                if len(head) > 4096 {
+                        head = head[:4096]
+                }
+                if m := metaCharsetRe.FindSubmatch(head); m != nil {
+                        charset = strings.ToLower(strings.TrimSpace(string(m[1])))
+                }
+        }
+        // 3. UTF-8 默认 (Go 标准库解 UTF-8 是隐式的)
+        if charset == "" || charset == "utf-8" || charset == "utf8" || charset == "us-ascii" || charset == "ascii" {
+                return string(body)
+        }
+        // 4. 非 UTF-8 → 用 htmlindex 解码
+        enc, err := htmlindex.Get(charset)
+        if err != nil || enc == nil {
+                // 未知 charset, 回退 UTF-8 (可能乱码, 但不会崩)
+                return string(body)
+        }
+        decoded, _, err := transform.Bytes(enc.NewDecoder(), body)
+        if err != nil {
+                return string(body)
+        }
+        // 验证解码后是合法 UTF-8 (htmlindex 已保证)
+        if !utf8.Valid(decoded) {
+                return string(body)
+        }
+        return string(decoded)
+}
+
+// metaCharsetRe — 提取 HTML <meta charset=...> 标签的 charset 值.
+var metaCharsetRe = regexp.MustCompile(`(?i)<meta[^>]+charset=["']?([\w-]+)["']?`)
+
+// extractCharset — 从 Content-Type 头提取 charset=... 值.
+func extractCharset(ct string) string {
+        idx := strings.Index(strings.ToLower(ct), "charset=")
+        if idx < 0 {
+                return ""
+        }
+        v := ct[idx+8:]
+        // 截到 ; 或行尾
+        if semi := strings.Index(v, ";"); semi >= 0 {
+                v = v[:semi]
+        }
+        v = strings.TrimSpace(strings.Trim(v, `"' `))
+        return strings.ToLower(v)
 }
 
 // parseRetryAfterMs — Retry-After 头解析 (秒数 / HTTP-date).
@@ -840,32 +1264,96 @@ func parseIntSafe(s string) (int, error) {
 
 // ---------- curl 二进制降级 ----------
 
+// stripControlChars — 剥控制字符 (防头注入). 与 buildHeaders 同款逻辑.
+func stripControlChars(s string) string {
+        return strings.Map(func(r rune) rune {
+                if r < 0x20 || r == 0x7f {
+                        return -1
+                }
+                return r
+        }, s)
+}
+
 // fetchViaCurl — exec 系统二进制 curl. 与 TS 端 spawn curl 同款.
+// R41-1A: 移除 --no-keepalive (curl 默认开 keepalive, 该 flag 反而禁用, 浪费且易触发频控);
+//          注入 Sec-Ch-Ua / Sec-Fetch-* 头族 (与 buildHeaders 同款, 防 curl 路径暴露);
+//          自定义 headers 剥控制字符 (与 buildHeaders 对称);
+//          成功后 SetHostReferer.
 func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy string) (string, error) {
         curlPath, err := exec.LookPath("curl")
         if err != nil {
                 return "", fmt.Errorf("curl binary not found: %v", err)
         }
+        // 请求前 jitter (反频控, 与 fetchHttp 同款)
+        jitterSleep(ctx, cfg.JitterMs)
+
         timeoutMs := cfg.Timeout
         if timeoutMs <= 0 {
                 timeoutMs = 20000
         }
         args := []string{
-                "-s", "-S",                       // silent + show errors
+                "-s", "-S", // silent + show errors
                 "--max-time", fmt.Sprintf("%d", timeoutMs/1000),
                 "-A", ua,
                 "-H", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 "-H", "Accept-Language: zh-CN,zh;q=0.9,en;q=0.8",
+                "-H", "Accept-Encoding: gzip, deflate",
                 "--compressed",
-                "-D", "-",                        // dump headers to stdout (mixed with body — we'll parse)
-                // 不跟随重定向 (3xx 视为失败)
-                "--no-keepalive",
+                "-D", "-", // dump headers to stdout (mixed with body — we'll parse)
+                // R41-1A: 移除 --no-keepalive. curl 默认开 keepalive, 该 flag 反而禁用, 浪费且易触发频控.
+                "-H", "Connection: keep-alive",
+                "-H", "Upgrade-Insecure-Requests: 1",
+                "-H", "DNT: 1",
         }
-        // Referer
+        // Sec-Ch-Ua / Sec-Fetch-* 头族 (与 buildHeaders 同款, 防 curl 路径暴露指纹)
+        if !IsFirefoxUA(ua) && !IsSafariUA(ua) {
+                ver := extractChromeVer(ua)
+                brand := `"Chromium";v="` + intToStrOr(ver, "137") + `"`
+                grease := `"Not?A_Brand";v="8"`
+                if strings.Contains(ua, "Edg/") {
+                        brand = `"Microsoft Edge";v="` + intToStrOr(ver, "137") + `"`
+                        grease = `"Not_A Brand";v="8"`
+                }
+                args = append(args,
+                        "-H", "Sec-Ch-Ua: "+grease+", "+brand,
+                )
+                if IsMobileUA(ua) {
+                        args = append(args,
+                                "-H", "Sec-Ch-Ua-Mobile: ?1",
+                                "-H", `Sec-Ch-Ua-Platform: "Android"`,
+                        )
+                } else if strings.Contains(ua, "Windows") {
+                        args = append(args,
+                                "-H", "Sec-Ch-Ua-Mobile: ?0",
+                                `-H`, `Sec-Ch-Ua-Platform: "Windows"`,
+                        )
+                } else if strings.Contains(ua, "Macintosh") || strings.Contains(ua, "Mac OS X") {
+                        args = append(args,
+                                "-H", "Sec-Ch-Ua-Mobile: ?0",
+                                `-H`, `Sec-Ch-Ua-Platform: "macOS"`,
+                        )
+                } else if strings.Contains(ua, "Linux") {
+                        args = append(args,
+                                "-H", "Sec-Ch-Ua-Mobile: ?0",
+                                `-H`, `Sec-Ch-Ua-Platform: "Linux"`,
+                        )
+                }
+        }
+        args = append(args,
+                "-H", "Sec-Fetch-Dest: document",
+                "-H", "Sec-Fetch-Mode: navigate",
+                "-H", "Sec-Fetch-Site: none",
+                "-H", "Sec-Fetch-User: ?1",
+                "-H", "Priority: u=0, i",
+        )
+        // Referer 优先级: cfg.RefererURL > per-host 记忆 > 目标站 origin
+        domain := originHost(rawURL)
         if cfg.Referer {
                 var ref string
                 if cfg.RefererChain && cfg.RefererURL != "" {
                         ref = cfg.RefererURL
+                } else if rh := GetHostReferer(domain); rh != "" {
+                        ref = rh
                 } else if u, err := url.Parse(rawURL); err == nil {
                         ref = u.Scheme + "://" + u.Host + "/"
                 }
@@ -874,7 +1362,6 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 }
         }
         // Cookie (用户配置 + CookieJar)
-        domain := originHost(rawURL)
         jarCookies := GetCookieJar().Get(domain)
         cookieParts := []string{}
         if jarCookies != "" {
@@ -886,9 +1373,13 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
         if len(cookieParts) > 0 {
                 args = append(args, "-H", "Cookie: "+strings.Join(cookieParts, "; "))
         }
-        // 自定义 headers
+        // 自定义 headers (剥控制字符, 与 buildHeaders 同款)
         for k, v := range cfg.Headers {
-                args = append(args, "-H", k+": "+v)
+                k = stripControlChars(k)
+                v = stripControlChars(v)
+                if k != "" {
+                        args = append(args, "-H", k+": "+v)
+                }
         }
         // 代理
         if proxy != "" {
@@ -946,6 +1437,8 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                         }
                 }
         }
+        // 成功: 记 per-host Referer (与 fetchHttp 同款)
+        SetHostReferer(rawURL)
         return body, nil
 }
 
@@ -1000,7 +1493,8 @@ func callBridge(ctx context.Context, bridgeURL, rawURL string, cfg FetchConfig, 
                 return nil
         }
         req.Header.Set("Content-Type", "application/json")
-        resp, err := http.DefaultClient.Do(req)
+        // R41-1A: 用 globalHttp (复用全局 transport + 连接池), 取代 http.DefaultClient
+        resp, err := globalHttp.Do(req)
         if err != nil {
                 return nil
         }
@@ -1170,11 +1664,13 @@ func isCurlFallbackError(err error) bool {
 
 // pickProxyFor — 从代理池选一条 (random 模式, 与 TS 端 random 同款).
 // 失败冷却 30s, 冷却内跳过.
+// R41-1A: 增加 lastSweptAt 字段 (周期性清扫 useCount / failedUntil, 防长跑进程内存泄漏).
 type proxyState struct {
         mu              sync.Mutex
         failedUntil     map[string]int64
         useCount        map[string]int
         lastIdx         int
+        lastSweptAt     int64
 }
 
 var proxyInst = &proxyState{
@@ -1219,6 +1715,8 @@ func isValidProxySpec(s string) bool {
 }
 
 // pickProxyFor — 从代理池选一条.
+// R41-1A: 增加 useCount 周期性清扫 (原实现 useCount map 只增不减, 长跑进程内存泄漏).
+//         每 5min 清一次未使用条目 (useCount 0 或超过 24h 未使用).
 func pickProxyFor(rawURL string, cfg FetchConfig) string {
         pool := ParseProxyPool(cfg.ProxyURL)
         if len(pool) == 0 {
@@ -1231,6 +1729,26 @@ func pickProxyFor(rawURL string, cfg FetchConfig) string {
         proxyInst.mu.Lock()
         defer proxyInst.mu.Unlock()
         now := time.Now().UnixMilli()
+        // R41-1A: 周期性清扫 useCount (惰性, 每 5min)
+        if now-proxyInst.lastSweptAt > 5*60*1000 {
+                proxyInst.lastSweptAt = now
+                // 清当前 pool 之外的条目 (代理池可能动态变化)
+                poolSet := map[string]bool{}
+                for _, p := range pool {
+                        poolSet[p] = true
+                }
+                for k := range proxyInst.useCount {
+                        if !poolSet[k] {
+                                delete(proxyInst.useCount, k)
+                        }
+                }
+                // 清过期的失败冷却条目
+                for k, t := range proxyInst.failedUntil {
+                        if t < now {
+                                delete(proxyInst.failedUntil, k)
+                        }
+                }
+        }
         available := []string{}
         for _, p := range pool {
                 if proxyInst.failedUntil[p] > now {
@@ -1665,14 +2183,6 @@ func mergeFetchConfig(base FetchConfig, override FetchConfig) FetchConfig {
                 out.CloakTier = override.CloakTier
         }
         return out
-}
-
-// min — small helper (Go 1.21+ has built-in min, but for older versions safe).
-func min(a, b int) int {
-        if a < b {
-                return a
-        }
-        return b
 }
 
 // ---------- base64 + b64 helpers (for parser decode) ----------

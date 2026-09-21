@@ -1142,7 +1142,9 @@ func renderAdminPage(w http.ResponseWriter, tmplName, active, title string, r *h
                 fillSeoAuditPageData(data, r)
         }
         if err := tmpls.ExecuteTemplate(w, tmplName, data); err != nil {
-                http.Error(w, "模板渲染失败: "+err.Error(), 500)
+                // R41-1B: 不暴露内部模板错误细节给客户端 (防信息泄漏)
+                log.Printf("[renderAdminPage] template %s render failed: %v", tmplName, err)
+                http.Error(w, "模板渲染失败", 500)
         }
 }
 
@@ -1989,10 +1991,21 @@ func adminThemesHandler(w http.ResponseWriter, r *http.Request) {
 
 const maxConcurrentDownloadJobs = 3
 
+// R41-1B: downloadFiles 内存兜底 — 容量上限 + TTL 过期 (防内存泄漏)
+const (
+        downloadFilesMaxEntries = 50              // 最多缓存 50 个 TXT (单 TXT 可达数十 MB)
+        downloadFilesTTLSeconds = 60 * 60 * 2    // 2h 后过期 (用户有充足时间取)
+)
+
+type downloadFileEntry struct {
+        content  string
+        createdAt time.Time
+}
+
 var (
         downloadInFlight   int
         downloadInFlightMu sync.Mutex
-        downloadFiles      = map[string]string{}
+        downloadFiles      = map[string]downloadFileEntry{}
         downloadFilesMu    sync.Mutex
 )
 
@@ -2189,7 +2202,27 @@ func adminDownloadsCreate(w http.ResponseWriter, r *http.Request) {
                 }
                 txt := sb.String()
                 downloadFilesMu.Lock()
-                downloadFiles[jid] = txt
+                // R41-1B: 容量上限 + TTL 过期检查 (防内存泄漏)
+                now := time.Now()
+                // 先清扫过期条目
+                for k, v := range downloadFiles {
+                        if now.Sub(v.createdAt) > downloadFilesTTLSeconds*time.Second {
+                                delete(downloadFiles, k)
+                        }
+                }
+                // 若仍超容, 删最早的
+                for len(downloadFiles) >= downloadFilesMaxEntries {
+                        var oldestKey string
+                        var oldestT time.Time
+                        for k, v := range downloadFiles {
+                                if oldestKey == "" || v.createdAt.Before(oldestT) {
+                                        oldestKey = k
+                                        oldestT = v.createdAt
+                                }
+                        }
+                        delete(downloadFiles, oldestKey)
+                }
+                downloadFiles[jid] = downloadFileEntry{content: txt, createdAt: now}
                 downloadFilesMu.Unlock()
                 _, _ = db.Exec(`UPDATE DownloadJob SET status='done', filePath=?, size=? WHERE id=?`, "memory:"+jid, len(txt), jid)
         }(jobID, bookID, bookName)
@@ -2223,12 +2256,18 @@ func adminDownloadFileHandler(w http.ResponseWriter, r *http.Request) {
                 return
         }
         downloadFilesMu.Lock()
-        txt, ok := downloadFiles[jobID]
+        entry, ok := downloadFiles[jobID]
+        // R41-1B: TTL 过期校验
+        if ok && time.Since(entry.createdAt) > downloadFilesTTLSeconds*time.Second {
+                delete(downloadFiles, jobID)
+                ok = false
+        }
         downloadFilesMu.Unlock()
         if !ok {
                 writeJSONErr(w, "文件已过期, 请重新生成", 410)
                 return
         }
+        txt := entry.content
         w.Header().Set("Content-Type", "text/plain; charset=utf-8")
         w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.txt"`, url.QueryEscape(bookName)))
         w.Header().Set("Content-Length", strconv.Itoa(len(txt)))
@@ -2786,58 +2825,109 @@ func adminBackupRestoreHandler(w http.ResponseWriter, r *http.Request) {
                 return
         }
         // 真正导入 (按 ID upsert, ON CONFLICT DO UPDATE)
+        // R41-1B: 单事务包裹 — 失败回滚防半导入状态; P0 修复 4 处 SQL 占位符数与列数/实参不匹配
+        tx, txErr := db.BeginTx(r.Context(), nil)
+        if txErr != nil {
+                writeJSONErr(w, "开启事务失败: "+txErr.Error(), 500)
+                return
+        }
+        committed := false
+        defer func() {
+                if !committed {
+                        _ = tx.Rollback()
+                }
+        }()
         imported := 0
         for _, s := range payload.Data.Settings {
-                _, _ = db.Exec(`INSERT INTO Setting (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, s.Key, s.Value)
+                if _, err := tx.Exec(`INSERT INTO Setting (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, s.Key, s.Value); err != nil {
+                        writeJSONErr(w, fmt.Sprintf("Setting %s 导入失败: %s", s.Key, err.Error()), 500)
+                        return
+                }
                 imported++
         }
         for _, c := range payload.Data.Categories {
-                _, _ = db.Exec(`INSERT INTO Category (id, name, sortOrder, createdAt) VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, sortOrder=excluded.sortOrder`,
-                        c.ID, c.Name, c.SortOrder, nullIfEmpty(c.CreatedAt))
+                if _, err := tx.Exec(`INSERT INTO Category (id, name, sortOrder, createdAt) VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, sortOrder=excluded.sortOrder`,
+                        c.ID, c.Name, c.SortOrder, nullIfEmpty(c.CreatedAt)); err != nil {
+                        writeJSONErr(w, fmt.Sprintf("Category %s 导入失败: %s", c.ID, err.Error()), 500)
+                        return
+                }
                 imported++
         }
         for _, s := range payload.Data.Sites {
-                _, _ = db.Exec(`INSERT INTO Site (id, name, domain, themeId, title, description, keywords, icbm, geoRegion, geoPlacename, offset, isDefault, status, inLinkWheel, createdAt, updatedAt)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),datetime('now'))
+                // R41-1B: 16 cols, 14 ? + 2 datetime('now') = 16 values, 14 args (修复前 13 ? 给 14 args 的 SQL 错配)
+                if _, err := tx.Exec(`INSERT INTO Site (id, name, domain, themeId, title, description, keywords, icbm, geoRegion, geoPlacename, offset, isDefault, status, inLinkWheel, createdAt, updatedAt)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                         ON CONFLICT(id) DO UPDATE SET name=excluded.name, domain=excluded.domain, themeId=excluded.themeId, title=excluded.title, description=excluded.description, keywords=excluded.keywords, icbm=excluded.icbm, geoRegion=excluded.geoRegion, geoPlacename=excluded.geoPlacename, offset=excluded.offset, isDefault=excluded.isDefault, status=excluded.status, inLinkWheel=excluded.inLinkWheel`,
-                        s.ID, s.Name, s.Domain, s.ThemeID, s.Title, s.Description, s.Keywords, s.Icbm, s.GeoRegion, s.GeoPlacename, s.Offset, s.IsDefault, s.Status, s.InLinkWheel)
+                        s.ID, s.Name, s.Domain, s.ThemeID, s.Title, s.Description, s.Keywords, s.Icbm, s.GeoRegion, s.GeoPlacename, s.Offset, s.IsDefault, s.Status, s.InLinkWheel, "datetime('now')", "datetime('now')"); err != nil {
+                        writeJSONErr(w, fmt.Sprintf("Site %s 导入失败: %s", s.ID, err.Error()), 500)
+                        return
+                }
                 imported++
         }
         for _, l := range payload.Data.FriendLinks {
-                _, _ = db.Exec(`INSERT INTO FriendLink (id, name, url, logo, sortOrder, enabled, createdAt, updatedAt) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, url=excluded.url, logo=excluded.logo, sortOrder=excluded.sortOrder, enabled=excluded.enabled`,
-                        l.ID, l.Name, l.URL, l.Logo, l.SortOrder, l.Enabled, nullIfEmpty(l.CreatedAt), nullIfEmpty(l.UpdatedAt))
+                // R41-1B: 8 cols, 8 ?, 8 args (修复前 7 ? 给 8 args 的 SQL 错配)
+                if _, err := tx.Exec(`INSERT INTO FriendLink (id, name, url, logo, sortOrder, enabled, createdAt, updatedAt) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, url=excluded.url, logo=excluded.logo, sortOrder=excluded.sortOrder, enabled=excluded.enabled`,
+                        l.ID, l.Name, l.URL, l.Logo, l.SortOrder, l.Enabled, nullIfEmpty(l.CreatedAt), nullIfEmpty(l.UpdatedAt)); err != nil {
+                        writeJSONErr(w, fmt.Sprintf("FriendLink %s 导入失败: %s", l.ID, err.Error()), 500)
+                        return
+                }
                 imported++
         }
         for _, r := range payload.Data.Rules {
-                _, _ = db.Exec(`INSERT INTO Rule (id, name, description, config, enabled, createdAt, updatedAt) VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, description=excluded.description, config=excluded.config, enabled=excluded.enabled`,
-                        r.ID, r.Name, r.Description, r.Config, r.Enabled, nullIfEmpty(r.CreatedAt), nullIfEmpty(r.UpdatedAt))
+                if _, err := tx.Exec(`INSERT INTO Rule (id, name, description, config, enabled, createdAt, updatedAt) VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, description=excluded.description, config=excluded.config, enabled=excluded.enabled`,
+                        r.ID, r.Name, r.Description, r.Config, r.Enabled, nullIfEmpty(r.CreatedAt), nullIfEmpty(r.UpdatedAt)); err != nil {
+                        writeJSONErr(w, fmt.Sprintf("Rule %s 导入失败: %s", r.ID, err.Error()), 500)
+                        return
+                }
                 imported++
         }
         for _, b := range payload.Data.Books {
-                _, _ = db.Exec(`INSERT INTO Book (id, name, author, categoryId, intro, cover, status, keywords, latestChapter, wordCount, sourceUrl, sourceRuleId, storageMode, collectedAt, createdAt, updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, author=excluded.author, categoryId=excluded.categoryId, intro=excluded.intro, cover=excluded.cover, status=excluded.status, keywords=excluded.keywords, latestChapter=excluded.latestChapter, wordCount=excluded.wordCount, sourceUrl=excluded.sourceUrl, sourceRuleId=excluded.sourceRuleId, storageMode=excluded.storageMode`,
-                        b.ID, b.Name, b.Author, nullIfEmpty(b.CategoryID), b.Intro, b.Cover, b.Status, b.Keywords, b.LatestChapter, b.WordCount, b.SourceURL, nullIfEmpty(b.SourceRule), b.StorageMode, nullIfEmpty(b.CollectedAt), nullIfEmpty(b.CreatedAt), nullIfEmpty(b.UpdatedAt))
+                // R41-1B: 16 cols, 16 ?, 16 args (修复前 15 ? 给 16 args 的 SQL 错配)
+                if _, err := tx.Exec(`INSERT INTO Book (id, name, author, categoryId, intro, cover, status, keywords, latestChapter, wordCount, sourceUrl, sourceRuleId, storageMode, collectedAt, createdAt, updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, author=excluded.author, categoryId=excluded.categoryId, intro=excluded.intro, cover=excluded.cover, status=excluded.status, keywords=excluded.keywords, latestChapter=excluded.latestChapter, wordCount=excluded.wordCount, sourceUrl=excluded.sourceUrl, sourceRuleId=excluded.sourceRuleId, storageMode=excluded.storageMode`,
+                        b.ID, b.Name, b.Author, nullIfEmpty(b.CategoryID), b.Intro, b.Cover, b.Status, b.Keywords, b.LatestChapter, b.WordCount, b.SourceURL, nullIfEmpty(b.SourceRule), b.StorageMode, nullIfEmpty(b.CollectedAt), nullIfEmpty(b.CreatedAt), nullIfEmpty(b.UpdatedAt)); err != nil {
+                        writeJSONErr(w, fmt.Sprintf("Book %s 导入失败: %s", b.ID, err.Error()), 500)
+                        return
+                }
                 imported++
                 for _, c := range b.Chapters {
-                        _, _ = db.Exec(`INSERT INTO Chapter (id, bookId, idx, title, volume, url, content, storage, filePath, wordCount, fetched, createdAt, updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(bookId, idx) DO UPDATE SET title=excluded.title, volume=excluded.volume, url=excluded.url, content=excluded.content, storage=excluded.storage, filePath=excluded.filePath, wordCount=excluded.wordCount, fetched=excluded.fetched`,
-                                c.ID, c.BookID, c.Idx, c.Title, c.Volume, c.URL, c.Content, c.Storage, nullIfEmpty(c.FilePath), c.WordCount, c.Fetched, nullIfEmpty(c.CreatedAt), nullIfEmpty(c.UpdatedAt))
+                        if _, err := tx.Exec(`INSERT INTO Chapter (id, bookId, idx, title, volume, url, content, storage, filePath, wordCount, fetched, createdAt, updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(bookId, idx) DO UPDATE SET title=excluded.title, volume=excluded.volume, url=excluded.url, content=excluded.content, storage=excluded.storage, filePath=excluded.filePath, wordCount=excluded.wordCount, fetched=excluded.fetched`,
+                                c.ID, c.BookID, c.Idx, c.Title, c.Volume, c.URL, c.Content, c.Storage, nullIfEmpty(c.FilePath), c.WordCount, c.Fetched, nullIfEmpty(c.CreatedAt), nullIfEmpty(c.UpdatedAt)); err != nil {
+                                writeJSONErr(w, fmt.Sprintf("Chapter %s 导入失败: %s", c.ID, err.Error()), 500)
+                                return
+                        }
                         imported++
                 }
                 for _, t := range b.Tags {
-                        _, _ = db.Exec(`INSERT INTO BookTag (id, bookId, tag, source, hits) VALUES (?,?,?,?,?) ON CONFLICT(bookId, tag) DO UPDATE SET source=excluded.source, hits=excluded.hits`,
-                                t.ID, t.BookID, t.Tag, t.Source, t.Hits)
+                        if _, err := tx.Exec(`INSERT INTO BookTag (id, bookId, tag, source, hits) VALUES (?,?,?,?,?) ON CONFLICT(bookId, tag) DO UPDATE SET source=excluded.source, hits=excluded.hits`,
+                                t.ID, t.BookID, t.Tag, t.Source, t.Hits); err != nil {
+                                writeJSONErr(w, fmt.Sprintf("BookTag %s 导入失败: %s", t.ID, err.Error()), 500)
+                                return
+                        }
                         imported++
                 }
         }
         for _, t := range payload.Data.Tasks {
-                _, _ = db.Exec(`INSERT INTO Task (id, name, ruleId, mode, bookUrl, listUrl, listStart, listEnd, bookStart, bookEnd, recrawlMode, storageMode, fetchConfig, threadMin, threadMax, intervalMin, intervalMax, smartCategory, smartComplete, autoSuggest, autoRefresh, refreshIntervalMin, status, progress, stats, createdAt, updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, ruleId=excluded.ruleId, status=excluded.status, progress=excluded.progress, stats=excluded.stats`,
-                        t.ID, t.Name, t.RuleID, t.Mode, t.BookURL, t.ListURL, t.ListStart, t.ListEnd, t.BookStart, t.BookEnd, t.RecrawlMode, t.StorageMode, t.FetchConfig, t.ThreadMin, t.ThreadMax, t.IntervalMin, t.IntervalMax, t.SmartCategory, t.SmartComplete, t.AutoSuggest, t.AutoRefresh, t.RefreshIntervalMin, t.Status, t.Progress, t.Stats, nullIfEmpty(t.CreatedAt), nullIfEmpty(t.UpdatedAt))
+                if _, err := tx.Exec(`INSERT INTO Task (id, name, ruleId, mode, bookUrl, listUrl, listStart, listEnd, bookStart, bookEnd, recrawlMode, storageMode, fetchConfig, threadMin, threadMax, intervalMin, intervalMax, smartCategory, smartComplete, autoSuggest, autoRefresh, refreshIntervalMin, status, progress, stats, createdAt, updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, ruleId=excluded.ruleId, status=excluded.status, progress=excluded.progress, stats=excluded.stats`,
+                        t.ID, t.Name, t.RuleID, t.Mode, t.BookURL, t.ListURL, t.ListStart, t.ListEnd, t.BookStart, t.BookEnd, t.RecrawlMode, t.StorageMode, t.FetchConfig, t.ThreadMin, t.ThreadMax, t.IntervalMin, t.IntervalMax, t.SmartCategory, t.SmartComplete, t.AutoSuggest, t.AutoRefresh, t.RefreshIntervalMin, t.Status, t.Progress, t.Stats, nullIfEmpty(t.CreatedAt), nullIfEmpty(t.UpdatedAt)); err != nil {
+                        writeJSONErr(w, fmt.Sprintf("Task %s 导入失败: %s", t.ID, err.Error()), 500)
+                        return
+                }
                 imported++
         }
         for _, d := range payload.Data.DownloadJobs {
-                _, _ = db.Exec(`INSERT INTO DownloadJob (id, bookId, options, status, filePath, error, size, createdAt) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET bookId=excluded.bookId, options=excluded.options, status=excluded.status, filePath=excluded.filePath, error=excluded.error, size=excluded.size`,
-                        d.ID, d.BookID, d.Options, d.Status, nullIfEmpty(d.FilePath), nullIfEmpty(d.Error), d.Size, nullIfEmpty(d.CreatedAt))
+                // R41-1B: 8 cols, 8 ?, 8 args (修复前 7 ? 给 8 args 的 SQL 错配)
+                if _, err := tx.Exec(`INSERT INTO DownloadJob (id, bookId, options, status, filePath, error, size, createdAt) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET bookId=excluded.bookId, options=excluded.options, status=excluded.status, filePath=excluded.filePath, error=excluded.error, size=excluded.size`,
+                        d.ID, d.BookID, d.Options, d.Status, nullIfEmpty(d.FilePath), nullIfEmpty(d.Error), d.Size, nullIfEmpty(d.CreatedAt)); err != nil {
+                        writeJSONErr(w, fmt.Sprintf("DownloadJob %s 导入失败: %s", d.ID, err.Error()), 500)
+                        return
+                }
                 imported++
         }
+        if err := tx.Commit(); err != nil {
+                writeJSONErr(w, "提交事务失败: "+err.Error(), 500)
+                return
+        }
+        committed = true
         writeJSONOK(w, map[string]interface{}{
                 "imported":   imported,
                 "version":    payload.Version,

@@ -151,7 +151,7 @@ func handle(w http.ResponseWriter, r *http.Request) {
         }
         // 站点真实请求形态: 仅 token 一个查询参数(base64 经 encodeURIComponent)
         finalURL := target.Scheme + "://" + target.Host + target.Path + "?token=" + url.QueryEscape(tok)
-        fmt.Printf("[bqg713-proxy] rewrite id=%d chapterid=%d token=%s...\n", id, chapterid, truncStr(tok, 12))
+        fmt.Printf("[bqg713-proxy] rewrite id=%d chapterid=%d token=%s...\n", id, chapterid, bridgeserver.TruncStr(tok, 12))
         if path == "/token" {
                 bridgeserver.WriteText(w, http.StatusOK, "text/plain; charset=utf-8", tok)
                 return
@@ -168,23 +168,9 @@ func handle(w http.ResponseWriter, r *http.Request) {
         })
 }
 
-func truncStr(s string, n int) string {
-        if len(s) <= n {
-                return s
-        }
-        return s[:n]
-}
-
-func boolStr(b bool) string {
-        if b {
-                return "PASS"
-        }
-        return "FAIL"
-}
-
 func main() {
         stOk := selfTest()
-        fmt.Printf("[bqg713-proxy] self-test(id=2530,chapterid=1): %s\n", boolStr(stOk))
+        fmt.Printf("[bqg713-proxy] self-test(id=2530,chapterid=1): %s\n", bridgeserver.BoolStr(stOk))
         bs := bridgeserver.New(bridgeserver.BridgeServerOptions{
                 Name:            "bqg713-proxy",
                 Port:            PORT,

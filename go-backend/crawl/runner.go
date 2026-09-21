@@ -293,9 +293,12 @@ func (rt *TaskRuntime) IncRequest() int64 {
 }
 
 // SetMaxRequests — 设置请求预算上限.
+// R41-1A: 修复原实现用 atomic.StoreInt64(&rt.epoch, rt.epoch) 做 "memory barrier" 的错误
+//         (epoch 自存自不构成 barrier). 改为用 rt.mu 锁保护写入, 与读路径 (Snapshot) 同款锁.
 func (rt *TaskRuntime) SetMaxRequests(max int) {
-        atomic.StoreInt64(&rt.epoch, rt.epoch) // memory barrier
+        rt.mu.Lock()
         rt.maxRequests = max
+        rt.mu.Unlock()
 }
 
 // CheckBudget — 检查请求预算 (gateFetch 入口调用, 超出返回 BudgetExceeded).
@@ -604,6 +607,10 @@ type ChapterTask struct {
 //  错误隔离: 单本/单章失败不影响其他; BudgetExceeded / CircuitBreak 上抛任务级
 func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) error {
         rt := NewTaskRuntime(cfg.TaskID)
+        // R41-1A: maxRequests 写入移到 MarkRunning / registration 之前 (happens-before 关系
+        // 保证 admin Snapshot 看到非零值). 原代码在 tr.runtimes[cfg.TaskID] = rt 之后写,
+        // 无 memory barrier, admin 读到零值.
+        rt.maxRequests = cfg.MaxRequests
         myEpoch := rt.MarkRunning()
 
         // 注册 runtime (供 admin UI 查询)
@@ -619,9 +626,6 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) error {
                 }
                 tr.mu.Unlock()
         }()
-
-        // 设置请求预算
-        rt.maxRequests = cfg.MaxRequests
 
         // ---------- 阶段 0: 列表发现 (bookQueue) ----------
         bookQueue := []string{}
@@ -712,6 +716,8 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) error {
 
                 // 并发处理本批次的书 —— semaphore 兜底
                 var wg sync.WaitGroup
+                // R41-1A: bookBatchMu 保护 stats.Errors++ (跨 goroutine 写)
+                var bookBatchMu sync.Mutex
                 results := make([]BookMetaResult, len(batch))
                 for i, bookURL := range batch {
                         if rt.IsStopped() || rt.IsStale(myEpoch) {
@@ -749,7 +755,10 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) error {
                                                 results[idx] = BookMetaResult{Status: BookMetaStatusStopped, BookURL: url}
                                                 return
                                         }
+                                        // R41-1A: 加锁保护 stats.Errors++ (跨 goroutine)
+                                        bookBatchMu.Lock()
                                         stats.Errors++
+                                        bookBatchMu.Unlock()
                                         rt.AddToFailed(url)
                                         logf(LogError, "书籍采集失败 %s: %v", url, err)
                                         results[idx] = BookMetaResult{Status: BookMetaStatusError, BookURL: url}
@@ -823,6 +832,10 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) error {
                 done := 0
                 chapterConcurrency := bookConcurrency
                 chapterSem := NewSemaphore(chapterConcurrency)
+                // R41-1A: 引入 batchMu 保护章节 goroutine 内共享变量写
+                // (stats.Errors / stats.ChaptersUpdated / consecutiveErrs / done /
+                //  progress.ContentDone / bookDoneMap 都是跨 goroutine 共享)
+                var batchMu sync.Mutex
 
                 for len(globalQueue) > 0 {
                         if rt.IsStopped() || rt.IsStale(myEpoch) {
@@ -863,6 +876,8 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) error {
                                         defer chapterSem.Release()
 
                                         ok, kind, msg := CrawlChapterContent(ctx, cfg, rt, myEpoch, q)
+                                        // R41-1A: 用 batchMu 保护共享变量写
+                                        batchMu.Lock()
                                         if ok {
                                                 stats.ChaptersUpdated++
                                                 consecutiveErrs = 0
@@ -890,11 +905,13 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) error {
                                                         logf(LogError, "%s", msg)
                                                 }
                                         }
+                                        batchMu.Unlock()
                                 }(q)
                         }
                         wg.Wait()
 
-                        // 连续错误熔断检查 (每批次末)
+                        // 连续错误熔断检查 (每批次末, 主循环读 consecutiveErrs 无锁 OK:
+                        // 因为 wg.Wait() happens-before 这里, 所有 goroutine 写都已发布)
                         if consecutiveErrs >= CircuitErrorLimit {
                                 rt.mu.Lock()
                                 rt.circuitTrippedAt = time.Now().UnixMilli()

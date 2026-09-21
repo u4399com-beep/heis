@@ -190,6 +190,10 @@ func (g *HostGate) settleRateLimitExpiry(st *hostState) {
 }
 
 // pump — 容量复查 (计账式准入核心): FIFO 队头起复查余量 + 节流到点 + 非冷却期.
+// R41-1A 修复: 原实现 default 分支 (send 失败) 直接 continue 不回滚 inFlight,
+//              导致槽位永久泄漏 (inFlight 增但 Release 永不被调用), 该 host 最终死锁.
+//              修复: default 分支回滚 inFlight--.
+//              并增加 waiter ctx 已取消的前置检查 (避免无谓 send 失败).
 func (g *HostGate) pump(st *hostState) {
         g.settleRateLimitExpiry(st)
         if len(st.waiters) == 0 {
@@ -207,13 +211,23 @@ func (g *HostGate) pump(st *hostState) {
                         return // 节流未到点: 卡住整个队列 (无 barge)
                 }
                 w := st.waiters[0]
+                // R41-1A: 前置检查 waiter ctx 是否已取消 (避免无谓 send + 避免 inFlight 增后回滚)
+                select {
+                case <-w.ctx.Done():
+                        // waiter 已超时/取消, 跳过 (不增 inFlight, 不 pump 该 waiter)
+                        st.waiters = st.waiters[1:]
+                        continue
+                default:
+                }
                 st.waiters = st.waiters[1:]
                 st.inFlight++
                 st.lastAdmitAt = now
                 select {
                 case w.ch <- struct{}{}:
+                        // 成功 admit
                 default:
-                        // caller 已超时取消, 继续下一个
+                        // R41-1A: 回滚 inFlight (send 失败 = waiter 已离开或 buffered 满但 caller 不再读)
+                        st.inFlight--
                         continue
                 }
         }
@@ -222,6 +236,9 @@ func (g *HostGate) pump(st *hostState) {
 // Acquire — 过闸获取槽位. 有余量 + 无排队者 + 非限流冷却期 + 节流到点 → 立即准入;
 // 否则入 FIFO 队尾, 由 Release/Report 触发的 pump 复查准入. 等待超过 timeoutMs
 // 或 ctx.Done() 返回 ctx.Err().
+// R41-1A 修复: ctx2.Done() 分支需 drain w.ch (pump 可能在 ctx2 触发 Done 之前已成功 send 到
+//              buffered chan, 若不 drain 就视为超时, inFlight 永不释放 → 槽位泄漏.
+//              修复: ctx2.Done() 分支非阻塞 drain w.ch, 若有值则视为成功 admit 返回 ticket.
 func (g *HostGate) Acquire(ctx context.Context, rawURL string, limit, timeoutMs, minGapMs int) (*HostGateTicket, error) {
         g.maybeSweepAndEvict()
         host := HostGateKeyOf(rawURL)
@@ -278,7 +295,14 @@ func (g *HostGate) Acquire(ctx context.Context, rawURL string, limit, timeoutMs,
         case <-w.ch:
                 return &HostGateTicket{Host: host}, nil
         case <-ctx2.Done():
-                // 超时/取消: 从队列移除 (lazy)
+                // R41-1A: pump 可能在 ctx2 触发 Done 之前已成功 send 到 w.ch (buffered chan 容量 1).
+                // 此处非阻塞 drain, 若有值则视为成功 admit 返回 ticket (调用方会正常 Release).
+                select {
+                case <-w.ch:
+                        return &HostGateTicket{Host: host}, nil
+                default:
+                }
+                // 真的没拿到 admission: 从队列移除 (lazy)
                 g.mu.Lock()
                 for i, x := range st.waiters {
                         if x == w {

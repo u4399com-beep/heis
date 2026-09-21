@@ -4,7 +4,7 @@
 // 幂等: 同名规则先删后建; export{} + import.meta.main 守卫(可被 verify 脚本 import 规则配置)
 //
 // ================= 结构依据(书源 JSON 反编译, 非实测) =================
-// 参考 scripts/archive/reference-shuyuan-7724.json — "阅读(legado)"书源 🍅番茄小说聚合API V3.2
+// 原参考 scripts/archive/reference-shuyuan-7724.json — "阅读(legado)"书源 🍅番茄小说聚合API V3.2 (R41-1C 归档已删, 结论沉淀于本脚本逻辑)
 // (2026.8.20 by 艳阳, bookSourceUrl=https://fq.taijiwang.top, header 内 Android 移动 UA)。
 // ★ API 可达性: 2026-08-31 主控侦察与本轮 502 矩阵(裸域 fq.taijiwang.top 全路径
 //   502 nginx Bad Gateway 552B, http/https 同; www 子域不解析; 根域/api. 子域拒绝连接;

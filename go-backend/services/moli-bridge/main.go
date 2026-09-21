@@ -37,6 +37,8 @@ const PORT = 3017
 
 const execTimeoutMs = 30_000
 
+// R41-1C: httpURLRe 已收口到 bridgeserver.HTTPURLRe (与其余 3 个服务同款, 消除 4 处重复定义)
+
 // moliBinaryPath — 优先 MOLI_BIN 环境变量, 否则 ~/.local/bin/moli。
 func moliBinaryPath() string {
         if p := os.Getenv("MOLI_BIN"); p != "" {
@@ -136,24 +138,58 @@ func handleFetch(w http.ResponseWriter, r *http.Request) {
                 bridgeserver.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "url required"})
                 return
         }
+        // R41-1B: SSRF 守卫 + URL 形态校验 (修复前完全缺失, moli 可被诱导访问内网)
+        if !bridgeserver.HTTPURLRe.MatchString(body.URL) || len(body.URL) > 2048 {
+                bridgeserver.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "url 非法(仅 http/https, ≤2048)"})
+                return
+        }
+        if ok, reason := bridgeserver.AssertSafeSsrfTarget(body.URL, bridgeserver.EnvBool("BRIDGE_SSRF_ALLOW_LOOPBACK")); !ok {
+                bridgeserver.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "SSRF 拒绝: " + reason})
+                return
+        }
 
         args := []string{}
         if body.Dump != "" {
+                // R41-1B: dump 字段白名单 (防注入命令行参数)
+                switch body.Dump {
+                case "json", "markdown", "semantic_tree", "text", "html":
+                default:
+                        bridgeserver.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "dump 字段非法"})
+                        return
+                }
                 args = append(args, "--dump", body.Dump)
         }
         if body.Eval != "" {
+                // R41-1B: 限长 (防巨型 eval 注入)
+                if len(body.Eval) > 10000 {
+                        bridgeserver.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "eval 过长(>10KB)"})
+                        return
+                }
                 args = append(args, "--eval", body.Eval)
         }
         if body.WaitUntil != "" {
+                // R41-1B: waitUntil 白名单
+                switch body.WaitUntil {
+                case "load", "domcontentloaded", "networkidle0", "networkidle2":
+                default:
+                        bridgeserver.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "waitUntil 非法"})
+                        return
+                }
                 args = append(args, "--wait-until", body.WaitUntil)
         }
         if body.DisableJS {
                 args = append(args, "--disable-js")
         }
         for k, v := range body.Headers {
-                args = append(args, "-H", k+": "+v)
+                // R41-1B: 头键经安全名单 + 头值剥 CRLF (防 moli 命令行头注入)
+                key := bridgeserver.SafeHeaderKey(k)
+                if key == "" {
+                        continue
+                }
+                args = append(args, "-H", key+": "+bridgeserver.SafeHeaderValue(v))
         }
-        args = append(args, body.URL)
+        // R41-1B: 在 URL 前插 "--" 终止符, 防 URL 以 - 开头被 moli 误判为 flag
+        args = append(args, "--", body.URL)
 
         res, err := execMoli(args)
         if err != nil {
@@ -208,11 +244,21 @@ func handleScreenshot(w http.ResponseWriter, r *http.Request) {
                 bridgeserver.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "url required"})
                 return
         }
+        // R41-1B: SSRF 守卫 + URL 形态校验
+        if !bridgeserver.HTTPURLRe.MatchString(body.URL) || len(body.URL) > 2048 {
+                bridgeserver.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "url 非法(仅 http/https, ≤2048)"})
+                return
+        }
+        if ok, reason := bridgeserver.AssertSafeSsrfTarget(body.URL, bridgeserver.EnvBool("BRIDGE_SSRF_ALLOW_LOOPBACK")); !ok {
+                bridgeserver.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "SSRF 拒绝: " + reason})
+                return
+        }
         dumpArg := "screenshot"
         if body.Full {
                 dumpArg = "screenshot_full"
         }
-        args := []string{"--layout", "--image", "--font", "--dump", dumpArg, body.URL}
+        // R41-1B: 用 -- 终止 URL 参数 (防 - 开头被 moli 误判)
+        args := []string{"--layout", "--image", "--font", "--dump", dumpArg, "--", body.URL}
         res, err := execMoli(args)
         if err != nil {
                 bridgeserver.WriteJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "error": err.Error(), "code": res.Code})

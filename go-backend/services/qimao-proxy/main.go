@@ -232,7 +232,7 @@ func upstreamJSON(targetURL string, headers map[string]string) upstreamResult {
                 resp, err := client.Do(req)
                 if err != nil {
                         if attempt == 2 {
-                                return upstreamResult{OK: false, Status: -1, Error: "上游网络错误: " + truncStr(err.Error(), 120)}
+                                return upstreamResult{OK: false, Status: -1, Error: "上游网络错误: " + bridgeserver.TruncStr(err.Error(), 120)}
                         }
                         time.Sleep(600 * time.Millisecond)
                         continue
@@ -247,7 +247,7 @@ func upstreamJSON(targetURL string, headers map[string]string) upstreamResult {
                 resp.Body.Close()
                 var j map[string]any
                 if err := json.Unmarshal(body, &j); err != nil {
-                        return upstreamResult{OK: false, Status: resp.StatusCode, Error: fmt.Sprintf("非JSON响应(%dB): %s", len(body), truncStr(string(body), 80))}
+                        return upstreamResult{OK: false, Status: resp.StatusCode, Error: fmt.Sprintf("非JSON响应(%dB): %s", len(body), bridgeserver.TruncStr(string(body), 80))}
                 }
                 if resp.StatusCode < 200 || resp.StatusCode >= 300 {
                         errStr := ""
@@ -258,7 +258,7 @@ func upstreamJSON(targetURL string, headers map[string]string) upstreamResult {
                                 b, _ := json.Marshal(s)
                                 errStr = string(b)
                         }
-                        return upstreamResult{OK: false, Status: resp.StatusCode, JSON: j, Error: fmt.Sprintf("上游 %d: %s", resp.StatusCode, truncStr(errStr, 120))}
+                        return upstreamResult{OK: false, Status: resp.StatusCode, JSON: j, Error: fmt.Sprintf("上游 %d: %s", resp.StatusCode, bridgeserver.TruncStr(errStr, 120))}
                 }
                 return upstreamResult{OK: true, Status: resp.StatusCode, JSON: j}
         }
@@ -400,12 +400,16 @@ func getAny(m map[string]any, keys ...string) any {
 }
 
 // ---------- 健康检查缓存 ----------
+// R41-1B: 修复 healthProbe 同步 bug — 原代码:
+//  1) goroutine 写 healthProbe=nil 在 healthProbeMu 下, 调用方读 healthProbe 在 apiReachableMu 下 → 数据竞争
+//  2) goroutine 永不 close(healthProbe) → 调用方 <-healthProbe 永久阻塞, 桥无法响应 /health
+//  3) goroutine 内 panic 会泄漏 channel
+// 修复: 用单一 apiReachableMu 守护 healthProbe; goroutine defer close+nil; 加 recover 兜底
 var (
         apiReachableMu sync.Mutex
         apiReachable   bool
         apiLastCheck   int64
         upstreamStatus int
-        healthProbeMu  sync.Mutex
         healthProbe    chan struct{}
 )
 
@@ -413,13 +417,22 @@ func healthCheck() (map[string]any, error) {
         now := time.Now().UnixMilli()
         apiReachableMu.Lock()
         if now-apiLastCheck > 60_000 && healthProbe == nil {
-                healthProbe = make(chan struct{})
+                probe := make(chan struct{})
+                healthProbe = probe
                 apiReachableMu.Unlock()
                 go func() {
+                        // R41-1B: defer close + nil + recover 兜底, 防 channel 永不关闭导致 <-healthProbe 永久阻塞
                         defer func() {
-                                healthProbeMu.Lock()
-                                healthProbe = nil
-                                healthProbeMu.Unlock()
+                                if rcv := recover(); rcv != nil {
+                                        fmt.Printf("[qimao-proxy] healthCheck goroutine panic: %v\n", rcv)
+                                }
+                                apiReachableMu.Lock()
+                                // R41-1B: 防止 race — 只关自己创建的 probe, 不关他人后续创建的 channel
+                                if healthProbe == probe {
+                                        close(probe)
+                                        healthProbe = nil
+                                }
+                                apiReachableMu.Unlock()
                         }()
                         sp := map[string]string{
                                 "gender":  "3",
@@ -443,16 +456,22 @@ func healthCheck() (map[string]any, error) {
                         upstreamStatus = r.Status
                         apiReachableMu.Unlock()
                 }()
-                <-healthProbe
+                <-probe
         } else if healthProbe != nil {
+                probe := healthProbe
                 apiReachableMu.Unlock()
-                <-healthProbe
+                <-probe
         } else {
                 apiReachableMu.Unlock()
         }
+        // R41-1B: 复制一份 snapshot 后返回, 防止读时另一线程写入
+        apiReachableMu.Lock()
+        reachableSnapshot := apiReachable
+        upstreamSnapshot := upstreamStatus
+        apiReachableMu.Unlock()
         return map[string]any{
-                "apiReachable": apiReachable,
-                "upstream":    upstreamStatus,
+                "apiReachable": reachableSnapshot,
+                "upstream":     upstreamSnapshot,
         }, nil
 }
 
@@ -758,16 +777,9 @@ func isDigits(s string) bool {
         return true
 }
 
-func truncStr(s string, n int) string {
-        if len(s) <= n {
-                return s
-        }
-        return s[:n]
-}
-
 func main() {
         stOk := aesRoundtripSelfTest()
-        fmt.Printf("[qimao-proxy] self-test(AES-128-CBC 回环): %s port=%d\n", boolStr(stOk), PORT)
+        fmt.Printf("[qimao-proxy] self-test(AES-128-CBC 回环): %s port=%d\n", bridgeserver.BoolStr(stOk), PORT)
         bs := bridgeserver.New(bridgeserver.BridgeServerOptions{
                 Name:            "qimao-proxy",
                 Port:            PORT,
@@ -785,11 +797,4 @@ func main() {
                 },
         })
         bs.ListenAndServe()
-}
-
-func boolStr(b bool) string {
-        if b {
-                return "PASS"
-        }
-        return "FAIL"
 }

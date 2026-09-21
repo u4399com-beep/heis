@@ -78,3 +78,29 @@ tmp-shots/
 __pycache__/
 *.pyc
 *.pid
+
+# R41-1C: Go 后端构建产物 — 9 个二进制(heis-backend + 8 个 services 子项目)及临时日志
+# 均为 `go build` 输出, 源码在 ./*.go 与 ./services/*/main.go; 不入版本库(原 9 个二进制共
+# ~100MB 已被 git 跟踪, 后续 git rm --cached 解除跟踪)
+go-backend/heis-backend
+go-backend/qimao-proxy
+go-backend/deqixs-proxy
+go-backend/fetch-relay
+go-backend/scrapling-bridge
+go-backend/xjp-proxy
+go-backend/uc-bridge
+go-backend/bqg713-proxy
+go-backend/moli-bridge
+# 兜底: 未来新增的 services/* 子项目二进制也按此模式命名(Port + service name)落在根目录
+go-backend/*-proxy
+go-backend/*-bridge
+go-backend/*-backend
+go-backend/services/*/*
+!go-backend/services/*/*.go
+!go-backend/services/*/go.mod
+!go-backend/services/*/go.sum
+!go-backend/services/*/scripts/
+!go-backend/services/*/.env.example
+# 显式覆盖 *.log 通用规则已存在, 此处补充 go-backend/ 路径注释明确意图
+go-backend/*.log
+

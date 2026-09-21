@@ -32,7 +32,6 @@ import (
         "net/url"
         "os"
         "os/exec"
-        "regexp"
         "strings"
         "time"
 
@@ -53,7 +52,6 @@ const (
 )
 
 var (
-        httpURLRe  = regexp.MustCompile(`^https?://`)
         browserSem = make(chan struct{}, browserConcurrency)
 )
 
@@ -129,7 +127,7 @@ func selfTest() bool { return findChromePath() != "" }
 // ---------- 业务逻辑 ----------
 func doFetch(payload fetchPayload, query url.Values) map[string]any {
         u := payload.URL
-        if !httpURLRe.MatchString(u) || len(u) > 2048 {
+        if !bridgeserver.HTTPURLRe.MatchString(u) || len(u) > 2048 {
                 return map[string]any{"ok": false, "error": "url 非法(仅 http/https, ≤2048 字符)"}
         }
         ok, reason := bridgeserver.AssertSafeSsrfTarget(u, bridgeserver.EnvBool("BRIDGE_SSRF_ALLOW_LOOPBACK"))
@@ -219,7 +217,7 @@ func doFetch(payload fetchPayload, query url.Values) map[string]any {
 
 func doSolveTurnstile(payload fetchPayload, query url.Values) map[string]any {
         u := payload.URL
-        if !httpURLRe.MatchString(u) || len(u) > 2048 {
+        if !bridgeserver.HTTPURLRe.MatchString(u) || len(u) > 2048 {
                 return map[string]any{"ok": false, "error": "url 非法(仅 http/https, ≤2048 字符)"}
         }
         ok, reason := bridgeserver.AssertSafeSsrfTarget(u, bridgeserver.EnvBool("BRIDGE_SSRF_ALLOW_LOOPBACK"))
@@ -395,26 +393,19 @@ func handle(w http.ResponseWriter, r *http.Request) {
                 status, _ := result["status"].(int)
                 html, _ := result["html"].(string)
                 fmt.Printf("[uc-bridge] %s %d %s (%dms, %d chars)\n",
-                        path, status, truncStr(payload.URL, 120), cost, len(html))
+                        path, status, bridgeserver.TruncStr(payload.URL, 120), cost, len(html))
         } else {
                 errStr, _ := result["error"].(string)
                 fmt.Printf("[uc-bridge] FAIL %s %s (%dms): %s\n",
-                        path, truncStr(payload.URL, 120), cost, truncStr(errStr, 200))
+                        path, bridgeserver.TruncStr(payload.URL, 120), cost, bridgeserver.TruncStr(errStr, 200))
         }
         bridgeserver.WriteJSON(w, http.StatusOK, result)
-}
-
-func truncStr(s string, n int) string {
-        if len(s) <= n {
-                return s
-        }
-        return s[:n]
 }
 
 func main() {
         stOk := selfTest()
         fmt.Printf("[uc-bridge] self-test: %s (chrome: %s, xvfb: %v)\n",
-                boolStr(stOk), findChromePath(), xvfbAvailable())
+                bridgeserver.BoolStr(stOk), findChromePath(), xvfbAvailable())
         bs := bridgeserver.New(bridgeserver.BridgeServerOptions{
                 Name:             "uc-bridge",
                 Port:             PORT,
@@ -436,11 +427,4 @@ func main() {
                 },
         })
         bs.ListenAndServe()
-}
-
-func boolStr(b bool) string {
-        if b {
-                return "PASS"
-        }
-        return "FAIL"
 }

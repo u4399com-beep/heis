@@ -56,11 +56,9 @@ const (
 )
 
 var (
-        httpURLRe    = regexp.MustCompile(`^https?://`)
         proxySpecRe = regexp.MustCompile(`^(https?|socks5h?|socks4a?)://[^\s,]+$`)
         modes       = []string{"static", "stealthy", "playwright"}
         modeSet     = map[string]bool{"static": true, "stealthy": true, "playwright": true}
-        browserSet  = map[string]bool{"stealthy": true, "playwright": true}
 
         // 浏览器并发闸(semaphore buffer)
         semChan = make(chan struct{}, browserConc)
@@ -77,13 +75,20 @@ type fetchPayload struct {
 }
 
 func handle(w http.ResponseWriter, r *http.Request) {
-        if r.URL.Path != "/fetch" || r.Method != http.MethodPost {
-                bridgeserver.WriteJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "not found"})
+        // R41-1B: 修复 /render 死代码 — 原逻辑先拒 path!="/fetch" 再判 path=="/render" 导致 /render 永远走不到
+        if r.Method != http.MethodPost {
+                bridgeserver.WriteJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "method not allowed"})
                 return
         }
-        if r.URL.Path == "/render" && r.Method == http.MethodPost {
+        switch r.URL.Path {
+        case "/fetch":
+                // fallthrough 到下方 fetch 处理
+        case "/render":
                 // /render 强制 stealthy (与 Python 版同款)
                 handleRender(w, r)
+                return
+        default:
+                bridgeserver.WriteJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "not found"})
                 return
         }
         raw, err := bridgeserver.ReadBodyCapped(r, maxRequestBytes)
@@ -124,7 +129,7 @@ func handleRender(w http.ResponseWriter, r *http.Request) {
 // doFetch — 业务逻辑。
 func doFetch(payload fetchPayload) map[string]any {
         u := payload.URL
-        if !httpURLRe.MatchString(u) || len(u) > 2048 {
+        if !bridgeserver.HTTPURLRe.MatchString(u) || len(u) > 2048 {
                 return map[string]any{"ok": false, "error": "url 非法(仅 http/https, ≤2048 字符)"}
         }
         // SSRF 守卫
@@ -134,7 +139,7 @@ func doFetch(payload fetchPayload) map[string]any {
         }
         mode := payload.Mode
         if !modeSet[mode] {
-                return map[string]any{"ok": false, "error": "mode 非法(应为 " + strings.Join(modes, "/") + "): " + truncStr(mode, 60)}
+                return map[string]any{"ok": false, "error": "mode 非法(应为 " + strings.Join(modes, "/") + "): " + bridgeserver.TruncStr(mode, 60)}
         }
         timeoutMs := payload.TimeoutMs
         if timeoutMs <= 0 {
@@ -174,11 +179,11 @@ func doFetch(payload fetchPayload) map[string]any {
                 status, _ := result["status"].(int)
                 html, _ := result["html"].(string)
                 fmt.Printf("[scrapling-bridge] /fetch %d %s %s (%dms, %d chars)\n",
-                        status, mode, truncStr(u, 120), cost, len(html))
+                        status, mode, bridgeserver.TruncStr(u, 120), cost, len(html))
         } else {
                 errStr, _ := result["error"].(string)
                 fmt.Printf("[scrapling-bridge] FAIL /fetch %s %s (%dms): %s\n",
-                        mode, truncStr(u, 120), cost, truncStr(errStr, 200))
+                        mode, bridgeserver.TruncStr(u, 120), cost, bridgeserver.TruncStr(errStr, 200))
         }
         return result
 }
@@ -397,17 +402,10 @@ func selfTest() bool {
         return err == nil
 }
 
-func truncStr(s string, n int) string {
-        if len(s) <= n {
-                return s
-        }
-        return s[:n]
-}
-
 func main() {
         stOk := selfTest()
         fmt.Printf("[scrapling-bridge] self-test: %s (scrapling script: %s)\n",
-                boolStr(stOk), findScriptPath())
+                bridgeserver.BoolStr(stOk), findScriptPath())
         bs := bridgeserver.New(bridgeserver.BridgeServerOptions{
                 Name:             "scrapling-bridge",
                 Port:             PORT,
@@ -431,11 +429,4 @@ func main() {
                 },
         })
         bs.ListenAndServe()
-}
-
-func boolStr(b bool) string {
-        if b {
-                return "PASS"
-        }
-        return "FAIL"
 }

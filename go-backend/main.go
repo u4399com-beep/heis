@@ -11,6 +11,7 @@ import (
         "net/http"
         "os"
         "path/filepath"
+        "regexp"
         "runtime"
         "strconv"
         "strings"
@@ -435,12 +436,29 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
         }
 
         tmplName := theme + "/" + view
-        if err := tmpls.ExecuteTemplate(w, tmplName, data); err != nil {
-                // fallback: 若 view 模板不存在, 退回 shipsay/home (home view 一定存在)
-                if fallbackErr := tmpls.ExecuteTemplate(w, "shipsay/home", data); fallbackErr != nil {
-                        http.Error(w, "模板渲染失败: "+err.Error(), 500)
-                }
+        // R41-1B: 渲染前先校验模板存在; 失败时回退到 shipsay/home 而非"半写后报错"
+        if tmpls.Lookup(tmplName) == nil {
+                log.Printf("[homeHandler] template not found: %s, fallback to shipsay/home", tmplName)
+                tmplName = "shipsay/home"
         }
+        // 用 bytes.Buffer 先渲染, 失败时还能控制响应
+        var buf strings.Builder
+        if err := tmpls.ExecuteTemplate(&buf, tmplName, data); err != nil {
+                log.Printf("[homeHandler] template render failed (tmpl=%s): %v", tmplName, err)
+                // 回退 shipsay/home (兜底)
+                if tmplName != "shipsay/home" {
+                        var buf2 strings.Builder
+                        if err2 := tmpls.ExecuteTemplate(&buf2, "shipsay/home", data); err2 == nil {
+                                w.Header().Set("Content-Type", "text/html; charset=utf-8")
+                                w.Write([]byte(buf2.String()))
+                                return
+                        }
+                }
+                http.Error(w, "模板渲染失败", 500)
+                return
+        }
+        w.Header().Set("Content-Type", "text/html; charset=utf-8")
+        w.Write([]byte(buf.String()))
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
@@ -476,28 +494,48 @@ func sitesHandler(w http.ResponseWriter, r *http.Request) {
 
 func bookDetailHandler(w http.ResponseWriter, r *http.Request) {
         id := r.URL.Query().Get("id")
-        var bid, name, author, intro, cover, status, latestChapter, category, categoryId, updatedAt string
+        if id == "" {
+                writeJSON(w, map[string]interface{}{"ok": false, "error": "缺少 id 参数"})
+                return
+        }
+        var bid, name, author, intro, cover, status, latestChapter, category, categoryId, updatedAt sql.NullString
         var wordCount int64
         err := db.QueryRow(`SELECT b.id,b.name,b.author,b.intro,b.cover,b.status,b.wordCount,b.latestChapter,COALESCE(c.name,'未分类'),b.categoryId,b.updatedAt FROM Book b LEFT JOIN Category c ON b.categoryId=c.id WHERE b.id=?`, id).Scan(
                 &bid, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryId, &updatedAt)
         if err != nil {
-                writeJSON(w, map[string]interface{}{"ok": false, "error": err.Error()})
+                // R41-1B: 区分 not found vs DB 错误, 不暴露内部细节
+                if err == sql.ErrNoRows {
+                        writeJSON(w, map[string]interface{}{"ok": false, "error": "book not found"})
+                        return
+                }
+                log.Printf("[bookDetailHandler] DB error for id=%s: %v", id, err)
+                writeJSON(w, map[string]interface{}{"ok": false, "error": "查询失败"})
                 return
         }
         writeJSON(w, map[string]interface{}{"ok": true, "data": map[string]interface{}{
-                "id": bid, "name": name, "author": author, "intro": intro, "cover": cover,
-                "status": status, "wordCount": wordCount, "latestChapter": latestChapter,
-                "category": category, "categoryId": categoryId, "updatedAt": updatedAt,
+                "id": bid.String, "name": name.String, "author": author.String, "intro": intro.String, "cover": cover.String,
+                "status": status.String, "wordCount": wordCount, "latestChapter": latestChapter.String,
+                "category": category.String, "categoryId": categoryId.String, "updatedAt": updatedAt.String,
         }})
 }
 
 func chapterHandler(w http.ResponseWriter, r *http.Request) {
         id := r.URL.Query().Get("id")
+        if id == "" {
+                writeJSON(w, map[string]interface{}{"ok": false, "error": "缺少 id 参数"})
+                return
+        }
         var chID, title, content string
         var idx int
         err := db.QueryRow(`SELECT id, title, content, idx FROM Chapter WHERE id=?`, id).Scan(&chID, &title, &content, &idx)
         if err != nil {
-                writeJSON(w, map[string]interface{}{"ok": false, "error": err.Error()})
+                // R41-1B: 区分 not found vs DB 错误, 不暴露内部细节
+                if err == sql.ErrNoRows {
+                        writeJSON(w, map[string]interface{}{"ok": false, "error": "chapter not found"})
+                        return
+                }
+                log.Printf("[chapterHandler] DB error for id=%s: %v", id, err)
+                writeJSON(w, map[string]interface{}{"ok": false, "error": "查询失败"})
                 return
         }
         writeJSON(w, map[string]interface{}{"ok": true, "data": map[string]interface{}{"id": chID, "title": title, "content": content, "idx": idx}})
@@ -587,9 +625,23 @@ func topBooks(books []map[string]interface{}, n int) []map[string]interface{} {
         sorted := make([]map[string]interface{}, len(books))
         copy(sorted, books)
         // 简单冒泡 (按 wordCount desc)
+        // R41-1B: 类型断言加 ok 检查防 panic (wordCount 缺失或类型异常时降级 0)
+        wcAt := func(b map[string]interface{}) int64 {
+                if v, ok := b["wordCount"]; ok {
+                        switch x := v.(type) {
+                        case int64:
+                                return x
+                        case int:
+                                return int64(x)
+                        case float64:
+                                return int64(x)
+                        }
+                }
+                return 0
+        }
         for i := 0; i < len(sorted); i++ {
                 for j := i + 1; j < len(sorted); j++ {
-                        if sorted[j]["wordCount"].(int64) > sorted[i]["wordCount"].(int64) {
+                        if wcAt(sorted[j]) > wcAt(sorted[i]) {
                                 sorted[i], sorted[j] = sorted[j], sorted[i]
                         }
                 }
@@ -605,6 +657,41 @@ func takeBooks(books []map[string]interface{}, n int) []map[string]interface{} {
                 n = len(books)
         }
         return books[:n]
+}
+
+// ===== R41-1B: 章节正文安全消毒 (剥离危险标签/事件处理器/JS URL) =====
+
+// 危险整段标签 — script/iframe/object/embed/svg/meta/link/style/base/form
+// 注意: Go regexp (RE2) 不支持 \1 反向引用, 故按标签名一一展开.
+var dangerousTagREs = func() []*regexp.Regexp {
+        tags := []string{"script", "iframe", "object", "embed", "svg", "meta", "link", "style", "base", "form"}
+        out := make([]*regexp.Regexp, 0, len(tags)*2)
+        for _, t := range tags {
+                // 含闭合: <tag ...> ... </tag>
+                out = append(out, regexp.MustCompile("(?is)<\\s*"+t+"\\b[^>]*>.*?<\\s*/\\s*"+t+"\\s*>"))
+                // 自闭合/未闭合: <tag ...>  (单独的, 不含闭合)
+                out = append(out, regexp.MustCompile("(?is)<\\s*"+t+"\\b[^>]*/?>"))
+        }
+        return out
+}()
+
+// 事件处理器属性 onXxx=
+var eventAttrRe = regexp.MustCompile(`(?i)\s+on[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)`)
+// javascript: / data: URL (script src, a href, iframe src)
+var jsURLOpenRe = regexp.MustCompile(`(?i)(href|src)\s*=\s*("javascript:[^"]*"|'javascript:[^']*'|javascript:[^\s>]+|'data:[^']*'|"data:[^"]*"|data:[^\s>]+)`)
+
+// sanitizeChapterHTML 剥离危险标签/事件处理器/JS URL — 防 stored XSS.
+// R41-1B: 渲染 template.HTML 前必须先过此函数.
+func sanitizeChapterHTML(s string) string {
+        if s == "" {
+                return ""
+        }
+        for _, re := range dangerousTagREs {
+                s = re.ReplaceAllString(s, "")
+        }
+        s = eventAttrRe.ReplaceAllString(s, "")
+        s = jsURLOpenRe.ReplaceAllString(s, "")
+        return s
 }
 
 // ===== 工具 =====
@@ -832,8 +919,10 @@ func getReadViewData(chID string) (map[string]interface{}, map[string]interface{
         }
         // 兼容 txt 模式: 直接从 DB 取 content; 若空且 storage=txt+filePath, 暂不读 txt 文件 (留给后续)
         bodyHTML := content.String
+        // R41-1B: 安全加固 — 始终剥离危险标签/事件处理器后再渲染 template.HTML
+        bodyHTML = sanitizeChapterHTML(bodyHTML)
         // 若 content 不含 <p> 标签但含 \n\n, 按 \n\n 切分加 <p> 包裹 (与公开 chapter API 一致)
-        if bodyHTML != "" && !strings.Contains(bodyHTML, "<p") && strings.Contains(bodyHTML, "\n\n") {
+        if bodyHTML != "" && !strings.Contains(bodyHTML, "<p>") && !strings.Contains(bodyHTML, "<p ") && strings.Contains(bodyHTML, "\n\n") {
                 parts := strings.Split(bodyHTML, "\n\n")
                 out := []string{}
                 for _, p := range parts {

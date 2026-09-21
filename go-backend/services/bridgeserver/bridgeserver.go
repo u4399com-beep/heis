@@ -671,7 +671,7 @@ func (bs *BridgeServer) infoHandler(w http.ResponseWriter, r *http.Request) {
                 extra, err := bs.opts.ExtraInfo()
                 if err != nil {
                         info["extraInfoError"] = SanitizeError(err)
-                } else if extra != nil {
+                } else {
                         for k, v := range extra {
                                 if _, exists := info[k]; !exists {
                                         info[k] = v
@@ -746,3 +746,78 @@ func EnvBool(name string) bool { return os.Getenv(name) == "1" }
 
 // QueryEscape — 简单 url query 编码(避免依赖 net/url 的 QueryEscape 对 ' ' 的 + 处理).
 func QueryEscape(s string) string { return url.QueryEscape(s) }
+
+// ---------- 文本工具 (R41-1C: 从 7 个 services 收口, 消除 28+ 处重复定义) ----------
+
+// HTTPURLRe — URL 形态校验正则 (仅 http/https, 用于 SSRF 守卫前置形态校验).
+// 4 个 services (fetch-relay/uc-bridge/scrapling-bridge/moli-bridge) 此前各自定义同款.
+var HTTPURLRe = regexp.MustCompile(`^https?://`)
+
+// TruncStr — 截断字符串到最大长度(超出按字节切片, 用于日志/错误脱敏).
+// 7 个 services 此前各自定义同款实现 (bqg713/deqixs/fetch-relay/moli/qimao/scrapling/uc/xjp).
+func TruncStr(s string, n int) string {
+        if len(s) <= n {
+                return s
+        }
+        return s[:n]
+}
+
+// BoolStr — bool → "PASS"/"FAIL" (服务自检日志统一格式).
+// 7 个 services 此前各自定义同款实现.
+func BoolStr(b bool) string {
+        if b {
+                return "PASS"
+        }
+        return "FAIL"
+}
+
+// IfStr — 三元表达式等价物 (Go 无内置三元, 用于 fmt.Sprintf 拼条件分支).
+// 2 个 services (deqixs/xjp) 此前各自定义同款实现.
+func IfStr(cond bool, t, f string) string {
+        if cond {
+                return t
+        }
+        return f
+}
+
+// ---------- HTML→纯文本 (R41-1C: 从 deqixs-proxy + xjp-proxy 收口) ----------
+//
+// 与 deqixs-proxy / xjp-proxy 原各自的 htmlToText 完全等价:
+//   - <br/> → \n, </p>|</div> → \n
+//   - 剥所有标签
+//   - &nbsp; → 空格, &lt;/&gt;/&quot;/&#39;/&apos; → 对应字符, &amp; 最后解码
+//     (防 '&amp;lt;' 被二次解码成 '<' 导致 stored XSS)
+//   - 行首尾 trim, 多于 2 个 \n 折叠为 2 个
+
+var (
+        brRe         = regexp.MustCompile(`(?i)<br\s*/?>`)
+        closePTDivRe = regexp.MustCompile(`(?i)</(?:p|div)>`)
+        tagRe        = regexp.MustCompile(`<[^>]+>`)
+        nbspRe       = regexp.MustCompile(`(?i)&nbsp;`)
+        ltRe         = regexp.MustCompile(`(?i)&lt;`)
+        gtRe         = regexp.MustCompile(`(?i)&gt;`)
+        quotRe       = regexp.MustCompile(`(?i)&quot;`)
+        aposRe       = regexp.MustCompile(`(?i)&#39;|&apos;`)
+        ampRe        = regexp.MustCompile(`(?i)&amp;`)
+        multiNLRe    = regexp.MustCompile(`\n{3,}`)
+)
+
+// HTMLToText — HTML 片段 → 纯文本 (用于章节正文清洗后输出, 不渲染 HTML).
+func HTMLToText(html string) string {
+        t := brRe.ReplaceAllString(html, "\n")
+        t = closePTDivRe.ReplaceAllString(t, "\n")
+        t = tagRe.ReplaceAllString(t, "")
+        t = nbspRe.ReplaceAllString(t, " ")
+        t = ltRe.ReplaceAllString(t, "<")
+        t = gtRe.ReplaceAllString(t, ">")
+        t = quotRe.ReplaceAllString(t, "\"")
+        t = aposRe.ReplaceAllString(t, "'")
+        t = ampRe.ReplaceAllString(t, "&")
+        lines := strings.Split(t, "\n")
+        for i, l := range lines {
+                lines[i] = strings.TrimSpace(l)
+        }
+        out := strings.Join(lines, "\n")
+        out = multiNLRe.ReplaceAllString(out, "\n\n")
+        return strings.TrimSpace(out)
+}

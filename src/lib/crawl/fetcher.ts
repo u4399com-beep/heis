@@ -2772,7 +2772,7 @@ async function fetchHttp(url: string, cfg: FetchConfig, ua: string, proxy = '', 
     // Cookie 行为。相对 Location 解析; 20 跳上限; 跨 scheme 降级(https→http)拒绝,
     // http→https 升级放行(国内站 301 升级 https 常态, 不能因安全策略拒采)。
     // 注: Bun fetch redirect:'manual' 实测(1.3.14)返回真实 3xx 响应, 状态行/Location/
-    // getSetCookie 全可读, 无 opaque-redirect 屏蔽(见 scripts/archive/probe-bun-manual-redirect.ts)
+    // getSetCookie 全可读, 无 opaque-redirect 屏蔽(历史探针 scripts/archive/probe-bun-manual-redirect.ts 已 R41-1C 归档删除, 结论沉淀于此)
     let hopUrl = url
     // agent-A-fetcher Bug B40: 记录上一跳 URL, 用于 hop>0 时把 Referer 更新为 prevHopUrl,
     // 与真实浏览器 3xx 重定向后的 Referer 行为对齐(原实现整个重定向链固定使用初始 Referer)
