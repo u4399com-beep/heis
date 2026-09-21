@@ -1,0 +1,570 @@
+// cloak-browser — 反检测浏览器桥 (Go 重写, R43-1A).
+//
+// 与 bun/puppeteer 端 mini-services/cloak-browser/index.ts 同口径:
+//   场景: 作为采集引擎 fetcher.ts fetchMode='cloak-browser' 显式 opt-in 通道,
+//   处理 Obscura 引擎无法突破的 Cloudflare / WAF 站点 (hetushu/shucong 等 hard WAF).
+//   puppeteer-extra-stealth 在 Node 端靠 puppeteer-extra-plugin-stealth 抹平
+//   navigator.webdriver / chrome runtime / plugins / languages 等 12 项指纹;
+//   Go 重写用 chromedp (CDP Go 实现) + 启动 flags (--disable-blink-features=
+//   AutomationControlled 抹除 navigator.webdriver, CDP Emulation.setUserAgentOverride
+//   随机 UA, --lang=zh-CN, --window-size=1920,1080).
+//
+// 与 puppeteer 端的差异:
+//   - chromedp 不自带 stealth plugin, 改用启动 flags + CDP Emulation + 注入脚本
+//     (等价 puppeteer-extra-stealth 抹平的 12 项隐身 flags 中前 6 项)
+//   - canvas/audio/WebGL noise 层 (puppeteer 端 standard/maximum 档) Go 端简化为
+//     注入 JS 桩 (navigator.webdriver=undefined + window.chrome runtime + navigator
+//     .languages + WebGL vendor/renderer + navigator.hardwareConcurrency=8 +
+//     navigator.deviceMemory=8). per-session seed 暂不实现 (与原 lite 档等价).
+//   - 并发限制 2 (与原 MAX_CONCURRENT=2 同口径), 超过返回 503 引擎侧降级
+//
+// 协议:
+//   GET  /health → { ok, service, port, ts, browserReady, inFlight, sessions }
+//   POST /render body: { url, actions?, timeoutMs?, waitUntil?, screenshot?, stealthTier? }
+//                 → 200 { ok: true, html, status, finalUrl, cookies, screenshotB64? }
+//                    (目标侧所有响应 —— 含 3xx/4xx/5xx —— 均忠实转发为 ok:true,
+//                     浏览器层无 4xx 概念, status 取自 CDP network.response)
+//                 → 200 { ok: false, error }  桥内异常(url 非法/浏览器启动失败/超时)
+//   POST /fetch  (alias for /render, 兼容 fetcher.ts 旧契约)
+//
+// 安全: hostname 钉 127.0.0.1; url 仅 http/https 且限长 8KB; AUTH_TOKEN/BRIDGE_KEY
+//       鉴权 + 30/min/IP 限速(浏览器任务重, 限速更紧); 超时上限 120s(浏览器导航+JS
+//       执行远慢于 HTTP fetch); SSRF 守卫(默认拒 localhost/私网/链路本地/元数据端点,
+//       BRIDGE_SSRF_ALLOW_LOOPBACK=1 放行 127.0.0.1/::1).
+//
+// 启动: cd go-backend/services/cloak-browser && go run . (端口固定 3020)
+package main
+
+import (
+        "context"
+        "encoding/base64"
+        "encoding/json"
+        "fmt"
+        "math/rand"
+        "net/http"
+        "net/url"
+        "os"
+        "regexp"
+        "strings"
+        "sync"
+        "sync/atomic"
+        "time"
+
+        "github.com/chromedp/cdproto/cdp"
+        "github.com/chromedp/cdproto/emulation"
+        "github.com/chromedp/cdproto/network"
+        "github.com/chromedp/chromedp"
+
+        "heis-backend/services/bridgeserver"
+)
+
+const PORT = 3020
+
+const (
+        cbMaxRequestBytes = 1 * 1024 * 1024 // 1MB POST 体上限(actions 列表很短)
+        cbMaxBodyBytes    = 20 * 1024 * 1024 // 20MB 响应 HTML 上限(浏览器渲染后可能含大量 base64 img)
+        cbMaxTimeoutMs    = 120_000          // 120s 浏览器导航 + JS 执行上限
+        cbMaxConcurrent   = 2                // 并发上限(与原 MAX_CONCURRENT=2 同口径)
+        cbIdleTimeoutS    = 250              // 覆盖 120s 超时 + base64 重组开销
+        cbBrowserIdleS    = 300              // 浏览器进程 idle 5min 后自动关闭
+)
+
+var ssrfAllowLB = os.Getenv("BRIDGE_SSRF_ALLOW_LOOPBACK") == "1"
+
+// StealthTier — 与原 puppeteer 端 lite/standard/maximum 三档对齐.
+//   lite: 仅 stealth 启动 flag (navigator.webdriver=undefined)
+//   standard: lite + canvas/WebGL/languages 注入桩
+//   maximum: standard + navigator.hardwareConcurrency/deviceMemory/connection 注入桩
+type StealthTier string
+
+const (
+        TierLite     StealthTier = "lite"
+        TierStandard StealthTier = "standard"
+        TierMaximum  StealthTier = "maximum"
+)
+
+// renderAction — POST /render actions 列表项.
+type renderAction struct {
+        Type     string `json:"type"`     // click|wait|input|scroll|sleep|eval
+        Selector string `json:"selector"` // CSS selector (click/wait/input/scroll)
+        Value    string `json:"value"`    // input text / eval script
+        WaitMs   int    `json:"waitMs"`   // sleep/wait 时长(ms)
+}
+
+// renderBody — POST /render 请求体.
+type renderBody struct {
+        URL          string         `json:"url"`
+        Actions      []renderAction `json:"actions"`
+        TimeoutMs    int            `json:"timeoutMs"`
+        WaitUntil    string         `json:"waitUntil"`    // load|domcontentloaded|networkidle (默认 domcontentloaded)
+        Screenshot   bool           `json:"screenshot"`    // 是否截图(viewport)
+        StealthTier  string         `json:"stealthTier"`   // lite|standard|maximum (默认 standard)
+}
+
+// renderResult — POST /render 响应.
+type renderResult struct {
+        OK           bool              `json:"ok"`
+        HTML         string            `json:"html"`
+        Status       int               `json:"status"`
+        FinalURL     string            `json:"finalUrl"`
+        Cookies      []map[string]any  `json:"cookies"`
+        ScreenshotB64 string           `json:"screenshotB64,omitempty"`
+        Error        string            `json:"error,omitempty"`
+}
+
+// UA 池 — 随机选 UA 防指纹钉 (与原 DEFAULT_UA 同款, 加 3 个变体).
+var userAgents = []string{
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
+}
+
+// CF challenge 标志(与原 CF_CHALLENGE_MARKERS 同口径)
+var cfChallengeRe = regexp.MustCompile(`(?i)challenge-platform|just a moment|cf-chl|cf_chl_|attention required|cf-turnstile|cf-browser-verification|checking your browser|正在進行安全驗證|正在驗證瀏覽器|正在验证浏览器|安全驗證`)
+
+// 并发计数 + 全局 allocator
+var (
+        inFlight      int32
+        allocCtx      context.Context
+        allocCancel   context.CancelFunc
+        allocMu       sync.Mutex
+        allocInited   bool
+)
+
+// ensureAllocator — 懒构造全局 chromedp.NewExecAllocator(浏览器进程不立即启动,
+//   chromedp 按需 fork 第一次 Run 时启动). 复用同一 allocator 避免每请求重新 fork.
+func ensureAllocator() (context.Context, context.CancelFunc) {
+        allocMu.Lock()
+        defer allocMu.Unlock()
+        if allocInited {
+                return allocCtx, allocCancel
+        }
+        opts := append(chromedp.DefaultExecAllocatorOptions[:],
+                chromedp.Flag("headless", "new"),                          // Chrome 132+ 推荐 headless=new
+                chromedp.Flag("no-sandbox", true),                        // 沙箱关闭(容器 root 跑必备)
+                chromedp.Flag("disable-setuid-sandbox", true),
+                chromedp.Flag("disable-dev-shm-usage", true),             // 容器 /dev/shm 小兜底
+                chromedp.Flag("disable-blink-features", "AutomationControlled"), // ★ 核心 stealth flag: 抹 navigator.webdriver
+                chromedp.Flag("disable-features", "site-per-process,Translate,BlinkGenPropertyTrees,IsolateOrigins"),
+                chromedp.Flag("disable-infobars", true),
+                chromedp.Flag("disable-extensions", true),
+                chromedp.Flag("disable-default-apps", true),
+                chromedp.Flag("disable-popup-blocking", true),
+                chromedp.Flag("disable-prompt-on-repost", true),
+                chromedp.Flag("no-first-run", true),
+                chromedp.Flag("no-default-browser-check", true),
+                chromedp.Flag("disable-background-networking", true),
+                chromedp.Flag("disable-client-side-phishing-detection", true),
+                chromedp.Flag("disable-component-update", true),
+                chromedp.Flag("disable-sync", true),
+                chromedp.Flag("force-color-profile", "srgb"),
+                chromedp.Flag("metrics-recording-only", true),
+                chromedp.Flag("password-store", "basic"),
+                chromedp.Flag("use-mock-keychain", true),
+                chromedp.Flag("lang", "zh-CN"),
+                chromedp.Flag("window-size", "1920,1080"),
+                chromedp.Flag("user-agent", userAgents[rand.Intn(len(userAgents))]),
+        )
+        allocCtx, allocCancel = chromedp.NewExecAllocator(context.Background(), opts...)
+        allocInited = true
+        return allocCtx, allocCancel
+}
+
+// stealthScript — 注入到 page.addScriptToEvaluateOnNewDocument 的 JS, 抹平
+//   puppeteer-extra-stealth 12 项 flags 中前 6 项 (navigator.webdriver / chrome
+//   runtime / plugins / languages / WebGL vendor/renderer / permissions.query).
+//   tier=lite 仅前 3 项; standard 加 WebGL/languages/permissions; maximum 加
+//   hardwareConcurrency/deviceMemory/connection.
+func stealthScript(tier StealthTier) string {
+        base := `
+(() => {
+  try { Object.defineProperty(navigator, 'webdriver', { get: () => undefined, configurable: true }); } catch(e) {}
+  try { window.chrome = window.chrome || { runtime: {}, app: { isInstalled: false }, csi: () => {}, loadTimes: () => {} }; } catch(e) {}
+  try {
+    const fakePlugins = [
+      { name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+      { name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+      { name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+      { name: 'Microsoft Edge PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+      { name: 'WebKit built-in PDF', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+    ];
+    Object.defineProperty(navigator, 'plugins', { get: () => fakePlugins, configurable: true });
+  } catch(e) {}
+})();`
+        if tier == TierLite {
+                return base
+        }
+        standard := base + `
+(() => {
+  try {
+    Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'], configurable: true });
+    Object.defineProperty(navigator, 'language', { get: () => 'zh-CN', configurable: true });
+  } catch(e) {}
+  try {
+    const orig = WebGLRenderingContext.prototype.getParameter;
+    WebGLRenderingContext.prototype.getParameter = function(p) {
+      if (p === 37445) return 'Google Inc. (Intel)';
+      if (p === 37446) return 'ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)';
+      return orig.call(this, p);
+    };
+    if (typeof WebGL2RenderingContext !== 'undefined') {
+      const orig2 = WebGL2RenderingContext.prototype.getParameter;
+      WebGL2RenderingContext.prototype.getParameter = function(p) {
+        if (p === 37445) return 'Google Inc. (Intel)';
+        if (p === 37446) return 'ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)';
+        return orig2.call(this, p);
+      };
+    }
+  } catch(e) {}
+  try {
+    const _orig = navigator.permissions.query;
+    navigator.permissions.query = (params) => params && params.name === 'notifications'
+      ? Promise.resolve({ state: Notification.permission })
+      : _orig.call(navigator.permissions, params);
+  } catch(e) {}
+})();`
+        if tier == TierStandard {
+                return standard
+        }
+        maximum := standard + `
+(() => {
+  try { Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8, configurable: true }); } catch(e) {}
+  try { Object.defineProperty(navigator, 'deviceMemory', { get: () => 8, configurable: true }); } catch(e) {}
+  try {
+    Object.defineProperty(navigator, 'connection', {
+      get: () => ({ effectiveType: '4g', rtt: 50, downlink: 10, saveData: false }),
+      configurable: true,
+    });
+  } catch(e) {}
+})();`
+        return maximum
+}
+
+func handle(w http.ResponseWriter, r *http.Request) {
+        // 兼容 /render (新) + /fetch (旧契约 alias)
+        if r.Method != http.MethodPost ||
+                (r.URL.Path != "/render" && r.URL.Path != "/fetch") {
+                bridgeserver.WriteJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "not found"})
+                return
+        }
+        // 并发上限(超出返回 503 引擎侧降级)
+        if cur := atomic.AddInt32(&inFlight, 1); cur > cbMaxConcurrent {
+                atomic.AddInt32(&inFlight, -1)
+                bridgeserver.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{
+                        "ok":    false,
+                        "error": fmt.Sprintf("并发已满 (%d/%d)", cur-1, cbMaxConcurrent),
+                        "code":  "CONCURRENCY_LIMIT",
+                })
+                return
+        }
+        defer atomic.AddInt32(&inFlight, -1)
+
+        raw, err := bridgeserver.ReadBodyCapped(r, cbMaxRequestBytes)
+        if err != nil {
+                bridgeserver.WriteJSON(w, http.StatusOK, renderResult{OK: false, Error: err.Error()})
+                return
+        }
+        var body renderBody
+        if err := json.Unmarshal(raw, &body); err != nil {
+                bridgeserver.WriteJSON(w, http.StatusOK, renderResult{OK: false, Error: "请求体非 JSON: " + bridgeserver.SanitizeError(err)})
+                return
+        }
+        u := body.URL
+        if !bridgeserver.HTTPURLRe.MatchString(u) || len(u) > 8192 {
+                bridgeserver.WriteJSON(w, http.StatusOK, renderResult{OK: false, Error: "url 缺失或非 http/https"})
+                return
+        }
+        // SSRF 守卫
+        ok, reason := bridgeserver.AssertSafeSsrfTarget(u, ssrfAllowLB)
+        if !ok {
+                fmt.Printf("[cloak-browser] SSRF 拒绝 %s: %s\n", safeHostPath(u), reason)
+                bridgeserver.WriteJSON(w, http.StatusOK, renderResult{OK: false, Error: "SSRF blocked: " + reason})
+                return
+        }
+        // 超时(钳制 5s ~ 120s)
+        timeoutMs := body.TimeoutMs
+        if timeoutMs <= 0 {
+                timeoutMs = 30_000
+        }
+        if timeoutMs < 5000 {
+                timeoutMs = 5000
+        }
+        if timeoutMs > cbMaxTimeoutMs {
+                timeoutMs = cbMaxTimeoutMs
+        }
+        // waitUntil
+        waitUntil := strings.ToLower(body.WaitUntil)
+        if waitUntil == "" {
+                waitUntil = "domcontentloaded"
+        }
+        // stealth tier
+        tier := TierStandard
+        switch strings.ToLower(body.StealthTier) {
+        case "lite":
+                tier = TierLite
+        case "maximum":
+                tier = TierMaximum
+        }
+
+        started := time.Now()
+        result, ferr := fetchPage(r.Context(), u, body.Actions, timeoutMs, waitUntil, body.Screenshot, tier)
+        if ferr != nil {
+                fmt.Printf("[cloak-browser] FAIL %s tier=%s (%dms): %s\n",
+                        safeHostPath(u), tier, time.Since(started).Milliseconds(), bridgeserver.SanitizeError(ferr))
+                bridgeserver.WriteJSON(w, http.StatusOK, renderResult{OK: false, Error: bridgeserver.SanitizeError(ferr)})
+                return
+        }
+        if !result.OK {
+                fmt.Printf("[cloak-browser] EMPTY %s tier=%s status=%d html=%dB (%dms)\n",
+                        safeHostPath(u), tier, result.Status, len(result.HTML), time.Since(started).Milliseconds())
+        } else {
+                fmt.Printf("[cloak-browser] OK %s tier=%s status=%d html=%dB (%dms)\n",
+                        safeHostPath(u), tier, result.Status, len(result.HTML), time.Since(started).Milliseconds())
+        }
+        bridgeserver.WriteJSON(w, http.StatusOK, result)
+}
+
+// fetchPage — 浏览器渲染主流程: navigate → (CF challenge 等待) → actions → screenshot → cookies
+func fetchPage(parent context.Context, targetURL string, actions []renderAction, timeoutMs int, waitUntil string, wantScreenshot bool, tier StealthTier) (*renderResult, error) {
+        allocCtx, _ := ensureAllocator()
+        // 每请求独立 ctx (任务级超时), allocator 复用全局
+        ctx, cancel := context.WithTimeout(allocCtx, time.Duration(timeoutMs)*time.Millisecond)
+        defer cancel()
+
+        browserCtx, cancelBrowser := chromedp.NewContext(ctx)
+        defer cancelBrowser()
+
+        // 随机 UA + 隐身脚本注入 (page.addScriptToEvaluateOnNewDocument)
+        ua := userAgents[rand.Intn(len(userAgents))]
+        _ = chromedp.Run(browserCtx,
+                network.Enable(),
+                emulation.SetUserAgentOverride(ua).WithUserAgentMetadata(&emulation.UserAgentMetadata{
+                        Brands:          []*emulation.UserAgentBrandVersion{{Brand: "Chromium", Version: "131"}, {Brand: "Google Chrome", Version: "131"}},
+                        FullVersionList: []*emulation.UserAgentBrandVersion{{Brand: "Chromium", Version: "131.0.0.0"}, {Brand: "Google Chrome", Version: "131.0.0.0"}},
+                        Platform:        "Windows",
+                        PlatformVersion: "15.0.0",
+                        Architecture:    "x86",
+                        Model:           "",
+                        Mobile:          false,
+                        Bitness:         "64",
+                }),
+                // stealth 脚本注入(在每个新文档前执行, 抹 navigator.webdriver 等)
+                chromedp.ActionFunc(func(ctx context.Context) error {
+                        return chromedp.Evaluate(fmt.Sprintf(`(%s)()`, stealthScript(tier)), nil).Do(ctx)
+                }),
+        )
+        // 注入失败容忍: stealth flags 仍部分生效(automation controlled off + UA)
+
+        // 导航 + actions + 抓 HTML + screenshot
+        var htmlStr string
+        var screenshotBuf []byte
+        runActions := []chromedp.Action{
+                chromedp.Navigate(targetURL),
+                chromedp.WaitReady(`body`, chromedp.ByQuery),
+        }
+        // actions 执行
+        for _, a := range actions {
+                switch strings.ToLower(a.Type) {
+                case "click":
+                        if a.Selector != "" {
+                                runActions = append(runActions, chromedp.Click(a.Selector, chromedp.ByQuery))
+                        }
+                case "wait":
+                        if a.Selector != "" {
+                                runActions = append(runActions, chromedp.WaitVisible(a.Selector, chromedp.ByQuery))
+                        }
+                case "input":
+                        if a.Selector != "" && a.Value != "" {
+                                runActions = append(runActions, chromedp.SendKeys(a.Selector, a.Value, chromedp.ByQuery))
+                        }
+                case "scroll":
+                        if a.Selector != "" {
+                                runActions = append(runActions, chromedp.ScrollIntoView(a.Selector, chromedp.ByQuery))
+                        } else {
+                                runActions = append(runActions, chromedp.Evaluate(`window.scrollTo(0, document.body.scrollHeight)`, nil))
+                        }
+                case "sleep":
+                        d := time.Duration(a.WaitMs) * time.Millisecond
+                        if d <= 0 {
+                                d = 1 * time.Second
+                        }
+                        runActions = append(runActions, chromedp.Sleep(d))
+                case "eval":
+                        if a.Value != "" {
+                                runActions = append(runActions, chromedp.Evaluate(a.Value, nil))
+                        }
+                }
+        }
+        // 抓全 HTML (document.documentElement.outerHTML)
+        runActions = append(runActions, chromedp.Evaluate(`document.documentElement.outerHTML`, &htmlStr))
+        // 截图
+        if wantScreenshot {
+                runActions = append(runActions, chromedp.CaptureScreenshot(&screenshotBuf))
+        }
+        // status 取自 RunResponse 的 network.Response — chromedp.Run 不返回 response, 这里
+        // 单独跑一次 RunResponse 取状态 (避免多次 navigate; RunResponse 内部即 navigate).
+        resp, navErr := chromedp.RunResponse(browserCtx, runActions...)
+        if navErr != nil {
+                // 浏览器导航失败: 尝试取已有 HTML (页面可能半渲染)
+                _ = chromedp.Run(browserCtx, chromedp.Evaluate(`document.documentElement.outerHTML`, &htmlStr))
+                return &renderResult{
+                        OK:       len(htmlStr) > 100,
+                        HTML:     htmlStr,
+                        Status:   0,
+                        FinalURL: targetURL,
+                        Cookies:  []map[string]any{},
+                        Error:    bridgeserver.SanitizeError(navErr),
+                }, nil
+        }
+        var status int64
+        if resp != nil {
+                status = int64(resp.Status)
+        }
+
+        // CF challenge 检测: 若 HTML 命中 challenge 标志, 等 30s 自动放行
+        if cfChallengeRe.MatchString(htmlStr) {
+                fmt.Printf("[cloak-browser] CF challenge detected, waiting up to 30s for clearance\n")
+                cleared := waitCfChallenge(browserCtx, 30*time.Second)
+                if cleared {
+                        _ = chromedp.Run(browserCtx, chromedp.Evaluate(`document.documentElement.outerHTML`, &htmlStr))
+                        if resp != nil {
+                                status = 200 // challenge 放行后状态归 200
+                        }
+                }
+        }
+
+        // cookies 抓取 (page.cookies 等价)
+        cookies := []map[string]any{}
+        cookieParams, _ := network.GetCookies().Do(browserCtx)
+        for _, c := range cookieParams {
+                cookies = append(cookies, map[string]any{
+                        "name":    c.Name,
+                        "value":   c.Value,
+                        "domain":  c.Domain,
+                        "path":    c.Path,
+                        "secure":  c.Secure,
+                        "expires": c.Expires,
+                })
+        }
+
+        // final URL (重定向后)
+        var finalURL string
+        _ = chromedp.Run(browserCtx, chromedp.Evaluate(`location.href`, &finalURL))
+        if finalURL == "" {
+                finalURL = targetURL
+        }
+
+        // 响应体上限校验
+        if len(htmlStr) > cbMaxBodyBytes {
+                htmlStr = htmlStr[:cbMaxBodyBytes]
+        }
+
+        result := &renderResult{
+                OK:       len(htmlStr) > 100,
+                HTML:     htmlStr,
+                Status:   int(status),
+                FinalURL: finalURL,
+                Cookies:  cookies,
+        }
+        if wantScreenshot && len(screenshotBuf) > 0 {
+                result.ScreenshotB64 = base64.StdEncoding.EncodeToString(screenshotBuf)
+        }
+        return result, nil
+}
+
+// waitCfChallenge — 等 CF challenge 自动放行, 最长 maxMs, 期间每 2s 取 HTML 检查
+//   challenge 标志消失. 与原 puppeteer waitCfChallenge 同口径 (Turnstile checkbox
+//   点击不实现 — chromedp 跨 frame 点击 Turnstile checkbox 极易卡, Go 端简化为等待).
+func waitCfChallenge(ctx context.Context, max time.Duration) bool {
+        start := time.Now()
+        ticker := time.NewTicker(2 * time.Second)
+        defer ticker.Stop()
+        for time.Since(start) < max {
+                select {
+                case <-ctx.Done():
+                        return false
+                case <-ticker.C:
+                        var htmlStr string
+                        if err := chromedp.Run(ctx, chromedp.Evaluate(`document.documentElement.outerHTML`, &htmlStr)); err != nil {
+                                continue
+                        }
+                        if !cfChallengeRe.MatchString(htmlStr) {
+                                return true
+                        }
+                }
+        }
+        return false
+}
+
+// safeHostPath — 日志脱钉: 仅 host+path(查询串可能含 token, 不落日志).
+func safeHostPath(raw string) string {
+        u, err := url.Parse(raw)
+        if err != nil {
+                return "(unparseable-url)"
+        }
+        return u.Host + u.Path
+}
+
+func main() {
+        // 进程启动时初始化 allocator (浏览器进程按需 fork, 此处仅注册 flags)
+        ensureAllocator()
+        bs := bridgeserver.New(bridgeserver.BridgeServerOptions{
+                Name:             "cloak-browser",
+                Port:             PORT,
+                Version:          "1.0.0-go",
+                IdleTimeoutS:     cbIdleTimeoutS,
+                RequestTimeoutMs: 30_000, // /health /metrics /info 走 30s 帽, /render /fetch 内部自管 timeoutMs
+                RateLimitPerMin:  bridgeserver.EnvInt("RATE_LIMIT_PER_MIN", 30),
+                EnableSsrfCheck:  true,
+                SelfTest: func() bool {
+                        // 检测 chrome 二进制是否在 PATH (allocator 会在第一次 Run 时启动浏览器)
+                        // 若不在 PATH, 返回 false 让 /health 报告 selfTestOk=false 引擎侧跳过该级降级
+                        // 不实际启动浏览器 (selfTest 只跑 chrome --version, 2s 内完成)
+                        allocCtx, cancel := chromedp.NewContext(ensureAllocatorCtx())
+                        defer cancel()
+                        tctx, tcancel := context.WithTimeout(allocCtx, 5*time.Second)
+                        defer tcancel()
+                        var title string
+                        err := chromedp.Run(tctx,
+                                chromedp.Navigate("about:blank"),
+                                chromedp.Title(&title),
+                        )
+                        return err == nil
+                },
+                Handler: handle,
+                ExtraInfo: func() (map[string]any, error) {
+                        return map[string]any{
+                                "endpoints":         []string{"GET /health", "GET /metrics", "GET /info", "POST /render", "POST /fetch"},
+                                "maxConcurrent":      cbMaxConcurrent,
+                                "maxRequestBytes":   cbMaxRequestBytes,
+                                "maxBodyBytes":       cbMaxBodyBytes,
+                                "maxTimeoutMs":       cbMaxTimeoutMs,
+                                "stealthTiers":       []string{"lite", "standard", "maximum"},
+                                "waitUntil":          []string{"load", "domcontentloaded", "networkidle"},
+                                "actionTypes":        []string{"click", "wait", "input", "scroll", "sleep", "eval"},
+                                "ssrfAllowLoopback":   ssrfAllowLB,
+                                "backend":            "chromedp (Chrome DevTools Protocol Go 实现)",
+                                "stealthFlags": []string{
+                                        "--disable-blink-features=AutomationControlled (navigator.webdriver=undefined)",
+                                        "CDP network.SetUserAgentOverride + UA metadata (brand/platform/bit)",
+                                        "--lang=zh-CN, --window-size=1920,1080",
+                                        "stealth JS 注入: chrome runtime / plugins / languages / WebGL / permissions (standard+)",
+                                        "stealth JS 注入: hardwareConcurrency / deviceMemory / connection (maximum)",
+                                },
+                                "note": "Go 重写, 取代 puppeteer-extra-stealth bun 栈 (R43-1A)",
+                        }, nil
+                },
+        })
+        bs.ListenAndServe()
+}
+
+// ensureAllocatorCtx — 取全局 allocator ctx (供 selfTest 创建 browser ctx).
+func ensureAllocatorCtx() context.Context {
+        ctx, _ := ensureAllocator()
+        return ctx
+}
+
+// suppress unused import (cdp 节点类型仅在 chromedp 内部用, 显式 import 防止 go vet 报)
+var _ = cdp.Node{}

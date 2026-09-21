@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # ============================================================
-# status.sh — 报告全部 6 个 mini-services 的运行状态
+# status.sh — 报告全部 Go mini-services 的运行状态 (Go 重写, R43-1C)
 # ============================================================
 # 行为:
 #   - 读 PID 文件 + 检查进程存活 + 探测 /health 200
 #   - 输出表格: service | port | pid | process | /health | uptime | selfTest
-#   - 退出码: 全部 OK=0, 任一异常=1(供 CI / 监控使用)
+#   - 退出码: 全部 OK=0, 任一异常=1 (供 CI / 监控使用)
 #
 # 使用:
 #   cd /home/z/my-project && bash mini-services/status.sh
@@ -66,7 +66,7 @@ for entry in "${NAMES[@]}"; do
   health_resp=$(curl -s --max-time 2 "http://127.0.0.1:$port/health" 2>/dev/null || echo "")
   if [ -n "$health_resp" ]; then
     health_code=200
-    # 提取 selfTestOk 字段(简单 grep + sed, 避免依赖 jq)
+    # 提取 selfTestOk 字段 (简单 grep + sed, 避免依赖 jq)
     selftest=$(echo "$health_resp" | grep -oE '"selfTestOk":[^,}]+' | head -n 1 | sed 's/"selfTestOk"://')
     [ -z "$selftest" ] && selftest="n/a"
   else
@@ -75,7 +75,7 @@ for entry in "${NAMES[@]}"; do
     exit_code=1
   fi
 
-  # 染色(终端环境)
+  # 染色 (终端环境)
   health_colored="$health_code"
   proc_colored="$process_state"
   if [ -t 1 ]; then
@@ -97,7 +97,7 @@ done
 
 echo ""
 if [ "$exit_code" = "0" ]; then
-  echo "[status] All 11 services healthy."
+  echo "[status] All ${#NAMES[@]} services healthy."
 else
   echo "[status] Some services unhealthy — check logs at $LOG_DIR/*.log"
 fi

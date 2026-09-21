@@ -1,6 +1,6 @@
-// Package bridgeserver — 11 个 Go mini-services 共享样板。
+// Package bridgeserver — Go mini-services 共享样板 (R40-1A 起, R43-1C 起 TS _shared/server.ts 删除后唯一来源).
 //
-// 与 TS 端 mini-services/_shared/server.ts 同口径:
+// 能力清单:
 //   - 所有服务绑定 127.0.0.1:<port>, 仅 API 路径暴露
 //   - 鉴权(AUTH_TOKEN/BRIDGE_KEY 任一非空时启用, X-Auth-Token/X-Bridge-Key/Authorization: Bearer 三选一)
 //   - 每 IP 限速(默认 60/min)
@@ -12,7 +12,7 @@
 //   - SIGTERM/SIGINT 优雅关闭(5s grace)
 //   - SSRF 守卫(默认拒绝 localhost/私网/链路本地/元数据端点; allowLoopback 放行回环测试场景)
 //
-// 与 TS 端 _shared/server.ts 不同点(主动收口):
+// 设计约束:
 //   - Metrics 类仅 uptime/requests/errors/inFlight/avgMs 五项
 //   - readBodyCapped 用 io.LimitReader(net/http 标准库自带等价能力)
 //   - 不实现 fetchMiniServiceConfig(主应用配置拉取由各服务自行实现)
@@ -42,7 +42,7 @@ import (
 // ---------- 常量 ----------
 const (
         MaxBodyBytes      = 20 * 1024 * 1024 // 20MB 请求/响应体上限(与 fetch-relay/scrapling 同口径)
-        MaxRequestBytes   = 10 * 1024 * 1024 // 10MB POST 体硬帽(_shared 默认)
+        MaxRequestBytes   = 10 * 1024 * 1024 // 10MB POST 体硬帽
         RequestTimeoutMs  = 30_000           // 任务硬要求 30s 上限
         RateWindowMs      = 60_000           // 限速窗口 60s
 )
@@ -142,7 +142,7 @@ func promName(s string) string {
 }
 
 // ---------- RateLimiter ----------
-// RateLimiter — 每 IP 滑窗限速器(默认 60/min, 与 _shared RateLimiter 同口径)。
+// RateLimiter — 每 IP 滑窗限速器(默认 60/min)。
 type RateLimiter struct {
         mu        sync.Mutex
         maxPerWin int

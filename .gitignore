@@ -55,7 +55,8 @@ server.log
 /tool-results/
 /tmp/
 
-# python venv (scrapling-bridge)
+# python venv (旧 mini-services/scrapling-bridge, uc-bridge, curl-impersonate-bridge,
+# trafilatura-bridge 已在 R43-1C 全删; 规则保留兜底, 防止未来 Python 内容混入)
 mini-services/**/.venv/
 .venv/
 
@@ -84,6 +85,10 @@ __pycache__/
 # ~100MB 已被 git 跟踪, 后续 git rm --cached 解除跟踪)
 # R42-1C: 9 个二进制 + backend.log 已从工作目录删除(总计 ~100MB), 需用时 go build 重新生成.
 #         scripts/archive/ + agent-ctx/archive-pre-r28/ 同步清理(过时归档).
+# R43-1C: 旧 Python/bun mini-services/* 全删, Go 版本在 go-backend/services/* (11 个).
+#         start-all.sh 改为构建并启动 go-backend/bin/<svc> 二进制 (端口 3010-3020).
+#         3 个 A agent 新增服务 (curl-impersonate-bridge / trafilatura-bridge / cloak-browser)
+#         已在 services/ 目录, 启动方式与其余 8 个一致.
 go-backend/heis-backend
 go-backend/qimao-proxy
 go-backend/deqixs-proxy
@@ -93,10 +98,16 @@ go-backend/xjp-proxy
 go-backend/uc-bridge
 go-backend/bqg713-proxy
 go-backend/moli-bridge
+go-backend/curl-impersonate-bridge
+go-backend/trafilatura-bridge
+go-backend/cloak-browser
 # 兜底: 未来新增的 services/* 子项目二进制也按此模式命名(Port + service name)落在根目录
 go-backend/*-proxy
 go-backend/*-bridge
 go-backend/*-backend
+go-backend/*-browser
+# start-all.sh 构建输出目录(11 个 Go 服务二进制, 每个约 10MB, 不入版本库)
+go-backend/bin/
 go-backend/services/*/*
 !go-backend/services/*/*.go
 !go-backend/services/*/go.mod

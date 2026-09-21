@@ -782,6 +782,58 @@ func transportWithProxy(proxy string) *http.Transport {
 //
 // 实现: 用 utls.UClient 替代 crypto/tls.Client 做 DialTLS. http.Transport 的连接池
 // 仍正常复用 utls 连接. HTTP/2 因 ALPN 协商差异默认关闭 (chrome 站点大多 HTTP/1.1).
+//
+// R43-1B 反反爬增强: JA3/JA4 指纹轮换. 单一 HelloChrome_Auto 长期使用会被反爬
+// 服务关联 (Chrome 指纹 + Go utls 库特征 = 爬虫). 增加 4 个 Hello 指纹池
+// (Chrome / Firefox / Safari / iOS), 按 host 哈希稳定选取 (per-domain 钉扎, 与
+// UA 钉扎同款), 反爬无法靠 TLS 指纹单一性识别.
+
+// utlsHelloPool — utls Hello 指纹池 (Chrome / Firefox / Safari / iOS).
+// 每个 Hello 模式对应独立的 JA3/JA4 指纹 (cipher suite 顺序 + 扩展顺序 +
+// GREASE 模式各异), 反爬服务关联不到单一指纹.
+var utlsHelloPool = []utls.ClientHelloID{
+        utls.HelloChrome_Auto,
+        utls.HelloFirefox_Auto,
+        utls.HelloSafari_Auto,
+        utls.HelloIOS_Auto,
+}
+
+// utlsHelloChoice — per-domain 钉扎的 Hello 指纹选择 (避免每请求换指纹被识别).
+var (
+        utlsChoiceMu  sync.Mutex
+        utlsChoiceMap = map[string]utls.ClientHelloID{}
+)
+
+// pickUtlsHello — 按 host 哈希稳定选取 Hello 指纹 (per-host 钉扎).
+// host 为空 → 返回 HelloChrome_Auto (默认).
+func pickUtlsHello(host string) utls.ClientHelloID {
+        if host == "" {
+                return utls.HelloChrome_Auto
+        }
+        utlsChoiceMu.Lock()
+        defer utlsChoiceMu.Unlock()
+        if h, ok := utlsChoiceMap[host]; ok {
+                return h
+        }
+        // 哈希 host 选 Hello (稳定, 不依赖 math/rand 避免全局锁)
+        var h uint32
+        for i := 0; i < len(host); i++ {
+                h = h*31 + uint32(host[i])
+        }
+        choice := utlsHelloPool[h%uint32(len(utlsHelloPool))]
+        utlsChoiceMap[host] = choice
+        return choice
+}
+
+// ClearUtlsChoice — 清掉 host 的 Hello 钉扎 (失败后下次换新指纹).
+func ClearUtlsChoice(host string) {
+        if host == "" {
+                return
+        }
+        utlsChoiceMu.Lock()
+        defer utlsChoiceMu.Unlock()
+        delete(utlsChoiceMap, host)
+}
 
 var globalUtlsTransport = func() *http.Transport {
         t := &http.Transport{
@@ -791,12 +843,16 @@ var globalUtlsTransport = func() *http.Transport {
                         if err != nil {
                                 return nil, err
                         }
+                        // R43-1B: 按 host 钉扎 Hello 指纹 (Chrome / Firefox / Safari / iOS 轮换)
+                        helloID := pickUtlsHello(host)
                         uConn := utls.UClient(rawConn, &utls.Config{
                                 ServerName:         host,
                                 InsecureSkipVerify: false,
-                        }, utls.HelloChrome_Auto)
+                        }, helloID)
                         if err := uConn.Handshake(); err != nil {
                                 _ = rawConn.Close()
+                                // 失败时清掉该 host 的钉扎, 下次换新指纹
+                                ClearUtlsChoice(host)
                                 return nil, err
                         }
                         return uConn, nil
@@ -1788,12 +1844,21 @@ func fetchViaCurlImpersonate(ctx context.Context, rawURL string, cfg FetchConfig
 // TLS ClientHello 识别 Go 标准库指纹 (crypto/tls 是固定扩展顺序 + 固定 cipher
 // suite 列表), 拒绝服务. utls 模拟 Chrome TLS 指纹 (GREASE + Chrome 扩展顺序 +
 // X25519Kyber768Draft00 curve) 可绕过.
+//
+// R43-1B 反反爬增强: 网络层失败时调 MarkProxyFailed, 让代理池健康跟踪生效
+// (R42-1B 后 proxyInst.failedUntil 是死字段, 本轮修复让 pickProxyFor 能跳过
+// 失败代理). 成功路径调 MarkProxyOK 清除冷却.
 func fetchHttpWithCurlFallback(ctx context.Context, rawURL string, cfg FetchConfig, ua string) (string, error) {
         proxy := pickProxyFor(rawURL, cfg)
         // native (net/http, 标准 TLS)
         html, err := fetchHttp(ctx, rawURL, cfg, ua, proxy, nil)
         if err == nil {
+                MarkProxyOK(proxy)
                 return html, nil
+        }
+        // 网络层错误 + 有代理 → 标记代理失败 (让 pickProxyFor 跳过该代理)
+        if proxy != "" && isRetriableNetErr(err) {
+                MarkProxyFailed(proxy, 30000)
         }
         // R42-1B: TLS 指纹错误 → utls Chrome 重试 (无代理, 直连)
         if isTLSFingerprintError(err) && proxy == "" {
@@ -1808,7 +1873,12 @@ func fetchHttpWithCurlFallback(ctx context.Context, rawURL string, cfg FetchConf
         // curl 二进制降级
         html2, err2 := fetchViaCurl(ctx, rawURL, cfg, ua, proxy)
         if err2 == nil {
+                MarkProxyOK(proxy)
                 return html2, nil
+        }
+        // curl 也失败 + 有代理 → 标记代理失败
+        if proxy != "" {
+                MarkProxyFailed(proxy, 30000)
         }
         // 返回 native 的错误 (含状态码 / WAF 头)
         return "", err
@@ -1906,6 +1976,8 @@ func isValidProxySpec(s string) bool {
 // pickProxyFor — 从代理池选一条.
 // R41-1A: 增加 useCount 周期性清扫 (原实现 useCount map 只增不减, 长跑进程内存泄漏).
 //         每 5min 清一次未使用条目 (useCount 0 或超过 24h 未使用).
+// R43-1B: 修复 failedUntil 死字段 — 添加 MarkProxyFailed 让网络层错误能标记代理冷却 30s,
+//         pickProxyFor 跳过冷却内代理. R42-1B 后该字段从未被写入, 代理健康跟踪完全失效.
 func pickProxyFor(rawURL string, cfg FetchConfig) string {
         pool := ParseProxyPool(cfg.ProxyURL)
         if len(pool) == 0 {
@@ -1983,6 +2055,32 @@ func pickProxyFor(rawURL string, cfg FetchConfig) string {
         idx := rand.Intn(len(available))
         proxyInst.useCount[available[idx]]++
         return available[idx]
+}
+
+// MarkProxyFailed — 标记代理失败, 冷却 ms (R43-1B 反反爬增强).
+// R42-1B 后 proxyInst.failedUntil 是死字段 (从未被写入), 代理健康跟踪完全失效.
+// 调用方在 transport 层错误 (连接重置 / 超时 / 5xx) 时调本函数, 让 pickProxyFor
+// 在冷却内跳过该代理. 默认冷却 30s; cooldownMs <= 0 用默认值.
+func MarkProxyFailed(proxyURL string, cooldownMs int) {
+        if proxyURL == "" {
+                return
+        }
+        if cooldownMs <= 0 {
+                cooldownMs = 30000
+        }
+        proxyInst.mu.Lock()
+        defer proxyInst.mu.Unlock()
+        proxyInst.failedUntil[proxyURL] = time.Now().UnixMilli() + int64(cooldownMs)
+}
+
+// MarkProxyOK — 标记代理健康 (清除冷却). 调用方在成功响应后调本函数.
+func MarkProxyOK(proxyURL string) {
+        if proxyURL == "" {
+                return
+        }
+        proxyInst.mu.Lock()
+        defer proxyInst.mu.Unlock()
+        delete(proxyInst.failedUntil, proxyURL)
 }
 
 // ---------- 镜像组故障切换 ----------
@@ -2119,6 +2217,11 @@ func FetchPage(ctx context.Context, rawURL string, cfgOverride FetchConfig) (*Fe
 // 单独调 fetchViaObscura (cloak-browser puppeteer 可自动点击 Turnstile 通过), 给 8s
 // 截止 (Turnstile 自动通过一般在 3-5s). 通过则继续走后续解析; 超时则返回 blocked
 // (调用方按 hostGate.ReportFailure 处理).
+//
+// R43-1B 反反爬增强: 2captcha 服务求解 h-captcha / reCAPTCHA. 当 LooksLikeCaptcha
+// 返回 CaptchaHCaptcha / CaptchaRecaptcha 且 cfg.TwoCaptchaAPIKey != "" 时, 调
+// 2captcha API 提交任务, 等待 token (180s 截止), 注入到 URL query 重抓. 成功
+// 返回 FetchResult{HTML: solvedHTML, Engine: "browser", Blocked: false, CaptchaDetected: false}.
 func fetchPageOnce(ctx context.Context, rawURL string, cfg FetchConfig) (*FetchResult, error) {
         ua := PickUAFor(originHost(rawURL), cfg)
 
@@ -2142,6 +2245,14 @@ func fetchPageOnce(ctx context.Context, rawURL string, cfg FetchConfig) (*FetchR
                 }
                 ct := LooksLikeCaptcha(html)
                 if ct != "" {
+                        // R43-1B: h-captcha / reCAPTCHA → 调 2captcha 服务 (配置 API key 时启用).
+                        // 优先于 Turnstile 路径 (Turnstile 走 Obscura 桥 puppeteer 点击更稳定,
+                        // 2captcha 仅处理 h-captcha / reCAPTCHA).
+                        if ct == CaptchaHCaptcha || ct == CaptchaRecaptcha {
+                                if solved := trySolveCaptchaWith2Captcha(ctx, rawURL, cfg, ct, html); solved != "" {
+                                        return &FetchResult{HTML: solved, Engine: "browser", Blocked: false}, nil
+                                }
+                        }
                         // R42-1B: Turnstile 8s 截止 — 调 Obscura 桥让 puppeteer 点击通过
                         if ct == CaptchaTurnstile {
                                 if solved := trySolveTurnstile(ctx, rawURL, cfg, ua); solved != "" {
@@ -2162,6 +2273,12 @@ func fetchPageOnce(ctx context.Context, rawURL string, cfg FetchConfig) (*FetchR
                         if solved, _ := TrySolveTokenChallenge(ctx, rawURL, he.Body, cfg, ua); solved != "" {
                                 return &FetchResult{HTML: solved, Engine: "http", Blocked: false}, nil
                         }
+                        // R43-1B: 错误路径也尝试 2captcha 求解 (h-captcha / reCAPTCHA 返 403)
+                        if ct := LooksLikeCaptcha(he.Body); ct == CaptchaHCaptcha || ct == CaptchaRecaptcha {
+                                if solved := trySolveCaptchaWith2Captcha(ctx, rawURL, cfg, ct, he.Body); solved != "" {
+                                        return &FetchResult{HTML: solved, Engine: "browser", Blocked: false}, nil
+                                }
+                        }
                 }
         }
 
@@ -2172,6 +2289,12 @@ func fetchPageOnce(ctx context.Context, rawURL string, cfg FetchConfig) (*FetchR
                 }
                 ct := LooksLikeCaptcha(bridged)
                 if ct != "" {
+                        // R43-1B: 桥路径也支持 2captcha (h-captcha / reCAPTCHA)
+                        if ct == CaptchaHCaptcha || ct == CaptchaRecaptcha {
+                                if solved := trySolveCaptchaWith2Captcha(ctx, rawURL, cfg, ct, bridged); solved != "" {
+                                        return &FetchResult{HTML: solved, Engine: "browser", Blocked: false}, nil
+                                }
+                        }
                         // R42-1B: Turnstile 8s 截止 (桥路径也支持)
                         if ct == CaptchaTurnstile {
                                 if solved := trySolveTurnstile(ctx, rawURL, cfg, ua); solved != "" {
@@ -2212,6 +2335,184 @@ func trySolveTurnstile(ctx context.Context, rawURL string, cfg FetchConfig, ua s
                 return ""
         }
         return html
+}
+
+// ---------- 2captcha 验证码服务 (R43-1B 反反爬增强) ----------
+//
+// 2captcha 是商业验证码求解服务 (https://2captcha.com). 提交 h-captcha /
+// reCAPTCHA / Turnstile sitekey + URL, 服务返回 token (g-recaptcha-response /
+// h-captcha-response / cf-turnstile-response). 调用方把 token 注入到页面
+// (通常通过 URL query 或 cookie), 再次 fetch 即可通过.
+//
+// 流程:
+//   1. extractCaptchaSitekey(html, ct) — 从 HTML 提取 sitekey (data-sitekey 属性)
+//   2. submitCaptchaTo2Captcha(apiKey, ct, sitekey, pageURL) — POST /in.php,
+//      返回 captcha_id
+//   3. pollCaptchaResult(apiKey, captchaID) — GET /res.php, 轮询 5s 间隔直到
+//      OK|<token> 或超时 (默认 180s)
+//   4. applyCaptchaToken(rawURL, ct, token) — 把 token 注入到 URL query 重抓
+//      (g-recaptcha-response / h-captcha-response / cf-turnstile-response)
+//
+// 成本: 2captcha h-captcha/reCAPTCHA $2.99/1000 次, Turnstile $1.99/1000 次.
+// 配置 cfg.TwoCaptchaAPIKey 后启用, 不配置走原 Obscura 桥路径.
+
+// captchaSitekeyRe — 提取 captcha sitekey (data-sitekey 属性).
+var captchaSitekeyRe = regexp.MustCompile(`(?i)data-sitekey=["']?([A-Za-z0-9_-]{20,})["']?`)
+
+// extractCaptchaSitekey — 从 HTML 提取 captcha sitekey. 失败返回空.
+func extractCaptchaSitekey(html string) string {
+        m := captchaSitekeyRe.FindStringSubmatch(html)
+        if len(m) < 2 {
+                return ""
+        }
+        return m[1]
+}
+
+// submitCaptchaTo2Captcha — POST /in.php 提交 captcha 任务.
+// 返回 captcha_id (2captcha 侧任务 ID). 失败返回空.
+func submitCaptchaTo2Captcha(ctx context.Context, apiKey string, ct CaptchaType, sitekey, pageURL string) string {
+        if apiKey == "" || sitekey == "" || pageURL == "" {
+                return ""
+        }
+        method := ""
+        switch ct {
+        case CaptchaRecaptcha:
+                method = "userrecaptcha"
+        case CaptchaHCaptcha:
+                method = "hcaptcha"
+        case CaptchaTurnstile:
+                method = "turnstile"
+        default:
+                return ""
+        }
+        form := url.Values{}
+        form.Set("key", apiKey)
+        form.Set("method", method)
+        form.Set("sitekey", sitekey)
+        form.Set("pageurl", pageURL)
+        form.Set("json", "1")
+        req, err := http.NewRequestWithContext(ctx, "POST", "https://2captcha.com/in.php", strings.NewReader(form.Encode()))
+        if err != nil {
+                return ""
+        }
+        req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+        resp, err := globalHttp.Do(req)
+        if err != nil {
+                return ""
+        }
+        defer resp.Body.Close()
+        body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+        var data struct {
+                Status  int    `json:"status"`
+                Request string `json:"request"`
+        }
+        if err := json.Unmarshal(body, &data); err != nil {
+                return ""
+        }
+        if data.Status != 1 {
+                return ""
+        }
+        return data.Request
+}
+
+// pollCaptchaResult — 轮询 /res.php 直到 token 返回或超时 (默认 180s).
+// 2captcha 文档: 平均 12-30s, 上限 180s.
+func pollCaptchaResult(ctx context.Context, apiKey, captchaID string) string {
+        if apiKey == "" || captchaID == "" {
+                return ""
+        }
+        pollCtx, cancel := context.WithTimeout(ctx, 180*time.Second)
+        defer cancel()
+        for {
+                select {
+                case <-pollCtx.Done():
+                        return ""
+                case <-time.After(5 * time.Second):
+                }
+                q := url.Values{}
+                q.Set("key", apiKey)
+                q.Set("action", "get")
+                q.Set("id", captchaID)
+                q.Set("json", "1")
+                req, err := http.NewRequestWithContext(pollCtx, "GET", "https://2captcha.com/res.php?"+q.Encode(), nil)
+                if err != nil {
+                        continue
+                }
+                resp, err := globalHttp.Do(req)
+                if err != nil {
+                        continue
+                }
+                body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+                resp.Body.Close()
+                var data struct {
+                        Status  int    `json:"status"`
+                        Request string `json:"request"`
+                }
+                if err := json.Unmarshal(body, &data); err != nil {
+                        continue
+                }
+                if data.Status == 1 {
+                        return data.Request
+                }
+                // CAPCHA_NOT_READY → 继续轮询
+                if data.Request == "CAPCHA_NOT_READY" {
+                        continue
+                }
+                // 其它错误 → 终止
+                return ""
+        }
+}
+
+// trySolveCaptchaWith2Captcha — 用 2captcha 服务求解 h-captcha / reCAPTCHA.
+// 成功返回注入 token 后的页面 HTML, 失败返回空.
+// 注: Turnstile 走 trySolveTurnstile (Obscura 桥 puppeteer 点击更稳定),
+// 2captcha 仅处理 h-captcha / reCAPTCHA (服务端 token 注入即可通过).
+func trySolveCaptchaWith2Captcha(ctx context.Context, rawURL string, cfg FetchConfig, ct CaptchaType, html string) string {
+        if cfg.TwoCaptchaAPIKey == "" {
+                return ""
+        }
+        if ct != CaptchaHCaptcha && ct != CaptchaRecaptcha {
+                return ""
+        }
+        sitekey := extractCaptchaSitekey(html)
+        if sitekey == "" {
+                return ""
+        }
+        // 180s 截止 (2captcha 平均 12-30s)
+        solveCtx, cancel := context.WithTimeout(ctx, 180*time.Second)
+        defer cancel()
+        captchaID := submitCaptchaTo2Captcha(solveCtx, cfg.TwoCaptchaAPIKey, ct, sitekey, rawURL)
+        if captchaID == "" {
+                return ""
+        }
+        token := pollCaptchaResult(solveCtx, cfg.TwoCaptchaAPIKey, captchaID)
+        if token == "" {
+                return ""
+        }
+        // 注入 token 到 URL query, 重抓 (服务端校验通过后返正常页)
+        sep := "&"
+        if !strings.Contains(rawURL, "?") {
+                sep = "?"
+        }
+        var paramName string
+        switch ct {
+        case CaptchaHCaptcha:
+                paramName = "h-captcha-response"
+        case CaptchaRecaptcha:
+                paramName = "g-recaptcha-response"
+        default:
+                return ""
+        }
+        solvedURL := rawURL + sep + paramName + "=" + url.QueryEscape(token)
+        solvedHTML, err := fetchHttpWithCurlFallback(ctx, solvedURL, cfg, PickUAFor(originHost(rawURL), cfg))
+        if err != nil || solvedHTML == "" {
+                return ""
+        }
+        // 二次确认: 通过后不再是 captcha
+        if LooksLikeCaptcha(solvedHTML) == "" {
+                return solvedHTML
+        }
+        return ""
 }
 
 // tryBridges — 依次尝试 8 级降级链中的桥 (fetch-relay → scrapling → Obscura → uc-bridge → moli-bridge → curl-impersonate).
@@ -2421,6 +2722,9 @@ func mergeFetchConfig(base FetchConfig, override FetchConfig) FetchConfig {
         }
         if override.CloakTier != "" {
                 out.CloakTier = override.CloakTier
+        }
+        if override.TwoCaptchaAPIKey != "" {
+                out.TwoCaptchaAPIKey = override.TwoCaptchaAPIKey
         }
         return out
 }

@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # ============================================================
-# stop-all.sh — 停止全部 6 个 mini-services(SIGTERM 优雅关闭)
+# stop-all.sh — 停止全部 Go mini-services (Go 重写, R43-1C)
 # ============================================================
+# 旧 Python/bun 进程已不存在; 本脚本与 start-all.sh 同步停止 Go 二进制.
+#
 # 行为:
-#   - 读取 .zscripts/<svc>.pid, 发 SIGTERM(各服务 5s 优雅关闭)
-#   - 5s 后仍存活则 SIGKILL
-#   - 端口仍占用兜底: 用 lsof/fuser 找 PID 强杀
+#   - 读取 .zscripts/<svc>.pid, 发 SIGTERM (Go 服务 5s 优雅关闭)
+#   - 6s 后仍存活则 SIGKILL
+#   - PID 文件丢失兜底: lsof/fuser 按端口找 PID
 #
 # 使用:
 #   cd /home/z/my-project && bash mini-services/stop-all.sh
@@ -15,6 +17,7 @@ set -u
 PROJECT_ROOT="/home/z/my-project"
 LOG_DIR="$PROJECT_ROOT/.zscripts"
 
+# 服务名 → 端口 (与 start-all.sh 同步)
 declare -a NAMES=(
   "bqg713-proxy|3010"
   "fetch-relay|3011"
@@ -24,10 +27,12 @@ declare -a NAMES=(
   "xjp-proxy|3015"
   "uc-bridge|3016"
   "moli-bridge|3017"
+  "curl-impersonate-bridge|3018"
   "trafilatura-bridge|3019"
+  "cloak-browser|3020"
 )
 
-echo "[stop-all] $(date +'%Y-%m-%d %H:%M:%S') stopping 9 mini-services..."
+echo "[stop-all] $(date +'%Y-%m-%d %H:%M:%S') stopping ${#NAMES[@]} Go mini-services..."
 
 for entry in "${NAMES[@]}"; do
   IFS='|' read -r name port <<< "$entry"
@@ -59,7 +64,7 @@ for entry in "${NAMES[@]}"; do
     continue
   fi
 
-  # 发 SIGTERM 优雅关闭(各服务 5s grace)
+  # 发 SIGTERM 优雅关闭 (Go 服务 SIGTERM/SIGINT 5s grace)
   echo "[stop-all] $name (port $port): sending SIGTERM to PID $pid"
   kill -TERM "$pid" 2>/dev/null || true
 
@@ -78,8 +83,6 @@ for entry in "${NAMES[@]}"; do
   else
     echo "[stop-all] $name (port $port): SIGKILL after 6s timeout (PID $pid)"
     kill -KILL "$pid" 2>/dev/null || true
-    # 杀子进程兜底(bun --hot 可能有子进程)
-    pkill -KILL -P "$pid" 2>/dev/null || true
   fi
 
   rm -f "$pid_file" 2>/dev/null || true

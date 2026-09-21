@@ -292,6 +292,12 @@ func (rt *TaskRuntime) IncRequest() int64 {
         return atomic.AddInt64(&rt.requestCount, 1)
 }
 
+// IncCaptcha — 累计验证码触发次数 (R43-1B 反反爬增强).
+// CrawlChapterContent / CrawlBookMeta 在 FetchResult.CaptchaDetected=true 时调用.
+func (rt *TaskRuntime) IncCaptcha() int64 {
+        return atomic.AddInt64(&rt.captchaEncountered, 1)
+}
+
 // SetMaxRequests — 设置请求预算上限.
 // R41-1A: 修复原实现用 atomic.StoreInt64(&rt.epoch, rt.epoch) 做 "memory barrier" 的错误
 //         (epoch 自存自不构成 barrier). 改为用 rt.mu 锁保护写入, 与读路径 (Snapshot) 同款锁.
@@ -880,7 +886,11 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) error {
 
                                         ok, kind, msg := CrawlChapterContent(ctx, cfg, rt, myEpoch, q)
                                         // R41-1A: 用 batchMu 保护共享变量写
+                                        // R43-1B: 改用 defer batchMu.Unlock() 保证 panic 时也能解锁
+                                        // (logf 内 cfg.Logger/DB 调用 panic 会让 batchMu 永久锁住,
+                                        // 后续批次 goroutine 全部死锁)
                                         batchMu.Lock()
+                                        defer batchMu.Unlock()
                                         if ok {
                                                 stats.ChaptersUpdated++
                                                 consecutiveErrs = 0
@@ -915,7 +925,6 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) error {
                                                         }
                                                 }
                                         }
-                                        batchMu.Unlock()
                                 }(q)
                         }
                         wg.Wait()
@@ -1026,15 +1035,21 @@ func discoverBooks(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
         discovered := []string{}
         seen := map[string]bool{}
         for p := 1; p <= maxPages; p++ {
+                if rt.IsStopped() || rt.IsStale(myEpoch) {
+                        break
+                }
                 url := strings.ReplaceAll(urlTemplate, "{page}", fmt.Sprintf("%d", p))
                 res, err := FetchPage(ctx, url, cfg.Override)
                 if err != nil {
-                        continue
+                        // R43-1B: 列表页 fetch 失败 → break (避免无效页继续浪费预算)
+                        // (原实现 continue 会无限重试同 URL, 且首页失败时继续翻 page=2 无意义)
+                        break
                 }
                 if res.Blocked {
                         break
                 }
                 listRes := ParseList(res.HTML, url, cfg.Rule.List, []string{"url"})
+                newCount := 0
                 for _, item := range listRes.Items {
                         u := item.Fields["url"]
                         if u == "" || seen[u] {
@@ -1043,9 +1058,12 @@ func discoverBooks(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                         seen[u] = true
                         discovered = append(discovered, u)
                         rt.AddToDiscovered(u)
+                        newCount++
                 }
-                if p < maxPages {
-                        // 翻页 (简化: 调用 ParseToc 的翻页逻辑)
+                // R43-1B 修复: 删除原 `if p < maxPages { break }` 的无条件 break
+                // (R38-1C 重写以来一直存在, maxPages > 1 时第一页就 break, 多页
+                // 列表发现完全失效). 改为: 本页无新发现 → break (避免无效翻页).
+                if newCount == 0 {
                         break
                 }
         }
@@ -1055,6 +1073,12 @@ func discoverBooks(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
 // ---------- CrawlBookMeta (阶段 1) ----------
 
 // CrawlBookMeta — 阶段 1: 书籍 meta 采集 (书籍详情页 + 目录页).
+//
+// R43-1B 边缘 case 修复:
+//   - HTTPError 429 / 503+RetryAfter → hostGate.ReportRateLimited (与 CrawlChapterContent 同款)
+//   - FetchResult.CaptchaDetected → rt.IncCaptcha
+//   - 拦截 (Blocked) 时也调 ReportFailure (R42-1B 后只在 err 路径调, res.Blocked
+//     路径漏调 ReportFailure, hostgate failStreak 不增, derate 永远不触发)
 func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, myEpoch int64, bookURL string) (*BookMetaResult, error) {
         // 预算检查
         if err := rt.CheckBudget(); err != nil {
@@ -1068,11 +1092,24 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                 RequestPriority: "book",
         }))
         if err != nil {
+                // R43-1B: 429 / 503+RetryAfter → ReportRateLimited (与 CrawlChapterContent 同款)
+                if he, ok := err.(*HTTPError); ok && (he.StatusCode == 429 || he.StatusCode == 503) && he.RetryAfterMs > 0 {
+                        GetHostGate().ReportRateLimited(HostGateKeyOf(bookURL), he.RetryAfterMs)
+                }
                 return nil, err
         }
+        // R43-1B: 命中验证码 → 累计 captchaEncountered
+        if bookRes.CaptchaDetected {
+                rt.IncCaptcha()
+        }
         if bookRes.Blocked {
+                // R43-1B: 拦截时也调 ReportFailure (R42-1B 后该路径漏调, hostgate
+                // failStreak 不增, derate 永远不触发, 同 host 持续被打)
+                GetHostGate().ReportFailure(HostGateKeyOf(bookURL))
                 return &BookMetaResult{Status: BookMetaStatusBlocked, BookURL: bookURL}, nil
         }
+        // 成功: 记 per-host Referer (fetchPageOnce 内部已记, 这里不重复)
+        GetHostGate().ReportSuccess(HostGateKeyOf(bookURL))
 
         // 解析书籍页 (parseBook)
         parsed := ParseBook(bookRes.HTML, bookURL, cfg.Rule.Book)
@@ -1129,11 +1166,23 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
         rt.SetCurrentURL(tocURL)
         tocRes, err := FetchPage(ctx, tocURL, mergeFetchConfig(cfg.Override, FetchConfig{RequestPriority: "book"}))
         if err != nil {
+                // R43-1B: 429 / 503+RetryAfter → ReportRateLimited (与书籍页同款)
+                if he, ok := err.(*HTTPError); ok && (he.StatusCode == 429 || he.StatusCode == 503) && he.RetryAfterMs > 0 {
+                        GetHostGate().ReportRateLimited(HostGateKeyOf(tocURL), he.RetryAfterMs)
+                }
                 return nil, err
         }
+        // R43-1B: 命中验证码 → 累计 captchaEncountered
+        if tocRes.CaptchaDetected {
+                rt.IncCaptcha()
+        }
         if tocRes.Blocked {
+                // R43-1B: 拦截时也调 ReportFailure (与书籍页同款)
+                GetHostGate().ReportFailure(HostGateKeyOf(tocURL))
                 return &BookMetaResult{Status: BookMetaStatusBlocked, BookURL: bookURL}, nil
         }
+        // 成功
+        GetHostGate().ReportSuccess(HostGateKeyOf(tocURL))
 
         // 解析目录 (含翻页)
         pageFetcher := func(ctx context.Context, u, refererURL string) (string, error) {
@@ -1211,6 +1260,12 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
 
 // CrawlChapterContent — 阶段 2: 单章正文采集.
 // 返回 (ok, kind, message). kind: "" | "no-url" | "timeout" | "abort" | "hostgate" | "other"
+//
+// R43-1B 反反爬增强 + 边缘 case 修复:
+//   - HTTPError 429 / 503+RetryAfter → hostGate.ReportRateLimited (R42-1B 后该函数
+//     是死代码, 429 冷却从未触发, 反爬服务持续命中后续请求)
+//   - FetchResult.CaptchaDetected → rt.IncCaptcha (R42-1B 后 captchaEncountered 字段
+//     是死字段, admin 任务监控永远显示 0)
 func CrawlChapterContent(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, myEpoch int64, q *ChapterTask) (bool, string, string) {
         if q.URL == "" {
                 return false, "no-url", ""
@@ -1238,6 +1293,11 @@ func CrawlChapterContent(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRun
                 if ctx.Err() != nil {
                         return false, "abort", ""
                 }
+                // R43-1B: HTTPError 429 / 503+RetryAfter → 调 ReportRateLimited (R42-1B 后
+                // 该函数是死代码, 反爬 429 冷却从未触发). 其它网络层错误仍调 ReportFailure.
+                if he, ok := err.(*HTTPError); ok && (he.StatusCode == 429 || he.StatusCode == 503) && he.RetryAfterMs > 0 {
+                        hostGate.ReportRateLimited(HostGateKeyOf(q.URL), he.RetryAfterMs)
+                }
                 // 分类错误
                 errStr := err.Error()
                 if strings.Contains(errStr, "timeout") || strings.Contains(errStr, "context deadline exceeded") {
@@ -1248,6 +1308,12 @@ func CrawlChapterContent(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRun
                 return false, "other", fmt.Sprintf("章节采集失败 %s: %s", q.Title, truncate(errStr, 120))
         }
         hostGate.ReportSuccess(HostGateKeyOf(q.URL))
+
+        // R43-1B: 命中验证码 → 累计 captchaEncountered (R42-1B 后该字段是死字段,
+        // admin 任务监控 captchaEncountered 永远显示 0, 操作员无法察觉反爬触发频率)
+        if res.CaptchaDetected {
+                rt.IncCaptcha()
+        }
 
         if res.Blocked {
                 hostGate.ReportFailure(HostGateKeyOf(q.URL))

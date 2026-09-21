@@ -51,13 +51,18 @@ var trafilaturaInst = &trafilaturaState{}
 // R42-1B: 复用进程级 http.Client (取代每调用 new http.Client{Timeout: 1.5s}).
 // 原实现 CheckTrafilaturaBridge 每次探测都 new 一个 http.Client, 高频探测下
 // (每章节都查桥可用性) TCP 句柄 + TLS session 浪费. 改为进程级单例 (1.5s timeout).
+// R43-1B: 同 trafilaturaCallClient, Transport = globalTransport 共享连接池.
 var trafilaturaProbeClient = &http.Client{
-        Timeout: 1500 * time.Millisecond,
+        Timeout:   1500 * time.Millisecond,
+        Transport: globalTransport,
 }
 
 // R42-1B: 桥调用复用进程级 transport (取代 http.DefaultClient, 与 fetcher globalHttp 同口径).
+// R43-1B: 真正复用 globalTransport (R42-1B 注释声称同口径但 Transport 字段为 nil, 实际走
+// http.DefaultTransport 独立连接池, 与 fetcher 不共享). 修复: Transport = globalTransport.
 var trafilaturaCallClient = &http.Client{
-        Timeout: time.Duration(TrafilaturaRequestTimeoutMs) * time.Millisecond,
+        Timeout:   time.Duration(TrafilaturaRequestTimeoutMs) * time.Millisecond,
+        Transport: globalTransport,
 }
 
 // CheckTrafilaturaBridge — 探测桥可用性 (/health), 60s 缓存.

@@ -303,7 +303,7 @@ func chapterHeaders() map[string]string {
                 "Accept":          "text/html,*/*;q=0.8",
                 "Accept-Language": "zh-CN,zh;q=0.9",
         }
-        // R7-18: 从主应用拉取 Ywkey/Ywguid 凭证(60s 缓存, 失败兜底无凭证)
+        // 从主应用拉取 Ywkey/Ywguid 凭证(60s 缓存, 失败兜底无凭证)
         cfg := fetchMiniServiceConfig()
         if xjp, ok := cfg["xjp"].(map[string]any); ok {
                 if ywkey, ok := xjp["ywkey"].(string); ok && ywkey != "" {

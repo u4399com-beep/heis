@@ -58,6 +58,10 @@ func StripLeadingBom(html string) string {
 
 // ---------- 结构化数据提取 (反反爬增强) ----------
 
+// R43-1B: 预编译 JSON-LD 类型识别正则 (避免 ExtractJsonLd 每次 call 重新编译,
+// 高频路径 GC 压力. R42-1B 前 regexp.MustCompile 在循环内每次 call 都重编).
+var jsonLdTypeRe = regexp.MustCompile(`(?i)Article|Book|CreativeWork|Chapter|WebPage|PublicationIssue`)
+
 // ExtractMetaTags — 提取 og:* / article:* / book:* / twitter:* meta 标签 → 字段映射表.
 func ExtractMetaTags(doc *goquery.Document) map[string]string {
         out := map[string]string{}
@@ -127,7 +131,7 @@ func ExtractJsonLd(doc *goquery.Document) map[string]string {
                                 typeStr = t
                         }
                         // 仅采信内容性 schema 类型
-                        if !regexp.MustCompile(`(?i)Article|Book|CreativeWork|Chapter|WebPage|PublicationIssue`).MatchString(typeStr) {
+                        if !jsonLdTypeRe.MatchString(typeStr) {
                                 continue
                         }
                         pick := func(k string) string {

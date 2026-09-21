@@ -130,6 +130,11 @@ type FetchConfig struct {
         CurlImpersonateProfile string            `json:"curlImpersonateProfile,omitempty"`
         CloakBrowserURL        string            `json:"cloakBrowserUrl,omitempty"`
         CloakTier              string            `json:"cloakTier,omitempty"`
+        // R43-1B 反反爬增强: 2captcha 验证码服务 API key.
+        // 配置后, fetchPageOnce 命中 h-captcha / reCAPTCHA / Turnstile 时, 调 2captcha
+        // API 提交任务, 等待人工/AI 解出 token, 注入到页面重新抓取. 无配置则走原
+        // Obscura 桥 (puppeteer 自动点击) 路径.
+        TwoCaptchaAPIKey       string            `json:"twoCaptchaApiKey,omitempty"`
 }
 
 // CleanConfig — 内容清洗配置.
@@ -460,6 +465,10 @@ func sanitizeFetchConfig(m map[string]any) FetchConfig {
                         }
                 }
                 out.MoliHeaders = h
+        }
+        // R43-1B: 2captcha API key (低权限敏感字段, 长度上限 64 防 token 注入)
+        if v, ok := m["twoCaptchaApiKey"].(string); ok {
+                out.TwoCaptchaAPIKey = safeStr(v, 64)
         }
         return out
 }

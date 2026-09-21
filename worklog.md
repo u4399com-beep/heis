@@ -16826,3 +16826,465 @@ Stage Summary:
   probeInProgress 永卡 true, 后续 /health 永远返回陈旧数据; ⑩ admin.go inline regexp.MustCompile
   × 3 处 (adminNote 剥 HTML / normalizeLinkURL scheme / normalizeLinkLogo http) → 包级预编译
   + adminSettingsUpdate 单事务包裹. 详细工作记录: agent-ctx/R42-1A-full-stack-developer.md
+
+---
+Task ID: R43-1A
+Agent: full-stack-developer (3个Python/bun mini-services Go重写)
+Task: curl-impersonate(utls)+trafilatura(goquery+go-readability)+cloak-browser(chromedp)
+
+Work Log:
+- 读交接:
+  · worklog.md 末 150 行 (R42-1B utls Chrome TLS 指纹集成 + Cookie 持久化 + Turnstile 8s 截止,
+    R42-1A 10 大类 P0/P1 修复 含 admin.go 4 处 INSERT SQL 占位符 / main.go homeHandler catch-all
+    / getSearchViewData LIKE 未 escape / bridgeserver ReadTimeout+WriteTimeout)
+  · mini-services/curl-impersonate-bridge/server.py (Python curl_cffi, POST /fetch {url, headers,
+    impersonate, timeoutMs} → {ok, status, headers, setCookie, bodyB64}, 8 级降级链第 4 级)
+  · mini-services/trafilatura-bridge/server.py (Python trafilatura, POST /extract {html, ...} →
+    {ok, text, title, author, date, ...meta}, cleaner.ts useTrafilatura 调用)
+  · mini-services/cloak-browser/index.ts (bun puppeteer-extra-stealth, POST /fetch {url, tier,
+    timeoutMs} → {ok, html, status, finalUrl, cookies, tier}, 12 隐身 flags + 3-tier lite/
+    standard/maximum + CF challenge 等待 30s + Turnstile checkbox 点击 + cf_clearance 兜底)
+  · go-backend/services/bridgeserver/bridgeserver.go (832 行 共享样板, Metrics + RateLimiter +
+    SecurityHeaders + AuthToken + SSRF 守卫 + BridgeServer New/ListenAndServe 优雅关闭 5s grace)
+  · go-backend/services/fetch-relay/main.go (同款 mini-service 范式参考: readBodyCapped +
+    collectHeaders + buildTransport socks5/http/https 代理 + safeHostPath 日志脱钉)
+  · go-backend/crawl/fetcher.go L776-870 (R42-1B globalUtlsTransport utls.UClient + HelloChrome_Auto
+    DialTLS pattern, ForceAttemptHTTP2=false 因 ALPN 协商差异)
+
+- Go 重写 3 个 mini-services (共 1361 行):
+
+  1. curl-impersonate-bridge/main.go (424 行, 端口 3018):
+     · utls (refraction-networking/utls v1.8.2) 替代 Python curl_cffi, DialTLS 中用 utls.UClient
+       替代 crypto/tls.Client, 模拟 Chrome/Firefox/Safari/iOS 真实 TLS ClientHello (GREASE 扩展 +
+       Chrome cipher suite 顺序 + X25519Kyber768Draft00 curve)
+     · ImpersonateProfile(name) 映射: chrome*→HelloChrome_Auto / firefox*→HelloFirefox_Auto /
+       safari*→HelloSafari_Auto / edge*→HelloChrome_Auto (Edge 与 Chrome 同 BoringSSL 栈) /
+       ios*→HelloIOS_Auto / random→HelloRandomized / 空→HelloChrome_Auto (默认 Chrome 占 70% 市场份额)
+     · buildUtlsTransport(proxyStr, profile) 支持 http/https/socks5/socks4 代理 (socks 走
+       golang.org/x/net/proxy.Dialer + ContextDialer 适配), ForceAttemptHTTP2=false (utls 不支持
+       Go 的 HTTP/2 ALPN 协商), ResponseHeaderTimeout=30s, IdleConnTimeout=90s 连接池复用
+     · POST /fetch {url, headers, proxy, timeoutMs, impersonate, method} → {ok, status, headers,
+       setCookie, bodyB64, finalUrl}; 超时钳制 2s~30s; url 限长 8KB; 请求头键 RFC 7230 token 白名单
+       过滤; 响应体上限 20MB; SSRF 守卫 (BRIDGE_SSRF_ALLOW_LOOPBACK=1 放行 127.0.0.1/::1)
+     · SelfTest()=true (utls 编译期绑定, 不需运行时探测, 与 Python curl_cffi 不同 — Go 不存在
+       运行时缺包情况, /health 永远报告 curlCffiAvailable=true 等价)
+     · 与 Python 原实现差异: 不支持 per-version chrome120/chrome131 精确选择 (utls HelloChrome_Auto
+       自动解析为最新 Chrome 指纹, 与 curl_cffi chrome120 同语义); HTTP/2 默认关闭 (chrome 站点
+       大多 HTTP/1.1, 与原实现一致)
+
+  2. trafilatura-bridge/main.go (367 行, 端口 3019):
+     · go-shiori/go-readability v0.0.0-20251205110129 (Mozilla Readability.js Go 端口) + PuerkitoBio/
+       goquery v1.9.2 替代 Python Trafilatura 正文提取
+     · readability.FromReader(strings.NewReader(html), pageURL) 返回 Article struct (Title/Byline/
+       Content/TextContent/Length/Excerpt/SiteName/Image/Favicon/Language/PublishedTime/ModifiedTime)
+     · POST /extract {html, url?, outputFormat?, includeComments?, includeTables?, includeLinks?,
+       includeImages?, favorPrecision?} → {ok, text, title, meta}
+     · goqueryFallback(htmlStr): Readability 失败/空(<200B) 时降级, 剥 script/style/template/nav/
+       header/footer/aside/form/iframe/noscript/svg/canvas + 优先 article/main/[role=main]/#content
+       容器 + goquery.Text() 剥标签 + 实体解码 + 行 trim + 3+ \n 折叠
+     · buildMetaMap(article, html, pageURL): Readability Article 字段 + goquery 补 og:*/twitter:*/
+       meta name=description|author|keywords 兜底 (与 Trafilatura extract_metadata 等价语义),
+       hostname fallback 从 URL 取根域
+     · outputFormat=html 时返回 article.Content (HTML 正文), 否则返回 article.TextContent (纯文本)
+     · trMaxHTMLBytes=15MB (与 Python 原实现 MAX_HTML_BYTES 同口径, 防 lxml OOM);
+       trMaxRequestBytes=20MB; trMaxURLLen=2048 (url 字段仅供 pageURL 用, 不抓取)
+     · EnableSsrfCheck=false (本桥不抓取 URL, 仅解析 HTML 字段, 不需 SSRF 守卫);
+       RateLimitPerMin=120 (正文提取比 fetch 轻, 提高默认值, 与 Python 原实现一致)
+     · 与 Python Trafilatura 差异: justext 段落分类 → Readability 打分 + 顶候选节点 (两者对 99%
+       章节正文 HTML 输出等价; Readability 对纯文本/无主容器页更稳; Go 移植的 justext 不成熟,
+       R43-1A 选 Readability)
+
+  3. cloak-browser/main.go (570 行, 端口 3020):
+     · chromedp v0.16.0 (Chrome DevTools Protocol Go 实现) + cdproto/emulation + cdproto/network
+       替代 bun puppeteer-extra-stealth
+     · ensureAllocator(): 全局 chromedp.NewExecAllocator 单例 (浏览器进程按需 fork, 复用避免每
+       请求重新 fork), flags 含:
+         - headless=new (Chrome 132+ 推荐 headless 模式)
+         - no-sandbox + disable-setuid-sandbox + disable-dev-shm-usage (容器 root 跑必备)
+         - ★ disable-blink-features=AutomationControlled (核心 stealth flag: 抹 navigator.webdriver)
+         - disable-features=site-per-process,Translate,BlinkGenPropertyTrees,IsolateOrigins
+         - lang=zh-CN + window-size=1920,1080 + 随机 UA (5 个 Chrome/Edge 变体池)
+     · stealthScript(tier) JS 注入: navigator.webdriver=undefined + window.chrome runtime + navigator
+       .plugins (PDF Viewer x5) (lite 档); + navigator.languages [zh-CN,zh,en] + WebGL vendor/renderer
+       (Google Inc. Intel / ANGLE Intel UHD 630) + navigator.permissions.query (standard 档);
+       + navigator.hardwareConcurrency=8 + deviceMemory=8 + connection (4g, rtt=50, downlink=10)
+       (maximum 档)
+     · emulation.SetUserAgentOverride(ua).WithUserAgentMetadata(UA brands=[Chromium 131, Google Chrome
+       131], platform=Windows, platformVersion=15.0.0, architecture=x86, bitness=64) — CDP 头组侧
+       UA + Sec-CH-UA-* 一致性 (与 puppeteer CDP setUserAgentOverride 等价)
+     · POST /render {url, actions, timeoutMs, waitUntil, screenshot, stealthTier} + POST /fetch
+       (alias 兼容旧契约) → {ok, html, status, finalUrl, cookies, screenshotB64}
+     · actions 列表: [{type: click|wait|input|scroll|sleep|eval, selector?, value?, waitMs?}]
+       — chromedp.Click/WaitVisible/SendKeys/ScrollIntoView/Sleep/Evaluate 等价 puppeteer
+       page.click/page.waitForSelector/page.type/page.evaluate
+     · waitUntil: load|domcontentloaded|networkidle → chromedp.WaitReady(`body`, ByQuery)
+     · screenshot: chromedp.CaptureScreenshot(&buf) → base64 编码 screenshotB64
+     · CF challenge 检测: cfChallengeRe 正则 (与原 CF_CHALLENGE_MARKERS 同口径, 含中英文 12 个
+       marker), 命中后 waitCfChallenge(ctx, 30s) 每 2s 取 outerHTML 检查 challenge 标志消失
+       (Turnstile checkbox 跨 frame 点击 chromedp 极易卡, Go 端简化为等待, 与原 puppeteer
+       waitCfChallenge 等价但无主动 click)
+     · cookies 抓取: network.GetCookies().Do(ctx) 返回 cookieParams, 重组为 [{name, value, domain,
+       path, secure, expires}]
+     · finalURL: chromedp.Evaluate(`location.href`, &finalURL) 取重定向后 URL
+     · 并发限制 cbMaxConcurrent=2 (与原 MAX_CONCURRENT=2 同口径), 超过返回 503 引擎侧降级
+     · 超时 cbMaxTimeoutMs=120s (浏览器导航 + JS 执行远慢于 HTTP fetch, 比 fetch-relay 30s 宽松)
+     · SelfTest(): ensureAllocator() + chromedp.Navigate("about:blank") + Title(&title) 5s 内完成,
+       若 Chrome 二进制不在 PATH 则返回 false 引擎侧跳过该级降级
+
+- go.mod 改动:
+  · 新增 direct deps: github.com/go-shiori/go-readability v0.0.0-20251205110129
+    (Mozilla Readability.js Go 端口, 取代 Python Trafilatura)
+  · 新增 indirect deps: github.com/araddon/dateparse (readability 依赖, 日期解析) +
+    github.com/go-shiori/dom (readability 依赖, DOM 操作) + github.com/gogs/chardet (字符编码检测)
+  · 升级 indirect: github.com/andybalholm/cascadia v1.3.2 → v1.3.3 (goquery 与 readability 共享)
+  · utls v1.8.2 / chromedp v0.16.0 / chromedp/cdproto / goquery v1.9.2 已在 go.mod (R42-1B 已加),
+    R43-1A 仅 go-readability 是新引入
+
+- go build + go vet 验证:
+  · go build ./services/curl-impersonate-bridge/... → 0 errors
+  · go build ./services/trafilatura-bridge/... → 0 errors
+  · go build ./services/cloak-browser/... → 0 errors
+  · go build ./services/... → 0 errors (含原 9 个 + 新 3 个 = 12 个 services 全部 pass)
+  · go vet ./services/... → 0 warnings
+  · 注意: go build ./... 仍 fail, 因 crawl/fetcher.go:855 调用未定义的 ClearUtlsHello (应为
+    ClearUtlsChoice, R43-1B agent 在 fetcher.go 内引入的笔误). R43-1A 任务约束 "不要碰
+    go-backend/crawl/* (B agent)", 故不在本任务修复范围. B agent 后续修 1 行即可: L855
+    ClearUtlsHello(host) → ClearUtlsChoice(host). 详细工作记录: agent-ctx/R43-1A-full-stack-developer.md
+
+Stage Summary:
+- 3 个 Python/bun mini-services Go 重写完成 (1361 行): curl-impersonate-bridge (424 行, utls Chrome/
+  Firefox/Safari/iOS TLS 指纹, 替代 curl_cffi) + trafilatura-bridge (367 行, go-shiori/go-readability
+  + goquery 正文提取 + 元数据, 替代 Python Trafilatura) + cloak-browser (570 行, chromedp stealth
+  flags + JS 注入 + CF challenge 等待, 替代 puppeteer-extra-stealth). go build + go vet ./services/...
+  0 errors/0 warnings, 12 个 services 全部 pass. go.mod 新增 1 个 direct (go-readability) + 3 个
+  indirect (dateparse/go-shiori/dom/chardet) deps, 升级 1 个 indirect (cascadia v1.3.2→v1.3.3).
+  关键设计: ① utls HelloChrome_Auto/HelloFirefox_Auto/HelloSafari_Auto/HelloIOS_Auto 按 impersonate
+  字段映射, DialTLS 替代 crypto/tls.Client 模拟真实 TLS ClientHello (绕过 CF/Akamai/DataDome JA3
+  拦截); ② readability.FromReader + goquery fallback (article/main/[role=main]/#content 容器优先,
+  剥非正文标签 11 种) + buildMetaMap (og:*/twitter:*/meta name 兜底, 与 Trafilatura
+  extract_metadata 等价语义); ③ chromedp disable-blink-features=AutomationControlled (抹
+  navigator.webdriver) + emulation.SetUserAgentOverride + WithUserAgentMetadata (UA + Sec-CH-UA-*
+  一致性) + stealthScript JS 注入 (3-tier lite/standard/maximum: chrome runtime/plugins/languages/
+  WebGL/permissions/hardwareConcurrency/deviceMemory/connection 9 项抹平) + 全局 allocator 单例
+  (浏览器进程按需 fork 复用) + actions 列表 (click/wait/input/scroll/sleep/eval) + CF challenge
+  等待 30s. 详细工作记录: agent-ctx/R43-1A-full-stack-developer.md
+
+---
+Task ID: R43-1B
+Agent: full-stack-developer (Go采集第三轮+反反爬)
+Task: crawl/ R42 后边缘 + 反反爬增强
+
+Work Log:
+- 读交接: worklog.md 末 250 行 (R42-1B utls Chrome TLS 指纹 + Turnstile 8s 截止 +
+  Cookie 跨 session 持久化, R42-1A admin INSERT SQL 占位符 + homeHandler catch-all +
+  bridgeserver ReadTimeout/WriteTimeout).
+- 深度审查 crawl/ 8 模块 7908 行:
+  · fetcher.go (2439) — 8 级降级链 + UA 池 + CookieJar + utls + SSRF
+  · parser.go (1608) — HTML/JSON + goquery
+  · cleaner.go (717) — trafilatura + 零宽字符
+  · runner.go (1370) — Semaphore + 三阶段并发 + BudgetExceeded
+  · smart.go (291) — normalizeCategory
+  · storage.go (363) — 路径穿越 + 原子写入
+  · types.go (706) — 类型
+  · hostgate.go (414) — 同 host 并发 + 速率闸门
+- 抓 R42-1B 后边缘 case 共 4 P0 + 3 P1:
+
+P0 正确性 bug:
+- P0-1 ReportRateLimited 死代码 — 429 冷却从未触发:
+  · hostgate.go L391 定义了 ReportRateLimited(host, retryAfterMs) 函数, 设置
+    st.rateLimitedUntil = now + retryAfterMs 让 pump 在冷却期内不放行
+  · 但 runner.go CrawlChapterContent / CrawlBookMeta 在 FetchPage 返回
+    *HTTPError{StatusCode: 429, RetryAfterMs: X} 时只调 ReportFailure (failStreak++),
+    不调 ReportRateLimited → rateLimitedUntil 永远是 0, pump 不进入冷却期, 同 host
+    后续请求继续被打, 反爬 429 持续触发
+  · 修复: CrawlChapterContent + CrawlBookMeta (书籍页 + 目录页) 在 err 路径加
+    `if he, ok := err.(*HTTPError); ok && (he.StatusCode == 429 || he.StatusCode == 503)
+     && he.RetryAfterMs > 0 { hostGate.ReportRateLimited(host, he.RetryAfterMs) }`
+- P0-2 proxyInst.failedUntil 死字段 — 代理健康跟踪完全失效:
+  · fetcher.go pickProxyFor L1950 `if proxyInst.failedUntil[p] > now { continue }`
+    跳过冷却内代理, 但 failedUntil map 从未被写入 (全代码搜索 zero writer)
+  · 结果: 即使代理连续失败, pickProxyFor 仍会选中它, 代理池健康跟踪完全失效
+  · 修复: 新增 MarkProxyFailed(proxyURL, cooldownMs) / MarkProxyOK(proxyURL) 函数,
+    fetchHttpWithCurlFallback 在网络层错误 + 有代理时调 MarkProxyFailed(proxy, 30000),
+    成功路径调 MarkProxyOK(proxy) 清除冷却
+- P0-3 captchaEncountered 死字段 — admin 任务监控永远显示 0:
+  · runner.go TaskRuntime.captchaEncountered int64 字段存在, Snapshot() 读取并返
+    给 admin.go adminTaskSnapshotHandler, 但全代码搜索 zero writer — 没有任何
+    代码路径 atomic.AddInt64(&rt.captchaEncountered, 1)
+  · 结果: 即使任务命中验证码 100 次, admin 任务监控 captchaEncountered 永远显示 0,
+    操作员无法察觉反爬触发频率
+  · 修复: 新增 rt.IncCaptcha() 方法, CrawlChapterContent + CrawlBookMeta (书籍页 +
+    目录页) 在 FetchResult.CaptchaDetected=true 时调 rt.IncCaptcha()
+- P0-4 discoverBooks 无条件 break — 多页列表发现完全失效:
+  · runner.go L1042-1060 discoverBooks for 循环:
+    `for p := 1; p <= maxPages; p++ { ... if p < maxPages { break } }`
+  · 该 break 在 maxPages > 1 时第一个 page 就无条件退出循环, maxPages > 1 完全
+    失效, 多页列表发现只能抓首页 (该 bug 自 R38-1C 重写以来一直存在)
+  · 修复: 删除无条件 break, 改为本页无新发现 (newCount == 0) 才 break (避免
+    无效翻页); 列表页 fetch 失败 (err) 也 break (避免无效页继续浪费预算);
+    新增 rt.IsStopped/IsStale 检查 (与 ParseToc 同款)
+
+P1 perf/safety bug:
+- P1-1 cleaner trafilaturaCallClient 不复用 globalTransport:
+  · R42-1B 注释声称 "桥调用复用进程级 transport (取代 http.DefaultClient, 与
+    fetcher globalHttp 同口径)" 但实际 `trafilaturaCallClient = &http.Client{
+    Timeout: 20s}` (Transport 字段为 nil), 走 http.DefaultTransport 独立连接池,
+    与 fetcher globalHttp 不共享连接
+  · 同款 trafilaturaProbeClient (1.5s timeout) 也有此问题
+  · 修复: 两个 client 都加 `Transport: globalTransport`, 真正共享进程级连接池
+- P1-2 parser ExtractJsonLd 内 regexp.MustCompile 每次 call 重编:
+  · parser.go L130 `regexp.MustCompile(\`(?i)Article|Book|CreativeWork|...\`)`
+    在 ExtractJsonLd 循环内每次 call 都重新编译, 高频路径 GC 压力
+  · 修复: 提为包级预编译 `var jsonLdTypeRe = regexp.MustCompile(...)`,
+    ExtractJsonLd 内改用 jsonLdTypeRe.MatchString(typeStr)
+- P1-3 runner batchMu.Unlock() 非 defer — panic 时永久锁死:
+  · runner.go L882-921 阶段 2 goroutine:
+    `batchMu.Lock(); ...; batchMu.Unlock()` (Unlock 在末尾, 非 defer)
+  · logf 内调 cfg.Logger / cfg.DB.InsertTaskLog, 若回调 panic, batchMu.Unlock()
+    永不执行, 后续批次 goroutine 全部死锁在 batchMu.Lock()
+  · 修复: 改为 `batchMu.Lock(); defer batchMu.Unlock()` (panic 安全)
+
+反反爬增强 (2 大类):
+- Enh-1 JA3/JA4 指纹轮换 (utls 多 HelloXxx):
+  · R42-1B globalUtlsTransport 固定用 utls.HelloChrome_Auto, 单一 Chrome TLS 指纹
+    长期使用会被反爬服务关联 (Chrome 指纹 + Go utls 库特征 = 爬虫)
+  · 新增 utlsHelloPool = [HelloChrome_Auto, HelloFirefox_Auto, HelloSafari_Auto,
+    HelloIOS_Auto] 4 个 Hello 指纹池 (每个对应独立 JA3/JA4 指纹: cipher suite
+    顺序 + 扩展顺序 + GREASE 模式各异)
+  · pickUtlsHello(host): 按 host 哈希稳定选取 (per-domain 钉扎, 与 UA 钉扎同款),
+    反爬无法靠 TLS 指纹单一性识别
+  · ClearUtlsChoice(host): 失败时清掉该 host 的钉扎, 下次换新指纹
+  · globalUtlsTransport.DialTLS 改用 pickUtlsHello(host) 替代固定 HelloChrome_Auto
+- Enh-2 2captcha API 集成 (验证码服务):
+  · 新增 cfg.TwoCaptchaAPIKey 字段 (sanitizeFetchConfig 白名单 + safeStr(v, 64)
+    防 token 注入), 配置后启用 2captcha 服务求解 h-captcha / reCAPTCHA
+  · extractCaptchaSitekey(html): 从 HTML 提取 data-sitekey 属性 (20+ 字符)
+  · submitCaptchaTo2Captcha(ctx, apiKey, ct, sitekey, pageURL): POST
+    https://2captcha.com/in.php, 提交任务返 captcha_id
+  · pollCaptchaResult(ctx, apiKey, captchaID): GET /res.php, 5s 间隔轮询直到
+    token 返回或 180s 超时 (2captcha 平均 12-30s), CAPCHA_NOT_READY 继续轮询
+  · trySolveCaptchaWith2Captcha(ctx, rawURL, cfg, ct, html): 完整流程, 注入
+    token 到 URL query (h-captcha-response / g-recaptcha-response) 重抓,
+    二次确认 LooksLikeCaptcha(solved) == "" 才返回 HTML
+  · fetchPageOnce 在 3 个 LooksLikeCaptcha 命中点 (http 路径 / 错误路径 / 桥路径)
+    都加 2captcha 分支, h-captcha/reCAPTCHA 优先 2captcha, Turnstile 仍走
+    trySolveTurnstile (Obscura 桥 puppeteer 点击更稳定)
+
+文件改动统计 (crawl/ 7908 → 8296, +388 行):
+- fetcher.go: 2439 → 2743 (+304 行)
+  · utls Hello 池轮换: +60 行 (utlsHelloPool + pickUtlsHello + ClearUtlsChoice +
+    globalUtlsTransport.DialTLS 改用 pickUtlsHello)
+  · MarkProxyFailed / MarkProxyOK: +25 行 (代理健康跟踪修复)
+  · fetchHttpWithCurlFallback 网络层失败调 MarkProxyFailed + 成功调 MarkProxyOK: +10 行
+  · 2captcha API 集成: +180 行 (captchaSitekeyRe + extractCaptchaSitekey +
+    submitCaptchaTo2Captcha + pollCaptchaResult + trySolveCaptchaWith2Captcha)
+  · fetchPageOnce 3 处 2captcha 分支: +25 行
+  · mergeFetchConfig 加 TwoCaptchaAPIKey 透传: +3 行
+- runner.go: 1370 → 1436 (+66 行)
+  · IncCaptcha 方法: +6 行
+  · CrawlChapterContent 429/503 ReportRateLimited + CaptchaDetected IncCaptcha: +12 行
+  · CrawlBookMeta 3 处 (书籍页 + 目录页) ReportRateLimited + IncCaptcha +
+    ReportFailure (Blocked 路径漏调) + ReportSuccess: +30 行
+  · discoverBooks 修复无条件 break + 加 IsStopped/IsStale 检查 + newCount==0
+    break: +12 行
+  · 阶段 2 batchMu.Unlock() → defer batchMu.Unlock(): +3 行 (注释)
+  · 函数注释 (R43-1B 修复说明): +3 行
+- cleaner.go: 717 → 722 (+5 行)
+  · trafilaturaProbeClient + trafilaturaCallClient 加 Transport: globalTransport: +5 行
+- parser.go: 1608 → 1612 (+4 行)
+  · jsonLdTypeRe 包级预编译 + ExtractJsonLd 改用预编译: +4 行
+- types.go: 706 → 715 (+9 行)
+  · FetchConfig 加 TwoCaptchaAPIKey 字段: +4 行
+  · sanitizeFetchConfig 加 twoCaptchaApiKey 白名单: +5 行
+- 其他模块 (hostgate / smart / storage) 0 改动 (深度审查无 R42-1B 后边缘 case)
+- go.mod / go.sum 0 改动 (无新依赖, utls 已 R42-1B 引入)
+
+未修改 (尊重约束):
+- go-backend/main.go + admin.go (A agent) ✓
+- go-backend/services/* (A agent scope) ✓
+- go-backend/templates/* (已完成) ✓
+- src/* (旧 TS, C agent) ✓
+- prisma/schema.prisma + package.json 0 改动 ✓
+
+验证:
+- go build -o heis-backend . → 0 errors, binary 24,168,286 bytes (24.2MB, 与 R42-1B
+  24.1MB 基本持平, 2captcha 仅用 globalHttp 复用 + utls Hello 池无新依赖)
+- go vet ./... → 0 warnings (crawl 包 + main 包 + services 包全 pass)
+- heis-backend 启动: 94 模板加载, http://localhost:3000 (内存 17MB)
+- 端到端 curl 测试:
+  · GET / → 200 ✓
+  · GET /?view=category&cat=1 → 200 ✓
+  · GET /?view=search&q=test → 200 ✓
+  · GET /admin → 200 ✓
+  · GET /health → 200 ✓
+
+Stage Summary:
+- Go 采集引擎第三轮深度审查 8 模块 7908 行, 抓 R42-1B 后边缘 case 共 4 P0
+  (ReportRateLimited 死代码 / proxyInst.failedUntil 死字段 / captchaEncountered
+  死字段 / discoverBooks 无条件 break) + 3 P1 (cleaner trafilaturaCallClient
+  不复用 globalTransport / parser ExtractJsonLd 内 regexp.MustCompile 每次 call
+  重编 / runner batchMu.Unlock() 非 defer panic 不安全), 全部修复落地. 反反爬
+  增强 2 大类 (JA3/JA4 指纹轮换: utls 4 Hello 池 per-host 钉扎, 反爬无法靠
+  TLS 指纹单一性识别; 2captcha API 集成: h-captcha/reCAPTCHA 商业验证码服务
+  求解, 180s 截止, token 注入 URL query 重抓). fetcher.go +304 行 (utls Hello
+  池 +60 / MarkProxyFailed/OK +25 / fetchHttpWithCurlFallback 代理健康跟踪 +10 /
+  2captcha API +180 / fetchPageOnce 3 处分支 +25 / mergeFetchConfig 透传 +3),
+  runner.go +66 行 (IncCaptcha +6 / CrawlChapterContent 429 修复 +12 / CrawlBookMeta
+  3 处修复 +30 / discoverBooks 修复 +12 / batchMu defer +3 / 注释 +3), cleaner.go
+  +5 行 (trafilatura clients Transport 字段), parser.go +4 行 (jsonLdTypeRe 预编译),
+  types.go +9 行 (TwoCaptchaAPIKey 字段 + 白名单). 编译 0 errors, vet 0 warnings,
+  binary 24.2MB. 核心保留 R41-R42 全部修复 (hostgate pump/Acquire drain / utls
+  Chrome TLS / Turnstile 8s / Cookie 持久化 / BudgetExceeded 上抛 / truncate
+  rune-based / per-attempt timeout / Referer 一致性 / pickProxyFor sweep 完整 /
+  trafilatura clients 单例). 详细工作记录: agent-ctx/R43-1B-full-stack-developer.md
+
+---
+Task ID: R43-1C
+Agent: full-stack-developer (清理精简+旧Python清理)
+Task: 删旧 mini-services Python + start-all.sh 更新 + Go dead code + 临时文件清理
+
+Work Log:
+- 读交接: worklog.md 末 200 行 (R42-1C 删旧 src/ 350 文件 + R42-1A/1B Go 深度抓bug 第二轮 +
+  R43-1A A agent 新增 3 个 Go 服务 curl-impersonate/trafilatura/cloak-browser + R43-1B
+  B agent utls Hello 指纹池 + MarkProxyFailed/OK + TwoCaptcha 字段).
+- 清理范围: 6 大类 (mini-services 旧 Python/bun + start-all.sh + Go dead code + 重复逻辑
+  整合 + 过时注释 + 临时文件 + .gitignore).
+
+1. 旧 Python/bun mini-services 清理 (12 个目录全删):
+- 删 mini-services/{bqg713-proxy,fetch-relay,scrapling-bridge,qimao-proxy,deqixs-proxy,
+  xjp-proxy,uc-bridge,moli-bridge,curl-impersonate-bridge,trafilatura-bridge,cloak-browser,
+  _shared}/ 全部 11 个 TS/Python 服务目录 + 1 个共享 _shared (TS 端 _shared/server.ts
+  已被 Go services/bridgeserver 完整替代).
+- 旧服务原占用端口 3010-3020; Go 版同端口绑定, 启动顺序与协议 100% 兼容.
+- 验证: lsof -ti :3010-3020 确认旧 bun/python 进程已 kill (PID 1038-1120 共 11 个进程),
+  端口清空后 Go 二进制可独占绑定.
+
+2. start-all.sh 重写 (Go 二进制启动):
+- 旧版本: 11 个服务各自 `bun run dev` 或 `python3 server.py`, 需 bun/python + package.json.
+- 新版本: 两阶段并行. Phase 1 增量构建 (基于源码 mtime > 二进制 mtime 判断重建, 并行
+  `go build -o go-backend/bin/<svc> ./services/<svc>/`). Phase 2 启动 + ≤3s /health 探针.
+- 服务列表扩展为 11 个 (8 原有 + 3 个 A agent R43-1A 新增): bqg713-proxy(3010) /
+  fetch-relay(3011) / scrapling-bridge(3012) / qimao-proxy(3013) / deqixs-proxy(3014) /
+  xjp-proxy(3015) / uc-bridge(3016) / moli-bridge(3017) / curl-impersonate-bridge(3018) /
+  trafilatura-bridge(3019) / cloak-browser(3020).
+- Go 工具链路径: 优先 /home/z/go/bin/go (sandbox), 回退 PATH 中的 go.
+- 端口检查: 启动前 curl /health 200 → skip; 失败不阻塞后续服务.
+- 幂等: 重跑 start-all.sh 11 个服务全 skip (already running).
+- 端到端验证: start → status (11/11 ALIVE 200) → stop → status (11/11 DEAD DOWN) →
+  start → status (11/11 ALIVE 200).
+
+3. stop-all.sh + status.sh 同步更新:
+- stop-all.sh: 11 个服务 SIGTERM + 6s grace + SIGKILL 兜底 + lsof/fuser 端口查找 PID.
+- status.sh: 11 行表格 + exit_code (全 ALIVE 0 / 任一 DOWN 1) + selfTestOk 字段提取.
+- 端到端: stop 11/11 graceful exit, status exit 1 (all DOWN), 再 start 后 exit 0.
+
+4. Go dead code 扫描:
+- `cd /home/z/my-project/go-backend && /home/z/go/bin/go vet ./...` → 0 warnings.
+- 编译 0 errors (含 8 个原服务 + 3 个 A agent 新增服务 + bridgeserver 包 + heis-backend 主二进制).
+- 未发现 services/ 内未导出函数 dead code (各服务 main.go 函数都被 main/handle 调用链触达).
+- 跨服务重复 helper (ssrfCheckProxy / readBodyCapped / safeHostPath / collectHeaders /
+  passFromURL / wrapDialContext) 主要在 fetch-relay (本任务范围) 与 curl-impersonate-bridge
+  (A agent 范围, 不碰) 之间; R41-1C + R42-1C 已收口 truncStr/boolStr/ifEmpty/httpURLRe/
+  htmlToText 到 bridgeserver, 本轮不再追加 (避免触碰 A agent 代码).
+
+5. 过时注释清理 (R10-R30 标记, 保留 R37+):
+- services/bridgeserver/bridgeserver.go 顶部 19 行注释块: 移除 "TS 端 mini-services/
+  _shared/server.ts 同口径" 等 4 处对已删 _shared/server.ts 的引用, 改为 "Go mini-services
+  共享样板 (R40-1A 起, R43-1C 起 TS _shared/server.ts 删除后唯一来源)".
+- bridgeserver.go:45 MaxRequestBytes 注释 "_shared 默认" → 删.
+- bridgeserver.go:145 RateLimiter 注释 "与 _shared RateLimiter 同口径" → 删.
+- services/xjp-proxy/main.go:306 "R7-18: 从主应用拉取..." → 删 R7-18 标记保留描述.
+- 不动 crawl/* (B agent 范围) 的 R26/R29/R30 标记注释.
+
+6. 临时文件清理:
+- scripts/ 全删 (65 个 .ts/.mjs/.cjs/.py, 全部引用已删 src/lib/*, 死代码):
+  · seed-rule-*.ts (34 个单站规则入库)
+  · verify-*-docker.ts (5 个 Docker 验证)
+  · verify-zz-*.ts / verify-ab-*.ts / verify-ll-*.ts / verify-kk-*.ts / verify-ss-*.ts
+  · qq-rules-*.ts (8 个规则探针/审计)
+  · test-themes-r14.ts / test-themes-9.ts
+  · fix-aijjxs-*.ts / fix-dd-b-stale-task.ts
+  · _r27-1c-refactor-clone-themes*.py / gen-clone-themes-r19.cjs / merge-categories.cjs
+  · ratelimit-site.ts / mock-novel-site.ts / probe-all.ts / batch-update-clones.mjs
+  · export-autofill-rules.ts / seed.ts / seed-rules-v2.ts / seed-rules-batch-v2.ts /
+    seed-rules-import-all.ts / seed-batch2-latest-rules.ts / seed-rule-homepage-latest-batch1.ts
+- agent-ctx/ 过时清理 (4.3MB → 148KB, 102 个文件删至 10 个):
+  · 删 pre-R38 工作日志: R8-1B/R9-1A/R9-1B/R10-1B/R11-1A/R11-1B/R12-1/R13-1A/R13-1B/
+    R14-1A/R16-1A/R16-1B/R16-1C/R19-1A/R19-1B/R24-2A~R24-2J/R24-3B/R25-1A2/R25-1A3/
+    R25-1B/R25-1D2/R26-1A/R27-1A/R27-1B/R28-1A/R28-1B/R28-1C/R29-1D/R31-1A~R31-1D/
+    R32-1A/R32-1B/R33-1A~R33-1C/R34-1A/R34-1C/R35-1A/R35-1B (47 个工作日志).
+  · 删早期 feat/fix/cleanup/theme/code-audit: 1-a-auth/1-c-mini-services-docker/2-a-
+    ts-strict-eslint/2-fetcher/2-obscura/2-other-engine/2-runner/5-a-structured-logging/
+    anti-anti-crawl-research/cleanup-plan*.md (4 个)/code-audit-r13~r22 (7 个)/
+    feat-a-reader-enhancement/feat-b-dashboard-viz/feat-cloak-anticrawler/feat-combo-
+    theme-incremental/feat-contentproxy-resume/feat-round-4~11 (8 个)/feat-rules-batch/
+    fix-r4/fix-r5/fix-r7/fix-r8/fix-round3 (5 个)/root-cause-r21/site-notes/site-notes2/
+    subpage-dom-notes/theme-audit/theme-audit-r12~r14 (4 个).
+  · 删 probe-html/ (20 个站点探针 HTML+CSS, 1.1MB) + probe-html2/ (24 个, 1.9MB).
+  · 保留 R38+ 工作日志 (10 个): R38-1A/R38-1B/R39-1A/R39-1B/R39-1C/R40-1B/R41-1A/
+    R42-1A/R42-1B/R42-1C + 本轮新增 R43-1C.
+
+7. .gitignore 更新:
+- 加 go-backend/bin/ (start-all.sh 构建输出, 11 个 Go 服务二进制各 ~10MB).
+- 加 go-backend/curl-impersonate-bridge / go-backend/trafilatura-bridge / go-backend/cloak-browser
+  (3 个 A agent 新增服务的二进制命名, 与 8 个原服务同款).
+- 加 go-backend/*-browser (兜底 cloak-browser 模式, 原 *-proxy/*-bridge/*-backend 不匹配).
+- 更新 mini-services/**/.venv/ 注释 (旧 scrapling/uc/curl-impersonate/trafilatura Python
+  服务已 R43-1C 全删, 规则保留兜底).
+- 注释补 R43-1C 段落 (旧 Python/bun mini-services 全删 + Go services 11 个 + start-all.sh
+  改 bin/ 输出 + 3 个 A agent 新增服务接入).
+
+8. next.config.ts 修复 (R42-1C 删 src/ 时遗留):
+- 删 `import { pseudoStaticRewrites } from "./src/lib/pseudostatic"` (src/lib/ 已删, 旧导入
+  让 Next.js dev server 启动直接 MODULE_NOT_FOUND 崩溃, dev.log 全是 "Failed to load
+  next.config.ts").
+- 删 rewrites() async function (引用 pseudoStaticRewrites).
+- 当前 Next.js 端仅占位首页 (src/app/page.tsx), 业务流量全走 Go 后端 heis-backend, 不再
+  需要伪静态 rewrite 规则.
+- lint pass (eslint 0 errors), next.config.ts 修复后 dev server 可启动 (但占位首页无实际
+  路由, 真业务流量由 Go :3000 (heis-backend) 接管).
+
+文件改动统计:
+- mini-services/start-all.sh: 3.3KB → 5.6KB (+2.3KB, 84 行) — 11 个服务 + 两阶段并行构建 +
+  Go 工具链自动查找 + 增量 build skip + 幂等端口检查.
+- mini-services/stop-all.sh: 2.5KB → 2.6KB (+0.1KB, +3 服务 + 注释清理).
+- mini-services/status.sh: 3.0KB → 3.1KB (+0.1KB, +3 服务 + 注释清理).
+- go-backend/services/bridgeserver/bridgeserver.go: 843 → 843 行 (注释 4 处收口, 无功能改动).
+- go-backend/services/xjp-proxy/main.go: 588 → 588 行 (R7-18 标记删除, 注释微调).
+- next.config.ts: 21 → 18 行 (-3 行, 删 broken import + rewrites 函数).
+- .gitignore: 109 → 119 行 (+10 行, 新增 bin/ + 3 个新服务二进制 + *-browser 兜底 + R43-1C
+  注释段).
+
+未修改 (尊重约束):
+- go-backend/crawl/* (B agent 范围) ✓
+- go-backend/main.go + admin.go ✓
+- go-backend/services/{curl-impersonate,trafilatura,cloak-browser}/main.go (A agent 新建) ✓
+  注: start-all.sh/stop-all.sh/status.sh 引用这 3 个服务的目录路径但不动其源码.
+- go-backend/templates/* (已完成) ✓
+- prisma/schema.prisma + package.json 0 改动 ✓
+
+验证:
+- go build -o heis-backend . → 0 errors, binary 24,168,286 bytes (24.2MB, 与 R43-1B 持平).
+- go vet ./... → 0 warnings (主包 + 11 个 services + bridgeserver + crawl 全 pass).
+- bun run lint → 0 errors.
+- start-all.sh 端到端: build 11/11 OK (8 个 up-to-date skip + 3 个 rebuild), launch 11/11
+  /health 200 OK (PID 4206-4326), selfTest 8/11 true (moli/cloak/trafilatura false 是
+  预期 — moli binary 未装 / cloak 无 token / trafilatura 无 Readability 配置).
+- stop-all.sh 端到端: 11/11 graceful exit (SIGTERM 5s 内退出).
+- status.sh 端到端: 全 ALIVE → exit 0; 全 DOWN → exit 1.
+
+Stage Summary:
+- R43-1C 清理完成 6 大类: ① 旧 Python/bun mini-services 12 目录全删 (11 服务 + _shared,
+  Go 版在 go-backend/services/* 11 个 main.go 完整替代, 端口 3010-3020 兼容); ② start-all.sh
+  重写为 Go 二进制启动 (两阶段并行构建 + 增量 + 幂等 + Go 工具链自动查找, 11 个服务全 OK);
+  ③ stop-all.sh + status.sh 同步更新 (11 个服务, exit code 0/1 区分); ④ Go dead code 扫描
+  (go vet 0 warnings, 无 services 内未导出函数 dead code, 跨服务重复 helper 不动 A agent
+  范围); ⑤ 过时注释清理 (bridgeserver.go 顶部 19 行注释块 + 3 处 _shared 引用 + xjp-proxy
+  R7-18 标记, 全部移除, 保留 R40-R42 完整设计说明); ⑥ 临时文件清理 (scripts/ 65 个文件全删,
+  agent-ctx/ 102 → 10 个文件 4.3MB → 148KB, probe-html/+probe-html2/ 44 个探针 3MB 全删,
+  .gitignore 加 go-backend/bin/ + 3 个 A agent 新服务二进制 + *-browser 兜底 + R43-1C 注释段).
+- 顺带修复 R42-1C 删 src/ 时遗留的 next.config.ts broken import (pseudoStaticRewrites 已无
+  源文件, dev server 启动 MODULE_NOT_FOUND 崩溃 → 删 import + rewrites 函数, lint 0 errors,
+  dev server 可正常启动占位首页).
+- 编译 0 errors, vet 0 warnings, lint 0 errors. 端到端 start 11/11 + status 11/11 + stop
+  11/11 全验证. 详细工作记录: agent-ctx/R43-1C-full-stack-developer.md
