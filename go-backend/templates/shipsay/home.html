@@ -1,0 +1,106 @@
+{{define "shipsay/home"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Site.Title}}</title>
+<meta name="keywords" content="{{.Site.Keywords}}">
+<meta name="description" content="{{.Site.Description}}">
+<link rel="stylesheet" href="/clone-css/shipsay.css">
+</head>
+<body>
+<header>
+<div class="container head">
+<a id="logo" href="/">
+<span>{{.Site.Name}}</span>
+<p>{{.Site.Domain}}</p>
+</a>
+<form name="t_frmsearch" action="/search" method="get" onsubmit="return !!this.querySelector('[name=searchkey]').value">
+<input id="searchkey" name="searchkey" class="search_input" placeholder="搜索书名或作者" autocomplete="off">
+<input type="hidden" name="searchtype" value="all">
+<button type="submit" id="search_btn" title="搜索"><i class="fa fa-search fa-lg"></i></button>
+</form>
+<div class="header_right">
+<a id="home" href="/"><i class="fa fa-home fa-lg"></i><br>首页</a>
+<a href="/?view=category"><i class="fa fa-book fa-lg"></i><br>书库</a>
+<a href="/?view=fulltext"><i class="fa fa-coffee fa-lg"></i><br>完本</a>
+<a href="/?view=history"><i class="fa fa-history fa-lg"></i><br>足迹</a>
+</div>
+</div>
+</header>
+
+<div class="navigation">
+<nav class="container">
+<a href="/">首页</a>
+{{range .NavCats}}
+<a href="/?view=category&cat={{.id}}">{{.name}}</a>
+{{end}}
+<div id="user_panel"></div>
+</nav>
+</div>
+
+<div class="container">
+<div class="side_commend side_commend_width">
+<p class="title"><i class="fa fa-thumbs-o-up fa-lg">&nbsp;</i>大神小说</p>
+<ul class="flex">
+{{range .TopBooks}}
+<li>
+<div class="img_span">
+<a href="/?view=book&id={{.id}}">
+{{if .cover}}<img src="{{.cover}}" title="{{.name}}" width="120" height="160">{{end}}
+</a>
+<span>{{.category}} / {{if eq .status "completed"}}完结{{else}}连载{{end}}</span>
+</div>
+<div class="w100">
+<a href="/?view=book&id={{.id}}"><h2>{{.name}}</h2></a>
+<p class="indent">{{.intro}}</p>
+<div class="li_bottom">
+<a><i class="fa fa-user-circle-o">&nbsp;{{.author}}</i></a>
+<div>
+<em class="orange">{{wordCount .wordCount}}</em>
+</div>
+</div>
+</div>
+</li>
+{{end}}
+</ul>
+</div>
+<aside>
+<p class="title"><i class="fa fa-fire fa-lg">&nbsp;</i>热门小说</p>
+<ul class="popular odd">
+{{range .Popular}}
+<li>
+<a href="/?view=book&id={{.id}}">{{.name}}</a>
+<a class="gray">{{.author}}</a>
+</li>
+{{end}}
+</ul>
+</aside>
+</div>
+
+<div class="container">
+<div class="section flex">
+{{range .NavCats}}
+<div class="sortvisit">
+<a href="/?view=category&cat={{.id}}">{{.name}}</a>
+<ul>
+{{range $.Books}}
+<div>
+<a href="/?view=book&id={{.id}}">
+{{if .cover}}<img src="{{.cover}}" title="{{.name}}" width="120" height="160">{{end}}
+</a>
+<p>
+<a href="/?view=book&id={{.id}}">{{.name}}</a>
+<i>&nbsp;/&nbsp;{{.author}}</i>
+<br>&nbsp;&nbsp;&nbsp;&nbsp;{{.intro}}
+</p>
+</div>
+{{end}}
+</ul>
+</div>
+{{end}}
+</div>
+</div>
+
+</body>
+</html>{{end}}
