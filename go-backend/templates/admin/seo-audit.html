@@ -1,0 +1,81 @@
+{{define "admin/seo-audit"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+{{template "admin/head" .}}
+</head>
+<body>
+<div class="app">
+{{template "admin/sidebar" .}}
+<main class="content">
+  <div class="topbar">
+    <h1>{{.Title}}</h1>
+    <div class="actions">
+      <a href="/api/admin/seo-audit" class="btn" target="_blank">API</a>
+    </div>
+  </div>
+  <div class="page">
+    <div class="card" style="margin-bottom:16px;">
+      <h3>审计概览</h3>
+      <div style="display:flex;gap:24px;flex-wrap:wrap;margin-top:8px;align-items:center;">
+        <div><div style="font-size:24px;font-weight:700;color:{{scoreColor .Summary.avgScore}};">{{.Summary.avgScore}}</div><div style="font-size:11px;color:var(--dim);">平均评分</div></div>
+        <div><div style="font-size:24px;font-weight:700;color:var(--info);">{{.Summary.totalSites}}</div><div style="font-size:11px;color:var(--dim);">站点数</div></div>
+        <div><div style="font-size:24px;font-weight:700;color:var(--warn);">{{.Summary.totalIssues}}</div><div style="font-size:11px;color:var(--dim);">问题总数</div></div>
+        <div><div style="font-size:24px;font-weight:700;color:var(--err);">{{.Summary.totalErrors}}</div><div style="font-size:11px;color:var(--dim);">错误数</div></div>
+        <div style="margin-left:auto;">
+          <form method="get" action="/admin/seo-audit" style="display:flex;gap:8px;align-items:center;">
+            <select name="site">
+              <option value="">全部站点 ({{.Summary.totalSites}})</option>
+              {{range .SiteOptions}}
+              <option value="{{.id}}"{{if eq $.FilterSite .id}} selected{{end}}>{{.name}}</option>
+              {{end}}
+            </select>
+            <button class="btn btn-primary" type="submit">审计</button>
+            <a class="btn" href="/admin/seo-audit">重置</a>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid cols-2">
+      {{range .Reports}}
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <div>
+            <div style="font-size:15px;font-weight:600;">{{.siteName}}</div>
+            <div style="font-size:11px;color:var(--dim);">{{.domain}}</div>
+          </div>
+          <div style="font-size:28px;font-weight:700;color:{{scoreColor .score}};">{{.score}}</div>
+        </div>
+        {{if .issues}}
+        <div style="margin-top:6px;">
+          <div style="font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">问题 ({{len .issues}})</div>
+          {{range .issues}}
+          <div style="display:flex;gap:6px;margin-bottom:4px;font-size:12px;padding:6px 8px;background:var(--card-2);border-radius:4px;border-left:3px solid {{severityColor .severity}};">
+            <span style="font-weight:600;color:{{severityColor .severity}};min-width:60px;">{{severityLabel .severity}}</span>
+            <div style="flex:1;">
+              <div>{{.message}}</div>
+              <div style="color:var(--dim);font-size:11px;margin-top:2px;">→ {{.fix}}</div>
+            </div>
+          </div>
+          {{end}}
+        </div>
+        {{end}}
+        {{if .passed}}
+        <div style="margin-top:6px;">
+          <div style="font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">通过 ({{len .passed}})</div>
+          {{range .passed}}
+          <div style="font-size:11px;color:var(--accent);margin-bottom:2px;">✓ {{.}}</div>
+          {{end}}
+        </div>
+        {{end}}
+      </div>
+      {{else}}
+      <div class="empty-state" style="grid-column:1/-1;"><span class="ic">🔍</span>暂无审计数据</div>
+      {{end}}
+    </div>
+  </div>
+</main>
+</div>
+</body>
+</html>
+{{end}}

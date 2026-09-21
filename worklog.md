@@ -16263,3 +16263,21 @@ Stage Summary:
 
 - 详细工作记录: agent-ctx/R39-1A-full-stack-developer.md (含 6 章节: 读交接/35 文件创建/
   编译确认/端到端 40 测试/markers+正文验证/未修改)
+
+---
+Task ID: R40-1B
+Agent: full-stack-developer (8 admin页面+API)
+Task: categories/links/themes/downloads/settings/feedback/backup/seo-audit
+
+Work Log:
+- 读交接 4 文档: go-backend/templates/admin/layout.html + dashboard.html, go-backend/admin.go (1536 行), src/app/api/admin/{categories,links,themes,downloads,settings,feedback,backup,seo-audit}/route.ts, src/components/admin/{CategoriesSection,LinksSection,ThemesSection,DownloadsSection,SettingsSection,FeedbackSection,BackupSection,SeoAuditSection}.tsx
+- 改 layout.html: sidebar 新增 8 nav (分类管理/友链链轮/主题模板/下载任务/系统设置/用户反馈/数据备份/SEO审计)
+- 新增 8 个 admin 模板 (1019 行): categories (CRUD+拖拽排序), links (CRUD+链轮配置), themes (10套主题预览卡), downloads (列表+新建Modal+TXT下载), settings (项CRUD+添加新key), feedback (列表+过滤+详情Modal), backup (统计+导出+导入dry-run+VACUUM), seo-audit (审计概览+按站点过滤+卡片列表)
+- admin.go 末尾追加 1906 行: adminThemes 10 套主题静态注册表 + 8 个 API handler (categories/links/themes/downloads/settings/feedback/backup/seo-audit) + 8 个 page filler + adminPageHandler/renderAdminPage switch 扩展 (新增 8 个 case) + io/regexp/sort/sync 导入
+- main.go 新增 89 行: 13 个新路由注册 (含 backup 子路由分发) + 8 个 FuncMap 函数 (fbTypeLabel/fbTypePill/fbStatusLabel/fbStatusPill/scoreColor/severityColor/severityLabel/jobStatusLabel) + strconv 导入
+- 关键设计: 1) 链轮配置走 Setting.linkwheel (与 TS WHEEL_SETTING_KEY 同款); 2) 下载并发占位用 sync.Mutex + int + DB count 三重校验 (max 3 个); 3) 下载 TXT 异步生成存内存 map (下载链接 GET /api/admin/downloads/:id/file); 4) 备份 books>200 仅导元数据; 5) 备份导入用 INSERT ON CONFLICT DO UPDATE upsert 全表; 6) 备份导入支持 ?dryRun=1 预检; 7) feedback PATCH/DELETE 前检查存在性→404; 8) adminNote 剥 HTML 标签防存储型 XSS; 9) SEO 评分 error -10/warning -3/info -1, 下限 0; 10) sort.SliceStable 排序审计报告 (error 多的在前)
+- 编译: cd /home/z/my-project/go-backend && go build -o heis-backend . → 0 errors, binary 20,510,125 bytes (20.5MB), go vet . (主包) 0 warnings
+- 端到端测试: heis-backend 启动 → 94 模板加载 → 13 admin 页面 + 8 admin API 全 HTTP 200; 9 个 CRUD 流程 (POST/PUT/DELETE categories, links, settings, vacuum, PATCH/DELETE feedback nonexistent→404, POST downloads no bookId→400, POST downloads real bookId→async gen→GET TXT 13.94MB, GET seo-audit issues 全维度); 临时数据已清理 (R40_1B_* setting + gtlpt* DownloadJob + lastBackupAt)
+
+Stage Summary:
+- 完成 R40-1B admin 后台 8 个新页面 + 13 个 API 路由 Go 端完整实现. 与 TS 端契约 (URL/方法/字段消毒/响应格式/错误码) 1:1 对齐. 与 R39-1C 既有 6 页面 (dashboard/tasks/books/rules/sites/layout) 风格统一 (深色主题 + 表格卡 + Modal + Toast). admin 路由体系扩展到 13 页面 + 24 API endpoint. 编译 0 errors, 全部 HTTP 200, 9 个 CRUD 流程测试通过. 与 R38-1C 采集引擎 + R39-1C admin DBClient 适配器零冲突. 修改 3 文件 (admin.go +1906 行/main.go +89 行/layout.html +9 nav), 新增 8 模板 (1019 行). 详细工作记录: agent-ctx/R40-1B-full-stack-developer.md

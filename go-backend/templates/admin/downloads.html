@@ -1,0 +1,138 @@
+{{define "admin/downloads"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+{{template "admin/head" .}}
+</head>
+<body>
+<div class="app">
+{{template "admin/sidebar" .}}
+<main class="content">
+  <div class="topbar">
+    <h1>{{.Title}}</h1>
+    <div class="actions">
+      <button class="btn btn-primary" onclick="openCreateModal()">+ 新建下载</button>
+      <a href="/api/admin/downloads" class="btn" target="_blank">API</a>
+    </div>
+  </div>
+  <div class="page">
+    <div class="grid cols-4" style="margin-bottom:16px;">
+      <div class="card"><h3>下载总数</h3><div class="num">{{.Total}}</div></div>
+      <div class="card"><h3>待生成</h3><div class="num" style="color:var(--warn);">{{.Pending}}</div></div>
+      <div class="card"><h3>已完成</h3><div class="num" style="color:var(--info);">{{.Done}}</div></div>
+      <div class="card"><h3>失败</h3><div class="num" style="color:var(--err);">{{.Error}}</div></div>
+    </div>
+
+    <div class="table-card">
+      <div class="head"><h2>下载任务列表</h2></div>
+      <table>
+        <thead>
+          <tr>
+            <th>书籍</th>
+            <th>状态</th>
+            <th>大小</th>
+            <th>错误</th>
+            <th>创建</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+        {{range .Downloads}}
+          <tr>
+            <td>
+              <a href="/?view=book&id={{.bookId}}" target="_blank">{{.bookName}}</a>
+              <div style="color:var(--dim);font-size:11px;">{{.bookAuthor}}</div>
+              <div style="color:var(--dim);font-size:11px;">{{.id}}</div>
+            </td>
+            <td><span class="pill pill-{{.status}}">{{jobStatusLabel .status}}</span></td>
+            <td>{{if .size}}{{.size}} B{{else}}-{{end}}</td>
+            <td style="color:var(--err);font-size:11px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{.error}}</td>
+            <td><small style="color:var(--dim);">{{fmtDate .createdAt}}</small></td>
+            <td>
+              {{if eq .status "done"}}
+              <a class="btn btn-sm btn-primary" href="/api/admin/downloads/{{.id}}/file" target="_blank">下载</a>
+              {{end}}
+              <a class="btn btn-sm" href="/?view=book&id={{.bookId}}" target="_blank">查看书籍</a>
+            </td>
+          </tr>
+        {{else}}
+          <tr><td colspan="6" class="empty-state"><span class="ic">⬇</span>暂无下载任务</td></tr>
+        {{end}}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</main>
+</div>
+
+<!-- 新建下载 Modal -->
+<div class="modal-backdrop" id="createModal">
+  <div class="modal" style="max-width:560px;">
+    <div class="modal-head"><h2>新建下载任务</h2><button class="btn btn-sm" onclick="closeModal('createModal')">✕</button></div>
+    <form id="createForm" class="modal-body" onsubmit="return false;">
+      <div class="field">
+        <label>书籍 ID *</label>
+        <input type="text" name="bookId" required placeholder="如: clxxxx... (从书籍管理复制 ID)">
+        <div class="hint">可在「书籍管理」页面查找书籍 ID, 章节数量 > 0 才能生成</div>
+      </div>
+      <div class="field">
+        <label>站点名 (注入到 TXT 页眉)</label>
+        <input type="text" name="siteName" placeholder="如: 我的小说站">
+      </div>
+      <div class="field">
+        <label>站点 URL (注入到 TXT 页眉)</label>
+        <input type="text" name="siteUrl" placeholder="https://example.com">
+      </div>
+      <div class="field"><label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" name="siteInfo" style="width:16px;height:16px;"> 注入站点信息到 TXT</label></div>
+      <div class="field"><label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" name="insertAds" style="width:16px;height:16px;"> 注入广告</label></div>
+      <div class="field"><label>广告间隔 (章节数)</label><input type="number" name="adInterval" value="10" min="1" max="1000"></div>
+      <div class="field"><label>广告文本 (每行一条, 最多 20 条)</label><textarea name="ads" placeholder="每行一条广告词" style="min-height:80px;"></textarea></div>
+      <div class="field">
+        <label>混淆模式 (默认关闭, 启用涉及版权风险)</label>
+        <select name="obfuscateMode">
+          <option value="zero-width" selected>zero-width (零宽字符)</option>
+          <option value="homoglyph">homoglyph (同形字)</option>
+          <option value="punctuation">punctuation (标点混淆)</option>
+          <option value="mixed">mixed (混合)</option>
+        </select>
+      </div>
+      <div class="field"><label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" name="obfuscate" style="width:16px;height:16px;"> 启用文本混淆</label></div>
+    </form>
+    <div class="modal-foot"><button class="btn" onclick="closeModal('createModal')">取消</button><button class="btn btn-primary" onclick="submitCreate()">创建</button></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+function openCreateModal(){document.getElementById('createModal').classList.add('open');}
+function closeModal(id){document.getElementById(id).classList.remove('open');}
+function showToast(msg,ok){
+  var t=document.getElementById('toast');t.textContent=msg;t.className='toast '+(ok?'ok':'err');
+  setTimeout(function(){t.classList.add('show');},10);setTimeout(function(){t.classList.remove('show');},2500);
+}
+function submitCreate(){
+  var f=document.getElementById('createForm');
+  var adsRaw=f.ads.value||'';
+  var ads=adsRaw.split('\n').map(function(s){return s.trim();}).filter(Boolean);
+  var body={
+    bookId:f.bookId.value.trim(),
+    siteName:f.siteName.value.trim(),
+    siteUrl:f.siteUrl.value.trim(),
+    siteInfo:f.siteInfo.checked,
+    insertAds:f.insertAds.checked,
+    adInterval:parseInt(f.adInterval.value,10)||10,
+    ads:ads,
+    obfuscateMode:f.obfuscateMode.value,
+    obfuscate:f.obfuscate.checked
+  };
+  if(!body.bookId){showToast('书籍 ID 必填',false);return;}
+  fetch('/api/admin/downloads',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(function(r){return r.json();}).then(function(j){
+      if(j&&j.ok){showToast('下载任务已创建, 生成中',true);closeModal('createModal');setTimeout(function(){location.reload();},1200);}
+      else{showToast('创建失败: '+(j&&j.error||''),false);}
+    }).catch(function(e){showToast('请求失败: '+e.message,false);});
+}
+</script>
+</body>
+</html>
+{{end}}

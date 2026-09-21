@@ -1,0 +1,161 @@
+{{define "admin/categories"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+{{template "admin/head" .}}
+</head>
+<body>
+<div class="app">
+{{template "admin/sidebar" .}}
+<main class="content">
+  <div class="topbar">
+    <h1>{{.Title}}</h1>
+    <div class="actions">
+      <button class="btn btn-primary" onclick="openCreateModal()">+ 新建分类</button>
+      <a href="/api/admin/categories" class="btn" target="_blank">API</a>
+    </div>
+  </div>
+  <div class="page">
+    <div class="toolbar">
+      <span style="color:var(--dim);font-size:12px;">共 {{.Total}} 个分类 · 拖拽行可重排 (保存后生效)</span>
+      <button class="btn btn-sm" onclick="reorderSave()" id="reorderBtn" style="margin-left:auto;display:none;">保存排序</button>
+    </div>
+    <div class="table-card">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:30px;"></th>
+            <th>排序</th>
+            <th>分类名</th>
+            <th>书籍数</th>
+            <th>创建</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="catTbody">
+        {{range .Categories}}
+          <tr data-id="{{.id}}" draggable="true" ondragstart="onDragStart(event,'{{.id}}')" ondragover="onDragOver(event,'{{.id}}')" ondrop="onDrop(event,'{{.id}}')">
+            <td style="cursor:move;color:var(--dim);">⠿</td>
+            <td><input type="number" value="{{.sortOrder}}" style="width:60px;" data-id="{{.id}}" class="sort-input"></td>
+            <td>{{.name}}<div style="color:var(--dim);font-size:11px;">{{.id}}</div></td>
+            <td>{{.bookCount}}</td>
+            <td><small style="color:var(--dim);">{{fmtDate .createdAt}}</small></td>
+            <td style="white-space:nowrap;">
+              <button class="btn btn-sm" onclick='editCat("{{.id}}","{{.name}}",{{.sortOrder}})'>编辑</button>
+              <button class="btn btn-sm btn-err" onclick='deleteCat("{{.id}}","{{.name}}")'>删除</button>
+            </td>
+          </tr>
+        {{else}}
+          <tr><td colspan="6" class="empty-state"><span class="ic">🗂</span>暂无分类</td></tr>
+        {{end}}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</main>
+</div>
+
+<!-- 新建/编辑分类 Modal -->
+<div class="modal-backdrop" id="editModal">
+  <div class="modal" style="max-width:480px;">
+    <div class="modal-head"><h2 id="editTitle">新建分类</h2><button class="btn btn-sm" onclick="closeModal('editModal')">✕</button></div>
+    <form id="editForm" class="modal-body" onsubmit="return false;">
+      <input type="hidden" name="id" value="">
+      <div class="field">
+        <label>分类名 *</label>
+        <input type="text" name="name" maxlength="50" required placeholder="如: 玄幻小说">
+      </div>
+      <div class="field">
+        <label>排序 (数字越小越靠前)</label>
+        <input type="number" name="sortOrder" value="0" min="0" max="1000000">
+      </div>
+    </form>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeModal('editModal')">取消</button>
+      <button class="btn btn-primary" onclick="submitEdit()">保存</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+function openCreateModal(){
+  document.getElementById('editTitle').textContent='新建分类';
+  document.querySelector('#editForm [name=id]').value='';
+  document.querySelector('#editForm [name=name]').value='';
+  document.querySelector('#editForm [name=sortOrder]').value='0';
+  document.getElementById('editModal').classList.add('open');
+}
+function editCat(id,name,sortOrder){
+  document.getElementById('editTitle').textContent='编辑分类';
+  document.querySelector('#editForm [name=id]').value=id;
+  document.querySelector('#editForm [name=name]').value=name;
+  document.querySelector('#editForm [name=sortOrder]').value=sortOrder;
+  document.getElementById('editModal').classList.add('open');
+}
+function closeModal(id){document.getElementById(id).classList.remove('open');}
+function showToast(msg,ok){
+  var t=document.getElementById('toast');t.textContent=msg;t.className='toast '+(ok?'ok':'err');
+  setTimeout(function(){t.classList.add('show');},10);setTimeout(function(){t.classList.remove('show');},2500);
+}
+function submitEdit(){
+  var form=document.getElementById('editForm');
+  var id=form.id.value;
+  var body={name:form.name.value.trim(),sortOrder:parseInt(form.sortOrder.value,10)||0};
+  if(!body.name){showToast('分类名必填',false);return;}
+  var url='/api/admin/categories';
+  var method='POST';
+  if(id){url='/api/admin/categories/'+encodeURIComponent(id);method='PUT';}
+  fetch(url,{method:method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(function(r){return r.json();}).then(function(j){
+      if(j&&j.ok){showToast(id?'已更新':'已创建',true);closeModal('editModal');setTimeout(function(){location.reload();},800);}
+      else{showToast('失败: '+(j&&j.error||''),false);}
+    }).catch(function(e){showToast('请求失败: '+e.message,false);});
+}
+function deleteCat(id,name){
+  if(!confirm('确定删除分类「'+name+'」? (分类下有书籍时无法删除)'))return;
+  fetch('/api/admin/categories/'+encodeURIComponent(id),{method:'DELETE'})
+    .then(function(r){return r.json();}).then(function(j){
+      if(j&&j.ok){showToast('已删除',true);setTimeout(function(){location.reload();},800);}
+      else{showToast('失败: '+(j&&j.error||''),false);}
+    }).catch(function(e){showToast('请求失败: '+e.message,false);});
+}
+// 拖拽重排 (前后顺序暂存 → 保存按钮批量 PUT)
+var orderDirty=false;
+var dragId=null;
+function onDragStart(e,id){dragId=id;e.dataTransfer.effectAllowed='move';try{e.dataTransfer.setData('text/plain',id);}catch(_){}}
+function onDragOver(e,id){e.preventDefault();if(dragId&&dragId!==id)e.dataTransfer.dropEffect='move';}
+function onDrop(e,targetId){
+  e.preventDefault();
+  if(!dragId||dragId===targetId)return;
+  var tbody=document.getElementById('catTbody');
+  var rows=Array.from(tbody.querySelectorAll('tr'));
+  var fromIdx=rows.findIndex(function(r){return r.dataset.id===dragId;});
+  var toIdx=rows.findIndex(function(r){return r.dataset.id===targetId;});
+  if(fromIdx<0||toIdx<0)return;
+  var moved=tbody.removeChild(rows[fromIdx]);
+  if(toIdx>=tbody.children.length){tbody.appendChild(moved);}else{tbody.insertBefore(moved,tbody.children[toIdx>fromIdx?toIdx:toIdx]);}
+  dragId=null;orderDirty=true;
+  document.getElementById('reorderBtn').style.display='inline-flex';
+}
+function reorderSave(){
+  var tbody=document.getElementById('catTbody');
+  var rows=Array.from(tbody.querySelectorAll('tr'));
+  var promises=[];
+  rows.forEach(function(r,i){
+    var id=r.dataset.id;
+    promises.push(fetch('/api/admin/categories/'+encodeURIComponent(id),{
+      method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({sortOrder:i+1})
+    }).then(function(r){return r.json();}));
+  });
+  Promise.all(promises).then(function(){
+    showToast('排序已保存',true);
+    document.getElementById('reorderBtn').style.display='none';
+    orderDirty=false;
+    setTimeout(function(){location.reload();},800);
+  }).catch(function(e){showToast('保存失败: '+e.message,false);});
+}
+</script>
+</body>
+</html>
+{{end}}

@@ -1,0 +1,132 @@
+{{define "admin/backup"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+{{template "admin/head" .}}
+</head>
+<body>
+<div class="app">
+{{template "admin/sidebar" .}}
+<main class="content">
+  <div class="topbar">
+    <h1>{{.Title}}</h1>
+    <div class="actions">
+      <a href="/api/admin/backup" class="btn" target="_blank">API</a>
+    </div>
+  </div>
+  <div class="page">
+    <div class="grid cols-2">
+      <div class="card">
+        <h3>数据库统计</h3>
+        <div style="margin-top:8px;display:grid;grid-template-columns:repeat(2,1fr);gap:8px;">
+          {{range .Counts}}
+          <div style="background:var(--card-2);padding:8px 12px;border-radius:6px;border:1px solid var(--border);">
+            <div style="font-size:18px;font-weight:700;color:var(--accent);">{{.count}}</div>
+            <div style="font-size:11px;color:var(--dim);">{{.label}}</div>
+          </div>
+          {{end}}
+        </div>
+      </div>
+      <div class="card">
+        <h3>导出备份</h3>
+        <div style="margin-top:8px;display:flex;flex-direction:column;gap:12px;">
+          <p style="font-size:12px;color:var(--muted);line-height:1.6;">点击下方按钮可下载全库 JSON 备份(含 settings / categories / sites / friendLinks / rules / books / chapters / tasks / downloadJobs)。<br>书籍 > 200 时仅导出元数据, 避免备份体积过大.</p>
+          <a class="btn btn-primary" href="/api/admin/backup" target="_blank" style="text-align:center;text-decoration:none;">📥 导出备份 JSON</a>
+          <div style="font-size:11px;color:var(--dim);">上次备份时间: {{.LastBackupAt}}</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px;">
+      <h3>导入备份</h3>
+      <div style="margin-top:8px;display:flex;flex-direction:column;gap:12px;">
+        <p style="font-size:12px;color:var(--warn);line-height:1.6;">⚠ 导入会按 ID upsert 数据(已存在则覆盖, 不存在则新建). 章节正文 (Book.chapters) 仅在 books 数量 ≤ 200 时导入, 大备份文件可能耗时较长.<br>建议在导入前先<a href="/api/admin/backup" target="_blank" style="color:var(--info);">导出当前备份</a>作为回滚点.</p>
+        <form id="restoreForm" onsubmit="return false;" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <input type="file" id="backupFile" accept=".json,application/json" style="flex:1;min-width:240px;color:var(--muted);">
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;color:var(--muted);">
+            <input type="checkbox" id="dryRun" checked> 仅模拟 (dry run)
+          </label>
+          <button class="btn btn-primary" onclick="uploadRestore()">上传并预检</button>
+        </form>
+        <div id="restoreResult" style="display:none;background:var(--bg-2);border:1px solid var(--border);border-radius:6px;padding:12px;font-size:12px;color:var(--text);"></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px;border-color:var(--err);">
+      <h3 style="color:var(--err);">危险操作</h3>
+      <p style="font-size:12px;color:var(--muted);line-height:1.6;margin-top:6px;">以下操作不可逆, 请谨慎执行:</p>
+      <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn btn-err" onclick="vacuumDB()">清理数据库碎片 (VACUUM)</button>
+      </div>
+    </div>
+  </div>
+</main>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+function showToast(msg,ok){
+  var t=document.getElementById('toast');t.textContent=msg;t.className='toast '+(ok?'ok':'err');
+  setTimeout(function(){t.classList.add('show');},10);setTimeout(function(){t.classList.remove('show');},3000);
+}
+function uploadRestore(){
+  var fileInput=document.getElementById('backupFile');
+  if(!fileInput.files||!fileInput.files.length){showToast('请选择备份文件',false);return;}
+  var file=fileInput.files[0];
+  if(file.size>50*1024*1024){showToast('文件过大 (>50MB), 不支持',false);return;}
+  var dryRun=document.getElementById('dryRun').checked;
+  var reader=new FileReader();
+  reader.onload=function(){
+    var text=reader.result;
+    // 简单校验: 必须是合法 JSON
+    var payload;
+    try{payload=JSON.parse(text);}catch(e){showToast('JSON 解析失败: '+e.message,false);return;}
+    var result=document.getElementById('restoreResult');
+    result.style.display='block';
+    var html='<div style="color:var(--accent);font-weight:600;">预检通过 (dry run='+dryRun+')</div>';
+    html+='<div style="margin-top:6px;">版本: '+(payload.version||'?')+' · 导出时间: '+(payload.exportedAt||'?')+'</div>';
+    if(payload.counts){
+      html+='<div style="margin-top:6px;">统计:</div><ul style="margin-left:20px;">';
+      for(var k in payload.counts){html+='<li>'+k+': '+payload.counts[k]+'</li>';}
+      html+='</ul>';
+    }
+    if(payload.warnings&&payload.warnings.length){
+      html+='<div style="color:var(--warn);margin-top:6px;">警告:</div><ul style="margin-left:20px;color:var(--warn);">';
+      payload.warnings.forEach(function(w){html+='<li>'+w+'</li>';});
+      html+='</ul>';
+    }
+    if(dryRun){
+      html+='<div style="color:var(--info);margin-top:8px;">仅模拟, 不会写入数据库. 取消勾选 "仅模拟" 后再次上传以真正导入.</div>';
+    }
+    html+='<div style="margin-top:8px;"><button class="btn btn-primary" onclick="confirmRestore()">确认'+(dryRun?'':'真正')+'导入</button></div>';
+    result.innerHTML=html;
+    window.__backupPayload=text;
+    window.__backupDryRun=dryRun;
+  };
+  reader.onerror=function(){showToast('读取文件失败',false);};
+  reader.readAsText(file);
+}
+function confirmRestore(){
+  if(!window.__backupPayload){showToast('未加载备份',false);return;}
+  var dryRun=window.__backupDryRun;
+  if(!dryRun && !confirm('确认真正导入? 此操作不可逆!'))return;
+  fetch('/api/admin/backup/restore'+(dryRun?'?dryRun=1':''),{
+    method:'POST',headers:{'Content-Type':'application/json'},body:window.__backupPayload
+  }).then(function(r){return r.json();}).then(function(j){
+    if(j&&j.ok){
+      var d=j.data||{};
+      showToast((dryRun?'预检完成':'导入完成')+(d.imported?' · 已导入 '+d.imported:''),true);
+      if(!dryRun){setTimeout(function(){location.reload();},1500);}
+    }else{showToast('失败: '+(j&&j.error||''),false);}
+  }).catch(function(e){showToast('请求失败: '+e.message,false);});
+}
+function vacuumDB(){
+  if(!confirm('执行 VACUUM 操作? 此操作会临时锁定数据库几秒~几十秒.'))return;
+  fetch('/api/admin/backup/vacuum',{method:'POST'}).then(function(r){return r.json();}).then(function(j){
+    if(j&&j.ok){showToast('VACUUM 完成',true);}else{showToast('失败: '+(j&&j.error||''),false);}
+  });
+}
+</script>
+</body>
+</html>
+{{end}}

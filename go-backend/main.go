@@ -12,6 +12,7 @@ import (
         "os"
         "path/filepath"
         "runtime"
+        "strconv"
         "strings"
 
         _ "modernc.org/sqlite"
@@ -97,6 +98,108 @@ func main() {
                 "sub": func(a, b interface{}) int {
                         return toInt(a) - toInt(b)
                 },
+                // R40-1B: 反馈类型/状态 标签 + pill 颜色
+                "fbTypeLabel": func(t interface{}) string {
+                        switch fmt.Sprintf("%v", t) {
+                        case "bug":
+                                return "Bug"
+                        case "suggestion":
+                                return "建议"
+                        case "praise":
+                                return "表扬"
+                        case "other":
+                                return "其他"
+                        }
+                        return fmt.Sprintf("%v", t)
+                },
+                "fbTypePill": func(t interface{}) string {
+                        switch fmt.Sprintf("%v", t) {
+                        case "bug":
+                                return "error"
+                        case "suggestion":
+                                return "ongoing"
+                        case "praise":
+                                return "completed"
+                        }
+                        return "unknown"
+                },
+                "fbStatusLabel": func(s interface{}) string {
+                        switch fmt.Sprintf("%v", s) {
+                        case "new":
+                                return "新"
+                        case "read":
+                                return "已读"
+                        case "resolved":
+                                return "已解决"
+                        case "ignored":
+                                return "已忽略"
+                        }
+                        return fmt.Sprintf("%v", s)
+                },
+                "fbStatusPill": func(s interface{}) string {
+                        switch fmt.Sprintf("%v", s) {
+                        case "new":
+                                return "running"
+                        case "read":
+                                return "ongoing"
+                        case "resolved":
+                                return "completed"
+                        case "ignored":
+                                return "stopped"
+                        }
+                        return "unknown"
+                },
+                // R40-1B: SEO 评分颜色 (绿/黄/红)
+                "scoreColor": func(s interface{}) string {
+                        n, _ := strconv.Atoi(fmt.Sprintf("%v", s))
+                        switch {
+                        case n >= 80:
+                                return "var(--accent)"
+                        case n >= 60:
+                                return "var(--warn)"
+                        case n > 0:
+                                return "var(--err)"
+                        }
+                        return "var(--dim)"
+                },
+                // R40-1B: SEO 严重度颜色
+                "severityColor": func(s interface{}) string {
+                        switch fmt.Sprintf("%v", s) {
+                        case "error":
+                                return "var(--err)"
+                        case "warning":
+                                return "var(--warn)"
+                        case "info":
+                                return "var(--info)"
+                        }
+                        return "var(--dim)"
+                },
+                // R40-1B: SEO 严重度中文标签
+                "severityLabel": func(s interface{}) string {
+                        switch fmt.Sprintf("%v", s) {
+                        case "error":
+                                return "错误"
+                        case "warning":
+                                return "警告"
+                        case "info":
+                                return "提示"
+                        }
+                        return fmt.Sprintf("%v", s)
+                },
+                // R40-1B: 下载任务状态标签 (pending/running/done/error)
+                "jobStatusLabel": func(s interface{}) string {
+                        switch fmt.Sprintf("%v", s) {
+                        case "pending":
+                                return "待生成"
+                        case "running":
+                                return "生成中"
+                        case "done":
+                                return "已完成"
+                        case "error":
+                                return "失败"
+                        }
+                        return fmt.Sprintf("%v", s)
+                },
         })
         // 收集所有 template 文件 (templates/*.html + templates/*/*.html)
         tmplFiles := []string{}
@@ -142,6 +245,21 @@ func main() {
         http.HandleFunc("/api/admin/rules", adminRulesHandler)
         http.HandleFunc("/api/admin/rules/", adminRuleByIDHandler) // /:id
         http.HandleFunc("/api/admin/books", adminBooksAPIHandler)
+
+        // R40-1B: admin 后台扩展 API (categories/links/themes/downloads/settings/feedback/backup/seo-audit)
+        http.HandleFunc("/api/admin/categories", adminCategoriesHandler)
+        http.HandleFunc("/api/admin/categories/", adminCategoryByIDHandler) // /:id (PUT/DELETE)
+        http.HandleFunc("/api/admin/links", adminLinksHandler)
+        http.HandleFunc("/api/admin/links/", adminLinkByIDHandler) // /:id (PUT/DELETE) — path 风格, 兼容 body.id
+        http.HandleFunc("/api/admin/themes", adminThemesHandler)
+        http.HandleFunc("/api/admin/downloads", adminDownloadsHandler)
+        http.HandleFunc("/api/admin/downloads/", adminDownloadFileHandler) // /:id/file (GET TXT 下载)
+        http.HandleFunc("/api/admin/settings", adminSettingsHandler)
+        http.HandleFunc("/api/admin/feedback", adminFeedbackHandler)
+        http.HandleFunc("/api/admin/feedback/", adminFeedbackByIDHandler) // /:id (GET/PATCH/DELETE)
+        http.HandleFunc("/api/admin/backup", adminBackupHandler)           // GET 导出 JSON
+        http.HandleFunc("/api/admin/backup/", adminBackupSubHandler)      // /restore + /vacuum
+        http.HandleFunc("/api/admin/seo-audit", adminSeoAuditHandler)
 
         // R39-1C: 采集后台页面 (Go templates SSR, 深色主题)
         http.HandleFunc("/admin", adminPageHandler)

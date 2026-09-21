@@ -1,0 +1,70 @@
+{{define "admin/themes"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+{{template "admin/head" .}}
+</head>
+<body>
+<div class="app">
+{{template "admin/sidebar" .}}
+<main class="content">
+  <div class="topbar">
+    <h1>{{.Title}}</h1>
+    <div class="actions">
+      <a href="/api/admin/themes" class="btn" target="_blank">API</a>
+    </div>
+  </div>
+  <div class="page">
+    <div class="toolbar">
+      <span style="color:var(--dim);font-size:12px;">共 {{len .Themes}} 套主题 · 已部署站点 {{.SiteTotal}} 个</span>
+    </div>
+    <div class="grid cols-2">
+      {{range .Themes}}
+      <div class="card" style="padding:0;overflow:hidden;">
+        <div style="height:120px;background:{{.previewBg}};display:flex;align-items:center;justify-content:center;border-bottom:1px solid var(--border);position:relative;">
+          <div style="text-align:center;color:{{.previewText}};">
+            <div style="font-size:18px;font-weight:700;">{{.name}}</div>
+            <div style="font-size:11px;opacity:.7;margin-top:4px;">{{.id}}</div>
+          </div>
+          {{if .dark}}<span class="pill pill-unknown" style="position:absolute;top:8px;right:8px;">深色</span>{{else}}<span class="pill pill-ok" style="position:absolute;top:8px;right:8px;">浅色</span>{{end}}
+        </div>
+        <div style="padding:14px 16px;">
+          <div style="font-size:12px;color:var(--muted);line-height:1.5;margin-bottom:8px;min-height:48px;">{{.desc}}</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;font-size:11px;color:var(--dim);margin-bottom:10px;">
+            <span style="background:var(--bg-2);padding:2px 8px;border-radius:4px;">布局: {{.layout}}</span>
+            <span style="background:var(--bg-2);padding:2px 8px;border-radius:4px;">阅读: {{.readLayout}}</span>
+            <span style="background:var(--bg-2);padding:2px 8px;border-radius:4px;">字号 {{.readFontBase}}px</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div>
+              <div style="font-size:11px;color:var(--dim);">使用此主题的站点</div>
+              <div style="font-size:13px;color:var(--text);">{{.siteCount}} 个</div>
+            </div>
+            <div style="display:flex;gap:6px;">
+              <a class="btn btn-sm" href="/?site=default&view=home" target="_blank">前台预览</a>
+              <a class="btn btn-sm btn-primary" href="/admin/sites">配置站点</a>
+            </div>
+          </div>
+        </div>
+      </div>
+      {{else}}
+      <div class="empty-state" style="grid-column:1/-1;"><span class="ic">🎨</span>暂无主题</div>
+      {{end}}
+    </div>
+
+    <div class="card" style="margin-top:16px;">
+      <h3>主题使用统计</h3>
+      <div style="margin-top:8px;display:flex;gap:24px;flex-wrap:wrap;">
+        {{range .ThemeStats}}
+        <div style="text-align:center;min-width:80px;">
+          <div style="font-size:20px;font-weight:700;color:var(--accent);">{{.count}}</div>
+          <div style="font-size:11px;color:var(--dim);word-break:break-all;">{{.themeId}}</div>
+        </div>
+        {{end}}
+      </div>
+    </div>
+  </div>
+</main>
+</div>
+</body>
+</html>
+{{end}}

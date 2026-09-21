@@ -1,0 +1,177 @@
+{{define "admin/links"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+{{template "admin/head" .}}
+</head>
+<body>
+<div class="app">
+{{template "admin/sidebar" .}}
+<main class="content">
+  <div class="topbar">
+    <h1>{{.Title}}</h1>
+    <div class="actions">
+      <button class="btn btn-primary" onclick="openCreateModal()">+ 新建友链</button>
+      <a href="/api/admin/links" class="btn" target="_blank">API</a>
+    </div>
+  </div>
+  <div class="page">
+    <div class="grid cols-2" style="margin-bottom:16px;">
+      <div class="card">
+        <h3>链轮配置</h3>
+        <div style="display:flex;flex-direction:column;gap:12px;margin-top:6px;">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+            <input type="checkbox" id="wheelEnabled" {{if .Wheel.enabled}}checked{{end}} style="width:16px;height:16px;"> 启用站群链轮
+          </label>
+          <div class="field">
+            <label>链轮模式</label>
+            <select id="wheelMode" style="width:100%;">
+              <option value="home" {{if eq .Wheel.mode "home"}}selected{{end}}>随机站点主页 (每站最多一条)</option>
+              <option value="book" {{if eq .Wheel.mode "book"}}selected{{end}}>随机书籍页 (同站可多链)</option>
+              <option value="mixed" {{if eq .Wheel.mode "mixed"}}selected{{end}}>混合 (主页+书籍交替)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>链位数量 (1~30)</label>
+            <input type="number" id="wheelCount" value="{{.Wheel.count}}" min="1" max="30">
+          </div>
+          <button class="btn btn-primary" onclick="saveWheel()">保存链轮配置</button>
+          <div style="font-size:11px;color:var(--dim);">参与链轮站点: {{.WheelSiteCount}} 个</div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>统计</h3>
+        <div style="display:flex;gap:24px;flex-wrap:wrap;margin-top:6px;">
+          <div><div style="font-size:24px;font-weight:700;color:var(--accent);">{{.Total}}</div><div style="color:var(--dim);font-size:12px;">友链总数</div></div>
+          <div><div style="font-size:24px;font-weight:700;color:var(--info);">{{.EnabledCount}}</div><div style="color:var(--dim);font-size:12px;">启用中</div></div>
+          <div><div style="font-size:24px;font-weight:700;color:var(--muted);">{{.DisabledCount}}</div><div style="color:var(--dim);font-size:12px;">已禁用</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="table-card">
+      <div class="head"><h2>友链列表</h2></div>
+      <table>
+        <thead>
+          <tr>
+            <th>排序</th>
+            <th>名称</th>
+            <th>URL</th>
+            <th>Logo</th>
+            <th>状态</th>
+            <th>更新</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+        {{range .Links}}
+          <tr>
+            <td>{{.sortOrder}}</td>
+            <td>{{.name}}<div style="color:var(--dim);font-size:11px;">{{.id}}</div></td>
+            <td><a href="{{.url}}" target="_blank" style="word-break:break-all;">{{.url}}</a></td>
+            <td>{{if .logo}}<code style="font-size:11px;">{{.logo}}</code>{{else}}-{{end}}</td>
+            <td>{{if .enabled}}<span class="pill pill-ok">启用</span>{{else}}<span class="pill pill-off">禁用</span>{{end}}</td>
+            <td><small style="color:var(--dim);">{{fmtDate .updatedAt}}</small></td>
+            <td style="white-space:nowrap;">
+              <button class="btn btn-sm" onclick='editLink("{{.id}}","{{.name}}","{{.url}}","{{.logo}}",{{.sortOrder}},{{.enabled}})'>编辑</button>
+              {{if .enabled}}<button class="btn btn-sm btn-warn" onclick='toggleLink("{{.id}}",false)'>禁用</button>{{else}}<button class="btn btn-sm btn-primary" onclick='toggleLink("{{.id}}",true)'>启用</button>{{end}}
+              <button class="btn btn-sm btn-err" onclick='deleteLink("{{.id}}","{{.name}}")'>删除</button>
+            </td>
+          </tr>
+        {{else}}
+          <tr><td colspan="7" class="empty-state"><span class="ic">🔗</span>暂无友链</td></tr>
+        {{end}}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</main>
+</div>
+
+<!-- 新建/编辑 Modal -->
+<div class="modal-backdrop" id="editModal">
+  <div class="modal" style="max-width:560px;">
+    <div class="modal-head"><h2 id="editTitle">新建友链</h2><button class="btn btn-sm" onclick="closeModal('editModal')">✕</button></div>
+    <form id="editForm" class="modal-body" onsubmit="return false;">
+      <input type="hidden" name="id" value="">
+      <div class="field"><label>名称 (1~60 字) *</label><input type="text" name="name" maxlength="60" required></div>
+      <div class="field"><label>URL (http/https) *</label><input type="text" name="url" placeholder="https://example.com"></div>
+      <div class="field"><label>Logo (可选: http(s) 或 / 开头路径)</label><input type="text" name="logo" placeholder="https://... 或 /logo.png"></div>
+      <div class="field"><label>排序</label><input type="number" name="sortOrder" value="0" min="0" max="99999"></div>
+      <div class="field"><label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" name="enabled" checked style="width:16px;height:16px;">启用</label></div>
+    </form>
+    <div class="modal-foot"><button class="btn" onclick="closeModal('editModal')">取消</button><button class="btn btn-primary" onclick="submitEdit()">保存</button></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+function openCreateModal(){
+  document.getElementById('editTitle').textContent='新建友链';
+  var f=document.getElementById('editForm');
+  f.id.value='';f.name.value='';f.url.value='';f.logo.value='';f.sortOrder.value='0';f.enabled.checked=true;
+  document.getElementById('editModal').classList.add('open');
+}
+function editLink(id,name,url,logo,sortOrder,enabled){
+  document.getElementById('editTitle').textContent='编辑友链';
+  var f=document.getElementById('editForm');
+  f.id.value=id;f.name.value=name;f.url.value=url;f.logo.value=logo;f.sortOrder.value=sortOrder;f.enabled.checked=enabled;
+  document.getElementById('editModal').classList.add('open');
+}
+function closeModal(id){document.getElementById(id).classList.remove('open');}
+function showToast(msg,ok){
+  var t=document.getElementById('toast');t.textContent=msg;t.className='toast '+(ok?'ok':'err');
+  setTimeout(function(){t.classList.add('show');},10);setTimeout(function(){t.classList.remove('show');},2500);
+}
+function submitEdit(){
+  var f=document.getElementById('editForm');
+  var body={
+    name:f.name.value.trim(),
+    url:f.url.value.trim(),
+    logo:f.logo.value.trim(),
+    sortOrder:parseInt(f.sortOrder.value,10)||0,
+    enabled:f.enabled.checked
+  };
+  if(!body.name){showToast('名称必填',false);return;}
+  if(!body.url){showToast('URL 必填',false);return;}
+  var id=f.id.value;
+  var url='/api/admin/links';var method='POST';
+  if(id){url='/api/admin/links/'+encodeURIComponent(id);method='PUT';}
+  fetch(url,{method:method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(function(r){return r.json();}).then(function(j){
+      if(j&&j.ok){showToast(id?'已更新':'已创建',true);closeModal('editModal');setTimeout(function(){location.reload();},800);}
+      else{showToast('失败: '+(j&&j.error||''),false);}
+    }).catch(function(e){showToast('请求失败: '+e.message,false);});
+}
+function toggleLink(id,enabled){
+  fetch('/api/admin/links/'+encodeURIComponent(id),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:enabled})})
+    .then(function(r){return r.json();}).then(function(j){
+      if(j&&j.ok){showToast(enabled?'已启用':'已禁用',true);setTimeout(function(){location.reload();},800);}
+      else{showToast('失败: '+(j&&j.error||''),false);}
+    });
+}
+function deleteLink(id,name){
+  if(!confirm('删除友链「'+name+'」?'))return;
+  fetch('/api/admin/links/'+encodeURIComponent(id),{method:'DELETE'})
+    .then(function(r){return r.json();}).then(function(j){
+      if(j&&j.ok){showToast('已删除',true);setTimeout(function(){location.reload();},800);}
+      else{showToast('失败: '+(j&&j.error||''),false);}
+    });
+}
+function saveWheel(){
+  var body={
+    linkwheel:{
+      enabled:document.getElementById('wheelEnabled').checked,
+      mode:document.getElementById('wheelMode').value,
+      count:parseInt(document.getElementById('wheelCount').value,10)||6
+    }
+  };
+  fetch('/api/admin/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(function(r){return r.json();}).then(function(j){
+      if(j&&j.ok){showToast('链轮配置已保存',true);}else{showToast('失败: '+(j&&j.error||''),false);}
+    });
+}
+</script>
+</body>
+</html>
+{{end}}

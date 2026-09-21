@@ -1,0 +1,158 @@
+{{define "admin/feedback"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+{{template "admin/head" .}}
+</head>
+<body>
+<div class="app">
+{{template "admin/sidebar" .}}
+<main class="content">
+  <div class="topbar">
+    <h1>{{.Title}}</h1>
+    <div class="actions">
+      <a href="/api/admin/feedback" class="btn" target="_blank">API</a>
+    </div>
+  </div>
+  <div class="page">
+    <div class="grid cols-4" style="margin-bottom:16px;">
+      <div class="card"><h3>反馈总数</h3><div class="num">{{.Stats.total}}</div></div>
+      <div class="card"><h3>新反馈</h3><div class="num" style="color:var(--warn);">{{.Stats.new}}</div></div>
+      <div class="card"><h3>已解决</h3><div class="num" style="color:var(--accent);">{{.Stats.resolved}}</div></div>
+      <div class="card"><h3>本页</h3><div class="num">{{len .Rows}}</div></div>
+    </div>
+
+    <div class="toolbar">
+      <form method="get" action="/admin/feedback" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <select name="status">
+          <option value="">全部状态</option>
+          <option value="new"{{if eq .FilterStatus "new"}} selected{{end}}>新</option>
+          <option value="read"{{if eq .FilterStatus "read"}} selected{{end}}>已读</option>
+          <option value="resolved"{{if eq .FilterStatus "resolved"}} selected{{end}}>已解决</option>
+          <option value="ignored"{{if eq .FilterStatus "ignored"}} selected{{end}}>已忽略</option>
+        </select>
+        <select name="type">
+          <option value="">全部类型</option>
+          <option value="bug"{{if eq .FilterType "bug"}} selected{{end}}>Bug</option>
+          <option value="suggestion"{{if eq .FilterType "suggestion"}} selected{{end}}>建议</option>
+          <option value="praise"{{if eq .FilterType "praise"}} selected{{end}}>表扬</option>
+          <option value="other"{{if eq .FilterType "other"}} selected{{end}}>其他</option>
+        </select>
+        <input type="search" name="q" value="{{.FilterQ}}" placeholder="搜索内容">
+        <button class="btn btn-primary" type="submit">筛选</button>
+      </form>
+      <span style="color:var(--dim);font-size:12px;margin-left:auto;">共 {{.Total}} 条 · 第 {{.Page}}/{{.TotalPages}} 页</span>
+    </div>
+
+    <div class="table-card">
+      <table>
+        <thead>
+          <tr>
+            <th>类型</th>
+            <th>状态</th>
+            <th>联系方式</th>
+            <th>内容</th>
+            <th>URL</th>
+            <th>IP</th>
+            <th>时间</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+        {{range .Rows}}
+          <tr>
+            <td><span class="pill pill-{{fbTypePill .type}}">{{fbTypeLabel .type}}</span></td>
+            <td><span class="pill pill-{{fbStatusPill .status}}">{{fbStatusLabel .status}}</span></td>
+            <td>{{.contact}}</td>
+            <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{.content}}">{{.content}}</td>
+            <td>{{if .url}}<a href="{{.url}}" target="_blank" style="font-size:11px;word-break:break-all;">{{.url}}</a>{{else}}-{{end}}</td>
+            <td><small style="color:var(--dim);">{{.ip}}</small></td>
+            <td><small style="color:var(--dim);">{{fmtDate .createdAt}}</small></td>
+            <td style="white-space:nowrap;">
+              <button class="btn btn-sm" onclick='viewFeedback("{{.id}}")'>详情</button>
+              <button class="btn btn-sm btn-warn" onclick='setStatus("{{.id}}","read")'>已读</button>
+              <button class="btn btn-sm btn-primary" onclick='setStatus("{{.id}}","resolved")'>已解决</button>
+              <button class="btn btn-sm btn-err" onclick='deleteFeedback("{{.id}}")'>删除</button>
+            </td>
+          </tr>
+        {{else}}
+          <tr><td colspan="8" class="empty-state"><span class="ic">💬</span>暂无反馈</td></tr>
+        {{end}}
+        </tbody>
+      </table>
+      {{if gt .TotalPages 1}}
+      <div class="pagination">
+        {{if gt .Page 1}}<a href="?q={{.FilterQ}}&status={{.FilterStatus}}&type={{.FilterType}}&page={{sub .Page 1}}">‹ 上一页</a>{{end}}
+        {{range .PageList}}
+          {{if eq . $.Page}}<span class="cur">{{.}}</span>{{else}}<a href="?q={{$.FilterQ}}&status={{$.FilterStatus}}&type={{$.FilterType}}&page={{.}}">{{.}}</a>{{end}}
+        {{end}}
+        {{if lt .Page .TotalPages}}<a href="?q={{.FilterQ}}&status={{.FilterStatus}}&type={{.FilterType}}&page={{add .Page 1}}">下一页 ›</a>{{end}}
+      </div>
+      {{end}}
+    </div>
+  </div>
+</main>
+</div>
+
+<!-- 反馈详情 Modal -->
+<div class="modal-backdrop" id="detailModal">
+  <div class="modal">
+    <div class="modal-head"><h2>反馈详情</h2><button class="btn btn-sm" onclick="closeModal('detailModal')">✕</button></div>
+    <div class="modal-body" id="detailBody"><div class="empty-state">加载中…</div></div>
+    <div class="modal-foot"><button class="btn" onclick="closeModal('detailModal')">关闭</button></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+function showToast(msg,ok){
+  var t=document.getElementById('toast');t.textContent=msg;t.className='toast '+(ok?'ok':'err');
+  setTimeout(function(){t.classList.add('show');},10);setTimeout(function(){t.classList.remove('show');},2500);
+}
+function closeModal(id){document.getElementById(id).classList.remove('open');}
+function viewFeedback(id){
+  document.getElementById('detailModal').classList.add('open');
+  var body=document.getElementById('detailBody');
+  body.innerHTML='<div class="empty-state">加载中…</div>';
+  fetch('/api/admin/feedback/'+encodeURIComponent(id)).then(function(r){return r.json();}).then(function(j){
+    if(!j||!j.ok){body.innerHTML='<div class="empty-state">加载失败: '+(j&&j.error||'')+'</div>';return;}
+    var f=j.data||{};
+    var html='<dl class="kv-list">';
+    html+='<dt>ID</dt><dd>'+f.id+'</dd>';
+    html+='<dt>类型</dt><dd>'+(f.type||'')+'</dd>';
+    html+='<dt>状态</dt><dd>'+(f.status||'')+'</dd>';
+    html+='<dt>联系方式</dt><dd>'+(f.contact||'-')+'</dd>';
+    html+='<dt>页面 URL</dt><dd style="word-break:break-all;">'+(f.url||'-')+'</dd>';
+    html+='<dt>Site ID</dt><dd>'+(f.siteId||'-')+'</dd>';
+    html+='<dt>IP</dt><dd>'+(f.ip||'-')+'</dd>';
+    html+='<dt>UA</dt><dd style="word-break:break-all;font-size:11px;">'+(f.userAgent||'-')+'</dd>';
+    html+='<dt>创建</dt><dd>'+(f.createdAt||'-')+'</dd>';
+    html+='</dl>';
+    html+='<h3 style="margin:14px 0 8px;font-size:13px;color:var(--muted);">内容</h3>';
+    html+='<div style="background:var(--bg-2);padding:10px;border-radius:6px;border:1px solid var(--border);white-space:pre-wrap;">'+(f.content||'')+'</div>';
+    html+='<h3 style="margin:14px 0 8px;font-size:13px;color:var(--muted);">管理员备注</h3>';
+    html+='<textarea id="adminNote" style="width:100%;min-height:80px;">'+(f.adminNote||'')+'</textarea>';
+    body.innerHTML=html;
+    body.dataset.fid=f.id;
+  });
+}
+function setStatus(id,status){
+  fetch('/api/admin/feedback/'+encodeURIComponent(id),{
+    method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:status})
+  }).then(function(r){return r.json();}).then(function(j){
+    if(j&&j.ok){showToast('状态已更新',true);setTimeout(function(){location.reload();},800);}
+    else{showToast('失败: '+(j&&j.error||''),false);}
+  });
+}
+function deleteFeedback(id){
+  if(!confirm('确认删除此反馈? 不可恢复'))return;
+  fetch('/api/admin/feedback/'+encodeURIComponent(id),{method:'DELETE'})
+    .then(function(r){return r.json();}).then(function(j){
+      if(j&&j.ok){showToast('已删除',true);setTimeout(function(){location.reload();},800);}
+      else{showToast('失败: '+(j&&j.error||''),false);}
+    });
+}
+</script>
+</body>
+</html>
+{{end}}

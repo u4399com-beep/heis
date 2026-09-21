@@ -1,0 +1,102 @@
+{{define "admin/settings"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+{{template "admin/head" .}}
+</head>
+<body>
+<div class="app">
+{{template "admin/sidebar" .}}
+<main class="content">
+  <div class="topbar">
+    <h1>{{.Title}}</h1>
+    <div class="actions">
+      <a href="/api/admin/settings" class="btn" target="_blank">API</a>
+    </div>
+  </div>
+  <div class="page">
+    <div class="toolbar">
+      <button class="btn btn-primary" onclick="saveAll()">💾 保存全部修改</button>
+      <span style="color:var(--dim);font-size:12px;margin-left:auto;">共 {{.Total}} 项设置</span>
+    </div>
+    <div class="grid cols-2">
+      {{range .Settings}}
+      <div class="card">
+        <h3>{{.key}}{{if .isJson}} <span class="pill pill-unknown">JSON</span>{{end}}</div>
+        <div class="field" style="margin-top:6px;">
+          {{if .isJson}}
+          <textarea data-key="{{.key}}" data-json="1" style="min-height:120px;font-family:ui-monospace,monospace;font-size:12px;">{{.rawValue}}</textarea>
+          {{else}}
+          <input type="text" data-key="{{.key}}" value="{{.value}}" style="width:100%;">
+          {{end}}
+          <div class="hint">最后更新: {{.updatedAt}}</div>
+        </div>
+      </div>
+      {{else}}
+      <div class="empty-state" style="grid-column:1/-1;"><span class="ic">⚙</span>暂无设置项</div>
+      {{end}}
+    </div>
+
+    <div class="card" style="margin-top:16px;">
+      <h3>添加新设置项</h3>
+      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center;">
+        <input type="text" id="newKey" placeholder="key (字母数字_.- 1~64位)" style="min-width:200px;padding:7px 10px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:var(--text);">
+        <input type="text" id="newValue" placeholder="value (任意 JSON 值)" style="flex:1;min-width:240px;padding:7px 10px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:var(--text);">
+        <button class="btn btn-primary" onclick="addSetting()">添加</button>
+      </div>
+      <div class="hint" style="margin-top:6px;font-size:11px;color:var(--dim);">常见 key: miniServiceConfig / linkwheel / lastBackupAt / site.default / announcement 等</div>
+    </div>
+  </div>
+</main>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+function showToast(msg,ok){
+  var t=document.getElementById('toast');t.textContent=msg;t.className='toast '+(ok?'ok':'err');
+  setTimeout(function(){t.classList.add('show');},10);setTimeout(function(){t.classList.remove('show');},2500);
+}
+function saveAll(){
+  var body={};
+  var els=document.querySelectorAll('[data-key]');
+  var errs=[];
+  els.forEach(function(el){
+    var k=el.dataset.key;
+    var v=el.value;
+    if(el.dataset.json==='1'){
+      try{body[k]=JSON.parse(v);}catch(e){errs.push(k+' JSON 解析失败: '+e.message);}
+    }else{
+      // 标量值: 尝试解析为 number/bool/null, 否则字符串
+      if(v==='true')body[k]=true;
+      else if(v==='false')body[k]=false;
+      else if(v==='null')body[k]=null;
+      else if(/^\d+$/.test(v))body[k]=parseInt(v,10);
+      else if(/^\d+\.\d+$/.test(v))body[k]=parseFloat(v);
+      else body[k]=v;
+    }
+  });
+  if(errs.length){showToast(errs.join('; '),false);return;}
+  fetch('/api/admin/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(function(r){return r.json();}).then(function(j){
+      if(j&&j.ok){showToast('已保存 '+Object.keys(body).length+' 项',true);setTimeout(function(){location.reload();},800);}
+      else{showToast('保存失败: '+(j&&j.error||''),false);}
+    }).catch(function(e){showToast('请求失败: '+e.message,false);});
+}
+function addSetting(){
+  var k=document.getElementById('newKey').value.trim();
+  var v=document.getElementById('newValue').value.trim();
+  if(!k){showToast('key 必填',false);return;}
+  if(!/^[A-Za-z0-9_.\-]{1,64}$/.test(k)){showToast('key 格式非法',false);return;}
+  var val;
+  try{val=JSON.parse(v);}catch(e){val=v;}
+  var body={};body[k]=val;
+  fetch('/api/admin/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(function(r){return r.json();}).then(function(j){
+      if(j&&j.ok){showToast('已添加',true);setTimeout(function(){location.reload();},800);}
+      else{showToast('失败: '+(j&&j.error||''),false);}
+    });
+}
+</script>
+</body>
+</html>
+{{end}}
