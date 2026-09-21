@@ -66,6 +66,37 @@ func main() {
                         }
                         return fmt.Sprintf("%d 字", i)
                 },
+                // R38-1B: 状态码 → 中文标签 (ongoing/unknown/"" → 连载, completed → 完结)
+                "statusLabel": func(s interface{}) string {
+                        v := fmt.Sprintf("%v", s)
+                        if v == "completed" {
+                                return "完结"
+                        }
+                        return "连载"
+                },
+                // R38-1B: ISO/SQLite datetime 字符串 → YYYY-MM-DD
+                "fmtDate": func(s interface{}) string {
+                        d := fmt.Sprintf("%v", s)
+                        if len(d) >= 10 {
+                                return d[:10]
+                        }
+                        return d
+                },
+                // R38-1B: ISO/SQLite datetime 字符串 → MMDD (无分隔, 排行榜日期用)
+                "fmtDateShort": func(s interface{}) string {
+                        d := fmt.Sprintf("%v", s)
+                        if len(d) >= 10 {
+                                return d[5:7] + d[8:10]
+                        }
+                        return d
+                },
+                // R38-1B: 整数加减 (模板不支持原生算术, 用于分页上下页)
+                "add": func(a, b interface{}) int {
+                        return toInt(a) + toInt(b)
+                },
+                "sub": func(a, b interface{}) int {
+                        return toInt(a) - toInt(b)
+                },
         })
         // 收集所有 template 文件 (templates/*.html + templates/*/*.html)
         tmplFiles := []string{}
@@ -111,7 +142,8 @@ func main() {
         }
 }
 
-// homeHandler 首页 + 视图路由 (/?view=home|book|read|...)
+// homeHandler 首页 + 视图路由 (/?view=home|book|read|category|ranking|fulltext|search|keyword)
+// R38-1B: 扩展为按 view 参数渲染对应主题模板
 func homeHandler(w http.ResponseWriter, r *http.Request) {
         view := r.URL.Query().Get("view")
         if view == "" {
@@ -126,13 +158,11 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 return
         }
 
-        // 获取分类
+        // 获取分类 (所有页型共用 nav)
         cats, _ := getCategories()
+        navCats := takeN(cats, 8)
 
-        // 获取书籍 (home view)
-        books, _ := getBooks(48)
-
-        // 渲染对应主题的 home template
+        // 主题解析 (clone-shipsay → shipsay)
         theme, _ := site["ThemeID"].(string)
         if !strings.HasPrefix(theme, "clone-") {
                 theme = "shipsay" // 默认
@@ -140,19 +170,144 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 theme = strings.TrimPrefix(theme, "clone-")
         }
 
-        tmplName := theme + "/home"
+        // 基础 data (所有页型都用到)
         data := map[string]interface{}{
-                "Site":       site,
+                "Site":    site,
                 "Categories": cats,
-                "Books":      books,
-                "NavCats":    takeN(cats, 8),
-                "TopBooks":   topBooks(books, 6),
-                "Popular":    takeBooks(books, 12),
+                "NavCats": navCats,
         }
 
+        // 按 view 装配数据
+        switch view {
+        case "book":
+                id := r.URL.Query().Get("id")
+                if id == "" {
+                        http.Error(w, "缺少 id 参数", 400)
+                        return
+                }
+                book, chapters, recent, related, firstChID, ok := getBookViewData(id)
+                if !ok {
+                        http.NotFound(w, r)
+                        return
+                }
+                data["Book"] = book
+                data["Chapters"] = chapters
+                data["RecentChapters"] = recent
+                data["Related"] = related
+                data["FirstChapterId"] = firstChID
+        case "read":
+                chID := r.URL.Query().Get("chapter")
+                if chID == "" {
+                        http.Error(w, "缺少 chapter 参数", 400)
+                        return
+                }
+                ch, book, prev, next, ok := getReadViewData(chID)
+                if !ok {
+                        http.NotFound(w, r)
+                        return
+                }
+                data["Chapter"] = ch
+                data["Book"] = book
+                data["Prev"] = prev
+                data["Next"] = next
+        case "category":
+                catID := r.URL.Query().Get("cat")
+                page := clampPage(r.URL.Query().Get("page"))
+                size := 24
+                label, books, total := getCategoryViewData(catID, page, size)
+                totalPages := (total + size - 1) / size
+                if totalPages < 1 {
+                        totalPages = 1
+                }
+                if page > totalPages {
+                        page = totalPages
+                }
+                data["CatID"] = catID
+                data["Label"] = label
+                data["Books"] = books
+                data["HotBooks"] = takeBooks(books, 12)
+                data["TopAuthors"] = pickAuthors(books, 12)
+                data["Page"] = page
+                data["Size"] = size
+                data["Total"] = total
+                data["TotalPages"] = totalPages
+                data["PageList"] = buildPageList(page, totalPages)
+        case "ranking":
+                tab := r.URL.Query().Get("sort")
+                if tab == "" {
+                        tab = "allvisit"
+                }
+                page := clampPage(r.URL.Query().Get("page"))
+                size := 30
+                books, total := getRankingViewData(tab, page, size)
+                totalPages := (total + size - 1) / size
+                if totalPages < 1 {
+                        totalPages = 1
+                }
+                if page > totalPages {
+                        page = totalPages
+                }
+                tabName := tabName(tab)
+                data["Tabs"] = rankingTabs()
+                data["Tab"] = tab
+                data["TabName"] = tabName
+                data["Books"] = withRank(books, page, size)
+                data["HotBooks"] = takeBooks(books, 12)
+                data["Page"] = page
+                data["Size"] = size
+                data["Total"] = total
+                data["TotalPages"] = totalPages
+                data["PageList"] = buildPageList(page, totalPages)
+        case "fulltext":
+                page := clampPage(r.URL.Query().Get("page"))
+                size := 24
+                books, total := getFulltextViewData(page, size)
+                totalPages := (total + size - 1) / size
+                if totalPages < 1 {
+                        totalPages = 1
+                }
+                if page > totalPages {
+                        page = totalPages
+                }
+                data["Label"] = "全本完本小说"
+                data["Books"] = books
+                data["HotBooks"] = takeBooks(books, 12)
+                data["TopAuthors"] = pickAuthors(books, 12)
+                data["Page"] = page
+                data["Size"] = size
+                data["Total"] = total
+                data["TotalPages"] = totalPages
+                data["PageList"] = buildPageList(page, totalPages)
+        case "search":
+                q := r.URL.Query().Get("q")
+                books := getSearchViewData(q, 20)
+                data["Q"] = q
+                data["Books"] = books
+                data["HotBooks"] = takeBooks(books, 12)
+        case "keyword":
+                tag := r.URL.Query().Get("tag")
+                books, relatedTags := getKeywordViewData(tag, 20)
+                data["Tag"] = tag
+                data["Books"] = books
+                data["RelatedTags"] = relatedTags
+                data["HotBooks"] = takeBooks(books, 12)
+        case "history":
+                // 简单占位: 复用 home 数据 (足迹页未在 tsx 复刻, 不渲染独立模板)
+                books, _ := getBooks(48)
+                data["Books"] = books
+                data["TopBooks"] = topBooks(books, 6)
+                data["Popular"] = takeBooks(books, 12)
+        default: // home
+                books, _ := getBooks(48)
+                data["Books"] = books
+                data["TopBooks"] = topBooks(books, 6)
+                data["Popular"] = takeBooks(books, 12)
+        }
+
+        tmplName := theme + "/" + view
         if err := tmpls.ExecuteTemplate(w, tmplName, data); err != nil {
-                // fallback 到 shipsay
-                if err2 := tmpls.ExecuteTemplate(w, "shipsay/home", data); err2 != nil {
+                // fallback: 若 view 模板不存在, 退回 shipsay/home (home view 一定存在)
+                if fallbackErr := tmpls.ExecuteTemplate(w, "shipsay/home", data); fallbackErr != nil {
                         http.Error(w, "模板渲染失败: "+err.Error(), 500)
                 }
         }
@@ -341,4 +496,433 @@ func getMemMB() uint64 {
         var m runtime.MemStats
         runtime.ReadMemStats(&m)
         return m.Sys / 1024 / 1024
+}
+
+// ===== R38-1B: 视图相关查询 + 工具 =====
+
+// toInt 把 interface{} 转 int (支持 int/int64/float64/字符串数字)
+func toInt(v interface{}) int {
+        switch x := v.(type) {
+        case int:
+                return x
+        case int64:
+                return int(x)
+        case float64:
+                return int(x)
+        case string:
+                var n int
+                fmt.Sscanf(x, "%d", &n)
+                return n
+        }
+        return 0
+}
+
+// clampPage 解析 page 参数, 默认 1, 最小 1
+func clampPage(s string) int {
+        n := toInt(s)
+        if n < 1 {
+                return 1
+        }
+        return n
+}
+
+// buildPageList 生成可点击页码列表 (当前页前后各 5 个, 最多 11 个)
+func buildPageList(cur, total int) []int {
+        if total < 1 {
+                return []int{}
+        }
+        start := cur - 5
+        if start < 1 {
+                start = 1
+        }
+        end := start + 10
+        if end > total {
+                end = total
+        }
+        if end-start < 10 && start > 1 {
+                start = end - 10
+                if start < 1 {
+                        start = 1
+                }
+        }
+        out := []int{}
+        for i := start; i <= end; i++ {
+                out = append(out, i)
+        }
+        return out
+}
+
+// pickAuthors 从 books 提取去重作者前 n 个
+func pickAuthors(books []map[string]interface{}, n int) []string {
+        seen := map[string]bool{}
+        out := []string{}
+        for _, b := range books {
+                a, _ := b["author"].(string)
+                if a == "" || seen[a] {
+                        continue
+                }
+                seen[a] = true
+                out = append(out, a)
+                if len(out) >= n {
+                        break
+                }
+        }
+        return out
+}
+
+// withRank 给 books 列表每项加 rank 字段 (基于 page/size 计算全局序号)
+func withRank(books []map[string]interface{}, page, size int) []map[string]interface{} {
+        base := (page - 1) * size
+        for i, b := range books {
+                b["rank"] = base + i + 1
+                books[i] = b
+        }
+        return books
+}
+
+// rankingTabs 排行榜 tab 列表 (与 RankingView.tsx TABS 同口径)
+func rankingTabs() []map[string]string {
+        return []map[string]string{
+                {"id": "allvisit", "name": "总点击榜"},
+                {"id": "monthvisit", "name": "月点击榜"},
+                {"id": "weekvisit", "name": "周点击榜"},
+                {"id": "dayvisit", "name": "日点击榜"},
+                {"id": "allvote", "name": "总推荐榜"},
+                {"id": "size", "name": "字数榜"},
+                {"id": "lastupdate", "name": "最近更新"},
+        }
+}
+
+// tabName 根据 tab id 取中文名
+func tabName(tab string) string {
+        for _, t := range rankingTabs() {
+                if t["id"] == tab {
+                        return t["name"]
+                }
+        }
+        return "排行榜"
+}
+
+// bookRowFromScan 把 SQL scan 出来的字段拼成 books slice 元素 (与 getBooks 同款字段名)
+func bookRowFromScan(id, name, author, intro, cover, status, latestChapter, category, categoryId sql.NullString, wordCount int64, updatedAt string) map[string]interface{} {
+        return map[string]interface{}{
+                "id": id.String, "name": name.String, "author": author.String,
+                "intro": truncate(intro.String, 120), "cover": cover.String,
+                "status": status.String, "wordCount": wordCount, "latestChapter": latestChapter.String,
+                "category": category.String, "categoryId": categoryId.String, "updatedAt": updatedAt,
+        }
+}
+
+// getBookViewData 装配 book 视图所需: 单本书 + 完整章节列表 + 最近章节 + 同类推荐 + 第一章 id
+func getBookViewData(id string) (map[string]interface{}, []map[string]interface{}, []map[string]interface{}, []map[string]interface{}, string, bool) {
+        // 1. 单本书详情 (字段比 getBooks 多 keywords)
+        var bid, name, author, intro, cover, status, latestChapter, category, categoryId, keywords, updatedAt sql.NullString
+        var wordCount int64
+        err := db.QueryRow(`SELECT b.id,b.name,b.author,b.intro,b.cover,b.status,b.wordCount,b.latestChapter,COALESCE(c.name,'未分类'),b.categoryId,b.keywords,b.updatedAt FROM Book b LEFT JOIN Category c ON b.categoryId=c.id WHERE b.id=?`, id).Scan(
+                &bid, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryId, &keywords, &updatedAt)
+        if err != nil {
+                return nil, nil, nil, nil, "", false
+        }
+        book := map[string]interface{}{
+                "id": bid.String, "name": name.String, "author": author.String,
+                "intro": intro.String, "cover": cover.String, "status": status.String,
+                "wordCount": wordCount, "latestChapter": latestChapter.String,
+                "category": category.String, "categoryId": categoryId.String,
+                "keywords": keywords.String, "updatedAt": updatedAt.String,
+        }
+
+        // 2. 完整章节列表 (按 idx asc, 取前 200 防止超大书)
+        rows, err := db.Query(`SELECT id, idx, title, wordCount, volume FROM Chapter WHERE bookId=? ORDER BY idx ASC LIMIT 200`, id)
+        if err != nil {
+                rows = nil
+        }
+        chapters := []map[string]interface{}{}
+        firstChID := ""
+        if rows != nil {
+                defer rows.Close()
+                for rows.Next() {
+                        var cid, title, volume sql.NullString
+                        var idx int
+                        var wc int64
+                        rows.Scan(&cid, &idx, &title, &wc, &volume)
+                        chapters = append(chapters, map[string]interface{}{
+                                "id": cid.String, "idx": idx, "title": title.String,
+                                "wordCount": wc, "volume": volume.String,
+                        })
+                        if firstChID == "" {
+                                firstChID = cid.String
+                        }
+                }
+        }
+
+        // 3. 最近章节 (按 idx desc 取 12, 然后反转顺序让其显示为最新→次新)
+        recent := []map[string]interface{}{}
+        if rows2, err := db.Query(`SELECT id, title FROM Chapter WHERE bookId=? ORDER BY idx DESC LIMIT 12`, id); err == nil {
+                defer rows2.Close()
+                tmp := []map[string]interface{}{}
+                for rows2.Next() {
+                        var cid, title sql.NullString
+                        rows2.Scan(&cid, &title)
+                        tmp = append(tmp, map[string]interface{}{"id": cid.String, "title": title.String})
+                }
+                // 反转
+                for i := len(tmp) - 1; i >= 0; i-- {
+                        recent = append(recent, tmp[i])
+                }
+        }
+
+        // 4. 同类推荐 (同 categoryId, 排除当前书, 取 12 本)
+        related := []map[string]interface{}{}
+        if categoryId.String != "" {
+                if rows3, err := db.Query(`SELECT b.id,b.name,b.author,b.intro,b.cover,b.status,b.wordCount,b.latestChapter,COALESCE(c.name,'未分类'),b.categoryId,b.updatedAt FROM Book b LEFT JOIN Category c ON b.categoryId=c.id WHERE b.categoryId=? AND b.id!=? ORDER BY b.updatedAt DESC LIMIT 12`, categoryId.String, id); err == nil {
+                        defer rows3.Close()
+                        for rows3.Next() {
+                                var bid2, name2, author2, intro2, cover2, status2, latestChapter2, category2, categoryId2 sql.NullString
+                                var wordCount2 int64
+                                var updatedAt2 string
+                                rows3.Scan(&bid2, &name2, &author2, &intro2, &cover2, &status2, &wordCount2, &latestChapter2, &category2, &categoryId2, &updatedAt2)
+                                related = append(related, bookRowFromScan(bid2, name2, author2, intro2, cover2, status2, latestChapter2, category2, categoryId2, wordCount2, updatedAt2))
+                        }
+                }
+        }
+
+        return book, chapters, recent, related, firstChID, true
+}
+
+// getReadViewData 装配 read 视图所需: chapter content + book 信息 + prev/next
+func getReadViewData(chID string) (map[string]interface{}, map[string]interface{}, map[string]interface{}, map[string]interface{}, bool) {
+        // 1. 查 chapter (含 bookId, idx, title, content, wordCount)
+        var cid, title, content, bookID, volume, storage, filePath sql.NullString
+        var idx int
+        var wc int64
+        err := db.QueryRow(`SELECT id, title, content, idx, wordCount, bookId, volume, storage, filePath FROM Chapter WHERE id=?`, chID).Scan(
+                &cid, &title, &content, &idx, &wc, &bookID, &volume, &storage, &filePath)
+        if err != nil {
+                return nil, nil, nil, nil, false
+        }
+        // 兼容 txt 模式: 直接从 DB 取 content; 若空且 storage=txt+filePath, 暂不读 txt 文件 (留给后续)
+        bodyHTML := content.String
+        // 若 content 不含 <p> 标签但含 \n\n, 按 \n\n 切分加 <p> 包裹 (与公开 chapter API 一致)
+        if bodyHTML != "" && !strings.Contains(bodyHTML, "<p") && strings.Contains(bodyHTML, "\n\n") {
+                parts := strings.Split(bodyHTML, "\n\n")
+                out := []string{}
+                for _, p := range parts {
+                        p = strings.TrimSpace(p)
+                        if p == "" {
+                                continue
+                        }
+                        // 转义 HTML
+                        p = strings.ReplaceAll(p, "&", "&amp;")
+                        p = strings.ReplaceAll(p, "<", "&lt;")
+                        p = strings.ReplaceAll(p, ">", "&gt;")
+                        out = append(out, "<p>"+p+"</p>")
+                }
+                bodyHTML = strings.Join(out, "")
+        }
+        chapter := map[string]interface{}{
+                "id": cid.String, "title": title.String, "content": template.HTML(bodyHTML),
+                "idx": idx, "wordCount": wc,
+        }
+
+        // 2. 查 book (id, name, author, status, category, intro)
+        var bid, bname, bauthor, bstatus, bcategory, bintro sql.NullString
+        if err := db.QueryRow(`SELECT b.id,b.name,b.author,b.status,COALESCE(c.name,'未分类'),b.intro FROM Book b LEFT JOIN Category c ON b.categoryId=c.id WHERE b.id=?`, bookID.String).Scan(
+                &bid, &bname, &bauthor, &bstatus, &bcategory, &bintro); err != nil {
+                // book 查不到也允许渲染
+                bookMap := map[string]interface{}{"id": bookID.String, "name": "", "author": "", "status": "", "category": "", "intro": ""}
+                return chapter, bookMap, nil, nil, true
+        }
+        bookMap := map[string]interface{}{
+                "id": bid.String, "name": bname.String, "author": bauthor.String,
+                "status": bstatus.String, "category": bcategory.String, "intro": bintro.String,
+        }
+
+        // 3. prev / next (基于 idx)
+        var prev, next map[string]interface{}
+        if prow, err := db.Query(`SELECT id, title FROM Chapter WHERE bookId=? AND idx<? ORDER BY idx DESC LIMIT 1`, bookID.String, idx); err == nil {
+                if prow.Next() {
+                        var pid, ptitle sql.NullString
+                        prow.Scan(&pid, &ptitle)
+                        prev = map[string]interface{}{"id": pid.String, "title": ptitle.String}
+                }
+                prow.Close()
+        }
+        if nrow, err := db.Query(`SELECT id, title FROM Chapter WHERE bookId=? AND idx>? ORDER BY idx ASC LIMIT 1`, bookID.String, idx); err == nil {
+                if nrow.Next() {
+                        var nid, ntitle sql.NullString
+                        nrow.Scan(&nid, &ntitle)
+                        next = map[string]interface{}{"id": nid.String, "title": ntitle.String}
+                }
+                nrow.Close()
+        }
+
+        return chapter, bookMap, prev, next, true
+}
+
+// getCategoryViewData 分类列表: 按 categoryId 过滤 + 分页
+func getCategoryViewData(catID string, page, size int) (string, []map[string]interface{}, int) {
+        label := "全本小说"
+        // 若指定 catID, 取分类名做 label
+        if catID != "" {
+                var cname sql.NullString
+                if err := db.QueryRow(`SELECT name FROM Category WHERE id=?`, catID).Scan(&cname); err == nil && cname.String != "" {
+                        label = cname.String
+                }
+        }
+
+        // 查 total
+        var total int
+        if catID != "" {
+                db.QueryRow(`SELECT COUNT(*) FROM Book WHERE categoryId=?`, catID).Scan(&total)
+        } else {
+                db.QueryRow(`SELECT COUNT(*) FROM Book`).Scan(&total)
+        }
+
+        offset := (page - 1) * size
+        if offset > 10000 {
+                offset = 10000
+        }
+
+        var rows *sql.Rows
+        var err error
+        if catID != "" {
+                rows, err = db.Query(`SELECT b.id,b.name,b.author,b.intro,b.cover,b.status,b.wordCount,b.latestChapter,COALESCE(c.name,'未分类'),b.categoryId,b.updatedAt FROM Book b LEFT JOIN Category c ON b.categoryId=c.id WHERE b.categoryId=? ORDER BY b.updatedAt DESC LIMIT ? OFFSET ?`, catID, size, offset)
+        } else {
+                rows, err = db.Query(`SELECT b.id,b.name,b.author,b.intro,b.cover,b.status,b.wordCount,b.latestChapter,COALESCE(c.name,'未分类'),b.categoryId,b.updatedAt FROM Book b LEFT JOIN Category c ON b.categoryId=c.id ORDER BY b.updatedAt DESC LIMIT ? OFFSET ?`, size, offset)
+        }
+        if err != nil {
+                return label, []map[string]interface{}{}, total
+        }
+        defer rows.Close()
+        books := []map[string]interface{}{}
+        for rows.Next() {
+                var id, name, author, intro, cover, status, latestChapter, category, categoryId sql.NullString
+                var wordCount int64
+                var updatedAt string
+                rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryId, &updatedAt)
+                books = append(books, bookRowFromScan(id, name, author, intro, cover, status, latestChapter, category, categoryId, wordCount, updatedAt))
+        }
+        return label, books, total
+}
+
+// getRankingViewData 排行榜: 按 tab (sort) 排序 + 分页
+func getRankingViewData(tab string, page, size int) ([]map[string]interface{}, int) {
+        // 排序映射 (与 Next.js page.tsx SORT_MAP 同口径)
+        // size → wordCount DESC; 其他 → updatedAt DESC (无 visit/vote 列)
+        orderClause := "b.updatedAt DESC"
+        if tab == "size" {
+                orderClause = "b.wordCount DESC"
+        }
+        var total int
+        db.QueryRow(`SELECT COUNT(*) FROM Book`).Scan(&total)
+
+        offset := (page - 1) * size
+        if offset > 10000 {
+                offset = 10000
+        }
+        q := `SELECT b.id,b.name,b.author,b.intro,b.cover,b.status,b.wordCount,b.latestChapter,COALESCE(c.name,'未分类'),b.categoryId,b.updatedAt FROM Book b LEFT JOIN Category c ON b.categoryId=c.id ORDER BY ` + orderClause + ` LIMIT ? OFFSET ?`
+        rows, err := db.Query(q, size, offset)
+        if err != nil {
+                return []map[string]interface{}{}, total
+        }
+        defer rows.Close()
+        books := []map[string]interface{}{}
+        for rows.Next() {
+                var id, name, author, intro, cover, status, latestChapter, category, categoryId sql.NullString
+                var wordCount int64
+                var updatedAt string
+                rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryId, &updatedAt)
+                books = append(books, bookRowFromScan(id, name, author, intro, cover, status, latestChapter, category, categoryId, wordCount, updatedAt))
+        }
+        return books, total
+}
+
+// getFulltextViewData 全本完本: status='completed' + 分页
+func getFulltextViewData(page, size int) ([]map[string]interface{}, int) {
+        var total int
+        db.QueryRow(`SELECT COUNT(*) FROM Book WHERE status='completed'`).Scan(&total)
+        offset := (page - 1) * size
+        if offset > 10000 {
+                offset = 10000
+        }
+        rows, err := db.Query(`SELECT b.id,b.name,b.author,b.intro,b.cover,b.status,b.wordCount,b.latestChapter,COALESCE(c.name,'未分类'),b.categoryId,b.updatedAt FROM Book b LEFT JOIN Category c ON b.categoryId=c.id WHERE b.status='completed' ORDER BY b.updatedAt DESC LIMIT ? OFFSET ?`, size, offset)
+        if err != nil {
+                return []map[string]interface{}{}, total
+        }
+        defer rows.Close()
+        books := []map[string]interface{}{}
+        for rows.Next() {
+                var id, name, author, intro, cover, status, latestChapter, category, categoryId sql.NullString
+                var wordCount int64
+                var updatedAt string
+                rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryId, &updatedAt)
+                books = append(books, bookRowFromScan(id, name, author, intro, cover, status, latestChapter, category, categoryId, wordCount, updatedAt))
+        }
+        return books, total
+}
+
+// getSearchViewData 搜索: name/author/intro/keywords LIKE %q%
+func getSearchViewData(q string, limit int) []map[string]interface{} {
+        if q == "" {
+                return []map[string]interface{}{}
+        }
+        like := "%" + q + "%"
+        rows, err := db.Query(`SELECT b.id,b.name,b.author,b.intro,b.cover,b.status,b.wordCount,b.latestChapter,COALESCE(c.name,'未分类'),b.categoryId,b.updatedAt FROM Book b LEFT JOIN Category c ON b.categoryId=c.id WHERE b.name LIKE ? OR b.author LIKE ? OR b.intro LIKE ? OR b.keywords LIKE ? ORDER BY b.wordCount DESC LIMIT ?`, like, like, like, like, limit)
+        if err != nil {
+                return []map[string]interface{}{}
+        }
+        defer rows.Close()
+        books := []map[string]interface{}{}
+        for rows.Next() {
+                var id, name, author, intro, cover, status, latestChapter, category, categoryId sql.NullString
+                var wordCount int64
+                var updatedAt string
+                rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryId, &updatedAt)
+                // 搜索结果简介取 150 字 (与 page.tsx 同口径)
+                m := bookRowFromScan(id, name, author, intro, cover, status, latestChapter, category, categoryId, wordCount, updatedAt)
+                m["intro"] = truncate(intro.String, 150)
+                books = append(books, m)
+        }
+        return books
+}
+
+// getKeywordViewData 标签关键词: 通过 BookTag 关联取书 + 相关标签
+func getKeywordViewData(tag string, limit int) ([]map[string]interface{}, []string) {
+        if tag == "" {
+                return []map[string]interface{}{}, []string{}
+        }
+        // 1. 取有此 tag 的书 (按 hits desc)
+        rows, err := db.Query(`SELECT b.id,b.name,b.author,b.intro,b.cover,b.status,b.wordCount,b.latestChapter,COALESCE(c.name,'未分类'),b.categoryId,b.updatedAt FROM BookTag bt JOIN Book b ON bt.bookId=b.id LEFT JOIN Category c ON b.categoryId=c.id WHERE bt.tag=? ORDER BY bt.hits DESC LIMIT ?`, tag, limit)
+        if err != nil {
+                return []map[string]interface{}{}, []string{}
+        }
+        defer rows.Close()
+        books := []map[string]interface{}{}
+        for rows.Next() {
+                var id, name, author, intro, cover, status, latestChapter, category, categoryId sql.NullString
+                var wordCount int64
+                var updatedAt string
+                rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryId, &updatedAt)
+                m := bookRowFromScan(id, name, author, intro, cover, status, latestChapter, category, categoryId, wordCount, updatedAt)
+                m["intro"] = truncate(intro.String, 200)
+                books = append(books, m)
+        }
+        // 2. 相关标签: 第一本书的其他 tag, 排除当前 tag, 取 12
+        relatedTags := []string{}
+        if len(books) > 0 {
+                firstBookID, _ := books[0]["id"].(string)
+                if firstBookID != "" {
+                        if rows2, err := db.Query(`SELECT DISTINCT tag FROM BookTag WHERE bookId=? AND tag!=? ORDER BY hits DESC LIMIT 12`, firstBookID, tag); err == nil {
+                                defer rows2.Close()
+                                for rows2.Next() {
+                                        var t sql.NullString
+                                        rows2.Scan(&t)
+                                        if t.String != "" {
+                                                relatedTags = append(relatedTags, t.String)
+                                        }
+                                }
+                        }
+                }
+        }
+        return books, relatedTags
 }

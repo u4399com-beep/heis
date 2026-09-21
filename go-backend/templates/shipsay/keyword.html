@@ -1,0 +1,104 @@
+{{define "shipsay/keyword"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Site.Title}} - 标签：{{.Tag}}</title>
+<meta name="keywords" content="{{.Site.Keywords}},{{.Tag}}">
+<meta name="description" content="标签 {{.Tag}} 相关书籍">
+<link rel="stylesheet" href="/clone-css/shipsay.css">
+</head>
+<body>
+<header>
+<div class="container head">
+<a id="logo" href="/">
+<span>{{.Site.Name}}</span>
+<p>{{.Site.Domain}}</p>
+</a>
+<form name="t_frmsearch" action="/search" method="get" onsubmit="return !!this.querySelector('[name=searchkey]').value">
+<input id="searchkey" name="searchkey" class="search_input" placeholder="搜索书名或作者" value="{{.Tag}}" autocomplete="off">
+<input type="hidden" name="searchtype" value="all">
+<button type="submit" id="search_btn" title="搜索"><i class="fa fa-search fa-lg"></i></button>
+</form>
+<div class="header_right">
+<a id="home" href="/"><i class="fa fa-home fa-lg"></i><br>首页</a>
+<a href="/?view=category"><i class="fa fa-book fa-lg"></i><br>书库</a>
+<a href="/?view=fulltext"><i class="fa fa-coffee fa-lg"></i><br>完本</a>
+<a href="/?view=history"><i class="fa fa-history fa-lg"></i><br>足迹</a>
+</div>
+</div>
+</header>
+
+<div class="navigation">
+<nav class="container">
+<a href="/">首页</a>
+{{range .NavCats}}
+<a href="/?view=category&cat={{.id}}">{{.name}}</a>
+{{end}}
+<div id="user_panel"></div>
+</nav>
+</div>
+
+<div class="container">
+<div class="section">
+<p class="title"><i class="fa fa-tags fa-lg">&nbsp;</i>标签：{{.Tag}}</p>
+
+{{if .RelatedTags}}
+<ul class="ulcard">
+{{range .RelatedTags}}
+<li><a href="/?view=keyword&tag={{.}}">{{.}}</a></li>
+{{end}}
+</ul>
+{{end}}
+
+{{if .Books}}
+{{range .Books}}
+<div class="searchresult">
+<h3><a href="/?view=book&id={{.id}}">{{.name}}</a></h3>
+<p>作者：{{.author}} &nbsp; 类别：{{.category}} &nbsp; 字数：{{wordCount .wordCount}}</p>
+<p class="searchresult_p">{{.intro}}</p>
+<div>
+<a class="gray" href="/?view=book&id={{.id}}">最新章节：{{if .latestChapter}}{{.latestChapter}}{{else}}点击阅读{{end}}</a>
+</div>
+</div>
+{{end}}
+{{else}}
+<div class="msgdiv" style="text-align:center;">
+<p>未找到与标签 "<strong style="color:#bf2c24;">{{.Tag}}</strong>" 相关的书籍</p>
+<a class="l_btn" href="/">返回首页</a>
+</div>
+{{end}}
+</div>
+
+{{if .HotBooks}}
+<aside>
+<p class="title"><i class="fa fa-fire fa-lg">&nbsp;</i>热门小说</p>
+<ul class="popular odd">
+{{range .HotBooks}}
+<li>
+<a href="/?view=book&id={{.id}}">{{.name}}</a>
+<a class="gray" href="/?view=search&q={{.author}}">{{.author}}</a>
+</li>
+{{end}}
+</ul>
+</aside>
+{{end}}
+</div>
+
+<div class="container">
+<div class="section link">
+<p class="title"><i class="fa fa-link">&nbsp;</i>友情链接</p>
+<a href="{{if .Site.Domain}}https://{{.Site.Domain}}{{else}}/{{end}}" target="_blank">{{.Site.Name}}</a>
+<a href="/">{{.Site.Name}}首页</a>
+</div>
+</div>
+
+<div id="footer">
+<footer class="container">
+<p><i class="fa fa-flag"></i>&nbsp;<a href="/">{{.Site.Name}}</a>&nbsp;书友最值得收藏的网络小说阅读网</p>
+<p>本站所有小说为完本转载作品，所有内容版权归版权方或原作者所有。</p>
+</footer>
+</div>
+
+</body>
+</html>{{end}}

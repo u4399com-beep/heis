@@ -1,0 +1,131 @@
+{{define "shipsay/book"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Site.Title}} - {{.Book.name}} - {{.Book.author}}</title>
+<meta name="keywords" content="{{.Site.Keywords}},{{.Book.name}},{{.Book.author}},{{.Book.category}}">
+<meta name="description" content="{{.Book.intro}}">
+<link rel="stylesheet" href="/clone-css/shipsay.css">
+</head>
+<body>
+<header>
+<div class="container head">
+<a id="logo" href="/">
+<span>{{.Site.Name}}</span>
+<p>{{.Site.Domain}}</p>
+</a>
+<form name="t_frmsearch" action="/search" method="get" onsubmit="return !!this.querySelector('[name=searchkey]').value">
+<input id="searchkey" name="searchkey" class="search_input" placeholder="搜索书名或作者" autocomplete="off">
+<input type="hidden" name="searchtype" value="all">
+<button type="submit" id="search_btn" title="搜索"><i class="fa fa-search fa-lg"></i></button>
+</form>
+<div class="header_right">
+<a id="home" href="/"><i class="fa fa-home fa-lg"></i><br>首页</a>
+<a href="/?view=category"><i class="fa fa-book fa-lg"></i><br>书库</a>
+<a href="/?view=fulltext"><i class="fa fa-coffee fa-lg"></i><br>完本</a>
+<a href="/?view=history"><i class="fa fa-history fa-lg"></i><br>足迹</a>
+</div>
+</div>
+</header>
+
+<div class="navigation">
+<nav class="container">
+<a href="/">首页</a>
+{{range .NavCats}}
+<a href="/?view=category&cat={{.id}}">{{.name}}</a>
+{{end}}
+<div id="user_panel"></div>
+</nav>
+</div>
+
+<div class="container">
+<div class="section">
+<div class="novel_info_main">
+{{if .Book.cover}}<a href="/?view=book&id={{.Book.id}}"><img src="{{.Book.cover}}" title="{{.Book.name}}" style="width:120px;height:160px;margin-right:20px;margin-top:8px;box-shadow:3px 4px 10px #999;float:left;"></a>{{end}}
+<div class="novel_info_title">
+<h1>{{.Book.name}}</h1>
+<p>
+<span>作者：{{.Book.author}}</span>
+<span>类别：{{.Book.category}}</span>
+<span>状态：{{statusLabel .Book.status}}</span>
+<span>字数：{{wordCount .Book.wordCount}}</span>
+<span>更新：{{fmtDate .Book.updatedAt}}</span>
+</p>
+<i>最新章节：{{if .Book.latestChapter}}<a href="/?view=read&chapter={{.FirstChapterId}}">{{.Book.latestChapter}}</a>{{else}}<a href="/?view=read&chapter={{.FirstChapterId}}">第1章</a>{{end}}</i>
+<div>
+<a class="l_btn" href="/?view=read&chapter={{.FirstChapterId}}" title="开始阅读{{.Book.name}}">开始阅读</a>
+<a class="l_btn_0" href="#chapter_list" title="{{.Book.name}}目录">查看目录</a>
+</div>
+</div>
+<div class="indent">
+<p>{{.Book.intro}}</p>
+</div>
+</div>
+</div>
+</div>
+
+<div class="container">
+<div class="section">
+<div class="chapter_list" id="chapter_list">
+<p class="title"><i class="fa fa-list fa-lg">&nbsp;</i>最新章节</p>
+<ul>
+{{range .RecentChapters}}
+<li><a href="/?view=read&chapter={{.id}}" title="{{.title}}">{{.title}}</a></li>
+{{end}}
+<li><a href="#chapter_list" title="{{.Book.name}}目录">查看完整章节目录 &gt;&gt;</a></li>
+</ul>
+</div>
+</div>
+</div>
+
+{{if .Chapters}}
+<div class="container">
+<div class="section">
+<div class="chapter_list">
+<p class="title"><i class="fa fa-list fa-lg">&nbsp;</i>完整章节目录</p>
+<ul class="chapter_full_list">
+{{range .Chapters}}
+<li><a href="/?view=read&chapter={{.id}}" title="{{.title}}">{{.title}}</a></li>
+{{end}}
+</ul>
+</div>
+</div>
+</div>
+{{end}}
+
+{{if .Related}}
+<div class="container">
+<div class="section flex">
+<div class="sortvisit">
+<a href="/?view=category&cat={{.Book.categoryId}}">同类推荐</a>
+<ul>
+{{range .Related}}
+<li>
+<a href="/?view=book&id={{.id}}">{{.name}}</a>
+<i>&nbsp;/ {{.author}}</i>
+</li>
+{{end}}
+</ul>
+</div>
+</div>
+</div>
+{{end}}
+
+<div class="container">
+<div class="section link">
+<p class="title"><i class="fa fa-link">&nbsp;</i>友情链接</p>
+<a href="{{if .Site.Domain}}https://{{.Site.Domain}}{{else}}/{{end}}" target="_blank">{{.Site.Name}}</a>
+<a href="/">{{.Site.Name}}首页</a>
+</div>
+</div>
+
+<div id="footer">
+<footer class="container">
+<p><i class="fa fa-flag"></i>&nbsp;<a href="/">{{.Site.Name}}</a>&nbsp;书友最值得收藏的网络小说阅读网</p>
+<p>本站所有小说为完本转载作品，所有内容版权归版权方或原作者所有。</p>
+</footer>
+</div>
+
+</body>
+</html>{{end}}

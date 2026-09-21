@@ -1,0 +1,104 @@
+{{define "ggd66/home"}}<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>{{.Site.Title}}</title>
+<meta name="keywords" content="{{.Site.Keywords}}">
+<meta name="description" content="{{.Site.Description}}">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0">
+<link rel="stylesheet" href="https://cdn.staticfile.org/font-awesome/4.7.0/css/font-awesome.min.css">
+<link rel="stylesheet" href="/clone-css/ggd66.css">
+</head>
+<body>
+<div class="header">
+<div class="container">
+<div class="header-left">
+<a href="/" title="{{.Site.Name}}" class="logo">{{.Site.Name}}</a>
+</div>
+<div class="header-right">
+<a href="/?view=history">阅读历史</a> |
+<a href="/?view=fulltext">全本阅读</a> |
+<a href="/?view=category">分类浏览</a>
+</div>
+<div class="header-nav">
+<a href="/" title="首页">首 页</a>
+<a href="/?view=category" title="书库">书 库</a>
+<a href="/?view=fulltext" title="全本">全本</a>
+{{range .NavCats}}<a href="/?view=category&cat={{.id}}" title="{{.name}}">{{.name}}</a>{{end}}
+</div>
+</div>
+<div class="clear"></div>
+</div>
+
+<div class="container">
+<div class="content">
+<div class="content-left" id="fengtui">
+<h2>热门小说推荐</h2>
+{{range .TopBooks}}
+<div class="item">
+<div class="image"><a href="/?view=book&id={{.id}}">{{if .cover}}<img src="{{.cover}}" alt="{{.name}}" width="120" height="150">{{end}}</a></div>
+<dl>
+<dt><span>{{.author}}</span><a href="/?view=book&id={{.id}}">{{.name}}</a></dt>
+<dd>{{.intro}}</dd>
+</dl>
+<div class="clear"></div>
+</div>
+{{end}}
+</div>
+
+<div class="content-right" id="fengyou">
+<div class="search hidden-xs">
+<form name="articlesearch" method="get" action="/search">
+<input name="searchkey" type="text" class="text" id="searchkey" size="10" maxlength="50" placeholder="搜索从这里开始...">
+<button type="submit" name="submit">搜  索</button>
+</form>
+</div>
+<h2 class="visible-xs">阅读排行榜</h2>
+<ul>
+{{range .Popular}}
+<li>[{{.category}}] <a href="/?view=book&id={{.id}}">{{.name}}</a><span>{{.author}}</span></li>
+{{end}}
+</ul>
+</div>
+<div class="clear"></div>
+</div>
+
+<div class="content">
+<div class="content-right" id="zuixin">
+<h2>最新小说</h2>
+<ul>
+{{range .Books}}
+<li>[{{.category}}] <a href="/?view=book&id={{.id}}">{{.name}}</a><span>{{.author}}</span></li>
+{{end}}
+</ul>
+</div>
+<div class="content-left" id="gengxin">
+<h2>最近更新</h2>
+<ul>
+{{range .Books}}
+<li>
+<span class="s1">[{{.category}}]</span>
+<span class="s2"><a href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a></span>
+<span class="s3"><a href="/?view=book&id={{.id}}" target="_blank">{{if .latestChapter}}{{.latestChapter}}{{else}}查看详情{{end}}</a></span>
+<span class="s5">{{wordCount .wordCount}}</span>
+<span class="s4">{{.author}}</span>
+</li>
+{{end}}
+</ul>
+</div>
+<div class="clear"></div>
+</div>
+
+<div class="content tuijian hidden-xs">
+<div class="clear"></div>
+</div>
+</div>
+
+<div class="footer">
+<p class="hidden-xs">本站所有小说为转载作品，所有章节均由网友上传，转载至本站只是为了宣传本书让更多读者欣赏。</p>
+<p class="hidden-xs">Copyright © {{.Site.Name}} ({{.Site.Domain}}) All Rights Reserved.</p>
+<div class="clear"></div>
+</div>
+
+</body>
+</html>{{end}}

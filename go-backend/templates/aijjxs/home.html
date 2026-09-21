@@ -1,0 +1,120 @@
+{{define "aijjxs/home"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Site.Title}}</title>
+<meta name="keywords" content="{{.Site.Keywords}}">
+<meta name="description" content="{{.Site.Description}}">
+<link rel="stylesheet" href="/clone-css/aijjxs.css">
+</head>
+<body>
+<div class="top-float">
+<div class="top-float-inner">
+<div class="mobile-nav-tools">
+<button type="button" class="mobile-nav-back">返回</button>
+<button type="button" class="mobile-nav-menu">菜单</button>
+</div>
+<nav class="top-float-nav">
+<a href="/" class="active">首页</a>
+{{range .NavCats}}<a href="/?view=category&cat={{.id}}">{{.name}}</a>{{end}}
+</nav>
+<div class="top-float-auth"><a href="/?view=history">足迹</a><a href="/?view=fulltext">完本</a></div>
+</div>
+</div>
+
+<div class="wrap">
+<header class="top">
+<div class="top-1">
+<h1 class="logo">{{.Site.Name}}<small>{{.Site.Domain}}</small></h1>
+<div class="top-links">欢迎访问 {{.Site.Name}}，开始您的小说之旅</div>
+</div>
+<form class="search" action="/search" method="get">
+<input type="text" name="searchkey" placeholder="请输入书名或作者关键字">
+<button type="submit">搜索全站</button>
+</form>
+</header>
+
+<main class="layout">
+<section>
+<article class="panel latest-upload latest-upload-expand">
+<h3 class="latest">最新上传<small></small></h3>
+<div class="body gird2">
+<ul class="lines lines-books lines-books-2col">
+{{range .Books}}
+<li>
+<span class="line-main">
+<span class="cat">{{.category}}</span>
+<a href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a>
+<span class="author">{{.author}}</span>
+</span>
+<span class="date new"><span class="new">{{wordCount .wordCount}}</span></span>
+</li>
+{{end}}
+</ul>
+<div class="latest-upload-more-wrap">
+<a href="/?view=category" class="latest-upload-more">查看更多书籍</a>
+</div>
+</div>
+</article>
+
+<article class="panel" style="margin-top:14px;">
+<h3>封面推荐</h3>
+<div class="body grid2">
+{{range .TopBooks}}
+<div class="book">
+{{if .cover}}<img src="{{.cover}}" alt="{{.name}}封面">{{end}}
+<h4><span class="badge">荐</span><a href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a></h4>
+<div class="meta">{{.author}} · {{.category}} · {{wordCount .wordCount}} · {{if eq .status "completed"}}完结{{else}}连载{{end}}</div>
+<div class="desc">{{.intro}}</div>
+</div>
+{{end}}
+</div>
+</article>
+
+<article class="panel latest-upload" style="margin-top:14px;">
+<h3>小说分类</h3>
+<div class="body grid2">
+<div>
+<h4>女生小说 <a href="/?view=category">更多&gt;&gt;</a></h4>
+<ul class="lines lines-books">
+{{range $.Books}}
+<li>
+<span class="line-main">
+<span class="cat">{{.category}}</span>
+<a href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a>
+<span class="author">{{.author}}</span>
+</span>
+<span class="date new"><span class="new">{{wordCount .wordCount}}</span></span>
+</li>
+{{end}}
+</ul>
+</div>
+<div>
+<h4>热门推荐 <a href="/?view=fulltext">更多&gt;&gt;</a></h4>
+<ul class="lines lines-books">
+{{range .Popular}}
+<li>
+<span class="line-main">
+<span class="cat">热</span>
+<a href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a>
+<span class="author">{{.author}}</span>
+</span>
+<span class="date new"><span class="new">{{wordCount .wordCount}}</span></span>
+</li>
+{{end}}
+</ul>
+</div>
+</div>
+</article>
+</section>
+</main>
+
+<footer class="footer">
+<p>本站所有小说为转载作品，转载至本站只是为了宣传本书让更多读者欣赏。</p>
+<p>Copyright © {{.Site.Name}} ({{.Site.Domain}}) All Rights Reserved.</p>
+</footer>
+</div>
+
+</body>
+</html>{{end}}

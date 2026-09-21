@@ -1,0 +1,119 @@
+{{define "23qb/home"}}<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0">
+<title>{{.Site.Title}}</title>
+<meta name="keywords" content="{{.Site.Keywords}}">
+<meta name="description" content="{{.Site.Description}}">
+<link rel="stylesheet" href="/clone-css/23qb.css">
+</head>
+<body class="homepage">
+<header id="header" class="wrapper">
+<div class="header-content">
+<div class="banyundog-com">
+<div class="header-logo">
+<h1 class="slogan">{{.Site.Name}}</h1>
+<div class="fixed-logo">
+<a href="/" class="logo" title="{{.Site.Name}}">{{.Site.Name}}</a>
+</div>
+</div>
+</div>
+<div class="nav-search">
+<form action="/search.html" class="search-dh"></form>
+</div>
+<div class="nav">
+<ul class="nav-menu-items">
+<li class="nav-menu-item selected"><a href="/" title="首页"><span>首页</span></a></li>
+{{range .NavCats}}<li class="nav-menu-item"><a href="/?view=category&cat={{.id}}" title="{{.name}}"><span>{{.name}}</span></a></li>{{end}}
+</ul>
+</div>
+<div class="header-module">
+<ul class="nav-menu-items">
+<li class="nav-menu-item"><a href="/?view=fulltext" title="完本"><span>完本</span></a></li>
+<li class="nav-menu-item"><a href="/?view=history" title="足迹"><span>足迹</span></a></li>
+</ul>
+</div>
+</div>
+<div id="search-content">
+<div class="index-logo">
+<span class="logo-s">{{.Site.Name}}</span>
+</div>
+<form action="/search">
+<div class="search-main">
+<div class="search-box">
+<input class="search-input" type="search" name="searchkey" autocomplete="off" placeholder="搜索喜欢的小说、作者、标签">
+<button class="search-btn search-go" type="submit">搜索</button>
+</div>
+</div>
+</form>
+</div>
+</header>
+
+<main id="main" class="wrapper">
+<div class="content">
+<div class="list">
+<div class="box">
+<div class="module">
+<div class="module-list module-lines-list">
+<div class="module-items">
+{{range .TopBooks}}
+<div class="module-item">
+<div class="module-item-cover">
+<div class="module-item-pic">
+<a href="/?view=book&id={{.id}}" title="{{.name}}"></a>
+{{if .cover}}<img src="{{.cover}}" alt="{{.name}}">{{end}}
+</div>
+<div class="module-item-caption"><span>{{.author}}.{{.name}}.{{.category}}</span></div>
+</div>
+<div class="module-item-titlebox">
+<a href="/?view=book&id={{.id}}" class="module-item-title" title="{{.name}}">{{.name}}</a>
+</div>
+<div class="module-item-text">{{.author}}</div>
+</div>
+{{end}}
+</div>
+</div>
+</div>
+
+<div class="box" style="margin-top:20px;">
+<div class="module">
+<h3 class="module-title">最近更新</h3>
+<div class="module-list module-lines-list">
+<div class="module-items">
+{{range .Books}}
+<div class="module-item module-item-text-list">
+<div class="module-item-titlebox">
+<a href="/?view=book&id={{.id}}" class="module-item-title" title="{{.name}}">{{.name}}</a>
+</div>
+<div class="module-item-text">{{.author}} · {{.category}} · {{wordCount .wordCount}}字 · {{if eq .status "completed"}}完结{{else}}连载{{end}}</div>
+<div class="module-item-intro">{{.intro}}</div>
+</div>
+{{end}}
+</div>
+</div>
+</div>
+
+<div class="box" style="margin-top:20px;">
+<div class="module">
+<h3 class="module-title">热门榜单</h3>
+<div class="module-list">
+<ul class="module-rank-list">
+{{range .Popular}}
+<li><a href="/?view=book&id={{.id}}" title="{{.name}}">{{.name}}</a><span>{{.author}}</span></li>
+{{end}}
+</ul>
+</div>
+</div>
+</div>
+</div>
+</div>
+</main>
+
+<footer class="footer">
+<p>本站小说为转载作品，所有章节均由网友上传，转载至本站只是为了宣传本书让更多读者欣赏。</p>
+<p>Copyright © {{.Site.Name}} ({{.Site.Domain}}) All Rights Reserved.</p>
+</footer>
+
+</body>
+</html>{{end}}

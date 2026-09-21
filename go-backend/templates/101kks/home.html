@@ -1,0 +1,186 @@
+{{define "101kks/home"}}<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Type" content="text/html; charset=utf8">
+<meta http-equiv="Content-Language" content="zh-TW">
+<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=5">
+<title>{{.Site.Title}}</title>
+<meta name="keywords" content="{{.Site.Keywords}}">
+<meta name="description" content="{{.Site.Description}}">
+<link rel="stylesheet" type="text/css" href="/clone-css/101kks.css">
+</head>
+<body>
+<div class="leftmenu">
+<div class="menu_close_btn"><i class="iconfont icon-close"></i></div>
+<div class="headuser">
+<div class="headimg"><img class="user_touxiang" src="/images/user.png" alt=""></div>
+<span>访客</span>
+</div>
+<div class="register">
+<a href="/?view=history">閱讀記錄</a>
+<a href="/?view=fulltext">完本小說</a>
+</div>
+<div class="menu2">
+<ul>
+<li><a href="/"><i class="iconfont icon-home"></i>首頁</a></li>
+{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}"><i class="iconfont icon-list1"></i>{{.name}}</a></li>{{end}}
+<li><a href="/?view=history"><i class="iconfont icon-yuedujilu"></i>閱讀記錄</a></li>
+</ul>
+</div>
+</div>
+
+<header>
+<div class="headbox clearfix">
+<div class="menubtn pull-left"><i class="iconfont icon-menu"></i></div>
+<div class="logo pull-left">
+<div class="logoimg"></div>
+<a href="/">{{.Site.Name}}</a>
+</div>
+<form action="/search" method="post">
+<div class="search pull-left">
+<i class="iconfont icon-search"></i>
+<div class="inputbox">
+<i class="iconfont icon-ArrowLeft"></i>
+<input type="text" value="請輸入搜索內容！" name="searchkey">
+<input type="hidden" name="searchtype" value="all">
+</div>
+</div>
+</form>
+<div class="menu1 pull-right">
+<ul>
+<li><a href="/"> 首頁</a></li>
+<li><a href="/?view=fulltext"><i class="iconfont icon-ai-book"></i> 完本</a></li>
+<li><a href="/?view=history"><i class="iconfont icon-yuedujilu"></i> 閱讀記錄</a></li>
+</ul>
+</div>
+</div>
+</header>
+
+<div class="main">
+<div class="container">
+<div class="adbanner mybox" style="margin-bottom:0">
+<div class="headerad">歡迎光臨 {{.Site.Name}}（{{.Site.Domain}}）</div>
+</div>
+<ul class="row">
+<li class="col-xinindex">
+<div class="mybox">
+<div class="xinlogo">
+<img src="/images/logo_index.png" alt="{{.Site.Name}}">
+</div>
+<div class="error-text searchBox">
+<form name="articlesearch" method="post" action="/search">
+<input id="searchkey" class="searchinput" autocomplete="off" type="text" value="請輸入書名" placeholder="請輸入書名" name="searchkey">
+<button type="submit" id="searchbtn" name="submit" value="Search"><i class="iconfont icon-search" style="font-size: 25px;"></i></button>
+</form>
+</div>
+<div class="indexdaohang">
+<ul>
+<li><a href="/?view=fulltext"><h3 class="ellipsis_1">完本小說</h3></a></li>
+<li><a href="/?view=category"><h3 class="ellipsis_1">小說分類</h3></a></li>
+<li><a href="/?view=history"><h3 class="ellipsis_1">閱讀記錄</h3></a></li>
+<li><a href="/"><h3 class="ellipsis_1">回到首頁</h3></a></li>
+</ul>
+</div>
+<div>
+<h3 class="mytitle">熱門書單推薦</h3>
+<div class="booklist-block">
+<div class="booklist-grid">
+{{range .TopBooks}}
+<div class="booklist-card">
+<a target="_blank" href="/?view=book&id={{.id}}" class="booklist-card-link">
+<div class="booklist-card-content">
+<div class="booklist-cover-section">
+<div class="booklist-cover-stack">
+<div class="cover-main">
+{{if .cover}}<img src="{{.cover}}" alt="{{.name}}封面" class="cover-image">{{end}}
+</div>
+<div class="cover-count"><span>★</span></div>
+</div>
+</div>
+<div class="booklist-info-section">
+<h3 class="booklist-title">{{.name}}</h3>
+<div class="booklist-meta">
+<div class="meta-item"><i class="iconfont icon-chart"></i><span>{{wordCount .wordCount}}</span></div>
+<div class="meta-item"><i class="iconfont icon-library"></i><span>{{.category}}</span></div>
+<div class="meta-item"><i class="iconfont icon-shoujihao"></i><span>{{.author}}</span></div>
+</div>
+<div class="booklist-desc">
+<p>{{.intro}}</p>
+</div>
+</div>
+</div>
+</a>
+</div>
+{{end}}
+</div>
+</div>
+
+<div class="tag">
+<h3 class="mytitle">小說分類</h3>
+<ul>
+{{range .NavCats}}<a href="/?view=category&cat={{.id}}" target="_blank">{{.name}}</a>{{end}}
+</ul>
+</div>
+</div>
+</div>
+</li>
+</ul>
+</div>
+
+<div class="container">
+<div class="mybox">
+<h3 class="mytitle">最近更新</h3>
+<div class="booklist-block">
+<div class="booklist-grid">
+{{range .Books}}
+<div class="booklist-card">
+<a target="_blank" href="/?view=book&id={{.id}}" class="booklist-card-link">
+<div class="booklist-card-content">
+<div class="booklist-cover-section">
+<div class="booklist-cover-stack">
+<div class="cover-main">
+{{if .cover}}<img src="{{.cover}}" alt="{{.name}}封面" class="cover-image">{{end}}
+</div>
+<div class="cover-count"><span>{{.category}}</span></div>
+</div>
+</div>
+<div class="booklist-info-section">
+<h3 class="booklist-title">{{.name}}</h3>
+<div class="booklist-meta">
+<div class="meta-item"><i class="iconfont icon-shoujihao"></i><span>{{.author}}</span></div>
+<div class="meta-item"><i class="iconfont icon-chart"></i><span>{{wordCount .wordCount}}</span></div>
+<div class="meta-item"><i class="iconfont icon-ai-book"></i><span>{{if eq .status "completed"}}完結{{else}}連載{{end}}</span></div>
+</div>
+<div class="booklist-desc">
+<p>{{.intro}}</p>
+</div>
+</div>
+</div>
+</a>
+</div>
+{{end}}
+</div>
+</div>
+</div>
+</div>
+</div>
+
+<div class="foot">
+<div class="copyright">
+<div>
+<a href="/?view=fulltext">完本小說</a>
+<a href="/?view=category">小說分類</a>
+<a href="/?view=history">閱讀記錄</a>
+<a href="/">全部小說</a>
+</div>
+<p>Copyright © {{.Site.Name}}（{{.Site.Domain}}）</p>
+<div>
+友情連結：<a href="/" target="_blank" title="{{.Site.Name}}">{{.Site.Name}}</a>|
+<div class="clear"></div>
+</div>
+</div>
+</div>
+
+</body>
+</html>{{end}}

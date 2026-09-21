@@ -1,0 +1,127 @@
+{{define "huangjinwu/home"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>{{.Site.Title}}</title>
+<meta name="keywords" content="{{.Site.Keywords}}">
+<meta name="description" content="{{.Site.Description}}">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,minimum-scale=1,user-scalable=no,viewport-fit=cover">
+<link rel="stylesheet" type="text/css" href="/clone-css/huangjinwu.css">
+<script>(function() {const savedTheme = localStorage.getItem('theme') || 'light';document.documentElement.setAttribute('data-theme', savedTheme);})();</script>
+</head>
+<body>
+<div class="header-group">
+<div class="headers">
+<div class="container">
+<div class="navbar">
+<div class="user-dropdown">
+<button class="user-toggle user-dropdown-toggle" aria-label="个人中心"><span class="iconfont icon-user"></span></button>
+<ul class="user-dropdown-menu">
+<li><a href="/?view=history">临时书架</a></li>
+<li><a href="/?view=fulltext">完本阅读</a></li>
+<li><a href="/?view=category">分类浏览</a></li>
+</ul>
+</div>
+<a href="/" class="logo" title="{{.Site.Name}}"><span class="iconfont icon-book"></span>{{.Site.Name}}</a>
+<div class="sidebar-wrapper">
+<div class="sidebar-header"><a href="/" class="sidebar-logo" title="{{.Site.Name}}"><span class="iconfont icon-book"></span><span class="sidebar-logo-text">{{.Site.Name}}</span></a></div>
+<ul class="navbar-menu" id="navbarMenu">
+<li><a href="/"><span class="menu-icon iconfont icon-book"></span><span class="menu-text">首页</span></a></li>
+<li><a href="/?view=category"><span class="menu-icon iconfont icon-sort"></span><span class="menu-text">书库</span></a></li>
+<li><a href="/?view=fulltext"><span class="menu-icon iconfont icon-ai-book"></span><span class="menu-text">完本</span></a></li>
+<li><a href="/?view=history"><span class="menu-icon iconfont icon-yuedujilu"></span><span class="menu-text">历史</span></a></li>
+<li class="navbar-menu-search"><a href="/search"><span class="menu-icon iconfont icon-search"></span><span class="menu-text">搜索</span></a></li>
+</ul>
+</div>
+<form class="navbar-search" action="/search" method="get">
+<input class="navbar-search-input" type="text" placeholder="可搜书名、作者、角色" value="" name="keyword" id="searchkey" autocomplete="off" required>
+<button class="navbar-search-btn" type="submit" aria-label="搜索"><span class="iconfont icon-search"></span></button>
+</form>
+</div>
+</div>
+<div class="menu-overlay" id="menuOverlay" aria-hidden="true"></div>
+</div>
+<button class="menu-toggle" id="menuToggle" aria-label="菜单"><span class="iconfont icon-menu"></span></button>
+</div>
+
+<div class="main-content content-default">
+<div class="container container-default">
+<div class="hot-section section-default">
+<h2 class="page-title title-default"><span class="iconfont icon-hot"></span> 热门推荐</h2>
+<div class="book-grid cardlist-default">
+{{range .TopBooks}}
+<a href="/?view=book&id={{.id}}" title="{{.name}}" class="book-card card-default">
+<div class="book-info info-default">
+<div class="book-title">{{.name}}</div>
+<div class="book-author">作者：{{.author}}</div>
+<div class="book-desc">{{.intro}}</div>
+<div class="book-badges">
+<span class="book-badge category">{{.category}}</span>
+<span class="book-badge status">{{if eq .status "completed"}}完结{{else}}连载{{end}}</span>
+<span class="book-badge words">{{wordCount .wordCount}}</span>
+</div>
+</div>
+</a>
+{{end}}
+</div>
+</div>
+
+<div class="sort-section section-default">
+<h2 class="page-title title-default"><span class="iconfont icon-sort"></span> 分类排行榜</h2>
+<div class="category-ranking-grid category-default">
+{{range .NavCats}}
+<div class="ranking-module module-default">
+<div class="ranking-module-title title-default">{{.name}}</div>
+<div class="ranking-list list-default">
+{{$catId := .id}}
+{{range $i, $b := $.Books}}
+{{if lt $i 6}}
+<div class="ranking-item item-default">
+<a href="/?view=book&id={{$b.id}}" title="{{$b.name}}" class="ranking-title">{{$b.name}}</a>
+<span class="ranking-author">{{$b.author}}</span>
+</div>
+{{end}}
+{{end}}
+</div>
+</div>
+{{end}}
+</div>
+</div>
+
+<div class="latest-section section-default" style="margin-top:24px;">
+<h2 class="page-title title-default"><span class="iconfont icon-ai-book"></span> 最近更新</h2>
+<div class="book-grid cardlist-default">
+{{range .Books}}
+<a href="/?view=book&id={{.id}}" title="{{.name}}" class="book-card card-default">
+<div class="book-info info-default">
+<div class="book-title">{{.name}}</div>
+<div class="book-author">作者：{{.author}}</div>
+<div class="book-desc">{{.intro}}</div>
+<div class="book-badges">
+<span class="book-badge category">{{.category}}</span>
+<span class="book-badge status">{{if eq .status "completed"}}完结{{else}}连载{{end}}</span>
+<span class="book-badge words">{{wordCount .wordCount}}</span>
+</div>
+</div>
+</a>
+{{end}}
+</div>
+</div>
+</div>
+</div>
+
+<div class="footers footer-default">
+<div class="container container-default">
+<p class="sitemap">
+<a href="/?view=category" title="小说大全" target="_blank">小说</a>|
+<a href="/?view=fulltext" title="完本小说" target="_blank">完本</a>|
+<a href="/?view=history" title="阅读历史" target="_blank">历史</a>|
+<a href="/" title="回到首页" target="_blank">首页</a>
+</p>
+<p class="copyright">本站小说由根据搜索引擎转码，只为让更多读者欣赏，不保存小说内及数据，仅作宣传展示。</p>
+<p class="copyright">Copyright © {{.Site.Name}} ({{.Site.Domain}})</p>
+</div>
+</div>
+
+</body>
+</html>{{end}}

@@ -1,0 +1,704 @@
+// cleaner.go — 内容清洗 + 段落规整 + 零宽字符剥离 + trafilatura 桥 (R38-1C).
+//
+// 与 TS 端 src/lib/crawl/cleaner.ts 同口径核心功能:
+//   - decodeEntitiesOnce (实体单遍解码防链式二次)
+//   - removeAdLines (URL 保护 + 内置 EXTRA_AD_PATTERNS + ReDoS 防护)
+//   - cleanContentHtml (plainText / HTML 双分支 + 控制字符剥离 + 零宽字符剥离 +
+//     段落规整 + 首末段水印剥离)
+//   - cleanTextField (纯文本字段清洗)
+//   - cleanIntro (多行简介清洗)
+//   - callTrafilaturaExtract (trafilatura 桥调用 + 60s 可用性缓存)
+//
+// 已知限制 (与 TS 端差异):
+//   - OpenCC 繁简转换无 Go 原生绑定, T2SText/T2SHtml 当前为 stub (原样返回)
+//     trafilatura 桥侧可承担繁简转换 (Python 端 OpenCC 词典加载, 与 R29-1C 兼容)
+//   - EXTRA_AD_PATTERNS 与 cfg.AdPatterns 合并去重 (与 TS 端同口径)
+package crawl
+
+import (
+        "bytes"
+        "context"
+        "encoding/json"
+        "fmt"
+        "io"
+        "net/http"
+        "regexp"
+        "strings"
+        "sync"
+        "time"
+        "unicode/utf8"
+
+        "github.com/PuerkitoBio/goquery"
+)
+
+// ---------- trafilatura 桥 (mini-services/trafilatura-bridge:3019) ----------
+
+const (
+        TrafilaturaBridgeURLDefault   = "http://127.0.0.1:3019"
+        TrafilaturaProbeRetryMs       = 60000
+        TrafilaturaRequestTimeoutMs   = 20000
+        TrafilaturaMaxHTMLBytes       = 10 * 1024 * 1024
+)
+
+type trafilaturaState struct {
+        mu        sync.Mutex
+        available *bool // nil = 未探测
+        checkedAt int64
+}
+
+var trafilaturaInst = &trafilaturaState{}
+
+// CheckTrafilaturaBridge — 探测桥可用性 (/health), 60s 缓存.
+func CheckTrafilaturaBridge(bridgeURL string) bool {
+        if bridgeURL == "" {
+                bridgeURL = TrafilaturaBridgeURLDefault
+        }
+        trafilaturaInst.mu.Lock()
+        defer trafilaturaInst.mu.Unlock()
+        now := time.Now().UnixMilli()
+        if trafilaturaInst.available != nil {
+                if *trafilaturaInst.available {
+                        return true
+                }
+                // 60s 缓存内视为不可用
+                if now-trafilaturaInst.checkedAt < TrafilaturaProbeRetryMs {
+                        return false
+                }
+        }
+        // 探测
+        client := &http.Client{Timeout: 1500 * time.Millisecond}
+        resp, err := client.Get(bridgeURL + "/health")
+        if err != nil {
+                f := false
+                trafilaturaInst.available = &f
+                trafilaturaInst.checkedAt = now
+                return false
+        }
+        defer resp.Body.Close()
+        if resp.StatusCode != 200 {
+                f := false
+                trafilaturaInst.available = &f
+                trafilaturaInst.checkedAt = now
+                return false
+        }
+        var data struct {
+                Ok         bool `json:"ok"`
+                SelfTestOk bool `json:"selfTestOk"`
+        }
+        body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+        _ = json.Unmarshal(body, &data)
+        if !data.Ok || !data.SelfTestOk {
+                f := false
+                trafilaturaInst.available = &f
+                trafilaturaInst.checkedAt = now
+                return false
+        }
+        t := true
+        trafilaturaInst.available = &t
+        trafilaturaInst.checkedAt = now
+        return true
+}
+
+// TrafilaturaExtractResult — 桥调用结果.
+type TrafilaturaExtractResult struct {
+        Ok    bool
+        Text  string
+        Error string
+}
+
+// CallTrafilaturaExtract — 调 trafilatura-bridge POST /extract 提取正文.
+// html > 10MB 跳过; 桥不可达/异常/空文本 → {ok:false} (上层降级 cheerio 链).
+func CallTrafilaturaExtract(ctx context.Context, html string, pruneXPath []string, bridgeURL string) TrafilaturaExtractResult {
+        if html == "" {
+                return TrafilaturaExtractResult{Ok: false, Error: "empty html"}
+        }
+        if len(html) > TrafilaturaMaxHTMLBytes {
+                return TrafilaturaExtractResult{Ok: false, Error: "html 超过 10MB 上限"}
+        }
+        if bridgeURL == "" {
+                bridgeURL = TrafilaturaBridgeURLDefault
+        }
+        // 自定义 bridgeURL (≠ 默认) 不走 60s 缓存
+        isDefault := bridgeURL == TrafilaturaBridgeURLDefault
+        if isDefault {
+                if !CheckTrafilaturaBridge(bridgeURL) {
+                        return TrafilaturaExtractResult{Ok: false, Error: "trafilatura-bridge 不可用 (60s 缓存内)"}
+                }
+        }
+        ctx, cancel := context.WithTimeout(ctx, time.Duration(TrafilaturaRequestTimeoutMs)*time.Millisecond)
+        defer cancel()
+
+        reqPayload := map[string]any{
+                "html": html,
+        }
+        if len(pruneXPath) > 0 {
+                reqPayload["pruneXPath"] = pruneXPath
+        }
+        body, err := json.Marshal(reqPayload)
+        if err != nil {
+                return TrafilaturaExtractResult{Ok: false, Error: err.Error()}
+        }
+        req, err := http.NewRequestWithContext(ctx, "POST", bridgeURL+"/extract", bytes.NewReader(body))
+        if err != nil {
+                return TrafilaturaExtractResult{Ok: false, Error: err.Error()}
+        }
+        req.Header.Set("Content-Type", "application/json")
+        resp, err := http.DefaultClient.Do(req)
+        if err != nil {
+                if isDefault {
+                        trafilaturaInst.mu.Lock()
+                        f := false
+                        trafilaturaInst.available = &f
+                        trafilaturaInst.checkedAt = time.Now().UnixMilli()
+                        trafilaturaInst.mu.Unlock()
+                }
+                return TrafilaturaExtractResult{Ok: false, Error: "调用失败: " + err.Error()}
+        }
+        defer resp.Body.Close()
+        if resp.StatusCode != 200 {
+                if isDefault {
+                        trafilaturaInst.mu.Lock()
+                        f := false
+                        trafilaturaInst.available = &f
+                        trafilaturaInst.checkedAt = time.Now().UnixMilli()
+                        trafilaturaInst.mu.Unlock()
+                }
+                return TrafilaturaExtractResult{Ok: false, Error: fmt.Sprintf("bridge HTTP %d", resp.StatusCode)}
+        }
+        var data struct {
+                Ok    bool   `json:"ok"`
+                Text  string `json:"text"`
+                Error string `json:"error"`
+        }
+        respBody, err := io.ReadAll(io.LimitReader(resp.Body, TrafilaturaMaxHTMLBytes))
+        if err != nil {
+                return TrafilaturaExtractResult{Ok: false, Error: err.Error()}
+        }
+        if err := json.Unmarshal(respBody, &data); err != nil {
+                return TrafilaturaExtractResult{Ok: false, Error: "JSON decode failed"}
+        }
+        if !data.Ok {
+                return TrafilaturaExtractResult{Ok: false, Error: orStr(data.Error, "bridge returned ok:false")}
+        }
+        return TrafilaturaExtractResult{Ok: true, Text: data.Text}
+}
+
+// ---------- 繁简转换 (TODO: OpenCC 词典) ----------
+// Go 端无 OpenCC 绑定, 当前为 stub (原样返回). trafilatura 桥侧 (Python 端) 已含
+// 繁简转换能力 (lxml + OpenCC 词典加载), 调用桥可补足此能力.
+
+// T2SText — 繁体→简体 (纯文本). Go stub 当前原样返回.
+func T2SText(s string) string {
+        return s
+}
+
+// T2SHtml — HTML 繁体→简体 (仅转标签外文本段). Go stub 当前原样返回.
+func T2SHtml(html string) string {
+        return html
+}
+
+// ---------- removeAdLines (URL 保护 + 内置 EXTRA_AD_PATTERNS) ----------
+
+// EXTRA_AD_SELECTORS — 内置额外广告/导航/弹窗容器选择器 (与 cfg.RemoveSelectors 合并去重).
+var EXTRA_AD_SELECTORS = []string{
+        ".ad-container", ".ad-wrap", ".ad-wrapper", ".adbox", ".ad-banner", ".advertisement",
+        ".adsbygoogle", ".google-ad", ".ad-slot", ".ad-zone", ".ad-area",
+        "#ad", "#ads", "#advertisement", "#banner_ad", "#popup", "#popup-ad",
+        ".popup", ".modal-ad", ".modal-advertisement",
+        ".download-app", ".app-promo", ".qrcode", ".qr-code", ".scan-download",
+        ".friend-link", ".friendlink", ".link-list", ".footer-link", ".nav-bottom",
+        ".float-btn", ".float-banner", ".float-toolbar",
+        ".chapter-navigate", ".chapter-nav", ".page-navigate",
+        ".baidu-ad", ".baidu-promo", "[class*=\"baidu_promote\"]",
+        ".interstitial", ".interstitial-ad", ".splash-ad",
+}
+
+// EXTRA_AD_PATTERNS — 内置额外广告正则文案 (与 cfg.AdPatterns 合并, 后于用户配置跑).
+var EXTRA_AD_PATTERNS = []string{
+        `本章未完.{0,8}点击下一页继续阅读`,
+        `请记住本书.{0,12}域名`,
+        `最新章节请到.{0,30}查看`,
+        `一秒记住.{0,12}免费读`,
+        `为您提供.{0,16}精彩小说`,
+        `本站(?:首发|更新最快|最新章节).{0,30}《`,
+        `下载(?:APP|客户端|手机版).{0,20}看`,
+        `扫码(?:关注|下载|领取).{0,20}`,
+        `关注(?:微信公众号|公众号).{0,20}`,
+        `加入书签.{0,15}继续阅读`,
+        `为了方便下次阅读.{0,30}`,
+        `推荐阅读.{0,20}本书`,
+        `本章(?:未完|未完待续|继续阅读).{0,8}`,
+        `第[一二三四五六七八九十百千万0-9]+(?:章|节|回|话|集).{0,4}(?:未完|继续|下一页)`,
+        `友情链接[:：].{0,200}`,
+        `(?:www\.)?[a-z0-9-]+\.(?:com|net|cc|org|info|top|xyz|vip|site)(?:首发|更新|整理|出品)`,
+}
+
+var (
+        reDoSNestedQuantifierAd = regexp.MustCompile(`[+*]\s*\)\s*[+*{]`)
+        urlProtectRe            = regexp.MustCompile(`https?://[^\s"'<>]+`)
+        urlPlaceholderRe        = regexp.MustCompile("\x00(\\d+)\x00")
+)
+
+// RemoveAdLines — 广告正则清洗 + URL 保护.
+//  1. 先把 https?://... 完整 URL 掩码成 \x00N\x00 占位符
+//  2. 跑广告正则 (用户配置优先, 内置 EXTRA_AD_PATTERNS 后跑在剩余文本上)
+//  3. 还原 URL 占位符, 清残留 \x00
+func RemoveAdLines(text string, patterns []string) string {
+        if text == "" {
+                return ""
+        }
+        urls := []string{}
+        out := urlProtectRe.ReplaceAllStringFunc(text, func(m string) string {
+                urls = append(urls, m)
+                return fmt.Sprintf("\x00%d\x00", len(urls)-1)
+        })
+        // 合并内置 EXTRA_AD_PATTERNS (后跑在剩余文本上)
+        merged := append([]string(nil), patterns...)
+        merged = append(merged, EXTRA_AD_PATTERNS...)
+        for _, p := range merged {
+                if p == "" {
+                        continue
+                }
+                // ReDoS 闸门
+                if len(p) > 300 {
+                        continue
+                }
+                if reDoSNestedQuantifierAd.MatchString(p) {
+                        continue
+                }
+                re, err := regexp.Compile("(?i)" + p)
+                if err != nil {
+                        continue
+                }
+                out = re.ReplaceAllString(out, "")
+        }
+        // 还原 URL
+        out = urlPlaceholderRe.ReplaceAllStringFunc(out, func(m string) string {
+                sub := urlPlaceholderRe.FindStringSubmatch(m)
+                if len(sub) < 2 {
+                        return ""
+                }
+                var idx int
+                fmt.Sscanf(sub[1], "%d", &idx)
+                if idx >= 0 && idx < len(urls) {
+                        return urls[idx]
+                }
+                return ""
+        })
+        // 清残留 \x00
+        out = strings.ReplaceAll(out, "\x00", "")
+        return out
+}
+
+// ---------- 控制字符 + 零宽字符剥离 ----------
+
+// CcAndZwStripRe — 控制字符 (除 \t \n \r) + 零宽字符 (U+200B-C / U+2060 / U+FEFF) 剥离正则.
+//  R26-1A: 同口径追加 U+2060 (Word Joiner, 与 downloader.ZW_CHARS 同口径).
+var CcAndZwStripRe = regexp.MustCompile(`[\x00-\x08\x0B\x0C\x0E-\x1F\u200B-\u200D\u2060\uFEFF]`)
+
+// ZWStripOnlyRe — 仅零宽字符 (用于纯文本字段, 不剥控制字符)
+var ZWStripOnlyRe = regexp.MustCompile(`[\u200B-\u200D\u2060\uFEFF]`)
+
+// CcStripOnlyRe — 仅控制字符 (\b 等源站杂符; \t\n\r 不在剥离类内)
+var CcStripOnlyRe = regexp.MustCompile(`[\x00-\x08\x0B\x0C\x0E-\x1F]`)
+
+// ---------- 段落规整 ----------
+
+// NormalizeParagraphs — 段落规整: 空行压缩 + 缩进统一 + 段内多换行压单空格.
+//  - 入参 s (任意换行形式: \r\n / \n / \r)
+//  - 出参按 \n\n 分段 (双换行段间分隔)
+//  - 段内多换行压单空格; 全角空格 U+3000 → 半角; 多空白合并
+func NormalizeParagraphs(s string, separator string) string {
+        if s == "" {
+                return ""
+        }
+        // 按双换行 (>=2 个连续换行) 分段
+        twoNewlineRe := regexp.MustCompile(`\n{2,}`)
+        segs := twoNewlineRe.Split(s, -1)
+        out := []string{}
+        for _, seg := range segs {
+                // 段内 \r → 空格, \n → 空格, U+3000 → 半角, 多空白合并
+                seg = strings.ReplaceAll(seg, "\r", " ")
+                seg = strings.ReplaceAll(seg, "\n", " ")
+                seg = strings.ReplaceAll(seg, "\u3000", " ")
+                wsRe := regexp.MustCompile(`\s+`)
+                seg = wsRe.ReplaceAllString(seg, " ")
+                seg = strings.TrimSpace(seg)
+                if seg != "" {
+                        out = append(out, seg)
+                }
+        }
+        return strings.Join(out, separator)
+}
+
+// ---------- cleanContentHtml (主入口) ----------
+
+// cleanContentHtmlSync — 同步版清洗 (不含 trafilatura 桥调用).
+//  cfg.plainText=true: 剥全部标签 + 控制字符剥离 + 零宽字符剥离 + 段落规整
+//  cfg.plainText=false: HTML 模式 (白名单剥壳 + removeSelectors + 段落规整 + 首末段剥离)
+func cleanContentHtmlSync(raw string, cfg CleanConfig) string {
+        if raw == "" {
+                return ""
+        }
+        // 字面 \n → 真实换行 (源站二次转义 JSON 体)
+        html := strings.ReplaceAll(raw, "\\n", "\n")
+        // 繁简转换 (Go stub)
+        html = T2SHtml(html)
+
+        if cfg.PlainText {
+                // 纯文本模式: 剥全部标签
+                text := html
+                // 1. 先剥危险标签 (script/style/noscript/iframe/object/embed) 及其内部文本
+                text = regexp.MustCompile(`(?is)<(script|style|noscript|iframe|object|embed)\b[^>]*>.*?</\1\s*>`).ReplaceAllString(text, " ")
+                text = regexp.MustCompile(`(?is)<(script|style|noscript|iframe|object|embed)\b[^>]*/>`).ReplaceAllString(text, " ")
+                // 截断/未闭合的 script|style|... 段 — 贪婪匹配到串尾
+                text = regexp.MustCompile(`(?is)<(script|style|noscript|iframe|object|embed)\b[^>]*>.*`).ReplaceAllString(text, " ")
+                // 2. <br> → \n
+                text = regexp.MustCompile(`(?i)<\s*br\s*/?\s*>`).ReplaceAllString(text, "\n")
+                // 3. 块级闭合标签 → \n
+                text = regexp.MustCompile(`(?i)</(p|div|h[1-6]|li)>`).ReplaceAllString(text, "\n")
+                // 4. 剥全部标签
+                text = regexp.MustCompile(`<[^>]+>`).ReplaceAllString(text, "")
+                // 5. 实体单遍解码
+                text = DecodeEntitiesOnce(text)
+                // 6. 广告正则清洗
+                text = RemoveAdLines(text, cfg.AdPatterns)
+                // 7. 段落规整 (\n\n 分段)
+                text = NormalizeParagraphs(text, "\n\n")
+                // 8. 控制字符 + 零宽字符剥离
+                text = CcAndZwStripRe.ReplaceAllString(text, "")
+                return text
+        }
+
+        // HTML 模式
+        // 包 <div id="__clean_root"> 让 cheerio 规范化
+        doc, err := goquery.NewDocumentFromReader(strings.NewReader(`<div id="__clean_root">` + html + `</div>`))
+        if err != nil {
+                return raw
+        }
+        root := doc.Find("#__clean_root")
+        // 0. 硬移除脚本/样式类标签
+        root.Find(`script, style, noscript, iframe, object, embed`).Remove()
+        // 1. 移除指定选择器 (用户配置优先, 内置 EXTRA_AD_SELECTORS 后跑)
+        mergedSelectors := []string{}
+        mergedSelectors = append(mergedSelectors, cfg.RemoveSelectors...)
+        for _, extra := range EXTRA_AD_SELECTORS {
+                found := false
+                for _, s := range mergedSelectors {
+                        if s == extra {
+                                found = true
+                                break
+                        }
+                }
+                if !found {
+                        mergedSelectors = append(mergedSelectors, extra)
+                }
+        }
+        for _, sel := range mergedSelectors {
+                root.Find(sel).Remove()
+        }
+        // 1.5 移除分页/导航链接 (下一页/上一页/目录/继续阅读等短链接)
+        navRe := regexp.MustCompile(`^(下一页|上一页|下页|上页|目录|首?页|尾?页|返回目录|继续阅读|点击阅读|分页阅读?|加入书签|推荐本书?|报错).{0,4}$`)
+        root.Find("a").Each(func(_ int, s *goquery.Selection) {
+                t := strings.TrimSpace(s.Text())
+                if t != "" && navRe.MatchString(t) {
+                        s.Remove()
+                }
+        })
+        // 1.55 水印段落识别 (短段 ≤120 字 + 命中水印特征词 → 整段删)
+        watermarkRe1 := regexp.MustCompile(`(?i)(www\.)?[a-z0-9-]+\.(com|net|cc|org|info|top|xyz|vip|site)`)
+        watermarkRe2 := regexp.MustCompile(`敬请(?:期待|关注)|扫码(?:关注|下载)|加入书签|关注微信公众号|为了方便下次阅读`)
+        watermarkRe3 := regexp.MustCompile(`本章(?:未完|未完待续|继续阅读)|点击下一(?:页|章)`)
+        watermarkRe4 := regexp.MustCompile(`本书首发于|请记住本书|最新章节请到|一秒记住`)
+        watermarkRe5 := regexp.MustCompile(`为您提供.*?精彩小说|本站(?:首发|更新最快)`)
+        watermarkRe6 := regexp.MustCompile(`下载(?:APP|客户端|手机版)`)
+        root.Find("p").Each(func(_ int, s *goquery.Selection) {
+                t := strings.TrimSpace(s.Text())
+                if t == "" {
+                        return
+                }
+                if utf8.RuneCountInString(t) > 120 {
+                        return
+                }
+                if watermarkRe1.MatchString(t) || watermarkRe2.MatchString(t) || watermarkRe3.MatchString(t) ||
+                        watermarkRe4.MatchString(t) || watermarkRe5.MatchString(t) || watermarkRe6.MatchString(t) {
+                        s.Remove()
+                }
+        })
+        // 2. 白名单外的标签剥壳保文本
+        whitelistSet := map[string]bool{}
+        for _, t := range cfg.Whitelist {
+                whitelistSet[strings.ToLower(t)] = true
+        }
+        root.Find("*").Each(func(_ int, s *goquery.Selection) {
+                tag := goquery.NodeName(s)
+                tag = strings.ToLower(tag)
+                if tag != "" && !whitelistSet[tag] {
+                        s.ReplaceWithSelection(s.Contents())
+                }
+        })
+        // 2.5 白名单标签属性消毒 (a href / img src 必须 http(s); img alt 任意; 其余剥)
+        root.Find("*").Each(func(_ int, s *goquery.Selection) {
+                tag := strings.ToLower(goquery.NodeName(s))
+                if s.Nodes == nil || len(s.Nodes) == 0 {
+                        return
+                }
+                // 收集所有属性名, 非白名单的 RemoveAttr
+                attrNames := []string{}
+                for _, attr := range s.Nodes[0].Attr {
+                        attrNames = append(attrNames, attr.Key)
+                }
+                for _, name := range attrNames {
+                        val := s.AttrOr(name, "")
+                        keep := false
+                        if tag == "a" && name == "href" {
+                                keep = matchedHTTP(val)
+                        } else if tag == "img" && name == "src" {
+                                keep = matchedHTTP(val)
+                        } else if tag == "img" && name == "alt" {
+                                keep = true
+                        }
+                        if !keep {
+                                s.RemoveAttr(name)
+                        }
+                }
+        })
+        out, _ := root.Html()
+        // 3. 广告正则清洗
+        out = RemoveAdLines(out, cfg.AdPatterns)
+        // 4. 规范化 (空段落合并 + <br><br> → </p><p>)
+        if cfg.Normalize {
+                out = "<p>" + out + "</p>"
+                out = regexp.MustCompile(`(?i)<\s*br\s*/?\s*>\s*<\s*br\s*/?\s*>`).ReplaceAllString(out, "</p><p>")
+                out = regexp.MustCompile(`(?i)<p>(?:\s|&nbsp;|<br\s*/?\s*>)*</p>`).ReplaceAllString(out, "")
+                out = regexp.MustCompile(`(?i)<p>\s+`).ReplaceAllString(out, "<p>")
+                out = regexp.MustCompile(`(?i)\s+</p>`).ReplaceAllString(out, "</p>")
+        }
+        // 5. 若无任何 p 标签, 按换行重建段落
+        if !regexp.MustCompile(`(?i)<(p|br)\b`).MatchString(out) {
+                lines := strings.Split(out, "\n")
+                var b strings.Builder
+                for _, l := range lines {
+                        l = strings.TrimSpace(l)
+                        if l != "" {
+                                b.WriteString("<p>")
+                                b.WriteString(l)
+                                b.WriteString("</p>")
+                        }
+                }
+                out = b.String()
+        }
+        // 5.5 段首缩进规整 + 段内 <br> 压单空格
+        if doc2, err := goquery.NewDocumentFromReader(strings.NewReader(`<div id="__indent_root">` + out + `</div>`)); err == nil {
+                root2 := doc2.Find("#__indent_root")
+                root2.Find("p").Each(func(_ int, s *goquery.Selection) {
+                        h, _ := s.Html()
+                        h = regexp.MustCompile(`(?i)<\s*br\s*/?\s*>`).ReplaceAllString(h, " ")
+                        h = strings.ReplaceAll(h, "\u3000", " ")
+                        h = regexp.MustCompile(`\s+`).ReplaceAllString(h, " ")
+                        h = strings.TrimSpace(h)
+                        s.SetHtml(h)
+                })
+                out, _ = root2.Html()
+        }
+        out = regexp.MustCompile(`(?i)</p>\s*<p>`).ReplaceAllString(out, "</p><p>")
+        // 6. 首末段剥离 (短段 ≤80 字匹配章节号归一化形态 / 末段 ≤200 字命中水印特征词)
+        if doc3, err := goquery.NewDocumentFromReader(strings.NewReader(`<div id="__strip_root">` + out + `</div>`)); err == nil {
+                root3 := doc3.Find("#__strip_root")
+                paras := root3.Find("p")
+                if paras.Length() > 0 {
+                        first := paras.First()
+                        headText := strings.TrimSpace(first.Text())
+                        if utf8.RuneCountInString(headText) <= 80 {
+                                if regexp.MustCompile(`^第[一二三四五六七八九十百千万0-9]+(?:章|节|回|话|集)\b`).MatchString(headText) ||
+                                        regexp.MustCompile(`(?i)^Chapter\s+\d+`).MatchString(headText) {
+                                        first.Remove()
+                                }
+                        }
+                }
+                paras2 := root3.Find("p")
+                if paras2.Length() > 0 {
+                        last := paras2.Last()
+                        tailText := strings.TrimSpace(last.Text())
+                        if utf8.RuneCountInString(tailText) <= 200 {
+                                tailRe := regexp.MustCompile(`本章(?:未完|未完待续|继续阅读)|点击下一(?:页|章)|敬请(?:期待|关注)|加入书签|为了方便下次阅读`)
+                                if tailRe.MatchString(tailText) || watermarkRe1.MatchString(tailText) || watermarkRe4.MatchString(tailText) {
+                                        last.Remove()
+                                }
+                        }
+                }
+                out, _ = root3.Html()
+        }
+        // 7. 控制字符 + 零宽字符剥离
+        out = CcAndZwStripRe.ReplaceAllString(out, "")
+        return strings.TrimSpace(out)
+}
+
+// goqueryAttr — placeholder removed (uses html.Attribute from x/net/html directly).
+
+// matchedHTTP — val 是否以 http:// / https:// 开头.
+func matchedHTTP(val string) bool {
+        v := strings.ToLower(strings.TrimSpace(val))
+        return strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://")
+}
+
+// CleanContentHtml — 清洗章节正文 HTML (同步, 不调 trafilatura 桥).
+// 与 TS 端 cleanContentHtml 同口径 (R29-1C useTrafilatura=true 走 caller-side 分流).
+func CleanContentHtml(raw string, cfgOverride *CleanConfig) string {
+        cfg := DefaultCleanConfig
+        if cfgOverride != nil {
+                cfg = cloneCleanConfig(*cfgOverride)
+        }
+        return cleanContentHtmlSync(raw, cfg)
+}
+
+// CleanContentHtmlWithTrafilatura — trafilatura first 路径 (R29-1C useTrafilatura=true).
+// 调桥提取正文 → 喂入 plainText 段落规整链 (跳过 cheerio DOM 剥壳阶段).
+// 桥不可达/异常/空文本 → 降级回 cheerio 链 (零回归).
+func CleanContentHtmlWithTrafilatura(ctx context.Context, raw string, cfgOverride *CleanConfig, bridgeURL string) string {
+        cfg := DefaultCleanConfig
+        if cfgOverride != nil {
+                cfg = cloneCleanConfig(*cfgOverride)
+        }
+        if raw == "" {
+                return ""
+        }
+        // trafilatura first
+        res := CallTrafilaturaExtract(ctx, raw, cfg.TrafilaturaPruneXPath, bridgeURL)
+        if res.Ok && res.Text != "" {
+                // 喂入 plainText 段落规整链 (与 cleanContentHtmlSync plainText 分支同款)
+                text := strings.ReplaceAll(res.Text, "\\n", "\n")
+                text = T2SText(text)
+                text = RemoveAdLines(text, cfg.AdPatterns)
+                text = NormalizeParagraphs(text, "\n\n")
+                text = CcAndZwStripRe.ReplaceAllString(text, "")
+                if text != "" {
+                        return text
+                }
+        }
+        // 降级回 cheerio 链
+        return cleanContentHtmlSync(raw, cfg)
+}
+
+// TryTrafilaturaFallback — trafilatura 兜底模式 (R29-1A → R29-1C).
+// runner 在 sync cleanContentHtml 后, 若结果过短 (<200 字符) 且原 HTML 较长 (>2KB),
+// 调本桥做规则无关兜底; 桥结果 >2x cleaner 结果才采纳 (防误判).
+func TryTrafilaturaFallback(ctx context.Context, html, cleaned string, cfg CleanConfig, bridgeURL string) string {
+        if len(html) <= 2000 || len([]rune(cleaned)) >= 200 {
+                return cleaned
+        }
+        res := CallTrafilaturaExtract(ctx, html, cfg.TrafilaturaPruneXPath, bridgeURL)
+        if !res.Ok || res.Text == "" {
+                return cleaned
+        }
+        // 桥结果 >2x cleaner 结果才采纳
+        if len([]rune(res.Text)) > 2*len([]rune(cleaned)) {
+                text := strings.ReplaceAll(res.Text, "\\n", "\n")
+                text = T2SText(text)
+                text = RemoveAdLines(text, cfg.AdPatterns)
+                text = NormalizeParagraphs(text, "\n\n")
+                text = CcAndZwStripRe.ReplaceAllString(text, "")
+                return text
+        }
+        return cleaned
+}
+
+// ---------- cleanTextField (纯文本字段清洗) ----------
+
+// CleanTextField — 清洗纯文本字段 (书名/作者/简介等).
+//  1. 剥 HTML 标签
+//  2. 实体单遍解码
+//  3. 控制字符剥离 (\t \n \r 保留, 供后续按行切段)
+//  4. 零宽字符剥离
+//  5. 繁简转换 (Go stub)
+//  6. 站点水印清洗 + 重复标点压缩
+//  7. maxLength 截断 (按码点截断防代理对斩半)
+func CleanTextField(raw string, maxLength int) string {
+        if raw == "" {
+                return ""
+        }
+        v := regexp.MustCompile(`<[^>]+>`).ReplaceAllString(raw, "")
+        v = DecodeEntitiesOnce(v)
+        v = CcStripOnlyRe.ReplaceAllString(v, "")
+        v = ZWStripOnlyRe.ReplaceAllString(v, "")
+        v = T2SText(v)
+        v = strings.ReplaceAll(v, "\\n", "\n")
+        v = regexp.MustCompile(`[\r\n\t]+`).ReplaceAllString(v, " ")
+        v = regexp.MustCompile(`\s{2,}`).ReplaceAllString(v, " ")
+        // 站点水印清洗
+        v = regexp.MustCompile(`^(?:本书首发于|转载请注明出处|本书来源于|本书首发自)[^，。；]*[，。；]?`).ReplaceAllString(v, "")
+        v = strings.TrimSpace(v)
+        // 重复标点压缩 (! ? 。 及其全角形式)
+        v = regexp.MustCompile(`([!?。！？])\1+`).ReplaceAllString(v, "$1")
+        if maxLength > 0 && utf8.RuneCountInString(v) > maxLength {
+                runes := []rune(v)
+                v = string(runes[:maxLength])
+        }
+        return v
+}
+
+// CleanIntro — 清洗多行简介.
+func CleanIntro(raw string, maxLength int) string {
+        if raw == "" {
+                return ""
+        }
+        if maxLength <= 0 {
+                maxLength = 2000
+        }
+        v := regexp.MustCompile(`(?i)<\s*br\s*/?\s*>`).ReplaceAllString(raw, "\n")
+        v = regexp.MustCompile(`(?i)</(p|div)>`).ReplaceAllString(v, "\n")
+        v = regexp.MustCompile(`<[^>]+>`).ReplaceAllString(v, "")
+        v = DecodeEntitiesOnce(v)
+        v = CcStripOnlyRe.ReplaceAllString(v, "")
+        v = ZWStripOnlyRe.ReplaceAllString(v, "")
+        v = T2SText(v)
+        v = RemoveAdLines(v, DefaultCleanConfig.AdPatterns)
+        v = strings.ReplaceAll(v, "\\n", "\n")
+        // 段落规整 (\n 单换行段间, 与正文双换行不同)
+        v = NormalizeParagraphs(v, "\n")
+        // 末尾推广段剥离 + 开头元数据剥离
+        v = stripTrailingPromo(v)
+        v = stripLeadingMetadata(v)
+        // 按码点截断
+        if utf8.RuneCountInString(v) > maxLength {
+                runes := []rune(v)
+                v = string(runes[:maxLength])
+        }
+        return v
+}
+
+// stripTrailingPromo — 从末尾向前扫, 连续命中推广词的段全删 (遇到非推广段即停).
+func stripTrailingPromo(s string) string {
+        lines := strings.Split(s, "\n")
+        promoRe := regexp.MustCompile(`本书首发于|请记住本书|最新章节请到|一秒记住|为您提供.*?精彩小说|本站(?:首发|更新最快)|下载(?:APP|客户端|手机版)`)
+        for i := len(lines) - 1; i >= 0; i-- {
+                t := strings.TrimSpace(lines[i])
+                if t == "" {
+                        continue
+                }
+                if !promoRe.MatchString(t) {
+                        break
+                }
+                lines = append(lines[:i], lines[i+1:]...)
+        }
+        return strings.Join(lines, "\n")
+}
+
+// stripLeadingMetadata — 简介开头元数据剥离 (字数：xxx万字 / 状态：连载中 / 分类：玄幻 等).
+func stripLeadingMetadata(s string) string {
+        metaRe := regexp.MustCompile(`(?m)^\s*(?:字数|状态|分类|类型|作者|更新时间|最后更新)[:：].{0,80}$`)
+        lines := strings.Split(s, "\n")
+        for i, l := range lines {
+                t := strings.TrimSpace(l)
+                if t == "" {
+                        continue
+                }
+                if !metaRe.MatchString(t) {
+                        if i == 0 {
+                                return s
+                        }
+                        return strings.Join(lines[i:], "\n")
+                }
+        }
+        return s
+}

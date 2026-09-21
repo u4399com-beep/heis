@@ -1,0 +1,130 @@
+{{define "ddyueshu/home"}}<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>{{.Site.Title}}</title>
+<meta name="keywords" content="{{.Site.Keywords}}">
+<meta name="description" content="{{.Site.Description}}">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" type="text/css" href="/clone-css/ddyueshu.css">
+</head>
+<body>
+<div id="wrapper">
+<div class="header">
+<div class="header_logo">
+<a href="/">{{.Site.Name}}</a>
+</div>
+<div class="header_search">
+<form name="articlesearch" method="get" action="/search">
+<input name="searchkey" type="text" class="text" placeholder="搜索从这里开始...">
+<button type="submit" name="submit">搜索</button>
+</form>
+</div>
+</div>
+
+<div class="nav">
+<ul>
+<li><a href="/">首页</a></li>
+{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}">{{.name}}</a></li>{{end}}
+<li><a href="/?view=fulltext">全本</a></li>
+<li><a href="/?view=history">足迹</a></li>
+</ul>
+</div>
+
+<div id="main">
+<div id="content">
+<div id="main">
+
+<div id="hotcontent">
+<div class="l">
+{{range .TopBooks}}
+<div class="item">
+<div class="image"><a href="/?view=book&id={{.id}}" target="_blank">{{if .cover}}<img src="{{.cover}}" alt="{{.name}}" width="120" height="150">{{end}}</a></div>
+<dl>
+<dt><span>{{.author}}</span><a href="/?view=book&id={{.id}}">{{.name}}</a></dt>
+<dd>{{.intro}}</dd>
+</dl>
+<div class="clear"></div>
+</div>
+{{end}}
+</div>
+
+<div class="r">
+<h2>强档推荐</h2>
+<ul>
+{{range .Popular}}
+<li><span class="s1">[{{.category}}]</span><span class="s2"><a href="/?view=book&id={{.id}}">{{.name}}</a></span><span class="s5">{{.author}}</span></li>
+{{end}}
+</ul>
+</div>
+
+<div class="clear"></div>
+</div>
+
+<div class="novelslist">
+<div class="content">
+<h2>最新小说</h2>
+<div class="top">
+<div class="image">{{if index .Books 0}}{{$b := index .Books 0}}<a href="/?view=book&id={{$b.id}}" target="_blank">{{if $b.cover}}<img src="{{$b.cover}}" alt="{{$b.name}}" width="67" height="82">{{end}}</a>{{end}}</div>
+<dl>
+<dt>{{if index .Books 0}}{{$b := index .Books 0}}<a href="/?view=book&id={{$b.id}}" target="_blank">{{$b.name}}</a>{{end}}</dt>
+<dd>{{if index .Books 0}}{{(index .Books 0).intro}}{{end}}</dd>
+</dl>
+<div class="clear"></div>
+</div>
+<ul>
+{{range .Books}}
+<li><a href="/?view=book&id={{.id}}">{{.name}}</a>/{{.author}}</li>
+{{end}}
+</ul>
+</div>
+<div class="content">
+<h2>历史推荐</h2>
+<div class="top">
+<div class="image">{{if index .Popular 0}}{{$b := index .Popular 0}}<a href="/?view=book&id={{$b.id}}" target="_blank">{{if $b.cover}}<img src="{{$b.cover}}" alt="{{$b.name}}" width="67" height="82">{{end}}</a>{{end}}</div>
+<dl>
+<dt>{{if index .Popular 0}}{{$b := index .Popular 0}}<a href="/?view=book&id={{$b.id}}" target="_blank">{{$b.name}}</a>{{end}}</dt>
+<dd>{{if index .Popular 0}}{{(index .Popular 0).intro}}{{end}}</dd>
+</dl>
+<div class="clear"></div>
+</div>
+<ul>
+{{range .Popular}}
+<li><a href="/?view=book&id={{.id}}">{{.name}}</a>/{{.author}}</li>
+{{end}}
+</ul>
+</div>
+<div class="clear"></div>
+</div>
+
+<div id="newscontent">
+<div class="l">
+<h2>最近更新小说列表</h2>
+<ul>
+{{range .Books}}
+<li><span class="s1">[{{.category}}]</span><span class="s2"><a href="/?view=book&id={{.id}}">{{.name}}</a></span><span class="s3"><a href="/?view=book&id={{.id}}">{{if .latestChapter}}{{.latestChapter}}{{else}}查看最新{{end}}</a></span><span class="s4">{{.author}}</span><span class="s5">{{wordCount .wordCount}}</span></li>
+{{end}}
+</ul>
+</div>
+<div class="r">
+<h2>最热小说列表</h2>
+<ul>
+{{range .Popular}}
+<li><span class="s1">[{{.category}}]</span><span class="s2"><a href="/?view=book&id={{.id}}">{{.name}}</a></span><span class="s3"><a href="/?view=book&id={{.id}}">{{if .latestChapter}}{{.latestChapter}}{{else}}查看{{end}}</a></span><span class="s4">{{.author}}</span><span class="s5">{{wordCount .wordCount}}</span></li>
+{{end}}
+</ul>
+</div>
+<div class="clear"></div>
+</div>
+
+</div>
+</div>
+</div>
+
+<div class="footer">
+<p>本站所有小说为转载作品，所有章节均由网友上传，转载至本站只是为了宣传本书让更多读者欣赏。</p>
+<p>Copyright © {{.Site.Name}} ({{.Site.Domain}}) All Rights Reserved.</p>
+</div>
+
+</body>
+</html>{{end}}

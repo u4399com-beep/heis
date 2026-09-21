@@ -1,0 +1,167 @@
+{{define "pilishuwu/home"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>{{.Site.Title}}</title>
+<meta name="keywords" content="{{.Site.Keywords}}">
+<meta name="description" content="{{.Site.Description}}">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="/clone-css/pilishuwu.css">
+</head>
+<body>
+<div class="mod-top-wr">
+<div class="mod-top-frame">
+<div class="mod-top-tool-wr ui-wm">
+<div class="mod-top-logo-wr ui-left">
+<h1 class="mod-top-logo ui-left ui-text-hide">
+<a title="{{.Site.Name}}" href="/">{{.Site.Name}}</a>
+</h1>
+<div class="mod-top-event ui-left ui-dn"></div>
+</div>
+<div class="mod-top-search-wr ui-left">
+<div id="top-search" class="mod-top-search">
+<div class="mod-search-input-wr ui-left">
+<form action="/search">
+<input class="mod-search-input" type="text" name="key" placeholder="可搜索小说名/作者名">
+<button class="mod-search-submit ui-left ui-text-hide" type="submit">搜索</button>
+</form>
+</div>
+<ul class="mod-top-tag" id="hotWord">
+{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}">{{.name}}</a></li>{{end}}
+</ul>
+</div>
+</div>
+<div class="mod-top-nav-tool ui-right" id="loginbox">
+<a href="/?view=history">阅读历史</a> · <a href="/?view=fulltext">完本阅读</a>
+</div>
+</div>
+
+<div class="mod-top-nav-wr">
+<div class="mod-top-nav ui-wm">
+<ul class="mod-top-nav-list ui-left">
+<li><a class="mod-top-nav-home" href="/" title="首页">首页</a></li>
+{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}" title="{{.name}}">{{.name}}</a></li>{{end}}
+</ul>
+</div>
+</div>
+</div>
+</div>
+
+<div class="newyear-bg-wrap">
+<div class="mod-tags-wr ui-wm">
+<ul class="mod-animate-list clearfix">
+<li class="first"><span class="ui-ico-animate">独家推荐</span></li>
+{{range .TopBooks}}
+<li>
+<a href="/?view=book&id={{.id}}" title="{{.name}}" target="_blank" class="mod-top-ani-a">{{.name}}</a>
+<div class="mod-ani-info">
+<span class="mod-ico-top">&nbsp;</span>
+<a class="mod-ani-img" href="/?view=book&id={{.id}}" target="_blank">
+{{if .cover}}<img src="{{.cover}}" width="210" height="280" alt="{{.name}}">{{end}}
+</a>
+<div class="mod-ani-text1 clearfix">
+<a href="/?view=book&id={{.id}}" class="ui-left ui-fs-18" title="{{.name}}">{{.name}}</a>
+<a class="ui-right ui-txt-fb" title="{{.author}}">{{.author}}</a>
+</div>
+<div class="mod-ani-text2">
+<p class="ui-ani-fplay">{{.category}} · {{wordCount .wordCount}}</p>
+</div>
+</div>
+</li>
+{{end}}
+</ul>
+</div>
+</div>
+
+<div class="ui-wm clearfix in-banner-wrap">
+<div class="in-rank-wr ui-right">
+<div class="mod-tab-handle clearfix">
+<h2>热门排行</h2>
+</div>
+<div id="top-rank-panel" class="mod-tab-content-wr">
+<div class="mod-tab-content clearfix">
+<ol class="in-rank-list ui-left ui-pr10">
+{{range .Popular}}
+<li>
+<sub class="in-rank-no-orange">★</sub>
+<a class="in-rank-name" href="/?view=book&id={{.id}}" title="{{.name}}">{{.name}}</a>
+<i class="ui-rank-trend-keep"></i>
+</li>
+{{end}}
+</ol>
+</div>
+</div>
+</div>
+</div>
+
+<div class="in-strong-wr ui-wm ui-mb40" id="in-strong-wr">
+<div class="in-title-wr title-line-bg ui-mb20 clearfix">
+<h3 class="in-title-big ui-left veins">精品<em>推荐</em></h3>
+</div>
+<div id="in-slider-wr" class="in-slider-wr in-content">
+<ul id="in-slider-list" class="in-slider-list mod-cover-list clearfix">
+{{range .Books}}
+<li>
+<a class="mod-cover-list-thumb mod-cover-effect ui-db" title="{{.name}}" href="/?view=book&id={{.id}}" target="_blank">
+{{if .cover}}<img src="{{.cover}}" alt="{{.name}}">{{end}}
+<span class="mod-layer-mask">&nbsp;&nbsp;</span>
+</a>
+<p class="mod-cover-list-updata">
+<a class="mod-cover-list-mask" href="/?view=book&id={{.id}}" target="_blank">
+<span class="mod-cover-list-text">{{if .latestChapter}}{{.latestChapter}}{{else}}{{.category}}{{end}}</span>
+</a>
+</p>
+<h5><a class="mod-cover-list-name" href="/?view=book&id={{.id}}" title="{{.name}}" target="_blank">{{.name}}</a></h5>
+<p class="mod-cover-list-intro">{{.intro}}</p>
+<p class="mod-cover-list-intro">{{.author}}</p>
+<p class="mod-cover-list-tag">
+<a class="mod-tag-item" href="/?view=category&cat={{.categoryId}}" target="_blank" title="{{.category}}">{{.category}}</a>
+</p>
+</li>
+{{end}}
+</ul>
+</div>
+</div>
+
+<div class="in-main-wr ui-left ui-wm">
+<div class="in-teen-list-wr ui-mb30" id="in-teen-list-wr">
+<div class="in-title-wr ui-mb20 clearfix">
+<h3 class="in-title-big ui-left">最新<em>入库</em></h3>
+</div>
+<div class="in-content-wr">
+<ul id="in-teen-list" class="in-teen-list mod-cover-list clearfix">
+{{range .Books}}
+<li>
+<a class="mod-cover-list-thumb mod-cover-effect ui-db" title="{{.name}}" href="/?view=book&id={{.id}}">
+{{if .cover}}<img src="{{.cover}}" alt="{{.name}}">{{end}}
+<span class="mod-layer-mask">&nbsp;&nbsp;</span>
+</a>
+<p class="mod-cover-list-updata">
+<a class="mod-cover-list-mask" href="/?view=book&id={{.id}}" target="_blank">
+<span class="mod-cover-list-text">{{wordCount .wordCount}}</span>
+</a>
+</p>
+<h5><a class="mod-cover-list-name" href="/?view=book&id={{.id}}" title="{{.name}}" target="_blank">{{.name}}</a></h5>
+<p class="mod-cover-list-intro">{{.author}}</p>
+<p class="mod-cover-list-tag">
+<a class="mod-tag-item" href="/?view=category&cat={{.categoryId}}" target="_blank" title="{{.category}}">{{.category}}</a>
+</p>
+</li>
+{{end}}
+</ul>
+</div>
+</div>
+</div>
+
+<div class="mod-footer-wr">
+<div class="mod-footer-main-wr">
+<div class="mod-footer-main ui-wm">
+<div class="mod-footer-info">本站所有小说为完本转载作品，所有内容版权归版权方或原作者所有。</div>
+<p>Copyright © {{.Site.Name}} ({{.Site.Domain}})</p>
+</div>
+</div>
+<div class="mod-footer-border"></div>
+</div>
+
+</body>
+</html>{{end}}

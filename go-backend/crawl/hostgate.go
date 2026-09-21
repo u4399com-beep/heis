@@ -1,0 +1,378 @@
+// hostgate.go — 同 host 并发 + 速率 双维闸门 (反反爬核心组件).
+//
+// 与 TS 端 src/lib/crawl/hostgate.ts 同口径:
+//   - 每 host 一个槽位账本 (inFlight / limit / failStreak / successStreak / minGapMs)
+//   - 计账式准入: 释放只触发一次容量复查 (pump), 不把槽位"递给"任何特定等待者;
+//     等待者按 FIFO 队头次序自行复查 "limit - inFlight > 0" 并自计入账;
+//     新请求必须排在既存等待者之后 (队空 + 有余量才走快速通道), 杜绝 barge 插队.
+//   - 降额: 同 host 连续失败 ≥3 → limit-1 (最低 1), 60s 冷却内不再降; 连续成功 ≥10
+//     → limit+1 (不超过 baseLimit). 降额不动在飞请求, 存量自然回落.
+//   - 速率节流: 同 host 相邻准入最小间隔 minGapMs; 准入判定 = 并发余量 + 节流到点.
+//   - 限流冷却: 429 感知后推后 rateLimitedUntil; 该期间 pump 不放行.
+//   - LRU 治理: gates Map 软上限 1000; acquire 路径惰性 sweep + 驱逐 idle host.
+//
+// Go 实现要点: 用 chan struct 信号 + sync.Mutex 取代 TS 端 promise 队列; 单 goroutine
+// pump 避免锁竞争; context.Context 支持取消 (与 Semaphore 配合 stop/换代).
+package crawl
+
+import (
+        "context"
+        "net/url"
+        "strings"
+        "sync"
+        "time"
+)
+
+const (
+        HostGateDefaultLimit   = 3
+        HostGateMinLimit       = 1
+        HostGateMaxLimit       = 10
+        HostGateWaitTimeoutMs = 30000
+        DerateFailStreak       = 3
+        DerateCooldownMs       = 60000
+        RecoverSuccessStreak   = 10
+        HostGateRateLimitDefaultMs = 30000
+        HostGateRateLimitMaxMs     = 120000
+        HostsCap                   = 1000
+        SweepEvery                 = 100
+        SweepMax                   = 200
+)
+
+// HostGateTicket — 准入票据 (释放时回传 host).
+type HostGateTicket struct {
+        Host string
+}
+
+// HostGateDerateEvent — 降额事件 (供 runner 写日志).
+type HostGateDerateEvent struct {
+        Host       string
+        FailStreak int
+        OldLimit   int
+        NewLimit   int
+}
+
+type waiter struct {
+        ch     chan struct{}
+        ctx    context.Context
+        cancel context.CancelFunc
+}
+
+type hostState struct {
+        host                  string
+        inFlight              int
+        limit                 int
+        baseLimit             int
+        failStreak            int
+        successStreak         int
+        penaltyUntil          int64
+        waiters              []*waiter
+        minGapMs              int
+        minGapMsLastValue     int
+        minGapMsBeforeCooldown int
+        lastAdmitAt           int64
+        rateLimitedUntil      int64
+}
+
+// HostGate — 同 host 并发闸门 (进程级单例, 多任务共享).
+type HostGate struct {
+        mu   sync.Mutex
+        gate map[string]*hostState
+        // sweepN 计数 (摊销惰性 sweep)
+        sweepN int
+}
+
+var (
+        hostGateOnce sync.Once
+        hostGateInst *HostGate
+)
+
+// GetHostGate — 进程级单例.
+func GetHostGate() *HostGate {
+        hostGateOnce.Do(func() {
+                hostGateInst = &HostGate{gate: make(map[string]*hostState)}
+        })
+        return hostGateInst
+}
+
+// HostGateKeyOf — host 键: URL host 小写 (含非默认端口, 同主机不同端口视为不同站).
+func HostGateKeyOf(s string) string {
+        u, err := url.Parse(s)
+        if err != nil {
+                return ""
+        }
+        if u.Host == "" {
+                return ""
+        }
+        return strings.ToLower(u.Host)
+}
+
+func clampLimit(v int) int {
+        if v < HostGateMinLimit {
+                return HostGateMinLimit
+        }
+        if v > HostGateMaxLimit {
+                return HostGateMaxLimit
+        }
+        return v
+}
+
+func (g *HostGate) stateOf(host string, baseLimit int) *hostState {
+        st, ok := g.gate[host]
+        if !ok {
+                st = &hostState{
+                        host:      host,
+                        inFlight:  0,
+                        limit:     baseLimit,
+                        baseLimit: baseLimit,
+                }
+                g.gate[host] = st
+        }
+        return st
+}
+
+// isHostIdle — 是否空闲 (在飞 0 + 队列空 + 冷却过期).
+func (g *HostGate) isHostIdle(st *hostState, now int64) bool {
+        return st.inFlight == 0 &&
+                len(st.waiters) == 0 &&
+                st.penaltyUntil < now &&
+                st.rateLimitedUntil < now
+}
+
+// evictOneIdleHost — 驱逐一个空闲 host, 返回是否仍超限.
+func (g *HostGate) evictOneIdleHost() bool {
+        now := time.Now().UnixMilli()
+        for k, st := range g.gate {
+                if g.isHostIdle(st, now) {
+                        delete(g.gate, k)
+                        return len(g.gate) > HostsCap
+                }
+        }
+        return false
+}
+
+// sweepIdleHosts — 周期性 sweep (惰性, 上限 SweepMax 防病态大 Map 单次过久).
+func (g *HostGate) sweepIdleHosts() {
+        now := time.Now().UnixMilli()
+        removed := 0
+        for k, st := range g.gate {
+                if removed >= SweepMax {
+                        break
+                }
+                if g.isHostIdle(st, now) {
+                        delete(g.gate, k)
+                        removed++
+                }
+        }
+}
+
+func (g *HostGate) maybeSweepAndEvict() {
+        g.sweepN++
+        if g.sweepN%SweepEvery == 0 {
+                g.sweepIdleHosts()
+        }
+        for len(g.gate) > HostsCap {
+                if !g.evictOneIdleHost() {
+                        break
+                }
+        }
+}
+
+// settleRateLimitExpiry — 限流冷却到期结算 (惰性): 清零连败 + 回滚 minGapMs 快照.
+func (g *HostGate) settleRateLimitExpiry(st *hostState) {
+        if st.rateLimitedUntil > 0 && time.Now().UnixMilli() >= st.rateLimitedUntil {
+                st.rateLimitedUntil = 0
+                st.failStreak = 0
+                if st.minGapMsBeforeCooldown > 0 {
+                        st.minGapMs = st.minGapMsBeforeCooldown
+                        st.minGapMsBeforeCooldown = 0
+                }
+        }
+}
+
+// pump — 容量复查 (计账式准入核心): FIFO 队头起复查余量 + 节流到点 + 非冷却期.
+func (g *HostGate) pump(st *hostState) {
+        g.settleRateLimitExpiry(st)
+        if len(st.waiters) == 0 {
+                return
+        }
+        now := time.Now().UnixMilli()
+        if now < st.rateLimitedUntil {
+                return // 限流冷却期内整队不放行
+        }
+        for len(st.waiters) > 0 {
+                if st.limit-st.inFlight <= 0 {
+                        return // 并发余量不足
+                }
+                if now-st.lastAdmitAt < int64(st.minGapMs) {
+                        return // 节流未到点: 卡住整个队列 (无 barge)
+                }
+                w := st.waiters[0]
+                st.waiters = st.waiters[1:]
+                st.inFlight++
+                st.lastAdmitAt = now
+                select {
+                case w.ch <- struct{}{}:
+                default:
+                        // caller 已超时取消, 继续下一个
+                        continue
+                }
+        }
+}
+
+// Acquire — 过闸获取槽位. 有余量 + 无排队者 + 非限流冷却期 + 节流到点 → 立即准入;
+// 否则入 FIFO 队尾, 由 Release/Report 触发的 pump 复查准入. 等待超过 timeoutMs
+// 或 ctx.Done() 返回 ctx.Err().
+func (g *HostGate) Acquire(ctx context.Context, rawURL string, limit, timeoutMs, minGapMs int) (*HostGateTicket, error) {
+        g.maybeSweepAndEvict()
+        host := HostGateKeyOf(rawURL)
+        if host == "" {
+                return &HostGateTicket{Host: ""}, nil
+        }
+        baseLimit := clampLimit(limit)
+        if timeoutMs < 1000 {
+                timeoutMs = HostGateWaitTimeoutMs
+        }
+        if minGapMs < 0 {
+                minGapMs = 0
+        }
+
+        g.mu.Lock()
+        st := g.stateOf(host, baseLimit)
+        st.baseLimit = baseLimit
+        if st.limit > st.baseLimit {
+                st.limit = st.baseLimit
+        }
+        // minGapMs 跟随最近一次 (新 caller 接管时不做 MAX 合并, 防旧 caller 60s 永久毒杀新 caller)
+        if minGapMs != st.minGapMsLastValue {
+                st.minGapMs = minGapMs
+                st.minGapMsLastValue = minGapMs
+        }
+
+        // 快速通道: 队空 + 有余量 + 非冷却期 + 节流到点
+        now := time.Now().UnixMilli()
+        if len(st.waiters) == 0 && st.limit-st.inFlight > 0 &&
+                now >= st.rateLimitedUntil && now-st.lastAdmitAt >= int64(st.minGapMs) {
+                st.inFlight++
+                st.lastAdmitAt = now
+                g.mu.Unlock()
+                return &HostGateTicket{Host: host}, nil
+        }
+
+        // 入 FIFO 等待队列
+        ctx2, cancel := context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond)
+        defer cancel()
+        w := &waiter{
+                ch:     make(chan struct{}, 1),
+                ctx:    ctx2,
+                cancel: cancel,
+        }
+        st.waiters = append(st.waiters, w)
+        g.mu.Unlock()
+
+        // pump 复查 (新等待者入队后立即尝试)
+        g.mu.Lock()
+        g.pump(st)
+        g.mu.Unlock()
+
+        select {
+        case <-w.ch:
+                return &HostGateTicket{Host: host}, nil
+        case <-ctx2.Done():
+                // 超时/取消: 从队列移除 (lazy)
+                g.mu.Lock()
+                for i, x := range st.waiters {
+                        if x == w {
+                                st.waiters = append(st.waiters[:i], st.waiters[i+1:]...)
+                                break
+                        }
+                }
+                g.mu.Unlock()
+                return nil, ctx2.Err()
+        }
+}
+
+// Release — 释放槽位 (计账式: inFlight-- + pump).
+func (g *HostGate) Release(t *HostGateTicket) {
+        if t == nil || t.Host == "" {
+                return
+        }
+        g.mu.Lock()
+        defer g.mu.Unlock()
+        st, ok := g.gate[t.Host]
+        if !ok {
+                return
+        }
+        if st.inFlight > 0 {
+                st.inFlight--
+        }
+        g.pump(st)
+}
+
+// ReportFailure — 记录失败 (连续 ≥3 触发降额). 返回降额事件 (无降额时 nil).
+func (g *HostGate) ReportFailure(host string) *HostGateDerateEvent {
+        if host == "" {
+                return nil
+        }
+        g.mu.Lock()
+        defer g.mu.Unlock()
+        st, ok := g.gate[host]
+        if !ok {
+                return nil
+        }
+        st.successStreak = 0
+        st.failStreak++
+        now := time.Now().UnixMilli()
+        if st.failStreak >= DerateFailStreak && st.penaltyUntil < now {
+                old := st.limit
+                if st.limit > HostGateMinLimit {
+                        st.limit--
+                }
+                st.penaltyUntil = now + DerateCooldownMs
+                return &HostGateDerateEvent{Host: host, FailStreak: st.failStreak, OldLimit: old, NewLimit: st.limit}
+        }
+        return nil
+}
+
+// ReportSuccess — 记录成功 (连续 ≥10 回升一档, 不超过 baseLimit).
+func (g *HostGate) ReportSuccess(host string) {
+        if host == "" {
+                return
+        }
+        g.mu.Lock()
+        defer g.mu.Unlock()
+        st, ok := g.gate[host]
+        if !ok {
+                return
+        }
+        st.failStreak = 0
+        st.successStreak++
+        if st.successStreak >= RecoverSuccessStreak && st.limit < st.baseLimit {
+                st.limit++
+                st.successStreak = 0
+        }
+}
+
+// ReportRateLimited — 限流冷却 (429 感知). Retry-After 缺省 30s, 上限 120s.
+func (g *HostGate) ReportRateLimited(host string, retryAfterMs int) {
+        if host == "" {
+                return
+        }
+        if retryAfterMs < 1000 {
+                retryAfterMs = HostGateRateLimitDefaultMs
+        }
+        if retryAfterMs > HostGateRateLimitMaxMs {
+                retryAfterMs = HostGateRateLimitMaxMs
+        }
+        g.mu.Lock()
+        defer g.mu.Unlock()
+        st, ok := g.gate[host]
+        if !ok {
+                // 即使新建账本也记录 (后续 acquire 会立即冷却, 不发请求)
+                st = g.stateOf(host, HostGateDefaultLimit)
+        }
+        now := time.Now().UnixMilli()
+        st.rateLimitedUntil = now + int64(retryAfterMs)
+        if st.minGapMsBeforeCooldown == 0 && st.minGapMs > 0 {
+                st.minGapMsBeforeCooldown = st.minGapMs
+        }
+}

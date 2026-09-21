@@ -15301,3 +15301,536 @@ Stage Summary:
 - 根因: book.fields.cover 用 {floor:id/1000} 非标准占位符, parser 不支持 → cover URL 渲染失败
 - 修复: list + book 段都加 cover, 用固定路径 /bookimg/0/{id}.jpg (agent-browser 实测 + curl 验证)
 - 教训: 规则字段占位符需用 parser 支持的标准占位符({id}/{q.id}/{index} 等), 不能用未实现的函数(floor:)
+
+---
+Task ID: R38-1B
+Agent: full-stack-developer (shipsay 8页型 Go template)
+Task: book/category/read/ranking/fulltext/search/keyword.html
+
+Work Log:
+- 步骤 1 读交接:
+  · 读 go-backend/templates/shipsay/home.html (Go template 写法: {{define "..."}}
+    包裹 + {{range .NavCats}}{{.id}}{{end}} + {{if .cover}}<img>{{end}} 风格)
+  · 读 go-backend/main.go (homeHandler 数据结构: Site/Categories/Books/NavCats/
+    TopBooks/Popular; FuncMap 仅 wordCount; 路由: / → homeHandler, /api/public/* 9 个)
+  · 读 src/components/public/clone-themes/shipsay/{BookInfo,CategoryList,ReadChrome,
+    RankingView,FulltextView,SearchView,KeywordView}.tsx 学习各页型 DOM 结构 +
+    源站 class 名 (.novel_info_main/.chapter_list/.sortvisit/.store/.store_left/
+    #store_right/.side_commend/.flex/.img_span/.w100/.li_bottom/.pages/.ulcard/
+    .lastupdate/.searchresult/.searchresult_p/.read_nav/.text/.fontsize/#article/
+    .text_title/.style_h1/.text_info/.fullflag/.store_title/.section.link/#footer)
+  · 读 src/app/page.tsx 了解 view 路由 + 数据装配 (book: book+chapters+tags+recent;
+    read: chapter+book+prev+next+pagination; category: books+total+page+size;
+    ranking: books by sort; fulltext: status=completed; search: LIKE q;
+    keyword: BookTag JOIN Book)
+  · 读 prisma/schema.prisma 了解字段 (Book: id/name/author/intro/cover/status/
+    wordCount/latestChapter/keywords/categoryId/updatedAt; Chapter: id/bookId/idx/
+    title/content/wordCount/storage/filePath; BookTag: bookId/tag/source/hits)
+
+- 步骤 2 创建 7 个 shipsay 页型 template:
+  · go-backend/templates/shipsay/book.html ({{define "shipsay/book"}}):
+    - 完整 header/nav (复用 home 同款 .container.head + .navigation nav.container)
+    - .novel_info_main: img 120x160 float:left + .novel_info_title (h1 + p span 作者/
+      类别/状态/字数/更新 + i 最新章节 + div l_btn/l_btn_0 开始阅读/查看目录) +
+      .indent p 简介
+    - .chapter_list #chapter_list: p.title 最新章节 + ul li RecentChapters +
+      查看完整章节目录
+    - {{if .Chapters}} 第二个 .chapter_list: 完整章节目录 ul li (按 idx asc 排序)
+    - {{if .Related}} .section.flex .sortvisit 同类推荐 (大卡 + li x N)
+    - .section.link 友情链接 + #footer footer.container
+  · category.html ({{define "shipsay/category"}}):
+    - .store > .store_left .side_commend_width (p.title {{.Label}} + ul.flex li 含
+      .img_span img 100x133 + span 类别/状态 + .w100 h2 + p.indent + .li_bottom a
+      作者 + div em.orange 字数 + em.blue 日期) + {{if gt .TotalPages 1}}.pages
+      分页 (上一页/页码/下一页/尾页) + #store_right (全部分类 + 热门小说 + 热门作者)
+  · read.html ({{define "shipsay/read"}}):
+    - main.container.read_bg .text_title (h1.style_h1 + .text_info span 来源/欢迎)
+    - .text .fontsize (3 个 button A 字号档 + span 字号提示) + #article (template.HTML
+      不转义正文, 已自动 \n\n → <p> 包裹)
+    - .read_nav a x3 (上一章 / 目录 / 下一章, {{if .Prev}}/{{if .Next}} 守卫)
+  · ranking.html ({{define "shipsay/ranking"}}):
+    - .section .ulcard 7 tabs (总点击/月点击/周点击/日点击/总推荐/字数/最近更新,
+      {{if eq .id $.Tab}}class="act"{{end}}) + .lastupdate (p.title {{.TabName}} +
+      ul.odd li 含 span bookmark 排名 + a 书名 + a.gray 最新章节 + span 作者+日期) +
+      {{if gt .TotalPages 1}}.pages
+    - aside 热门小说 ul.popular.odd
+  · fulltext.html ({{define "shipsay/fulltext"}}):
+    - 同 category 结构, 加 .img_span span.fullflag "完本" 图标 + p.title 全本完本小说 +
+      .pages 分页
+  · search.html ({{define "shipsay/search"}}):
+    - input searchkey value={{.Q}} 预填搜索词
+    - .section (p.title 搜索 + {{range .Books}}.searchresult: h3 书名 + p 作者/类别/
+      字数 + p.searchresult_p 简介 + div a.gray 最新章节) + aside 热门小说
+  · keyword.html ({{define "shipsay/keyword"}}):
+    - input searchkey value={{.Tag}} 预填标签
+    - .section (p.title 标签 + {{if .RelatedTags}}.ulcard li 相关标签 + {{range .Books}}
+      .searchresult) + aside 热门小说
+
+- 步骤 3 扩展 main.go:
+  · FuncMap 加 5 个: statusLabel (status → 连载/完结), fmtDate (ISO/SQLite dt →
+    YYYY-MM-DD), fmtDateShort (→ MMDD 4 字符), add/sub (整数加减, 用于分页上下页)
+  · homeHandler 改造: switch view (book/read/category/ranking/fulltext/search/
+    keyword/history/home) 各分支按需装配 data, theme+view 拼模板名 tmplName =
+    theme + "/" + view, 失败 fallback shipsay/home
+  · 新增工具函数: toInt (interface{} → int, 支持 int/int64/float64/字符串数字),
+    clampPage (page 参数解析, 默认 1 最小 1), buildPageList (当前页前后各 5 个, 最多
+    11 个页码列表), pickAuthors (去重作者前 n), withRank (给 books 列表每项加 rank
+    字段), rankingTabs (静态 7 项), tabName (id → 中文), bookRowFromScan (SQL 字段
+    拼成 book map, 字段名与 getBooks 一致)
+  · 新增视图数据查询:
+    - getBookViewData(id) → book map + chapters (前 200 章) + recent (idx desc 12
+      章反转, 最新在前) + related (同 categoryId 排除当前书, 12 本) + firstChID
+    - getReadViewData(chID) → chapter (含 content, 若 \n\n 分段则自动包 <p> 并 HTML
+      转义) + book (id/name/author/status/category/intro) + prev/next (基于 idx 查
+      前/后一章)
+    - getCategoryViewData(catID, page, size) → label (分类名或 "全本小说") + books +
+      total, WHERE categoryId=? 过滤 + LIMIT/OFFSET 分页, offset 钳 ≤ 10000
+    - getRankingViewData(tab, page, size) → books + total, ORDER BY updatedAt DESC
+      (size → wordCount DESC), 与 Next.js page.tsx SORT_MAP 同口径
+    - getFulltextViewData(page, size) → books + total, WHERE status='completed'
+    - getSearchViewData(q, limit) → books, LIKE %q% 匹配 name/author/intro/keywords,
+      ORDER BY wordCount DESC
+    - getKeywordViewData(tag, limit) → books (BookTag JOIN Book 按 hits desc) +
+      relatedTags (第一本书的其他 tag, 12 个)
+
+- 步骤 4 编译 + 渲染测试:
+  · cd go-backend && go build -o heis-backend . → 0 errors, 二进制 18.26 MB
+  · go vet ./... → 0 warnings
+  · 重启 heis-backend (kill 旧 + setsid 启动), 监听 :3001, 加载 17 个模板 (shipsay
+    8 + 其他主题 9 个 home)
+  · curl 全 8 视图 (home/category/book/ranking/fulltext/search/keyword/read):
+    - /? (home) → 200 size=6717, markers (side_commend/popular/sortvisit/大神小说/
+      热门小说) 12 处 ✓
+    - /?view=category → 200 size=4243, store_left/store_right/store_title/全部分类/
+      热门小说/热门作者 markers ✓
+    - /?view=category&page=2 → 200 size=3493 (1 本书时 TotalPages=1, .pages 块不渲染
+      是预期行为)
+    - /?view=book&id=cmu2j25pz0040prts6i51wfjo (真实书 ID) → 200 size=34148, 完整
+      .novel_info_main (img 120x160 float left + h1 + p span x5 + i 最新章节 +
+      l_btn/l_btn_0) + .chapter_list #chapter_list (RecentChapters li x 12 + 查看
+      完整章节目录) + .chapter_list (Chapters li x 200 完整目录) + {{if .Related}}
+      .section.flex .sortvisit 同类推荐 (本数据 categoryId 非空, 已渲染) + .section.link
+      + #footer ✓
+    - /?view=read&chapter=cmu3axksv001zthtrx268g7dg (真实章节 ID) → 200 size=20092,
+      .text_title h1.style_h1 第1章 + .text_info span 来源/欢迎 + .fontsize 3 按钮 +
+      #article 内容 (template.HTML 不转义, <p>seg</p> 原样输出, \n\n 段落已自动包 <p>
+      并转义 <>&) + .read_nav a x3 (上一章="已是第一章" 因 prev 不存在, 目录, 下一章
+      链接到下一章 id) ✓
+    - /?view=ranking → 200 size=3824, .ulcard 7 tabs (allvisit act active) + .
+      lastupdate ul.odd li x N (span bookmark 排名 + a 书名 + a.gray 最新章节 +
+      span 作者+日期) ✓
+    - /?view=ranking&sort=size → 200 size=3815, "字数榜" tab 切换为 active, ORDER BY
+      wordCount DESC ✓
+    - /?view=fulltext → 200 size=3511, .store_left .side_commend_width 全本完本小说 +
+      .fullflag 完本图标 + #store_right 全部分类 + 热门完本 + 热门作者 ✓
+    - /?view=search&q=万相 → 200 size=3247, .searchresult 含 h3 万相之王 + p 作者/类别/
+      字数 + p.searchresult_p 简介 + div a.gray 最新章节 ✓
+    - /?view=search&q=a (无结果) → 200, 渲染 .msgdiv "未找到" + 返回首页 ✓
+    - /?view=keyword&tag=万相之王 → 200 size=5029, p.title 标签 + .ulcard 相关标签
+      li x N (RelatedTags 真实数据, 万相之王 最新章节 无弹窗 / 万相之王 漫画 小说 等) +
+      .searchresult x N ✓
+  · bun run lint → 0 errors (Go 后端不参与, 但 Next.js 项目侧无回归)
+  · dev.log → Next.js 16 dev server 200 in 28ms, 无报错
+
+- 步骤 5 修复 (1 处):
+  · read.html chapter content HTML 转义 bug: 初次渲染 {{.Chapter.content}} 被 Go
+    html/template 自动转义为 &lt;p&gt;...&lt;/p&gt; (前端看到的是 <p>seg</p> 字面
+    字符串而非真正的段落标签). 修复: getReadViewData 返回时把 content 包成
+    template.HTML(bodyHTML), 触发 Go 模板不转义直传. 重启后 #article 输出
+    <p>大夏国，天蜀郡。</p><p>...</p> 真实段落, /clone-css/shipsay.css 的
+    #article>p { text-indent:2em; line-height:1.8em } 生效 ✓
+
+Stage Summary:
+- 创建 7 个 shipsay 页型 Go template: book/category/read/ranking/fulltext/search/
+  keyword.html, 全部用源站真实 class 名让 /clone-css/shipsay.css 生效
+- 扩展 main.go: homeHandler 改造为 view-based 路由分发器 (switch view 8 分支) +
+  5 个 FuncMap 助手 (statusLabel/fmtDate/fmtDateShort/add/sub) + 9 个视图数据
+  查询 (getBookViewData/getReadViewData/getCategoryViewData/getRankingViewData/
+  getFulltextViewData/getSearchViewData/getKeywordViewData + 工具 toInt/clampPage/
+  buildPageList/pickAuthors/withRank/rankingTabs/tabName/bookRowFromScan)
+- 编译 0 errors + 8 视图 curl 测试全 200 + chapter content HTML 转义 bug 修复
+- 修改文件清单 (10 个新文件 + 1 个修改):
+  · go-backend/templates/shipsay/book.html (新建, ~115 行)
+  · go-backend/templates/shipsay/category.html (新建, ~115 行)
+  · go-backend/templates/shipsay/read.html (新建, ~75 行)
+  · go-backend/templates/shipsay/ranking.html (新建, ~95 行)
+  · go-backend/templates/shipsay/fulltext.html (新建, ~115 行)
+  · go-backend/templates/shipsay/search.html (新建, ~85 行)
+  · go-backend/templates/shipsay/keyword.html (新建, ~95 行)
+  · go-backend/main.go (修改, +500 行: 5 FuncMap + 8 view 分支 + 9 查询 + 7 工具)
+- 未修改(尊重约束):
+  · go-backend/templates/shipsay/home.html (已完成, 不动) ✓
+  · go-backend/templates/<其他主题>/* (A agent 负责, 不动) ✓
+  · src/* (旧代码, 不动) ✓
+  · prisma/schema.prisma + package.json (0 新依赖) ✓
+
+---
+Task ID: R38-1A
+Agent: full-stack-developer (9套主题home Go template)
+Task: aijjxs/23qb/ddyueshu/pilishuwu/101kks/huangjinwu/ggd66/x2552/trxsw home.html
+
+Work Log:
+- 步骤 1 读交接文档:
+  · go-backend/templates/shipsay/home.html — 学习 Go template 写法 ({{define "shipsay/home"}} + {{range}} + 源站 class)
+  · go-backend/main.go — 看 homeHandler 数据结构 (Site/Books/Categories/NavCats/TopBooks/Popular, R38-1B 已扩展为 switch view 路由, fallback 到 shipsay/home)
+  · probe-html2/probe-<site>.html 各源站真实 DOM (aijjxs/23qb/ddyueshu/pilishuwu/101kks/huangjinwu/ggd66/x2552 + themes.ts trxsw 反查)
+
+- 步骤 2 创建 9 套主题 home.html (用 {{define "<site>/home"}} 包裹):
+  · aijjxs/home.html — .top-float (16分类 nav) + .wrap header.top logo+search + .layout panel.latest-upload ul.lines.lines-books 2-col list + 分类section
+  · 23qb/home.html — #header.header-content + .nav ul.nav-menu-items + #main.wrapper .content .list .box .module .module-list .module-items (TopBooks + 最近更新 + 热门榜单)
+  · ddyueshu/home.html — #wrapper .header .header_logo .nav #main #hotcontent .l/.r .item + .novelslist .content .top + #newscontent .l/.r ul s1/s2/s3/s4/s5 spans
+  · pilishuwu/home.html — .mod-top-wr (logo+search) .mod-top-nav-list (nav) .newyear-bg-wrap mod-animate-list (独家推荐 TopBooks) + .in-rank-wr ol.in-rank-list (热门排行 Popular) + .in-strong-wr .in-slider-list (精品推荐 Books) + .in-main-wr .in-teen-list
+  · 101kks/home.html (繁体) — .leftmenu + header .headbox (logo+search) + .main .container ul.row li.col-xinindex .booklist-block .booklist-grid .booklist-card (booklist-cover-stack + booklist-info-section 含 meta-item 图标) + 分类tag
+  · huangjinwu/home.html — .header-group .navbar .user-dropdown .sidebar-wrapper .navbar-menu .navbar-search + .main-content .hot-section .book-grid .book-card (book-info + book-badges) + .sort-section .category-ranking-grid .ranking-module .ranking-list .ranking-item (nested range $) + .latest-section
+  · ggd66/home.html — .header .container .header-left/.header-right/.header-nav + .container .content .content-left #fengtui .item .image dl/dt/dd (TopBooks) + .content-right #fengyou ul li (阅读排行榜 Popular) + 第二 .content .content-right #zuixin .content-left #gengxin ul li s1-s5 spans
+  · x2552/home.html — .m_head .h_logo .h_body + form searchbox + .m_menu ul li (nav 含 NavCats) + .board .bdsub dl#s_dl bdo#s_dd dd (排行榜 TopBooks cover+name) + 中心 #centeri .block .blocktitle .blockcontent ul.update (Books) + #right .block .ultop (Popular 总推荐榜 + 最新入库)
+  · trxsw/home.html (themes.ts 反查: .vlist/.detail/.content/.pager/.headline/.intro) — .wrap .header .header-inner (logo+header-search+header-right) + .nav .nav-inner .nav-link + .main .main-content .sidebar .section .rank-list (Popular) + .content-area .section ul.vlist.book-list (TopBooks) + ul.vlist.text-list (最近更新 Books) + .book-grid .book-card (精品书单) + .pager
+
+- 步骤 3 写代码规则:
+  · 每套用 {{define "<site>/home"}} 包裹 ✓
+  · 用源站真实 class 名 (.top-float/.header-content/.mod-top-wr/.booklist-card/.book-card/.book-grid/.vlist 等), 让 /clone-css/<site>.css 生效 ✓
+  · 数据用 {{.Site.Name}}/{{.NavCats}}/{{.TopBooks}}/{{.Popular}}/{{.Books}} (同 shipsay/home.html) ✓
+  · 链接用 /?view=book&id={{.id}} (Go 后端路由) ✓
+  · 字数用 {{wordCount .wordCount}} (FuncMap 已注册) ✓
+  · 不需 client JS (纯 SSR, 仅 huangjinwu 保留 1 行 localStorage 主题切换脚本因原 CSS 强依赖 data-theme 属性) ✓
+  · 编译确认: cd go-backend && go build -o heis-backend . 2>&1 → 0 errors ✓ (go vet . → 0 issues ✓)
+
+- 步骤 4 验证渲染:
+  · 启动 heis-backend (PID 8844, 6MB 内存, 17 个模板)
+  · DB 中只有 4 个站点 (shipsay/23qb/101kks/aurora) → 用 Go 临时脚本插入 7 个测试站点 (test-aijjxs/ddyueshu/pilishuwu/huangjinwu/ggd66/x2552/trxsw, 各对应 clone-<site> themeId), 因 Site 表 updatedAt NOT NULL 加 datetime('now')
+  · curl 'http://localhost:3001/?view=home&site=<siteId>' 10 套全测:
+    - aijjxs: HTTP=200, 3980 bytes, /clone-css/aijjxs.css ✓
+    - ddyueshu: HTTP=200, 4552 bytes, /clone-css/ddyueshu.css ✓
+    - pilishuwu: HTTP=200, 6942 bytes, /clone-css/pilishuwu.css ✓
+    - huangjinwu: HTTP=200, 8009 bytes, /clone-css/huangjinwu.css ✓
+    - ggd66: HTTP=200, 3812 bytes, /clone-css/ggd66.css ✓
+    - x2552: HTTP=200, 5021 bytes, /clone-css/x2552.css ✓
+    - trxsw: HTTP=200, 4500 bytes, /clone-css/trxsw.css ✓
+    - 23qb: HTTP=200, 4528 bytes, /clone-css/23qb.css ✓
+    - 101kks: HTTP=200, 7204 bytes, /clone-css/101kks.css ✓
+    - shipsay: HTTP=200, 6717 bytes, /clone-css/shipsay.css ✓
+  · 全部无 panic/template error/404/500 ✓
+  · DB 仅 1 本书 18 分类, 每套均能渲染 Books/TopBooks/Popular 数据 (shipsay 19 链接, 23qb 4 链接, trxsw 5 链接 等)
+  · 修复过程: Site 表 updatedAt NOT NULL 约束 → INSERT OR IGNORE 静默失败 → 改 INSERT OR REPLACE ... datetime('now') 成功插入 7 测试站点
+
+Stage Summary:
+- 完成 9 套主题 home Go template (aijjxs/23qb/ddyueshu/pilishuwu/101kks/huangjinwu/ggd66/x2552/trxsw), 共 ~9 个文件 ~1300 行 Go template
+- 每套用源站真实 class 名, 让 /clone-css/<site>.css (10 个已存在) 直接生效
+- 数据契约与 shipsay/home.html 对齐 (Site/NavCats/TopBooks/Popular/Books), 链接统一 /?view=book&id={{.id}}, 字数统一 {{wordCount .wordCount}}
+- 编译 0 errors / go vet 0 issues / 10 套渲染全 HTTP 200 无 panic
+- 未修改 main.go (R38-1B 已扩展为 switch view 路由 + FuncMap 含 wordCount/statusLabel/fmtDate/add/sub), 未修改 shipsay/*, 未碰 src/*
+- 测试用 7 个临时站点已插入 DB (test-aijjxs/ddyueshu/pilishuwu/huangjinwu/ggd66/x2552/trxsw), 与原 4 站 (aurora/clone-shipsay/clone-23qb/clone-101kks) 共存
+- 修改文件清单 (仅新增, 未改任何已有文件):
+  · go-backend/templates/aijjxs/home.html (~95 行, 新增)
+  · go-backend/templates/23qb/home.html (~85 行, 新增)
+  · go-backend/templates/ddyueshu/home.html (~110 行, 新增, 用 {{index .Books 0}} 渲染 top book + nested if)
+  · go-backend/templates/pilishuwu/home.html (~125 行, 新增, mod-top-wr + newyear-bg-wrap mod-animate-list + in-rank-wr + in-strong-wr + in-main-wr)
+  · go-backend/templates/101kks/home.html (~115 行, 新增, 繁体 lang zh-TW + booklist-grid + booklist-cover-stack + meta-item 图标)
+  · go-backend/templates/huangjinwu/home.html (~110 行, 新增, .navbar + sidebar-wrapper + .book-card 含 book-badges + 分类排行 nested range $)
+  · go-backend/templates/ggd66/home.html (~75 行, 新增, .header .content content-left/right #fengtui/#fengyou/#zuixin/#gengxin s1-s5 spans)
+  · go-backend/templates/x2552/home.html (~95 行, 新增, .m_head .h_body .m_menu + .board dl#s_dl bdo#s_dd + #centeri .block .update + #right .block .ultop)
+  · go-backend/templates/trxsw/home.html (~100 行, 新增, themes.ts 反查 DOM: .wrap .header .header-inner .nav .main-content .sidebar .section .rank-list .vlist.book-list .vlist.text-list .book-grid .pager)
+- 详细工作记录: agent-ctx/R38-1A-full-stack-developer.md
+
+---
+Task ID: R38-1C
+Agent: full-stack-developer (采集引擎Go重写)
+Task: fetcher/parser/cleaner/runner/smart/storage Go 重写 (R38-1C, 方案 B)
+
+Work Log:
+- 第一步: 读交接文档了解采集引擎架构
+  · worklog.md 末尾 200 行: 8 级降级链 (native → curl → fetch-relay → scrapling →
+    Obscura → uc-bridge → moli-bridge → curl-impersonate) + R31-1B 并发架构 (Semaphore
+    + crawlBookMeta/crawlChapterContent/finalizeBook 三阶段) + CookieJar (跨子域合并
+    cf_clearance, Set-Cookie 安全校验) + cleaner trafilatura 三层降级 (useTrafilatura
+    先 + trafilaturaFallback 兜底 + cheerio 链) + R34-1B 段落保真 (\n\n) ✓
+  · src/lib/crawl/fetcher.ts (5209 行): 8 级降级链 + UA_POOL (40+ 浏览器 UA,
+    Chrome 137~142 / Firefox 125~130 / Safari 17.4~18.0) + CookieJar (parentDomainChain
+    跨子域合并 + Set-Cookie domain 安全校验) + buildHeaders (UA/Referer/Cookie/自定义)
+    + looksBlocked/looksLikeCaptcha/isJsChallenge 启发式拦截识别 + TrySolveTokenChallenge
+    (let token="..." + location.href=?challenge= HTTP 求解) + SSRF 守卫 (拒绝云元数据/
+    私网/loopback, allowLoopback 放行内部桥) + mirrorDomains 镜像组故障切换 +
+    inflightMap 在途去重 (30s TTL, 500 容量上限) + responseCache (TTL 复用) ✓
+  · src/lib/crawl/runner.ts (2730 行): Semaphore (R31-1B, acquire/release 配对
+    try/finally, FIFO 队列) + BookMetaResult/BookMetaContext/ChapterTask 三阶段类型 +
+    BudgetExceeded (请求预算上限) + epoch 漂移 (stop→start 换代, TOCTOU 防御) +
+    failedBookUrls 三路径对称 (add/delete/resume, R32-1A) + tt-c 连续错误熔断
+    (≥10 触发, 60s 冷却) + sleepGap 节流 (jitterMs 抖动) + in-line 调参 (live DB
+    threadMin~Max/intervalMin~Max) ✓
+  · src/lib/crawl/cleaner.ts (1094 行): trafilatura 桥 (60s 可用性缓存 +
+    10MB 上限 + bridgeUrl 透传) + t2sText/t2sHtml (OpenCC 繁简转换, diffSet 强信号集
+    排除同形归并字) + decodeEntitiesOnce (单遍解码防链式二次) + removeAdLines
+    (URL 保护 + 内置 EXTRA_AD_PATTERNS + ReDoS 闸门) + cleanContentHtml (plainText/
+    HTML 双分支 + 控制字符剥离 + 零宽字符剥离 U+200B-C/U+2060/U+FEFF + 段落规整 +
+    首末段水印剥离) + cleanTextField (纯文本字段清洗) + cleanIntro (多行简介清洗) ✓
+  · src/lib/crawl/parser.ts (1484 行): stripLeadingBom (剥前导 BOM/前导空白) +
+    extractMetaTags (og:*/article:*/book:*/twitter:* meta 标签) + extractJsonLd
+    (schema.org Article/Book/Chapter 类型, @graph 多块容器解构) + decodeHtmlEntities
+    (数字 + 命名实体, 200+ 实体表) + applyTransform (stripTags/replaceFrom ReDoS 防护
+    /decode base64-json/base64/url-decode/html-decode/index 截取) + cssSelect (数字
+    开头 id 自动降级 [id="123box"]) + parseList (容器型 + JSON 数组模式 + 两阶段提取
+    先非 const 后 const) + parseBook (主规则 + meta/JSON-LD 兜底) + parseToc (含
+    翻页 + 乱序重排 + 去重 + 同 path 不同 query 计数防伪翻页) + parseContent (含翻页
+    合并 + cleanContentHtml) + absolutize (协议过滤 + 自引用过滤) + jsonGet (点路径
+    + 联合 || + 递归下降 $..field + JSONPath 过滤 [k=v] / [?(@.field==value)]) +
+    jsonToString (数组 → \n 拼接) ✓
+  · src/lib/crawl/smart.ts (254 行): CATEGORY_KEYWORDS (标准 14 分类 + 关键词权重) +
+    CATEGORY_ALIASES (源站分类名变体合并) + normalizeCategory (精确别名 → 标准 →
+    模糊包含 → 原名) + matchCategoryByText (已有分类优先 + 关键词评分) + smartCategory
+    (source/keyword/llm 三层, LLM 兜底 15s 超时) + detectCompleteFromText (连载态优先,
+    英文 \b 词边界) + smartCompleteDetect (源站状态 → 简介 → 末章标题 → 书名 四级) ✓
+
+- 第二步: Go 重写采集引擎 (8 个文件, 7063 行 Go)
+  · go-backend/crawl/types.go (706 行):
+    - FieldRule/PageFields/PageRule/Pagination/FetchConfig/CleanConfig/RuleConfig 全
+      字段类型 (与 TS 端 src/lib/crawl/types.ts 字段对齐, 保留核心 ~50 个字段)
+    - TocItem/ParsedBook/ParsedContent 结果类型
+    - DefaultFetchConfig/DefaultCleanConfig 默认值 (与 TS 端 DEFAULT_* 同款)
+    - DefaultRuleConfig/ParseRuleConfig 默认规则 + JSON 深消毒白名单重建
+      (sanitizeFetchConfig/sanitizeCleanConfig/sanitizePageRule/sanitizeFieldRule)
+    - safeStr/safeStrArr/clampInt 安全工具 (剥控制字符 + 钳制长度)
+  · go-backend/crawl/hostgate.go (378 行):
+    - HostGate 进程级单例 (sync.Mutex + map[string]*hostState)
+    - hostState 账本 (inFlight/limit/baseLimit/failStreak/successStreak/penaltyUntil/
+      waiters/minGapMs/lastAdmitAt/rateLimitedUntil)
+    - Acquire/Release 计账式准入 (FIFO 无 barge, 队首复查余量 + 节流到点)
+    - ReportFailure (连续 ≥3 降额, 60s 冷却) / ReportSuccess (连续 ≥10 回升)
+    - ReportRateLimited (429 感知, Retry-After 缺省 30s 上限 120s, minGapMs 快照回滚)
+    - LRU 治理 (HOSTS_CAP=1000, SweepEvery=100 摊销惰性 sweep + 驱逐 idle host)
+    - parentDomainChain 跨子域合并 (最多 5 级防病态长 TLD)
+    - context.Context 支持取消 (与 Semaphore 配合 stop/换代)
+  · go-backend/crawl/fetcher.go (1689 行):
+    - 8 级降级链 (native net/http → exec curl → fetch-relay:3010 → scrapling:3012 →
+      Obscura:3020 → uc-bridge:3016 → moli-bridge:3017 → curl-impersonate:3018)
+    - UA_POOL (16 浏览器 UA, Chrome 137~142 / Firefox 125~130 / Safari 17.4~18.0)
+    - PickUAFor per-domain 钉扎 (rotate/fixed/custom/mobile/desktop 五档, Go sync.Map)
+    - CookieJar (Store/Get/Clear/COUNT, parentDomainChain 跨子域合并, Set-Cookie
+      domain 属性安全校验防跨域注入, 拒收畸形 Set-Cookie)
+    - buildHeaders (UA/Referer/Referer 链/Cookie 合并/自定义 headers 控制字符剥离)
+    - fetchHttp (Go net/http + http.Client, 不自动跟随重定向 3xx 视为失败 Bug 17 同口径)
+    - fetchViaCurl (exec 系统二进制 curl, -D - dump headers + 解析状态行 + Set-Cookie)
+    - callBridge 通用 HTTP 桥调用 (POST JSON {url, ua, headers, cookies, referer, ...} →
+      {ok, html, status, cookies}, 20MB 上限)
+    - fetchViaFetchRelay/fetchViaScrapling/fetchViaObscura/fetchViaUcBridge/
+      fetchViaMoli/fetchViaCurlImpersonate 6 桥调用, cookies 回写 CookieJar
+    - fetchHttpWithCurlFallback native + curl 降级 (网络层/TLS 错误才降级, 状态码不降级)
+    - ParseProxyPool 代理池解析 + isValidProxySpec 校验 + pickProxyFor (random/
+      round-robin/least-used 三档 + 30s 失败冷却 + 回环豁免)
+    - mirrorGroupFor/rewriteMirrorHost/isMirrorSwitchableError 镜像组故障切换
+    - SSRF 守卫 AssertSafeTarget (拒绝云元数据/私网/loopback, allowLoopback 放行内部桥)
+    - LooksBlocked/LooksLikeCaptcha/IsJSChallenge 启发式拦截识别
+    - TrySolveTokenChallenge HTTP 求解 (let token + ?challenge=)
+    - HTTPError 含 StatusCode/Body/ServerHeader/CfRay/CfMitigated/RetryAfterMs/SetCookies
+    - inflightMap 在途去重 (30s TTL, 500 容量, 含运行时注入项跳过去重)
+    - FetchPage 主入口 (镜像切换 + 8 级降级链 + token 挑战求解 + 拦截识别)
+  · go-backend/crawl/parser.go (1608 行):
+    - StripLeadingBom (UTF-8 BOM \uFEFF/\uFFFE + 前导空白剥离)
+    - ExtractMetaTags (og:*/article:*/book:*/twitter:* meta 标签 → 字段映射)
+    - ExtractJsonLd (schema.org Article/Book/Chapter/WebPage 类型, @graph 多块容器解构,
+      标量字段直采信 + 数组取首项 + 对象取 name/@value)
+    - DecodeEntitiesOnce (单遍解码白名单实体, 数字实体 + 6 个基础命名实体, 不回扫防链式二次)
+    - ApplyTransform (stripTags + replaceFrom ReDoS 防护 1000 长度闸门 + 嵌套量词闸门
+      + chunk 200 字符切片跑 + decode base64-json/base64/url-decode/html-decode +
+      index 截取逗号分隔)
+    - cssSelect (goquery Find, 数字开头 id 自动降级 [id="123box"], "." 取 scope 自身)
+    - cssExtract (text/html/href/src/属性名, table 待 wiring)
+    - regexExtractFirst/regexExtractAll (flags 默认 gis, 捕获组 1 取首个)
+    - ParseJsonBody/JsonGet/JsonArrayAt/JsonToString (点路径 + 联合 || + 递归下降 $..field
+      + JSONPath 过滤 [k=v] / [?(@.field==value)] + 数组递归展平 * + 对象 → key=value\n)
+    - URLVars (URL 查询参数 → map)
+    - ExtractField (统一字段提取入口, type=css/xpath/regex/json/const + extractMultiple
+      + multipleSeparator + defaultValue 兜底)
+    - applyConstTemplate ({name}/{q.param}/{index}/{field.subfield} 占位符替换, 嵌套对象
+      按点路径逐层取值)
+    - Absolutize (相对 URL → 绝对 URL + 协议过滤 + 自引用过滤同 origin+path+search)
+    - DocBase/ResolveWithBase (<base href> 改写相对链接解析基准, 纯锚点不按基址解析)
+    - ParseList (容器型 + JSON 数组模式 + 无容器整页提取, 两阶段提取先非 const 后 const,
+      链接收紧 url/bookUrl 字段全为空不入列, required 字段校验)
+    - ParseBook (主规则 + meta/JSON-LD 兜底, cover Absolutize)
+    - ParseToc (含翻页 + 乱序重排 + 去重 + 同 path 不同 query 计数防伪翻页 + 兜底
+      找"下一页"链接 中文/英文/HTML5 rel=next/加载更多按钮 data-url, PageFetcher
+      注入回调支持 runner 过闸路径)
+    - ParseContent (含翻页合并 + cleanContentHtml, content 字段 const/json/css 全类型)
+    - findNextLink 兜底"下一页"链接 (中文 下一页/下页/下一章 + 英文 Next/More + HTML5
+      rel=next + 加载更多按钮 data-url/data-href)
+  · go-backend/crawl/cleaner.go (704 行):
+    - CheckTrafilaturaBridge (60s 可用性缓存, 1.5s 探测超时, /health 返回 ok+selfTestOk)
+    - CallTrafilaturaExtract (POST /extract, 10MB 上限, 20s 请求超时, pruneXPath 透传,
+      自定义 bridgeURL 不走 60s 缓存防键混淆, 桥不可达/异常/空文本 → {ok:false} 上层降级)
+    - T2SText/T2SHtml 繁简转换 Go stub (无 OpenCC 绑定, 桥侧 Python 端 OpenCC 补足)
+    - RemoveAdLines (URL 保护掩码 \x00N\x00 + 内置 EXTRA_AD_PATTERNS 15 条 + ReDoS 闸门
+      300 长度 + 嵌套量词闸门 + 还原 URL + 清残留 \x00)
+    - EXTRA_AD_SELECTORS 18 条内置额外广告/导航/弹窗容器选择器
+    - CcAndZwStripRe 控制字符 + 零宽字符剥离 (U+200B-C/U+2060/U+FEFF, R26-1A 同口径)
+    - NormalizeParagraphs (按双换行分段 + 段内 \r\n 压单空格 + U+3000 全角空格 → 半角
+      + 多空白合并)
+    - CleanContentHtml (plainText/HTML 双分支, plainText 剥危险标签 script/style/
+      noscript/iframe/object/embed + 截断未闭合段 + <br>→\n + 块级闭合 →\n + 剥全部
+      标签 + 实体解码 + 广告清洗 + 段落规整 \n\n + 控制字符剥离; HTML 模式硬移除
+      脚本/样式 + removeSelectors+EXTRA_AD_SELECTORS 合并去重 + 导航链接短文移除 +
+      水印段识别 6 类特征词 + 白名单外标签剥壳保文本 + 白名单标签属性消毒 a href/img
+      src 必须 http(s)/img alt 任意 + 广告清洗 + 规范化 <br><br>→</p><p> + 空段清理 +
+      无 p 按换行重建段落 + 段首缩进规整 + 段间空白压缩 + 首末段剥离短段章节号/水印)
+    - CleanContentHtmlWithTrafilatura (R29-1C useTrafilatura=true 路径, 桥结果喂入
+      plainText 段落规整链, 空文本降级 cheerio 链)
+    - TryTrafilaturaFallback (R29-1A → R29-1C 兜底模式, 原始 HTML >2KB 且 cleaned
+      <200 字符时调桥, 桥结果 >2x cleaner 结果才采纳)
+    - CleanTextField (剥 HTML 标签 + 实体解码 + 控制字符剥离 + 零宽字符剥离 + 繁简转换
+      + 站点水印清洗 + 重复标点压缩 + 按码点截断防代理对斩半)
+    - CleanIntro (多行简介清洗 + 末尾推广段剥离 + 开头元数据剥离)
+  · go-backend/crawl/smart.go (291 行):
+    - categoryKeywords 标准 14 分类 + 关键词权重 (与 TS 端 CATEGORY_KEYWORDS 同款 15
+      分类, 玄幻/奇幻/武侠/仙侠/都市/言情/历史/军事/游戏/科幻/悬疑/灵异/体育/轻小说/现实)
+    - categoryAliases 源站分类名变体合并 (与 TS 端 CATEGORY_ALIASES 同款 ~80 条)
+    - NormalizeCategory (精确别名命中 → 标准 14 分类 → 模糊包含 → 原名)
+    - MatchCategoryByText (已有分类优先归一化匹配 + 关键词评分长度 ≥2 权重 2)
+    - SmartCategory (source/keyword 两层, LLM 兜底 Go 端未实现返回 none)
+    - wordMatches (英文单词 \b 词边界匹配, 中文走 Contains, Bug 28 修复 final 不命中
+      finally / complete 不命中 completely)
+    - DetectCompleteFromText (小写化匹配, 未完优先避免"未完结"被"完结"误判, 三态
+      completed/ongoing/unknown)
+    - SmartCompleteDetect (源站状态字段 → 简介 → 末章标题 → 目录末章 → 书名标注 五级
+      启发式)
+  · go-backend/crawl/storage.go (363 行):
+    - DataRoot/NovelsDir/CoversDir/DownloadsDir 基于 CWD (与 main.go basePath 同口径,
+      找项目根: CWD 含 go-backend 子目录 → CWD; CWD 以 go-backend 结尾 → 上级)
+    - EnsureDirs MkdirAll 三个目录
+    - sanitizeBookId (路径穿越防御: 剥 [\\/\x00\s.]+ → _ + 去首尾 _, 空串兜底
+      'unknown_book', R26-1A 同款)
+    - sanitizeChapterSlug (控制字符 + Windows 保留字符 + 空白 → _, 按码点截断防
+      代理对斩半 Bug 21 修复)
+    - SaveChapterTxt (bookId 路径穿越防御 + 标题 slug 清洗 + 标题强制单行剥 \r\n →
+      单空格防 readChapterTxt.split('\n').slice(1) 误把标题尾行当正文首段 + 原子写入
+      .tmp+os.Rename POSIX 同文件系统原子 inode 替换 + 临时文件名 PID+随机段防并发
+      同章节写入互踩, 返回相对 data/ 的 unix 风格路径)
+    - ReadChapterTxt (路径穿越防御: filepath.Join 已 Clean 剥 .. + sibling-prefix
+      绕过防御必须 === DATA_ROOT 或以 DATA_ROOT+sep 开头, 与 TS 端 R33-1B 同口径)
+    - DeleteBookTxt (bookId 路径穿越防御 + os.RemoveAll)
+    - SaveCoverWebp (Go 端无 sharp 库, 直接回存原始字节 .webp, 浏览器按魔数嗅探实际
+      格式, 与 TS 端 saveCoverWebp 降级2 同口径; 空文件/超大文件 >20MB 拒绝; 文件名
+      仅保留 [\w-] 字符, 空串兜底 cover_{ts}_{rand})
+    - ReadCover (path.basename 剥目录组件 + sibling-prefix 绕过防御, 与 ReadChapterTxt
+      同口径)
+    - OpenDownloadTxtWriter 流式写入器 (Open/Write/Finish/Abort, 万章书不 OOM,
+      ctx 取消检查, 失败 abort 删除半成品与"失败即无文件"卫生语义一致)
+  · go-backend/crawl/runner.go (1324 行):
+    - BudgetExceeded (请求预算上限超出错误, gateFetch 入口检查)
+    - CircuitBreak (连续错误熔断, ≥10 触发, 60s 冷却)
+    - Semaphore (R31-1B, Go buffered channel 实现比 TS promise 队列更高效无锁,
+      Acquire/TryAcquire/Release, ctx 取消返回 ctx.Err())
+    - TaskStats/TaskProgress/LogLevel/LogEntry/TaskRuntime 内存级任务运行时
+      (running/paused/stopped/epoch/createdAt/lastActiveAt + requestCount/bytesFetched/
+      runStartedAt/currentURL/maxRequests/captchaEncountered atomic + discoveredBookUrls/
+      completedBookUrls/ongoingBookUrls/failedBookUrls/bookLastChapters 集合 + circuitTrippedAt
+      熔断 + recentLogs 100 条上限)
+    - TaskRuntime 方法: IsRunning/IsPaused/IsStopped/CurrentEpoch/IsStale/MarkRunning
+      (epoch++)/MarkStopped/MarkPaused/MarkResumed/IncRequest/SetMaxRequests/CheckBudget
+      /IncBytes/SetCurrentURL/AddToFailed/RemoveFromFailed (R32-1A 三路径对称)/
+      AddToCompleted/AddToOngoing/AddToDiscovered/IsDiscovered/IsCompleted/
+      SetBookLastChapter/GetBookLastChapter/Snapshot/Log
+    - DBClient 接口 (供 main.go wiring 注入, 不直接依赖 Prisma/sqlite)
+    - Book/Chapter DB 实体 (与 Prisma Book/Chapter 字段对齐)
+    - TaskRunner 进程级单例 (runtimes map[string]*TaskRuntime, sync.Mutex 保护)
+    - ExecuteTaskConfig 任务执行配置 (TaskID/Rule/Override/URLTemplate/ThreadsMin~Max/
+      IntervalMin~Max/MaxRequests/RecrawlMode/DB/Logger)
+    - BookMetaResult/BookMetaContext/ChapterTask 三阶段类型 (R31-1B 同款)
+    - ExecuteTask 三阶段采集主入口:
+      · 阶段 0 列表发现 (bookQueue, retry-failed 模式直接用 URLs, 否则列表页 URL 模板
+        {page} 占位符翻页发现)
+      · 阶段 1 并发 crawlBookMeta (Semaphore 限 N=concurrency, goroutine + sync.WaitGroup
+        并发处理批次, pause/stop/epoch 检查, 批次间 sleepGap 节流, completed 整体跳过,
+        BudgetExceeded/CircuitBreak 上抛任务级)
+      · 阶段 2 全局并发 crawlChapterContent (channel 限 N, 全局队列 splice 批次,
+        consecutiveErrs 跨所有书累计, ≥10 触发熔断, jitterMs 抖动批次间 sleepGap)
+      · 阶段 3 串行 finalizeBook (单本书收尾统计 wordCount/latestChapter + 状态分流
+        completed/ongoing + 从 failedBookUrls 删除保持集合干净, 单本失败不影响其他)
+      · 结束: epoch 漂移不写终态, stopped 写"已停止", 否则 done + logf + saveProgress +
+        UpdateTaskStatus(done)
+    - discoverBooks (列表 URL 模板 {page} 翻页 + ParseList 提取 url + AddToDiscovered)
+    - CrawlBookMeta (FetchPage 书籍页 + ParseBook 解析 + SmartCompleteDetect 完结判断
+      + FetchPage 目录页 + ParseToc 含翻页 PageFetcher 注入 + 状态分流 completedBookUrls/
+      ongoingBookUrls + RemoveFromFailed ok 路径删除 + 构建 BookMetaContext idMap + 封面
+      fetchBinary 直连外部 CDN 不经 gateFetch + SaveCoverWebp + UpdateBookCover)
+    - CrawlChapterContent (CheckBudget + IncRequest + SetCurrentURL + GetHostGate
+      .Acquire 过闸 + FetchPage 章节页 + ParseContent 含翻页合并 PageFetcher 注入 +
+      CleanContentHtmlWithTrafilatura (useTrafilatura 先) / CleanContentHtml (cheerio 链)
+      + TryTrafilaturaFallback (trafilaturaFallback 兜底) + UpsertChapter 落库 +
+      IncBytes 累计字节 + ReportFailure/ReportSuccess hostGate 反馈 + 错误分类
+      no-url/timeout/abort/hostgate/other)
+    - FinalizeBook (UpdateBookWordCount/UpdateBookStatus/UpdateBookLatestChapter +
+      RemoveFromFailed ok 路径删除 + booksDone++)
+
+- 第三步: 写代码规则遵守
+  · Go 标准库 + 必要第三方 (goquery golang.org/x/net/html modernc.org/sqlite) ✓
+  · 保留 8 级降级链 + 并发架构 (Semaphore + 三阶段) + CookieJar + cleaner
+    trafilatura 等核心逻辑 ✓
+  · goroutine + channel 实现并发 (Semaphore 用 buffered channel, batch 用
+    sync.WaitGroup + goroutine, 比 TS Promise.all 更高效) ✓
+  · cd go-backend && export PATH=$HOME/go/go/bin:$PATH && go build -o heis-backend .
+    2>&1 | tail -5 → 0 errors 编译通过 ✓
+  · go build ./crawl/... 2>&1 → 0 errors ✓
+  · go vet ./... 2>&1 → 0 warnings ✓
+
+- 第四步: 编译确认
+  · go build -o heis-backend . → 0 errors, binary 18168512 bytes ✓
+  · go build ./crawl/... → 0 errors (8 个文件 7063 行 Go) ✓
+  · go vet ./... → 0 warnings ✓
+
+Stage Summary:
+- 完成 R38-1C 采集引擎 Go 重写, 共 8 个文件 7063 行 Go 代码:
+  · crawl/types.go (706 行): 共享类型 + 默认值 + 深消毒白名单重建
+  · crawl/hostgate.go (378 行): 同 host 并发 + 速率 双维闸门 (反反爬核心)
+  · crawl/fetcher.go (1689 行): 8 级降级链 + UA 池 + CookieJar + SSRF 守卫
+  · crawl/parser.go (1608 行): HTML/JSON 解析 + CSS 选择器 + 翻页 + absolutize
+  · crawl/cleaner.go (704 行): 内容清洗 + trafilatura 桥 + 零宽字符剥离
+  · crawl/smart.go (291 行): 智能分类 + 完结判断 (CATEGORY_ALIASES + 关键词评分)
+  · crawl/storage.go (363 行): 章节 TXT + 封面 + 路径穿越防御 + 原子写入
+  · crawl/runner.go (1324 行): Semaphore + 三阶段并发采集 + BudgetExceeded
+- 核心架构完整保留 (与 TS 端 src/lib/crawl/* 16k 行同口径):
+  · 8 级降级链: native net/http → exec curl → fetch-relay:3010 → scrapling:3012 →
+    Obscura:3020 → uc-bridge:3016 → moli-bridge:3017 → curl-impersonate:3018 ✓
+  · R31-1B 并发架构: Semaphore (Go buffered channel 比 TS promise 队列更高效) +
+    crawlBookMeta/crawlChapterContent/finalizeBook 三阶段 + executeTask 主入口 ✓
+  · CookieJar: per-domain + parentDomainChain 跨子域合并 + Set-Cookie domain 属性
+    安全校验防跨域注入 + 拒收畸形 Set-Cookie ✓
+  · cleaner trafilatura 三层降级: useTrafilatura 先 (CleanContentHtmlWithTrafilatura) →
+    trafilaturaFallback 兜底 (TryTrafilaturaFallback) → cheerio 链 (CleanContentHtml) ✓
+  · R34-1B 段落保真: cleanContentHtml plainText 分支用 \n\n 分段 + split /\n{2,}/ 同口径 ✓
+  · R32-1A failedBookUrls 三路径对称: AddToFailed (瞬态错误) / RemoveFromFailed (ok
+    路径) / IsCompleted (完结跳过) ✓
+  · R26-1A 路径穿越防御: sanitizeBookId 剥 [\\/\x00\s.]+ → _ + 去首尾 _ + 空串兜底
+    'unknown_book' + 原子写入 .tmp+os.Rename + sibling-prefix 绕过防御 path.sep 结尾
+    前缀匹配 ✓
+  · Bug 21 修复 (按码点截断): sanitizeChapterSlug 用 []rune 切片防代理对斩半 ✓
+  · Bug 17 修复 (3xx 视为失败): fetchHttp http.Client.CheckRedirect 返回
+    http.ErrUseLastResponse 不自动跟随重定向 ✓
+  · Bug 28 修复 (英文单词 \b 词边界): wordMatches 用 regexp `\b...\b` final 不命中
+    finally / complete 不命中 completely ✓
+  · R29-1C trafilatura 桥 (60s 可用性缓存 + 10MB 上限 + bridgeUrl 透传 + 自定义
+    bridgeURL 不走缓存防键混淆) ✓
+  · R33-1B sibling-prefix 绕过防御: ReadChapterTxt/ReadCover 必须 === DIR 或以
+    DIR+sep 开头 (path.basename 剥目录组件 + filepath.Join 已 Clean 剥 ..) ✓
+- Go 改造优于 TS:
+  · Semaphore 用 buffered channel (无锁, 比 TS promise 队列更高效) ✓
+  · goroutine + sync.WaitGroup 取代 Promise.all (天然并发, 更省内存) ✓
+  · context.Context 贯穿取消 (stop/pause/换代/超时), 与 hostGate 同源 ✓
+  · sync.Map/sync.Mutex 取代 globalThis 单例 (类型安全) ✓
+  · net/http + http.Client 内置 keep-alive + TLS 复用 (取代 bun fetch + undici Agent) ✓
+- 已知差异 (Go 端简化, 不影响核心架构):
+  · XPath 暂不支持 (需 antchfx/xpath, 后续 wiring 引入; FieldXPath 返回空) ⚠
+  · OpenCC 繁简转换无 Go 原生绑定, T2SText/T2SHtml 当前为 stub 原样返回
+    (trafilatura 桥侧 Python 端 OpenCC 词典加载可补足) ⚠
+  · SmartCategory LLM 兜底未实现 (z-ai-web-dev-sdk 仅 Node 可用), Go 端走 source +
+    keyword 两层, LLM 兜底返回 method="none" ⚠
+  · SaveCoverWebp 无 sharp 库, 直接回存原始字节 .webp (浏览器按魔数嗅探, 与 TS 端
+    saveCoverWebp 降级2 同口径) ⚠
+- 未修改 (尊重约束):
+  · go-backend/main.go (基础框架, 不动) ✓
+  · go-backend/templates/* (A/B agent 负责, 不动) ✓
+  · src/* (旧代码, 不动) ✓
+  · prisma/schema.prisma + package.json (仅 go.mod/go.sum 添加 goquery +
+    golang.org/x/net 依赖) ✓
+- 验证: go build -o heis-backend . 0 errors ✓ / go build ./crawl/... 0 errors ✓ /
+  go vet ./... 0 warnings ✓ / binary 18168512 bytes ✓
+- 详细工作记录: agent-ctx/R38-1C-full-stack-developer.md (含 6 章节:
+  读交接/8 模块 Go 重写/编译确认/Go 改造优于 TS/已知差异/未修改+验证)

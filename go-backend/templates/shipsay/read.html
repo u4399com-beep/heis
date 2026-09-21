@@ -1,0 +1,86 @@
+{{define "shipsay/read"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Chapter.title}} - {{.Book.name}} - {{.Site.Title}}</title>
+<meta name="keywords" content="{{.Book.name}},{{.Chapter.title}},{{.Book.author}},{{.Site.Keywords}}">
+<meta name="description" content="{{.Book.name}}{{.Chapter.title}}全文阅读,{{.Book.intro}}">
+<link rel="stylesheet" href="/clone-css/shipsay.css">
+</head>
+<body>
+<header>
+<div class="container head">
+<a id="logo" href="/">
+<span>{{.Site.Name}}</span>
+<p>{{.Site.Domain}}</p>
+</a>
+<form name="t_frmsearch" action="/search" method="get" onsubmit="return !!this.querySelector('[name=searchkey]').value">
+<input id="searchkey" name="searchkey" class="search_input" placeholder="搜索书名或作者" autocomplete="off">
+<input type="hidden" name="searchtype" value="all">
+<button type="submit" id="search_btn" title="搜索"><i class="fa fa-search fa-lg"></i></button>
+</form>
+<div class="header_right">
+<a id="home" href="/"><i class="fa fa-home fa-lg"></i><br>首页</a>
+<a href="/?view=category"><i class="fa fa-book fa-lg"></i><br>书库</a>
+<a href="/?view=fulltext"><i class="fa fa-coffee fa-lg"></i><br>完本</a>
+<a href="/?view=history"><i class="fa fa-history fa-lg"></i><br>足迹</a>
+</div>
+</div>
+</header>
+
+<div class="navigation">
+<nav class="container">
+<a href="/">首页</a>
+{{range .NavCats}}
+<a href="/?view=category&cat={{.id}}">{{.name}}</a>
+{{end}}
+<div id="user_panel"></div>
+</nav>
+</div>
+
+<main class="container read_bg">
+<div class="text_title">
+<h1 class="style_h1">{{.Chapter.title}}</h1>
+<div class="text_info">
+<span>来源：{{.Site.Name}}</span>
+<span>欢迎阅读{{.Site.Name}}</span>
+</div>
+</div>
+
+<div class="text">
+<div class="fontsize">
+<button title="小字号" onclick="document.getElementById('article').style.fontSize='16px';">A</button>
+<button title="中字号" onclick="document.getElementById('article').style.fontSize='19px';">A</button>
+<button title="大字号" onclick="document.getElementById('article').style.fontSize='22px';">A</button>
+<span style="margin-left:12px;align-self:center;color:#666;font-size:14px;">字号: 19px</span>
+</div>
+<div id="article" style="font-size:19px;line-height:1.8;">
+{{if .Chapter.content}}{{.Chapter.content}}{{else}}<p style="text-align:center;color:#999;">本章内容加载中...</p>{{end}}
+</div>
+</div>
+
+<div class="read_nav">
+{{if .Prev}}<a href="/?view=read&chapter={{.Prev.id}}" title="上一章">上一章</a>{{else}}<a href="javascript:;" title="已是第一章">上一章</a>{{end}}
+<a href="/?view=book&id={{.Book.id}}#chapter_list" title="返回目录">目录</a>
+{{if .Next}}<a href="/?view=read&chapter={{.Next.id}}" title="下一章">下一章</a>{{else}}<a href="javascript:;" title="已是最后一章">下一章</a>{{end}}
+</div>
+</main>
+
+<div class="container">
+<div class="section link">
+<p class="title"><i class="fa fa-link">&nbsp;</i>友情链接</p>
+<a href="{{if .Site.Domain}}https://{{.Site.Domain}}{{else}}/{{end}}" target="_blank">{{.Site.Name}}</a>
+<a href="/">{{.Site.Name}}首页</a>
+</div>
+</div>
+
+<div id="footer">
+<footer class="container">
+<p><i class="fa fa-flag"></i>&nbsp;<a href="/">{{.Site.Name}}</a>&nbsp;书友最值得收藏的网络小说阅读网</p>
+<p>本站所有小说为完本转载作品，所有内容版权归版权方或原作者所有。</p>
+</footer>
+</div>
+
+</body>
+</html>{{end}}
