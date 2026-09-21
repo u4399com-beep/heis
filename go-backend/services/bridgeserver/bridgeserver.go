@@ -329,13 +329,16 @@ func SafeHeaderKey(k string) string {
         return k
 }
 
-// SafeHeaderValue — 请求头值: 剥 CR/LF/NUL, 截 8192 字节。
+// SafeHeaderValue — 请求头值: 剥 CR/LF/NUL, 截 8192 rune (防 UTF-8 多字节字符斩半).
 func SafeHeaderValue(v string) string {
         v = strings.ReplaceAll(v, "\r", " ")
         v = strings.ReplaceAll(v, "\n", " ")
         v = strings.ReplaceAll(v, "\x00", " ")
-        if len(v) > 8192 {
-                return v[:8192]
+        // R44-1C 修复: 原 v[:8192] 按字节切片, 中文/emoji 头值 (3-4 byte/rune) 在边界处会斩半.
+        //   HTTP 头 RFC 7230 是 ASCII, 但中文站点常设中文头值 (如 Referer 含中文 path).
+        //   改用 []rune 防多字节字符斩半 (与 TruncStr 同款).
+        if len([]rune(v)) > 8192 {
+                v = string([]rune(v)[:8192])
         }
         return v
 }
@@ -442,8 +445,9 @@ func SanitizeError(e error) string {
         s := e.Error()
         s = pathRe.ReplaceAllString(s, "<path>")
         s = stackRe.ReplaceAllString(s, "<stack>")
-        if len(s) > 200 {
-                s = s[:200]
+        // R44-1C 修复: 原 s[:200] 按字节切片, 中文 error message 可能斩半.
+        if len([]rune(s)) > 200 {
+                s = string([]rune(s)[:200])
         }
         return s
 }
@@ -763,13 +767,22 @@ func QueryEscape(s string) string { return url.QueryEscape(s) }
 // 4 个 services (fetch-relay/uc-bridge/scrapling-bridge/moli-bridge) 此前各自定义同款.
 var HTTPURLRe = regexp.MustCompile(`^https?://`)
 
-// TruncStr — 截断字符串到最大长度(超出按字节切片, 用于日志/错误脱敏).
+// TruncStr — 截断字符串到最大长度(超出按 rune 切片, 用于日志/错误脱敏, 防 UTF-8 多字节字符斩半).
 // 7 个 services 此前各自定义同款实现 (bqg713/deqixs/fetch-relay/moli/qimao/scrapling/uc/xjp).
+// R44-1C 修复: 原实现 s[:n] 按字节切片, 中文 (3-byte UTF-8) 在边界处会切出孤立 continuation byte,
+//   日志输出乱码 + utf8.Valid 校验失败. 改用 []rune 安全截断 (与 runner.go truncate 同款).
 func TruncStr(s string, n int) string {
+        if n <= 0 {
+                return ""
+        }
         if len(s) <= n {
                 return s
         }
-        return s[:n]
+        r := []rune(s)
+        if len(r) <= n {
+                return s
+        }
+        return string(r[:n])
 }
 
 // BoolStr — bool → "PASS"/"FAIL" (服务自检日志统一格式).

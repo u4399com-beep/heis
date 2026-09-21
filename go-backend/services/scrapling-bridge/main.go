@@ -264,8 +264,9 @@ func doFetchBrowser(u, mode string, timeoutMs int, headers map[string]string, pr
                 errMsg := bridgeserver.SanitizeError(err)
                 if stderr.Len() > 0 {
                         errMsg = stderr.String()
-                        if len(errMsg) > 200 {
-                                errMsg = errMsg[:200]
+                        // R44-1C 修复: 原 errMsg[:200] 按字节切片, stderr 含中文 traceback 时会斩半.
+                        if len([]rune(errMsg)) > 200 {
+                                errMsg = string([]rune(errMsg)[:200])
                         }
                 }
                 return map[string]any{"ok": false, "error": "scrapling 输出非 JSON: " + errMsg}
@@ -312,7 +313,9 @@ func applyDefaultChromeHeaders(req *http.Request, headers map[string]string) {
                 req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
         }
         if req.Header.Get("Accept-Encoding") == "" {
-                req.Header.Set("Accept-Encoding", "gzip, deflate, br")
+                // R44-1C 修复: 移除 br — Go net/http 自动解 gzip/deflate 但不解 brotli.
+                // 服务器返 br 时 body 是原始 brotli 字节, HTML 解析全炸 (与 fetcher.go buildHeaders 同款).
+                req.Header.Set("Accept-Encoding", "gzip, deflate")
         }
         if req.Header.Get("Sec-Ch-Ua") == "" {
                 req.Header.Set("Sec-Ch-Ua", `"Chromium";v="131", "Not_A Brand";v="24", "Google Chrome";v="131"`)

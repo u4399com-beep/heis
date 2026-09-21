@@ -509,8 +509,9 @@ func handle(w http.ResponseWriter, r *http.Request) {
 func handleSearch(w http.ResponseWriter, r *http.Request, paths map[string]string, apiVer string) {
         q := r.URL.Query()
         wd := q.Get("wd")
-        if len(wd) > 60 {
-                wd = wd[:60]
+        // R44-1C 修复: 原 wd[:60] 按字节切片, 中文搜索词可能斩半 (3-byte UTF-8 在边界处切出孤立 continuation byte).
+        if len([]rune(wd)) > 60 {
+                wd = string([]rune(wd)[:60])
         }
         if wd == "" {
                 bridgeserver.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "缺 wd 参数"})
@@ -554,8 +555,8 @@ func handleRank(w http.ResponseWriter, r *http.Request, paths map[string]string,
         if rankType == "" {
                 rankType = "hot_list"
         }
-        if len(rankType) > 40 {
-                rankType = rankType[:40]
+        if len([]rune(rankType)) > 40 {
+                rankType = string([]rune(rankType)[:40])
         }
         tabType := 1
         if v, err := strconv.Atoi(q.Get("tab_type")); err == nil && v > 0 {

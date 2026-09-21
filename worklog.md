@@ -17288,3 +17288,322 @@ Stage Summary:
   dev server 可正常启动占位首页).
 - 编译 0 errors, vet 0 warnings, lint 0 errors. 端到端 start 11/11 + status 11/11 + stop
   11/11 全验证. 详细工作记录: agent-ctx/R43-1C-full-stack-developer.md
+
+---
+Task ID: R44-1B
+Agent: full-stack-developer (安装部署教程)
+Task: DEPLOY.md 图文教程 (Go 重写后部署链路, 完全替换旧 Next.js+Docker 版)
+
+Work Log:
+- 读交接: worklog.md 末 200 行 (R43-1B Go 引擎深度审查 8 模块 7908 行抓 4 P0+3 P1 bug +
+  utls Hello 指纹池 + 2captcha API; R43-1C 删旧 Python/bun mini-services 12 目录 + start-all.sh
+  重写 Go 版 + scripts/ 65 文件清理 + next.config.ts broken import 修复).
+- 读 go-backend/main.go (1173 行, 入口 :3000): init() basePath 自动查找 / main() dbPath 优先
+  db/custom.db 回落 prisma/dev.db / 模板 94 个 / 路由 / + /health + 6 个 /api/public/* + 14 个
+  /api/admin/* + /admin.
+- 读 go-backend/services/ 12 个目录: 11 个独立服务 main.go (bqg713-proxy/fetch-relay/
+  scrapling-bridge/qimao-proxy/deqixs-proxy/xjp-proxy/uc-bridge/moli-bridge/
+  curl-impersonate-bridge/trafilatura-bridge/cloak-browser) + 1 共享包 bridgeserver (843 行).
+  LoC 总 18680 (含 crawl/* 8296 + main 1173 + admin 3562 + services 5649 + bridgeserver 843).
+- 读 mini-services/start-all.sh (Go 版 R43-1C, 169 行): 11 个服务 (端口 3010-3020, 与 heis-backend
+  :3000 合计 12 个 Go 二进制) + 两阶段并行构建 (增量 mtime 判断) + Go 工具链 /home/z/go/bin/go
+  优先 PATH 回退 + 幂等端口检查 + ≤3s /health 探针 + PID 写 .zscripts/<svc>.pid.
+- 读 prisma/schema.prisma (259 行, 11+1 表): Category/Rule/Book/Chapter/BookTag/Task/TaskLog/
+  Site/DownloadJob/Setting/FriendLink + R40 新增 Feedback. schema 完全兼容旧版, 升级无需迁移.
+
+完全重写 DEPLOY.md (项目根, 516 行 → 591 行, 旧版全删). 新版本 10 节:
+1. 环境要求 (3 子节): 软件依赖表 (Go 1.23+ / SQLite modernc.org/sqlite v1.59.0 纯 Go 无 cgo /
+   curl / bash 4+ / Prisma CLI 可选) + 硬件建议表 (内存最低 256MB 推荐 4GB, Go 17MB vs 旧 Next.js
+   2.2GB OOM 消失) + 端口规划表 (:3000 heis-backend + :3010-3020 12 mini-services 每行附用途).
+2. 快速开始 (5 步): go build -o heis-backend . + prisma db push/直接放 db/custom.db + ./heis-backend
+   + bash mini-services/start-all.sh + curl /health 验证. 5 分钟跑起来.
+3. 配置 (4 子节): 数据库 (db/custom.db 默认, DSN file:./db/custom.db 仅 Prisma CLI 用, Go 后端
+   直接 sql.Open 不读 .env, WAL + VACUUM + .backup 在线备份) + 站点配置 (10 主题 + TDK + SEO/GEO +
+   footer 自定义 + 章节分页 + 伪静态 URL 风格 7 种 + 站群链轮 inLinkWheel) + 采集规则 (4 段 list/
+   book/toc/content JSON + 5 提取器 css/xpath/regex/json/const + 清洗 + 极限校准 + tokenUrl 钩子)
+   + mini-services 启停 (start/stop/status 三脚本命令表 + Go 工具链路径解析顺序).
+4. 采集规则配置 (3 子节): 创建规则 5 步 + 参考规则表 (7 站点: 番茄/七猫/得奇/八零/精华/笔趣阁/
+   霹雳, 每行附 tokenUrl/AES/反爬严重度) + 8 级降级链 (native→curl→fetch-relay→scrapling→
+   Obscura→uc-bridge→moli-bridge→curl-impersonate; R43-1B MarkProxyFailed cooldown +
+   MarkProxyOK 清状态说明).
+5. 预览 (访问地址表 11 行): 8 页型 (?view=home|book|read|category|ranking|search|fulltext|
+   keyword) + ?site=<siteId> 站点切换 + /admin 后台. 注明后台无登录鉴权, 生产必做反向代理.
+6. 架构图 (文字版): 用户 → Go heis-backend :3000 (main.go 1173 行) → 静态 /clone-css/* + 前台
+   SSR 94 模板 (10 主题 × 8 页型 + 14 admin) + API 14+6 路由 + DB SQLite WAL → 采集引擎 crawl/
+   8296 行 (fetcher 2743/parser 1612/runner 1436/cleaner 722/types 715/hostgate 414/storage
+   363/smart 291, 反反爬 utls+JA3/JA4+2captcha+Cookie+Referer) → 12 Go mini-services (端口
+   3010-3020 全 Go 二进制, start-all.sh 一键拉起).
+7. 故障排查 (6 子节): OOM (Go 17MB 不会 OOM; 旧 Next.js 2.2GB OOM 已不存在; chromium 吃内存场景)
+   + mini-services 异常 (status.sh + tail 日志 + 重启命令 + 3 个 selfTest=false 预期说明: moli
+   外部二进制未装/cloak 无 token/trafilatura 缺 Readability 配置) + 数据库锁 (WAL +
+   busy_timeout + wal_checkpoint(TRUNCATE) + VACUUM + sqlite3 .backup 在线备份) + 主后端 :3000
+   起不来 (端口占用/模板解析失败/数据库路径/94 模板加载不全) + 采集失败排查 (规则在线测试/降级链
+   日志 tail/TaskLog 表/极限校准) + 编译失败 (Go 版本太低/国内 GOPROXY/utls chromedp 冲突
+   go mod tidy/vet 警告).
+8. 生产部署建议 (4 子节): systemd 双 unit (heis-backend.service Type=simple + heis-mini-
+   services.service Type=oneshot RemainAfterExit=yes 完整 INI) + 反向代理 (Caddy basicauth
+   /admin* 自动 HTTPS + Nginx auth_basic 等价配置) + 备份策略 (每日凌晨 cp + VACUUM + 7 天保留
+   + /api/admin/backup JSON 导出) + 升级 (git pull → go build → stop-all/start-all → systemctl
+   restart).
+9. 迁移说明 (从旧 Next.js 版本升级, 11 维度对比表): 运行时/内存/构建/部署/依赖/前端/模板数/
+   采集引擎/mini-services/降级链/反反爬. 升级 5 步路径 (停旧 → 留 db/custom.db+clone-css+data →
+   删 src/node_modules/.next → 编译+启动 → 浏览器验证). schema 完全兼容无需迁移.
+10. 参考 (8 个文档/源码索引): agent-ctx R43-1A/1B/1C 3 工作日志 + worklog.md 全链路 17291 行 +
+    prisma/schema.prisma 11+1 表 + crawl/* 8296 行 + main.go 1173 行 + admin.go 3562 行 +
+    services/* 12 个 + bridgeserver.go 843 行.
+
+文件改动统计:
+- DEPLOY.md: 516 行 (旧 Next.js+Docker, 含 install.sh 国内镜像加速+Bun+node:22-slim+
+  Turbopack 构建+scrapling Dockerfile) → 591 行 (Go 单二进制+bash 启停脚本+systemd+反向代理+
+  升级链+迁移说明). 完全重写而非局部修改, 旧版本全删.
+- agent-ctx/R44-1B-full-stack-developer.md: 新建 (本任务工作记录, 详细读交接 5 步 + DEPLOY.md
+  10 节写作说明 + 命令链路验证 + LoC/端口/模板数三处一致性验证).
+
+未修改 (尊重约束):
+- go-backend/* (Go 代码, 含 main.go+admin.go+crawl/*+services/*+templates/*) ✓
+- src/* (已删, R42-1C) ✓
+- prisma/schema.prisma + package.json + next.config.ts 0 改动 ✓
+- mini-services/*.sh (R43-1C 已重写, 仅引用不改) ✓
+- README.md (仍 Next.js 描述, 不在本任务范围) ✓
+- install.sh (旧 Docker 一键安装脚本, 仍保留兜底, 不在本任务范围) ✓
+
+验证:
+- DEPLOY.md 完整性: 10 节全覆盖, 命令可直接复制执行.
+- 命令链路: cd go-backend && go build -o heis-backend . (R43-1B 验证 24.2MB 0 errors) + bash
+  start-all.sh (R43-1C 验证 11/11 ALIVE 200) + bash status.sh (exit 0/1 区分) + bash stop-all.sh
+  (11/11 graceful) + curl /health+//admin (R43-1B 验证 200) 全部基于已验证的 R43 实测结果.
+- 端口映射: start-all.sh SERVICES 数组 11 项 + heis-backend :3000 = 12 个 Go 二进制, 与
+  DEPLOY.md §1.3 端口规划表 + §六架构图一致.
+- LoC 验证: crawl/* 8296 行 (fetcher 2743+parser 1612+runner 1436+cleaner 722+types 715+
+  hostgate 414+storage 363+smart 291) 与 DEPLOY.md §六架构图一致.
+- 模板数验证: templates/ 10 主题 × 8 页型 + 14 admin = 94, 与 R43-1B 启动日志 "已加载 94 个模板"
+  一致.
+
+Stage Summary:
+- R44-1B 完成 DEPLOY.md 完全重写 (516 → 591 行), 把部署链路从旧 Next.js/Bun+Docker 切换到 Go
+  单二进制 + 12 mini-services. 新版本 10 节: ① 环境要求 (Go 1.23+ / SQLite modernc.org/sqlite
+  纯 Go 无 cgo / 4GB 内存 / :3000 主后端 + :3010-3020 12 mini-services); ② 快速开始 5 步
+  (go build + prisma db push + ./heis-backend + bash start-all.sh + curl 验证, 5 分钟跑起来);
+  ③ 配置 (数据库 WAL + 站点 10 主题 + 采集规则 4 段 JSON + mini-services 三脚本启停); ④ 采集规则
+  (7 站点参考 + 8 级降级链 native→curl→fetch-relay→scrapling→Obscura→uc-bridge→moli-bridge→
+  curl-impersonate); ⑤ 预览 (8 页型 + /admin 后台, 注明无鉴权); ⑥ 架构图 (用户 → :3000
+  heis-backend → 94 模板 + 14+6 API + SQLite WAL + crawl/ 8296 行 + 12 mini-services); ⑦ 故障
+  排查 6 大类 (OOM/mini-services/DB 锁/主后端起不来/采集失败/编译失败); ⑧ 生产部署 (systemd
+  双 unit + Caddy/Nginx 反向代理 + 备份 + 升级); ⑨ 迁移说明 (11 维度对比 + 5 步升级路径, schema
+  兼容无需迁移); ⑩ 参考 8 文档/源码索引. 旧版本 Next.js+Docker+install.sh 国内镜像加速链路全删,
+  新版本基于 R43-1C 后实际 Go 部署链路. 详细工作记录: agent-ctx/R44-1B-full-stack-developer.md
+
+---
+Task ID: R44-1A
+Agent: full-stack-developer (探索sma规则+创建采集规则)
+Task: sma.yueyouxs.com 采集规则探索 + scripts/seed-rule-yueyouxs.ts
+
+Work Log:
+- 读交接: agent-ctx/R43-1A (3 个 Go mini-services 重写) + R43-1C (清理 scripts/ 65 文件全删
+  + src/ 350 文件删 + agent-ctx pre-R38 删 + .gitignore + next.config.ts 修 pseudostatic
+  import). 确认 scripts/ 目录已被 R43-1C 清空, 需重建; src/lib/db.ts 已删, 种子脚本需
+  自带 Prisma 客户端实例化.
+- 读 prisma/schema.prisma (11 模型: Rule/Book/Chapter/Task/Site/...) 确认 Rule.config 是
+  String @default("{}") 存 JSON 字符串, name 唯一性靠 findFirst+update/create 而非
+  @unique (R43-1C 清理后 schema 无 name 唯一约束).
+- 读 docker/autofill-rules.json (1671 行, 8 站点 fanqie/qimao/deqixs/80ge/jhssd/ttkan/
+  pili/bqg713) 取 4 类参考: ① deqixs (HTML css+attr+replaceFrom/replaceTo/stripTags 模板);
+  ② fanqie (JSON itemSelector+fields+const tocLink {q.book_id} 占位符); ③ bqg713 (const
+  tocLink {q.id}+JSON toc url {q.id}&chapterid={index}); ④ pili (css content.read-content
+  attr=html 正文提取模式).
+- 读 go-backend/crawl/parser.go (只读不碰): cssExtract (L396) sel.First() 确认 CSS 提取
+  只取首个匹配; regexExtractFirst (L438) FindStringSubmatch 支持 attr=1 捕获组;
+  ParseList L1177 `if uf=="url"||uf=="bookUrl"` 确认两个字段名都被识别为书 URL.
+- 读 go-backend/crawl/runner.go:1023-1069 (只读): discoverBooks 用 {page} 占位符
+  ReplaceAll 展开 1..maxPages, 新发现 0 则 break (R43-1B 修的无条件 break bug).
+
+第一步站点探索 (curl SSR HTML, agent-browser open 超时改用 curl):
+- 首页 GET / (71KB): div.v-list-item flex d="{0x{hash} {男频/女频} {分类} {简介}}" 
+  onclick="newWebView('/b/{id}.html')", .v-title/.v-intro/.v-cover-img 子元素结构确认.
+- 列表 API GET /api/book/classify?site_id=&classify_id=1100&page=2 (含 Referer 头):
+  {code:0, data:{count:7074, list:[{wapBookId, bookName, authorName, bookPic, intro,
+  classifySecondName, fullFlag, latestChapterName, chapterCount, ...}]}} 干净 JSON,
+  wapBookId 是 URL 用的书 ID (不是 id 字段).
+- 书页 GET /b/24240.html (41KB, 无上神帝): p.face-info-title(书名)/.v-words span×3
+  (作者/分类/字数)/.content-label(连载中)/img.face-cover-img/#intro/.sumchapter a
+  href="/c/24240.html"(目录链接)/#idNewIds .chapter-entrance(最新章 6518 章).
+- 目录页 GET /c/24240.html (1.15MB): ul.catalog_ls li a[href="/r/24240/{chapterId}.html"]
+  全量 6518 章单页 SSR (无 JS 分页), a 内含 <span class="type">免费</span> 前缀.
+- 章节页 GET /r/24240/24241.html (27KB, 第一章): div.virtual_body>div.book>5×div.section
+  (首个无 .none 类, 余 4 个 .none 隐藏, JS 内联切换显隐, 同 URL 全 5 页 SSR) 每个 section
+  含 h2(章名(N/M))+div.con(<p>正文</p>), 末尾 .con 含 "（本章未完，请翻页）"/"（本章完）"
+  分页标记. .book 还含 .wanzheng-dl/.bookfunbtn/#advert_up/#advert_down1/2/.foot-img-down
+  导航广告元素需 clean 剥离.
+- 分类选择页 GET /l/f/0.html (4.4KB): 仅 ca-item 分类入口 gotoPage('/l/f/{catCode}/1.html').
+- 分类书列页 GET /l/f/1100/1.html (9.8KB): 6 个 v-list-item 静态 SSR + JS AJAX
+  /api/book/classify 加载更多页 (确认 list 走 JSON API 最干净, 不走 HTML 分页).
+
+第二步规则创建 (scripts/seed-rule-yueyouxs.ts, 282 行):
+- list (JSON API): urlTemplate=/api/book/classify?classify_id=1100&page={page} (maxPages=20),
+  itemSelector=data.list, fields: name=bookName/author=authorName/intro/cover=bookPic/
+  category=classifySecondName/latestChapter=latestChapterName/bookUrl=wapBookId
+  replaceFrom ^(\d+)$ replaceTo https://sma.yueyouxs.com/b/$1.html (全 URL 避免相对路径解析).
+- book (SSR HTML): name=p.face-info-title/cover=img.face-cover-img attr=src/intro=#intro
+  stripTags/status=div.content-label/latestChapter=#idNewIds .chapter-entrance/bookId=
+  div.sumchapter a attr=href replaceFrom ^/c/(\d+)\.html$ replaceTo $1 (供 toc 占位符).
+  author+category 用 type=regex 锁定 v-words span (作者：([^\n<]+)/分类：([^\n<]+) attr=1)
+  绕开 CSS first-match 只取首段 .v-words span 的限制.
+- toc (HTML 独立目录页): tocLink=const https://sma.yueyouxs.com/c/{q.bookId}.html (占位符
+  取 book 段 bookId), itemSelector=ul.catalog_ls li, title=a replaceFrom ^(免费|付费|VIP|收费)
+  剥 span 前缀, url=a attr=href. pagination disabled (全量单页 SSR).
+- content (HTML 章节页): title=div.section h2 replaceFrom \s*\(\d+/\d+\)\s* 剥 (N/M) 后缀,
+  content=div.book attr=html (整块含 5 section+nav+广告, 由 clean 剥离非正文元素).
+  pagination disabled (5 sub-section 同 URL 内 SSR).
+- fetch: engine=http (SSR 完整无 JS 渲染依赖) + uaMode=rotate + autoCookie + referer +
+  timeout=20s + retries=2 + waitMs=500 + hostGateLimit=3.
+- clean: removeSelectors 剥 script/style/iframe/ins/noscript + .r-header/.nav/.xcyjgnLfeL/
+  .dJoicqeaQqOgbgC (浮窗)/.wanzheng-dl/.bookfunbtn/.foot-img-down/#advert_up/down1/down2/
+  .tips/h2 (分页标题); adPatterns 剥 （本章未完，请翻页）/（本章完）/页面篇幅有限.*下载安装
+  客户端.*算我输！/URL 域名/一秒记住.免费读/请记住本书.域名; whitelist p/br/b/strong/em/
+  i/u; normalize+plainText 输出纯文本全 5 页正文.
+
+第三步入库 + 验证:
+- bun run db:push (确认 schema 已同步, prisma client 重新生成到 node_modules/@prisma/client).
+- bun run scripts/seed-rule-yueyouxs.ts: findFirst({name})→无→create, 返回 id=
+  cmubw50750000keyuwg0y9nb3, self-check OK enabled=true stages=[list,book,toc,content,
+  fetch,clean].
+- bun -e 回读 DB 确认: rule.name="神马小说 (sma.yueyouxs.com)" + config JSON 解析 6 段全在
+  + list.fields 7 项 + toc.itemSelector css ul.catalog_ls li + content.fields.content css
+  div.book attr=html.
+- bun run lint: 0 errors (scripts/ 默认不被 eslint 扫描, 但脚本本身无 TS 类型错误, bun
+  解析无报错).
+
+文件改动统计:
+- scripts/seed-rule-yueyouxs.ts: 新建 282 行 (含 60 行探索注释 + RULE_CONFIG 4 段 + 
+  RULE_DESCRIPTION 8 行 + main() upsert+self-check+6 行诊断输出 + 错误处理/断连).
+- prisma/dev.db + db/custom.db: db/custom.db 新增 1 条 Rule 记录 (id=cmubw5075...).
+
+未修改 (尊重约束):
+- go-backend/* (Go 代码, 含 crawl/parser.go+runner.go 只读探查 CSS/page 占位符行为不碰) ✓
+- 其他 seed-rule-*.ts (R43-1C 已全删, 无可改) ✓
+- docker/autofill-rules.json (1671 行, 不在本任务追加, 站点 key 走 DB 直接 upsert 不走
+  autofill 引导脚本) ✓
+- prisma/schema.prisma + package.json + next.config.ts 0 改动 ✓
+- src/* (已删, R42-1C) ✓
+
+Stage Summary:
+- R44-1A 完成 sma.yueyouxs.com (神马小说/阅友系) 采集规则探索 + 入库. 5 个页面 SSR HTML
+  全部 curl 实测 (/ 71KB + /b/24240 41KB + /c/24240 1.15MB 全量 6518 章 + /r/24240/24241
+  27KB 5-sub-section + /l/f/1100/1 9.8KB + /api/book/classify JSON 7074 本). 站点无 JS 渲染
+  依赖 (SSR 完整), fetch engine=http 即可, 无需浏览器引擎/scrapling/cloak. 规则四段策略:
+  list=JSON API (干净 wapBookId/bookName/authorName/intro/cover/classifySecondName 直接取,
+  无 HTML 解析开销)/book=HTML+CSS+regex 混合 (作者/分类用 regex 锁 v-words span 绕开
+  CSS first-match 限制)/toc=独立目录页 const {q.bookId} 占位符 (全量单页无分页)/content=
+  div.book 整块 HTML+clean.removeSelectors 剥 5 类非正文元素 (nav/广告/浮窗/h2 分页标题/
+  tips) + adPatterns 剥 3 类分页标记 (本章未完/本章完/下载提示) 输出全 5 sub-section 正文.
+  入库: bun run scripts/seed-rule-yueyouxs.ts → DB Rule 表新增 1 条 (id=cmubw5075...,
+  name="神马小说 (sma.yueyouxs.com)", config 6 段 JSON, enabled=true), self-check+回读
+  确认. 详细工作记录: agent-ctx/R44-1A-full-stack-developer.md
+
+---
+Task ID: R44-1C
+Agent: full-stack-developer (Go深度抓bug+清理第四轮)
+Task: R43 后边缘 case + 清理精简 (主要改 go-backend/*)
+
+Work Log:
+- 读交接: worklog.md 末 290 行 (R43-1A A agent 3 新服务 curl-impersonate/trafilatura/cloak-browser +
+  R43-1B B agent utls Hello 池 + MarkProxyFailed/OK + TwoCaptcha + 4 P0 + 3 P1 修复 +
+  R43-1C 清理 Python/bun mini-services + start-all.sh 重写 + .gitignore + next.config.ts 修复).
+- 审查范围: go-backend/ 全 Go 代码 ~17000 行 = crawl/* 8296 + main.go 1173 + admin.go 3562 +
+  services/* 11 服务 5146 + bridgeserver 843.
+
+P0 反反爬 bug (cloak-browser stealth 注入完全失效):
+- cloak-browser/main.go stealthScript 注入有两 bug 叠加, 导致 stealth JS 从未实际执行:
+  · Bug 1: chromedp.Evaluate(fmt.Sprintf(`(%s)()`, stealthScript(tier)), nil) 包裹方式错.
+    stealthScript(tier) 返回多个 IIFE 段 (() => {...})(); (() => {...})(); ...), 包在 (...)
+    后调用 () 是 JS 语法错 (括号内只接受单表达式, 多语句以 ; 分隔不合法). V8 报 SyntaxError.
+  · Bug 2: chromedp.Evaluate 在当前文档 (about:blank) 执行, 导航后上下文销毁, 真实页面未注入
+    stealth JS. 注释声称 "在每个新文档前执行" 但 API 用错 — chromedp.Evaluate 是 Runtime.evaluate
+    CDP, 只跑一次, 不是 Page.addScriptToEvaluateOnNewDocument.
+  · 结果: cloak-browser 服务从 R43-1A 创建以来, stealth 注入完全失效, 仅靠 chromedp flags
+    (disable-blink-features=AutomationControlled + UA metadata) 兜底, puppeteer-extra-stealth
+    12 项抹平中前 6 项 (navigator.webdriver / chrome runtime / plugins / languages /
+    WebGL vendor/renderer / permissions.query) 全部失效, WAF 站点 (hetushu/shucong 等 hard WAF)
+    概率被识别为自动化浏览器.
+  · 修复: 改用 page.AddScriptToEvaluateOnNewDocument (CDP Page 域) — 脚本在每个新文档加载前
+    自动执行, 跨导航持久. 直接传 stealthScript(tier) 原文 (无 ()() 包裹), 多 IIFE 语句被 V8
+    视为程序顶层语句序列, 合法执行.
+  · 顺带清理: 移除 dead import "github.com/chromedp/cdproto/cdp" + 末尾 var _ = cdp.Node{}
+    suppress 语句 (cdp 包未直接使用, 仅在 suppress 出现).
+
+P1 byte-slice 截断不安全 (中文 UTF-8 多字节字符斩半) — 全局 7 处:
+- 7 处按字节 s[:n] 截断, 中文 (3-byte UTF-8) 在边界处会切出孤立 continuation byte (10xxxxxx),
+  导致 (a) 日志输出乱码 (b) utf8.Valid 校验失败 (c) 代理对/多字节字符斩半 (d) 部分 strings.Contains
+  误命中 (代理对部分字节凑成另一词). R42-1A 已在 main.go truncate 修复过, 但 services/* + admin.go
+  + crawl/smart.go 仍存同款 bug. 全部改用 []rune 安全截断:
+  · bridgeserver.go TruncStr (7 个 services 共用): s[:n] → []rune[:n]
+  · bridgeserver.go SafeHeaderValue (HTTP 头值): v[:8192] → []rune[:8192]
+  · bridgeserver.go SanitizeError (错误脱敏): s[:200] → []rune[:200]
+  · admin.go strField (admin 字段 name/description/adminNote 等): s[:max] → []rune[:max]
+  · admin.go adminNote PATCH 再截断 (tagStrip 后): note[:1000] → []rune[:1000]
+    (原实现 strField 已 rune 截到 ≤1000, 但 tagStripRE 剥标签后 byte 长度仍可能 >1000, 因
+    中文字符 3 byte/rune, 350 runes = 1050 bytes, 触发再截断 byte 切片)
+  · admin.go ads 数组项 (下载广告文案): s[:200] → []rune[:200]
+  · crawl/smart.go MatchCategoryByText: text[:3000] → []rune[:3000]
+  · crawl/smart.go DetectCompleteFromText: text[:2000] → []rune[:2000]
+  · crawl/smart.go SmartCompleteDetect StatusField Reason: s[:30] → []rune[:30]
+  · services/qimao-proxy handleSearch wd: wd[:60] → []rune[:60]
+  · services/qimao-proxy handleRank rankType: rankType[:40] → []rune[:40]
+  · services/scrapling-bridge doFetchBrowser errMsg: errMsg[:200] → []rune[:200]
+
+P1 反反爬 bug (scrapling-bridge Accept-Encoding 含 br):
+- scrapling-bridge applyDefaultChromeHeaders 设 Accept-Encoding: gzip, deflate, br.
+  Go net/http 自动解 gzip/deflate 但不解 brotli (brotli 需第三方 libs). 服务器返 br 时 body
+  是原始 brotli 字节, doFetchStatic 返回的 html 字段是压缩字节, 引擎侧 parseList/parseBook
+  解析全炸. 与 fetcher.go buildHeaders 同款 (R41-1A 已修, 此处漏改).
+- 修复: 移除 br, 仅 gzip, deflate (与 fetcher.go 一致).
+
+文件改动统计 (4 文件, +0/-3 行, 注释 +60 行):
+- services/cloak-browser/main.go: 570 → 577 行 (+7 行, 注释 +12, 移除 cdp import + suppress
+  -3 行, 改用 page.AddScriptToEvaluateOnNewDocument +6 行)
+- services/scrapling-bridge/main.go: 432 → 435 行 (+3 行, Accept-Encoding br→gzip/deflate +1 行,
+  errMsg rune-safe +3 行, 注释 -1)
+- services/bridgeserver/bridgeserver.go: 843 → 856 行 (+13 行, TruncStr/SafeHeaderValue/
+  SanitizeError rune-safe, 注释 +13 行)
+- services/qimao-proxy/main.go: 800 → 802 行 (+2 行, wd/rankType rune-safe)
+- admin.go: 3562 → 3570 行 (+8 行, strField/adminNote/ads rune-safe)
+- crawl/smart.go: 291 → 300 行 (+9 行, 3 处 rune-safe + 注释)
+
+未修改 (尊重约束):
+- go-backend/main.go (truncate 已 R42-1A rune-safe 修复, 无需改) ✓
+- go-backend/templates/* (已完成) ✓
+- go-backend/crawl/{fetcher,parser,cleaner,hostgate,storage,types,runner}.go (深度审查无
+  R43 后边缘 case, fetcher.go truncate []rune 安全, runner.go truncate []rune 安全) ✓
+- services/{bqg713-proxy,deqixs-proxy,fetch-relay,moli-bridge,uc-bridge,xjp-proxy,
+  curl-impersonate-bridge,trafilatura-bridge}/main.go (深度审查无 byte-截断 bug) ✓
+- scripts/seed-rule-yueyouxs.ts (A agent 创建, 不碰) ✓
+- DEPLOY.md (B agent 创建, 不碰) ✓
+- prisma/schema.prisma + package.json 0 改动 ✓
+
+验证:
+- go build -o heis-backend . → 0 errors, binary 24,167,974 bytes (24.2MB, 与 R43-1B 24,168,286
+  基本持平, 仅注释 +60 行 + 逻辑微调)
+- go vet ./... → 0 warnings (主包 + 11 services + bridgeserver + crawl 全 pass)
+- go vet ./services/cloak-browser/ → 0 warnings (验证 cdp import 移除后无 unused 报警)
+- heis-backend 启动: 94 模板加载, http://localhost:3000 (内存 17MB)
+- 端到端 curl 测试:
+  · GET / → 200 ✓
+  · GET /health → 200 ✓
+  · GET /admin → 200 ✓
+
+Stage Summary:
+- Go 采集引擎第四轮深度审查 ~17000 行 (crawl 8 模块 + main + admin + 11 services + bridgeserver),
+  抓 1 P0 反反爬 bug (cloak-browser stealth 注入完全失效: (script)() 包裹多 IIFE 段 = JS 语法错
+  + chromedp.Evaluate 在 about:blank 上下文执行导航后销毁, 真实页面无 stealth JS, 改用
+  page.AddScriptToEvaluateOnNewDocument 跨导航持久注入) + 1 P1 反反爬 (scrapling-bridge
+  Accept-Encoding 含 br, Go net/http 不解 brotli, 服务器返 br 时 HTML 全炸, 移除 br 与
+  fetcher.go 一致) + 13 处 byte-slice 截断不安全 (中文 UTF-8 多字节字符斩半, 改 []rune 安全截断,
+  覆盖 bridgeserver TruncStr/SafeHeaderValue/SanitizeError + admin.go strField/adminNote/ads +
+  crawl/smart.go MatchCategoryByText/DetectCompleteFromText/SmartCompleteDetect + qimao-proxy
+  wd/rankType + scrapling-bridge errMsg). 顺带清理 cloak-browser dead import (cdp 包 + var _
+  suppress). 编译 0 errors, vet 0 warnings, binary 24.2MB. 核心保留 R41-R43 全部修复 (hostgate
+  pump/Acquire drain / utls Chrome TLS / 4 Hello 池 per-host 钉扎 / Turnstile 8s / 2captcha 180s /
+  Cookie 持久化 / BudgetExceeded 上抛 / truncate rune-based / per-attempt timeout / Referer 一致性 /
+  pickProxyFor sweep 完整 / trafilatura clients 单例 + globalTransport 复用 / jsonLdTypeRe 预编译 /
+  batchMu defer / discoverBooks newCount==0 break / MarkProxyFailed/OK / IncCaptcha / ReportRateLimited).
+  详细工作记录: agent-ctx/R44-1C-full-stack-developer.md

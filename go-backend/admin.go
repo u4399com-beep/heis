@@ -237,8 +237,11 @@ func strField(m map[string]interface{}, key string, max int) string {
                 s = fmt.Sprintf("%v", v)
         }
         s = strings.TrimSpace(s)
-        if max > 0 && len(s) > max {
-                s = s[:max]
+        // R44-1C 修复: 原实现 s[:max] 按字节切片, 中文 (3-byte UTF-8) 在边界处会切出孤立
+        //   continuation byte (admin 字段如 name/description/adminNote 大量中文输入).
+        //   改用 []rune 安全截断 (与 main.go truncate 同款).
+        if max > 0 && len([]rune(s)) > max {
+                s = string([]rune(s)[:max])
         }
         return s
 }
@@ -2103,8 +2106,9 @@ func adminDownloadsCreate(w http.ResponseWriter, r *http.Request) {
                         for _, a := range arr {
                                 if s, isStr := a.(string); isStr {
                                         s = strings.TrimSpace(s)
-                                        if len(s) > 200 {
-                                                s = s[:200]
+                                        // R44-1C 修复: 原 s[:200] 按字节切片, 中文 ad 文本可能斩半.
+                                        if len([]rune(s)) > 200 {
+                                                s = string([]rune(s)[:200])
                                         }
                                         if s != "" {
                                                 ads = append(ads, s)
@@ -2487,8 +2491,12 @@ func adminFeedbackByIDHandler(w http.ResponseWriter, r *http.Request) {
                 if v, ok := body["adminNote"]; ok && v != nil {
                         note := strField(body, "adminNote", 1000)
                         note = tagStripRE.ReplaceAllString(note, "")
-                        if len(note) > 1000 {
-                                note = note[:1000]
+                        // R44-1C 修复: 原 note[:1000] 按字节切片, 中文 (3-byte UTF-8) 在边界处
+                        //   会切出孤立 continuation byte. strField 已按 rune 截断到 ≤1000, 但 tagStripRE
+                        //   剥标签后 byte 长度仍可能 >1000 (因中文字符 3 byte/rune, 350 runes = 1050 bytes).
+                        //   改用 []rune 防多字节字符斩半.
+                        if len([]rune(note)) > 1000 {
+                                note = string([]rune(note)[:1000])
                         }
                         note = strings.TrimSpace(note)
                         if note == "" {

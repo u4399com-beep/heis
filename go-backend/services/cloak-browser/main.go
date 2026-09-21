@@ -50,9 +50,9 @@ import (
         "sync/atomic"
         "time"
 
-        "github.com/chromedp/cdproto/cdp"
         "github.com/chromedp/cdproto/emulation"
         "github.com/chromedp/cdproto/network"
+        "github.com/chromedp/cdproto/page"
         "github.com/chromedp/chromedp"
 
         "heis-backend/services/bridgeserver"
@@ -336,7 +336,15 @@ func fetchPage(parent context.Context, targetURL string, actions []renderAction,
         browserCtx, cancelBrowser := chromedp.NewContext(ctx)
         defer cancelBrowser()
 
-        // 随机 UA + 隐身脚本注入 (page.addScriptToEvaluateOnNewDocument)
+        // 随机 UA + 隐身脚本注入 (Page.addScriptToEvaluateOnNewDocument)
+        // R44-1C 修复: 原实现 chromedp.Evaluate(fmt.Sprintf(`(%s)()`, script), nil) 有两 bug:
+        //   1) (script)() 包裹多 IIFE 段为单一表达式调用 = JS 语法错 (语句以 ; 分隔不能入 ()).
+        //      stealthScript 返回多个 (() => {...})(); 块, 包在 (...) 后调用 () 是 SyntaxError.
+        //   2) chromedp.Evaluate 只在当前文档 (about:blank) 执行, 导航后上下文销毁, 
+        //      真实页面未注入 stealth JS. 注释声称 "在每个新文档前执行" 但 API 用错.
+        // 修复: 改用 page.AddScriptToEvaluateOnNewDocument (CDP Page 域) — 脚本在每个新文档
+        //   加载前自动执行, 跨导航持久. 直接传 script 原文 (无包裹), 多 IIFE 语句被 V8 视为
+        //   程序顶层语句序列, 合法执行.
         ua := userAgents[rand.Intn(len(userAgents))]
         _ = chromedp.Run(browserCtx,
                 network.Enable(),
@@ -350,9 +358,10 @@ func fetchPage(parent context.Context, targetURL string, actions []renderAction,
                         Mobile:          false,
                         Bitness:         "64",
                 }),
-                // stealth 脚本注入(在每个新文档前执行, 抹 navigator.webdriver 等)
+                // stealth 脚本注入到 Page.addScriptToEvaluateOnNewDocument (每个新文档前执行, 跨导航持久)
                 chromedp.ActionFunc(func(ctx context.Context) error {
-                        return chromedp.Evaluate(fmt.Sprintf(`(%s)()`, stealthScript(tier)), nil).Do(ctx)
+                        _, err := page.AddScriptToEvaluateOnNewDocument(stealthScript(tier)).Do(ctx)
+                        return err
                 }),
         )
         // 注入失败容忍: stealth flags 仍部分生效(automation controlled off + UA)
@@ -565,6 +574,3 @@ func ensureAllocatorCtx() context.Context {
         ctx, _ := ensureAllocator()
         return ctx
 }
-
-// suppress unused import (cdp 节点类型仅在 chromedp 内部用, 显式 import 防止 go vet 报)
-var _ = cdp.Node{}
