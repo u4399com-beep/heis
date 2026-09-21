@@ -1,0 +1,129 @@
+{{define "ddyueshu/keyword"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>"{{.Tag}}" 相关小说 - {{.Site.Title}}</title>
+<meta name="keywords" content="{{.Site.Keywords}},{{.Tag}}">
+<meta name="description" content="标签 {{.Tag}} 相关小说。">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" type="text/css" href="/clone-css/ddyueshu.css">
+</head>
+<body>
+<div id="wrapper">
+<div class="header">
+<div class="header_logo"><a href="/">{{.Site.Name}}</a></div>
+<div class="header_search">
+<form name="articlesearch" method="get" action="/?view=search">
+<input name="q" type="text" class="text" value="{{.Tag}}" placeholder="搜索从这里开始...">
+<button type="submit" name="submit">搜索</button>
+</form>
+</div>
+</div>
+
+<div class="nav">
+<ul>
+<li><a href="/">首页</a></li>
+{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}">{{.name}}</a></li>{{end}}
+<li><a href="/?view=fulltext">全本</a></li>
+<li><a href="/?view=history">足迹</a></li>
+</ul>
+</div>
+
+<div id="main">
+<div id="content">
+<div class="novelslist">
+<h2 style="background:#F6F8FE;border-bottom:1px solid #A6D3E8;font-size:14px;font-weight:700;height:30px;line-height:30px;overflow:hidden;padding:0 0 0 10px;margin:0;">
+"{{.Tag}}" 相关小说
+</h2>
+
+{{if .Books}}
+<div style="padding:5px 3px;background:#FEF9EF;">
+<div style="display:flex;flex-wrap:wrap;gap:0;">
+
+<div class="content" style="border-right:dotted 1px #A6D3E8;padding:0 3px;float:left;width:33.33%;box-sizing:border-box;vertical-align:top;">
+<h2 style="border-bottom:solid 1px #A6D3E8;font-size:14px;font-weight:700;padding-left:5px;line-height:25px;height:25px;overflow:hidden;margin:0;">{{.Tag}} 推荐 1</h2>
+{{if (index .Books 0)}}
+<div class="top" style="padding:5px 0 0 0;">
+<div class="image" style="display:inline-block;vertical-align:top;padding:5px 0 0 5px;width:71px;">
+<a href="/?view=book&id={{(index .Books 0).id}}">{{if (index .Books 0).cover}}<img src="{{(index .Books 0).cover}}" alt="{{(index .Books 0).name}}" width="67" height="82">{{end}}</a>
+</div>
+<dl style="display:inline-block;vertical-align:top;width:60%;padding:10px 0 0 0;">
+<dt style="height:25px;line-height:25px;overflow:hidden;font-weight:700;"><a href="/?view=book&id={{(index .Books 0).id}}">{{(index .Books 0).name}}</a></dt>
+<dd style="line-height:20px;height:60px;overflow:hidden;color:#9E9E9E;font-size:12px;">{{if (index .Books 0).intro}}{{(index .Books 0).intro}}{{else}}暂无简介{{end}}</dd>
+</dl>
+<div class="clear"></div>
+</div>
+{{end}}
+<ul style="padding:10px 0 0 0;">
+{{range $i, $b := .Books}}{{if and (gt $i 0) (lt $i 7)}}<li style="color:#B3B3B3;height:20px;line-height:20px;font-size:12px;overflow:hidden;float:left;width:48%;display:inline-block;padding:3px 0 0 0;border-bottom:1px solid #EEEEEE;box-sizing:border-box;"><a href="/?view=book&id={{$b.id}}" style="font-size:13px;">{{$b.name}}</a><span style="margin-left:4px;">/ {{$b.author}}</span></li>{{end}}{{end}}
+<div class="clear"></div>
+</ul>
+<div class="clear"></div>
+</div>
+
+<div class="content" style="border-right:dotted 1px #A6D3E8;padding:0 3px;float:left;width:33.33%;box-sizing:border-box;vertical-align:top;">
+<h2 style="border-bottom:solid 1px #A6D3E8;font-size:14px;font-weight:700;padding-left:5px;line-height:25px;height:25px;overflow:hidden;margin:0;">{{.Tag}} 推荐 2</h2>
+{{if (index .Books 1)}}
+<div class="top" style="padding:5px 0 0 0;">
+<div class="image" style="display:inline-block;vertical-align:top;padding:5px 0 0 5px;width:71px;">
+<a href="/?view=book&id={{(index .Books 1).id}}">{{if (index .Books 1).cover}}<img src="{{(index .Books 1).cover}}" alt="{{(index .Books 1).name}}" width="67" height="82">{{end}}</a>
+</div>
+<dl style="display:inline-block;vertical-align:top;width:60%;padding:10px 0 0 0;">
+<dt style="height:25px;line-height:25px;overflow:hidden;font-weight:700;"><a href="/?view=book&id={{(index .Books 1).id}}">{{(index .Books 1).name}}</a></dt>
+<dd style="line-height:20px;height:60px;overflow:hidden;color:#9E9E9E;font-size:12px;">{{if (index .Books 1).intro}}{{(index .Books 1).intro}}{{else}}暂无简介{{end}}</dd>
+</dl>
+<div class="clear"></div>
+</div>
+{{end}}
+<ul style="padding:10px 0 0 0;">
+{{range $i, $b := .Books}}{{if and (gt $i 7) (lt $i 14)}}<li style="color:#B3B3B3;height:20px;line-height:20px;font-size:12px;overflow:hidden;float:left;width:48%;display:inline-block;padding:3px 0 0 0;border-bottom:1px solid #EEEEEE;box-sizing:border-box;"><a href="/?view=book&id={{$b.id}}" style="font-size:13px;">{{$b.name}}</a><span style="margin-left:4px;">/ {{$b.author}}</span></li>{{end}}{{end}}
+<div class="clear"></div>
+</ul>
+<div class="clear"></div>
+</div>
+
+<div class="content" style="padding:0 3px;float:left;width:33.33%;box-sizing:border-box;vertical-align:top;">
+<h2 style="border-bottom:solid 1px #A6D3E8;font-size:14px;font-weight:700;padding-left:5px;line-height:25px;height:25px;overflow:hidden;margin:0;">{{.Tag}} 推荐 3</h2>
+{{if (index .Books 2)}}
+<div class="top" style="padding:5px 0 0 0;">
+<div class="image" style="display:inline-block;vertical-align:top;padding:5px 0 0 5px;width:71px;">
+<a href="/?view=book&id={{(index .Books 2).id}}">{{if (index .Books 2).cover}}<img src="{{(index .Books 2).cover}}" alt="{{(index .Books 2).name}}" width="67" height="82">{{end}}</a>
+</div>
+<dl style="display:inline-block;vertical-align:top;width:60%;padding:10px 0 0 0;">
+<dt style="height:25px;line-height:25px;overflow:hidden;font-weight:700;"><a href="/?view=book&id={{(index .Books 2).id}}">{{(index .Books 2).name}}</a></dt>
+<dd style="line-height:20px;height:60px;overflow:hidden;color:#9E9E9E;font-size:12px;">{{if (index .Books 2).intro}}{{(index .Books 2).intro}}{{else}}暂无简介{{end}}</dd>
+</dl>
+<div class="clear"></div>
+</div>
+{{end}}
+<ul style="padding:10px 0 0 0;">
+{{range $i, $b := .Books}}{{if and (gt $i 14) (lt $i 21)}}<li style="color:#B3B3B3;height:20px;line-height:20px;font-size:12px;overflow:hidden;float:left;width:48%;display:inline-block;padding:3px 0 0 0;border-bottom:1px solid #EEEEEE;box-sizing:border-box;"><a href="/?view=book&id={{$b.id}}" style="font-size:13px;">{{$b.name}}</a><span style="margin-left:4px;">/ {{$b.author}}</span></li>{{end}}{{end}}
+<div class="clear"></div>
+</ul>
+<div class="clear"></div>
+</div>
+
+</div>
+<div class="clear"></div>
+</div>
+{{else}}
+<div style="padding:40px;text-align:center;color:#6b7280;">暂无相关小说</div>
+{{end}}
+</div>
+
+<div id="firendlink">
+相关关键词：
+{{if .RelatedTags}}{{range .RelatedTags}}<a href="/?view=keyword&tag={{.}}">{{.}}</a>{{end}}{{end}}
+<a href="/">返回首页</a>
+</div>
+</div>
+</div>
+
+<div class="footer">
+<p>本站所有小说为转载作品，所有章节均由网友上传，转载至本站只是为了宣传本书让更多读者欣赏。</p>
+<p>Copyright &copy; {{.Site.Name}} ({{.Site.Domain}}) All Rights Reserved.</p>
+</div>
+</div>
+
+</body>
+</html>{{end}}

@@ -1,0 +1,124 @@
+{{define "23qb/search"}}<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0">
+<title>{{.Q}} - {{.Site.Title}}</title>
+<meta name="keywords" content="{{.Site.Keywords}},{{.Q}}">
+<meta name="description" content="搜索结果：{{.Q}}">
+<link rel="stylesheet" href="/clone-css/23qb.css">
+</head>
+<body class="homepage">
+<header id="header" class="wrapper">
+<div class="header-content">
+<div class="banyundog-com">
+<div class="header-logo">
+<h1 class="slogan">{{.Site.Name}}</h1>
+<div class="fixed-logo">
+<a href="/" class="logo" title="{{.Site.Name}}">{{.Site.Name}}</a>
+</div>
+</div>
+</div>
+<div class="nav-search">
+<form action="/?view=search" class="search-dh"></form>
+</div>
+<div class="header-module">
+<ul class="nav-menu-items">
+<li class="nav-menu-item"><a href="/" title="首页"><span>首页</span></a></li>
+<li class="nav-menu-item"><a href="/?view=category" title="书库"><span>书库</span></a></li>
+</ul>
+</div>
+</div>
+<div id="search-content">
+<form action="/?view=search">
+<div class="search-main">
+<div class="search-box">
+<input class="search-input ac_wd" id="txtKeywords" type="search" name="q" value="{{.Q}}" autocomplete="off" placeholder="搜索喜欢的小说、作者、标签">
+<a href="/?view=category" class="search-btn search-cupfox" title="书库">书库</a>
+<button class="search-btn search-go" type="submit"><i class="icon-search"></i></button>
+<button class="cancel-btn" type="button">取消</button>
+</div>
+</div>
+</form>
+</div>
+</header>
+
+<main id="main" class="wrapper">
+<div class="content">
+<div class="list">
+<div class="box">
+<div class="search-stat">
+<h1>{{.Q}}</h1>
+<h2>共 {{len .Books}} 部作品</h2>
+</div>
+
+{{if .Books}}
+{{range .Books}}
+<div class="module-search-item">
+<div class="novel-cover">
+<div class="module-item-cover">
+<div class="module-item-pic">
+<a href="/?view=book&id={{.id}}" title="{{.name}}"></a>
+{{if .cover}}<img class="lazy lazyloaded" src="{{.cover}}" alt="{{.name}}">{{end}}
+<div class="loading"></div>
+</div>
+<div class="module-item-caption">
+<span>{{.category}}</span>
+</div>
+</div>
+</div>
+
+<div class="novel-info">
+<div class="novel-info-header">
+<h3><a href="/?view=book&id={{.id}}" title="{{.name}}">{{.name}}</a></h3>
+</div>
+<div class="novel-info-main">
+<div class="novel-info-items">
+<div class="novel-info-itemtitle">作者</div>
+<div class="novel-info-actor">{{.author}}</div>
+</div>
+<div class="novel-info-items">
+<div class="novel-info-itemtitle">分类</div>
+<div class="novel-info-actor">{{.category}}</div>
+</div>
+<div class="novel-info-items">
+<div class="novel-info-itemtitle">状态</div>
+<div class="novel-info-actor">{{statusLabel .status}}</div>
+</div>
+<div class="novel-info-items">
+<div class="novel-info-itemtitle">字数</div>
+<div class="novel-info-actor">{{wordCount .wordCount}}</div>
+</div>
+<div class="novel-info-items">
+<div class="novel-info-itemtitle">更新</div>
+<div class="novel-info-actor">{{fmtDate .updatedAt}}</div>
+</div>
+</div>
+<div class="novel-info-content">
+<p>{{if .intro}}{{.intro}}{{else}}暂无简介{{end}}</p>
+</div>
+</div>
+</div>
+{{end}}
+{{else}}
+<div style="padding:40px;text-align:center;">未找到相关书籍</div>
+{{end}}
+</div>
+</div>
+</div>
+</main>
+
+<footer id="footer" class="wrapper pd60">
+<p class="sitemap">
+<span>{{.Site.Name}}</span>
+<a href="/">RSS</a>
+<span class="space-line-bold"></span>
+<a href="/">Google</a>
+<span class="space-line-bold"></span>
+<a href="/">Bing</a>
+</p>
+<p>{{.Site.Title}}</p>
+</footer>
+
+</body>
+</html>{{end}}

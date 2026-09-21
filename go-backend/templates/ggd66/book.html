@@ -1,0 +1,118 @@
+{{define "ggd66/book"}}<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>{{.Site.Title}} - {{.Book.name}} - {{.Book.author}}</title>
+<meta name="keywords" content="{{.Site.Keywords}},{{.Book.name}},{{.Book.author}},{{.Book.category}}">
+<meta name="description" content="{{.Book.intro}}">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0">
+<link rel="stylesheet" href="https://cdn.staticfile.org/font-awesome/4.7.0/css/font-awesome.min.css">
+<link rel="stylesheet" href="/clone-css/ggd66.css">
+</head>
+<body>
+<div class="header">
+<div class="container">
+<div class="header-left">
+<a href="/" title="{{.Site.Name}}" class="logo">{{.Site.Name}}</a>
+</div>
+<div class="header-right">
+<a href="/?view=history">阅读历史</a> |
+<a href="/?view=fulltext">全本阅读</a> |
+<a href="/?view=category">分类浏览</a>
+</div>
+<div class="header-nav">
+<a href="/" title="首页">首 页</a>
+<a href="/?view=category" title="书库">书 库</a>
+<a href="/?view=fulltext" title="全本">全本</a>
+{{range .NavCats}}<a href="/?view=category&cat={{.id}}" title="{{.name}}">{{.name}}</a>{{end}}
+</div>
+</div>
+<div class="clear"></div>
+</div>
+
+<div class="container">
+<ul class="breadcrumb">
+<li><a href="/">首页</a></li>
+<li><a href="/?view=category">书库</a></li>
+{{if .Book.categoryId}}<li><a href="/?view=category&cat={{.Book.categoryId}}">{{.Book.category}}</a></li>{{end}}
+<li class="active">{{.Book.name}}</li>
+</ul>
+
+<div class="content">
+<div class="content-left" id="book-info">
+<div class="book">
+<div class="bookcover">
+<a href="/?view=book&id={{.Book.id}}">{{if .Book.cover}}<img src="{{.Book.cover}}" alt="{{.Book.name}}" width="160" height="220">{{end}}</a>
+</div>
+<div class="bookinfo">
+<h1 class="booktitle">{{.Book.name}}</h1>
+<div class="booktag">
+{{if .Book.categoryId}}<a href="/?view=category&cat={{.Book.categoryId}}" class="red">{{.Book.category}}</a>{{else}}<span class="red">{{.Book.category}}</span>{{end}}
+<span class="blue">{{if eq .Book.status "completed"}}已完结{{else}}连载中{{end}}</span>
+<span class="blue">{{wordCount .Book.wordCount}}</span>
+<a href="/?view=search&q={{.Book.author}}" class="red">{{.Book.author}}</a>
+</div>
+<div class="bookintro">{{.Book.intro}}</div>
+</div>
+<div class="clear"></div>
+</div>
+
+<div class="book">
+<div class="chapterlist">
+<dl>
+{{range .Chapters}}<dd><a href="/?view=read&chapter={{.id}}" title="{{.title}}">{{.title}}</a></dd>
+{{end}}
+</dl>
+<div class="clear"></div>
+</div>
+<div class="clear"></div>
+</div>
+
+<div class="book">
+<div style="padding: 10px 0; text-align: center;">
+<a href="/?view=read&chapter={{.FirstChapterId}}" class="btn btn-info" style="display:inline-block;padding:6px 24px;margin-right:10px;text-decoration:none;">开始阅读</a>
+<a href="#book-info" class="btn btn-default" style="display:inline-block;padding:6px 24px;text-decoration:none;">查看目录</a>
+</div>
+<div class="clear"></div>
+</div>
+</div>
+
+<div class="content-right" id="fengyou">
+<div class="search hidden-xs">
+<form name="articlesearch" method="get" action="/?view=search">
+<input type="hidden" name="view" value="search">
+<input name="searchkey" type="text" class="text" id="searchkey" size="10" maxlength="50" placeholder="搜索从这里开始...">
+<button type="submit" name="submit">搜  索</button>
+</form>
+</div>
+<h2 class="visible-xs">阅读排行榜</h2>
+<ul>
+{{range .HotBooks}}
+<li>[{{.category}}] <a href="/?view=book&id={{.id}}">{{.name}}</a><span>{{.author}}</span></li>
+{{end}}
+</ul>
+</div>
+<div class="clear"></div>
+</div>
+
+<div class="content tuijian hidden-xs">
+友情链接：
+<div class="class">
+<ul>
+<li><a href="/?view=category">书库</a></li>
+<li><a href="/?view=fulltext">全本</a></li>
+{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}">{{.name}}</a></li>{{end}}
+</ul>
+</div>
+<div class="clear"></div>
+</div>
+</div>
+
+<div class="footer">
+<p class="hidden-xs">本站所有小说为转载作品，所有章节均由网友上传，转载至本站只是为了宣传本书让更多读者欣赏。</p>
+<p class="hidden-xs">Copyright © {{.Site.Name}} ({{.Site.Domain}}) All Rights Reserved.</p>
+<div class="clear"></div>
+</div>
+
+</body>
+</html>{{end}}

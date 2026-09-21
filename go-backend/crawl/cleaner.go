@@ -294,10 +294,11 @@ func RemoveAdLines(text string, patterns []string) string {
 
 // CcAndZwStripRe — 控制字符 (除 \t \n \r) + 零宽字符 (U+200B-C / U+2060 / U+FEFF) 剥离正则.
 //  R26-1A: 同口径追加 U+2060 (Word Joiner, 与 downloader.ZW_CHARS 同口径).
-var CcAndZwStripRe = regexp.MustCompile(`[\x00-\x08\x0B\x0C\x0E-\x1F\u200B-\u200D\u2060\uFEFF]`)
+//  R39-1C: Go RE2 不支持 \u 转义, 改用 \x{XXXX} 语法 (与 init 不再 panic).
+var CcAndZwStripRe = regexp.MustCompile(`[\x00-\x08\x0B\x0C\x0E-\x1F\x{200B}-\x{200D}\x{2060}\x{FEFF}]`)
 
 // ZWStripOnlyRe — 仅零宽字符 (用于纯文本字段, 不剥控制字符)
-var ZWStripOnlyRe = regexp.MustCompile(`[\u200B-\u200D\u2060\uFEFF]`)
+var ZWStripOnlyRe = regexp.MustCompile(`[\x{200B}-\x{200D}\x{2060}\x{FEFF}]`)
 
 // CcStripOnlyRe — 仅控制字符 (\b 等源站杂符; \t\n\r 不在剥离类内)
 var CcStripOnlyRe = regexp.MustCompile(`[\x00-\x08\x0B\x0C\x0E-\x1F]`)

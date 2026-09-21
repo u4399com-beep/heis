@@ -1,0 +1,118 @@
+{{define "x2552/read"}}<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta charset="gbk">
+<title>{{.Chapter.title}} - {{.Book.name}} - {{.Site.Title}}</title>
+<meta name="keywords" content="{{.Book.name}},{{.Chapter.title}},{{.Book.author}},{{.Site.Keywords}}">
+<meta name="description" content="{{.Book.name}}{{.Chapter.title}}全文阅读">
+<link rel="stylesheet" href="/clone-css/x2552.css" type="text/css">
+</head>
+<body>
+<div class="main m_head">
+<div class="h_logo fl"><a href="/"><img src="/heibing/images/logo.png" alt="{{.Site.Name}}"></a></div>
+<div class="h_body fl">
+<div>
+<p class="fr"><a href="/">简体版</a> | <a href="/?charset=big5">繁体版</a> | <a href="/">设为首页</a> | <a href="#">联系我们</a> | <a href="#">加入收藏</a></p>
+{{.Site.Name}}：免费小说阅读网 没有弹窗广告 好看的小说免费阅读
+</div>
+<div>
+<form target="_blank" action="/?view=search" method="get" name="articlesearch" id="articlesearch">
+<input type="hidden" name="view" value="search">
+<input type="hidden" id="searchtype" name="searchtype" value="articlename">
+<dl class="fl searchbox">
+<dt><i></i><input type="text" name="q"></dt>
+<dd><a href="javascript:void(0);" class="so_book">搜书</a><a href="javascript:void(0);" class="so_author">搜作者</a></dd>
+</dl>
+</form>
+<dl class="fr loginbox">
+<dd>欢迎您，[<a href="/?view=history">阅读历史</a>] 或 [<a href="/?view=fulltext">全本阅读</a>]</dd>
+</dl>
+</div>
+</div>
+</div>
+
+<div class="main m_menu">
+<ul>
+<li class="m_ml"></li>
+<li><a href="/">吾爱首页</a></li>
+<li><a href="/?view=category">分类</a></li>
+<li><a href="/?view=fulltext">全本</a></li>
+<li class="m_bc"><a rel="nofollow" href="#"></a></li>
+<li class="m_mr"></li>
+</ul>
+</div>
+
+<div id="a_head">
+<ul>
+<li><a href="/">{{.Site.Name}}</a> &gt; </li>
+<li>{{.Chapter.title}} &gt; </li>
+<li>正在阅读</li>
+</ul>
+<form class="so" action="/?view=search" method="get">
+<input type="hidden" name="view" value="search">
+<input type="hidden" name="searchtype" value="articlename">
+<input type="text" name="q" placeholder="书名">
+<a href="javascript:void(0);">搜索</a>
+</form>
+</div>
+
+<div id="a_main">
+<div class="myset">
+阅读设置：
+<a href="javascript:void(0)" title="减小字号" onclick="var c=document.getElementById('contents');var s=window.getComputedStyle(c).fontSize.replace('px','')||14;c.style.fontSize=(Math.max(12,parseInt(s)-1))+'px';" style="display:inline-block;padding:2px 8px;border:1px solid #E4E4E4;color:#666;text-decoration:none;margin-left:8px;">A-</a>
+<span style="color:#999;font-size:12px;margin:0 6px;">14px</span>
+<a href="javascript:void(0)" title="增大字号" onclick="var c=document.getElementById('contents');var s=window.getComputedStyle(c).fontSize.replace('px','')||14;c.style.fontSize=(Math.min(22,parseInt(s)+1))+'px';" style="display:inline-block;padding:2px 8px;border:1px solid #E4E4E4;color:#666;text-decoration:none;">A+</a>
+<span style="margin:0 12px;color:#eee;">|</span>
+<a href="javascript:void(0)" title="回顶部" onclick="window.scrollTo({top:0,behavior:'smooth'});" style="color:#2f468f;text-decoration:none;">回顶部</a>
+<span style="margin:0 12px;color:#eee;">|</span>
+<a href="/?view=book&id={{.Book.id}}" title="返回书页" style="color:#2f468f;text-decoration:none;">返回书页</a>
+</div>
+
+<h1>{{.Chapter.title}}</h1>
+
+<div id="contents" style="font-size:14px;line-height:1.9;color:#333;word-break:break-word;text-align:justify;text-indent:2em;">
+{{if .Chapter.content}}{{.Chapter.content}}{{else}}<p style="text-align:center;color:#999;text-indent:0;">本章内容加载中...</p>{{end}}
+</div>
+
+<div class="btnlinks" style="text-align:center;margin-top:24px;">
+{{if .Prev}}<a class="read" href="/?view=read&chapter={{.Prev.id}}" title="上一章">« 上一章</a>{{end}}
+<a href="javascript:void(0)" onclick="window.scrollTo({top:0,behavior:'smooth'});" title="回顶部">返回顶部</a>
+{{if .Next}}<a class="read" href="/?view=read&chapter={{.Next.id}}" title="下一章">下一章 »</a>{{end}}
+</div>
+</div>
+
+<div id="a_footer">
+{{if .Prev}}<a href="/?view=read&chapter={{.Prev.id}}" style="color:#2f468f;text-decoration:none;margin-right:16px;">« 上一章</a>{{end}}
+|
+<a href="/?view=book&id={{.Book.id}}" style="color:#2f468f;text-decoration:none;margin:0 16px;">返回书页</a>
+|
+{{if .Next}}<a href="/?view=read&chapter={{.Next.id}}" style="color:#2f468f;text-decoration:none;margin-left:16px;">下一章 »</a>{{end}}
+</div>
+
+<div class="cl" style="height:8px;"></div>
+<div class="main links">
+<div class="block">
+<div class="blocktitle">友情链接</div>
+<div class="blockmore"><a href="#">更多...</a></div>
+<div class="blockcontent">
+<ul class="ulrow">
+<li><a href="/" target="_blank">{{.Site.Name}}</a></li>
+<li><a href="/?view=fulltext" target="_blank">全本小说</a></li>
+<li><a href="/?view=category" target="_blank">小说分类</a></li>
+</ul>
+</div>
+</div>
+</div>
+<div class="cl" style="height:8px;"></div>
+
+<div class="main footer">
+<div class="bdtop"><i></i><span title="0.529769"></span></div>
+<div class="ftc">
+{{.Site.Name}} 无弹窗小说网承诺没有弹窗广告，所有小说都能免费阅读。找好看的小说网站，就到 {{.Site.Domain}}<br>
+请所有网友上传作品时务必遵守国家互联网信息管理办法规定，本站拒绝任何色情小说，一经发现，即作删除<br>
+Copyright © 2026 <a href="/">{{.Site.Name}}</a>({{.Site.Domain}}) <a href="/">网站地图</a> All Rights Reserved.
+</div>
+</div>
+
+</body>
+</html>{{end}}

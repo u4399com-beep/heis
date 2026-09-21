@@ -1,0 +1,148 @@
+{{define "pilishuwu/keyword"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>标签 {{.Tag}} - {{.Site.Title}}</title>
+<meta name="keywords" content="{{.Site.Keywords}},{{.Tag}}">
+<meta name="description" content="标签 {{.Tag}} 相关小说。">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="/clone-css/pilishuwu.css">
+</head>
+<body>
+<div class="mod-top-wr">
+<div class="mod-top-frame">
+<div class="mod-top-tool-wr ui-wm">
+<div class="mod-top-logo-wr ui-left">
+<h1 class="mod-top-logo ui-left ui-text-hide">
+<a title="{{.Site.Name}}" href="/">{{.Site.Name}}</a>
+</h1>
+<div class="mod-top-event ui-left ui-dn"></div>
+</div>
+<div class="mod-top-search-wr ui-left">
+<form action="/?view=search" method="get">
+<div id="top-search" class="mod-top-search">
+<div class="mod-search-input-wr ui-left">
+<input class="mod-search-input" type="text" name="q" value="{{.Tag}}" placeholder="可搜索小说名/作者名" autocomplete="off">
+</div>
+<button class="mod-search-submit ui-left ui-text-hide" type="submit">搜索</button>
+</div>
+</form>
+<ul class="mod-top-tag" id="hotWord">
+{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}">{{.name}}</a></li>{{end}}
+</ul>
+</div>
+<div class="mod-top-nav-tool ui-right" id="loginbox">
+<a href="/?view=history">阅读历史</a> · <a href="/?view=fulltext">完本阅读</a>
+</div>
+</div>
+
+<div class="mod-top-nav-wr">
+<div class="mod-top-nav ui-wm">
+<ul class="mod-top-nav-list ui-left">
+<li><a class="mod-top-nav-home" href="/" title="首页">首页</a></li>
+<li><a href="/?view=category" title="全部小说">全部小说</a></li>
+<li><a href="/?view=ranking" title="排行榜">排行榜</a></li>
+{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}" title="{{.name}}">{{.name}}</a></li>{{end}}
+</ul>
+</div>
+</div>
+</div>
+</div>
+
+<div class="ui-wm ui-mb20 ui-mt40 clearfix">
+<div class="ret-main-wr ui-mb40 ui-left" style="width:100%;">
+<div class="ret-main">
+<div class="ret-search-head clearfix">
+<h1 class="ui-left" style="font-size:22px;font-weight:bold;color:#333;padding:8px 0;margin-right:20px;">
+标签: <span style="color:#fd8929;">{{.Tag}}</span>
+</h1>
+<span class="ret-result-num ui-right" style="margin-top:14px;">
+共<em>{{len .Books}}</em>个结果
+</span>
+</div>
+
+<div class="ret-search-result">
+{{if .Books}}
+<ul class="ret-search-list clearfix">
+{{range .Books}}
+<li class="ret-search-item clearfix">
+<div class="ret-works-cover">
+<a class="mod-cover-list-thumb mod-cover-effect ui-db" title="{{.name}}" href="/?view=book&id={{.id}}" target="_blank">
+{{if .cover}}<img src="{{.cover}}" alt="{{.name}}" width="100" height="133">{{end}}
+<span class="mod-layer-mask">&nbsp;&nbsp;</span>
+</a>
+<p class="mod-cover-list-updata">
+<a class="mod-cover-list-mask" href="/?view=book&id={{.id}}" target="_blank">
+<span class="mod-cover-list-text">{{if .latestChapter}}{{.latestChapter}}{{else}}第1章{{end}}</span>
+</a>
+</p>
+</div>
+<div class="ret-works-info">
+<h3 class="ret-works-title clearfix">
+<a href="/?view=book&id={{.id}}" target="_blank" title="{{.name}}">{{.name}}</a>
+</h3>
+<p class="ret-works-author" title="{{.author}}">作者：{{.author}}</p>
+<p class="ret-works-tags">
+{{if .categoryId}}<a href="/?view=category&cat={{.categoryId}}" target="_blank">分类：{{.category}}</a>{{else}}<span>分类：{{.category}}</span>{{end}}
+<span>字数：<em>{{wordCount .wordCount}}</em></span>
+<span>状态：<em>{{statusLabel .status}}</em></span>
+</p>
+<p class="ret-works-decs">{{if .intro}}{{.intro}}{{else}}暂无简介{{end}}</p>
+<a class="ret-works-view ui-btn-pink" href="/?view=book&id={{.id}}" target="_blank">开始阅读</a>
+</div>
+</li>
+{{end}}
+</ul>
+{{else}}
+<div style="padding:40px;text-align:center;color:#999;">
+暂无 "<strong style="color:#fd8929;">{{.Tag}}</strong>" 相关的书籍
+<br>
+<a href="/" style="display:inline-block;margin-top:16px;padding:6px 16px;background:#fd8929;color:#fff;text-decoration:none;">返回首页</a>
+</div>
+{{end}}
+</div>
+
+{{if .RelatedTags}}
+<div class="works-intro-tags" style="margin-top:20px;padding:16px;background:#fff;border-top:1px solid #eee;">
+<p class="works-intro-tags">
+<span class="ui-left" style="font-weight:bold;margin-right:8px;">相关标签：</span>
+<span class="tags-show">
+{{range .RelatedTags}}<a href="/?view=keyword&tag={{.}}" class="works-intro-tags-item">{{.}}</a>{{end}}
+</span>
+</p>
+</div>
+{{end}}
+</div>
+</div>
+</div>
+
+<div class="linkBox">
+<span class="linkTitle">友情链接</span>
+<p class="linkList">
+<a href="/">永久地址</a>
+<a href="/">{{.Site.Name}}二站</a>
+<a href="/">{{.Site.Name}}</a>
+</p>
+</div>
+
+<div class="mod-footer-wr">
+<div class="mod-footer-main-wr">
+<div class="mod-footer-main ui-wm">
+<div class="mod-footer-info">
+本站所有小说为完本转载作品，所有内容版权归版权方或原作者所有。
+<br>
+<span style="display:inline-block;margin-top:8px;">
+<a href="/" style="margin-right:12px;">首页</a>
+<a href="/?view=category" style="margin-right:12px;">全部小说</a>
+<a href="/?view=ranking" style="margin-right:12px;">排行榜</a>
+<a href="/?view=fulltext" style="margin-right:12px;">全本小说</a>
+<a href="/?view=history">阅读足迹</a>
+</span>
+</div>
+</div>
+</div>
+<div class="mod-footer-border"></div>
+</div>
+
+</body>
+</html>{{end}}

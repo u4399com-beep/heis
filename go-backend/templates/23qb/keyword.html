@@ -1,0 +1,102 @@
+{{define "23qb/keyword"}}<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0">
+<title>{{.Tag}} - {{.Site.Title}}</title>
+<meta name="keywords" content="{{.Site.Keywords}},{{.Tag}}">
+<meta name="description" content="标签 {{.Tag}} 相关作品。">
+<link rel="stylesheet" href="/clone-css/23qb.css">
+</head>
+<body class="homepage">
+<header id="header" class="wrapper">
+<div class="header-content">
+<div class="banyundog-com">
+<div class="header-logo">
+<h1 class="slogan">{{.Site.Name}}</h1>
+<div class="fixed-logo">
+<a href="/" class="logo" title="{{.Site.Name}}">{{.Site.Name}}</a>
+</div>
+</div>
+</div>
+<div class="nav-search">
+<form action="/?view=search" class="search-dh"></form>
+</div>
+<div class="header-module">
+<ul class="nav-menu-items">
+<li class="nav-menu-item"><a href="/" title="首页"><span>首页</span></a></li>
+<li class="nav-menu-item"><a href="/?view=category" title="书库"><span>书库</span></a></li>
+</ul>
+</div>
+</div>
+<div id="search-content">
+<form action="/?view=search">
+<div class="search-main">
+<div class="search-box">
+<input class="search-input ac_wd" id="txtKeywords" type="search" name="q" value="{{.Tag}}" autocomplete="off" placeholder="搜索喜欢的小说、作者、标签">
+<a href="/?view=category" class="search-btn search-cupfox" title="书库">书库</a>
+<button class="search-btn search-go" type="submit"><i class="icon-search"></i></button>
+<button class="cancel-btn" type="button">取消</button>
+</div>
+</div>
+</form>
+</div>
+</header>
+
+<main id="main" class="wrapper">
+<div class="content">
+<div class="list">
+<div class="box">
+<div class="search-stat">
+<h1>{{.Tag}}</h1>
+<h2>共 {{len .Books}} 部相关作品</h2>
+</div>
+
+{{if .Books}}
+<div class="module">
+<div class="module-list module-lines-list">
+<div class="module-items">
+{{range $i, $b := .Books}}
+<div class="module-item">
+<div class="module-item-cover">
+{{if lt $i 3}}<div class="module-item-top top{{add $i 1}}">{{add $i 1}}</div>{{end}}
+<div class="module-item-pic">
+<a href="/?view=book&id={{$b.id}}" title="{{$b.name}}"></a>
+{{if $b.cover}}<img class="lazy lazyloaded" src="{{$b.cover}}" alt="{{$b.name}}">{{end}}
+<div class="loading"></div>
+</div>
+<div class="module-item-caption">
+<span>{{$b.category}} {{wordCount $b.wordCount}}</span>
+</div>
+</div>
+<div class="module-item-titlebox">
+<a href="/?view=book&id={{$b.id}}" class="module-item-title" title="{{$b.name}}">{{$b.name}}</a>
+</div>
+<div class="module-item-text">{{$b.author}}</div>
+</div>
+{{end}}
+</div>
+</div>
+</div>
+{{else}}
+<div style="padding:40px;text-align:center;">暂无相关书籍</div>
+{{end}}
+</div>
+</div>
+</div>
+</main>
+
+<footer id="footer" class="wrapper pd60">
+<p class="sitemap">
+<span>{{.Site.Name}}</span>
+<a href="/">RSS</a>
+<span class="space-line-bold"></span>
+<a href="/">Google</a>
+<span class="space-line-bold"></span>
+<a href="/">Bing</a>
+</p>
+<p>{{.Site.Title}}</p>
+</footer>
+
+</body>
+</html>{{end}}

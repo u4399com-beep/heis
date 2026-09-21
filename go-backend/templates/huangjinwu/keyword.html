@@ -1,0 +1,139 @@
+{{define "huangjinwu/keyword"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>{{.Site.Title}} - 标签：{{.Tag}}</title>
+<meta name="keywords" content="{{.Site.Keywords}},{{.Tag}}">
+<meta name="description" content="标签 {{.Tag}} 相关书籍">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,minimum-scale=1,user-scalable=no,viewport-fit=cover">
+<link rel="stylesheet" type="text/css" href="/clone-css/huangjinwu.css">
+<script>(function() {const savedTheme = localStorage.getItem('theme') || 'light';document.documentElement.setAttribute('data-theme', savedTheme);})();</script>
+</head>
+<body>
+<div class="header-group">
+<div class="headers">
+<div class="container">
+<div class="navbar">
+<div class="user-dropdown">
+<button class="user-toggle user-dropdown-toggle" aria-label="个人中心"><span class="iconfont icon-user"></span></button>
+<ul class="user-dropdown-menu">
+<li><a href="/?view=history">临时书架</a></li>
+<li><a href="/?view=fulltext">完本阅读</a></li>
+<li><a href="/?view=category">分类浏览</a></li>
+</ul>
+</div>
+<a href="/" class="logo" title="{{.Site.Name}}"><span class="iconfont icon-book"></span>{{.Site.Name}}</a>
+<div class="sidebar-wrapper">
+<div class="sidebar-header"><a href="/" class="sidebar-logo" title="{{.Site.Name}}"><span class="iconfont icon-book"></span><span class="sidebar-logo-text">{{.Site.Name}}</span></a></div>
+<ul class="navbar-menu" id="navbarMenu">
+<li><a href="/"><span class="menu-icon iconfont icon-book"></span><span class="menu-text">首页</span></a></li>
+<li><a href="/?view=ranking"><span class="menu-icon iconfont icon-hot"></span><span class="menu-text">排行榜</span></a></li>
+<li><a href="/?view=category"><span class="menu-icon iconfont icon-sort"></span><span class="menu-text">书库</span></a></li>
+<li><a href="/?view=keyword&tag=小说"><span class="menu-icon iconfont icon-mark"></span><span class="menu-text">标签</span></a></li>
+<li><a href="/?view=fulltext"><span class="menu-icon iconfont icon-ai-book"></span><span class="menu-text">电子书</span></a></li>
+<li><a href="/?view=fulltext"><span class="menu-icon iconfont icon-read"></span><span class="menu-text">完本</span></a></li>
+<li class="navbar-menu-search"><a href="/?view=search"><span class="menu-icon iconfont icon-search"></span><span class="menu-text">搜索</span></a></li>
+</ul>
+</div>
+<form class="navbar-search" action="/?view=search" method="get">
+<input type="hidden" name="view" value="search">
+<input class="navbar-search-input" type="text" placeholder="可搜书名、作者、角色" name="q" id="searchkey" value="{{.Tag}}" autocomplete="off" required>
+<button class="navbar-search-btn" type="submit" aria-label="搜索"><span class="iconfont icon-search"></span></button>
+</form>
+</div>
+</div>
+<div class="menu-overlay" id="menuOverlay" aria-hidden="true"></div>
+</div>
+<button class="menu-toggle" id="menuToggle" aria-label="菜单"><span class="iconfont icon-menu"></span></button>
+</div>
+
+<div class="main-content content-default">
+<div class="container container-default">
+<nav class="breadcrumb" aria-label="面包屑">
+<ol class="breadcrumb-list">
+<li class="breadcrumb-item"><a href="/">首页</a></li>
+<li class="breadcrumb-separator">/</li>
+<li class="breadcrumb-item"><a href="/?view=keyword&tag=小说">标签</a></li>
+<li class="breadcrumb-separator">/</li>
+<li class="breadcrumb-item active">{{.Tag}}</li>
+</ol>
+</nav>
+
+<h2 class="page-title title-default"><span class="iconfont icon-mark"></span> 「{{.Tag}}」相关小说</h2>
+
+<form class="search-form" action="/?view=search" method="get">
+<input type="hidden" name="view" value="search">
+<div class="search-form-inline">
+<input type="text" name="q" class="search-input" placeholder="可搜书名、作者、角色" value="{{.Tag}}">
+<button type="submit" class="btn btn-primary"><span class="iconfont icon-search"></span> 搜索</button>
+</div>
+</form>
+
+{{if .Tag}}
+<div class="search-result-info">
+共找到 <strong>{{len .Books}}</strong> 部与「<strong>{{.Tag}}</strong>」相关的小说
+</div>
+{{end}}
+
+<div class="book-list">
+{{if .Books}}
+{{range .Books}}
+<div class="book-list-item">
+<a href="/?view=book&id={{.id}}" title="{{.name}}">
+<div class="book-list-cover">
+{{if .cover}}<img src="{{.cover}}" alt="{{.name}}">{{end}}
+</div>
+<div class="book-list-info">
+<h3 class="book-list-title">{{.name}}</h3>
+<div class="book-list-desc">{{.intro}}</div>
+<div class="book-list-meta">
+<span>作者：{{.author}}</span>
+<span>分类：{{.category}}</span>
+<span>状态：{{statusLabel .status}}</span>
+<span>字数：{{wordCount .wordCount}}</span>
+<span>更新：{{fmtDate .updatedAt}}</span>
+</div>
+<div class="book-badges">
+<span class="book-badge category">{{.category}}</span>
+<span class="book-badge status">{{if eq .status "completed"}}全本{{else}}连载{{end}}</span>
+<span class="book-badge words">{{wordCount .wordCount}}</span>
+</div>
+</div>
+</a>
+</div>
+{{end}}
+{{else}}
+<div class="search-empty">
+<p>暂无与「{{.Tag}}」相关的小说。</p>
+</div>
+{{end}}
+</div>
+
+{{if .RelatedTags}}
+<div class="detail-section hot-tags-section">
+<h2 class="section-title"><span class="iconfont icon-mark"></span> 相关标签</h2>
+<div class="tag-list">
+{{range .RelatedTags}}
+<a class="tag-item" href="/?view=keyword&tag={{.}}"><span class="tag-name">{{.}}</span></a>
+{{end}}
+</div>
+</div>
+{{end}}
+</div>
+</div>
+
+<div class="footers footer-default">
+<div class="container container-default">
+<p class="sitemap">
+<a href="/?view=category" title="小说大全" target="_blank">小说</a>|
+<a href="/?view=fulltext" title="完本小说" target="_blank">完本</a>|
+<a href="/?view=history" title="阅读历史" target="_blank">历史</a>|
+<a href="/" title="回到首页" target="_blank">首页</a>
+</p>
+<p class="copyright">本站小说由根据搜索引擎转码，只为让更多读者欣赏，不保存小说内及数据，仅作宣传展示。</p>
+<p class="copyright">Copyright © {{.Site.Name}} ({{.Site.Domain}})</p>
+</div>
+</div>
+
+</body>
+</html>{{end}}

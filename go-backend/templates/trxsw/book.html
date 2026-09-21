@@ -1,0 +1,168 @@
+{{define "trxsw/book"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>{{.Site.Title}} - {{.Book.name}} - {{.Book.author}}</title>
+<meta name="keywords" content="{{.Site.Keywords}},{{.Book.name}},{{.Book.author}},{{.Book.category}}">
+<meta name="description" content="{{.Book.intro}}">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="/clone-css/trxsw.css">
+</head>
+<body>
+<div class="wrap">
+<header class="header">
+<div class="header-inner">
+<a href="/" class="logo"><strong>{{.Site.Name}}</strong><span>{{.Site.Domain}}</span></a>
+<form class="header-search" action="/?view=search" method="get">
+<input type="hidden" name="view" value="search">
+<input type="text" name="q" placeholder="可搜索小说名/作者名" autocomplete="off">
+<button type="submit" class="header-search-btn">搜索</button>
+</form>
+<div class="header-right">
+<a href="/">首页</a>
+<a href="/?view=category">书库</a>
+<a href="/?view=fulltext">完本</a>
+<a href="/?view=history">足迹</a>
+</div>
+</div>
+</header>
+
+<nav class="nav">
+<div class="nav-inner">
+{{range .NavCats}}<a href="/?view=category&cat={{.id}}" class="nav-link">{{.name}}</a>{{end}}
+<div class="nav-right"><a href="/?view=ranking" class="nav-link">排行榜</a><a href="/?view=fulltext" class="nav-link active">全本阅读</a></div>
+</div>
+</nav>
+
+<div class="wrap">
+<div class="breadcrumb">
+<a href="/">首页</a>
+<span class="breadcrumb-sep">»</span>
+{{if .Book.categoryId}}<a href="/?view=category&cat={{.Book.categoryId}}">{{.Book.category}}</a>{{else}}<span>{{.Book.category}}</span>{{end}}
+<span class="breadcrumb-sep">»</span>
+<span>{{.Book.name}}</span>
+</div>
+
+<main class="main">
+<div class="main-content">
+<div class="detail">
+<div class="detail-cover">
+{{if .Book.cover}}<img src="{{.Book.cover}}" alt="{{.Book.name}}">{{end}}
+</div>
+<div class="detail-info">
+<h1 class="detail-name"><strong>{{.Book.name}}</strong></h1>
+<div class="detail-author">
+作者：<a href="/?view=search&q={{.Book.author}}" title="{{.Book.author}}">{{.Book.author}}</a>
+</div>
+<div class="detail-meta">
+<span class="meta-item"><span class="meta-label">分类：</span><span class="meta-value">{{.Book.category}}</span></span>
+<span class="meta-item"><span class="meta-label">状态：</span><span class="meta-value">{{statusLabel .Book.status}}</span></span>
+<span class="meta-item"><span class="meta-label">字数：</span><span class="meta-value">{{wordCount .Book.wordCount}}</span></span>
+<span class="meta-item"><span class="meta-label">更新：</span><span class="meta-value">{{fmtDate .Book.updatedAt}}</span></span>
+</div>
+<div class="detail-actions">
+<a class="btn btn-primary" href="/?view=read&chapter={{.FirstChapterId}}" title="开始阅读 {{.Book.name}}">开始阅读</a>
+<a class="btn btn-outline" href="#chapter_list" title="查看目录">章节目录</a>
+</div>
+</div>
+</div>
+
+<div class="intro">
+<div class="intro-title">内容简介</div>
+<div class="intro-content">
+{{.Book.intro}}
+</div>
+</div>
+
+{{if .RecentChapters}}
+<section class="section" id="chapter_list">
+<div class="section-title">
+<h2>最新章节</h2>
+<a class="more" href="#chapter_list">完整目录 &gt;&gt;</a>
+</div>
+<ul class="vlist">
+{{range .RecentChapters}}
+<li class="now">
+<span class="chapter-no">·</span>
+<a href="/?view=read&chapter={{.id}}" title="{{.title}}">{{.title}}</a>
+</li>
+{{end}}
+</ul>
+</section>
+{{end}}
+
+{{if .Chapters}}
+<section class="section">
+<div class="section-title">
+<h2>完整章节目录</h2>
+</div>
+<ul class="vlist">
+{{range .Chapters}}
+<li>
+<span class="chapter-no">·</span>
+<a href="/?view=read&chapter={{.id}}" title="{{.title}}">{{.title}}</a>
+</li>
+{{end}}
+</ul>
+</section>
+{{end}}
+</div>
+
+<aside class="sidebar">
+{{if .Related}}
+<section class="section hot">
+<div class="section-title">
+<h2>{{.Book.category}} 排行</h2>
+</div>
+<ul class="hot-list">
+{{range $i, $b := .Related}}{{if lt $i 10}}
+<li>
+<span class="hot-no">{{add $i 1}}</span>
+<a class="hot-title" href="/?view=book&id={{$b.id}}" title="{{$b.name}}">{{$b.name}}</a>
+<span class="hot-author">{{$b.author}}</span>
+</li>
+{{end}}{{end}}
+</ul>
+</section>
+{{end}}
+
+<section class="section">
+<div class="section-title">
+<h2>全部分类</h2>
+</div>
+<div class="tags">
+{{range .NavCats}}<a class="tag" href="/?view=category&cat={{.id}}" title="{{.name}}">{{.name}}</a>{{end}}
+</div>
+</section>
+
+<div class="link-box">
+<span class="link-title">友情链接</span>
+<span class="link-list">
+<a href="/">{{.Site.Name}}</a>
+<a href="/?view=fulltext">全本小说</a>
+<a href="/?view=category">小说分类</a>
+</span>
+</div>
+</aside>
+</main>
+</div>
+
+<footer class="footer">
+<div class="footer-inner">
+<div class="footer-links">
+<a href="/">首页</a>
+<a href="/?view=category">书库</a>
+<a href="/?view=ranking">排行榜</a>
+<a href="/?view=fulltext">完本</a>
+<a href="/?view=history">足迹</a>
+</div>
+<div class="footer-copyright">
+本站小说由根据搜索引擎转码，只为让更多读者欣赏，不保存小说内及数据，仅作宣传展示。<br>
+Copyright © {{.Site.Name}} ({{.Site.Domain}})
+</div>
+</div>
+</footer>
+</div>
+
+</body>
+</html>{{end}}

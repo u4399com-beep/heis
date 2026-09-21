@@ -1,0 +1,248 @@
+{{define "101kks/book"}}<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Type" content="text/html; charset=utf8">
+<meta http-equiv="Content-Language" content="zh-TW">
+<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=5">
+<title>{{.Book.name}} - {{.Book.author}} - {{.Site.Title}}</title>
+<meta name="keywords" content="{{.Book.name}},{{.Book.author}},{{.Book.category}},{{.Site.Keywords}}">
+<meta name="description" content="{{.Book.intro}}">
+<link rel="stylesheet" type="text/css" href="/clone-css/101kks.css">
+</head>
+<body>
+<div class="leftmenu">
+<div class="menu_close_btn"><i class="iconfont icon-close"></i></div>
+<div class="headuser">
+<div class="headimg"><img class="user_touxiang" src="/images/user.png" alt=""></div>
+<span>访客</span>
+</div>
+<div class="register">
+<a href="/?view=history">閱讀記錄</a>
+<a href="/?view=fulltext">完本小說</a>
+</div>
+<div class="menu2">
+<ul>
+<li><a href="/"><i class="iconfont icon-home"></i>首頁</a></li>
+{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}"><i class="iconfont icon-list1"></i>{{.name}}</a></li>{{end}}
+<li><a href="/?view=history"><i class="iconfont icon-yuedujilu"></i>閱讀記錄</a></li>
+</ul>
+</div>
+</div>
+
+<header>
+<div class="headbox clearfix">
+<div class="menubtn pull-left"><i class="iconfont icon-menu"></i></div>
+<div class="logo pull-left">
+<div class="logoimg"></div>
+<a href="/">{{.Site.Name}}</a>
+</div>
+<form action="/?view=search" method="get">
+<div class="search pull-left">
+<i class="iconfont icon-search"></i>
+<div class="inputbox">
+<i class="iconfont icon-ArrowLeft"></i>
+<input type="text" name="q" placeholder="請輸入搜索內容！" autocomplete="off">
+<input type="hidden" name="searchtype" value="all">
+</div>
+</div>
+</form>
+<div class="user1 pull-right"><img class="user_touxiang" src="/images/user.png" alt=""></div>
+<div class="lang pull-right">
+<a href="javascript:;" class="textsel">繁體</a>
+<ul>
+<li><a href="javascript:;" class="zh_click">簡體</a></li>
+<li><a href="javascript:;" class="zh_click">繁體</a></li>
+</ul>
+</div>
+<div class="menu1 pull-right">
+<ul>
+<li><a href="/"> 首頁</a></li>
+<li><a href="/?view=ranking"><i class="iconfont icon-chart"></i> 排行</a></li>
+<li><a href="/?view=fulltext"><i class="iconfont icon-ai-book"></i> 完本</a></li>
+<li><a href="/?view=category"><i class="iconfont icon-list1"></i> 分類</a></li>
+<li><a href="/?view=history"><i class="iconfont icon-library"></i> 我的書架</a></li>
+<li><a href="/?view=history"><i class="iconfont icon-yuedujilu"></i> 閱讀記錄</a></li>
+</ul>
+</div>
+</div>
+</header>
+
+<div class="main">
+<div class="container">
+<ul class="row">
+<li class="col-8">
+<div class="mybox">
+<h3 class="mytitle shuye">
+<div class="bread">
+<a href="/">首頁</a> &gt;
+{{if .Book.categoryId}}<a href="/?view=category&cat={{.Book.categoryId}}">{{.Book.category}}</a>{{else}}<a href="/?view=category">{{.Book.category}}</a>{{end}} &gt;
+<a href="/?view=book&id={{.Book.id}}">{{.Book.name}}</a>
+</div>
+</h3>
+
+<div class="bookbox">
+<div class="bookimg2">
+<span class="{{if eq .Book.status "completed"}}status1{{else}}status0{{end}}"></span>
+<a href="/?view=book&id={{.Book.id}}">
+{{if .Book.cover}}<img src="{{.Book.cover}}" alt="{{.Book.name}}" width="120" height="160">{{end}}
+</a>
+</div>
+
+<div class="booknav2">
+<h1><a href="/?view=book&id={{.Book.id}}">{{.Book.name}}</a></h1>
+<p>作者：<a href="/?view=search&q={{.Book.author}}" title="{{.Book.author}}">{{.Book.author}}</a></p>
+{{if .Book.categoryId}}<p>分類：<a href="/?view=category&cat={{.Book.categoryId}}" title="{{.Book.category}}">{{.Book.category}}</a></p>{{else}}<p>分類：{{.Book.category}}</p>{{end}}
+<p>{{wordCount .Book.wordCount}} | {{statusLabel .Book.status}}</p>
+<p>更新：{{fmtDate .Book.updatedAt}}</p>
+<div class="sharebtn"></div>
+</div>
+
+<div class="addbtn">
+<a class="btn" href="/?view=read&chapter={{.FirstChapterId}}">開始閱讀</a>
+<a class="btn" href="/?view=history">加入書架</a>
+<a class="btn" href="javascript:;">投推薦票</a>
+</div>
+<div id="vote_result" style="clear:both;padding:10px 10px 0 10px;color:#f00;font-size:14px;"></div>
+</div>
+<div class="txtcenter1"></div>
+</div>
+
+<div class="mybox">
+<div class="infotag clearfix" id="infotag">
+<h3 class="tagtitle">標籤</h3>
+<ul class="tagul" id="tagul">
+{{if .Book.keywords}}{{if .Book.categoryId}}<li><a href="/?view=keyword&tag={{.Book.category}}">{{.Book.category}}</a></li>{{end}}
+{{if .Book.author}}<li><a href="/?view=keyword&tag={{.Book.author}}">{{.Book.author}}</a></li>{{end}}
+{{if .Book.category}}<li><a href="/?view=keyword&tag={{.Book.category}}小說">{{.Book.category}}小說</a></li>{{end}}
+<li><a href="/?view=keyword&tag={{.Book.name}}">{{.Book.name}}</a></li>
+{{if .Book.latestChapter}}<li><a href="/?view=keyword&tag={{.Book.latestChapter}}">{{.Book.latestChapter}}</a></li>{{end}}
+{{else}}<li><a>暫無標籤</a></li>{{end}}
+</ul>
+</div>
+
+<ul class="tabs clearfix">
+<li><a><i class="iconfont icon-list"></i>目錄</a></li>
+<li class="active"><a><i class="iconfont icon-Info"></i>簡介</a></li>
+<li><a><i class="iconfont icon-chat"></i>書評</a></li>
+</ul>
+
+<div class="tabsnav">
+<div id="tab_info">
+<ul class="infolist">
+<li>{{wordCount .Book.wordCount}}<span>字數</span></li>
+<li>{{if .Book.latestChapter}}{{.Book.latestChapter}}{{else}}連載{{end}}<span>狀態</span></li>
+</ul>
+<div class="navtxt">
+<p>{{if .Book.intro}}{{.Book.intro}}{{else}}暫無簡介{{end}}</p>
+<p>小說關鍵詞：{{.Book.name}}無彈窗,{{.Book.name}}無亂序,{{.Book.name}}小說,{{.Book.name}}{{.Book.author}},{{.Book.name}}101,{{.Book.name}}最新章節閱讀</p>
+</div>
+</div>
+</div>
+
+<a class="btn more-btn" href="#chapter_list">完整目錄</a>
+</div>
+
+{{if .RecentChapters}}
+<div class="mybox" id="chapter_list">
+<h3 class="mytitle">最新章節</h3>
+<div class="newbox">
+<ul id="article_list_content">
+{{range .RecentChapters}}
+<li style="padding:8px 0;border-bottom:1px dashed #eee;">
+<a href="/?view=read&chapter={{.id}}" style="margin-left:10px;">{{.title}}</a>
+</li>
+{{end}}
+</ul>
+</div>
+</div>
+{{end}}
+
+{{if .Chapters}}
+<div class="mybox">
+<h3 class="mytitle">完整章節目錄</h3>
+<div class="newbox">
+<ul id="article_list_content">
+{{range .Chapters}}
+<li style="width:33%;float:left;display:inline-block;padding:8px 0;border-bottom:1px dashed #eee;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+<a href="/?view=read&chapter={{.id}}" style="margin-left:10px;" title="{{.title}}">{{.title}}</a>
+</li>
+{{end}}
+<div class="clear"></div>
+</ul>
+</div>
+</div>
+{{end}}
+</li>
+
+<li class="col-4">
+<div class="mybox">
+<h3 class="mytitle">本周最強</h3>
+<ul class="tabs tabshot clearfix">
+<li class="active"><a><i class="iconfont icon-hot"></i>熱門</a></li>
+<li><a><i class="iconfont icon-hot"></i>完本</a></li>
+</ul>
+<div class="tabsnav">
+<div class="ranking">
+<ul>
+{{if .Related}}
+{{range $i, $b := .Related}}{{if eq $i 0}}
+<li class="active">
+<a href="/?view=book&id={{$b.id}}">
+<div class="rank_left">
+<h3 class="ranktit ellipsis_1"><span></span>{{$b.name}}</h3>
+<h4>本周最強</h4>
+<p>{{$b.category}}.{{$b.author}}</p>
+</div>
+<div class="rank_right">
+<div class="imgbox2">
+{{if $b.cover}}<img src="{{$b.cover}}" alt="{{$b.name}}" width="60" height="80">{{end}}
+</div>
+<span>{{if eq $b.status "completed"}}全本{{else}}連載{{end}}</span>
+</div>
+</a>
+</li>
+{{else if lt $i 12}}
+<li>
+<a href="/?view=book&id={{$b.id}}">
+<div class="rank_left">
+<h3 class="ranktit ellipsis_1"><span></span>{{$b.name}}</h3>
+</div>
+<div class="rank_right">
+<span>{{if eq $b.status "completed"}}全本{{else}}連載{{end}}</span>
+</div>
+</a>
+</li>
+{{end}}{{end}}
+{{else}}
+<li style="padding:20px;text-align:center;color:#999;">暫無推薦</li>
+{{end}}
+</ul>
+</div>
+</div>
+</div>
+</li>
+</ul>
+</div>
+</div>
+
+<div class="foot">
+<div class="copyright">
+<div>
+<a href="/?view=ranking">排行榜</a>
+<a href="/">最新更新</a>
+<a href="/">全部小說</a>
+<a href="/?view=keyword&tag=系統">熱門標籤</a>
+</div>
+<p>Copyright 2023 <a href="/">Powered by &copy; {{.Site.Name}}（https://{{.Site.Domain}}）</a></p>
+<div>
+友情連結：<a href="/" title="{{.Site.Name}}">{{.Site.Name}}</a>|
+<a href="javascript:;">Cookies Policy</a>|
+<a href="javascript:;">DMCA</a>
+<div class="clear"></div>
+</div>
+</div>
+</div>
+
+</body>
+</html>{{end}}

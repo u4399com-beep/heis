@@ -1,0 +1,177 @@
+{{define "x2552/book"}}<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta charset="gbk">
+<title>{{.Site.Title}} - {{.Book.name}} - {{.Book.author}}</title>
+<meta name="keywords" content="{{.Site.Keywords}},{{.Book.name}},{{.Book.author}},{{.Book.category}}">
+<meta name="description" content="{{.Book.intro}}">
+<link rel="stylesheet" href="/clone-css/x2552.css" type="text/css">
+</head>
+<body>
+<div class="main m_head">
+<div class="h_logo fl"><a href="/"><img src="/heibing/images/logo.png" alt="{{.Site.Name}}"></a></div>
+<div class="h_body fl">
+<div>
+<p class="fr"><a href="/">简体版</a> | <a href="/?charset=big5">繁体版</a> | <a href="/">设为首页</a> | <a href="#">联系我们</a> | <a href="#">加入收藏</a></p>
+{{.Site.Name}}：免费小说阅读网 没有弹窗广告 好看的小说免费阅读
+</div>
+<div>
+<form target="_blank" action="/?view=search" method="get" name="articlesearch" id="articlesearch">
+<input type="hidden" name="view" value="search">
+<input type="hidden" id="searchtype" name="searchtype" value="articlename">
+<dl class="fl searchbox">
+<dt><i></i><input type="text" name="q"></dt>
+<dd><a href="javascript:void(0);" class="so_book">搜书</a><a href="javascript:void(0);" class="so_author">搜作者</a></dd>
+</dl>
+</form>
+<dl class="fr loginbox">
+<dd>欢迎您，[<a href="/?view=history">阅读历史</a>] 或 [<a href="/?view=fulltext">全本阅读</a>]</dd>
+</dl>
+</div>
+</div>
+</div>
+
+<div class="main m_menu">
+<ul>
+<li class="m_ml"></li>
+<li><a href="/">吾爱首页</a></li>
+{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}">{{.name}}</a></li>{{end}}
+<li><a href="/?view=fulltext">全本</a></li>
+<li><a href="/?view=history">阅读记录</a></li>
+<li class="m_bc"><a rel="nofollow" href="/?view=category"></a></li>
+<li class="m_mr"></li>
+</ul>
+</div>
+
+<div id="a_head">
+<ul>
+<li><a href="/">{{.Site.Name}}</a> &gt; </li>
+<li><a href="/?view=category&cat={{.Book.categoryId}}">{{.Book.category}}</a> &gt; </li>
+<li>{{.Book.name}}</li>
+</ul>
+<form class="so" action="/?view=search" method="get">
+<input type="hidden" name="view" value="search">
+<input type="hidden" name="searchtype" value="articlename">
+<input type="text" name="q" placeholder="书名">
+<a href="javascript:void(0);">搜索</a>
+</form>
+</div>
+
+<div id="a_main">
+<dl id="at">
+<dt><h1>{{.Book.name}}</h1></dt>
+<table>
+<tbody>
+<tr>
+<td class="grid">
+{{if .Book.cover}}<img src="{{.Book.cover}}" alt="{{.Book.name}}" style="width:120px;height:150px;border:1px solid #E4E4E4;padding:5px;background:#fff;float:left;margin-right:15px;">{{end}}
+</td>
+<td class="even">
+<p>作&nbsp;&nbsp;&nbsp;&nbsp;者：<a href="/?view=search&q={{.Book.author}}" title="{{.Book.author}}"><span class="hottext">{{.Book.author}}</span></a></p>
+<p>类&nbsp;&nbsp;&nbsp;&nbsp;别：{{if .Book.categoryId}}<a href="/?view=category&cat={{.Book.categoryId}}">{{.Book.category}}</a>{{else}}<span>{{.Book.category}}</span>{{end}}</p>
+<p>状&nbsp;&nbsp;&nbsp;&nbsp;态：<span class="hottext">{{statusLabel .Book.status}}</span></p>
+<p>字&nbsp;&nbsp;&nbsp;&nbsp;数：<span class="hottext">{{wordCount .Book.wordCount}}</span></p>
+<p>最新章节：<a href="/?view=read&chapter={{.FirstChapterId}}" title="{{if .Book.latestChapter}}{{.Book.latestChapter}}{{else}}第1章{{end}}">{{if .Book.latestChapter}}{{.Book.latestChapter}}{{else}}第1章{{end}}</a><span style="color:#999;margin-left:8px;">{{fmtDate .Book.updatedAt}}</span></p>
+</td>
+</tr>
+<tr>
+<td class="grid" colspan="2">
+<div class="tips">
+<strong>内容简介：</strong>
+<br>
+<span style="line-height:26px;text-indent:2em;display:block;">{{.Book.intro}}</span>
+</div>
+<div class="btnlinks">
+<a class="read" href="/?view=read&chapter={{.FirstChapterId}}" title="开始阅读{{.Book.name}}">开始阅读</a>
+<a href="#chapter_list" title="查看目录">查看目录</a>
+<a href="/?view=history" title="加入书架">加入书架</a>
+{{if .Book.categoryId}}<a href="/?view=category&cat={{.Book.categoryId}}" title="返回列表">返回列表</a>{{end}}
+</div>
+</td>
+</tr>
+</tbody>
+</table>
+</dl>
+</div>
+
+<div class="main">
+<div id="centeri">
+<div class="block" id="chapter_list">
+<div class="blocktitle"><i></i>{{.Book.name}}最新章节</div>
+<div class="blockcontent">
+<ul class="update">
+{{if .RecentChapters}}
+{{range .RecentChapters}}
+<li>
+<p class="ul1"><a href="/?view=category&cat={{$.Book.categoryId}}">[{{$.Book.category}}]</a>《<a class="poptext" href="/?view=read&chapter={{.id}}" target="_blank">{{.title}}</a>》</p>
+<p class="ul2"><a href="/?view=read&chapter={{.id}}" target="_blank">{{.title}}</a></p>
+<p>{{$.Book.author}}</p>{{fmtDateShort $.Book.updatedAt}}
+</li>
+{{end}}
+{{else}}
+<li>
+<p class="ul1">《<a class="poptext" href="/?view=read&chapter={{.FirstChapterId}}">{{.Book.name}}</a>》</p>
+<p class="ul2"><a href="/?view=read&chapter={{.FirstChapterId}}">{{if .Book.latestChapter}}{{.Book.latestChapter}}{{else}}第1章{{end}}</a></p>
+<p>{{.Book.author}}</p>{{fmtDateShort .Book.updatedAt}}
+</li>
+{{end}}
+<li class="more"><a href="#chapter_list">查看完整章节目录...</a></li>
+</ul>
+</div>
+</div>
+</div>
+
+<div id="right">
+<div class="block">
+<div class="blocktitle"><span>{{.Site.Name}}总推荐榜</span></div>
+<div class="blockcontent">
+<ul class="ultop">
+{{range .HotBooks}}
+<li><p>{{wordCount .wordCount}}</p><a href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a></li>
+{{end}}
+<li style="list-style:none;text-align:right;border:none;"><a href="/?view=ranking">更多...</a></li>
+</ul>
+</div>
+</div>
+
+<div class="block">
+<div class="blocktitle"><span>{{.Site.Name}}最新小说</span></div>
+<div class="blockcontent">
+<ul class="ultop">
+{{range .HotBooks}}
+<li><p>{{fmtDateShort .updatedAt}}</p><a href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a></li>
+{{end}}
+<li style="list-style:none;text-align:right;border:none;"><a href="/?view=ranking">更多...</a></li>
+</ul>
+</div>
+</div>
+</div>
+</div>
+
+<div class="cl" style="height:8px;"></div>
+<div class="main links">
+<div class="block">
+<div class="blocktitle">友情链接</div>
+<div class="blockmore"><a href="#">更多...</a></div>
+<div class="blockcontent">
+<ul class="ulrow">
+<li><a href="/" target="_blank">{{.Site.Name}}</a></li>
+<li><a href="/?view=fulltext" target="_blank">全本小说</a></li>
+<li><a href="/?view=category" target="_blank">小说分类</a></li>
+</ul>
+</div>
+</div>
+</div>
+<div class="cl" style="height:8px;"></div>
+
+<div class="main footer">
+<div class="bdtop"><i></i><span title="0.529769"></span></div>
+<div class="ftc">
+{{.Site.Name}} 无弹窗小说网承诺没有弹窗广告，所有小说都能免费阅读。找好看的小说网站，就到 {{.Site.Domain}}<br>
+请所有网友上传作品时务必遵守国家互联网信息管理办法规定，本站拒绝任何色情小说，一经发现，即作删除<br>
+Copyright © 2026 <a href="/">{{.Site.Name}}</a>({{.Site.Domain}}) <a href="/">网站地图</a> All Rights Reserved.
+</div>
+</div>
+
+</body>
+</html>{{end}}

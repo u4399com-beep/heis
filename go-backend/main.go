@@ -135,6 +135,18 @@ func main() {
         http.HandleFunc("/api/public/book", bookDetailHandler)
         http.HandleFunc("/api/public/chapter", chapterHandler)
 
+        // R39-1C: 采集后台 API (与 src/app/api/admin/* 同口径, 调 crawl 包)
+        http.HandleFunc("/api/admin/health", adminHealthHandler)
+        http.HandleFunc("/api/admin/tasks", adminTasksHandler)
+        http.HandleFunc("/api/admin/tasks/", adminTaskSubHandler) // /:id/control + /:id/snapshot
+        http.HandleFunc("/api/admin/rules", adminRulesHandler)
+        http.HandleFunc("/api/admin/rules/", adminRuleByIDHandler) // /:id
+        http.HandleFunc("/api/admin/books", adminBooksAPIHandler)
+
+        // R39-1C: 采集后台页面 (Go templates SSR, 深色主题)
+        http.HandleFunc("/admin", adminPageHandler)
+        http.HandleFunc("/admin/", adminPageHandler) // /admin/tasks, /admin/books, ...
+
         addr := ":3001"
         log.Printf("heis-backend 启动: http://localhost%s (内存 %dMB)", addr, getMemMB())
         if err := http.ListenAndServe(addr, nil); err != nil {

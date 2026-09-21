@@ -1,0 +1,270 @@
+{{define "admin/tasks"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+{{template "admin/head" .}}
+</head>
+<body>
+<div class="app">
+{{template "admin/sidebar" .}}
+<main class="content">
+  <div class="topbar">
+    <h1>{{.Title}}</h1>
+    <div class="actions">
+      <button class="btn btn-primary" onclick="openCreateModal()">+ 新建任务</button>
+      <a href="/api/admin/tasks" class="btn" target="_blank">API</a>
+    </div>
+  </div>
+  <div class="page">
+    <div class="toolbar">
+      <form method="get" action="/admin/tasks" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <select name="status">
+          <option value="">全部状态</option>
+          <option value="pending"{{if eq .FilterStatus "pending"}} selected{{end}}>待运行</option>
+          <option value="running"{{if eq .FilterStatus "running"}} selected{{end}}>运行中</option>
+          <option value="paused"{{if eq .FilterStatus "paused"}} selected{{end}}>已暂停</option>
+          <option value="stopped"{{if eq .FilterStatus "stopped"}} selected{{end}}>已停止</option>
+          <option value="done"{{if eq .FilterStatus "done"}} selected{{end}}>已完成</option>
+          <option value="error"{{if eq .FilterStatus "error"}} selected{{end}}>错误</option>
+        </select>
+        <button class="btn btn-primary" type="submit">筛选</button>
+      </form>
+      <span style="color:var(--dim);font-size:12px;margin-left:auto;">共 {{.Total}} 条 · 已加载 {{len .Tasks}} 条</span>
+    </div>
+
+    <div class="table-card">
+      <table>
+        <thead>
+          <tr>
+            <th>任务名</th>
+            <th>规则 / 模式</th>
+            <th>状态</th>
+            <th>进度</th>
+            <th>统计</th>
+            <th>更新</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+        {{range .Tasks}}
+          <tr data-task-id="{{.id}}">
+            <td>
+              <a href="javascript:void(0)" onclick="openDetailModal('{{.id}}')">{{.name}}</a>
+              <div style="color:var(--dim);font-size:11px;">{{.id}}</div>
+            </td>
+            <td>
+              <div>{{.ruleName}}</div>
+              <div style="color:var(--dim);font-size:11px;">{{.modeLabel}} · {{.recrawlMode}}</div>
+            </td>
+            <td>
+              <span class="pill pill-{{.status}}">{{.statusLabel}}</span>
+              {{if eq .status "running"}}<span class="badge-dot green"></span>{{end}}
+            </td>
+            <td style="min-width:160px;">
+              <div class="progress-bar"><span style="width:{{.progressPct}}%"></span></div>
+              <small style="color:var(--dim);">{{.progressNote}}</small>
+            </td>
+            <td style="font-size:11px;color:var(--muted);">
+              {{.statBooks}} 书 / {{.statChapters}} 章<br>
+              {{.statErrors}} 错误
+            </td>
+            <td><small style="color:var(--dim);">{{.updatedAtShort}}</small></td>
+            <td style="white-space:nowrap;">
+              {{if eq .status "running"}}
+                <button class="btn btn-sm btn-warn" onclick="controlTask('{{.id}}','pause')">暂停</button>
+                <button class="btn btn-sm btn-err" onclick="controlTask('{{.id}}','stop')">停止</button>
+              {{else if eq .status "paused"}}
+                <button class="btn btn-sm btn-primary" onclick="controlTask('{{.id}}','start')">恢复</button>
+                <button class="btn btn-sm btn-err" onclick="controlTask('{{.id}}','stop')">停止</button>
+              {{else}}
+                <button class="btn btn-sm btn-primary" onclick="controlTask('{{.id}}','start')">启动</button>
+              {{end}}
+              <button class="btn btn-sm" onclick="openDetailModal('{{.id}}')">详情</button>
+            </td>
+          </tr>
+        {{else}}
+          <tr><td colspan="7" class="empty-state">
+            <span class="ic">📋</span>暂无任务,点击右上角新建任务
+          </td></tr>
+        {{end}}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</main>
+</div>
+
+<!-- 新建任务 Modal -->
+<div class="modal-backdrop" id="createModal">
+  <div class="modal">
+    <div class="modal-head"><h2>新建采集任务</h2><button class="btn btn-sm" onclick="closeModal('createModal')">✕</button></div>
+    <form id="createForm" class="modal-body">
+      <div class="form-grid">
+        <div class="field full">
+          <label>任务名称 *</label>
+          <input type="text" name="name" maxlength="100" required placeholder="如: 采集玄幻新书 2024-09-21">
+        </div>
+        <div class="field">
+          <label>采集规则 *</label>
+          <select name="ruleId" required>
+            <option value="">— 请选择规则 —</option>
+            {{range .Rules}}
+            <option value="{{.id}}">{{.name}}{{if not .enabled}} (已禁用){{end}}</option>
+            {{end}}
+          </select>
+        </div>
+        <div class="field">
+          <label>采集模式</label>
+          <select name="mode">
+            <option value="single">single (单本书籍页)</option>
+            <option value="range" selected>range (列表页范围)</option>
+            <option value="urls">urls (指定URL列表)</option>
+          </select>
+        </div>
+        <div class="field full">
+          <label>书籍页 URL (single 模式必填)</label>
+          <input type="text" name="bookUrl" placeholder="https://example.com/book/123">
+        </div>
+        <div class="field full">
+          <label>列表页 URL 模板 (range 模式必填,含 {page} 占位符)</label>
+          <input type="text" name="listUrl" placeholder="https://example.com/list/{{"{page}"}}.html">
+        </div>
+        <div class="field">
+          <label>列表起页</label>
+          <input type="number" name="listStart" value="1" min="1" max="100000">
+        </div>
+        <div class="field">
+          <label>列表止页</label>
+          <input type="number" name="listEnd" value="1" min="1" max="100000">
+        </div>
+        <div class="field">
+          <label>书籍序号起 (0=不限)</label>
+          <input type="number" name="bookStart" value="0" min="0" max="100000">
+        </div>
+        <div class="field">
+          <label>书籍序号止 (0=不限)</label>
+          <input type="number" name="bookEnd" value="0" min="0" max="100000">
+        </div>
+        <div class="field">
+          <label>重采集模式</label>
+          <select name="recrawlMode">
+            <option value="incremental" selected>incremental (增量)</option>
+            <option value="full">full (全量)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>存储模式</label>
+          <select name="storageMode">
+            <option value="db" selected>db (正文入库)</option>
+            <option value="txt">txt (文件存储)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>线程数 min</label>
+          <input type="number" name="threadMin" value="1" min="1" max="32">
+        </div>
+        <div class="field">
+          <label>线程数 max</label>
+          <input type="number" name="threadMax" value="3" min="1" max="32">
+        </div>
+        <div class="field">
+          <label>间隔 ms min</label>
+          <input type="number" name="intervalMin" value="500" min="0" max="600000">
+        </div>
+        <div class="field">
+          <label>间隔 ms max</label>
+          <input type="number" name="intervalMax" value="2000" min="0" max="600000">
+        </div>
+        <div class="field full">
+          <label>反反爬覆盖配置 (JSON, 可空)</label>
+          <textarea name="fetchConfig" placeholder='{"concurrency":3,"timeout":20000}'>{}</textarea>
+          <div class="hint">留空使用规则默认; 详细字段参考 RuleConfig.fetch</div>
+        </div>
+      </div>
+    </form>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeModal('createModal')">取消</button>
+      <button class="btn btn-primary" onclick="submitCreate()">创建并启动</button>
+    </div>
+  </div>
+</div>
+
+<!-- 任务详情 Modal -->
+<div class="modal-backdrop" id="detailModal">
+  <div class="modal">
+    <div class="modal-head"><h2>任务详情</h2><button class="btn btn-sm" onclick="closeModal('detailModal')">✕</button></div>
+    <div class="modal-body" id="detailBody"><div class="empty-state">加载中…</div></div>
+    <div class="modal-foot"><button class="btn" onclick="closeModal('detailModal')">关闭</button></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+function fmtTS(ts){if(!ts)return'--';var d=new Date(ts);return d.toLocaleTimeString('zh-CN',{hour12:false});}
+function openCreateModal(){document.getElementById('createModal').classList.add('open');}
+function openDetailModal(id){
+  document.getElementById('detailModal').classList.add('open');
+  var body=document.getElementById('detailBody');
+  body.innerHTML='<div class="empty-state">加载中…</div>';
+  fetch('/api/admin/tasks/'+encodeURIComponent(id)+'/snapshot').then(function(r){return r.json();}).then(function(j){
+    if(!j||!j.ok){body.innerHTML='<div class="empty-state">无运行时快照 (任务可能未在运行)</div>';return;}
+    var s=j.data||{};
+    var html='';
+    html+='<dl class="kv-list">';
+    html+='<dt>运行中</dt><dd>'+(s.running?'<span class="pill pill-running">是</span>':'否')+(s.paused?' <span class="pill pill-paused">暂停</span>':'')+'</dd>';
+    html+='<dt>请求次数</dt><dd>'+s.requestCount+(s.maxRequests>0?' / '+s.maxRequests:'')+'</dd>';
+    html+='<dt>已下载字节</dt><dd>'+(s.bytesFetched||0).toLocaleString()+' B</dd>';
+    html+='<dt>当前 URL</dt><dd style="word-break:break-all;">'+(s.currentURL||'-')+'</dd>';
+    html+='<dt>失败书籍</dt><dd>'+s.failedBookUrlsCount+' 本</dd>';
+    html+='<dt>验证码触发</dt><dd>'+(s.captchaEncountered||0)+'</dd>';
+    html+='<dt>开始运行</dt><dd>'+fmtTS(s.runStartedAt)+'</dd>';
+    html+='</dl>';
+    html+='<h3 style="margin:14px 0 8px;font-size:13px;color:var(--muted);">实时日志</h3>';
+    html+='<div class="logs">';
+    if(s.recentLogs&&s.recentLogs.length){
+      s.recentLogs.forEach(function(l){
+        html+='<div class="line"><span class="ts">['+fmtTS(l.ts)+']</span><span class="lv-'+l.level+'">'+l.message+'</span></div>';
+      });
+    }else{html+='<div class="empty">暂无日志</div>';}
+    html+='</div>';
+    body.innerHTML=html;
+  }).catch(function(e){body.innerHTML='<div class="empty-state">加载失败: '+e.message+'</div>';});
+}
+function closeModal(id){document.getElementById(id).classList.remove('open');}
+function showToast(msg,ok){
+  var t=document.getElementById('toast');t.textContent=msg;t.className='toast '+(ok?'ok':'err');
+  setTimeout(function(){t.classList.add('show');},10);setTimeout(function(){t.classList.remove('show');},2500);
+}
+function controlTask(id,action){
+  fetch('/api/admin/tasks/'+encodeURIComponent(id)+'/control',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({action:action})
+  }).then(function(r){return r.json();}).then(function(j){
+    if(j&&j.ok){showToast('操作成功: '+action,true);setTimeout(function(){location.reload();},800);}
+    else{showToast('操作失败: '+(j&&j.error||'未知错误'),false);}
+  }).catch(function(e){showToast('请求失败: '+e.message,false);});
+}
+function submitCreate(){
+  var form=document.getElementById('createForm');
+  var fd=new FormData(form);
+  var body={};
+  fd.forEach(function(v,k){body[k]=v;});
+  fetch('/api/admin/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(function(r){return r.json();}).then(function(j){
+      if(j&&j.ok){
+        showToast('任务创建成功',true);
+        closeModal('createModal');
+        setTimeout(function(){location.reload();},800);
+      }else{showToast('创建失败: '+(j&&j.error||'未知错误'),false);}
+    }).catch(function(e){showToast('请求失败: '+e.message,false);});
+}
+// URL 模式联动校验
+document.querySelector('[name=mode]').addEventListener('change',function(){
+  var v=this.value;
+  document.querySelector('[name=bookUrl]').required=(v==='single');
+  document.querySelector('[name=listUrl]').required=(v==='range');
+});
+</script>
+</body>
+</html>
+{{end}}

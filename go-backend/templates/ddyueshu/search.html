@@ -1,0 +1,93 @@
+{{define "ddyueshu/search"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>搜索 "{{.Q}}" - {{.Site.Title}}</title>
+<meta name="keywords" content="{{.Site.Keywords}},{{.Q}}">
+<meta name="description" content="搜索结果：{{.Q}}">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" type="text/css" href="/clone-css/ddyueshu.css">
+</head>
+<body>
+<div id="wrapper">
+<div class="header">
+<div class="header_logo"><a href="/">{{.Site.Name}}</a></div>
+<div class="header_search">
+<form name="articlesearch" method="get" action="/?view=search">
+<input name="q" type="text" class="text" value="{{.Q}}" placeholder="搜索从这里开始...">
+<button type="submit" name="submit">搜索</button>
+</form>
+</div>
+</div>
+
+<div class="nav">
+<ul>
+<li><a href="/">首页</a></li>
+{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}">{{.name}}</a></li>{{end}}
+<li><a href="/?view=fulltext">全本</a></li>
+<li><a href="/?view=history">足迹</a></li>
+</ul>
+</div>
+
+<div id="main">
+<div id="content">
+<div id="newscontent">
+<div class="l">
+<h2>搜索 "{{.Q}}" 的小说</h2>
+
+<div style="padding:10px;border-bottom:1px solid #A6D3E8;background:#E1ECED;">
+<form action="/?view=search" method="get">
+<input name="q" type="text" value="{{.Q}}" placeholder="可搜索书名或作者" style="width:390px;height:24px;padding:3px 5px;border:1px solid #A6D3E8;font-size:14px;">
+<button type="submit" style="background:#88C6E5;border:none;color:#fff;font-size:14px;height:30px;padding:0 15px;cursor:pointer;margin-left:5px;">搜索</button>
+</form>
+</div>
+
+{{if .Books}}
+<ul>
+{{range .Books}}
+<li>
+<span class="s1" style="width:75px;float:left;display:inline-block;">[{{.category}}]</span>
+<span class="s2" style="width:165px;float:left;display:inline-block;"><a href="/?view=book&id={{.id}}">{{.name}}</a></span>
+<span class="s3" style="width:300px;float:left;display:inline-block;"><a href="/?view=book&id={{.id}}">{{if .latestChapter}}{{.latestChapter}}{{else}}最新章节{{end}}</a></span>
+<span class="s4" style="color:#B3B3B3;width:90px;float:left;display:inline-block;text-align:right;">{{.author}}</span>
+<span class="s5" style="color:#B3B3B3;float:right;text-align:right;">{{wordCount .wordCount}}</span>
+<div class="clear"></div>
+</li>
+{{end}}
+</ul>
+{{else}}
+<ul><li style="padding:40px;text-align:center;color:#6b7280;">未找到相关书籍</li></ul>
+{{end}}
+</div>
+
+<div class="r">
+<h2>相关小说推荐</h2>
+{{if .HotBooks}}
+<ul>
+{{range .HotBooks}}
+<li>
+<span class="s1" style="width:75px;float:left;display:inline-block;">[{{.category}}]</span>
+<span class="s2" style="width:165px;float:left;display:inline-block;"><a href="/?view=book&id={{.id}}">{{.name}}</a></span>
+<span class="s5" style="color:#B3B3B3;float:right;text-align:right;">{{.author}}</span>
+<div class="clear"></div>
+</li>
+{{end}}
+</ul>
+{{else}}
+<ul><li style="padding:40px;text-align:center;color:#6b7280;">暂无推荐</li></ul>
+{{end}}
+</div>
+
+<div class="clear"></div>
+</div>
+</div>
+</div>
+
+<div class="footer">
+<p>本站所有小说为转载作品，所有章节均由网友上传，转载至本站只是为了宣传本书让更多读者欣赏。</p>
+<p>Copyright &copy; {{.Site.Name}} ({{.Site.Domain}}) All Rights Reserved.</p>
+</div>
+</div>
+
+</body>
+</html>{{end}}

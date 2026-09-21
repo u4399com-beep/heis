@@ -1,0 +1,217 @@
+{{define "23qb/book"}}<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0">
+<title>{{.Book.name}} - {{.Book.author}} - {{.Site.Title}}</title>
+<meta name="keywords" content="{{.Book.name}},{{.Book.author}},{{.Book.category}},{{.Site.Keywords}}">
+<meta name="description" content="{{.Book.intro}}">
+<link rel="stylesheet" href="/clone-css/23qb.css">
+</head>
+<body class="homepage">
+<header id="header" class="wrapper">
+<div class="header-content">
+<div class="banyundog-com">
+<div class="header-logo">
+<h1 class="slogan">{{.Site.Name}}</h1>
+<div class="fixed-logo">
+<a href="/" class="logo" title="{{.Site.Name}}">{{.Site.Name}}</a>
+</div>
+</div>
+</div>
+<div class="nav-search">
+<form action="/?view=search" class="search-dh"></form>
+</div>
+<div class="header-module">
+<ul class="nav-menu-items">
+<li class="nav-menu-item"><a href="/" title="首页"><span>首页</span></a></li>
+<li class="nav-menu-item"><a href="/?view=category" title="书库"><span>书库</span></a></li>
+</ul>
+</div>
+</div>
+<div id="search-content">
+<form action="/?view=search">
+<div class="search-main">
+<div class="search-box">
+<input class="search-input ac_wd" id="txtKeywords" type="search" name="q" autocomplete="off" placeholder="搜索喜欢的小说、作者、标签">
+<a href="/?view=category" class="search-btn search-cupfox" title="书库">书库</a>
+<button class="search-btn search-go" type="submit"><i class="icon-search"></i></button>
+<button class="cancel-btn" type="button">取消</button>
+</div>
+</div>
+</form>
+</div>
+</header>
+
+<main id="main" class="wrapper">
+<div class="content">
+<div class="list">
+<div class="box">
+<div class="module-search-item">
+<div class="novel-cover">
+<div class="module-item-cover">
+<div class="module-item-pic">
+<a href="/?view=book&id={{.Book.id}}" title="{{.Book.name}}"></a>
+{{if .Book.cover}}<img class="lazy lazyloaded" src="{{.Book.cover}}" alt="{{.Book.name}}">{{end}}
+<div class="loading"></div>
+</div>
+<div class="module-item-caption">
+<span>{{.Book.category}} {{.Book.author}}</span>
+</div>
+</div>
+</div>
+
+<div class="novel-info">
+<div class="novel-info-header">
+<h3>{{.Book.name}}</h3>
+</div>
+
+<div class="novel-info-main">
+<div class="novel-info-items">
+<div class="novel-info-itemtitle">作者</div>
+<div class="novel-info-actor"><a href="/?view=search&q={{.Book.author}}" title="{{.Book.author}}">{{.Book.author}}</a></div>
+</div>
+<div class="novel-info-items">
+<div class="novel-info-itemtitle">分类</div>
+<div class="novel-info-actor">
+{{if .Book.categoryId}}<a href="/?view=category&cat={{.Book.categoryId}}" title="{{.Book.category}}">{{.Book.category}}{{else}}{{.Book.category}}{{end}}</a>
+</div>
+</div>
+<div class="novel-info-items">
+<div class="novel-info-itemtitle">状态</div>
+<div class="novel-info-actor">{{statusLabel .Book.status}}</div>
+</div>
+<div class="novel-info-items">
+<div class="novel-info-itemtitle">字数</div>
+<div class="novel-info-actor">{{wordCount .Book.wordCount}}</div>
+</div>
+{{if .Book.latestChapter}}
+<div class="novel-info-items">
+<div class="novel-info-itemtitle">最新章节</div>
+<div class="novel-info-actor">
+<a href="/?view=read&chapter={{.FirstChapterId}}">{{.Book.latestChapter}}</a>
+</div>
+</div>
+{{end}}
+<div class="novel-info-items">
+<div class="novel-info-itemtitle">更新时间</div>
+<div class="novel-info-actor">{{fmtDate .Book.updatedAt}}</div>
+</div>
+</div>
+
+<div class="novel-info-content">
+<div class="novel-info-itemtitle">内容简介</div>
+<p>{{if .Book.intro}}{{.Book.intro}}{{else}}暂无简介{{end}}</p>
+</div>
+
+<div class="novel-info-footer">
+<a href="/?view=read&chapter={{.FirstChapterId}}" class="btn-important"><i class="icon-play"></i>开始阅读</a>
+<a href="#chapter_list" class="btn-base"><i class="icon-list"></i>查看目录</a>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</main>
+
+{{if .RecentChapters}}
+<main id="main" class="wrapper" style="padding-top:0;">
+<div class="content">
+<div class="list">
+<div class="box">
+<h3 class="module-title">最新章节</h3>
+<div class="module">
+<div class="module-list module-lines-list">
+<div class="module-items">
+{{range .RecentChapters}}
+<div class="module-item module-item-text-list">
+<div class="module-item-titlebox">
+<a href="/?view=read&chapter={{.id}}" class="module-item-title" title="{{.title}}">{{.title}}</a>
+</div>
+</div>
+{{end}}
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</main>
+{{end}}
+
+{{if .Chapters}}
+<main id="main" class="wrapper" style="padding-top:0;">
+<div class="content">
+<div class="list">
+<div class="box" id="chapter_list">
+<h3 class="module-title">完整章节目录</h3>
+<div class="module">
+<div class="module-list module-lines-list">
+<div class="module-items">
+{{range .Chapters}}
+<div class="module-item module-item-text-list">
+<div class="module-item-titlebox">
+<a href="/?view=read&chapter={{.id}}" class="module-item-title" title="{{.title}}">{{.title}}</a>
+</div>
+</div>
+{{end}}
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</main>
+{{end}}
+
+{{if .Related}}
+<main id="main" class="wrapper" style="padding-top:0;">
+<div class="content">
+<div class="list">
+<div class="box">
+<h3 class="module-title">相关推荐</h3>
+<div class="module">
+<div class="module-list module-lines-list">
+<div class="module-items">
+{{range .Related}}
+<div class="module-item">
+<div class="module-item-cover">
+<div class="module-item-pic">
+<a href="/?view=book&id={{.id}}" title="{{.name}}"></a>
+{{if .cover}}<img class="lazy lazyloaded" src="{{.cover}}" alt="{{.name}}">{{end}}
+<div class="loading"></div>
+</div>
+<div class="module-item-caption">
+<span>{{.category}} {{wordCount .wordCount}}</span>
+</div>
+</div>
+<div class="module-item-titlebox">
+<a href="/?view=book&id={{.id}}" class="module-item-title" title="{{.name}}">{{.name}}</a>
+</div>
+<div class="module-item-text">{{.author}}</div>
+</div>
+{{end}}
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</main>
+{{end}}
+
+<footer id="footer" class="wrapper pd60">
+<p class="sitemap">
+<span>{{.Site.Name}}</span>
+<a href="/">RSS</a>
+<span class="space-line-bold"></span>
+<a href="/">Google</a>
+<span class="space-line-bold"></span>
+<a href="/">Bing</a>
+</p>
+<p>{{.Site.Title}}</p>
+</footer>
+
+</body>
+</html>{{end}}

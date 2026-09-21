@@ -1,0 +1,118 @@
+{{define "ggd66/search"}}<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>{{.Site.Title}} - 搜索：{{.Q}}</title>
+<meta name="keywords" content="{{.Site.Keywords}},{{.Q}}">
+<meta name="description" content="搜索结果：{{.Q}}">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0">
+<link rel="stylesheet" href="https://cdn.staticfile.org/font-awesome/4.7.0/css/font-awesome.min.css">
+<link rel="stylesheet" href="/clone-css/ggd66.css">
+</head>
+<body>
+<div class="header">
+<div class="container">
+<div class="header-left">
+<a href="/" title="{{.Site.Name}}" class="logo">{{.Site.Name}}</a>
+</div>
+<div class="header-right">
+<a href="/?view=history">阅读历史</a> |
+<a href="/?view=fulltext">全本阅读</a> |
+<a href="/?view=category">分类浏览</a>
+</div>
+<div class="header-nav">
+<a href="/" title="首页">首 页</a>
+<a href="/?view=category" title="书库">书 库</a>
+<a href="/?view=fulltext" title="全本">全本</a>
+{{range .NavCats}}<a href="/?view=category&cat={{.id}}" title="{{.name}}">{{.name}}</a>{{end}}
+</div>
+</div>
+<div class="clear"></div>
+</div>
+
+<div class="container">
+<ul class="breadcrumb">
+<li><a href="/">首页</a></li>
+<li class="active">搜索：{{.Q}}</li>
+</ul>
+
+<div class="content">
+<div class="content-left" id="search-list">
+<h2>搜索：{{.Q}}</h2>
+
+<div class="search hidden-xs" style="margin-bottom:10px;">
+<form name="articlesearch" method="get" action="/?view=search">
+<input type="hidden" name="view" value="search">
+<input name="searchkey" type="text" class="text" id="searchkey" size="10" maxlength="50" placeholder="搜索从这里开始..." value="{{.Q}}">
+<button type="submit" name="submit">搜  索</button>
+</form>
+</div>
+<div class="clear"></div>
+
+{{if .Books}}
+{{range $i, $b := .Books}}
+<div class="bookbox">
+<span class="num">{{add $i 1}}</span>
+<div class="p10">
+<a href="/?view=book&id={{$b.id}}" style="float:left;display:inline-block;margin-right:10px;">
+{{if $b.cover}}<img src="{{$b.cover}}" alt="{{$b.name}}" width="80" height="110">{{end}}
+</a>
+<div class="bookinfo">
+<div class="bookname"><a href="/?view=book&id={{$b.id}}">{{$b.name}}</a></div>
+<div class="author">作者：{{$b.author}}</div>
+<div class="cat">分类：{{$b.category}}</div>
+<div class="update">{{wordCount $b.wordCount}} / 更新于 {{fmtDateShort $b.updatedAt}}</div>
+</div>
+</div>
+</div>
+{{end}}
+{{else}}
+<div style="padding:40px;text-align:center;">
+未找到与「{{.Q}}」相关的书籍，换个关键词试试吧。
+<div style="margin-top:12px;">
+<a href="/" class="btn btn-info" style="display:inline-block;padding:6px 16px;text-decoration:none;">返回首页</a>
+</div>
+</div>
+{{end}}
+<div class="clear"></div>
+</div>
+
+<div class="content-right" id="fengyou">
+<div class="search hidden-xs">
+<form name="articlesearch" method="get" action="/?view=search">
+<input type="hidden" name="view" value="search">
+<input name="searchkey" type="text" class="text" id="searchkey" size="10" maxlength="50" placeholder="搜索从这里开始...">
+<button type="submit" name="submit">搜  索</button>
+</form>
+</div>
+<h2 class="visible-xs">阅读排行榜</h2>
+<ul>
+{{range .HotBooks}}
+<li>[{{.category}}] <a href="/?view=book&id={{.id}}">{{.name}}</a><span>{{.author}}</span></li>
+{{end}}
+</ul>
+</div>
+<div class="clear"></div>
+</div>
+
+<div class="content tuijian hidden-xs">
+友情链接：
+<div class="class">
+<ul>
+<li><a href="/?view=category">书库</a></li>
+<li><a href="/?view=fulltext">全本</a></li>
+{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}">{{.name}}</a></li>{{end}}
+</ul>
+</div>
+<div class="clear"></div>
+</div>
+</div>
+
+<div class="footer">
+<p class="hidden-xs">本站所有小说为转载作品，所有章节均由网友上传，转载至本站只是为了宣传本书让更多读者欣赏。</p>
+<p class="hidden-xs">Copyright © {{.Site.Name}} ({{.Site.Domain}}) All Rights Reserved.</p>
+<div class="clear"></div>
+</div>
+
+</body>
+</html>{{end}}

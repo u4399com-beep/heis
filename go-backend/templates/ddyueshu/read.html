@@ -1,0 +1,75 @@
+{{define "ddyueshu/read"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>{{.Chapter.title}} - {{.Book.name}} - {{.Site.Title}}</title>
+<meta name="keywords" content="{{.Book.name}},{{.Chapter.title}},{{.Book.author}},{{.Site.Keywords}}">
+<meta name="description" content="{{.Book.name}}{{.Chapter.title}}全文阅读,{{.Book.intro}}">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" type="text/css" href="/clone-css/ddyueshu.css">
+</head>
+<body>
+<div id="wrapper">
+<div class="header">
+<div class="header_logo"><a href="/">{{.Site.Name}}</a></div>
+<div class="header_search">
+<form name="articlesearch" method="get" action="/?view=search">
+<input name="q" type="text" class="text" placeholder="搜索从这里开始...">
+<button type="submit" name="submit">搜索</button>
+</form>
+</div>
+</div>
+
+<div class="nav">
+<ul>
+<li><a href="/">首页</a></li>
+{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}">{{.name}}</a></li>{{end}}
+<li><a href="/?view=fulltext">全本</a></li>
+<li><a href="/?view=history">足迹</a></li>
+</ul>
+</div>
+
+<div id="main">
+<div id="content">
+<div class="content_read">
+<div class="box_con">
+<div class="con_top">
+<a href="/">{{.Book.category}}</a>
+&nbsp;&gt;&nbsp;
+<a href="/?view=book&id={{.Book.id}}">{{.Book.name}}</a>
+&nbsp;&gt;&nbsp;
+<span>{{.Chapter.title}}</span>
+</div>
+
+<div class="bookname">
+<h1>{{.Chapter.title}}</h1>
+</div>
+
+<div id="content">
+{{if .Chapter.content}}{{.Chapter.content}}{{else}}<p style="text-align:center;color:#999;">本章内容加载中...</p>{{end}}
+</div>
+
+<div class="bottem1">
+{{if .Prev}}<a href="/?view=read&chapter={{.Prev.id}}">上一章</a>{{else}}<a href="javascript:;">已是首章</a>{{end}}
+<a href="/?view=book&id={{.Book.id}}">返回书页</a>
+{{if .Next}}<a href="/?view=read&chapter={{.Next.id}}">下一章</a>{{else}}<a href="javascript:;">已是末章</a>{{end}}
+</div>
+
+<div class="bottem2">
+{{if .Prev}}<a href="/?view=read&chapter={{.Prev.id}}">上一章</a>{{else}}<a href="javascript:;">已是首章</a>{{end}}
+<a href="/">返回首页</a>
+{{if .Next}}<a href="/?view=read&chapter={{.Next.id}}">下一章</a>{{else}}<a href="javascript:;">已是末章</a>{{end}}
+</div>
+</div>
+</div>
+</div>
+</div>
+
+<div class="footer">
+<p>本站所有小说为转载作品，所有章节均由网友上传，转载至本站只是为了宣传本书让更多读者欣赏。</p>
+<p>Copyright &copy; {{.Site.Name}} ({{.Site.Domain}}) All Rights Reserved.</p>
+</div>
+</div>
+
+</body>
+</html>{{end}}

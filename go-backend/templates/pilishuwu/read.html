@@ -1,0 +1,109 @@
+{{define "pilishuwu/read"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>{{.Chapter.title}} - {{.Book.name}} - {{.Site.Title}}</title>
+<meta name="keywords" content="{{.Book.name}},{{.Chapter.title}},{{.Book.author}},{{.Site.Keywords}}">
+<meta name="description" content="{{.Book.name}}{{.Chapter.title}}全文阅读,{{.Book.intro}}">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="/clone-css/pilishuwu.css">
+</head>
+<body>
+<div class="mod-top-wr">
+<div class="mod-top-frame">
+<div class="mod-top-tool-wr ui-wm">
+<div class="mod-top-logo-wr ui-left">
+<h1 class="mod-top-logo ui-left ui-text-hide">
+<a title="{{.Site.Name}}" href="/">{{.Site.Name}}</a>
+</h1>
+<div class="mod-top-event ui-left ui-dn"></div>
+</div>
+<div class="mod-top-search-wr ui-left">
+<form action="/?view=search" method="get">
+<div id="top-search" class="mod-top-search">
+<div class="mod-search-input-wr ui-left">
+<input class="mod-search-input" type="text" name="q" placeholder="可搜索小说名/作者名" autocomplete="off">
+</div>
+<button class="mod-search-submit ui-left ui-text-hide" type="submit">搜索</button>
+</div>
+</form>
+<ul class="mod-top-tag" id="hotWord">
+{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}">{{.name}}</a></li>{{end}}
+</ul>
+</div>
+<div class="mod-top-nav-tool ui-right" id="loginbox">
+<a href="/?view=history">阅读历史</a> · <a href="/?view=fulltext">完本阅读</a>
+</div>
+</div>
+
+<div class="mod-top-nav-wr">
+<div class="mod-top-nav ui-wm">
+<ul class="mod-top-nav-list ui-left">
+<li><a class="mod-top-nav-home" href="/" title="首页">首页</a></li>
+<li><a href="/?view=category" title="全部小说">全部小说</a></li>
+<li><a href="/?view=ranking" title="排行榜">排行榜</a></li>
+{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}" title="{{.name}}">{{.name}}</a></li>{{end}}
+</ul>
+</div>
+</div>
+</div>
+</div>
+
+<div class="ui-wm ui-mb20 ui-mt20 clearfix">
+<div class="works-chapter-wr works-stack ui-wm ui-mb20">
+<div class="bookname">
+<h2 style="text-align:center;font-size:24px;font-weight:bold;color:#333;padding:20px 0;">
+{{.Chapter.title}}
+</h2>
+</div>
+
+<div class="bottem1" style="display:flex;justify-content:center;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid #eee;border-top:1px solid #eee;margin-bottom:16px;flex-wrap:wrap;">
+{{if .Prev}}<a href="/?view=read&chapter={{.Prev.id}}" title="上一章" style="display:inline-block;padding:4px 14px;background:#fd8929;color:#fff;text-decoration:none;">上一章</a>{{end}}
+<a href="/?view=book&id={{.Book.id}}" title="返回书页" style="display:inline-block;padding:4px 14px;background:#fff;border:1px solid #ddd;color:#666;text-decoration:none;">返回书页</a>
+{{if .Next}}<a href="/?view=read&chapter={{.Next.id}}" title="下一章" style="display:inline-block;padding:4px 14px;background:#fd8929;color:#fff;text-decoration:none;">下一章</a>{{end}}
+</div>
+
+<div id="booktxt" class="read-content-wr" style="background:#fff;padding:24px 32px;margin:0 auto;max-width:900px;">
+<div id="content" class="read-content" style="font-size:19px;line-height:1.9;color:#333;word-break:break-word;text-align:justify;text-indent:2em;">
+{{if .Chapter.content}}{{.Chapter.content}}{{else}}<p style="text-align:center;color:#999;">本章内容加载中...</p>{{end}}
+</div>
+</div>
+
+<div class="bottem2" style="display:flex;justify-content:center;align-items:center;gap:12px;padding:20px 0;border-top:1px solid #eee;margin-top:16px;flex-wrap:wrap;">
+{{if .Prev}}<a href="/?view=read&chapter={{.Prev.id}}" title="上一章" style="display:inline-block;padding:6px 24px;background:#fd8929;color:#fff;text-decoration:none;">« 上一章</a>{{end}}
+<a href="/?view=book&id={{.Book.id}}" title="返回书页" style="display:inline-block;padding:6px 24px;background:#fff;border:1px solid #ddd;color:#666;text-decoration:none;">返回书页</a>
+{{if .Next}}<a href="/?view=read&chapter={{.Next.id}}" title="下一章" style="display:inline-block;padding:6px 24px;background:#fd8929;color:#fff;text-decoration:none;">下一章 »</a>{{end}}
+</div>
+</div>
+</div>
+
+<div class="linkBox">
+<span class="linkTitle">友情链接</span>
+<p class="linkList">
+<a href="/">永久地址</a>
+<a href="/">{{.Site.Name}}二站</a>
+<a href="/">{{.Site.Name}}</a>
+</p>
+</div>
+
+<div class="mod-footer-wr">
+<div class="mod-footer-main-wr">
+<div class="mod-footer-main ui-wm">
+<div class="mod-footer-info">
+本站所有小说为完本转载作品，所有内容版权归版权方或原作者所有。
+<br>
+<span style="display:inline-block;margin-top:8px;">
+<a href="/" style="margin-right:12px;">首页</a>
+<a href="/?view=category" style="margin-right:12px;">全部小说</a>
+<a href="/?view=ranking" style="margin-right:12px;">排行榜</a>
+<a href="/?view=fulltext" style="margin-right:12px;">全本小说</a>
+<a href="/?view=history">阅读足迹</a>
+</span>
+</div>
+</div>
+</div>
+<div class="mod-footer-border"></div>
+</div>
+
+</body>
+</html>{{end}}

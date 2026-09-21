@@ -1,0 +1,149 @@
+{{define "admin/rules"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+{{template "admin/head" .}}
+</head>
+<body>
+<div class="app">
+{{template "admin/sidebar" .}}
+<main class="content">
+  <div class="topbar">
+    <h1>{{.Title}}</h1>
+    <div class="actions">
+      <button class="btn btn-primary" onclick="openCreateModal()">+ 新建规则</button>
+      <a href="/api/admin/rules" class="btn" target="_blank">API</a>
+    </div>
+  </div>
+  <div class="page">
+    <div class="toolbar">
+      <span style="color:var(--dim);font-size:12px;">共 {{.Total}} 条规则 · 启用 {{.EnabledCount}} · 禁用 {{.DisabledCount}}</span>
+    </div>
+    <div class="table-card">
+      <table>
+        <thead>
+          <tr>
+            <th>规则名</th>
+            <th>描述</th>
+            <th>状态</th>
+            <th>任务数</th>
+            <th>更新</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+        {{range .Rules}}
+          <tr>
+            <td>
+              {{.name}}
+              <div style="color:var(--dim);font-size:11px;">{{.id}}</div>
+            </td>
+            <td><small style="color:var(--muted);">{{.description}}</small></td>
+            <td>{{if .enabled}}<span class="pill pill-ok">启用</span>{{else}}<span class="pill pill-off">禁用</span>{{end}}</td>
+            <td>{{.taskCount}}</td>
+            <td><small style="color:var(--dim);">{{fmtDate .updatedAt}}</small></td>
+            <td>
+              <button class="btn btn-sm" onclick='viewConfig("{{.id}}","{{.name}}")'>查看配置</button>
+              {{if .enabled}}
+              <button class="btn btn-sm btn-warn" onclick='toggleRule("{{.id}}",false)'>禁用</button>
+              {{else}}
+              <button class="btn btn-sm btn-primary" onclick='toggleRule("{{.id}}",true)'>启用</button>
+              {{end}}
+            </td>
+          </tr>
+        {{else}}
+          <tr><td colspan="6" class="empty-state"><span class="ic">📐</span>暂无规则</td></tr>
+        {{end}}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</main>
+</div>
+
+<!-- 新建规则 Modal -->
+<div class="modal-backdrop" id="createModal">
+  <div class="modal">
+    <div class="modal-head"><h2>新建采集规则</h2><button class="btn btn-sm" onclick="closeModal('createModal')">✕</button></div>
+    <form id="createForm" class="modal-body">
+      <div class="form-grid">
+        <div class="field full">
+          <label>规则名称 *</label>
+          <input type="text" name="name" maxlength="100" required placeholder="如: 玄幻网 玄幻小说">
+        </div>
+        <div class="field full">
+          <label>描述</label>
+          <input type="text" name="description" maxlength="500" placeholder="可选,采集说明">
+        </div>
+        <div class="field full">
+          <label>规则配置 (JSON)</label>
+          <textarea name="config" style="min-height:240px;" placeholder='{"list":{"urlTemplate":"https://.../{page}"},"book":{...},"toc":{...},"content":{...},"fetch":{...},"clean":{...}}'>{}</textarea>
+          <div class="hint">完整配置参考 RuleConfig: list/book/toc/content 四段 + fetch 反反爬 + clean 清洗</div>
+        </div>
+        <div class="field">
+          <label>启用</label>
+          <select name="enabled">
+            <option value="true" selected>启用</option>
+            <option value="false">禁用</option>
+          </select>
+        </div>
+      </div>
+    </form>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeModal('createModal')">取消</button>
+      <button class="btn btn-primary" onclick="submitCreate()">创建</button>
+    </div>
+  </div>
+</div>
+
+<!-- 规则配置 Modal -->
+<div class="modal-backdrop" id="configModal">
+  <div class="modal">
+    <div class="modal-head"><h2 id="configTitle">规则配置</h2><button class="btn btn-sm" onclick="closeModal('configModal')">✕</button></div>
+    <div class="modal-body"><pre id="configBody" style="background:#0a0f1a;border:1px solid var(--border);padding:12px;border-radius:8px;font-size:12px;overflow:auto;max-height:60vh;color:var(--text);"></pre></div>
+    <div class="modal-foot"><button class="btn" onclick="closeModal('configModal')">关闭</button></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+function openCreateModal(){document.getElementById('createModal').classList.add('open');}
+function closeModal(id){document.getElementById(id).classList.remove('open');}
+function showToast(msg,ok){
+  var t=document.getElementById('toast');t.textContent=msg;t.className='toast '+(ok?'ok':'err');
+  setTimeout(function(){t.classList.add('show');},10);setTimeout(function(){t.classList.remove('show');},2500);
+}
+function viewConfig(id,name){
+  document.getElementById('configTitle').textContent='规则配置 — '+name;
+  document.getElementById('configModal').classList.add('open');
+  fetch('/api/admin/rules/'+encodeURIComponent(id)).then(function(r){return r.json();}).then(function(j){
+    if(!j||!j.ok){document.getElementById('configBody').textContent='加载失败: '+(j&&j.error||'');return;}
+    document.getElementById('configBody').textContent=JSON.stringify(j.data,null,2);
+  }).catch(function(e){document.getElementById('configBody').textContent='错误: '+e.message;});
+}
+function toggleRule(id,enabled){
+  fetch('/api/admin/rules/'+encodeURIComponent(id),{
+    method:'PUT',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({enabled:enabled})
+  }).then(function(r){return r.json();}).then(function(j){
+    if(j&&j.ok){showToast(enabled?'已启用':'已禁用',true);setTimeout(function(){location.reload();},800);}
+    else{showToast('操作失败: '+(j&&j.error||''),false);}
+  }).catch(function(e){showToast('请求失败: '+e.message,false);});
+}
+function submitCreate(){
+  var form=document.getElementById('createForm');
+  var fd=new FormData(form);
+  var body={name:fd.get('name'),description:fd.get('description')||'',enabled:fd.get('enabled')==='true'};
+  // config 字段尝试解析为对象,失败则原样字符串
+  var raw=fd.get('config')||'{}';
+  try{body.config=JSON.parse(raw);}catch(e){body.config=raw;}
+  fetch('/api/admin/rules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(function(r){return r.json();}).then(function(j){
+      if(j&&j.ok){showToast('规则创建成功',true);closeModal('createModal');setTimeout(function(){location.reload();},800);}
+      else{showToast('创建失败: '+(j&&j.error||''),false);}
+    }).catch(function(e){showToast('请求失败: '+e.message,false);});
+}
+</script>
+</body>
+</html>
+{{end}}

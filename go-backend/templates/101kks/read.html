@@ -1,0 +1,118 @@
+{{define "101kks/read"}}<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Type" content="text/html; charset=utf8">
+<meta http-equiv="Content-Language" content="zh-TW">
+<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=5">
+<title>{{.Chapter.title}} - {{.Book.name}} - {{.Site.Title}}</title>
+<meta name="keywords" content="{{.Book.name}},{{.Chapter.title}},{{.Book.author}},{{.Site.Keywords}}">
+<meta name="description" content="{{.Book.name}}{{.Chapter.title}}全文閱讀,{{.Book.intro}}">
+<link rel="stylesheet" type="text/css" href="/clone-css/101kks.css">
+</head>
+<body>
+<div class="leftmenu">
+<div class="menu_close_btn"><i class="iconfont icon-close"></i></div>
+<div class="headuser">
+<div class="headimg"><img class="user_touxiang" src="/images/user.png" alt=""></div>
+<span>访客</span>
+</div>
+<div class="register">
+<a href="/?view=history">閱讀記錄</a>
+<a href="/?view=fulltext">完本小說</a>
+</div>
+<div class="menu2">
+<ul>
+<li><a href="/"><i class="iconfont icon-home"></i>首頁</a></li>
+{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}"><i class="iconfont icon-list1"></i>{{.name}}</a></li>{{end}}
+<li><a href="/?view=history"><i class="iconfont icon-yuedujilu"></i>閱讀記錄</a></li>
+</ul>
+</div>
+</div>
+
+<header>
+<div class="headbox clearfix">
+<div class="menubtn pull-left"><i class="iconfont icon-menu"></i></div>
+<div class="logo pull-left">
+<div class="logoimg"></div>
+<a href="/">{{.Site.Name}}</a>
+</div>
+<form action="/?view=search" method="get">
+<div class="search pull-left">
+<i class="iconfont icon-search"></i>
+<div class="inputbox">
+<i class="iconfont icon-ArrowLeft"></i>
+<input type="text" name="q" placeholder="請輸入搜索內容！" autocomplete="off">
+<input type="hidden" name="searchtype" value="all">
+</div>
+</div>
+</form>
+<div class="user1 pull-right"><img class="user_touxiang" src="/images/user.png" alt=""></div>
+<div class="lang pull-right">
+<a href="javascript:;" class="textsel">繁體</a>
+<ul>
+<li><a href="javascript:;" class="zh_click">簡體</a></li>
+<li><a href="javascript:;" class="zh_click">繁體</a></li>
+</ul>
+</div>
+<div class="menu1 pull-right">
+<ul>
+<li><a href="/"> 首頁</a></li>
+<li><a href="/?view=ranking"><i class="iconfont icon-chart"></i> 排行</a></li>
+<li><a href="/?view=fulltext"><i class="iconfont icon-ai-book"></i> 完本</a></li>
+<li><a href="/?view=category"><i class="iconfont icon-list1"></i> 分類</a></li>
+<li><a href="/?view=history"><i class="iconfont icon-library"></i> 我的書架</a></li>
+<li><a href="/?view=history"><i class="iconfont icon-yuedujilu"></i> 閱讀記錄</a></li>
+</ul>
+</div>
+</div>
+</header>
+
+<div class="black">
+<div class="container">
+<div class="mybox">
+<div class="tools">
+<ul>
+<li><i class="iconfont icon-list"></i><span>目錄</span></li>
+<li><i class="iconfont icon-set"></i><span>設置</span></li>
+<li><i class="iconfont icon-yuedujilu"></i><span>書籤</span></li>
+</ul>
+</div>
+
+<div class="txtnav">
+<h1>{{.Chapter.title}}</h1>
+</div>
+
+<div class="txtinfo">
+{{if .Chapter.content}}{{.Chapter.content}}{{else}}<p style="text-align:center;color:#999;">本章內容載入中...</p>{{end}}
+</div>
+
+<div class="page1">
+{{if .Prev}}<a href="/?view=read&chapter={{.Prev.id}}">上一章</a>{{else}}<a href="javascript:;">已是首章</a>{{end}}
+<a href="/?view=book&id={{.Book.id}}">返回書頁</a>
+{{if .Next}}<a href="/?view=read&chapter={{.Next.id}}">下一章</a>{{else}}<a href="javascript:;">已是末章</a>{{end}}
+</div>
+</div>
+</div>
+
+<div class="foot">
+<div class="copyright">
+<div>
+<a href="/?view=ranking">排行榜</a>
+<a href="/">最新更新</a>
+<a href="/">全部小說</a>
+<a href="/?view=keyword&tag=系統">熱門標籤</a>
+</div>
+<p>Copyright 2023 <a href="/">Powered by &copy; {{.Site.Name}}（https://{{.Site.Domain}}）</a></p>
+<div>
+友情連結：<a href="/" title="{{.Site.Name}}">{{.Site.Name}}</a>|
+<a href="javascript:;">Cookies Policy</a>|
+<a href="javascript:;">DMCA</a>
+<div class="clear"></div>
+</div>
+</div>
+</div>
+</div>
+
+</body>
+</html>{{end}}

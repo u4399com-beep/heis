@@ -1,0 +1,112 @@
+{{define "23qb/fulltext"}}<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0">
+<title>全本完本 - {{.Site.Title}}</title>
+<meta name="keywords" content="{{.Site.Keywords}},全本完本">
+<meta name="description" content="{{.Site.Name}}全本完本小说，共 {{.Total}} 部完结作品。">
+<link rel="stylesheet" href="/clone-css/23qb.css">
+</head>
+<body class="homepage">
+<header id="header" class="wrapper">
+<div class="header-content">
+<div class="banyundog-com">
+<div class="header-logo">
+<h1 class="slogan">{{.Site.Name}}</h1>
+<div class="fixed-logo">
+<a href="/" class="logo" title="{{.Site.Name}}">{{.Site.Name}}</a>
+</div>
+</div>
+</div>
+<div class="nav-search">
+<form action="/?view=search" class="search-dh"></form>
+</div>
+<div class="header-module">
+<ul class="nav-menu-items">
+<li class="nav-menu-item"><a href="/" title="首页"><span>首页</span></a></li>
+{{range .NavCats}}<li class="nav-menu-item"><a href="/?view=category&cat={{.id}}" title="{{.name}}"><span>{{.name}}</span></a></li>{{end}}
+<li class="nav-menu-item"><a href="/?view=fulltext" title="完本"><span>完本</span></a></li>
+<li class="nav-menu-item"><a href="/?view=history" title="足迹"><span>足迹</span></a></li>
+</ul>
+</div>
+</div>
+<div id="search-content">
+<form action="/?view=search">
+<div class="search-main">
+<div class="search-box">
+<input class="search-input ac_wd" id="txtKeywords" type="search" name="q" autocomplete="off" placeholder="搜索喜欢的小说、作者、标签">
+<a href="/?view=category" class="search-btn search-cupfox" title="书库">书库</a>
+<button class="search-btn search-go" type="submit"><i class="icon-search"></i></button>
+<button class="cancel-btn" type="button">取消</button>
+</div>
+</div>
+</form>
+</div>
+</header>
+
+<main id="main" class="wrapper">
+<div class="content">
+<div class="list">
+<div class="box">
+<div class="search-stat">
+<h1>全本完本</h1>
+<h2>共 {{.Total}} 部完结作品</h2>
+</div>
+
+{{if .Books}}
+<div class="module">
+<div class="module-list module-lines-list">
+<div class="module-items">
+{{range $i, $b := .Books}}
+<div class="module-item">
+<div class="module-item-cover">
+{{if lt $i 3}}<div class="module-item-top top{{add $i 1}}">{{add $i 1}}</div>{{end}}
+<div class="module-item-pic">
+<a href="/?view=book&id={{$b.id}}" title="{{$b.name}}"></a>
+{{if $b.cover}}<img class="lazy lazyloaded" src="{{$b.cover}}" alt="{{$b.name}}">{{end}}
+<div class="loading"></div>
+</div>
+<div class="module-item-caption">
+<span>{{$b.category}} {{wordCount $b.wordCount}}</span>
+</div>
+</div>
+<div class="module-item-titlebox">
+<a href="/?view=book&id={{$b.id}}" class="module-item-title" title="{{$b.name}}">{{$b.name}}</a>
+</div>
+<div class="module-item-text">{{$b.author}}</div>
+</div>
+{{end}}
+</div>
+</div>
+</div>
+{{else}}
+<div style="padding:40px;text-align:center;">暂无完本小说</div>
+{{end}}
+
+{{if gt .TotalPages 1}}
+<div id="page">
+{{if gt .Page 1}}<a class="page-previous" href="/?view=fulltext&page={{sub .Page 1}}">上一页</a>{{end}}
+{{range .PageList}}{{if eq . $.Page}}<strong>{{.}}</strong>{{else}}<a href="/?view=fulltext&page={{.}}">{{.}}</a>{{end}}{{end}}
+{{if lt .Page .TotalPages}}<a class="page-next" href="/?view=fulltext&page={{add .Page 1}}">下一页</a>{{end}}
+</div>
+{{end}}
+</div>
+</div>
+</div>
+</main>
+
+<footer id="footer" class="wrapper pd60">
+<p class="sitemap">
+<span>{{.Site.Name}}</span>
+<a href="/">RSS</a>
+<span class="space-line-bold"></span>
+<a href="/">Google</a>
+<span class="space-line-bold"></span>
+<a href="/">Bing</a>
+</p>
+<p>{{.Site.Title}}</p>
+</footer>
+
+</body>
+</html>{{end}}

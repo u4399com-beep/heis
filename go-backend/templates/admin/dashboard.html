@@ -1,0 +1,102 @@
+{{define "admin/dashboard"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+{{template "admin/head" .}}
+</head>
+<body>
+<div class="app">
+{{template "admin/sidebar" .}}
+<main class="content">
+  <div class="topbar">
+    <h1>{{.Title}}</h1>
+    <div class="actions">
+      <a href="/admin/tasks">管理任务</a>
+      <a href="/admin/rules">查看规则</a>
+    </div>
+  </div>
+  <div class="page">
+    <div class="grid cols-4" style="margin-bottom:16px;">
+      <div class="card">
+        <h3>书籍总数</h3>
+        <div class="num">{{.BooksTotal}}</div>
+        <div class="sub">完结 {{.BooksCompleted}} / 连载中 {{.BooksOngoing}}</div>
+      </div>
+      <div class="card">
+        <h3>章节总数</h3>
+        <div class="num">{{.ChaptersTotal}}</div>
+        <div class="sub">最近 24h 新增 {{.ChaptersDay}}</div>
+      </div>
+      <div class="card">
+        <h3>采集任务</h3>
+        <div class="num">{{.TasksTotal}}</div>
+        <div class="sub"><span class="badge-dot {{if gt .TasksRunning 0}}green{{else}}gray{{end}}"></span> {{.TasksRunning}} 个运行中</div>
+      </div>
+      <div class="card">
+        <h3>站点 / 规则</h3>
+        <div class="num">{{.SitesTotal}} / {{.RulesTotal}}</div>
+        <div class="sub">已启用规则 {{.RulesEnabled}}</div>
+      </div>
+    </div>
+
+    <div class="grid cols-2">
+      <div class="table-card">
+        <div class="head">
+          <h2>最近任务</h2>
+          <div class="tools"><a class="btn btn-sm" href="/admin/tasks">全部任务</a></div>
+        </div>
+        <table>
+          <thead>
+            <tr><th>任务名</th><th>状态</th><th>进度</th><th>更新</th></tr>
+          </thead>
+          <tbody>
+          {{range .RecentTasks}}
+            <tr>
+              <td><a href="/admin/tasks?id={{.id}}">{{.name}}</a><br><small style="color:var(--dim)">{{.ruleName}}</small></td>
+              <td><span class="pill pill-{{.status}}">{{.statusLabel}}</span></td>
+              <td><div style="width:120px;" class="progress-bar"><span style="width:{{.progressPct}}%"></span></div><small style="color:var(--dim)">{{.progressNote}}</small></td>
+              <td><small style="color:var(--dim)">{{.updatedAtShort}}</small></td>
+            </tr>
+          {{else}}
+            <tr><td colspan="4" class="empty-state">暂无任务</td></tr>
+          {{end}}
+          </tbody>
+        </table>
+      </div>
+      <div class="table-card">
+        <div class="head">
+          <h2>最近书籍</h2>
+          <div class="tools"><a class="btn btn-sm" href="/admin/books">全部书籍</a></div>
+        </div>
+        <table>
+          <thead>
+            <tr><th>书名</th><th>作者</th><th>状态</th><th>更新</th></tr>
+          </thead>
+          <tbody>
+          {{range .RecentBooks}}
+            <tr>
+              <td><a href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a></td>
+              <td>{{.author}}</td>
+              <td><span class="pill pill-{{.status}}">{{statusLabel .status}}</span></td>
+              <td><small style="color:var(--dim)">{{fmtDate .updatedAt}}</small></td>
+            </tr>
+          {{else}}
+            <tr><td colspan="4" class="empty-state">暂无书籍</td></tr>
+          {{end}}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</main>
+</div>
+<script>
+function fmtTS(ts){if(!ts)return'-';var d=new Date(ts);return d.getHours().toString().padStart(2,'0')+':'+d.getMinutes().toString().padStart(2,'0')+':'+d.getSeconds().toString().padStart(2,'0');}
+function toast(msg, ok){
+  var t=document.createElement('div');t.className='toast '+(ok?'ok':'err');t.textContent=msg;document.body.appendChild(t);
+  setTimeout(function(){t.classList.add('show');},10);setTimeout(function(){t.classList.remove('show');},2500);
+  setTimeout(function(){if(t.parentNode)t.parentNode.removeChild(t);},2800);
+}
+</script>
+</body>
+</html>
+{{end}}

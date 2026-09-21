@@ -1,0 +1,119 @@
+{{define "x2552/search"}}<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta charset="gbk">
+<title>{{.Site.Title}} - 搜索：{{.Q}}</title>
+<meta name="keywords" content="{{.Site.Keywords}},{{.Q}}">
+<meta name="description" content="搜索结果：{{.Q}}">
+<link rel="stylesheet" href="/clone-css/x2552.css" type="text/css">
+</head>
+<body>
+<div class="main m_head">
+<div class="h_logo fl"><a href="/"><img src="/heibing/images/logo.png" alt="{{.Site.Name}}"></a></div>
+<div class="h_body fl">
+<div>
+<p class="fr"><a href="/">简体版</a> | <a href="/?charset=big5">繁体版</a> | <a href="/">设为首页</a> | <a href="#">联系我们</a> | <a href="#">加入收藏</a></p>
+{{.Site.Name}}：免费小说阅读网 没有弹窗广告 好看的小说免费阅读
+</div>
+<div>
+<form target="_blank" action="/?view=search" method="get" name="articlesearch" id="articlesearch">
+<input type="hidden" name="view" value="search">
+<input type="hidden" id="searchtype" name="searchtype" value="articlename">
+<dl class="fl searchbox">
+<dt><i></i><input type="text" name="q" value="{{.Q}}"></dt>
+<dd><a href="javascript:void(0);" class="so_book">搜书</a><a href="javascript:void(0);" class="so_author">搜作者</a></dd>
+</dl>
+</form>
+<dl class="fr loginbox">
+<dd>欢迎您，[<a href="/?view=history">阅读历史</a>] 或 [<a href="/?view=fulltext">全本阅读</a>]</dd>
+</dl>
+</div>
+</div>
+</div>
+
+<div class="main m_menu">
+<ul>
+<li class="m_ml"></li>
+<li><a href="/">吾爱首页</a></li>
+{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}">{{.name}}</a></li>{{end}}
+<li><a href="/?view=fulltext">全本</a></li>
+<li class="m_bc"><a rel="nofollow" href="/?view=category"></a></li>
+<li class="m_mr"></li>
+</ul>
+</div>
+
+<div style="border:1px solid #E4E4E4;color:red;width:960px;line-height:25px;margin:5px auto;padding:0;text-align:left;">
+&nbsp;&nbsp;&nbsp;&nbsp;1、{{.Site.Name}}全面升级，<a href="#"><b>手机版</b></a>同时上线 欢迎新老书友前来阅读。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;2、感谢大家多年支持，{{.Site.Name}} 坚持无弹窗广告阅读
+</div>
+
+<div class="main">
+<div class="block">
+<div class="blocktitle">
+<i></i>
+搜索 "<span class="hottext">{{.Q}}</span>" 的结果列表 (共 <span class="hottext">{{len .Books}}</span> 本)
+</div>
+<div class="blockcontent">
+{{if .Books}}
+<table>
+<thead>
+<tr>
+<th style="width:12%;">类别</th>
+<th style="width:28%;">书名</th>
+<th style="width:30%;">最新章节</th>
+<th style="width:10%;">作者</th>
+<th style="width:10%;">字数</th>
+<th style="width:10%;">更新</th>
+</tr>
+</thead>
+<tbody>
+{{range .Books}}
+<tr>
+<td><a href="/?view=category&cat={{.categoryId}}">[{{.category}}]</a></td>
+<td><a href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a></td>
+<td><a href="/?view=book&id={{.id}}" target="_blank">{{if .latestChapter}}{{.latestChapter}}{{else}}最新章节{{end}}</a></td>
+<td>{{.author}}</td>
+<td><span class="hottext">{{wordCount .wordCount}}</span></td>
+<td>{{fmtDateShort .updatedAt}}</td>
+</tr>
+{{end}}
+</tbody>
+</table>
+{{else}}
+<div style="padding:40px;text-align:center;color:#999;">
+未找到 "<strong class="hottext">{{.Q}}</strong>" 相关的书籍
+<br>
+<a href="/" style="display:inline-block;margin-top:16px;padding:6px 16px;background:#2f468f;color:#fff;text-decoration:none;">返回首页</a>
+</div>
+{{end}}
+</div>
+</div>
+</div>
+
+<div class="cl" style="height:8px;"></div>
+<div class="main links">
+<div class="block">
+<div class="blocktitle">友情链接</div>
+<div class="blockmore"><a href="#">更多...</a></div>
+<div class="blockcontent">
+<ul class="ulrow">
+<li><a href="/" target="_blank">{{.Site.Name}}</a></li>
+<li><a href="/?view=fulltext" target="_blank">全本小说</a></li>
+<li><a href="/?view=category" target="_blank">小说分类</a></li>
+</ul>
+</div>
+</div>
+</div>
+<div class="cl" style="height:8px;"></div>
+
+<div class="main footer">
+<div class="bdtop"><i></i><span title="0.529769"></span></div>
+<div class="ftc">
+{{.Site.Name}} 无弹窗小说网承诺没有弹窗广告，所有小说都能免费阅读。找好看的小说网站，就到 {{.Site.Domain}}<br>
+请所有网友上传作品时务必遵守国家互联网信息管理办法规定，本站拒绝任何色情小说，一经发现，即作删除<br>
+Copyright © 2026 <a href="/">{{.Site.Name}}</a>({{.Site.Domain}}) <a href="/">网站地图</a> All Rights Reserved.
+</div>
+</div>
+
+</body>
+</html>{{end}}

@@ -1,0 +1,122 @@
+{{define "aijjxs/search"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>搜索：{{.Q}} - {{.Site.Title}}</title>
+<meta name="keywords" content="{{.Site.Keywords}},{{.Q}}">
+<meta name="description" content="搜索结果：{{.Q}}">
+<link rel="stylesheet" href="/clone-css/aijjxs.css">
+</head>
+<body>
+<div class="top-float">
+<div class="top-float-inner">
+<nav class="top-float-nav">
+<a href="/">首页</a>
+{{range .NavCats}}<a href="/?view=category&cat={{.id}}">{{.name}}</a>{{end}}
+</nav>
+<div class="top-float-auth"><a href="/?view=history">足迹</a><a href="/?view=fulltext">完本</a></div>
+</div>
+</div>
+
+<div class="wrap">
+<header class="top">
+<div class="top-1">
+<h1 class="logo">{{.Site.Name}}<small>快速找到你想要的TXT电子书</small></h1>
+<div class="top-links">欢迎访问 {{.Site.Name}}，开始您的小说之旅</div>
+</div>
+<form class="search" action="/?view=search" method="get">
+<input type="hidden" name="show" value="title,writer">
+<input type="text" name="q" value="{{.Q}}" placeholder="请输入书名或作者关键字" autocomplete="off">
+<button type="submit">搜索全站</button>
+</form>
+</header>
+
+<main class="layout">
+<div class="cenMain">
+<div class="articleInfo"><h1>搜索：{{.Q}}</h1></div>
+
+<div class="body filters">
+<div class="row">
+<a href="javascript:;" class="on">最新上传</a>
+<a href="javascript:;">人气最高</a>
+<a href="javascript:;">收藏最多</a>
+<a href="javascript:;">只看推荐</a>
+</div>
+</div>
+
+<div class="catalog">
+{{if .Books}}
+{{range .Books}}
+<div class="listbg">
+<a href="/?view=book&id={{.id}}" title="{{.name}}" class="img" target="_blank">{{if .cover}}<img src="{{.cover}}" width="112" height="154" alt="《{{.name}}》封面">{{end}}</a>
+<span class="title"><a href="/?view=book&id={{.id}}" title="{{.name}}" target="_blank">{{.name}}</a></span>
+<span class="old"><span class="oldDate">{{fmtDate .updatedAt}}</span>上传</span>
+<div style="padding:0 19px">{{if .intro}}{{.intro}}{{else}}暂无简介{{end}}</div>
+<div style="padding:0 19px">
+<span class="mainGreen">
+<small>书籍作者：</small><a href="/?view=search&q={{.author}}" title="{{.author}}">{{.author}}</a>
+<small>文件大小：</small>{{wordCount .wordCount}}
+<small>写作进度：</small>{{statusLabel .status}}
+<small>下载方式：</small>全本免费
+</span>
+</div>
+</div>
+{{end}}
+{{else}}
+<div style="padding:40px;text-align:center;color:#6b7280;">
+未找到与「{{.Q}}」相关的书籍，换个关键词试试吧。
+</div>
+{{end}}
+</div>
+</div>
+
+<aside>
+{{if .HotBooks}}
+<article class="panel rank">
+<h3>热门搜索下载</h3>
+<div class="body">
+<div class="book_r">
+{{if (index .HotBooks 0).cover}}<a href="/?view=book&id={{(index .HotBooks 0).id}}"><img src="{{(index .HotBooks 0).cover}}" alt="{{(index .HotBooks 0).name}}"></a>{{end}}
+<h4><a href="/?view=book&id={{(index .HotBooks 0).id}}">{{(index .HotBooks 0).name}}</a></h4>
+<div class="meta">{{(index .HotBooks 0).author}} · {{(index .HotBooks 0).category}} · {{wordCount (index .HotBooks 0).wordCount}}</div>
+<div class="desc">{{if (index .HotBooks 0).intro}}{{(index .HotBooks 0).intro}}{{else}}暂无简介{{end}}</div>
+</div>
+<ul class="lines">
+{{range $i, $b := .HotBooks}}{{if gt $i 0}}{{if lt $i 10}}<li><span class="no">{{$i}}</span><a href="/?view=book&id={{$b.id}}" title="{{$b.name}}">{{$b.name}}</a><span class="date">{{$b.author}}</span></li>{{end}}{{end}}{{end}}
+</ul>
+</div>
+</article>
+{{end}}
+
+{{if .TopAuthors}}
+<article class="panel" style="margin-top:14px;">
+<h3>热门作者</h3>
+<div class="body tags">
+{{range .TopAuthors}}<a href="/?view=search&q={{.}}" title="{{.}}">{{.}}</a>{{end}}
+</div>
+</article>
+{{end}}
+
+<article class="panel" style="margin-top:14px;">
+<h3>相关分类</h3>
+<div class="body">
+<ul class="lines">
+<li><a href="/">最新上传的电子书</a></li>
+<li><a href="/?view=fulltext">全本小说下载</a></li>
+{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}">{{.name}}下载</a></li>{{end}}
+</ul>
+</div>
+</article>
+</aside>
+</main>
+
+<footer class="foot">
+<a href="/">网站简介</a> · <a href="/">网站帮助</a> · <a href="/">版权声明</a> · <a href="/">网站地图</a> · <a href="/">友情链接</a><br>
+Copyright &copy; {{.Site.Name}} All Rights Reserved<br>
+本站所有小说电子书均系网友上传，仅供书友之间免费下载预览！
+</footer>
+</div>
+
+</body>
+</html>{{end}}

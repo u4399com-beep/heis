@@ -1,0 +1,127 @@
+{{define "pilishuwu/ranking"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>{{.TabName}} - {{.Site.Title}}</title>
+<meta name="keywords" content="{{.Site.Keywords}},{{.TabName}}">
+<meta name="description" content="{{.Site.Name}}{{.TabName}}，共 {{.Total}} 个结果。">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="/clone-css/pilishuwu.css">
+</head>
+<body>
+<div class="mod-top-wr">
+<div class="mod-top-frame">
+<div class="mod-top-tool-wr ui-wm">
+<div class="mod-top-logo-wr ui-left">
+<h1 class="mod-top-logo ui-left ui-text-hide">
+<a title="{{.Site.Name}}" href="/">{{.Site.Name}}</a>
+</h1>
+<div class="mod-top-event ui-left ui-dn"></div>
+</div>
+<div class="mod-top-search-wr ui-left">
+<form action="/?view=search" method="get">
+<div id="top-search" class="mod-top-search">
+<div class="mod-search-input-wr ui-left">
+<input class="mod-search-input" type="text" name="q" placeholder="可搜索小说名/作者名" autocomplete="off">
+</div>
+<button class="mod-search-submit ui-left ui-text-hide" type="submit">搜索</button>
+</div>
+</form>
+<ul class="mod-top-tag" id="hotWord">
+{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}">{{.name}}</a></li>{{end}}
+</ul>
+</div>
+<div class="mod-top-nav-tool ui-right" id="loginbox">
+<a href="/?view=history">阅读历史</a> · <a href="/?view=fulltext">完本阅读</a>
+</div>
+</div>
+
+<div class="mod-top-nav-wr">
+<div class="mod-top-nav ui-wm">
+<ul class="mod-top-nav-list ui-left">
+<li><a class="mod-top-nav-home" href="/" title="首页">首页</a></li>
+<li><a href="/?view=category" title="全部小说">全部小说</a></li>
+<li class="active"><a href="/?view=ranking" title="排行榜">排行榜</a></li>
+{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}" title="{{.name}}">{{.name}}</a></li>{{end}}
+</ul>
+</div>
+</div>
+</div>
+</div>
+
+<div class="ui-wm ui-mb20 ui-mt40 clearfix">
+<div class="in-rank-wr" style="width:100%;float:none;">
+<div class="mod-tab-handle clearfix">
+<h2>热门排行</h2>
+<ul id="top-rank-handle">
+{{range .Tabs}}<li {{if eq .id $.Tab}}class="active"{{end}}><a href="/?view=ranking&sort={{.id}}">{{.name}}</a></li>{{end}}
+</ul>
+</div>
+<div id="top-rank-panel" class="mod-tab-content-wr">
+<div class="mod-tab-content clearfix">
+{{if .Books}}
+<ol class="in-rank-list ui-left ui-pr10">
+{{range $i, $b := .Books}}{{if lt $i 20}}
+<li>
+<sub class="{{if lt $i 3}}in-rank-no-orange{{else}}in-rank-no-gray{{end}}">{{$b.rank}}</sub>
+<a class="in-rank-name" href="/?view=book&id={{$b.id}}" title="{{$b.name}}" target="_blank">{{$b.name}}</a>
+<i class="ui-rank-trend-keep"></i>
+</li>
+{{end}}{{end}}
+</ol>
+<ol class="in-rank-list ui-left">
+{{range $i, $b := .Books}}{{if ge $i 20}}
+<li>
+<sub class="in-rank-no-gray">{{$b.rank}}</sub>
+<a class="in-rank-name" href="/?view=book&id={{$b.id}}" title="{{$b.name}}" target="_blank">{{$b.name}}</a>
+<i class="ui-rank-trend-keep"></i>
+</li>
+{{end}}{{end}}
+</ol>
+{{else}}
+<div style="padding:40px;text-align:center;color:#999;">暂无排行数据</div>
+{{end}}
+</div>
+</div>
+<div class="in-rank-spacing"></div>
+</div>
+
+{{if gt .TotalPages 1}}
+<div class="ret-page-wr mod-page" id="pagination-rank" style="text-align:center;margin-top:16px;">
+{{if gt .Page 1}}<a href="/?view=ranking&sort={{.Tab}}&page={{sub .Page 1}}" class="mod_page_next">上一页</a>{{else}}<a href="javascript:alert('已经是第一页了');" class="mod_page_next">第一页</a>{{end}}
+{{range .PageList}}{{if eq . $.Page}}<a href="javascript:void(0)" class="current">{{.}}</a>{{else}}<a href="/?view=ranking&sort={{$.Tab}}&page={{.}}">{{.}}</a>{{end}}{{end}}
+{{if lt .Page .TotalPages}}<a href="/?view=ranking&sort={{.Tab}}&page={{add .Page 1}}" class="mod_page_next">下一页</a>{{else}}<a href="javascript:alert('已经是最后一页了');" class="mod_page_next">最后页</a>{{end}}
+</div>
+{{end}}
+</div>
+
+<div class="linkBox">
+<span class="linkTitle">友情链接</span>
+<p class="linkList">
+<a href="/">永久地址</a>
+<a href="/">{{.Site.Name}}二站</a>
+<a href="/">{{.Site.Name}}</a>
+</p>
+</div>
+
+<div class="mod-footer-wr">
+<div class="mod-footer-main-wr">
+<div class="mod-footer-main ui-wm">
+<div class="mod-footer-info">
+本站所有小说为完本转载作品，所有内容版权归版权方或原作者所有。
+<br>
+<span style="display:inline-block;margin-top:8px;">
+<a href="/" style="margin-right:12px;">首页</a>
+<a href="/?view=category" style="margin-right:12px;">全部小说</a>
+<a href="/?view=ranking" style="margin-right:12px;">排行榜</a>
+<a href="/?view=fulltext" style="margin-right:12px;">全本小说</a>
+<a href="/?view=history">阅读足迹</a>
+</span>
+</div>
+</div>
+</div>
+<div class="mod-footer-border"></div>
+</div>
+
+</body>
+</html>{{end}}

@@ -1,0 +1,75 @@
+{{define "ddyueshu/category"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>{{.Label}} - {{.Site.Title}}</title>
+<meta name="keywords" content="{{.Site.Keywords}},{{.Label}}">
+<meta name="description" content="{{.Site.Name}}{{.Label}}列表，共 {{.Total}} 本。">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" type="text/css" href="/clone-css/ddyueshu.css">
+</head>
+<body>
+<div id="wrapper">
+<div class="header">
+<div class="header_logo"><a href="/">{{.Site.Name}}</a></div>
+<div class="header_search">
+<form name="articlesearch" method="get" action="/?view=search">
+<input name="q" type="text" class="text" placeholder="搜索从这里开始...">
+<button type="submit" name="submit">搜索</button>
+</form>
+</div>
+</div>
+
+<div class="nav">
+<ul>
+<li><a href="/">首页</a></li>
+{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}">{{.name}}</a></li>{{end}}
+<li><a href="/?view=fulltext">全本</a></li>
+<li><a href="/?view=history">足迹</a></li>
+</ul>
+</div>
+
+<div id="main">
+<div id="content">
+<div class="novelslist">
+<h2>{{.Label}}</h2>
+<div style="padding:10px;">
+{{if .Books}}
+<div style="display:flex;flex-wrap:wrap;gap:0;">
+{{range $i, $b := .Books}}
+<a href="/?view=book&id={{$b.id}}" class="novellist-item" style="width:20%;padding:5px;float:left;display:inline-block;box-sizing:border-box;vertical-align:top;">
+<div class="image" style="width:67px;height:82px;margin:0 auto;overflow:hidden;border:1px solid #DDD;padding:1px;background:#fff;">
+{{if $b.cover}}<img src="{{$b.cover}}" alt="{{$b.name}}" width="67" height="82">{{end}}
+</div>
+<div style="padding:5px 0;text-align:center;overflow:hidden;">
+<span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#6F78A7;font-size:13px;">{{$b.name}}</span>
+<span style="color:#B3B3B3;font-size:12px;">{{$b.author}} / {{wordCount $b.wordCount}}</span>
+</div>
+</a>
+{{end}}
+</div>
+<div class="clear"></div>
+{{else}}
+<div style="padding:40px;text-align:center;color:#6b7280;">暂无书籍</div>
+{{end}}
+</div>
+
+{{if gt .TotalPages 1}}
+<div class="bottem1" style="clear:both;text-align:center;width:100%;padding:10px 0;">
+{{if gt .Page 1}}<a href="/?view=category{{if .CatID}}&cat={{.CatID}}{{end}}&page={{sub .Page 1}}" style="margin:0 10px;color:#085308;font-size:14px;">上一页</a>{{end}}
+<span style="color:#B3B3B3;font-size:12px;">第 {{.Page}} 页 / 共 {{.TotalPages}} 页 ({{.Total}} 本)</span>
+{{if lt .Page .TotalPages}}<a href="/?view=category{{if .CatID}}&cat={{.CatID}}{{end}}&page={{add .Page 1}}" style="margin:0 10px;color:#085308;font-size:14px;">下一页</a>{{end}}
+</div>
+{{end}}
+</div>
+</div>
+</div>
+
+<div class="footer">
+<p>本站所有小说为转载作品，所有章节均由网友上传，转载至本站只是为了宣传本书让更多读者欣赏。</p>
+<p>Copyright &copy; {{.Site.Name}} ({{.Site.Domain}}) All Rights Reserved.</p>
+</div>
+</div>
+
+</body>
+</html>{{end}}

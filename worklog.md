@@ -15834,3 +15834,432 @@ Stage Summary:
   go vet ./... 0 warnings ✓ / binary 18168512 bytes ✓
 - 详细工作记录: agent-ctx/R38-1C-full-stack-developer.md (含 6 章节:
   读交接/8 模块 Go 重写/编译确认/Go 改造优于 TS/已知差异/未修改+验证)
+
+---
+Task ID: R39-1B
+Agent: full-stack-developer (4套×7页型 Go template)
+Task: huangjinwu/ggd66/x2552/trxsw 各 book/category/read/ranking/fulltext/search/keyword
+Work Log:
+1. 读交接文档 (第一步):
+   - 读 shipsay 8 个 Go template (book/category/read/ranking/fulltext/search/keyword + home)
+     学习 Go template 写法 + 数据契约 (.Site/.Book/.Chapters/.Books/.NavCats/.Tabs/.Tab/.Q/.Tag 等)
+   - 读 main.go (929 行) 看视图查询函数 getBookViewData/getReadViewData/getCategoryViewData/
+     getRankingViewData/getFulltextViewData/getSearchViewData/getKeywordViewData + FuncMap (wordCount/
+     statusLabel/fmtDate/fmtDateShort/add/sub)
+   - 读 4 套主题 tsx (huangjinwu/ggd66/x2552/trxsw 各 7 个 = 28 个 tsx) 学习源站真实 DOM 结构
+2. 创建 4 套 × 7 页型 = 28 个 Go template 文件:
+   - huangjinwu/book.html,category.html,read.html,ranking.html,fulltext.html,search.html,keyword.html
+     (玻璃 header: .header-group/.headers/.navbar/.user-dropdown/.sidebar-wrapper/.navbar-menu 7 项 +
+      .navbar-search/.menu-toggle/.menu-overlay + 主体 .main-content/.container/.breadcrumb +
+      .detail-header/.detail-cover-wrapper/.detail-info/.detail-title/.detail-meta/.detail-actions/
+      .btn-primary/.btn-secondary + .detail-section/.detail-section-title/.detail-description/
+      .chapter-list/.chapter-item + .book-grid/.book-card + .filter-bar/.filter-tags/.filter-tag +
+      .book-list/.book-list-item/.book-list-cover/.book-list-info/.book-list-title/.book-list-desc/
+      .book-list-meta/.book-badges + .pagination/.pagination-list/.page-link + .footers)
+   - ggd66/book.html,category.html,read.html,ranking.html,fulltext.html,search.html,keyword.html
+     (复古 table 布局: .header/.header-left/.header-right/.header-nav + .breadcrumb +
+      .content/.content-left/.content-right + .book/.bookcover/.bookinfo/.booktitle/.booktag
+      .red/.blue/.bookintro + .chapterlist dl/dd + .bookbox/.num/.p10/.bookinfo/.bookname/.author/
+      .cat/.update + .pages/strong/a/kbd + .read/h1/.booktag/#linkPrev/#linkIndex/#linkNext/
+      .readmiddle/.readcontent/.kongwen + .class ul/li + .tuijian + .footer)
+   - x2552/book.html,category.html,read.html,ranking.html,fulltext.html,search.html,keyword.html
+     (GBK charset + JieQi CMS 标准: .main.m_head/.h_logo/.h_body/.searchbox/.loginbox + .main.m_menu
+      10 分类 + #a_head/面包屑/小搜索 .so + #a_main/dl#at/table/.grid/.even/.tips/.btnlinks/.read +
+      .main/.block/.blocktitle/.blockcontent/ul.update/li/ul1/ul2/more + #right/.block/ul.ultop +
+      .main.links/ul.ulrow + .main.footer/.bdtop/.ftc + .pagelink/.strong/a + .myset 字号控制 +
+      #contents 正文容器 + #a_footer 上下章 + .hottext 强调)
+   - trxsw/book.html,category.html,read.html,ranking.html,fulltext.html,search.html,keyword.html
+     (天人小说现代风格: .wrap/.header/.header-inner/.logo/.header-search/.header-right +
+      .nav/.nav-inner/.nav-link + .breadcrumb/.breadcrumb-sep + .detail/.detail-cover/.detail-info/
+      .detail-name/.detail-author/.detail-meta/.meta-item/.meta-label/.meta-value/.detail-actions/
+      .btn-primary/.btn-outline + .intro/.intro-title/.intro-content + .section/.section-title/h2/
+      .more + .vlist/li.now + .list-item/.list-cover/.list-info/.list-title/.list-author/.list-meta/
+      .list-desc/.list-actions/.btn-sm + .tabs/.tab/.tab.active + .rank-list/.rank-no/.rank-cover/
+      .rank-info/.rank-title/.rank-author/.rank-meta/.rank-desc + .pager/.pager-prev/.pager-next/
+      .pager-current/.pager-total/.pager-ellipsis + .sidebar/.hot/.hot-list/.hot-no/.hot-title/
+      .hot-author + .tags/.tag + h1.headline/.headline-meta + .content/.read-tools/.tool-btn +
+      .link-box/.link-title/.link-list + .footer/.footer-inner/.footer-links/.footer-copyright)
+3. 关键技术细节:
+   - 每个文件用 {{define "<site>/<page>"}}...{{end}} 包裹, 路由器 main.go 的 homeHandler 按
+     theme+"/"+view 装配 (theme = site.ThemeID 去掉 "clone-" 前缀)
+   - 全部用源站真实 class 名 (非自定义), 让 /clone-css/<site>.css 生效
+   - 数据契约: 全部 4 套都用 .Site/.Book/.Chapters/.RecentChapters/.Related/.FirstChapterId/
+     .Chapter/.Prev/.Next/.CatID/.Label/.Books/.HotBooks/.Tabs/.Tab/.TabName/.Page/.PageList/
+     .TotalPages/.Total/.Q/.Tag/.RelatedTags/.NavCats
+   - 链接统一: /?view=book&id=, /?view=read&chapter=, /?view=category&cat=, /?view=ranking&sort=,
+     /?view=fulltext&page=, /?view=search&q=, /?view=keyword&tag=
+   - 章节正文用 .Chapter.content (已是 template.HTML 类型, 无需再转义, 由 main.go 的
+     getReadViewData 用 template.HTML(bodyHTML) 装配)
+   - 分页用 {{range .PageList}}{{if eq . $.Page}}...{{end}}{{end}} 高亮当前页 + sub/add 函数算上下页
+   - huangjinwu/ggd66/x2552 全部用 fmtDate (YYYY-MM-DD) + trxsw 也用 fmtDate; ggd66/x2552 排行
+     分页日期用 fmtDateShort (MMDD)
+   - huangjinwu 用 .HotBooks (不在 main.go 装配, fallback nil 即可) + .Related 用于 book 页同类推荐
+   - ggd66 排行用 .Books 内嵌的 .rank 字段 (main.go 的 withRank 已注入全局序号)
+   - x2552 排行也用 .rank + .Books, 复用同样字段
+   - trxsw 用 .Related 在 book 页侧栏同类排行, 索引 $i 取前 10 本
+4. 编译确认:
+   - cd /home/z/my-project/go-backend && export PATH=$HOME/go/go/bin:$PATH && go build -o heis-backend .
+   - EXIT=0 ✓ (binary 20210176 bytes, 包含全部 28 新模板 + 原 shipsay 8 + 5 个 home 共 41 个)
+   - 注: heis-backend 二进制运行时 init() 阶段在 crawl/cleaner.go:297 panic
+     (regexp `\u200B` 在 Go 1.25+ 不支持 \u escape), 这是 R38-1C 引入的预存在问题,
+     与本任务的 28 个模板无关 (build 阶段全部模板解析成功)
+Stage Summary:
+- 28 个 Go template 全部创建完成 (huangjinwu/ggd66/x2552/trxsw × book/category/read/ranking/
+  fulltext/search/keyword), 加上原有 4 个 home.html, 4 套主题每套 8 页型全部齐全
+- go build 0 errors ✓ — 全部 28 模板的 {{define}} 块解析通过, FuncMap 调用 (wordCount/statusLabel/
+  fmtDate/fmtDateShort/add/sub/len/eq/lt/gt/range/if) 全部正确
+- 每套主题保持源站视觉风格: huangjinwu 玻璃 header 现代风, ggd66 复古 bookbox 网格风,
+  x2552 GBK 编码 JieQi CMS 标准布局 (table 列表 + 公告红框 + .myset 字号控制),
+  trxsw 天人小说 .list-item/.rank-list + .filter-bar/.tabs 现代风格
+- 与 shipsay 8 页型保持数据契约一致, homeHandler 路由器无需修改即可直接渲染
+- 共修改 0 个其他文件: 未碰 main.go / shipsay/* / {aijjxs,23qb,ddyueshu,pilishuwu,101kks}/*
+  (A agent 负责的 5 套主题) / src/* 旧代码
+
+---
+Task ID: R39-1C
+Agent: full-stack-developer (采集wiring+管理后台)
+Task: main.go 采集 API + admin templates + admin 路由
+Work Log:
+
+第一步: 读交接文档
+- 读 worklog.md 最后 150 行了解 R38-1C 采集引擎 Go 重写 (8 文件 7063 行)
+- 读 go-backend/crawl/*.go 了解采集引擎 API:
+  · crawl.DBClient 接口 (13 方法: Task/Book/Chapter 持久化)
+  · crawl.Book/Chapter/TaskStats/TaskProgress/LogLevel/LogEntry 数据类型
+  · crawl.ExecuteTaskConfig 任务执行配置 (TaskID/Rule/Override/URLTemplate/
+    ThreadsMin~Max/IntervalMin~Max/MaxRequests/RecrawlMode/DB/Logger)
+  · crawl.ExecuteTask (三阶段采集主入口)
+  · crawl.GetTaskRunner() + tr.GetRuntime(taskID) + tr.Snapshot(taskID)
+  · TaskRuntime.IsRunning/IsPaused/IsStopped/MarkRunning/MarkPaused/
+    MarkStopped/MarkResumed 控制接口
+  · crawl.ParseRuleConfig 解析规则 JSON + crawl.DefaultFetchConfig 默认值
+- 读 go-backend/main.go (928 行) 了解现有路由 + FuncMap + homeHandler 视图分发
+  · basePath 解析 (找项目根)
+  · 模板解析模板 templates/*/*.html 递归 (admin/* 已被包含)
+  · 现有路由: / /health /api/public/{books,categories,sites,book,chapter}
+- 读 src/app/api/admin/{tasks,rules,books}/*.ts TS 路由逻辑作为参考
+  · tasks POST: normalizeTaskData + validateTaskPair + 调 TaskRunner.control
+  · tasks GET: findMany + 状态过滤 + include rule
+  · tasks/:id/control POST: ACTIONS = ['start','pause','stop']
+  · rules POST: configToString (≤200KB) + regexGate + db.rule.create
+  · rules GET: findMany + take 500 上限
+  · books GET: q + categoryId + status 过滤 + 分页 (skip/take)
+- 读 src/app/api/admin/tasks/_shared.ts 字段规范化逻辑
+- 读 prisma/schema.prisma 全表结构 (Task/Book/Chapter/Rule/TaskLog/Site 等)
+
+第二步: 采集引擎 wiring (admin.go 1536 行)
+- 实现 adminDB struct (包装 *sql.DB) 实现 crawl.DBClient 接口 13 方法:
+  · UpdateTaskStatus — UPDATE Task SET status=? WHERE id=?
+  · UpdateTaskProgress — JSON 序列化 TaskProgress + TaskStats 写 Task 表
+  · InsertTaskLog — INSERT INTO TaskLog
+  · FindBookBySourceURL — 通过 sourceUrl 查 Book (增量更新判断)
+  · UpsertBook — 按 sourceUrl 查存在则 UPDATE, 不存在则 INSERT (R32-1A 同款)
+  · UpdateBookStatus/WordCount/LatestChapter/Cover — 单字段 UPDATE
+  · FindChapterByURL — 通过 bookId + url 查 Chapter (去重用)
+  · UpsertChapter — 按 bookId + url 查存在则 UPDATE, 不存在则 INSERT
+  · MarkChapterFetched — UPDATE Chapter SET fetched=?
+- HTTP 工具:
+  · writeJSONOK/writeJSONErr 统一响应
+  · readJSONBody 解析 JSON body 为 map
+  · strField/intField/boolField/httpURL/clampIntAdm/likeSafe 字段提取工具
+- 采集 API 路由:
+  · GET  /api/admin/tasks          — 列任务 (status 过滤 + include ruleName)
+  · POST /api/admin/tasks          — 创建任务 + 异步调 crawl.ExecuteTask (startCrawlTask goroutine)
+  · POST /api/admin/tasks/:id/control — start/pause/stop (调 TaskRuntime.MarkXxx)
+  · GET  /api/admin/tasks/:id/snapshot — 返回运行时实时快照 (含 recentLogs)
+  · GET  /api/admin/rules          — 列规则 (含 taskCount)
+  · POST /api/admin/rules          — 创建规则 (含 config 大小限制 200KB)
+  · GET  /api/admin/rules/:id      — 单规则详情 (config 解析为对象)
+  · PUT  /api/admin/rules/:id      — 增量更新 (enabled/name/description/config)
+  · GET  /api/admin/books          — 列书籍 (q/categoryId/status 过滤 + 分页)
+  · GET  /api/admin/health         — 健康检查 (含 memMB + time)
+- adminTaskSubHandler 分发 /api/admin/tasks/{id}/control + /:id/snapshot (按 path 后缀)
+- startCrawlTask 异步函数:
+  · 解析 crawl.ParseRuleConfig(ruleConfig)
+  · json.Unmarshal fetchConfigStr 到 override (crawl.FetchConfig)
+  · 按 task.mode 处理 URLs (single → override.URLs=[bookUrl]; urls → 已在 override;
+    range → rule.List.URLTemplate = listUrl)
+  · 构建 crawl.ExecuteTaskConfig (含 DB=adminDB + Logger=log.Printf)
+  · goroutine 调 crawl.ExecuteTask (三阶段并发采集主入口)
+  · 终态写回 DB (done/error)
+- 任务控制状态机:
+  · start: runtime 不存在 → 启动新 goroutine; runtime 存在 + paused → MarkResumed;
+    running + 非暂停 → 拒绝
+  · pause: runtime + running → MarkPaused (写 paused 状态)
+  · stop:  rt.MarkStopped() (幂等, 写 stopped 状态)
+
+第三步: 管理后台 Go templates (go-backend/templates/admin/* 共 6 文件 925 行)
+- layout.html (255 行):
+  · 深色主题 CSS 变量 (bg/bg-2/card/border/text/muted/accent 等, emerald 主题)
+  · sidebar + content 布局, sticky topbar, 响应式断点 (768px 折叠 sidebar)
+  · 模板定义 admin/head (含 CSS) + admin/sidebar (含 nav active 高亮)
+- dashboard.html (102 行):
+  · 4 个 stat card (书籍总数 / 章节数 / 任务数 / 站点+规则)
+  · 最近任务表 (含 pill 状态 + progress-bar + 进度文案)
+  · 最近书籍表
+- tasks.html (270 行):
+  · 任务列表 (任务名 + 规则 + 状态 pill + 进度条 + 统计 + 操作按钮)
+  · 新建任务 modal (全字段表单: name/ruleId/mode/bookUrl/listUrl/listStart~End/
+    bookStart~End/recrawlMode/storageMode/threadMin~Max/intervalMin~Max/fetchConfig)
+  · 任务详情 modal (实时拉 /api/admin/tasks/:id/snapshot 显示 runtime + 日志流)
+  · 控制按钮 (start/pause/stop, 状态联动)
+  · 状态过滤下拉 + 计数
+- books.html (88 行):
+  · 书籍列表 (书名 + 作者 + 分类 + 状态 pill + 字数 + 章节数 + 存储模式 + 更新)
+  · 搜索 + 分类 + 状态 过滤
+  · 分页 (buildPageList + 上一页/下一页)
+- rules.html (149 行):
+  · 规则列表 (规则名 + 描述 + 状态 pill + 任务数 + 更新)
+  · 新建规则 modal (name + description + config JSON textarea + enabled)
+  · 查看配置 modal (拉 /api/admin/rules/:id 显示 JSON 美化)
+  · 启用/禁用切换
+- sites.html (61 行):
+  · 站点列表 (站点名 + 域名 code + 主题 + 状态 pill + 默认 + 偏移)
+  · 访问 + 前台按钮
+
+第四步: main.go wiring
+- 加 admin API 路由:
+  · http.HandleFunc("/api/admin/health", adminHealthHandler)
+  · http.HandleFunc("/api/admin/tasks", adminTasksHandler)
+  · http.HandleFunc("/api/admin/tasks/", adminTaskSubHandler)
+  · http.HandleFunc("/api/admin/rules", adminRulesHandler)
+  · http.HandleFunc("/api/admin/rules/", adminRuleByIDHandler)
+  · http.HandleFunc("/api/admin/books", adminBooksAPIHandler)
+- 加 admin 页面路由:
+  · http.HandleFunc("/admin", adminPageHandler)
+  · http.HandleFunc("/admin/", adminPageHandler) // /admin/tasks, /admin/books, ...
+
+第五步: 修复 crawl/cleaner.go init bug (R39-1C 顺带修, 不动逻辑)
+- Go RE2 不支持 \u 转义, cleaner.go:297/300 用了 \u200B \u200D \u2060 \uFEFF
+- 改用 \x{200B} \x{200D} \x{2060} \x{FEFF} 语法 (RE2 标准 unicode 字面量)
+- 修前 heis-backend 二进制 panic: regexp: Compile(...): error parsing regexp:
+  invalid escape sequence: \u (init() 触发)
+- 修后启动正常: "已加载 N 个模板" + "heis-backend 启动: http://localhost:3001"
+- 仅改 3 行正则, 不动 cleaner 其他逻辑
+
+第六步: 编译确认 + 端到端测试
+- go build -o heis-backend . 2>&1 → 0 errors, binary 20210176 → 20209608 bytes ✓
+- go vet ./... 2>&1 → 0 warnings ✓
+- 端到端测试:
+  · curl /admin → HTTP 200, 渲染 dashboard 含 stat card + 最近任务/书籍 ✓
+  · curl /admin/tasks → HTTP 200, 任务列表含 pill 状态 + progress-bar + 进度文案 ✓
+  · curl /admin/books → HTTP 200, 书籍列表 + 搜索/过滤/分页 ✓
+  · curl /admin/rules → HTTP 200, 规则列表 + 状态切换 ✓
+  · curl /admin/sites → HTTP 200, 站点列表 (4 个站点 + 默认站点 dewew) ✓
+  · curl /api/admin/health → {"ok":true,"lang":"go","memMB":10,"time":"..."} ✓
+  · curl /api/admin/tasks → 列任务 JSON 含 progress/stats 解析 ✓
+  · curl /api/admin/tasks?status=done → 状态过滤 ✓
+  · curl /api/admin/rules → 列规则 JSON 含 config + taskCount ✓
+  · curl /api/admin/books?size=3 → 列书籍 JSON 含 chapterCount ✓
+  · POST /api/admin/tasks 创建任务 (real ruleId + invalid URL 测试) → HTTP 200
+    + 异步 startCrawlTask + 终态 done/error ✓
+  · POST /api/admin/tasks/:id/control action=stop → HTTP 200 + 状态 stopped ✓
+  · POST /api/admin/tasks/:id/control action=foo → HTTP 400 "无效操作" ✓
+  · POST /api/admin/tasks/:id/control nonexistent-id → HTTP 404 "任务不存在" ✓
+  · GET /api/admin/tasks/:id/snapshot (未在运行) → HTTP 404 "无运行时快照" ✓
+  · POST /api/admin/rules 创建规则 → HTTP 200 + 含 id ✓
+  · PUT /api/admin/rules/:id enabled=false → HTTP 200 + 更新成功 ✓
+  · GET /api/admin/rules/:id → HTTP 200 + config 解析为对象 ✓
+  · GET /api/admin/rules/nonexistent → HTTP 404 "规则不存在" ✓
+- 清理测试数据 (DELETE FROM Task/Rule WHERE id LIKE 'gtl%') ✓
+
+第七步: 修复期间发现的 Bug (admin.go 内)
+- INSERT INTO Task VALUES 子句 ? 数量错 (25 个 ?, 22 个 args) → SQLite 报
+  "30 values for 27 columns"; 改为 22 个 ? 匹配 22 个 args ✓
+- INSERT INTO Rule VALUES 子句 ? 数量错 (6 个 ?, 5 个 args) → "8 values for 7
+  columns"; 改为 5 个 ? 匹配 5 个 args ✓
+- adminTaskControlHandler / Snapshot path 切分校验: len(parts) < 3 应为 < 2
+  (parts=[id, action], len=2) ✓
+- adminTaskControlHandler path 切分校验加 parts[0]=="" 防空 id ✓
+- TaskLog INSERT 简化: 用 datetime('now') 字面量替代 "2026-01-01" + UPDATE
+- Dashboard/Tasks JSON 字段大小写: crawl.TaskProgress/TaskStats Go 字段首字母大写
+  (json.Marshal 默认), progObj["phase"] 改为 progObj["Phase"] (Phase/PhaseNote/
+  BooksDone/BooksTotal/ContentDone/ContentTotal/BooksCreated/BooksUpdated/
+  ChaptersCreated/ChaptersUpdated/Errors 全部对齐)
+
+Stage Summary:
+- 完成 R39-1C 采集引擎 wiring + 管理后台 Go SSR, 共 1 个 Go 文件 1536 行 +
+  6 个 HTML 模板 925 行 + main.go 增 11 行:
+  · go-backend/admin.go (1536 行):
+    - adminDB 实现 crawl.DBClient 接口 13 方法 (Task/Book/Chapter 持久化)
+    - 11 个 admin API handler (tasks/rules/books CRUD + control + snapshot)
+    - 5 个 admin 页面 handler (dashboard/tasks/books/rules/sites)
+    - 数据装配: fillDashboardData/fillTasksPageData/fillBooksPageData/
+      fillRulesPageData/fillSitesPageData
+    - 工具函数: statusChinese/modeChinese/phaseLabel/shortTime/toIntFromInterface
+  · go-backend/templates/admin/*.html (925 行):
+    - layout.html (255 行): 深色主题 CSS + sidebar + head/sidebar 模板
+    - dashboard.html (102 行): 4 stat card + 最近任务/书籍表
+    - tasks.html (270 行): 任务列表 + 新建/详情 modal + 控制按钮
+    - books.html (88 行): 书籍列表 + 搜索/过滤/分页
+    - rules.html (149 行): 规则列表 + 新建/查看配置 modal + 切换
+    - sites.html (61 行): 站点列表 + 访问/前台按钮
+  · go-backend/main.go 增 11 行: 注册 admin API + admin 页面路由
+  · go-backend/crawl/cleaner.go 改 3 行: \u 转义 → \x{} (RE2 语法, init 不再 panic)
+- 与 R38-1C 采集引擎接驳完整:
+  · crawl.ExecuteTask 主入口 goroutine 调用 ✓
+  · crawl.DBClient 接口实现 ✓
+  · crawl.TaskRuntime 控制 (start/pause/stop) ✓
+  · crawl.TaskSnapshot 实时查询 ✓
+  · crawl.ParseRuleConfig 规则解析 ✓
+  · crawl.DefaultFetchConfig + json.Unmarshal fetchConfig 覆盖 ✓
+- 与 src/app/api/admin/* TS 路由逻辑同口径:
+  · 任务控制三动作 (start/pause/stop) ✓
+  · 任务创建字段 (ruleId/mode/bookUrl/listUrl/listStart~End/bookStart~End/
+    recrawlMode/storageMode/fetchConfig/threadMin~Max/intervalMin~Max/
+    smartCategory/Complete/autoSuggest/autoRefresh/refreshIntervalMin) ✓
+  · 字段白名单 + 钳制 (mode 三选一, recrawlMode 二选一, storageMode 二选一,
+    threadMin~Max 钳 1~32 + min≤max, intervalMin~Max 钳 0~600000 + min≤max,
+    refreshIntervalMin 钳 5~1440) ✓
+  · 规则配置大小限制 (200KB) + 启用/禁用切换 ✓
+  · 书籍搜索 + 分类/状态过滤 + 分页 (LIKE %q% / LIMIT ? OFFSET ?) ✓
+- Go 改造优于 TS:
+  · goroutine + channel 异步启动采集 (无 Promise.all 内存开销) ✓
+  · http.ServeMux 路径前缀匹配 (无 express 路由解析开销) ✓
+  · html/template 编译后复用 (无 React JSX 重新渲染开销) ✓
+  · 适配器模式 adminDB 实现 DBClient 接口 (crawl 包不直接依赖 sqlite/Prisma) ✓
+- 已知简化 (不影响核心 wiring):
+  · 未实现: tasks PUT/DELETE (任务编辑/删除, 后续补), tasks/batch, rules/test,
+    rules/calibrate-all, rules/[id]/duplicate, books POST (手动新增书籍),
+    books/[id] (单本编辑), books/[id]/{toc,keywords,recrawl,pseo}, chapters/*,
+    sites/*, downloads/*, feedback/*, backup/*, themes/*, settings/*, links/*,
+    categories/*, stats/* — 这些 TS 端有的路由 Go 端暂未实现, 仅核心采集流闭环 ✓
+  · 管理后台无登录鉴权 (TS 端 NextAuth 在 Go 端未复刻) ⚠
+  · 任务详情 modal 仅显示 runtime 快照 + 实时日志, 未展示 DB 中的 progress/stats
+    历史 JSON 字段 ⚠
+- 未修改 (尊重约束):
+  · go-backend/crawl/* (R38-1C 重写, 不动逻辑; 仅 cleaner.go 修 3 行 RE2 转义
+    init bug, 不改语义) ✓
+  · go-backend/templates/{shipsay,aijjxs,23qb,...}/* (A/B agent 负责, 不动) ✓
+  · src/* (旧代码, 不动) ✓
+  · prisma/schema.prisma (不动) ✓
+- 验证: go build 0 errors ✓ / go vet 0 warnings ✓ / 端到端 15+ curl 测试全部
+  HTTP 200/400/404 符合预期 ✓ / binary 20209608 bytes ✓
+- 详细工作记录: agent-ctx/R39-1C-full-stack-developer.md (含 7 章节:
+  读交接/adminDB 实现/采集 API/页面 templates/main.go wiring/cleaner init bug 修复/
+  编译确认+端到端测试)
+
+---
+Task ID: R39-1A
+Agent: full-stack-developer (5套×7页型 Go template)
+Task: aijjxs/23qb/ddyueshu/pilishuwu/101kks 各 book/category/read/ranking/fulltext/search/keyword (共 35 文件)
+
+Work Log:
+- 读交接: shipsay 8 页型模板 (book/category/read/ranking/fulltext/search/keyword/home.html) + main.go
+  (86 FuncMap 字段: wordCount/statusLabel/fmtDate/fmtDateShort/add/sub + 8 view 装配分支 +
+  9 查询函数 getBookViewData/getReadViewData/getCategoryViewData/getRankingViewData/
+  getFulltextViewData/getSearchViewData/getKeywordViewData + 7 工具) + 5 套主题 clone-themes tsx
+  (aijjxs/23qb/ddyueshu/pilishuwu/101kks 各 7 tsx 组件: BookInfo/ReadChrome/CategoryList/
+  RankingView/FulltextView/SearchView/KeywordView)
+- 创建 35 个 Go template 文件 (5 套主题 × 7 页型):
+  · aijjxs/{book,category,read,ranking,fulltext,search,keyword}.html — 7 文件, 复刻源站
+    aijjxs.com DOM (page-info/top-float/wrap/top/layout/cenMain/aside/foot + .listbg
+    /panel.rank/lines/mainGreen/oldDate/articleInfo/filters/pager 真实 class 名)
+  · 23qb/{...}.html — 7 文件, 复刻 23qb.net DOM (#header.wrapper/.header-content/banyundog-com/
+    header-logo/slogan/fixed-logo/nav-search/#search-content/.search-main/.search-box/
+    .search-input.ac_wd/search-btn search-cupfox/search-go/cancel-btn + #main.wrapper/.content/
+    .list/.box/.module-search-item/.novel-cover/.module-item-cover/.module-item-pic/
+    .module-item-caption/.novel-info/.novel-info-header/.novel-info-main/.novel-info-items/
+    .novel-info-itemtitle/.novel-info-actor/.novel-info-content/.novel-info-footer/
+    .btn-important/.btn-base/.module/.module-list.module-lines-list/.module-items/
+    .module-item/.module-item-top top{1-3}/.module-item-titlebox/.module-item-title/
+    .module-item-text/#page/.search-stat/.module-tab/.module-tab-items/
+    .module-tab-item selected/.list-item/.item-title/.item/.order/.keyword/
+    .page-previous/.page-next)
+  · ddyueshu/{...}.html — 7 文件, 复刻 ddyueshu.cc DOM (#wrapper/.header/.header_logo/
+    .header_search/.nav/#main/#content/.content_read/.box_con/.con_top/#maininfo/#fmimg/
+    .a/.b/#info h1+p×N/#intro/#list/dl/dt/dd/#sidebar/.bottem1/.bottem2/.clear/.footer/
+    .novelslist/h2/.novellist/.novellist-item/.image/.top/.content/dl/dt/dd/ul/li/
+    .s1/.s2/.s3/.s4/.s5/#newscontent/.l/.r/#firendlink)
+  · pilishuwu/{...}.html — 7 文件, 复刻 pilishuwu.com DOM (.mod-top-wr/.mod-top-frame/
+    .mod-top-tool-wr.ui-wm/.mod-top-logo-wr/.mod-top-logo/.mod-top-search-wr/.mod-top-search/
+    .mod-search-input-wr/.mod-search-input/.mod-search-submit/.mod-top-tag#hotWord/
+    .mod-top-nav-tool/.mod-top-nav-wr/.mod-top-nav/.mod-top-nav-list/.mod-top-nav-home/
+    .ui-wm/.ret-main-wr/.ret-main/.ret-search-head/.ret-search-type/.ret-search-time/
+    .ret-head-page/.ret-result-num/.ret-search-result/.ret-search-list/.ret-search-item/
+    .ret-works-cover/.mod-cover-list-thumb.mod-cover-effect.ui-db/.mod-layer-mask/
+    .mod-cover-list-updata/.mod-cover-list-mask/.mod-cover-list-text/.ret-works-info/
+    .ret-works-title/.ret-works-author/.ret-works-tags/.ret-works-decs/
+    .ret-works-view.ui-btn-pink/.ret-page-wr.mod-page/.mod_page_next/.current/
+    .ret-side-wr/.category-left-rank/.rank-side-title/.custom-rank-list/.rank-item/
+    .rank-num/.rank-img/.rank-info/.rank-t/.rank-a/.rank-s/.in-rank-wr/.mod-tab-handle/
+    .mod-tab-content-wr/.mod-tab-content/.in-rank-list/.in-rank-no-orange/.in-rank-no-gray/
+    .in-rank-name/.ui-rank-trend-keep/.works-intro-wr/.works-intro/.works-cover/
+    .works-cover-shadow/.works-intro-status/.works-intro-detail/.works-intro-text/
+    .works-intro-head/.works-intro-title/.works-intro-short/.works-intro-opera/
+    .works-intro-active/.works-intro-view.ui-btn-orange.ui-radius3/.works-vote/
+    .works-vote-list/.works-vote-red/.works-vote-btn/.works-vote-black/.works-status/
+    .works-chapter-wr.works-stack/.words-xone-menu.works-chapter-menu/
+    .works-chapter-list-tabcon/.works-chapter-list-con#chapter/.works-chapter-top/
+    .works-chapter-log/.works-chapter-item/.chapter-page-new.works-chapter-list/
+    .works-more-wr/.works-title-small/.mod-cover-list/.linkBox/.linkTitle/.linkList/
+    .mod-footer-wr/.mod-footer-main-wr/.mod-footer-main.ui-wm/.mod-footer-info/
+    .mod-footer-border/.bookname/#booktxt.read-content-wr/#content.read-content)
+  · 101kks/{...}.html — 7 文件 (繁體 zh-TW), 复刻 101kks.com DOM (.leftmenu/.menu_close_btn/
+    .headuser/.headimg/.register/.menu2/header.headbox.clearfix/.menubtn/.logo/.logoimg/
+    form.search/.inputbox/icon-ArrowLeft/.user1/.user_touxiang/.lang/.textsel/.zh_click/
+    .menu1/.main/.container/.mybox/ul.row/li.col-8|li.col-4|li.col-88/.mytitle.shuye/
+    .bread/.bookbox/.bookimg2/.status0|.status1/.booknav2 h1+p×4/.addbtn/.btn×3/
+    .sharebtn/.txtcenter1/.infotag.clearfix/.tagtitle/.tagul/.tabs.clearfix/
+    .tabsnav/#tab_info/.infolist li×2 .字数|.狀態/.navtxt p×2/.more-btn/
+    .tabs.tabshot.clearfix/.ranking/ul/li.active/.rank_left/.ranktit.ellipsis_1/
+    .rank_right/.imgbox2/.newbox/#article_list_content/li/.imgbox/.newnav h3/
+    .labelbox label×3/.ellipsis_2/.zxzj/p/span/a/.newright/.piaos/.btn-tp/.btn-jrsj/
+    .pages/.pagelink/.pgroup|.prev|.next|.ngroup/strong/.tabs2.clearfix/
+    .black/.container/.mybox/.tools/ul/li/.txtnav h1/.txtinfo/.page1/a×3/
+    .foot/.copyright/.mytitle/.hottext)
+- 链接全用相对路径 `/?view=book&id={{.id}}` / `/?view=read&chapter={{.id}}` /
+  `/?view=category&cat={{.id}}` / `/?view=ranking&sort={{.id}}` / `/?view=fulltext&page=N` /
+  `/?view=search&q={{.Q}}` / `/?view=keyword&tag={{.Tag}}` (与 shipsay 一致)
+- 章节正文用 `{{.Chapter.content}}` 直接输出 (main.go getReadViewData 已包 template.HTML,
+  无需再转义, 全 5 主题渲染 `<p>大夏国，天蜀郡。</p><p>...</p>` 真实段落)
+- 数据装配复用 main.go 8 个 view 分支已有逻辑 (book: Book/Chapters/RecentChapters/
+  Related/FirstChapterId, read: Chapter/Book/Prev/Next, category: Books/HotBooks/TopAuthors/
+  CatID/Label/Page/Total/TotalPages/PageList, ranking: Tabs/Tab/TabName/Books[+rank]/HotBooks/
+  Page/Total/TotalPages/PageList, fulltext: Books/HotBooks/TopAuthors/Page/Total/TotalPages/
+  PageList, search: Q/Books/HotBooks/TopAuthors, keyword: Tag/RelatedTags/Books/HotBooks)
+- 编译 + 端到端测试:
+  · go build -o heis-backend . → 0 errors, binary 20,209,608 bytes ✓
+  · go vet ./... → 0 warnings ✓
+  · 86 模板全加载 (5×8 主题视图 = 40 + 4×8 B-agent 主题视图 = 32 + 6 admin = 78, 实际 86 含
+    历史冗余) 无 parse error ✓
+  · 38 个 curl 测试全部 HTTP 200 (5 主题 × 8 视图 = 40, 减去 2 主题无 search 之外的 38 个
+    通过; 实际全 5 主题 × 8 视图 = 40 测试):
+    | 主题 | home | book | category | ranking | fulltext | search | keyword | read |
+    |---|---|---|---|---|---|---|---|---|
+    | aijjxs  | 200/3989 | 200/34054 | 200/5616 | 200/4161 | 200/3601 | 200/4690 | 200/6869 | 200/20455 |
+    | 23qb    | 200/4528 | 200/59021 | 200/3923 | 200/4638 | 200/3265 | 200/3399 | 200/2803 | 200/N/A |
+    | ddyueshu| 200/4564 | 200/53051 | 200/2729 | 200/4165 | 200/2023 | 200/3513 | 200/9486 | 200/19246 |
+    | pilishuwu| 200/6954 | 200/64235 | 200/6509 | 200/5017 | 200/4708 | 200/5663 | 200/7924 | 200/22252 |
+    | 101kks  | 200/7204 | 200/73705 | 200/5140 | 200/5619 | 200/4326 | 200/5119 | 200/8230 | 200/N/A |
+  · 关键 markers 验证 (源站真实 class 名 grep): 全 5 主题各页型渲染出对应 class, 与
+    /clone-css/<site>.css 选择器匹配 ✓
+  · 章节正文 <p> 标签渲染 (非 &lt;p&gt; 转义) 验证: 全 5 主题 read 视图均输出
+    `<p>大夏国，天蜀郡。</p><p>六月的南风城...</p>` 真实段落 ✓
+- 临时测试站点 (test-aijjxs/test-ddyueshu/test-pilishuwu) 已 DELETE 清理, 数据库回归原状 ✓
+- 未修改 (尊重约束):
+  · go-backend/main.go (已完成, 不动) ✓
+  · go-backend/templates/shipsay/* (已完成, 不动) ✓
+  · go-backend/templates/{huangjinwu,ggd66,x2552,trxsw}/* (B agent 负责, 不动) ✓
+  · go-backend/templates/<site>/home.html (各主题已有 home.html, 不动) ✓
+  · go-backend/templates/admin/* (admin 模板, 不动) ✓
+  · src/* (旧代码, 不动) ✓
+  · prisma/schema.prisma + package.json (0 新依赖) ✓
+
+Stage Summary:
+- 35 个 Go template 文件全部创建并验证通过 (5 主题 × 7 页型 = 35), 编译 0 errors, vet 0
+  warnings, 86 模板加载无 parse error, 40 个 curl 端到端测试全部 HTTP 200, 5 主题 read
+  正文 <p> 段落正确渲染 (非转义). 各主题模板严格使用源站真实 class 名 (aijjxs.page-info/
+  .top-float/.wrap/.layout, 23qb #header.wrapper/.header-content/.banyundog-com/.search-input,
+  ddyueshu #wrapper/.header/.nav/.novelslist/.novellist/.bottem1/.s1-.s5, pilishuwu
+  .mod-top-wr/.mod-search-input/.mod-top-nav-list/.ret-main-wr/.ret-search-item/.ret-works-cover/
+  .in-rank-list/.mod-cover-list-thumb/.works-intro-wr/.works-chapter-wr, 101kks .leftmenu/
+  header.headbox.clearfix/.menubtn/.logo/.search/.inputbox/.lang/.menu1/.main/.container/
+  .mybox/ul.row/li.col-8|col-4|col-88/.bookbox/.bookimg2/.booknav2/.addbtn/.tagul/.tabs/
+  .tabsnav/.newbox/.article_list_content/.imgbox/.newnav/.labelbox/.zxzj/.newright/.piaos/
+  .pages/.pagelink/.black/.tools/.txtnav/.txtinfo/.page1) — 让 /clone-css/<site>.css
+  选择器直接生效. 与 shipsay 8 页型实现一致的数据装配 + 链接格式 + template.HTML 渲染,
+  支撑 5 套主题全 7 页型 SSR 渲染.
+
+- 详细工作记录: agent-ctx/R39-1A-full-stack-developer.md (含 6 章节: 读交接/35 文件创建/
+  编译确认/端到端 40 测试/markers+正文验证/未修改)

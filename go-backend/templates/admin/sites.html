@@ -1,0 +1,61 @@
+{{define "admin/sites"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+{{template "admin/head" .}}
+</head>
+<body>
+<div class="app">
+{{template "admin/sidebar" .}}
+<main class="content">
+  <div class="topbar">
+    <h1>{{.Title}}</h1>
+    <div class="actions">
+      <a href="/api/public/sites" class="btn" target="_blank">API</a>
+    </div>
+  </div>
+  <div class="page">
+    <div class="toolbar">
+      <span style="color:var(--dim);font-size:12px;">共 {{.Total}} 个站点 · 默认站点: {{.DefaultSiteName}}</span>
+    </div>
+    <div class="table-card">
+      <table>
+        <thead>
+          <tr>
+            <th>站点名</th>
+            <th>域名</th>
+            <th>主题</th>
+            <th>状态</th>
+            <th>默认</th>
+            <th>偏移</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+        {{range .Sites}}
+          <tr>
+            <td>
+              {{.name}}
+              <div style="color:var(--dim);font-size:11px;">{{.id}}</div>
+            </td>
+            <td><code style="background:var(--bg-2);padding:1px 6px;border-radius:4px;font-size:12px;">{{.domain}}</code></td>
+            <td>{{.themeId}}</td>
+            <td>{{if .status}}<span class="pill pill-ok">在线</span>{{else}}<span class="pill pill-off">下线</span>{{end}}</td>
+            <td>{{if .isDefault}}<span class="pill pill-ok">默认</span>{{else}}-{{end}}</td>
+            <td>{{.offset}}</td>
+            <td>
+              <a class="btn btn-sm" href="https://{{.domain}}" target="_blank">访问</a>
+              <a class="btn btn-sm" href="/?site={{.id}}" target="_blank">前台</a>
+            </td>
+          </tr>
+        {{else}}
+          <tr><td colspan="7" class="empty-state"><span class="ic">🌐</span>暂无站点,请通过 Prisma Studio 或 SQL 直接添加 Site</td></tr>
+        {{end}}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</main>
+</div>
+</body>
+</html>
+{{end}}
