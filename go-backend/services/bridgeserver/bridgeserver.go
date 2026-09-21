@@ -24,6 +24,7 @@ import (
         "encoding/json"
         "fmt"
         "io"
+        "log"
         "math"
         "net"
         "net/http"
@@ -514,10 +515,16 @@ func New(opts BridgeServerOptions) *BridgeServer {
         }
         mux := http.NewServeMux()
         mux.HandleFunc("/", bs.mainHandler)
+        // R42-1A: 补 ReadTimeout / WriteTimeout (DoS 防御). 之前只 ReadHeaderTimeout=10s
+        //         防住 slowloris header 攻击, 但 body read 和 response write 无超时 →
+        //         客户端可慢速 POST 1B/s 拖死 conn/goroutine. ReadTimeout 钳整读阶段 (header+body)
+        //         上限 35s (略宽于 30s ctx timeout 让 ctx 先触发兜底). WriteTimeout 钳整写阶段上限 35s.
         bs.httpServer = &http.Server{
                 Addr:              fmt.Sprintf("127.0.0.1:%d", opts.Port),
                 Handler:           mux,
                 ReadHeaderTimeout: 10 * time.Second,
+                ReadTimeout:       35 * time.Second,
+                WriteTimeout:      35 * time.Second,
                 IdleTimeout:       time.Duration(opts.IdleTimeoutS) * time.Second,
         }
         return bs
@@ -579,9 +586,12 @@ func (bs *BridgeServer) mainHandler(w http.ResponseWriter, r *http.Request) {
         defer func() {
                 if rcv := recover(); rcv != nil {
                         ok = false
+                        // R42-1A: 不直接 fmt %v 透传 rcv (panic 值可能含 stack / 内部路径 / 业务密钥等敏感信息)
+                        //         日志写完整 panic (供运维 debug), 客户端仅见通用 "internal error"
+                        log.Printf("[%s] panic recovered: %v", bs.opts.Name, rcv)
                         WriteJSON(ww, http.StatusInternalServerError, map[string]any{
                                 "ok":    false,
-                                "error": fmt.Sprintf("internal: %v", rcv),
+                                "error": "internal error",
                                 "code":  "INTERNAL",
                         })
                 }
@@ -778,6 +788,16 @@ func IfStr(cond bool, t, f string) string {
                 return t
         }
         return f
+}
+
+// IfEmpty — 空串兜底(s=="" 则返回 fallback, 否则原样返回 s).
+// R42-1C: 从 moli-bridge 收口 (此前 moli-bridge 有本地 ifEmpty 副本, 2 处调用).
+// 与 IfStr(s == "", fallback, s) 等价但语义更直白(空串兜底是高频模式, 值得命名).
+func IfEmpty(s, fallback string) string {
+        if s == "" {
+                return fallback
+        }
+        return s
 }
 
 // ---------- HTML→纯文本 (R41-1C: 从 deqixs-proxy + xjp-proxy 收口) ----------

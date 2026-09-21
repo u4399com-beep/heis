@@ -27,7 +27,6 @@ import (
         "net/http"
         "os"
         "os/exec"
-        "strings"
         "time"
 
         "heis-backend/services/bridgeserver"
@@ -38,6 +37,7 @@ const PORT = 3017
 const execTimeoutMs = 30_000
 
 // R41-1C: httpURLRe 已收口到 bridgeserver.HTTPURLRe (与其余 3 个服务同款, 消除 4 处重复定义)
+// R42-1C: truncStr/boolStr/ifEmpty 收口到 bridgeserver (TruncStr/BoolStr/IfEmpty), 消除 3 处本地副本
 
 // moliBinaryPath — 优先 MOLI_BIN 环境变量, 否则 ~/.local/bin/moli。
 func moliBinaryPath() string {
@@ -199,7 +199,7 @@ func handleFetch(w http.ResponseWriter, r *http.Request) {
         if res.Code != 0 && res.Stdout == "" {
                 bridgeserver.WriteJSON(w, http.StatusBadGateway, map[string]any{
                         "ok":    false,
-                        "error": ifEmpty(res.Stderr, "moli fetch failed"),
+                        "error": bridgeserver.IfEmpty(res.Stderr, "moli fetch failed"),
                         "code":  res.Code,
                 })
                 return
@@ -211,7 +211,7 @@ func handleFetch(w http.ResponseWriter, r *http.Request) {
                         bridgeserver.WriteJSON(w, http.StatusBadGateway, map[string]any{
                                 "ok":   false,
                                 "error": "invalid JSON from moli",
-                                "raw":   truncStr(res.Stdout, 500),
+                                "raw":   bridgeserver.TruncStr(res.Stdout, 500),
                         })
                         return
                 }
@@ -267,7 +267,7 @@ func handleScreenshot(w http.ResponseWriter, r *http.Request) {
         if res.Code != 0 && res.Stdout == "" {
                 bridgeserver.WriteJSON(w, http.StatusBadGateway, map[string]any{
                         "ok":    false,
-                        "error": ifEmpty(res.Stderr, "screenshot failed"),
+                        "error": bridgeserver.IfEmpty(res.Stderr, "screenshot failed"),
                         "code":  res.Code,
                 })
                 return
@@ -281,24 +281,10 @@ func handleScreenshot(w http.ResponseWriter, r *http.Request) {
         })
 }
 
-func ifEmpty(s, fallback string) string {
-        if s == "" {
-                return fallback
-        }
-        return s
-}
-
-func truncStr(s string, n int) string {
-        if len(s) <= n {
-                return s
-        }
-        return s[:n]
-}
-
 func main() {
         stOk := moliBinaryAvailable()
         fmt.Printf("[moli-bridge] serving on port %d, moli=%s, selfTest=%s\n",
-                PORT, moliBinaryPath(), boolStr(stOk))
+                PORT, moliBinaryPath(), bridgeserver.BoolStr(stOk))
         bs := bridgeserver.New(bridgeserver.BridgeServerOptions{
                 Name:            "moli-bridge",
                 Port:            PORT,
@@ -315,12 +301,3 @@ func main() {
         })
         bs.ListenAndServe()
 }
-
-func boolStr(b bool) string {
-        if b {
-                return "PASS"
-        }
-        return "FAIL"
-}
-
-var _ = strings.NewReader

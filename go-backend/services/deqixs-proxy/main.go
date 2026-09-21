@@ -278,7 +278,11 @@ func healthCheck() (map[string]any, error) {
                 probeInProgress = true
                 probeMu.Unlock()
                 go func() {
+                        // R42-1A: panic recover 防 probeInProgress 永卡 true (R41-1B 已加 snapshot 但漏 recover)
                         defer func() {
+                                if rcv := recover(); rcv != nil {
+                                        fmt.Printf("[deqixs-proxy] healthCheck goroutine panic: %v\n", rcv)
+                                }
                                 probeMu.Lock()
                                 probeInProgress = false
                                 probeMu.Unlock()

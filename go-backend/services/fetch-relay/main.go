@@ -100,6 +100,14 @@ func handle(w http.ResponseWriter, r *http.Request) {
                         bridgeserver.WriteJSON(w, http.StatusBadGateway, map[string]any{"relayError": "proxy 形态非法"})
                         return
                 }
+                // R42-1A: SSRF 守卫代理 host (放行 socks5/socks4, 但 http/https 代理必须非内网).
+                //         之前只对 target URL 做 SSRF 守卫, 攻击者设 proxy=http://127.0.0.1:xxxx →
+                //         fetch-relay 向本机服务发起 TCP 连接 (绕过 target SSRF 守卫).
+                //         allowLoopback=true 让 socks/http 代理走 127.0.0.1 (用户本机代理场景常见).
+                if pErr := ssrfCheckProxy(proxyURL); pErr != "" {
+                        bridgeserver.WriteJSON(w, http.StatusBadGateway, map[string]any{"relayError": pErr})
+                        return
+                }
         }
         // 超时(钳制 1s ~ 30s)
         timeoutMs := body.TimeoutMs
@@ -192,6 +200,20 @@ func handle(w http.ResponseWriter, r *http.Request) {
                 "setCookie": setCookies,
                 "bodyB64":   base64.StdEncoding.EncodeToString(bodyBytes),
         })
+}
+
+// ssrfCheckProxy — 校验代理 URL host 不为内网/链路本地/元数据端点.
+//   返回 ""=放行, 非空=拒绝原因 (供 relayError 字段).
+//   R42-1A: 复用 bridgeserver.AssertSafeSsrfTarget. allowLoopback 与 target URL 共用
+//   ssrfAllowLB (用户本机代理场景需设 BRIDGE_SSRF_ALLOW_LOOPBACK=1). socks5/socks4 代理
+//   透传 socks 协议层, 但 Dialer 仍向 proxy host 发起 TCP → 同样需校验.
+func ssrfCheckProxy(proxyURL string) string {
+        // proxySpecRe 已确保 scheme 在 (https?|socks5h?|socks4a?) 内
+        ok, reason := bridgeserver.AssertSafeSsrfTarget(proxyURL, ssrfAllowLB)
+        if !ok {
+                return "proxy SSRF 拒绝: " + reason
+        }
+        return ""
 }
 
 // buildTransport — 构造支持 http/https/socks5/socks4 代理的 http.Transport。

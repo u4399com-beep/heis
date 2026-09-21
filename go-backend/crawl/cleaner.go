@@ -48,6 +48,18 @@ type trafilaturaState struct {
 
 var trafilaturaInst = &trafilaturaState{}
 
+// R42-1B: 复用进程级 http.Client (取代每调用 new http.Client{Timeout: 1.5s}).
+// 原实现 CheckTrafilaturaBridge 每次探测都 new 一个 http.Client, 高频探测下
+// (每章节都查桥可用性) TCP 句柄 + TLS session 浪费. 改为进程级单例 (1.5s timeout).
+var trafilaturaProbeClient = &http.Client{
+        Timeout: 1500 * time.Millisecond,
+}
+
+// R42-1B: 桥调用复用进程级 transport (取代 http.DefaultClient, 与 fetcher globalHttp 同口径).
+var trafilaturaCallClient = &http.Client{
+        Timeout: time.Duration(TrafilaturaRequestTimeoutMs) * time.Millisecond,
+}
+
 // CheckTrafilaturaBridge — 探测桥可用性 (/health), 60s 缓存.
 func CheckTrafilaturaBridge(bridgeURL string) bool {
         if bridgeURL == "" {
@@ -66,8 +78,7 @@ func CheckTrafilaturaBridge(bridgeURL string) bool {
                 }
         }
         // 探测
-        client := &http.Client{Timeout: 1500 * time.Millisecond}
-        resp, err := client.Get(bridgeURL + "/health")
+        resp, err := trafilaturaProbeClient.Get(bridgeURL + "/health")
         if err != nil {
                 f := false
                 trafilaturaInst.available = &f
@@ -143,7 +154,8 @@ func CallTrafilaturaExtract(ctx context.Context, html string, pruneXPath []strin
                 return TrafilaturaExtractResult{Ok: false, Error: err.Error()}
         }
         req.Header.Set("Content-Type", "application/json")
-        resp, err := http.DefaultClient.Do(req)
+        // R42-1B: 用进程级 trafilaturaCallClient (取代 http.DefaultClient)
+        resp, err := trafilaturaCallClient.Do(req)
         if err != nil {
                 if isDefault {
                         trafilaturaInst.mu.Lock()

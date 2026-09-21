@@ -194,6 +194,9 @@ func (g *HostGate) settleRateLimitExpiry(st *hostState) {
 //              导致槽位永久泄漏 (inFlight 增但 Release 永不被调用), 该 host 最终死锁.
 //              修复: default 分支回滚 inFlight--.
 //              并增加 waiter ctx 已取消的前置检查 (避免无谓 send 失败).
+// R42-1B 修复: 原实现 lastAdmitAt = now 在 send 之前设置, 若 send 失败 (default 分支),
+//              lastAdmitAt 仍被更新为 now, 导致下一轮 pump 因 minGapMs 节流而被卡住
+//              (即使 send 失败的 waiter 已离队). 修复: 把 lastAdmitAt = now 移到 send 成功后.
 func (g *HostGate) pump(st *hostState) {
         g.settleRateLimitExpiry(st)
         if len(st.waiters) == 0 {
@@ -221,12 +224,13 @@ func (g *HostGate) pump(st *hostState) {
                 }
                 st.waiters = st.waiters[1:]
                 st.inFlight++
-                st.lastAdmitAt = now
                 select {
                 case w.ch <- struct{}{}:
-                        // 成功 admit
+                        // 成功 admit — R42-1B: lastAdmitAt 仅在 send 成功后更新 (避免失败时误节流)
+                        st.lastAdmitAt = now
                 default:
                         // R41-1A: 回滚 inFlight (send 失败 = waiter 已离开或 buffered 满但 caller 不再读)
+                        // R42-1B: 不更新 lastAdmitAt (避免下一轮 pump 被误节流)
                         st.inFlight--
                         continue
                 }
@@ -239,6 +243,12 @@ func (g *HostGate) pump(st *hostState) {
 // R41-1A 修复: ctx2.Done() 分支需 drain w.ch (pump 可能在 ctx2 触发 Done 之前已成功 send 到
 //              buffered chan, 若不 drain 就视为超时, inFlight 永不释放 → 槽位泄漏.
 //              修复: ctx2.Done() 分支非阻塞 drain w.ch, 若有值则视为成功 admit 返回 ticket.
+// R42-1B 修复: 原实现 drain 在 g.mu.Lock() 之前, 存在竞态: pump 持 g.mu 进行 send 时,
+//              ctx2 触发 Done, Acquire 的 drain 先于 pump 的 send 跑, drain 返回 default (空),
+//              然后 Acquire 取 g.mu.Lock() 阻塞等 pump 完成; pump 的 send 此时已写入 w.ch,
+//              但 Acquire 已决定走 ctx2.Err() 路径, 不再读 w.ch → inFlight 永久泄漏.
+//              修复: 把 drain 移到 g.mu.Lock() 内, 等 pump 完成后再 drain, 若有值则视为
+//              成功 admit. 这样 pump 的 send 与 Acquire 的 drain 在 g.mu 同步, 不再竞态.
 func (g *HostGate) Acquire(ctx context.Context, rawURL string, limit, timeoutMs, minGapMs int) (*HostGateTicket, error) {
         g.maybeSweepAndEvict()
         host := HostGateKeyOf(rawURL)
@@ -295,15 +305,17 @@ func (g *HostGate) Acquire(ctx context.Context, rawURL string, limit, timeoutMs,
         case <-w.ch:
                 return &HostGateTicket{Host: host}, nil
         case <-ctx2.Done():
-                // R41-1A: pump 可能在 ctx2 触发 Done 之前已成功 send 到 w.ch (buffered chan 容量 1).
-                // 此处非阻塞 drain, 若有值则视为成功 admit 返回 ticket (调用方会正常 Release).
+                // R42-1B: 把 drain 移到 g.mu.Lock() 内, 等 pump 完成后再 drain.
+                // 否则 pump 持 g.mu 在 send 时, Acquire 的 drain 先于 send 跑 → drain 返回 default (空),
+                // Acquire 走 ctx2.Err() 路径, 但 pump 的 send 已写入 w.ch → inFlight 永久泄漏.
+                g.mu.Lock()
                 select {
                 case <-w.ch:
+                        g.mu.Unlock()
                         return &HostGateTicket{Host: host}, nil
                 default:
                 }
                 // 真的没拿到 admission: 从队列移除 (lazy)
-                g.mu.Lock()
                 for i, x := range st.waiters {
                         if x == w {
                                 st.waiters = append(st.waiters[:i], st.waiters[i+1:]...)

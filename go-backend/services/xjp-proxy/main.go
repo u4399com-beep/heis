@@ -499,7 +499,12 @@ func healthCheck() (map[string]any, error) {
                 probeInProgress2 = true
                 probeMu2.Unlock()
                 go func() {
+                        // R42-1A: panic recover + 强制 reset probeInProgress2 防 panic 后永卡 true
+                        //         (R41-1B 仅 deqixs/qimao 加了 recover, xjp 漏了)
                         defer func() {
+                                if rcv := recover(); rcv != nil {
+                                        fmt.Printf("[xjp-proxy] healthCheck goroutine panic: %v\n", rcv)
+                                }
                                 probeMu2.Lock()
                                 probeInProgress2 = false
                                 probeMu2.Unlock()

@@ -1815,7 +1815,7 @@ func normalizeLinkURL(raw string) string {
                 return ""
         }
         candidate := s
-        if !regexp.MustCompile(`^[a-z][a-z0-9+.-]*://`).MatchString(s) {
+        if !linkSchemePrefixRE.MatchString(s) {
                 candidate = "https://" + s
         }
         return httpURL(candidate)
@@ -1833,7 +1833,8 @@ func normalizeLinkLogo(raw string) (string, string) {
         if strings.HasPrefix(s, "/") {
                 return s, ""
         }
-        if regexp.MustCompile(`^https?://`).MatchString(s) {
+        // R42-1A: strings.HasPrefix 替代 inline regexp.MustCompile, 等价 http(s):// 前缀校验
+        if strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") {
                 if v := httpURL(s); v != "" {
                         return v, ""
                 }
@@ -2278,6 +2279,15 @@ func adminDownloadFileHandler(w http.ResponseWriter, r *http.Request) {
 
 var settingKeyRE = regexp.MustCompile(`^[A-Za-z0-9_.\-]{1,64}$`)
 
+// R42-1A: 包级预编译正则 (替代 inline regexp.MustCompile, 防 per-request 重复编译开销 + 防
+//         每次 PATCH 反馈都重新编译正则导致的高频路径 GC 压力)
+var (
+        // linkSchemePrefixRE — URL scheme 前缀校验 (与 normalizeLinkURL 同款)
+        linkSchemePrefixRE = regexp.MustCompile(`^[a-z][a-z0-9+.-]*://`)
+        // tagStripRE — 剥离 HTML 标签 (与 adminFeedbackByIDHandler PATCH adminNote 同款, 防存储型 XSS)
+        tagStripRE = regexp.MustCompile(`<[^>]+>`)
+)
+
 const settingValueMax = 100000
 
 func adminSettingsHandler(w http.ResponseWriter, r *http.Request) {
@@ -2339,13 +2349,29 @@ func adminSettingsUpdate(w http.ResponseWriter, r *http.Request) {
                 }
                 pairs = append(pairs, kv{key: k, value: string(b)})
         }
+        // R42-1A: 单事务包裹所有 keys (失败回滚防半保存状态). 之前逐 key Exec 失败留下"前 N 个已保存"的半提交脏状态.
+        tx, txErr := db.BeginTx(r.Context(), nil)
+        if txErr != nil {
+                writeJSONErr(w, "开启事务失败: "+txErr.Error(), 500)
+                return
+        }
+        committed := false
+        defer func() {
+                if !committed {
+                        _ = tx.Rollback()
+                }
+        }()
         for _, p := range pairs {
-                _, err := db.Exec(`INSERT INTO Setting (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, p.key, p.value)
-                if err != nil {
+                if _, err := tx.Exec(`INSERT INTO Setting (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, p.key, p.value); err != nil {
                         writeJSONErr(w, "保存 "+p.key+" 失败: "+err.Error(), 500)
                         return
                 }
         }
+        if err := tx.Commit(); err != nil {
+                writeJSONErr(w, "提交事务失败: "+err.Error(), 500)
+                return
+        }
+        committed = true
         adminSettingsList(w, r)
 }
 
@@ -2460,7 +2486,7 @@ func adminFeedbackByIDHandler(w http.ResponseWriter, r *http.Request) {
                 }
                 if v, ok := body["adminNote"]; ok && v != nil {
                         note := strField(body, "adminNote", 1000)
-                        note = regexp.MustCompile(`<[^>]+>`).ReplaceAllString(note, "")
+                        note = tagStripRE.ReplaceAllString(note, "")
                         if len(note) > 1000 {
                                 note = note[:1000]
                         }
@@ -2854,11 +2880,13 @@ func adminBackupRestoreHandler(w http.ResponseWriter, r *http.Request) {
                 imported++
         }
         for _, s := range payload.Data.Sites {
-                // R41-1B: 16 cols, 14 ? + 2 datetime('now') = 16 values, 14 args (修复前 13 ? 给 14 args 的 SQL 错配)
+                // R42-1A: 16 cols + 16 ? + 16 args (R41-1B 把 createdAt/updatedAt 当字面字符串 "datetime('now')" 作 arg 传入 →
+                //         SQLite 会把字面串入库而非当前时间, 且若以 SQL 函数调用必须出现在 VALUES 子句而非 args 列表。
+                //         改用 nullIfEmpty(s.CreatedAt/UpdatedAt) 保留备份原时间戳, 与其它表统一.)
                 if _, err := tx.Exec(`INSERT INTO Site (id, name, domain, themeId, title, description, keywords, icbm, geoRegion, geoPlacename, offset, isDefault, status, inLinkWheel, createdAt, updatedAt)
                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                         ON CONFLICT(id) DO UPDATE SET name=excluded.name, domain=excluded.domain, themeId=excluded.themeId, title=excluded.title, description=excluded.description, keywords=excluded.keywords, icbm=excluded.icbm, geoRegion=excluded.geoRegion, geoPlacename=excluded.geoPlacename, offset=excluded.offset, isDefault=excluded.isDefault, status=excluded.status, inLinkWheel=excluded.inLinkWheel`,
-                        s.ID, s.Name, s.Domain, s.ThemeID, s.Title, s.Description, s.Keywords, s.Icbm, s.GeoRegion, s.GeoPlacename, s.Offset, s.IsDefault, s.Status, s.InLinkWheel, "datetime('now')", "datetime('now')"); err != nil {
+                        s.ID, s.Name, s.Domain, s.ThemeID, s.Title, s.Description, s.Keywords, s.Icbm, s.GeoRegion, s.GeoPlacename, s.Offset, s.IsDefault, s.Status, s.InLinkWheel, nullIfEmpty(s.CreatedAt), nullIfEmpty(s.UpdatedAt)); err != nil {
                         writeJSONErr(w, fmt.Sprintf("Site %s 导入失败: %s", s.ID, err.Error()), 500)
                         return
                 }
@@ -2882,7 +2910,7 @@ func adminBackupRestoreHandler(w http.ResponseWriter, r *http.Request) {
                 imported++
         }
         for _, b := range payload.Data.Books {
-                // R41-1B: 16 cols, 16 ?, 16 args (修复前 15 ? 给 16 args 的 SQL 错配)
+                // R42-1A: 16 cols + 16 ? + 16 args (R41-1B 注释声称 16 ? 但实际写入 14 ?; 已修正)
                 if _, err := tx.Exec(`INSERT INTO Book (id, name, author, categoryId, intro, cover, status, keywords, latestChapter, wordCount, sourceUrl, sourceRuleId, storageMode, collectedAt, createdAt, updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, author=excluded.author, categoryId=excluded.categoryId, intro=excluded.intro, cover=excluded.cover, status=excluded.status, keywords=excluded.keywords, latestChapter=excluded.latestChapter, wordCount=excluded.wordCount, sourceUrl=excluded.sourceUrl, sourceRuleId=excluded.sourceRuleId, storageMode=excluded.storageMode`,
                         b.ID, b.Name, b.Author, nullIfEmpty(b.CategoryID), b.Intro, b.Cover, b.Status, b.Keywords, b.LatestChapter, b.WordCount, b.SourceURL, nullIfEmpty(b.SourceRule), b.StorageMode, nullIfEmpty(b.CollectedAt), nullIfEmpty(b.CreatedAt), nullIfEmpty(b.UpdatedAt)); err != nil {
                         writeJSONErr(w, fmt.Sprintf("Book %s 导入失败: %s", b.ID, err.Error()), 500)
@@ -2890,7 +2918,8 @@ func adminBackupRestoreHandler(w http.ResponseWriter, r *http.Request) {
                 }
                 imported++
                 for _, c := range b.Chapters {
-                        if _, err := tx.Exec(`INSERT INTO Chapter (id, bookId, idx, title, volume, url, content, storage, filePath, wordCount, fetched, createdAt, updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(bookId, idx) DO UPDATE SET title=excluded.title, volume=excluded.volume, url=excluded.url, content=excluded.content, storage=excluded.storage, filePath=excluded.filePath, wordCount=excluded.wordCount, fetched=excluded.fetched`,
+                        // R42-1A: 13 cols + 13 ? + 13 args (R41-1B 把 SQL 写成 15 ?, 实际 args 13 → 备份恢复必报 "bind parameter count mismatch")
+                        if _, err := tx.Exec(`INSERT INTO Chapter (id, bookId, idx, title, volume, url, content, storage, filePath, wordCount, fetched, createdAt, updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(bookId, idx) DO UPDATE SET title=excluded.title, volume=excluded.volume, url=excluded.url, content=excluded.content, storage=excluded.storage, filePath=excluded.filePath, wordCount=excluded.wordCount, fetched=excluded.fetched`,
                                 c.ID, c.BookID, c.Idx, c.Title, c.Volume, c.URL, c.Content, c.Storage, nullIfEmpty(c.FilePath), c.WordCount, c.Fetched, nullIfEmpty(c.CreatedAt), nullIfEmpty(c.UpdatedAt)); err != nil {
                                 writeJSONErr(w, fmt.Sprintf("Chapter %s 导入失败: %s", c.ID, err.Error()), 500)
                                 return
@@ -2907,7 +2936,8 @@ func adminBackupRestoreHandler(w http.ResponseWriter, r *http.Request) {
                 }
         }
         for _, t := range payload.Data.Tasks {
-                if _, err := tx.Exec(`INSERT INTO Task (id, name, ruleId, mode, bookUrl, listUrl, listStart, listEnd, bookStart, bookEnd, recrawlMode, storageMode, fetchConfig, threadMin, threadMax, intervalMin, intervalMax, smartCategory, smartComplete, autoSuggest, autoRefresh, refreshIntervalMin, status, progress, stats, createdAt, updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, ruleId=excluded.ruleId, status=excluded.status, progress=excluded.progress, stats=excluded.stats`,
+                // R42-1A: 27 cols + 27 ? + 27 args (R41-1B 把 SQL 写成 31 ?, 实际 args 27 → 备份恢复必报 "bind parameter count mismatch")
+                if _, err := tx.Exec(`INSERT INTO Task (id, name, ruleId, mode, bookUrl, listUrl, listStart, listEnd, bookStart, bookEnd, recrawlMode, storageMode, fetchConfig, threadMin, threadMax, intervalMin, intervalMax, smartCategory, smartComplete, autoSuggest, autoRefresh, refreshIntervalMin, status, progress, stats, createdAt, updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, ruleId=excluded.ruleId, status=excluded.status, progress=excluded.progress, stats=excluded.stats`,
                         t.ID, t.Name, t.RuleID, t.Mode, t.BookURL, t.ListURL, t.ListStart, t.ListEnd, t.BookStart, t.BookEnd, t.RecrawlMode, t.StorageMode, t.FetchConfig, t.ThreadMin, t.ThreadMax, t.IntervalMin, t.IntervalMax, t.SmartCategory, t.SmartComplete, t.AutoSuggest, t.AutoRefresh, t.RefreshIntervalMin, t.Status, t.Progress, t.Stats, nullIfEmpty(t.CreatedAt), nullIfEmpty(t.UpdatedAt)); err != nil {
                         writeJSONErr(w, fmt.Sprintf("Task %s 导入失败: %s", t.ID, err.Error()), 500)
                         return

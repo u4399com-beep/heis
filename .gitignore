@@ -82,6 +82,8 @@ __pycache__/
 # R41-1C: Go 后端构建产物 — 9 个二进制(heis-backend + 8 个 services 子项目)及临时日志
 # 均为 `go build` 输出, 源码在 ./*.go 与 ./services/*/main.go; 不入版本库(原 9 个二进制共
 # ~100MB 已被 git 跟踪, 后续 git rm --cached 解除跟踪)
+# R42-1C: 9 个二进制 + backend.log 已从工作目录删除(总计 ~100MB), 需用时 go build 重新生成.
+#         scripts/archive/ + agent-ctx/archive-pre-r28/ 同步清理(过时归档).
 go-backend/heis-backend
 go-backend/qimao-proxy
 go-backend/deqixs-proxy

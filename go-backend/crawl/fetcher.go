@@ -39,8 +39,10 @@ import (
         "fmt"
         "io"
         "math/rand"
+        "net"
         "net/http"
         "net/url"
+        "os"
         "os/exec"
         "regexp"
         "strings"
@@ -50,6 +52,8 @@ import (
 
         "golang.org/x/text/encoding/htmlindex"
         "golang.org/x/text/transform"
+
+        utls "github.com/refraction-networking/utls"
 )
 
 // ---------- 常量 ----------
@@ -159,6 +163,19 @@ type cookieEntry struct {
         at int64
         // src = 引入该 cookie 的请求 host (用于 clear(domain) 精确清扫副罐)
         src string
+}
+
+// cookieEntryDump — JSON 序列化结构 (R42-1B cookie 持久化跨 session 复用).
+// cookieEntry 字段小写不可见 json, 用 dump 结构中转.
+type cookieEntryDump struct {
+        V   string `json:"v"`
+        At  int64  `json:"at"`
+        Src string `json:"src,omitempty"`
+}
+
+// cookieJarDump — CookieJar 序列化结构.
+type cookieJarDump struct {
+        Jars map[string]map[string]cookieEntryDump `json:"jars"`
 }
 
 // CookieJar — per-domain cookie 罐, 跨子域合并 cf_clearance 等会话凭证.
@@ -424,6 +441,92 @@ func (j *CookieJar) Clear(domain string) {
         }
 }
 
+// SaveToDisk — 持久化 cookies 到 JSON 文件 (R42-1B 反反爬增强: 跨 session 复用).
+// cf_clearance / PHPSESSID 等会话凭证跨 session 复用, 避免每 session 重做挑战.
+// 原子写: tmp + rename. 路径为空则不存.
+func (j *CookieJar) SaveToDisk(path string) error {
+        if path == "" {
+                return nil
+        }
+        j.mu.Lock()
+        defer j.mu.Unlock()
+        dump := cookieJarDump{Jars: map[string]map[string]cookieEntryDump{}}
+        now := time.Now().UnixMilli()
+        for d, jar := range j.jars {
+                out := map[string]cookieEntryDump{}
+                for k, e := range jar {
+                        // 滤过期 (写入时即清理)
+                        if now-e.at >= CookieSessionTTL {
+                                continue
+                        }
+                        out[k] = cookieEntryDump{V: e.v, At: e.at, Src: e.src}
+                }
+                if len(out) > 0 {
+                        dump.Jars[d] = out
+                }
+        }
+        data, err := json.Marshal(dump)
+        if err != nil {
+                return err
+        }
+        tmp := path + ".tmp." + fmt.Sprintf("%d", os.Getpid())
+        if err := os.WriteFile(tmp, data, 0600); err != nil {
+                return err
+        }
+        return os.Rename(tmp, path)
+}
+
+// LoadFromDisk — 从 JSON 文件加载 cookies (R42-1B 反反爬增强: 启动时调用一次).
+// 加载时滤过期 cookies; 不存在则不报错 (首次启动).
+func (j *CookieJar) LoadFromDisk(path string) error {
+        if path == "" {
+                return nil
+        }
+        j.mu.Lock()
+        defer j.mu.Unlock()
+        data, err := os.ReadFile(path)
+        if err != nil {
+                if os.IsNotExist(err) {
+                        return nil
+                }
+                return err
+        }
+        var dump cookieJarDump
+        if err := json.Unmarshal(data, &dump); err != nil {
+                return err
+        }
+        now := time.Now().UnixMilli()
+        loaded := map[string]map[string]cookieEntry{}
+        for d, jar := range dump.Jars {
+                out := map[string]cookieEntry{}
+                for k, e := range jar {
+                        // 滤过期
+                        if now-e.At >= CookieSessionTTL {
+                                continue
+                        }
+                        out[k] = cookieEntry{v: e.V, at: e.At, src: e.Src}
+                }
+                if len(out) > 0 {
+                        loaded[d] = out
+                }
+        }
+        // 合并: 不覆盖现有 in-memory entries (避免覆盖刚抓的新鲜 cookie)
+        for d, jar := range loaded {
+                existing, ok := j.jars[d]
+                if !ok {
+                        j.jars[d] = jar
+                        continue
+                }
+                for k, e := range jar {
+                        if _, has := existing[k]; !has {
+                                existing[k] = e
+                        }
+                }
+        }
+        j.lastPruneAt = now
+        return nil
+}
+
 // ---------- 域名 UA 钉扎 ----------
 
 var (
@@ -669,6 +772,46 @@ func transportWithProxy(proxy string) *http.Transport {
         t2.Proxy = http.ProxyURL(p)
         return t2
 }
+
+// ---------- utls Chrome TLS 指纹 transport (R42-1B 反反爬增强) ----------
+//
+// Cloudflare / Akamai / DataDome 等反爬服务基于 TLS ClientHello 识别 Go 标准库
+// 指纹 (crypto/tls 是固定扩展顺序 + 固定 cipher suite 列表, 与 Chrome 不一致),
+// 直接拒绝服务. utls 模拟 Chrome 真实 TLS 指纹 (GREASE 扩展 + Chrome 扩展顺序 +
+// X25519Kyber768Draft00 curve + Chrome cipher suite 顺序) 可绕过.
+//
+// 实现: 用 utls.UClient 替代 crypto/tls.Client 做 DialTLS. http.Transport 的连接池
+// 仍正常复用 utls 连接. HTTP/2 因 ALPN 协商差异默认关闭 (chrome 站点大多 HTTP/1.1).
+
+var globalUtlsTransport = func() *http.Transport {
+        t := &http.Transport{
+                DialTLS: func(network, addr string) (net.Conn, error) {
+                        host, _, _ := net.SplitHostPort(addr)
+                        rawConn, err := net.DialTimeout(network, addr, 10*time.Second)
+                        if err != nil {
+                                return nil, err
+                        }
+                        uConn := utls.UClient(rawConn, &utls.Config{
+                                ServerName:         host,
+                                InsecureSkipVerify: false,
+                        }, utls.HelloChrome_Auto)
+                        if err := uConn.Handshake(); err != nil {
+                                _ = rawConn.Close()
+                                return nil, err
+                        }
+                        return uConn, nil
+                },
+                DisableKeepAlives:     false,
+                MaxIdleConns:          200,
+                MaxIdleConnsPerHost:   16,
+                MaxConnsPerHost:       0,
+                IdleConnTimeout:       90 * time.Second,
+                ResponseHeaderTimeout: 30 * time.Second,
+                ExpectContinueTimeout: 1 * time.Second,
+                ForceAttemptHTTP2:     false, // utls 不支持 Go 的 HTTP/2 ALPN 协商
+        }
+        return t
+}()
 
 // ---------- 拦截识别 ----------
 
@@ -1018,20 +1161,24 @@ func (e *HTTPError) Error() string {
 //   - 成功后 SetHostReferer (供下次请求作 Referer)
 //   - 失败时 ClearHostReferer (避免污染下次请求)
 //   - decodeBody 识别 GBK / GB18030 (用 golang.org/x/text)
-func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy string) (string, error) {
+//
+// R42-1B 改造:
+//   - 新增 transport 参数 (nil = 用 transportWithProxy, 非 nil = 用指定 transport).
+//     让 fetchHttp (标准) 与 fetchHttpViaUtls (Chrome TLS 指纹) 共用同一重试/退避逻辑.
+func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy string, transport *http.Transport) (string, error) {
         // 请求前 jitter (反频控)
         jitterSleep(ctx, cfg.JitterMs)
 
-        // 超时
+        // 超时 (per-attempt, R42-1B 修复)
         timeoutMs := cfg.Timeout
         if timeoutMs <= 0 {
                 timeoutMs = 20000
         }
-        ctx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond)
-        defer cancel()
 
-        // 复用全局 transport; 代理则克隆挂载
-        transport := transportWithProxy(proxy)
+        // R42-1B: transport 注入 (utls 路径); nil 时用全局 transport + 代理克隆
+        if transport == nil {
+                transport = transportWithProxy(proxy)
+        }
         client := &http.Client{
                 Transport: transport,
                 // 不自动跟随重定向 (3xx 视为失败, 与 TS 端 Bug 17 同口径)
@@ -1041,11 +1188,13 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
         }
 
         referer := cfg.RefererURL
-        if cfg.RefererChain && cfg.RefererURL != "" {
-                referer = cfg.RefererURL
-        }
+        // R42-1B: RefererChain 字段保留语义 (跨请求链式 referer), 但当前实现下
+        // cfg.RefererURL 设置时即作为 referer 注入 (与 buildHeaders 同款).
+        _ = cfg.RefererChain
 
         // 重试退避 (full jitter exponential)
+        // R42-1B 修复: 每个 attempt 单独 timeout. 原实现 ctx 在循环外 wrap 一次,
+        // attempt 1 用 19s 后 attempt 2 只剩 1s, 重试无效. 改为 per-attempt wrap.
         retries := cfg.Retries
         if retries < 0 {
                 retries = 0
@@ -1055,14 +1204,17 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
         }
         var lastErr error
         for attempt := 0; attempt <= retries; attempt++ {
-                req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
+                attemptCtx, attemptCancel := context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond)
+                req, err := http.NewRequestWithContext(attemptCtx, "GET", rawURL, nil)
                 if err != nil {
+                        attemptCancel()
                         return "", &HTTPError{Err: err}
                 }
                 req.Header = buildHeaders(cfg, ua, rawURL, referer)
 
                 resp, err := client.Do(req)
                 if err != nil {
+                        attemptCancel()
                         lastErr = &HTTPError{Err: err}
                         // 仅网络层错误重试 (4xx/5xx 在下面分支处理)
                         if !isRetriableNetErr(err) || attempt == retries {
@@ -1084,6 +1236,7 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
 
                 bodyBytes, err := io.ReadAll(resp.Body)
                 _ = resp.Body.Close()
+                attemptCancel()
                 if err != nil {
                         lastErr = &HTTPError{StatusCode: resp.StatusCode, Err: err}
                         if !isRetriableNetErr(err) || attempt == retries {
@@ -1347,10 +1500,13 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 "-H", "Priority: u=0, i",
         )
         // Referer 优先级: cfg.RefererURL > per-host 记忆 > 目标站 origin
+        // R42-1B: 与 buildHeaders 同款 — cfg.RefererURL 设置时直接用 (不再要求 cfg.RefererChain).
+        // 原实现要求 cfg.RefererChain && cfg.RefererURL != "" 才用 cfg.RefererURL, 与
+        // buildHeaders 不对称, curl 路径会暴露给目标站一个 origin Referer 而非用户配置的 URL.
         domain := originHost(rawURL)
         if cfg.Referer {
                 var ref string
-                if cfg.RefererChain && cfg.RefererURL != "" {
+                if cfg.RefererURL != "" {
                         ref = cfg.RefererURL
                 } else if rh := GetHostReferer(domain); rh != "" {
                         ref = rh
@@ -1623,15 +1779,27 @@ func fetchViaCurlImpersonate(ctx context.Context, rawURL string, cfg FetchConfig
 
 // ---------- 8 级降级链 ----------
 
-// fetchHttpWithCurlFallback — native fetch + curl 二进制降级.
-//  - native fetch 失败 → exec curl (OpenSSL 栈, 防 undici 在线热更新)
+// fetchHttpWithCurlFallback — native fetch + utls fallback + curl 二进制降级.
+//  - native fetch (标准 TLS) 失败 → utls Chrome TLS 指纹重试 (R42-1B 新增)
+//  - utls 失败 → exec curl (OpenSSL 栈, 防 undici 在线热更新)
 //  - curl 失败 → 抛错 (上层 fetchPageOnce 会继续走桥降级链)
+//
+// R42-1B 反反爬增强: 新增 utls 中间层. Cloudflare / Akamai / DataDome 等会基于
+// TLS ClientHello 识别 Go 标准库指纹 (crypto/tls 是固定扩展顺序 + 固定 cipher
+// suite 列表), 拒绝服务. utls 模拟 Chrome TLS 指纹 (GREASE + Chrome 扩展顺序 +
+// X25519Kyber768Draft00 curve) 可绕过.
 func fetchHttpWithCurlFallback(ctx context.Context, rawURL string, cfg FetchConfig, ua string) (string, error) {
         proxy := pickProxyFor(rawURL, cfg)
-        // native (net/http)
-        html, err := fetchHttp(ctx, rawURL, cfg, ua, proxy)
+        // native (net/http, 标准 TLS)
+        html, err := fetchHttp(ctx, rawURL, cfg, ua, proxy, nil)
         if err == nil {
                 return html, nil
+        }
+        // R42-1B: TLS 指纹错误 → utls Chrome 重试 (无代理, 直连)
+        if isTLSFingerprintError(err) && proxy == "" {
+                if htmlUtls, errUtls := fetchHttp(ctx, rawURL, cfg, ua, "", globalUtlsTransport); errUtls == nil {
+                        return htmlUtls, nil
+                }
         }
         // 检查错误是否可降级 (网络层 / TLS 错误 / Timeout)
         if !isCurlFallbackError(err) {
@@ -1644,6 +1812,27 @@ func fetchHttpWithCurlFallback(ctx context.Context, rawURL string, cfg FetchConf
         }
         // 返回 native 的错误 (含状态码 / WAF 头)
         return "", err
+}
+
+// isTLSFingerprintError — 错误是否疑似 TLS 指纹识别 (Go 标准库 crypto/tls 指纹被识别).
+// 关键词: "tls:" / "handshake failure" / "remote error" / "protocol version".
+// 403/412 + 空 body 也可能是 TLS 指纹识别 (服务端拒绝而不返 body).
+func isTLSFingerprintError(err error) bool {
+        if err == nil {
+                return false
+        }
+        s := err.Error()
+        if strings.Contains(s, "tls:") || strings.Contains(s, "handshake failure") ||
+                strings.Contains(s, "remote error") || strings.Contains(s, "protocol version") ||
+                strings.Contains(s, "no cipher suite") {
+                return true
+        }
+        if he, ok := err.(*HTTPError); ok {
+                if (he.StatusCode == 403 || he.StatusCode == 412) && (he.Body == "" || len(he.Body) < 256) {
+                        return true
+                }
+        }
+        return false
 }
 
 // isCurlFallbackError — 是否可降级到 curl (网络层 / TLS / Timeout).
@@ -1740,6 +1929,13 @@ func pickProxyFor(rawURL string, cfg FetchConfig) string {
                 for k := range proxyInst.useCount {
                         if !poolSet[k] {
                                 delete(proxyInst.useCount, k)
+                        }
+                }
+                // R42-1B: 清当前 pool 之外的失败冷却条目 (原实现只清过期的, 不清 pool 之外的,
+                // 长跑进程代理池动态变化后会留下陈旧条目)
+                for k := range proxyInst.failedUntil {
+                        if !poolSet[k] {
+                                delete(proxyInst.failedUntil, k)
                         }
                 }
                 // 清过期的失败冷却条目
@@ -1918,6 +2114,11 @@ func FetchPage(ctx context.Context, rawURL string, cfgOverride FetchConfig) (*Fe
 }
 
 // fetchPageOnce — 单 host 完整抓取流程: token 预取 → HTTP 重试链 → 8 级降级.
+//
+// R42-1B 反反爬增强: Turnstile 8s 截止. 当 LooksLikeCaptcha 返回 CaptchaTurnstile,
+// 单独调 fetchViaObscura (cloak-browser puppeteer 可自动点击 Turnstile 通过), 给 8s
+// 截止 (Turnstile 自动通过一般在 3-5s). 通过则继续走后续解析; 超时则返回 blocked
+// (调用方按 hostGate.ReportFailure 处理).
 func fetchPageOnce(ctx context.Context, rawURL string, cfg FetchConfig) (*FetchResult, error) {
         ua := PickUAFor(originHost(rawURL), cfg)
 
@@ -1941,6 +2142,15 @@ func fetchPageOnce(ctx context.Context, rawURL string, cfg FetchConfig) (*FetchR
                 }
                 ct := LooksLikeCaptcha(html)
                 if ct != "" {
+                        // R42-1B: Turnstile 8s 截止 — 调 Obscura 桥让 puppeteer 点击通过
+                        if ct == CaptchaTurnstile {
+                                if solved := trySolveTurnstile(ctx, rawURL, cfg, ua); solved != "" {
+                                        // 二次确认: 通过后不再是 captcha
+                                        if LooksLikeCaptcha(solved) == "" {
+                                                return &FetchResult{HTML: solved, Engine: "browser", Blocked: false}, nil
+                                        }
+                                }
+                        }
                         return &FetchResult{HTML: html, Engine: "http", Blocked: true, CaptchaDetected: true, CaptchaType: ct}, nil
                 }
                 return &FetchResult{HTML: html, Engine: "http", Blocked: false}, nil
@@ -1962,6 +2172,14 @@ func fetchPageOnce(ctx context.Context, rawURL string, cfg FetchConfig) (*FetchR
                 }
                 ct := LooksLikeCaptcha(bridged)
                 if ct != "" {
+                        // R42-1B: Turnstile 8s 截止 (桥路径也支持)
+                        if ct == CaptchaTurnstile {
+                                if solved := trySolveTurnstile(ctx, rawURL, cfg, ua); solved != "" {
+                                        if LooksLikeCaptcha(solved) == "" {
+                                                return &FetchResult{HTML: solved, Engine: "browser", Blocked: false}, nil
+                                        }
+                                }
+                        }
                         return &FetchResult{HTML: bridged, Engine: "browser", Blocked: true, CaptchaDetected: true, CaptchaType: ct}, nil
                 }
                 return &FetchResult{HTML: bridged, Engine: "browser", Blocked: false}, nil
@@ -1972,6 +2190,28 @@ func fetchPageOnce(ctx context.Context, rawURL string, cfg FetchConfig) (*FetchR
                 return nil, he
         }
         return nil, err
+}
+
+// trySolveTurnstile — 用 Obscura 桥 (puppeteer-extra stealth) 尝试通过 Turnstile 验证.
+// R42-1B 反反爬增强: 给 8s 截止 (Turnstile 自动通过一般 3-5s). 失败/超时返回空字符串.
+// Obscura 桥通过 cloak-browser / 3020 端口 (与 fetchViaObscura 同款), 但加 tier=maximum
+// 让 puppeteer 加载完整 stealth 栈 (含 Turnstile 自动点击插件).
+func trySolveTurnstile(ctx context.Context, rawURL string, cfg FetchConfig, ua string) string {
+        turnstileCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+        defer cancel()
+        bridgeURL := cfg.CloakBrowserURL
+        if bridgeURL == "" {
+                bridgeURL = "http://127.0.0.1:3020/fetch"
+        }
+        // tier=maximum: puppeteer 加载完整 stealth 栈 + Turnstile 自动点击
+        maxCfg := cfg
+        maxCfg.CloakTier = "maximum"
+        maxCfg.CloakBrowserURL = bridgeURL
+        html, err := fetchViaObscura(turnstileCtx, rawURL, maxCfg, ua)
+        if err != nil || html == "" {
+                return ""
+        }
+        return html
 }
 
 // tryBridges — 依次尝试 8 级降级链中的桥 (fetch-relay → scrapling → Obscura → uc-bridge → moli-bridge → curl-impersonate).

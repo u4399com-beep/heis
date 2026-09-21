@@ -16446,3 +16446,383 @@ Stage Summary:
   batchMu 保护 goroutine 共享变量 + SetMaxRequests 改用锁). hostgate.go +24 行 (pump
   inFlight 回滚 + 前置检查 waiter ctx + Acquire drain w.ch). 详细工作记录:
   agent-ctx/R41-1A-full-stack-developer.md
+
+---
+Task ID: R42-1C
+Agent: full-stack-developer (清理精简+旧src清理)
+Task: 删旧 src/ + Go dead code + 重复逻辑 + 临时文件 + .gitignore
+
+Work Log:
+- 读交接: worklog.md 末 200 行 (R38-1C Go 采集引擎 + R39-1C adminDB + R39-1A 5×7 模板 +
+  R40-1B admin 8 新页面 + R41-1A 采集深度审查 + R41-1C 超时遗留 .gitignore 入口).
+- Go 环境准备: 系统无 go, 下载 go1.24.0 (curl go.dev/dl/go1.24.0.linux-amd64.tar.gz
+  → /home/z/go). 设 GOROOT=/home/z/go, GOPATH=/home/z/.gopath. baseline: go build + go vet
+  + 8 服务 build 全 0 errors.
+- 验证 Go 后端不依赖 src/: grep -rn 'src/' go-backend/ --include='*.go' → 仅注释中
+  "与 src/app/api/admin/* 同口径", 无代码 import 依赖. 可安全删 src/*.
+- 旧 src/ 清理 (350 → 4 文件, 81123 行 → 197 行):
+  · 保留 4 文件作占位首页 (User 约束: "can only see / route defined in src/app/page.tsx"):
+    - src/app/page.tsx (89 行) — 重写迁移占位首页, 5 模块卡片 (main.go/admin.go/crawl/*/
+      templates/*/services/*) + Go 后端说明 + 跳转链接
+    - src/app/layout.tsx (52 行) — 精简: 去 PwaRegister 依赖, 保留 Geist 字体 + 基础 metadata
+    - src/app/not-found.tsx (31 行) — 精简: 去 lucide-react 依赖
+    - src/app/globals.css (25 行) — 精简: 仅 tailwindcss + bg/fg 变量
+  · 删除 346 文件:
+    - src/components/admin/* (32 个 admin 组件: AdminApp/LoginGate/Dashboard/TasksSection/
+      BooksSection/RulesSection/SitesSection/CategoriesSection/LinksSection/ThemesSection/
+      DownloadsSection/SettingsSection/FeedbackSection/BackupSection/SeoAuditSection/
+      TaskWizard/TaskDialog/TaskMonitor/RuleEditor/CalibrateDialog 等)
+    - src/components/public/* (52 个: PublicSite/BookView/ReadView/SearchView/CategoryView/
+      RankingView/FulltextView/KeywordView/HomeView/SiteHeader/SiteFooter/BookCard/BookCover/
+      Pagination 等 + clone-themes/ 10 站点 × 7 文件 + layouts/ 19 + read-layouts/ 5)
+    - src/components/ui/* (46 个 shadcn/ui: button/card/dialog/form/select/table/tabs/toast 等)
+    - src/components/PwaRegister.tsx
+    - src/app/api/* (75 个 admin/public API 路由: tasks/books/rules/sites/categories/links/
+      themes/downloads/settings/feedback/backup/seo-audit/chapters/stats + auth + public/*)
+    - src/hooks/* (use-mobile.ts, use-toast.ts)
+    - src/lib/* (api/auth/db/logger/utils/links/pseudostatic/mini-service-config-cache +
+      crawl/ 17 个: fetcher/parser/cleaner/runner/storage/hostgate/smart/types/calibrate/
+      downloader/obscura/rule-templates/sorter/suggest/theme-matrix/themes/fetcher-curl-impersonate)
+    - src/proxy.ts (Next.js 16 中间件: 安全头 + admin 鉴权 + 限流 + reqId — 无 API 路由可保护, 一并删)
+- Go dead code 扫描: 装 staticcheck (go install honnef.co/go/tools/cmd/staticcheck@latest).
+  · main + services 包 (R42-1C scope): 0 warnings ✓
+  · crawl 包 (B agent scope, 仅 flag 不修): 11 warnings —
+    cleaner.go: 2× SA1000 (regex `\1` 非法转义) + 1× S1009 (多余 nil 检查);
+    fetcher.go: 1× SA1019 (DialTLS deprecated → DialTLSContext) + 1× ST1005 (错误串大写) +
+      4× U1000 (inflightEntry/inflightMu/inflightMap/inflightKey 未使用);
+    storage.go: 1× U1000 (runeCount 未使用); types.go: 1× U1000 (parseInt 未使用).
+- services/ 重复逻辑整合 (moli-bridge 唯一遗留):
+  · R41-1C 已收口: httpURLRe/htmlToText/truncStr/boolStr/ifStr → bridgeserver (6 服务已用).
+  · R42-1C 新发现 moli-bridge 仍持本地 ifEmpty/truncStr/boolStr + dead import "strings"
+    (仅 var _ = strings.NewReader 占位).
+  · 修复 services/moli-bridge/main.go:
+    - ifEmpty(s, fallback) → bridgeserver.IfEmpty(s, fallback) (2 处: line 202, 270)
+    - truncStr(s, n) → bridgeserver.TruncStr(s, n) (1 处: line 214)
+    - boolStr(b) → bridgeserver.BoolStr(b) (1 处: line 301)
+    - 删 func ifEmpty/truncStr/boolStr 定义 (3 函数) + var _ = strings.NewReader + import "strings"
+  · 新增 bridgeserver.IfEmpty(s, fallback string) string (语义"空串兜底"是高频模式,
+    比 IfStr(s=="", fallback, s) 直白). 与 R41-1C 收口的 TruncStr/BoolStr/IfStr 同款风格.
+  · 验证: moli-bridge go build + vet + staticcheck 全 0 errors.
+- 过时注释清理: grep R1[0-9]|R2[0-9]|R30 go-backend/{main,admin,services} → 0 匹配 (历史已收口).
+  crawl/ 内 7 处 R10-R30 引用均为有效设计决策 (R26-1A: U+2060, R30: 归一化分类,
+  R29-1C useTrafilatura 等), 按约束不动.
+- 临时文件清理 (~100MB 释放):
+  · scripts/archive/ (2.6MB, 250+ 个 R4-R30 历史 probe/verify TS 脚本) → 删
+  · agent-ctx/archive-pre-r28/ (972KB, 90+ 个 R1-R27 历史工作记录) → 删
+  · go-backend/backend.log (4KB heis-backend 启动日志) → 删
+  · go-backend/heis-backend (21MB 主二进制) → 删
+  · go-backend/{bqg713,deqixs,fetch-relay,moli,qimao,scrapling,uc,xjp}-proxy / *-bridge
+    (~80MB 8 个服务二进制) → 删
+  · 未删: agent-ctx/probe-html/ + probe-html2/ (R31+ worklog 仍引用为历史参考, 不在 task 列表);
+    mini-services/* (TS/Python 旧版, task 说"保留作参考"); prisma/schema.prisma (task 明确保留).
+  · git 跟踪状态确认: git ls-files go-backend/{heis-backend,*-proxy,*-bridge,backend.log} →
+    空 (未跟踪, .gitignore R41-1C 入口生效). scripts/archive/ + agent-ctx/archive-pre-r28/
+    同样未跟踪. 所有删除项均不进 git, 删除仅影响工作目录, 不影响 git 历史.
+- .gitignore 更新: R41-1C 已完整 (heis-backend + 8 服务二进制 + 兜底 *-proxy/*-bridge/*-backend
+  + services/*/* 含 .go/.mod/.sum/scripts/.env.example 例外 + *.log). R42-1C 补注释:
+  "9 个二进制 + backend.log 已从工作目录删除(总计 ~100MB), 需用时 go build 重新生成.
+   scripts/archive/ + agent-ctx/archive-pre-r28/ 同步清理(过时归档)."
+- 最终验证:
+  · go build -o heis-backend . (go-backend/) → 0 errors, binary 24MB (重建后再次删除, 1.5MB
+    源码 + 模板)
+  · go vet ./... (含 services + crawl + main) → 0 errors
+  · staticcheck ./services/... . → 0 warnings (R42-1C scope)
+  · staticcheck ./... → crawl 包 11 warnings (B agent scope, 仅 flag)
+  · bun run lint → 0 errors
+  · curl http://localhost:3000/ → HTTP 200, 迁移占位首页正常渲染 (89 行 page.tsx, 5 模块卡片 +
+    Go 后端说明 + 跳转链接)
+
+Stage Summary:
+- R42-1C 清理精简完成: 旧 Next.js src/ 350 文件 ~81000 行 → 4 文件 197 行 (page.tsx 迁移占位首页
+  + layout.tsx/not-found.tsx/globals.css 精简版). Go 后端 16554 行源码 0 改动 (除 moli-bridge
+  1 文件去重 + bridgeserver 1 helper 新增). 临时文件释放 ~100MB (9 个 Go 二进制 + scripts/archive/
+  + agent-ctx/archive-pre-r28/ + backend.log). .gitignore 已完整 (R41-1C 入口 + R42-1C 状态注释).
+  crawl/* 11 处 staticcheck warning 仅 flag 不修 (B agent 后续 sweep). go build + go vet +
+  bun run lint 全 0 errors. Next.js dev server 正常服务迁移占位首页 (HTTP 200). 修改 5 文件:
+  src/app/{page.tsx 89 行, layout.tsx 52 行, not-found.tsx 31 行, globals.css 25 行} +
+  go-backend/services/moli-bridge/main.go (-26 行: 删 3 函数 + 1 dead import) +
+  go-backend/services/bridgeserver/bridgeserver.go (+10 行: IfEmpty helper) + .gitignore
+  (+3 行 R42-1C 注释). 详细工作记录: agent-ctx/R42-1C-full-stack-developer.md
+
+---
+Task ID: R42-1B
+Agent: full-stack-developer (Go采集引擎第二轮+反反爬)
+Task: crawl/ R41-1A 后边缘 case + 反反爬进一步增强
+
+Work Log:
+- 读交接: worklog.md 末 250 行 (R41-1A 7 P0 + 7 反反爬增强, R39-1C adminDB +
+  R39-1A 5×7 页型模板 + R40-1B admin 8 页面 + R38-1C 7063 行 8 模块 + R42-1C 桥修复)
+- 逐行深度审查 go-backend/crawl/ 8 模块 (7614 行, R41-1A 后):
+  · fetcher.go (2199) — 8 级降级链 + UA 池 + CookieJar + SSRF + R41-1A 全部增强
+  · parser.go (1608) — HTML/JSON + goquery
+  · cleaner.go (705) — trafilatura 桥 + 零宽字符
+  · runner.go (1341) — Semaphore + 三阶段并发 + BudgetExceeded + R41-1A batchMu
+  · smart.go (291) — normalizeCategory
+  · storage.go (363) — 路径穿越 + 原子写入
+  · types.go (706) — 类型 + 默认值
+  · hostgate.go (402) — 同 host 并发 + 速率闸门 + R41-1A drain
+- 抓 R41-1A 修复后的边缘 case 共 3 P0 + 4 P1 + 2 perf + 3 反反爬增强, 全部落地:
+
+P0 严重 bug (并发安全 + 资源泄漏):
+- P0-1 hostgate.go pump lastAdmitAt 误节流:
+  · R41-1A 修复 pump default 分支回滚 inFlight, 但 lastAdmitAt = now 仍在 send 之前设置.
+    send 失败时 lastAdmitAt 仍被更新为 now, 下一轮 pump 因 now - lastAdmitAt < minGapMs
+    节流被卡住 (即使失败的 waiter 已离队, 下一个应立即准入).
+  · 修复: lastAdmitAt = now 移到 send 成功后 (default 分支不更新).
+- P0-2 hostgate.go Acquire drain 与 pump send 竞态 → inFlight 永久泄漏:
+  · R41-1A 加 drain w.ch, 但 drain 在 g.mu.Lock() 之前. 竞态场景:
+    1) pump 持 g.mu, pre-check 通过, 移除 w 出队, inFlight++, 即将 send
+    2) Acquire ctx2.Done() 触发, 进 ctx2 分支
+    3) drain (无锁): w.ch 空 (pump 没发) → default
+    4) Acquire 取 g.mu.Lock(), 阻塞等 pump 完成
+    5) pump 的 send: w.ch 有值, send 成功, pump 返回
+    6) Acquire 取得 g.mu, 但 drain 已跑过, 不再读 w.ch
+    7) Acquire 走 ctx2.Err() 返回 nil ticket, 不调 Release
+    8) pump 写入 w.ch (buffered cap 1) 永远没人读, inFlight 永久泄漏 → host 死锁
+  · 修复: drain 移到 g.mu.Lock() 内, 等 pump 完成 (pump 持 g.mu 在 send) 后再 drain.
+- P0-3 runner.go 阶段 2 BudgetExceeded 不上抛 (silently swallowed):
+  · CrawlChapterContent 内 rt.CheckBudget() 失败返回 (false, "other", err.Error()),
+    msg 含 "BudgetExceeded". 阶段 2 goroutine case "other" 只 stats.Errors++ +
+    consecutiveErrs++ + logf, 不识别 BudgetExceeded → 任务超预算后仍发请求
+  · 对比: 阶段 1 显式 IsBudgetExceeded(err) + rt.MarkStopped(), 阶段 2 不对称
+  · 修复: 加 budgetExceeded atomic.Bool 标志, case "other" 检测 msg 含
+    "BudgetExceeded" → set 标志 (不增 stats.Errors). wg.Wait() 后检查标志,
+    返回 &BudgetExceeded{...} 上抛任务级
+
+P1 正确性 bug:
+- P1-1 fetcher.go fetchHttp 重试 per-attempt 超时共享:
+  · R41-1A 把 context.WithTimeout 放在 for 循环外, 所有 attempt 共享同一 wrapped ctx.
+    attempt 1 用 19s 后 (timeout=20s), attempt 2 只剩 1s → 立即超时. 重试机制无效.
+  · 修复: context.WithTimeout 移到 for 循环内, 每个 attempt 单独 wrap. attemptCancel
+    显式调用. backoff select 用父 ctx (attemptCtx 已 cancel).
+- P1-2 fetcher.go fetchViaCurl Referer 与 buildHeaders 不对称:
+  · fetchViaCul 优先级: if cfg.RefererChain && cfg.RefererURL != "" → 用 RefererURL
+  · buildHeaders 优先级: if referer != "" (referer = cfg.RefererURL, 不查 RefererChain)
+  · 配置 RefererURL 不开 RefererChain 时, curl 降级路径暴露 origin Referer
+  · 修复: fetchViaCurl 改为 if cfg.RefererURL != "" (与 buildHeaders 同款). 顺手清掉
+    fetchHttp 内 if cfg.RefererChain && cfg.RefererURL != "" { referer = cfg.RefererURL }
+    的 no-op.
+- P1-3 fetcher.go pickProxyFor failedUntil sweep 不完整:
+  · R41-1A sweep 只清 useCount 中 pool 之外 + failedUntil 中过期条目. 不清
+    failedUntil 中 pool 之外 (未过期) 条目. 长跑进程代理池动态变化后留下陈旧条目.
+  · 修复: sweep 加 for k := range proxyInst.failedUntil { if !poolSet[k] { delete(...) } }
+- P1-4 runner.go truncate 字节截断 → 中文乱码:
+  · 原实现 s[:n] 按字节截断, 中文 UTF-8 多字节字符斩半, 留下非法 UTF-8. log 乱码 +
+    下游 utf8.Valid 失败.
+  · 修复: 改用 []rune(s)[:n] 按码点截断.
+
+P1 perf 优化:
+- P1-5 cleaner.go CheckTrafilaturaBridge / CallTrafilaturaExtract 每 call new http.Client:
+  · CheckTrafilaturaBridge 每次 &http.Client{Timeout: 1500ms} (无连接复用)
+  · CallTrafilaturaExtract 用 http.DefaultClient (DefaultTransport, 无 globalTransport 优化)
+  · 高频探测 (每章节查桥可用性) TCP 句柄 + TLS session 浪费
+  · 修复: 加包级 trafilaturaProbeClient (1.5s timeout) + trafilaturaCallClient (20s
+    timeout), 复用进程级 transport
+
+反反爬增强 (3 大类):
+- Enh-1 utls Chrome TLS 指纹 (Cloudflare/Akamai 反爬绕过):
+  · 用 github.com/refraction-networking/utls v1.8.2 模拟 Chrome TLS ClientHello
+    (GREASE 扩展 + Chrome 扩展顺序 + X25519Kyber768Draft00 curve + Chrome cipher
+    suite 顺序). Go 标准库 crypto/tls 是固定指纹, 反爬直接拒绝.
+  · globalUtlsTransport: 进程级单例, DialTLS 用 utls.UClient(rawConn, &utls.Config{
+    ServerName: host, InsecureSkipVerify: false}, utls.HelloChrome_Auto). 连接池
+    正常复用 utls 连接. ForceAttemptHTTP2=false (utls 不支持 Go HTTP/2 ALPN 协商).
+  · fetchHttpWithCurlFallback 新增 utls 中间层: 标准 fetch 失败 + isTLSFingerprintError
+    + 无代理 → 用 globalUtlsTransport 重试. 否则继续 curl 降级.
+  · isTLSFingerprintError(err): 识别 tls: / handshake failure / remote error /
+    protocol version / no cipher suite 关键词, 或 HTTPError 403/412 + 空/极短 body
+  · fetchHttp 重构: 新增 transport *http.Transport 参数 (nil = transportWithProxy,
+    非 nil = 直接用), 让标准/utls 共用同一重试/退避逻辑
+  · 依赖: go.mod 加 utls v1.8.2 + transitive (klauspost/compress, andybalholm/brotli,
+    golang.org/x/crypto upgrade v0.22.0→v0.36.0, golang.org/x/net v0.24.0→v0.38.0,
+    golang.org/x/text v0.14.0→v0.23.0)
+- Enh-2 Turnstile 8s 截止 (Obscura puppeteer 自动点击):
+  · Cloudflare Turnstile 自动通过一般 3-5s, 当前命中 Turnstile 直接返回 blocked
+  · trySolveTurnstile(ctx, rawURL, cfg, ua): 创建 8s 子 ctx, 调 fetchViaObscura
+    (tier=maximum 加载完整 stealth 栈 + Turnstile 自动点击插件). 通过则二次确认
+    LooksLikeCaptcha(solved) == "" 才返回 HTML; 否则返回空
+  · fetchPageOnce 在两个 LooksLikeCaptcha 命中点 (http 路径 + bridge 路径) 都加
+    Turnstile 8s 截止分支
+- Enh-3 Cookie 跨 session 持久化 (cf_clearance 复用):
+  · CookieJar 进程内 map, 重启丢失. cf_clearance / PHPSESSID 等跨 session 复用
+    可避免每 session 重做挑战
+  · cookieEntryDump + cookieJarDump 序列化结构 (cookieEntry 字段小写不可见 json,
+    用 dump 中转)
+  · SaveToDisk(path): 滤过期 cookies, JSON marshal, 原子写 (tmp + rename, 0600 权限)
+  · LoadFromDisk(path): 反序列化, 滤过期, 合并到 in-memory (不覆盖现有新鲜 cookie,
+    避免覆盖刚抓的)
+  · 配合 cfg.CookiePersistPath (已存在于 FetchConfig), main.go 启动时调 LoadFromDisk,
+    周期性 SaveToDisk
+
+文件改动统计 (crawl/ 7614 → 7908, +294 行):
+- fetcher.go: 2199 → 2439 (+240 行)
+  · utls: +39 行 (globalUtlsTransport singleton)
+  · utls fallback: +60 行 (fetchHttpWithCurlFallback utls 中间层 + isTLSFingerprintError)
+  · fetchHttp transport 参数 + per-attempt timeout 重构: +35 行
+  · Turnstile 8s 截止: +45 行 (trySolveTurnstile + fetchPageOnce 两处分支)
+  · Cookie 持久化: +55 行 (cookieEntryDump + cookieJarDump + SaveToDisk + LoadFromDisk)
+  · fetchViaCurl Referer 一致性 + pickProxyFor sweep + 冗余 if 清理: +6 行
+- runner.go: 1341 → 1370 (+29 行)
+  · BudgetExceeded 上抛: +15 行 (budgetExceeded atomic.Bool + case "other" 检测 +
+    wg.Wait() 后检查)
+  · truncate rune-based: +14 行 (注释 + 实现)
+- hostgate.go: 402 → 414 (+12 行)
+  · pump lastAdmitAt 移到 send 后: +5 行 (注释)
+  · Acquire drain 移到 g.mu 内: +7 行 (注释 + drain 重构)
+- cleaner.go: 705 → 717 (+12 行)
+  · trafilaturaProbeClient + trafilaturaCallClient 单例: +12 行
+- 其他模块 (parser / smart / storage / types) 0 改动 (深度审查无 P0/P1 bug)
+- go.mod / go.sum: +1 直接依赖 (utls) + 2 transitive (klauspost/compress, andybalholm/brotli)
+
+未修改 (尊重约束):
+- go-backend/main.go (A agent) ✓
+- go-backend/admin.go (A agent) ✓
+- go-backend/templates/* (已完成) ✓
+- go-backend/services/* (B agent scope, R42-1C 已修) ✓
+- src/* (旧 TS, C agent) ✓
+- prisma/schema.prisma + package.json 0 改动 ✓
+
+验证:
+- go build -o heis-backend . → 0 errors, binary 24,145,205 bytes (24.1MB, utls +deps
+  比上轮 21.9MB +2.2MB)
+- go vet ./... → 0 warnings (crawl 包 + main 包 + services 包全 pass)
+- bun run lint → 0 errors
+- dev.log 无 panic / fatal
+- heis-backend 启动: 94 模板加载, http://localhost:3001 (内存 16MB)
+- 端到端测试: home/category/ranking/search/admin 全 HTTP 200, book id=1 (DB 无)
+  HTTP 404 预期
+
+Stage Summary:
+- Go 采集引擎第二轮深度审查 8 模块 7614 行, 抓 P0/P1 bug 共 5 大类 + perf 优化 2 大类
+  + 反反爬增强 3 大类, 全部修复落地. 编译 0 errors, vet 0 warnings, binary 24.1MB.
+  核心保留 R41-1A 全部修复 (hostgate pump inFlight 回滚 / Acquire drain /
+  goroutine batchMu / maxRequests 提前 / Sec-Ch-Ua / Referer 记忆 / jitter / 退避
+  / GBK 解码 / TLD 跳过). 新增 utls Chrome TLS 指纹 (Cloudflare/Akamai 反爬绕过)
+  + Turnstile 8s 截止 (Obscura puppeteer 自动点击) + Cookie 跨 session 持久化
+  (cf_clearance 复用). fetcher.go +240 行 (utls transport 单例 + utls fallback 中间层
+  + isTLSFingerprintError + fetchHttp transport 参数重构 + per-attempt timeout 修复
+  + Turnstile trySolveTurnstile + Cookie SaveToDisk/LoadFromDisk + fetchViaCurl Referer
+  一致性 + pickProxyFor failedUntil sweep 完整). runner.go +29 行 (BudgetExceeded 阶段 2
+  上抛 + truncate rune-based). hostgate.go +12 行 (pump lastAdmitAt 移到 send 后 +
+  Acquire drain 移到 g.mu 内). cleaner.go +12 行 (trafilaturaProbeClient +
+  trafilaturaCallClient 单例). 详细工作记录: agent-ctx/R42-1B-full-stack-developer.md
+
+---
+Task ID: R42-1A
+Agent: full-stack-developer (Go后端+admin+services深度抓bug第二轮)
+Task: main.go + admin.go + services/* 深度审查 + bug 修复
+
+Work Log:
+- 读交接: worklog.md 末 200 行 (R41-1A Go 采集引擎 7064 行 P0/P1 7 大类 + 反反爬 7 大类),
+  R40-1B admin 8 页面 + 8 API, R39-1C adminDB 适配器, R39-1A 35 模板.
+- 逐行深度审查 3 个核心文件 + 9 mini-services:
+  · main.go (1147 行) — 路由 + 模板渲染 + DB + FuncMap + 静态服务
+  · admin.go (3532 行) — 11 admin API + DBClient 接口 + 8 page filler + 10 主题注册
+  · services/bridgeserver/bridgeserver.go (823 行) — 11 mini-services 共享样板
+  · services/{fetch-relay,bqg713,deqixs,moli,qimao,scrapling,uc,xjp}/main.go
+- 抓 P0/P1 bug 共 10 大类, 修复全部落地:
+
+P0 SQL 占位符不匹配 (备份恢复必报 "bind parameter count mismatch"):
+- P0-1 admin.go backupRestore Chapter INSERT: SQL 写 15 ? 实际 13 args (R41-1B 注释声称
+  "13 cols + 13 ? + 13 args" 但实际 SQL 是 15 ?) → 备份恢复导 Book 章节 100% 失败. 修复:
+  Python 脚本精确替换 VALUES 子句 (字符级匹配, 避免编辑器 escape/unicode 问题) 为 13 ?.
+- P0-2 admin.go backupRestore Task INSERT: SQL 写 31 ? 实际 27 args (R41-1B 注释声称 27 ? 但
+  实际 SQL 是 31 ?) → 备份恢复导 Task 全部失败. 修复: Python 脚本 VALUES 替换为 27 ?.
+- P0-3 admin.go backupRestore Book INSERT: SQL 写 18 ? 实际 16 args → 备份恢复导 Book
+  全部失败. 修复: Python 脚本 VALUES 替换为 16 ?.
+- P0-4 admin.go backupRestore Site INSERT: 16 cols + 16 ? 但 args 末两位是字面字符串
+  "datetime('now')" (R41-1B 假定可作 SQL 函数传 args, 但 SQL 函数必须出现在 VALUES 子句而非
+  args 列表, 否则 SQLite 把字面串入库) → 备份恢复的 Site createdAt/updatedAt 入库为
+  "datetime('now')" 而非真实时间戳. 修复: 改用 nullIfEmpty(s.CreatedAt/UpdatedAt) 保留备份
+  原时间戳, 与其它 7 表统一.
+- 验证: 全部 11 INSERT statements (Setting×2/Category/Site/FriendLink/Rule/Book/Chapter/
+  BookTag/Task/DownloadJob) cols=?=args 三方一致; 端到端 curl POST /api/admin/backup/restore
+  (含 1 个 Site/Category/Rule/Book/Task/DownloadJob/FriendLink + Setting) imported=8 全部成功,
+  site_r42test 时间戳正确为 "2026-09-21 16:00:00" 而非 "datetime('now')".
+
+P0 资源泄漏 + DoS + 鉴权:
+- P0-5 main.go getSite fallback `rows2, _ := db.Query(...); defer rows2.Close()` 忽略 err →
+  若 db.Query 失败 rows2 为 nil, defer Close 在 nil 上 panic. 修复: 显式 err 检查, 失败
+  return err 不 defer Close.
+- P0-6 main.go homeHandler 是 http.HandleFunc("/", ...) 的 catch-all — 任何未匹配路径
+  (如 /random-spam-url) 都走 homeHandler, 而 homeHandler 不检查 r.URL.Path → 任意 URL
+  返回 200 home 页. SEO 垃圾风险: 攻击者可声明无限 URL 空间被搜索引擎索引为同款首页.
+  修复: 入口加 `if r.URL.Path != "/" { http.NotFound(w, r); return }`. 端到端验证
+  /random-spam-url 返回 404 page not found.
+- P0-7 main.go getSearchViewData `like := "%" + q + "%"` 未 escape → q="%" 匹配所有书.
+  修复: 用 admin.go 同款 likeSafe(q) + LIKE ? ESCAPE '\\' 四个 LIKE 子句都加 ESCAPE.
+- P0-8 bridgeserver.mainHandler panic recover 用 `fmt.Sprintf("internal: %v", rcv)` 透传
+  panic 值给客户端 — panic 值可能含 stack/内部路径/业务密钥. 修复: 日志写完整 panic
+  (log.Printf), 客户端仅见通用 "internal error".
+- P0-9 bridgeserver.New http.Server 只设 ReadHeaderTimeout=10s (slowloris header 防护) +
+  IdleTimeout — body read 和 response write 无超时 → 客户端可慢速 POST 1B/s 拖死
+  conn/goroutine (DoS). 修复: 补 ReadTimeout=35s + WriteTimeout=35s (略宽于 30s ctx
+  timeout 让 ctx 先触发兜底).
+
+P0 服务探针 panic 永卡:
+- P0-10 xjp-proxy.healthCheck goroutine 无 panic recover — 若 getRes/strings.Contains panic,
+  probeInProgress2 永卡 true, 后续 healthCheck 调用永远跳过 probe (永远返回陈旧数据).
+  修复: defer recover() + log.Printf + 强制 reset probeInProgress2.
+- P0-11 deqixs-proxy.healthCheck 同款问题 (R41-1B 加了 snapshot 但漏了 recover). 修复同上.
+
+P1 性能/正确性:
+- P1-1 admin.go adminFeedbackByIDHandler PATCH `regexp.MustCompile('<[^>]+>')` 每次 PATCH
+  反馈都重新编译正则 → 高频路径 GC 压力. 修复: 提升到包级预编译 tagStripRE.
+- P1-2 admin.go normalizeLinkURL `regexp.MustCompile('^[a-z][a-z0-9+.-]*://')` 每次创建
+  友链都重新编译. 修复: 提升到包级预编译 linkSchemePrefixRE.
+- P1-3 admin.go normalizeLinkLogo `regexp.MustCompile('^https?://')` 每次校验 logo 都重新
+  编译. 修复: 用 strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
+  (无 regex 开销, 等价语义).
+- P1-4 admin.go adminSettingsUpdate 逐 key db.Exec, 失败留下"前 N 个已保存"的半提交
+  脏状态 (5 个 key 第 3 个失败 → 1+2 已 UPSERT, 3+4+5 丢失). 修复: 单事务包裹
+  BeginTx + 循环 Exec + Commit, 失败 defer Rollback.
+- P1-5 main.go truncate `s[:n]` 字节切片 — 在 3-byte 中文 (UTF-8 continuation byte) 处会
+  切半, 输出孤立 continuation byte → 无效 UTF-8 / 模板渲染 U+FFFD. 修复: 用
+  utf8.RuneStart 回退 end 到 rune 起点; 新增 unicode/utf8 import.
+
+文件改动统计:
+- main.go: 1147 → 1174 行 (+27 行) — getSite err 检查 + homeHandler 路径 404 + getSearchViewData
+  likeSafe + truncate UTF-8 + utf8 import
+- admin.go: 3532 → 3554 行 (+22 行) — 4 处 INSERT 占位符修正 + tagStripRE/linkSchemePrefixRE
+  包级预编译 + adminSettingsUpdate 单事务 + 3 处 inline regexp → 包级
+- services/bridgeserver/bridgeserver.go: 823 → 832 行 (+9 行) — ReadTimeout/WriteTimeout +
+  panic recover 日志 + log import
+- services/fetch-relay/main.go: 316 → 327 行 (+11 行) — ssrfCheckProxy 函数 + proxy SSRF 守卫
+- services/deqixs-proxy/main.go: 362 → 365 行 (+3 行) — healthCheck goroutine recover
+- services/xjp-proxy/main.go: 582 → 586 行 (+4 行) — healthCheck goroutine recover
+
+未修改 (尊重约束):
+- go-backend/crawl/* (B agent 负责) ✓
+- go-backend/templates/* (已完成) ✓
+- src/* (旧 TS 代码, C agent 清理) ✓
+
+验证:
+- go build -o heis-backend . → 0 errors, binary 24,145,205 bytes (24.1MB)
+- go vet ./... → 0 warnings (主包 + 9 mini-services + bridgeserver 全 pass)
+- 端到端 curl 测试:
+  · GET /health → {"lang":"go","memMB":17,"ok":true}
+  · GET /?view=home → 200 + 6717 bytes HTML
+  · GET /random-spam-url → 404 page not found (R42-1A homeHandler 修复验证)
+  · GET /api/admin/health → {ok:true,data:{lang,memMB,time}}
+  · GET /api/admin/backup → 200 + 15.5MB JSON (version=1, counts={books:1, chapters:1836, ...})
+  · POST /api/admin/backup/restore?dryRun=1 → {ok:true,data:{dryRun:true,imported:0,...}}
+  · POST /api/admin/backup/restore (real) → {ok:true,data:{imported:8}} (R42-1A SQL 占位符
+    修复端到端验证 — Site 时间戳正确入库为 "2026-09-21 16:00:00" 而非字面串 "datetime('now')")
+  · 临时数据已清理 (sqlite3 Python 模块 DELETE 全 r42test* 测试数据, 验证 0 行残留)
+
+Stage Summary:
+- 第二轮深度审查 3 文件 + 9 mini-services (1147+3532+823+8 services ≈ 9000 行), 抓 P0/P1 bug
+  共 10 大类, 修复全部落地. 编译 0 errors, vet 0 warnings, binary 24.1MB. 端到端 7 个 curl
+  测试全 HTTP 200/404, 备份恢复 real run imported=8 (含 Site 时间戳正确入库). 核心修复:
+  ① admin.go 4 处 INSERT SQL 占位符不匹配 (Chapter 15?→13?, Task 31?→27?, Book 18?→16?,
+  Site datetime('now') 字面串→nullIfEmpty(s.CreatedAt/UpdatedAt)) — R41-1B 标记修复但实际未改,
+  本轮真正落地; ② main.go homeHandler catch-all SEO 垃圾 (任意 URL 返回 200 home) → 404;
+  ③ main.go getSearchViewData LIKE 未 escape (q="%" 匹配所有书) → likeSafe + ESCAPE;
+  ④ main.go getSite rows2 nil defer panic → 显式 err 检查; ⑤ main.go truncate 字节切片
+  切半中文 → utf8.RuneStart 回退到 rune 起点; ⑥ bridgeserver http.Server 缺 ReadTimeout/
+  WriteTimeout (DoS) → 补 35s/35s; ⑦ bridgeserver panic recover 透传 panic 值给客户端 →
+  日志写完整, 客户端仅见 "internal error"; ⑧ fetch-relay 缺 proxy URL SSRF 守卫 → 加
+  ssrfCheckProxy; ⑨ xjp-proxy + deqixs-proxy healthCheck goroutine 无 panic recover →
+  probeInProgress 永卡 true, 后续 /health 永远返回陈旧数据; ⑩ admin.go inline regexp.MustCompile
+  × 3 处 (adminNote 剥 HTML / normalizeLinkURL scheme / normalizeLinkLogo http) → 包级预编译
+  + adminSettingsUpdate 单事务包裹. 详细工作记录: agent-ctx/R42-1A-full-stack-developer.md

@@ -15,6 +15,7 @@ import (
         "runtime"
         "strconv"
         "strings"
+        "unicode/utf8"
 
         _ "modernc.org/sqlite"
 )
@@ -276,6 +277,12 @@ func main() {
 // homeHandler 首页 + 视图路由 (/?view=home|book|read|category|ranking|fulltext|search|keyword)
 // R38-1B: 扩展为按 view 参数渲染对应主题模板
 func homeHandler(w http.ResponseWriter, r *http.Request) {
+        // R42-1A: 仅根路径 "/" 接受; 其它未匹配路径 (如 /random-spam-url) 应返回 404 而非 200 home
+        //         (防 SEO 垃圾 - 否则攻击者可声明无限 URL 空间都被搜索引擎索引为同款首页)
+        if r.URL.Path != "/" {
+                http.NotFound(w, r)
+                return
+        }
         view := r.URL.Query().Get("view")
         if view == "" {
                 view = "home"
@@ -563,8 +570,12 @@ func getSite(siteID string) (map[string]interface{}, error) {
                 rows.Scan(&id, &name, &domain, &themeId, &isDefault, &title, &desc, &kw, &offset)
                 return map[string]interface{}{"ID": id, "Name": name, "Domain": domain, "ThemeID": themeId, "IsDefault": isDefault, "Title": title, "Description": desc, "Keywords": kw, "Offset": offset}, nil
         }
-        // fallback 第一个
-        rows2, _ := db.Query(q + ` LIMIT 1`)
+        // fallback 第一个 (R42-1A: 显式 err 检查防 nil rows2.Close() panic; 之前 _ 忽略 err →
+        //                  若 db.Query 失败 rows2 为 nil, defer rows2.Close() 在 nil 上调用 panic)
+        rows2, qErr := db.Query(q + ` LIMIT 1`)
+        if qErr != nil {
+                return nil, qErr
+        }
         defer rows2.Close()
         for rows2.Next() {
                 var id, name, domain, themeId, title, desc, kw string
@@ -702,11 +713,25 @@ func writeJSON(w http.ResponseWriter, v interface{}) {
         json.NewEncoder(w).Encode(v)
 }
 
+// truncate 按字节截断到 n, 但回退到最后一个完整 UTF-8 rune 边界 (防中文等
+// 多字节字符被切半造成乱码 / 无效 UTF-8 输出 / 模板渲染 U+FFFD).
+// R42-1A: 之前直接 s[:n] 在 3-byte 中文处会切出孤立 continuation byte.
 func truncate(s string, n int) string {
+        if n <= 0 {
+                return ""
+        }
         if len(s) <= n {
                 return s
         }
-        return s[:n]
+        // 回退 end 到 rune 起点 (防切到 multi-byte rune 中间的 continuation byte).
+        // s[end] 若是 continuation byte (10xxxxxx) 则继续向前找.
+        end := n
+        for end > 0 && !utf8.RuneStart(s[end]) {
+                end--
+        }
+        // 此时 s[end] 是 rune 起点 (或 end==0). 但若 end 处的 rune 跨越 end+(1..4) 字节,
+        // 切到 end 仍是该 rune 起点, 不会切半; 该 rune 整体被丢弃 (好).
+        return s[:end]
 }
 
 func getMemMB() uint64 {
@@ -1081,12 +1106,13 @@ func getFulltextViewData(page, size int) ([]map[string]interface{}, int) {
 }
 
 // getSearchViewData 搜索: name/author/intro/keywords LIKE %q%
+// R42-1A: 用 likeSafe 转义 q 中的 % _ \ 防 wildcard 滥用 (q="%" 时不能匹配所有书)
 func getSearchViewData(q string, limit int) []map[string]interface{} {
-        if q == "" {
+        if q = strings.TrimSpace(q); q == "" {
                 return []map[string]interface{}{}
         }
-        like := "%" + q + "%"
-        rows, err := db.Query(`SELECT b.id,b.name,b.author,b.intro,b.cover,b.status,b.wordCount,b.latestChapter,COALESCE(c.name,'未分类'),b.categoryId,b.updatedAt FROM Book b LEFT JOIN Category c ON b.categoryId=c.id WHERE b.name LIKE ? OR b.author LIKE ? OR b.intro LIKE ? OR b.keywords LIKE ? ORDER BY b.wordCount DESC LIMIT ?`, like, like, like, like, limit)
+        like := "%" + likeSafe(q) + "%"
+        rows, err := db.Query(`SELECT b.id,b.name,b.author,b.intro,b.cover,b.status,b.wordCount,b.latestChapter,COALESCE(c.name,'未分类'),b.categoryId,b.updatedAt FROM Book b LEFT JOIN Category c ON b.categoryId=c.id WHERE b.name LIKE ? ESCAPE '\' OR b.author LIKE ? ESCAPE '\' OR b.intro LIKE ? ESCAPE '\' OR b.keywords LIKE ? ESCAPE '\' ORDER BY b.wordCount DESC LIMIT ?`, like, like, like, like, limit)
         if err != nil {
                 return []map[string]interface{}{}
         }

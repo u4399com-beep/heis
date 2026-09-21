@@ -836,6 +836,9 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) error {
                 // (stats.Errors / stats.ChaptersUpdated / consecutiveErrs / done /
                 //  progress.ContentDone / bookDoneMap 都是跨 goroutine 共享)
                 var batchMu sync.Mutex
+                // R42-1B: budgetExceeded 标志 (CrawlChapterContent 返回的 "other" 含 BudgetExceeded
+                // 时, 由 goroutine 写此标志, 主循环 wg.Wait() 后检查并上抛任务级)
+                var budgetExceeded atomic.Bool
 
                 for len(globalQueue) > 0 {
                         if rt.IsStopped() || rt.IsStale(myEpoch) {
@@ -900,15 +903,31 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) error {
                                                 case "hostgate":
                                                         logf(LogWarn, "%s", msg)
                                                 case "other":
-                                                        stats.Errors++
-                                                        consecutiveErrs++
-                                                        logf(LogError, "%s", msg)
+                                                        // R42-1B: 检测 BudgetExceeded 并上抛任务级
+                                                        // (CrawlChapterContent 内部 CheckBudget 失败时返回 "other" + BudgetExceeded msg)
+                                                        if strings.Contains(msg, "BudgetExceeded") {
+                                                                budgetExceeded.Store(true)
+                                                                logf(LogError, "🔴 预算超限: %s", msg)
+                                                        } else {
+                                                                stats.Errors++
+                                                                consecutiveErrs++
+                                                                logf(LogError, "%s", msg)
+                                                        }
                                                 }
                                         }
                                         batchMu.Unlock()
                                 }(q)
                         }
                         wg.Wait()
+
+                        // R42-1B: 预算超限上抛任务级 (CrawlChapterContent 内部 CheckBudget
+                        // 失败时, goroutine 在 "other" case 设置 budgetExceeded 标志, 此处
+                        // wg.Wait() happens-after, 安全读取)
+                        if budgetExceeded.Load() {
+                                logf(LogError, "🔴 预算超限中止: 已超出最大请求数 %d", cfg.MaxRequests)
+                                saveProgress()
+                                return &BudgetExceeded{TaskID: cfg.TaskID, Count: int(atomic.LoadInt64(&rt.requestCount)), Max: cfg.MaxRequests}
+                        }
 
                         // 连续错误熔断检查 (每批次末, 主循环读 consecutiveErrs 无锁 OK:
                         // 因为 wg.Wait() happens-before 这里, 所有 goroutine 写都已发布)
@@ -1332,10 +1351,20 @@ func FinalizeBook(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, m
 
 // ---------- 工具 ----------
 
-// truncate — 截断字符串到指定长度 (按字节, 简化实现).
+// truncate — 截断字符串到指定长度 (按 rune, 防中文 UTF-8 多字节字符被斩半).
+// R42-1B: 原实现按字节截断 s[:n], 对中文标题会留下非法 UTF-8 (代理对/多字节字符斩半),
+//         导致 log 输出乱码 + 部分下游 utf8.Valid 校验失败. 改用 utf8.RuneCountInString +
+//         []rune 安全截断.
 func truncate(s string, n int) string {
+        if n <= 0 {
+                return ""
+        }
         if len(s) <= n {
                 return s
         }
-        return s[:n]
+        r := []rune(s)
+        if len(r) <= n {
+                return s
+        }
+        return string(r[:n])
 }
