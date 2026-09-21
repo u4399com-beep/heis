@@ -267,7 +267,7 @@ func main() {
         http.HandleFunc("/admin", adminPageHandler)
         http.HandleFunc("/admin/", adminPageHandler) // /admin/tasks, /admin/books, ...
 
-        addr := ":3001"
+        addr := ":3000"
         log.Printf("heis-backend 启动: http://localhost%s (内存 %dMB)", addr, getMemMB())
         if err := http.ListenAndServe(addr, nil); err != nil {
                 log.Fatal(err)
