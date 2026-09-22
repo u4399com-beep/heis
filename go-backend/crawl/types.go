@@ -441,7 +441,7 @@ func sanitizeFetchConfig(m map[string]any) FetchConfig {
         if v, ok := m["requestPriority"].(string); ok {
                 out.RequestPriority = safeStr(v, 20)
         }
-        if v, ok := m["proxyRotationStrategy"].(string); ok && (v == "round-robin" || v == "random" || v == "least-used") {
+        if v, ok := m["proxyRotationStrategy"].(string); ok && (v == "round-robin" || v == "random" || v == "least-used" || v == "least-latency") {
                 out.ProxyRotationStrategy = v
         }
         if v, ok := m["urls"].([]any); ok {

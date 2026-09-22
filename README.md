@@ -2,7 +2,7 @@
 
 规则驱动的小说采集与发布系统：管理端配置站点规则与采集任务，引擎按规则抓取（8 级降级链）、
 清洗、落库；前台站群（书城/书籍详情/阅读页/搜索/分类/排行榜/关键词聚合/全文搜索）直接消费
-库内数据。**R38–R48 已完成 Next.js → Go 全面迁移**：单二进制部署、运行期 17 MB 内存、
+库内数据。**R38–R50 已完成 Next.js → Go 全面迁移 + 安装教程重写**：单二进制部署、运行期 17 MB 内存、
 无 cgo / 无 Bun / 无 Node / 无 Docker 依赖。`heis-backend` 二进制已入 git（commit
 `29dcd99`），平台 `git clone` 后零编译直接运行 `./go-backend/heis-backend`。
 
@@ -212,8 +212,8 @@ mini-services/{start-all.sh,stop-all.sh,status.sh,.gitkeep}  # 11 服务启停�
 public/clone-css/*.css           # 10 个主题的源站 CSS (由 main.go /clone-css/ 路由服务)
 public/{robots.txt,sw.js,manifest.json,icon.svg,logo.svg}   # 站点元数据 (Next.js PWA 残留, 可选)
 Caddyfile                        # 沙箱网关 SSRF 防御配置 (端口白名单 3010-3015 + 透传 3000)
-agent-ctx/R*-*.md                # 各轮 agent 工作记录 (R38-R48, 22 文件)
-worklog.md                       # 完整迁移工作日志 (~19000 行, R3-a → R48-1B 全链路)
+agent-ctx/R*-*.md                # 各轮 agent 工作记录 (R38-R50, 23 文件)
+worklog.md                       # 完整迁移工作日志 (~19500 行, R3-a → R50-1C 全链路)
 DEPLOY.md                        # 生产部署详细教程 (systemd / 反代 / 备份 / 升级 / 故障排查)
 README.md                        # 本文件
 scripts/rule-yueyouxs.json       # yueyouxs (神马小说) 站点规则 backup-restore 格式 JSON (/api/admin/backup/restore 可导入; R47-1B 替代旧 .ts 种子脚本)
@@ -319,5 +319,5 @@ curl -s http://localhost:3000/api/admin/backup > backup-$(date +%F).json
 
 ---
 
-**项目版本**：R48-1B（纯 Go 栈，自 R38 起从 Next.js 全面迁移完成）。详细部署见 [DEPLOY.md](./DEPLOY.md)，
-完整工作日志见 [worklog.md](./worklog.md)（~19000 行，R3-a → R48-1B 全链路）。
+**项目版本**：R50-1C（纯 Go 栈，自 R38 起从 Next.js 全面迁移完成；R50-1C 重写 12 节安装部署教程 + 26 项反反爬清单 + 清理 .dockerignore/upload/tool-results 等过时产物）。详细部署见 [DEPLOY.md](./DEPLOY.md)，
+完整工作日志见 [worklog.md](./worklog.md)（~19500 行，R3-a → R50-1C 全链路）。

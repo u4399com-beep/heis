@@ -54,6 +54,11 @@ db/*.db-wal
 /data/
 backups/
 tmp/
+# download/ 与 upload/ 为运行时沙箱挂载/产物目录, 不入库 (R50-1C 清理)
+download/
+upload/
+# .tmp/ 为 agent 工作过程临时目录 (R50-1C 清理)
+.tmp/
 
 # ── mini-services 运行时 PID/日志 ──
 .zscripts/
