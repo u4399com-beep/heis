@@ -231,14 +231,15 @@ var EXTRA_AD_SELECTORS = []string{
 }
 
 // EXTRA_AD_PATTERNS — 内置额外广告正则文案 (与 cfg.AdPatterns 合并, 后于用户配置跑).
+//  R49-1B: 扩展 "下载APP..." 残留尾词 + "未完待续" 残留 + 本书/本站 首发 兜底.
 var EXTRA_AD_PATTERNS = []string{
         `本章未完.{0,8}点击下一页继续阅读`,
         `请记住本书.{0,12}域名`,
         `最新章节请到.{0,30}查看`,
         `一秒记住.{0,12}免费读`,
         `为您提供.{0,16}精彩小说`,
-        `本站(?:首发|更新最快|最新章节).{0,30}《`,
-        `下载(?:APP|客户端|手机版).{0,20}看`,
+        `本[书站](?:首发|更新最快|最新章节).{0,30}《`,
+        `下载(?:APP|客户端|手机版).{0,30}`,
         `扫码(?:关注|下载|领取).{0,20}`,
         `关注(?:微信公众号|公众号).{0,20}`,
         `加入书签.{0,15}继续阅读`,
@@ -246,6 +247,8 @@ var EXTRA_AD_PATTERNS = []string{
         `推荐阅读.{0,20}本书`,
         `本章(?:未完|未完待续|继续阅读).{0,8}`,
         `第[一二三四五六七八九十百千万0-9]+(?:章|节|回|话|集).{0,4}(?:未完|继续|下一页)`,
+        `未完待续.{0,12}`,
+        `本[书站].{0,4}(?:域名|网址|地址)[：:].{0,50}`,
         `友情链接[:：].{0,200}`,
         `(?:www\.)?[a-z0-9-]+\.(?:com|net|cc|org|info|top|xyz|vip|site)(?:首发|更新|整理|出品)`,
 }
@@ -268,6 +271,9 @@ var (
         plainTextScriptStyleTailRe = regexp.MustCompile(`(?is)<(?:script|style|noscript|iframe|object|embed)\b[^>]*>.*`)
         plainTextBrRe       = regexp.MustCompile(`(?i)<\s*br\s*/?\s*>`)
         plainTextBlockEndRe = regexp.MustCompile(`(?i)</(p|div|h[1-6]|li)>`)
+        // R49-1B: </a> 段间分隔 (小说章节 <a> 多为独立导航链接, 非内联;
+        //   让 <a>text</a> 独立成段, stripPlainTextPromoSegments 段级命中 navLinkRe 整段剥)
+        plainTextAnchorEndRe = regexp.MustCompile(`(?i)</a>`)
         plainTextTagStripRe = regexp.MustCompile(`<[^>]+>`)
 
         // cleanContentHtmlSync HTML 分支 (在函数内联, 每章节重编译. R47-1A 提为包级)
@@ -296,6 +302,10 @@ var (
         hasPOrBrRe     = regexp.MustCompile(`(?i)<(p|br)\b`)
         // 7. </p>\s*<p> 压缩
         pBoundaryRe   = regexp.MustCompile(`(?i)</p>\s*<p>`)
+
+        // R49-1B: NormalizeParagraphs 用的 Unicode 空格归一化 (NBSP/Ogham/各种 space/NNBSP/MMSP/全角空格)
+        //   原 \s+ 仅匹配 ASCII whitespace, 漏 U+00A0/U+1680/U+2000-U+200A/U+202F/U+205F/U+3000.
+        unicodeWsRe = regexp.MustCompile(`[\x{00A0}\x{1680}\x{2000}-\x{200A}\x{202F}\x{205F}\x{3000}]`)
 
         // R47-1A: CleanTextField / CleanIntro / stripTrailingPromo / stripLeadingMetadata
         //   内联 regexp 提为包级 (原每书/每章节都重编译, hot path GC 压力大)
@@ -365,37 +375,56 @@ func RemoveAdLines(text string, patterns []string) string {
 
 // ---------- 控制字符 + 零宽字符剥离 ----------
 
-// CcAndZwStripRe — 控制字符 (除 \t \n \r) + 零宽字符 (U+200B-C / U+2060 / U+FEFF) 剥离正则.
-//  含 U+2060 (Word Joiner, 与 downloader.ZW_CHARS 同口径).
+// CcAndZwStripRe — 控制字符 (除 \t \n \r) + 零宽字符 + 不可见排版字符剥离正则.
+//  R49-1B: 扩展覆盖范围 (原仅 C0 + U+200B-C/U+2060/U+FEFF). 新增:
+//   - U+007F (DEL), U+0080-U+009F (C1 控制: NEL 等 Windows 风格源站杂符)
+//   - U+00AD (Soft Hyphen — 段内连字符, 中文站罕见但偶发)
+//   - U+200E (LRM), U+200F (RLM) — 左右方向标记 (中英混排站偶发)
+//   - U+2028 (LSP), U+2029 (PSP) — Unicode 行/段分隔符
+//   - U+2061-U+2064 (Invisible Math Operators: f / a / d / =)
+//   - U+2066-U+2069 (Bidi Isolate Marks: LRI/RLI/FSI/PDI)
+//   (U+00A0 NBSP / U+3000 全角空格等 Unicode 空格不在此剥, 由 NormalizeParagraphs
+//    的 unicodeWsRe 归一化到 ASCII 空格.)
 //  R39-1C: Go RE2 不支持 \u 转义, 改用 \x{XXXX} 语法 (与 init 不再 panic).
-var CcAndZwStripRe = regexp.MustCompile(`[\x00-\x08\x0B\x0C\x0E-\x1F\x{200B}-\x{200D}\x{2060}\x{FEFF}]`)
+var CcAndZwStripRe = regexp.MustCompile(`[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\x{0080}-\x{009F}\x{00AD}\x{200B}-\x{200F}\x{2028}\x{2029}\x{2060}-\x{2069}\x{FEFF}]`)
 
-// ZWStripOnlyRe — 仅零宽字符 (用于纯文本字段, 不剥控制字符)
-var ZWStripOnlyRe = regexp.MustCompile(`[\x{200B}-\x{200D}\x{2060}\x{FEFF}]`)
+// ZWStripOnlyRe — 仅零宽字符 + 不可见排版字符 (用于纯文本字段, 不剥控制字符).
+//  R49-1B: 同 CcAndZwStripRe 的零宽部分扩展 (新增 LRM/RLM/SHY/LSP/PSP/invisible operators/Bidi isolate).
+var ZWStripOnlyRe = regexp.MustCompile(`[\x{00AD}\x{200B}-\x{200F}\x{2028}\x{2029}\x{2060}-\x{2069}\x{FEFF}]`)
 
-// CcStripOnlyRe — 仅控制字符 (\b 等源站杂符; \t\n\r 不在剥离类内)
-var CcStripOnlyRe = regexp.MustCompile(`[\x00-\x08\x0B\x0C\x0E-\x1F]`)
+// CcStripOnlyRe — 仅控制字符 (C0 + DEL + C1; \t\n\r 不在剥离类内).
+//  R49-1B: 扩展 C1 (U+0080-U+009F) + DEL (U+007F) 覆盖 (Windows 风格源站偶发 NEL 等).
+var CcStripOnlyRe = regexp.MustCompile(`[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\x{0080}-\x{009F}]`)
 
 // ---------- 段落规整 ----------
 
 // NormalizeParagraphs — 段落规整: 空行压缩 + 缩进统一 + 段内多换行压单空格.
-//  - 入参 s (任意换行形式: \r\n / \n / \r)
+//  - 入参 s (任意换行形式: \r\n / \n / \r / U+2028 / U+2029)
 //  - 出参按 \n\n 分段 (双换行段间分隔)
-//  - 段内多换行压单空格; 全角空格 U+3000 → 半角; 多空白合并
-// R47-1A: 内层 regexp (twoNewlineRe / wsCollapseRe) 提为包级预编译, 避免每次
-//   调用都重编译 (NormalizeParagraphs 是 hot path, 每章节正文 + 简介都跑).
+//  - 段内多换行压单空格; Unicode 空格 (NBSP/U+3000/U+2000-U+200A 等) → ASCII 空格; 多空白合并
+// R47-1A: 内层 regexp (twoNewlineRe / wsCollapseRe / unicodeWsRe) 提为包级预编译,
+//   避免每次调用都重编译 (NormalizeParagraphs 是 hot path, 每章节正文 + 简介都跑).
+// R49-1B: 预规范化换行符 (\r\n → \n / \r → \n / U+2028 → \n / U+2029 → \n\n),
+//   原 \r → 空格把 \r\n\r\n 拆成 "\n \n" (中间空格), 导致 \n{2,} 无法识别双换行段间分隔.
+//   新增 unicodeWsRe 替换 Unicode 空格 (NBSP/U+1680/U+2000-U+200A/U+202F/U+205F/U+3000)
+//   到 ASCII 空格, 原 \s+ 仅匹配 ASCII whitespace 漏掉这些 Unicode 空格.
 func NormalizeParagraphs(s string, separator string) string {
         if s == "" {
                 return ""
         }
+        // R49-1B: 预规范化换行 — \r\n → \n, \r → \n (Mac 经典), U+2028 (LSP) → \n, U+2029 (PSP) → \n\n
+        s = strings.ReplaceAll(s, "\r\n", "\n")
+        s = strings.ReplaceAll(s, "\r", "\n")
+        s = strings.ReplaceAll(s, "\u2028", "\n")
+        s = strings.ReplaceAll(s, "\u2029", "\n\n")
+        // R49-1B: Unicode 空格 → ASCII 空格 (\s+ 仅匹配 ASCII whitespace, 漏 NBSP 等)
+        s = unicodeWsRe.ReplaceAllString(s, " ")
         // 按双换行 (>=2 个连续换行) 分段
         segs := twoNewlineRe.Split(s, -1)
         out := []string{}
         for _, seg := range segs {
-                // 段内 \r → 空格, \n → 空格, U+3000 → 半角, 多空白合并
-                seg = strings.ReplaceAll(seg, "\r", " ")
+                // 段内 \n → 空格 (单行段); 多空白合并
                 seg = strings.ReplaceAll(seg, "\n", " ")
-                seg = strings.ReplaceAll(seg, "\u3000", " ")
                 seg = wsCollapseRe.ReplaceAllString(seg, " ")
                 seg = strings.TrimSpace(seg)
                 if seg != "" {
@@ -433,8 +462,12 @@ func cleanContentHtmlSync(raw string, cfg CleanConfig) string {
                 text = plainTextScriptStyleTailRe.ReplaceAllString(text, " ")
                 // 2. <br> → \n
                 text = plainTextBrRe.ReplaceAllString(text, "\n")
-                // 3. 块级闭合标签 → \n
-                text = plainTextBlockEndRe.ReplaceAllString(text, "\n")
+                // 3. 块级闭合标签 → \n\n (R49-1B: 原 \n 单换行让 </p><p> 间段合并;
+                //   改 \n\n 双换行让 NormalizeParagraphs \n{2,} 分段识别段间分隔)
+                text = plainTextBlockEndRe.ReplaceAllString(text, "\n\n")
+                // 3.5 </a> → \n\n (R49-1B: 让 <a>text</a> 独立成段,
+                //   stripPlainTextPromoSegments 段级命中 navLinkRe 整段剥)
+                text = plainTextAnchorEndRe.ReplaceAllString(text, "\n\n")
                 // 4. 剥全部标签
                 text = plainTextTagStripRe.ReplaceAllString(text, "")
                 // 5. 实体单遍解码
@@ -443,6 +476,9 @@ func cleanContentHtmlSync(raw string, cfg CleanConfig) string {
                 text = RemoveAdLines(text, cfg.AdPatterns)
                 // 7. 段落规整 (\n\n 分段)
                 text = NormalizeParagraphs(text, "\n\n")
+                // 7.5 段级水印/导航/推广段剥离 (R49-1B: 原 plainText 模式无 cheerio Each,
+                //   短段命中水印/导航词漏剥. 调 stripPlainTextPromoSegments 同 HTML 模式口径)
+                text = stripPlainTextPromoSegments(text)
                 // 8. 控制字符 + 零宽字符剥离
                 text = CcAndZwStripRe.ReplaceAllString(text, "")
                 return text
@@ -457,6 +493,22 @@ func cleanContentHtmlSync(raw string, cfg CleanConfig) string {
         root := doc.Find("#__clean_root")
         // 0. 硬移除脚本/样式类标签
         root.Find(`script, style, noscript, iframe, object, embed`).Remove()
+        // 0.5 移除隐藏元素 (R49-1B: [hidden] 属性 + style 含 display:none / visibility:hidden).
+        //   原 cleaner 仅剥 script/style, 源站常在正文容器内插 display:none 段投放 SEO 关键词
+        //   或暗广告. goquery Find 支持 [hidden] 属性选择器; style 属性需 Each + 字符串匹配
+        //   (Cascadia 的 [style*=...] 子串匹配大小写敏感 + 不处理空格变体, 故手动 ToLower + 去空格).
+        root.Find(`[hidden]`).Remove()
+        root.Find(`[style]`).Each(func(_ int, s *goquery.Selection) {
+                if len(s.Nodes) == 0 {
+                        return
+                }
+                style := strings.ToLower(s.AttrOr("style", ""))
+                styleNoSpace := strings.ReplaceAll(style, " ", "")
+                if strings.Contains(styleNoSpace, "display:none") ||
+                        strings.Contains(styleNoSpace, "visibility:hidden") {
+                        s.Remove()
+                }
+        })
         // 1. 移除指定选择器 (用户配置优先, 内置 EXTRA_AD_SELECTORS 后跑)
         mergedSelectors := []string{}
         mergedSelectors = append(mergedSelectors, cfg.RemoveSelectors...)
@@ -648,6 +700,8 @@ func CleanContentHtmlWithTrafilatura(ctx context.Context, raw string, cfgOverrid
                 text = T2SText(text)
                 text = RemoveAdLines(text, cfg.AdPatterns)
                 text = NormalizeParagraphs(text, "\n\n")
+                // R49-1B: 同 plainText 分支调 stripPlainTextPromoSegments 段级水印/导航剥离
+                text = stripPlainTextPromoSegments(text)
                 text = CcAndZwStripRe.ReplaceAllString(text, "")
                 if text != "" {
                         return text
@@ -674,6 +728,8 @@ func TryTrafilaturaFallback(ctx context.Context, html, cleaned string, cfg Clean
                 text = T2SText(text)
                 text = RemoveAdLines(text, cfg.AdPatterns)
                 text = NormalizeParagraphs(text, "\n\n")
+                // R49-1B: 同 plainText 分支调 stripPlainTextPromoSegments 段级水印/导航剥离
+                text = stripPlainTextPromoSegments(text)
                 text = CcAndZwStripRe.ReplaceAllString(text, "")
                 return text
         }
@@ -801,4 +857,43 @@ func collapseDupPunct(s string) string {
                 prev = r
         }
         return b.String()
+}
+
+// stripPlainTextPromoSegments — plainText 模式段级水印/导航/广告段剥离.
+//  plainText 分支无 cheerio DOM 段级 Each 能力, 改在 NormalizeParagraphs 输出
+//  (\n\n 分段) 上做段级扫描: 短段 ≤120 字 + 命中水印/导航/章节尾推广词 → 整段删.
+//  与 HTML 模式 watermarkDomainRe / watermarkPromoRe1..5 / navLinkRe / chapterTailRe 同口径.
+//  R49-1B: 新增 (原 plainText 模式仅 RemoveAdLines 行级正则清洗, 段级水印/导航漏剥,
+//   导致 plainText 站点 (JSON API / 纯文本响应) 残留 "下一页"/"目录"/"下载APP..."
+//   等短段污染正文). 同步接入 CleanContentHtmlWithTrafilatura / TryTrafilaturaFallback
+//   trafilatura 桥两条路径 (桥返回纯文本, 无 DOM, 与 plainText 分支同款问题).
+func stripPlainTextPromoSegments(text string) string {
+        if text == "" {
+                return ""
+        }
+        segs := twoNewlineRe.Split(text, -1)
+        out := make([]string, 0, len(segs))
+        for _, seg := range segs {
+                t := strings.TrimSpace(seg)
+                if t == "" {
+                        // 空段跳过 (NormalizeParagraphs 已过滤, 但安全起见再过滤)
+                        continue
+                }
+                rl := utf8.RuneCountInString(t)
+                if rl <= 120 {
+                        // 短段: 检测水印/导航/章节尾推广特征词 (与 HTML 模式 p.Each 同口径)
+                        if navLinkRe.MatchString(t) ||
+                                watermarkDomainRe.MatchString(t) ||
+                                watermarkPromoRe1.MatchString(t) ||
+                                watermarkPromoRe2.MatchString(t) ||
+                                watermarkPromoRe3.MatchString(t) ||
+                                watermarkPromoRe4.MatchString(t) ||
+                                watermarkPromoRe5.MatchString(t) ||
+                                chapterTailRe.MatchString(t) {
+                                continue // drop this segment
+                        }
+                }
+                out = append(out, seg)
+        }
+        return strings.Join(out, "\n\n")
 }

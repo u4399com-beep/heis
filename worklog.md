@@ -19198,3 +19198,190 @@ Stage Summary:
   / captcha 主备切换 → 三服务级联 / 代理 probe / probeTarget 轮换 / probe 头族
   / ThreadsMax=0 兜底 / .env + .gitignore + README + DEPLOY 纯 Go 化).
 - 详细工作记录: agent-ctx/R48-1A-full-stack-developer.md
+
+---
+Task ID: R49-1B
+Agent: full-stack-developer (采集规则噪声清洗检查)
+Work Log:
+- 接 R48-1A 第八轮深度审查后, 本轮专门审查 cleaner.go 噪声清洗 + 53 条 enabled 采集规则
+  的 clean 配置完整性, 抓 R47/R48 后清洗链边缘 case 共 7 P2/P3 bug 全部修复落地.
+
+- ① cleaner.go 逻辑审查 (8 模块 + 899 行 ~R48 后):
+  - 审查覆盖 7 维度: 段落规整 / 空行压缩 / 缩进统一 / 零宽字符剥离 / 水印段识别 /
+    广告剥离 / HTML 消毒 / trafilatura 桥调用.
+  - 已实现 (R38-1C 起逐轮加固): DecodeEntitiesOnce 实体单遍解码防链式二次 /
+    RemoveAdLines URL 保护 + EXTRA_AD_PATTERNS + ReDoS 闸门 / cleanContentHtmlSync
+    plainText 与 HTML 双分支 / NormalizeParagraphs 空行压缩 + 全角空格归一化 /
+    CcAndZwStripRe + ZWStripOnlyRe + CcStripOnlyRe 三档剥离 / HTML 模式 watermarkDomainRe
+    + watermarkPromoRe1..5 + navLinkRe + chapterHeadCNRe/ENRe + chapterTailRe 段级
+    水印/导航/章节号剥离 / EXTRA_AD_SELECTORS 容器选择器 / 白名单属性消毒 (a href /
+    img src 必须 http(s)) / collapseDupPunct 重复标点压缩 / CleanContentHtmlWithTrafilatura
+    + TryTrafilaturaFallback 桥两条路径 / CheckTrafilaturaBridge 60s 可用性缓存.
+
+- ② 53 条 enabled Rule 配置审查 (DB Rule 表):
+  - 用 `bun -e` + bun:sqlite 查全部 Rule, 统计 TOTAL=71 / ENABLED=53.
+  - 53 条 enabled 规则全部带 clean 配置 (removeSelectors + adPatterns + whitelist +
+    normalize + plainText), 仅 1 条 [知轩藏书] 因 TXT 资源站无 content.fields.content
+    (合理, 跳过正文清洗).
+  - 16 条带 content.fields.content 选择器规则中: 11 条 plainText=false (HTML 模式
+    CSS 选择器), 5 条 plainText=true (JSON API: 笔趣阁bqg713 / 得奇小说 / 七猫官方 /
+    番茄小说聚合 / 新键盘首页). 其余 37 条为 "首页最近更新" 列表规则 (无正文选择器, 合理).
+  - 配置无需补: EXTRA_AD_PATTERNS 内置兜底覆盖所有规则的常见水印/广告文案.
+
+- ③ 测试噪声清洗效果 (Go test 程序 /tmp/heis-test/test_cleaner.go + test2/3/4.go):
+  - test1: 综合 HTML 含 Windows \r\n\r\n + 零宽 U+200B/U+2060/U+FEFF + NBSP U+00A0 +
+    LRM/RLM U+200E/U+200F + 水印段 + 广告段 + 隐藏 display:none 段 + 导航 <a> + 重复 <br>.
+  - test2: 隔离测试 (Windows \r\n\r\n 段落 / NBSP / plainText 模式 <a> 链接 / hidden 元素).
+  - test3: 真实笔趣阁系章节 HTML 风格 (含 <title>/<header>/<footer>/<script>/
+    .ad-container/导航 <a>/水印段/广告段/隐藏段).
+  - test4: JSON API plainText 模拟 (\r\n\r\n 段间 + 零宽 + NBSP + 水印 + 广告).
+
+  - 抓出 7 P2/P3 bug (修前测试输出 vs 修后对比):
+    · BUG-1 (P2): NormalizeParagraphs 把 \r → 空格, 导致 \r\n\r\n (Windows 风格) 拆成
+      "\n \n" (中间空格), \n{2,} 无法识别双换行段间分隔, 整段合并. (test2 修前
+      "第一段 第二段 第三段" → 修后 "第一段\n\n第二段\n\n第三段")
+    · BUG-2 (P2): \s+ 默认仅匹配 ASCII whitespace, 漏 NBSP U+00A0 / Ogham U+1680 /
+      各种 space U+2000-U+200A / NNBSP U+202F / MMSP U+205F / 全角空格 U+3000. (test2
+      修前 "第一段\u00a0内容 第二段" → 修后 "第一段 内容\n\n第二段")
+    · BUG-3 (P2): CcAndZwStripRe 仅覆盖 C0 + U+200B-C/U+2060/U+FEFF, 漏 LRM U+200E /
+      RLM U+200F / Soft Hyphen U+00AD / DEL U+007F / C1 控制 U+0080-U+009F / LSP U+2028 /
+      PSP U+2029 / Invisible Math Operators U+2061-U+2064 / Bidi Isolate Marks U+2066-
+      U+2069. (test1 修前 "第三段附‎‏" 残留 LRM/RLM → 修后 "第三段附" 干净)
+    · BUG-4 (P2): plainText 模式 plainTextBlockEndRe 把 </p>|</div>|...|</li> → \n
+      (单换行), 导致 </p><p> 间段合并为一. (test1 plainText 修前 "第一段 第二段" 段合并 →
+      修后 "第一段\n\n第二段" 独立段)
+    · BUG-5 (P2): plainText 模式无 cheerio DOM 段级 Each 能力, 短段命中水印/导航词漏
+      剥 (HTML 模式有 watermarkDomainRe + watermarkPromoRe1..5 + navLinkRe + chapterTailRe
+      p.Each, plainText 模式仅 RemoveAdLines 行级正则, 段级水印/导航漏). (test1 plainText
+      修前 "下一页上一页目录" + "精彩小说" + "待续，点击下一页继续阅读" + "隐藏广告" 残留 →
+      修后全剥, 段级命中 navLinkRe/watermarkPromoRe 整段删)
+    · BUG-6 (P3): HTML 模式 cleaner 仅剥 script/style/noscript/iframe/object/embed, 未
+      剥隐藏元素 ([hidden] 属性 + style 含 display:none/visibility:hidden). 源站常在
+      正文容器内插 display:none 段投放 SEO 关键词或暗广告. (test2 hidden element 修前
+      "<p>隐藏广告段</p><p>可见正文段一</p><p>隐藏段落</p>" → 修后 "<p>可见正文段一</p>"
+      干净)
+    · BUG-7 (P3): EXTRA_AD_PATTERNS `下载(?:APP|客户端|手机版).{0,20}看` 用 "看" 锚
+      点过紧, "下载APP客户端看精彩小说" 仅剥到 "看" 残留 "精彩小说"; `第[0-9]+章.{0,4}
+      (?:未完|继续|下一页)` .{0,4} 过短, "第3章 未完待续，点击下一页继续阅读" 仅剥
+      "第3章 未完" 残留 "待续，点击下一页继续阅读". (test1 修前 "精彩小说" + "待续..."
+      残留 → 修后扩展 `下载...{0,30}` 无锚点 + 新增 `未完待续.{0,12}` 兜底全剥)
+
+- ④ 修复落地 (cleaner.go 9 处编辑, 899 行):
+  - Edit 1: EXTRA_AD_PATTERNS 扩展 (line 233-254)
+    · `下载(?:APP|客户端|手机版).{0,20}看` → `下载(?:APP|客户端|手机版).{0,30}` (去
+      "看" 锚点, 扩 20→30 字捕获)
+    · `本站(?:首发|更新最快|最新章节).{0,30}《` → `本[书站](?:首发|更新最快|最新章节)
+      .{0,30}《` (扩 "本站" → "本书/本站", 兼容本书首发...)
+    · 新增 `未完待续.{0,12}` (兜底残留 "未完待续，点击下一页...")
+    · 新增 `本[书站].{0,4}(?:域名|网址|地址)[：:].{0,50}` (本书域名：xxx 兜底)
+  - Edit 2: 新增包级预编译 unicodeWsRe (line 303-305)
+    · `[\x{00A0}\x{1680}\x{2000}-\x{200A}\x{202F}\x{205F}\x{3000}]` Unicode 空格归一化
+      (NBSP/Ogham/各种 space/NNBSP/MMSP/全角空格), 让 NormalizeParagraphs 在 \s+ 合并
+      之前先把 Unicode 空格转 ASCII 空格.
+  - Edit 3: 扩展 CcAndZwStripRe / ZWStripOnlyRe / CcStripOnlyRe (line 375-394)
+    · CcAndZwStripRe 新增: U+007F (DEL) + U+0080-U+009F (C1 控制) + U+00AD (Soft Hyphen)
+      + U+200E (LRM) + U+200F (RLM) + U+2028 (LSP) + U+2029 (PSP) + U+2061-U+2064
+      (Invisible Math Operators) + U+2066-U+2069 (Bidi Isolate Marks).
+    · ZWStripOnlyRe 同款扩展零宽部分.
+    · CcStripOnlyRe 扩展 C1 + DEL.
+  - Edit 4: NormalizeParagraphs 预规范化换行 + Unicode 空格归一化 (line 398-432)
+    · 预规范化: \r\n → \n / \r → \n (Mac 经典) / U+2028 (LSP) → \n / U+2029 (PSP) →
+      \n\n, 让段间分隔符统一为 \n{2,}.
+    · Unicode 空格 → ASCII 空格 (unicodeWsRe).
+    · 段内 \r → 空格改 \n → 空格 (单行段), 移除 \u3000 ReplaceAll (已由 unicodeWsRe
+      覆盖).
+  - Edit 5: 新增 plainTextAnchorEndRe (line 274-276)
+    · `(?i)</a>` 用于 plainText 模式让 <a>text</a> 独立成段, stripPlainTextPromoSegments
+      可段级命中 navLinkRe 整段剥.
+  - Edit 6: cleanContentHtmlSync plainText 分支 (line 460-478)
+    · step 3: plainTextBlockEndRe 替换从 "\n" 改 "\n\n" (双换行让段间分隔)
+    · 新增 step 3.5: plainTextAnchorEndRe → "\n\n"
+    · 新增 step 7.5: stripPlainTextPromoSegments 段级水印/导航剥离
+  - Edit 7: HTML 模式隐藏元素剥离 (line 490-505)
+    · `root.Find("[hidden]").Remove()` 处理 hidden 属性
+    · `root.Find("[style]").Each` + ToLower + 去空格 + Contains 检测 display:none /
+      visibility:hidden, s.Remove(). (不用 Cascadia [style*=...] 因大小写敏感 + 不
+      处理空格变体)
+  - Edit 8: CleanContentHtmlWithTrafilatura 桥路径接入 stripPlainTextPromoSegments
+    (line 697-698)
+  - Edit 9: TryTrafilaturaFallback 兜底路径接入 stripPlainTextPromoSegments (line 725-726)
+  - Edit 10: 新增 stripPlainTextPromoSegments 函数 (line 856-893)
+    · twoNewlineRe.Split 切段, 短段 ≤120 字 + 命中 navLinkRe / watermarkDomainRe /
+      watermarkPromoRe1..5 / chapterTailRe 任一 → 整段删.
+    · 与 HTML 模式 p.Each 同口径, 让 plainText 模式 (JSON API / 纯文本响应 / trafilatura
+      桥返回纯文本) 也能段级剥离水印/导航/广告段.
+
+- ⑤ 验证:
+  - cd /home/z/my-project/go-backend && ~/go/go/bin/go build -o heis-backend . → 0
+    errors, binary 24,287,512 bytes (24.3MB, R48-1A 24,277,730 + 9.8KB 因 EXTRA_AD_PATTERNS
+    扩 2 条 + unicodeWsRe +1 / CcAndZwStripRe 等 3 正则扩 +3 / NormalizeParagraphs 预规范化
+    +6 / plainTextAnchorEndRe +1 / stripPlainTextPromoSegments +38 / HTML 隐藏元素 Each +15 /
+    plainText 双换行 + step 3.5 +6 / 桥两条路径接入 +2).
+  - ~/go/go/bin/go vet ./... → 0 warnings (主包 + 11 services + bridgeserver + crawl 全 pass).
+  - PATH=$HOME/go/go/bin:$PATH ~/go/bin/staticcheck ./crawl/... . → 0 issues.
+  - heis-backend 重启: setsid ./heis-backend → 数据库 /home/z/my-project/db/custom.db
+    + heis-backend 启动 http://localhost:3000 (内存 13MB).
+  - 端到端 curl: GET /health → 200 {"lang":"go","memMB":13,"ok":true} ✓, GET /
+    → 200 ✓, GET /api/admin/health → 200 {"data":{"lang":"go","memMB":13,"ok":true,
+    "time":"2026-09-22T16:19:09Z"},"ok":true} ✓.
+  - test_cleaner.go (test1) 综合测试: 7 bug 全部修复, plainText 模式输出从 364 字符
+    残留 "下一页上一页目录" / "精彩小说" / "待续..." → 328 字符干净正文.
+  - test2.go 隔离测试: Windows \r\n\r\n 段落分离 ✓, NBSP 归一化 ✓, plainText 模式
+    <a> 导航剥离 ✓, HTML 模式 hidden 元素剥离 ✓.
+  - test3.go 真实笔趣阁系章节 HTML: HTML 模式全部噪声 (header/footer/script/ads/水印/
+    广告/隐藏段/导航 <a>/章节尾) 全剥, 仅留 10 段真实正文.
+  - test4.go JSON API plainText: \r\n\r\n 段落分离 ✓, 零宽字符剥离 ✓, NBSP 归一化 ✓,
+    水印 + 广告段全剥 ✓, 5 段真实正文保留.
+
+未修改 (尊重约束):
+- go-backend/main.go + admin.go (深度审查无 R48 后边缘 case) ✓
+- go-backend/templates/* (已完成) ✓
+- go-backend/crawl/{parser,hostgate,smart,storage,types,fetcher,runner}.go (types.go
+  / fetcher.go / runner.go / parser.go R48-1A 已加固, 本轮无边缘 case) ✓
+- go-backend/services/* 12 个 services (深度审查无边缘 case) ✓
+- agent-ctx/*.md (R38-R48 全部保留) ✓
+- prisma/schema.prisma + package.json + .gitignore + DEPLOY.md + README.md
+  0 改动 ✓
+- DB Rule 表 53 条 enabled 规则 0 改动 (clean 配置完整, 内置 EXTRA_AD_PATTERNS 兜底
+  覆盖所有常见水印/广告文案, 无需补充) ✓
+
+文件改动统计 (本 R49-1B 轮, 1 文件改动):
+- crawl/cleaner.go: 804 → 899 行 (+95 行, EXTRA_AD_PATTERNS 扩 2 条 +3 / unicodeWsRe
+  包级 +3 / CcAndZwStripRe 等 3 正则扩展注释 +10 / NormalizeParagraphs 预规范化 +6 /
+  plainTextAnchorEndRe +3 / cleanContentHtmlSync plainText 分支 step 3 双换行 + step
+  3.5 + step 7.5 +10 / HTML 模式隐藏元素 Each +15 / CleanContentHtmlWithTrafilatura
+  接入 +2 / TryTrafilaturaFallback 接入 +2 / stripPlainTextPromoSegments 函数 +38 /
+  注释扩 +3).
+- 总计 +95 行.
+
+Stage Summary:
+- 采集规则噪声清洗深度审查 ~899 行 cleaner.go + 53 条 enabled Rule 配置, 抓 R47/R48
+  后清洗链边缘 case 共 7 P2/P3 bug (Windows \r\n 段落合并 / Unicode 空格漏归一化 /
+  零宽字符扩展不全 / plainText 模式段合并 / plainText 模式段级水印/导航漏剥 / HTML
+  模式 hidden 元素漏剥 / 广告正则锚点过紧残留尾词). 全部修复落地.
+- 噪声清洗增强 6 大类: ① 零宽/不可见字符剥离扩展 (CcAndZwStripRe 从 C0 + U+200B-C/
+  U+2060/U+FEFF 扩到 C0+C1+DEL+SHY+LRM/RLM+LSP/PSP+invisible operators+Bidi isolate
+  13 类, 让中英混排站偶发的方向标记/连字符/数学不可见符/Bidi 隔离标记全剥); ② 段落
+  规整预规范化 (NormalizeParagraphs \r\n → \n / \r → \n (Mac) / U+2028 → \n / U+2029 →
+  \n\n 预规范化, 修复 Windows \r\n\r\n 段落合并 bug); ③ Unicode 空格归一化 (新增
+  unicodeWsRe 包级预编译, 让 \s+ 默认 ASCII whitespace 漏的 NBSP/Ogham/各种 space/
+  NNBSP/MMSP/全角空格全归一化为 ASCII 空格); ④ plainText 模式段保持 + 段级水印/导航
+  剥离 (plainTextBlockEndRe 替换从 \n 改 \n\n 让 </p><p> 间段独立 + 新增 plainTextAnchorEndRe
+  让 <a>text</a> 独立成段 + 新增 stripPlainTextPromoSegments 函数段级命中 navLinkRe /
+  watermarkDomainRe / watermarkPromoRe1..5 / chapterTailRe 整段剥, 与 HTML 模式 p.Each
+  同口径); ⑤ HTML 模式隐藏元素剥离 ([hidden] 属性 + style 含 display:none/visibility:hidden
+  的元素全删, 防源站 SEO 关键词/暗广告污染正文); ⑥ 广告正则扩展 (下载...{0,30} 去
+  "看" 锚点扩捕获 + 未完待续.{0,12} 兜底残留 + 本书/本站 首发/域名/地址 兜底).
+- 桥两条路径 (CleanContentHtmlWithTrafilatura / TryTrafilaturaFallback) 同步接入
+  stripPlainTextPromoSegments, trafilatura 桥返回纯文本也能段级剥离水印/导航.
+- 编译 0 errors, vet 0 warnings, staticcheck 0 issues, binary 24.3MB (+9.8KB).
+  heis-backend 启动 :3000 + 3 端点 curl 全 200 (/health, /, /api/admin/health).
+  4 个 test 程序 (test_cleaner.go + test2/3/4.go) 全部 7 bug 修复验证通过.
+- 核心保留 R38-R48 全部修复 (DecodeEntitiesOnce 单遍解码 / RemoveAdLines URL 保护 +
+  ReDoS 闸门 / cleanContentHtmlSync plainText 与 HTML 双分支 / 三档剥离正则 / HTML
+  模式 watermarkDomainRe + watermarkPromoRe1..5 + navLinkRe + chapterHeadCNRe/ENRe
+  + chapterTailRe / EXTRA_AD_SELECTORS / 白名单属性消毒 / collapseDupPunct / 桥 60s
+  可用性缓存 + 进程级 http.Client 复用 globalTransport / R47-1A 包级预编译 hot path
+  regexp / R48-1A utls 21→24 池 + TLS session ticket 持久化 + 三服务级联 captcha +
+  probe 头族补全 + Bezier 微抖 + bell curve + hover + click 等).
+- 详细工作记录: 本 worklog 条目
