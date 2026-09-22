@@ -20,7 +20,7 @@
 </div>
 </div>
 <div class="nav-search">
-<form action="/search.html" class="search-dh"></form>
+<form action="/?view=search" class="search-dh"></form>
 </div>
 <div class="nav">
 <ul class="nav-menu-items">
@@ -39,10 +39,10 @@
 <div class="index-logo">
 <span class="logo-s">{{.Site.Name}}</span>
 </div>
-<form action="/search">
+<form action="/?view=search" method="get">
 <div class="search-main">
 <div class="search-box">
-<input class="search-input" type="search" name="searchkey" autocomplete="off" placeholder="搜索喜欢的小说、作者、标签">
+<input class="search-input" type="search" name="q" autocomplete="off" placeholder="搜索喜欢的小说、作者、标签">
 <button class="search-btn search-go" type="submit">搜索</button>
 </div>
 </div>

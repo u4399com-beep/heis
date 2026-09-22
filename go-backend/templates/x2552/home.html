@@ -16,10 +16,11 @@
 {{.Site.Name}}：免费小说阅读网 没有弹窗广告 好看的小说免费阅读
 </div>
 <div>
-<form target="_blank" action="/search" method="post" name="articlesearch" id="articlesearch">
+<form target="_blank" action="/?view=search" method="get" name="articlesearch" id="articlesearch">
+<input type="hidden" name="view" value="search">
 <input type="hidden" id="searchtype" name="searchtype" value="articlename">
 <dl class="fl searchbox">
-<dt><i></i><input type="text" name="searchkey"></dt>
+<dt><i></i><input type="text" name="q"></dt>
 <dd><a href="javascript:void(0);" class="so_book">搜书</a><a href="javascript:void(0);" class="so_author">搜作者</a></dd>
 </dl>
 </form>

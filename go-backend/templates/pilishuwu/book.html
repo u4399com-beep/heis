@@ -97,11 +97,11 @@
 <li>更新：{{fmtDate .Book.updatedAt}}</li>
 <li>最新：{{if .Book.latestChapter}}{{.Book.latestChapter}}{{else}}—{{end}}</li>
 </ul>
-<ul class="clear">
+<ul style="clear:both;">
 <li>字数：{{wordCount .Book.wordCount}}</li>
 <li>分类：{{.Book.category}}</li>
 </ul>
-<ul class="clear">
+<ul style="clear:both;">
 <li>作者：{{.Book.author}}</li>
 </ul>
 </div>
@@ -141,7 +141,7 @@
 {{end}}
 </ol>
 </div>
-<div class="clear"></div>
+<div style="clear:both;"></div>
 {{if .Chapters}}
 <div class="works-chapter-list-wr ui-left" style="width:100%;">
 <ol class="chapter-page-new works-chapter-list">
@@ -151,7 +151,7 @@
 </li>
 {{end}}
 </ol>
-<div class="clear"></div>
+<div style="clear:both;"></div>
 </div>
 {{end}}
 </div>

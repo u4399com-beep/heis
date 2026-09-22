@@ -16,8 +16,9 @@
 <span>{{.Site.Name}}</span>
 <p>{{.Site.Domain}}</p>
 </a>
-<form name="t_frmsearch" action="/search" method="get" onsubmit="return !!this.querySelector('[name=searchkey]').value">
-<input id="searchkey" name="searchkey" class="search_input" placeholder="搜索书名或作者" value="{{.Tag}}" autocomplete="off">
+<form name="t_frmsearch" action="/?view=search" method="get" onsubmit="return !!this.querySelector('[name=q]').value">
+<input type="hidden" name="view" value="search">
+<input id="searchkey" name="q" class="search_input" placeholder="搜索书名或作者" value="{{.Tag}}" autocomplete="off">
 <input type="hidden" name="searchtype" value="all">
 <button type="submit" id="search_btn" title="搜索"><i class="fa fa-search fa-lg"></i></button>
 </form>

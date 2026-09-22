@@ -30,11 +30,12 @@
 <li><a href="/?view=category"><span class="menu-icon iconfont icon-sort"></span><span class="menu-text">书库</span></a></li>
 <li><a href="/?view=fulltext"><span class="menu-icon iconfont icon-ai-book"></span><span class="menu-text">完本</span></a></li>
 <li><a href="/?view=history"><span class="menu-icon iconfont icon-yuedujilu"></span><span class="menu-text">历史</span></a></li>
-<li class="navbar-menu-search"><a href="/search"><span class="menu-icon iconfont icon-search"></span><span class="menu-text">搜索</span></a></li>
+<li class="navbar-menu-search"><a href="/?view=search"><span class="menu-icon iconfont icon-search"></span><span class="menu-text">搜索</span></a></li>
 </ul>
 </div>
-<form class="navbar-search" action="/search" method="get">
-<input class="navbar-search-input" type="text" placeholder="可搜书名、作者、角色" value="" name="keyword" id="searchkey" autocomplete="off" required>
+<form class="navbar-search" action="/?view=search" method="get">
+<input type="hidden" name="view" value="search">
+<input class="navbar-search-input" type="text" placeholder="可搜书名、作者、角色" value="" name="q" id="searchkey" autocomplete="off" required>
 <button class="navbar-search-btn" type="submit" aria-label="搜索"><span class="iconfont icon-search"></span></button>
 </form>
 </div>

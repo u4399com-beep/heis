@@ -13,8 +13,9 @@
 <header class="header">
 <div class="header-inner">
 <a href="/" class="logo"><strong>{{.Site.Name}}</strong><span>{{.Site.Domain}}</span></a>
-<form class="search" action="/search" method="get">
-<input type="text" name="searchkey" placeholder="可搜索小说名/作者名" autocomplete="off">
+<form class="search" action="/?view=search" method="get">
+<input type="hidden" name="view" value="search">
+<input type="text" name="q" placeholder="可搜索小说名/作者名" autocomplete="off">
 <button type="submit" >搜索</button>
 </form>
 <div class="header-right">

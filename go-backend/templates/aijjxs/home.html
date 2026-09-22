@@ -29,8 +29,8 @@
 <h1 class="logo">{{.Site.Name}}<small>{{.Site.Domain}}</small></h1>
 <div class="top-links">欢迎访问 {{.Site.Name}}，开始您的小说之旅</div>
 </div>
-<form class="search" action="/search" method="get">
-<input type="text" name="searchkey" placeholder="请输入书名或作者关键字">
+<form class="search" action="/?view=search" method="get">
+<input type="text" name="q" placeholder="请输入书名或作者关键字" autocomplete="off">
 <button type="submit">搜索全站</button>
 </form>
 </header>
