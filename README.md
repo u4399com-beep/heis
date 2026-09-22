@@ -2,7 +2,7 @@
 
 规则驱动的小说采集与发布系统：管理端配置站点规则与采集任务，引擎按规则抓取（8 级降级链）、
 清洗、落库；前台站群（书城/书籍详情/阅读页/搜索/分类/排行榜/关键词聚合/全文搜索）直接消费
-库内数据。**R38–R47 已完成 Next.js → Go 全面迁移**：单二进制部署、运行期 17 MB 内存、
+库内数据。**R38–R48 已完成 Next.js → Go 全面迁移**：单二进制部署、运行期 17 MB 内存、
 无 cgo / 无 Bun / 无 Node / 无 Docker 依赖。`heis-backend` 二进制已入 git（commit
 `29dcd99`），平台 `git clone` 后零编译直接运行 `./go-backend/heis-backend`。
 
@@ -16,15 +16,15 @@
   解析、CSS / XPath / regex / JSON 字段提取、分页与翻页 Referer 链、编码识别（GBK 自动转
   UTF-8）、正文清洗（广告模式 / 去壳页 / 零宽字符剥离 / trafilatura 桥）、分卷排序、并发限速
   + HostGate 双限速、封面本地化（webp）。
-- **8 级降级链**：native (utls 16 款 Hello 指纹池含 PSK / PQ) → curl (系统二进制 JA3 指纹) →
+- **8 级降级链**：native (utls 21 款 Hello 指纹池含 PSK / PQ / 老 iOS) → curl (系统二进制 JA3 指纹) →
   fetch-relay 中继桥 → Scrapling 桥（static / stealthy / playwright 三档）→ cloak-browser 隐身
   chromium 反检测渲染 → uc-bridge UC 头条桥 → moli-bridge moli 桥 → curl-impersonate curl_cffi
   JA3/JA4 桥，按站点防护级别自动降级，前级成功不降级。
-- **反反爬**：utls Hello 指纹池 16 款（R46-1B，含 Chrome PSK / PQ / Edge / iOS）+ per-host 钉扎
+- **反反爬**：utls Hello 指纹池 21 款（R47-1A，含 Chrome PSK / PQ / 老 iOS 五品牌）+ per-host 钉扎
   + attempts 偏移轮换 + TLS session ticket 缓存（模拟浏览器 ticket cache）+ JA3/JA4 轮换 +
-  Cookie 持久化（cf_clearance 跨子域合并）+ Referer 链伪造 + 重试退避（full jitter）+
-  Cookie/Token 挑战求解 + looksBlocked / looksLikeCaptcha 启发式拦截 + 2captcha 验证码（可选）+
-  代理池（MarkProxyFailed/OK 健康跟踪 + cooldown）。
+  Cookie 持久化（cf_clearance 跨子域合并 + stripPort 跨端口）+ Referer 链伪造 + 重试退避（full jitter）+
+  Cookie/Token 挑战求解 + looksBlocked / looksLikeCaptcha 启发式拦截 + 2captcha 验证码（可选 +
+  连续 3 次失败 60s cooldown）+ 代理池（MarkProxyFailed/OK 健康跟踪 + cooldown + 5 endpoint 轮选 probe）。
 - **站级签名/解密代理**：对 token / 签名 / AES 类站点以外置 Go mini-service 承载（见下表），
   引擎 `tokenUrl` 钩子对接。
 - **管理端**：14 个后台页面（dashboard / tasks / rules / books / categories / sites / links /
@@ -45,7 +45,7 @@
 | 语言 | Go（无 TypeScript / 无 JSX） |
 | 模板 | `html/template`（94 个，10 主题 × 8 页型 + 14 admin） |
 | 数据库 | modernc.org/sqlite v1.59.0（纯 Go SQLite，无 cgo）+ Prisma schema（仅建表用） |
-| 采集引擎 | `go-backend/crawl/*.go`（8 模块 8691 行，纯 Go 标准库 + goquery + utls + chromedp） |
+| 采集引擎 | `go-backend/crawl/*.go`（8 模块 9321 行，纯 Go 标准库 + goquery + utls + chromedp） |
 | mini-services | `go-backend/services/*/main.go`（11 个独立 Go 二进制，端口 3010–3020）+ bridgeserver 共享包 |
 | 部署 | 单二进制 + bash 脚本（start-all.sh / stop-all.sh / status.sh），无 Docker / 无 compose |
 
@@ -212,12 +212,12 @@ mini-services/{start-all.sh,stop-all.sh,status.sh,.gitkeep}  # 11 服务启停�
 public/clone-css/*.css           # 10 个主题的源站 CSS (由 main.go /clone-css/ 路由服务)
 public/{robots.txt,sw.js,manifest.json,icon.svg,logo.svg}   # 站点元数据 (Next.js PWA 残留, 可选)
 Caddyfile                        # 沙箱网关 SSRF 防御配置 (端口白名单 3010-3015 + 透传 3000)
-agent-ctx/R*-*.md                # 各轮 agent 工作记录 (R38-R47, 21 文件)
-worklog.md                       # 完整迁移工作日志 (~18500 行, R3-a → R47-1B 全链路)
+agent-ctx/R*-*.md                # 各轮 agent 工作记录 (R38-R48, 22 文件)
+worklog.md                       # 完整迁移工作日志 (~19000 行, R3-a → R48-1B 全链路)
 DEPLOY.md                        # 生产部署详细教程 (systemd / 反代 / 备份 / 升级 / 故障排查)
 README.md                        # 本文件
 scripts/rule-yueyouxs.json       # yueyouxs (神马小说) 站点规则 backup-restore 格式 JSON (/api/admin/backup/restore 可导入; R47-1B 替代旧 .ts 种子脚本)
-package.json                     # 仅保留 dev script = ./go-backend/heis-backend (平台 `bun run dev` 拉起 Go 后端; R47-1B 确认)
+package.json                     # 仅保留 scripts.dev 一项: auto-restart 包装 bash -c "while true; do ./go-backend/heis-backend; sleep 2; done" (进程异常退出后 2s 自动重启, 供平台 bun run dev 拉起)
 .env.example                     # 环境变量模板 (mini-services AUTH_TOKEN / BRIDGE_KEY / RATE_LIMIT 等)
 .env                             # 本机 .env (DATABASE_URL, .gitignore, 不入版本库)
 .gitignore                       # Go 构建产物 + 日志 + 运行时数据 + .env* 全忽略 (heis-backend 二进制以 git add -f 强制入 git, .gitignore 仅兜底)
@@ -251,7 +251,7 @@ package.json                     # 仅保留 dev script = ./go-backend/heis-back
 引擎对每个 URL 自动按下列顺序尝试，前级成功则不降级；全部失败才记为抓取失败：
 
 ```
-1. native              Go 标准库 net/http + utls Hello 指纹池 16 款 (R46-1B, 含 PSK/PQ/Edge)
+1. native              Go 标准库 net/http + utls Hello 指纹池 21 款 (R47-1A, 含 PSK/PQ/老 iOS)
 2. curl                系统 curl 二进制 (JA3 指纹绕过 Cloudflare 基础检测)
 3. fetch-relay         3011 中继桥 (代理池轮换)
 4. scrapling           3012 Scrapling 桥 (static → stealthy → playwright 三档)
@@ -265,13 +265,16 @@ package.json                     # 仅保留 dev script = ./go-backend/heis-back
 `MarkProxyFailed` 标记 cooldown，避免连续踩雷；恢复后 `MarkProxyOK` 清状态。R45-1C 起
 `DialTLSContext` 替代 deprecated `DialTLS`，支持 per-attempt timeout ctx cancel 立即断 dial。
 R46-1B 起新增 TLS session ticket 缓存（模拟浏览器行为，加速重连）+ 网络层错误不清 utls choice
-（仅 TLS handshake 失败才清，避免无效轮换）。
+（仅 TLS handshake 失败才清，避免无效轮换）。R47-1A 起 utls Hello 池扩 21 款（+Chrome
+100_PSK / 114_Padding_PSK_Shuf / 115_PQ_PSK + iOS 11_1 / 12_1）+ CookieJar stripPort 跨端口
+合并 + captcha 连续 3 次失败 60s cooldown + probe target 5 endpoint 轮选。
 
-## 反反爬能力（R38–R46 累计）
+## 反反爬能力（R38–R47 累计）
 
-- **utls Hello 指纹池**：R43-1B 起 4 款 → R45-1A 扩 12 款 → R46-1B 扩 16 款
+- **utls Hello 指纹池**：R43-1B 起 4 款 → R45-1A 扩 12 款 → R46-1B 扩 16 款 → R47-1A 扩 21 款
   （Chrome 102 / 106_Shuffle / 112_PSK_Shuf / 115_PQ / 120 / 120_PQ / 131 / 133 +
-  Firefox 99 / 102 / 105 / 120 + Safari 16.0 + iOS 13 / 14 + Edge 85）。
+  Firefox 99 / 102 / 105 / 120 + Safari 16.0 + iOS 13 / 14 + Edge 85 + R47-1A 新增 Chrome
+  100_PSK / 114_Padding_PSK_Shuf / 115_PQ_PSK + iOS 11_1 / 12_1）。
   per-host 钉扎（hash 稳定选取）+ attempts 偏移轮换（失败 N 次后偏移到下一号）。
 - **TLS session resumption**：R46-1B 起 `utls.NewLRUClientSessionCache(256)` 缓存
   session ticket，模拟浏览器 ticket cache 行为，加速重连 + 反"无 session ticket"识别。
@@ -316,5 +319,5 @@ curl -s http://localhost:3000/api/admin/backup > backup-$(date +%F).json
 
 ---
 
-**项目版本**：R47-1B（纯 Go 栈，自 R38 起从 Next.js 全面迁移完成）。详细部署见 [DEPLOY.md](./DEPLOY.md)，
-完整工作日志见 [worklog.md](./worklog.md)（~18500 行，R3-a → R47-1B 全链路）。
+**项目版本**：R48-1B（纯 Go 栈，自 R38 起从 Next.js 全面迁移完成）。详细部署见 [DEPLOY.md](./DEPLOY.md)，
+完整工作日志见 [worklog.md](./worklog.md)（~19000 行，R3-a → R48-1B 全链路）。

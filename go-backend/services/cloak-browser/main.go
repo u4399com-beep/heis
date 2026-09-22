@@ -618,6 +618,18 @@ func utf8ValidTruncate(s string, max int) string {
 //     scrollBy + 间隔 200-500ms, 模拟用户连续滚动.
 //   - 随机停顿 (300-800ms 总, 分 2-3 段): 真实用户阅读节奏不固定, 模拟多段
 //     阅读停顿.
+// R48-1A 反反爬增强 (任务要求 5: 行为模拟增强):
+//   - 每步 Bezier 点加 ±2-3px 微抖 (physiological tremor) — 真实用户鼠标有
+//     1-3px 生理抖动, 完美平滑 Bezier 曲线被 WAF 检测为 "数学轨迹 = 自动化".
+//     微抖让轨迹更接近真实用户.
+//   - 段间延迟改 bell curve (start/end 慢, 中段快) — 真实用户鼠标移动是
+//     "起步慢 → 加速 → 减速 → 停" 模式 (Fitts's law). 原 50-150ms 均匀分布
+//     被检测为 "匀速 = 自动化". bell curve 让中段 30-80ms 快, 两端 80-150ms 慢.
+//   - 轨迹起点 hover phase (200-400ms 短停顿) — 真实用户从静止到移动有 ~200ms
+//     反应时间. 直接开始 Bezier 移动被检测为 "无反应时间 = 自动化".
+//   - 30% 概率轨迹末 click (input.DispatchMouseEvent mousePressed/Released) —
+//     真实用户常在 mousemove 后 click 目标. 纯 mousemove 无 click 被检测为
+//     "无目标 = 自动化". click 后 100-300ms 短停顿 (用户阅读点击结果).
 func simulateHumanBehaviorActions() []chromedp.Action {
         actions := []chromedp.Action{}
         // 1. 多步滚动 (3 段 scrollBy + 间隔, 模拟用户连续滚动)
@@ -666,22 +678,80 @@ func simulateHumanBehaviorActions() []chromedp.Action {
         if ctrlY > 1030 {
                 ctrlY = 1030
         }
+        // R48-1A: 轨迹起点 hover phase (200-400ms 短停顿, 模拟用户反应时间)
+        //   原实现直接开始 Bezier 移动, 被检测为 "无反应时间 = 自动化".
+        //   加 hover phase 让 mousemove 起步更真实.
+        hoverMs := 200 + rand.Intn(201)
+        actions = append(actions, chromedp.Sleep(time.Duration(hoverMs)*time.Millisecond))
+        // 先 mouseMoved 到起点 (起始位置), 再开始 Bezier 轨迹
+        startXf := float64(startX)
+        startYf := float64(startY)
+        actions = append(actions, chromedp.ActionFunc(func(ctx context.Context) error {
+                return input.DispatchMouseEvent(input.MouseMoved, startXf, startYf).Do(ctx)
+        }))
+        actions = append(actions, chromedp.Sleep(time.Duration(80+rand.Intn(80))*time.Millisecond))
         steps := 5 + rand.Intn(4) // 5..8 步
+        // R48-1A: 30% 概率轨迹末 click (真实用户常 click 目标)
+        willClick := rand.Intn(10) < 3
         for i := 1; i <= steps; i++ {
                 t := float64(i) / float64(steps)
                 // Quadratic Bezier: B(t) = (1-t)^2 * P0 + 2(1-t)t * P1 + t^2 * P2
                 // R47-1A: 闭包捕获 xVal/yVal (Go 1.22+ 循环变量 per-iteration 安全)
                 xVal := (1-t)*(1-t)*float64(startX) + 2*(1-t)*t*float64(ctrlX) + t*t*float64(endX)
                 yVal := (1-t)*(1-t)*float64(startY) + 2*(1-t)*t*float64(ctrlY) + t*t*float64(endY)
-                // R47-1A: CDP-native input.DispatchMouseEvent(MouseMoved, x, y)
+                // R48-1A: 每步加 ±2-3px 微抖 (physiological tremor)
+                //   真实用户鼠标有 1-3px 生理抖动, 完美平滑 Bezier 被检测为
+                //   "数学轨迹 = 自动化". 微抖让轨迹更接近真实用户.
+                jitterX := float64(rand.Intn(7) - 3) // -3..+3
+                jitterY := float64(rand.Intn(7) - 3)
+                xVal += jitterX
+                yVal += jitterY
+                // R48-1A: CDP-native input.DispatchMouseEvent(MouseMoved, x, y)
                 //   isTrusted=true, 与真实用户事件无差异. 原 JS MouseEvent 的
                 //   isTrusted=false 被 Cloudflare Bot Management 等 WAF 检测为 bot.
                 actions = append(actions, chromedp.ActionFunc(func(ctx context.Context) error {
                         return input.DispatchMouseEvent(input.MouseMoved, xVal, yVal).Do(ctx)
                 }))
-                // 每步 50-150ms (鼠标移动间隔)
-                stepSleepMs := 50 + rand.Intn(101)
+                // R48-1A: 段间延迟改 bell curve (start/end 慢 80-150ms, 中段快 30-80ms)
+                //   真实用户鼠标移动是 "起步慢 → 加速 → 减速 → 停" 模式 (Fitts's law).
+                //   原 50-150ms 均匀分布被检测为 "匀速 = 自动化".
+                //   bell curve: t∈(0,1), delay = base + 70 * (2t-1)^2 (start/end 慢, 中段快)
+                //   base=30ms, max=30+70=100ms (中段) → 30+70=100ms (两端)
+                //   实际值: t=0.5 → 30ms (中段快), t=0/1 → 100ms (两端慢)
+                bellDelay := 30.0 + 70.0*(2*t-1)*(2*t-1)
+                if bellDelay < 30 {
+                        bellDelay = 30
+                }
+                if bellDelay > 150 {
+                        bellDelay = 150
+                }
+                // 加 ±20ms 随机扰动避免完全确定性
+                stepSleepMs := int(bellDelay) + rand.Intn(41) - 20
+                if stepSleepMs < 20 {
+                        stepSleepMs = 20
+                }
                 actions = append(actions, chromedp.Sleep(time.Duration(stepSleepMs)*time.Millisecond))
+        }
+        // R48-1A: 30% 概率轨迹末 click (mousePressed + mouseReleased)
+        //   真实用户常在 mousemove 后 click 目标. 纯 mousemove 无 click 被检测为
+        //   "无目标 = 自动化". click 间隔 50-150ms (press → release).
+        if willClick {
+                clickX := float64(endX)
+                clickY := float64(endY)
+                // mousePressed
+                actions = append(actions, chromedp.ActionFunc(func(ctx context.Context) error {
+                        return input.DispatchMouseEvent(input.MousePressed, clickX, clickY).
+                                WithButton(input.Left).WithClickCount(1).Do(ctx)
+                }))
+                // press → release 间隔 50-150ms (真实用户 press-release 时间)
+                actions = append(actions, chromedp.Sleep(time.Duration(50+rand.Intn(101))*time.Millisecond))
+                // mouseReleased
+                actions = append(actions, chromedp.ActionFunc(func(ctx context.Context) error {
+                        return input.DispatchMouseEvent(input.MouseReleased, clickX, clickY).
+                                WithButton(input.Left).WithClickCount(1).Do(ctx)
+                }))
+                // click 后阅读停顿 100-300ms
+                actions = append(actions, chromedp.Sleep(time.Duration(100+rand.Intn(201))*time.Millisecond))
         }
         // 3. 随机停顿 300-800ms (模拟用户阅读节奏, 总停顿分散在 2 段)
         pauseSegments := 1 + rand.Intn(2) // 1..2 段

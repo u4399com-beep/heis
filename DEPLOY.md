@@ -5,8 +5,9 @@
 > 3010–3020，已 R43-1C 全删旧 TS/Python 版本）+ bridgeserver 共享包。Go 二进制单文件部署，
 > **无 cgo、无 Bun、无 Node、无 Docker 依赖**，运行期内存 17 MB（vs 旧 Next.js 2.2 GB），
 > 单机即可承载。（R46-1A 起项目根目录已彻底删除 Next.js/Bun/Docker 残留，纯 Go 栈；R47-1B
-> 起根 `package.json` 仅保留 `scripts.dev = ./go-backend/heis-backend` 供平台 `bun run dev`
-> 拉起，heis-backend 二进制已入 git 可 clone 即跑。）
+> 起根 `package.json` 仅保留 `scripts.dev` 一项供平台 `bun run dev` 拉起：auto-restart 包装
+> `bash -c "while true; do ./go-backend/heis-backend; sleep 2; done"`，进程异常退出后 2s 自动
+> 重启；heis-backend 二进制已入 git（commit `29dcd99`）可 clone 即跑。）
 
 ---
 
@@ -299,7 +300,7 @@ R47-1B 将仅剩的 `seed-rule-yueyouxs.ts` 转为 portable JSON `scripts/rule-y
               ┌───────────────────────┐
               │  采集引擎 crawl/        │  (9321 行 Go)
               │  ───────────────────  │
-              │  fetcher.go  3615 行  │  ← 8 级降级链总调度 (R45-1C DialTLSContext + R46-1B utls 16 池/session cache + brotli miss + 代理 probe + captcha 成功率 + R47-1A cookie 跨子域 stripPort)
+              │  fetcher.go  3615 行  │  ← 8 级降级链总调度 (R45-1C DialTLSContext + R46-1B utls 16 池/session cache + brotli miss + 代理 probe + captcha 成功率 + R47-1A cookie 跨子域 stripPort + utls 池扩 21 款 + captcha 连续失败 cooldown + probe target 轮换)
               │  parser.go   1612 行  │  ← css/xpath/regex/json 提取
               │  runner.go   1481 行  │  ← 4 段采集流程 + 任务调度 (R45-1A defer recover + R46-1B ThreadsMax 兜底 + R47-1A 删 `_ = i` dead code)
               │  cleaner.go   804 行  │  ← 广告/去壳/编码/trafilatura (R45-1C collapseDupPunct + R47-1A ~40 段 regexp 预编译)
@@ -309,12 +310,12 @@ R47-1B 将仅剩的 `seed-rule-yueyouxs.ts` 转为 portable JSON `scripts/rule-y
               │  smart.go     310 行  │  ← LLM 智能分类/完结判断 (R45-1A 正则缓存)
               │                       │
               │  反反爬:              │
-              │    utls Hello 指纹池  │  (R43-1B → R45-1A 12 款 → R46-1B 16 款, 含 PSK/PQ)
+              │    utls Hello 指纹池  │  (R43-1B → R45-1A 12 款 → R46-1B 16 款 → R47-1A 21 款, 含 PSK/PQ)
               │    JA3/JA4 轮换       │
               │    TLS session cache │  (R46-1B, 模拟浏览器 ticket 缓存)
               │    brotli miss 计数  │  (R46-1B, 识别需走桥的 host)
-              │    代理主动 probe     │  (R46-1B, 5min 间隔 + 3 次失败冷却)
-              │    captcha 成功率    │  (R46-1B, 主服务成功率统计 + 自动切换)
+              │    代理主动 probe     │  (R46-1B 5min 间隔 + 3 次失败冷却; R47-1A probe target 轮换 5 endpoint)
+              │    captcha 成功率    │  (R46-1B 主服务成功率统计 + 自动切换; R47-1A 连续 3 次失败 60s cooldown)
               │    Cookie 持久化      │
               │    Referer 链伪造     │
               │    2captcha 验证码    │  (R43-1B, 可选)
@@ -582,7 +583,7 @@ sudo systemctl restart heis-backend
 | 采集引擎 | TS（src/lib/crawl/*，8302 行，已 R42-1C 删） | Go（go-backend/crawl/*，9321 行） |
 | mini-services | 5 Bun + 1 Python（已删） | 11 Go 二进制（端口 3010-3020）+ bridgeserver 共享包 |
 | 降级链 | 5 级 | **8 级**（+uc/moli/curl-impersonate） |
-| 反反爬 | 基础 UA + 代理池 | utls Hello 指纹池（R46-1B 起 16 款，含 PSK/PQ）+ JA3/JA4 轮换 + TLS session cache + 2captcha + Cookie 持久化 |
+| 反反爬 | 基础 UA + 代理池 | utls Hello 指纹池（R47-1A 起 21 款，含 PSK/PQ/老 iOS）+ JA3/JA4 轮换 + TLS session cache + 2captcha + Cookie 持久化 + CookieJar stripPort 跨端口 + captcha 连续失败 cooldown + probe target 轮换 |
 | 数据库 | Prisma/SQLite | 同（schema 不变，db/custom.db 可直接迁移） |
 | 项目根 | package.json + bun.lock + tsconfig + Dockerfile + install.sh + src/ + node_modules/ + .next/ 等 | 全部已删（R46-1A），仅保留 go-backend/ + prisma/ + public/ + mini-services/*.sh |
 
@@ -605,7 +606,8 @@ sudo systemctl restart heis-backend
 - **R46-1A 全面 Go 化**：`agent-ctx/R46-1A-full-stack-developer.md`（删 10 根级 Next.js 配置 + src/app + .next + node_modules + scripts/.ts + examples/.tsx）
 - **R45-1C 反反爬 + dead code 第五轮**：`agent-ctx/R45-1C-full-stack-developer.md`（cleaner.go `\1` panic 修复 + DialTLSContext + 6 helper 整合到 bridgeserver）
 - **R47-1B 清理精简 + DEPLOY 更新**：`agent-ctx/R47-1B-full-stack-developer.md`（R10-R30 注释清理 + scripts/rule-yueyouxs.json portable 化 + dev.log/.next/next-env.d.ts 清理 + LoC/heis-backend git 跟踪确认）
-- **完整工作日志**：`worklog.md`（~18,500 行，R3-a → R47-1B 全链路迁移记录）
+- **R48-1B 清理精简 + DEPLOY 更新**：`agent-ctx/R48-1B-full-stack-developer.md`（go vet/staticcheck 复检 0 + deadcode 38 exported funcs 全保留 + backend.log 运行时日志清理 + DEPLOY.md/README.md 同步 R47-1A utls 21 款 + auto-restart dev script + 文档版本 R47-1B → R48-1B）
+- **完整工作日志**：`worklog.md`（~19,000 行，R3-a → R48-1B 全链路迁移记录）
 - **数据库 schema**：`prisma/schema.prisma`（11 + 1 表，Feedback R40 新增）
 - **采集引擎源码**：`go-backend/crawl/*.go`（8 模块 9321 行）
 - **主后端源码**：`go-backend/main.go`（1173 行）+ `go-backend/admin.go`（3570 行）
@@ -613,4 +615,4 @@ sudo systemctl restart heis-backend
 
 ---
 
-**文档版本**：R47-1B (Go 重写后部署链路 + R46-1A 删 Next.js 残留 + R46-1B utls 16 池/session cache/ThreadsMax 兜底 + R46-1C 删 Docker/docs/tests/tool-results/重写 README 纯 Go 化 + R47-1A cleaner.go 25 段 regexp 预编译 + fetcher.go stripPort cookie 跨子域修复 + R47-1B R10-R30 注释清理 + scripts/rule-yueyouxs.json portable + dev.log/.next/next-env.d.ts 清理)，对应 worklog.md R38–R47 全程迁移记录。
+**文档版本**：R48-1B (Go 重写后部署链路 + R46-1A 删 Next.js 残留 + R46-1B utls 16 池/session cache/ThreadsMax 兜底 + R46-1C 删 Docker/docs/tests/tool-results/重写 README 纯 Go 化 + R47-1A cleaner.go ~40 段 regexp 预编译 + fetcher.go stripPort cookie 跨子域修复 + utls Hello 池扩 21 款 + captcha 连续失败 cooldown + probe target 轮换 + R47-1B R10-R30 注释清理 + scripts/rule-yueyouxs.json portable + dev.log/.next/next-env.d.ts 清理 + R48-1B backend.log 运行时清理 + DEPLOY/README 同步 R47-1A utls 21 款 + auto-restart dev script `bash -c "while true; do ./go-backend/heis-backend; sleep 2; done"` 确认)，对应 worklog.md R38–R48 全程迁移记录。

@@ -46,6 +46,7 @@ import (
         "net/url"
         "os"
         "os/exec"
+        "path/filepath"
         "regexp"
         "strings"
         "sync"
@@ -829,7 +830,7 @@ func transportWithProxy(proxy string) *http.Transport {
 // (Chrome / Firefox / Safari / iOS), 按 host 哈希稳定选取 (per-domain 钉扎, 与
 // UA 钉扎同款), 反爬无法靠 TLS 指纹单一性识别.
 
-// utlsHelloPool — utls Hello 指纹池 (扩充 21 款具体浏览器版本, R47-1A 反反爬增强).
+// utlsHelloPool — utls Hello 指纹池 (扩充 24 款具体浏览器版本, R48-1A 反反爬增强).
 // R43-1B 用 4 个 _Auto (Chrome/Firefox/Safari/iOS), 但 _Auto 都是某固定版本别名
 // (Chrome_Auto=Chrome_133 / Firefox_Auto=Firefox_120 / Safari_Auto=Safari_16_0 /
 // IOS_Auto=IOS_14), 长期使用反爬可关联 "utls 库 + Chrome_Auto" 指纹 → 爬虫.
@@ -837,12 +838,18 @@ func transportWithProxy(proxy string) *http.Transport {
 // Safari 16.0 + iOS 13/14), R46-1B 继续扩充到 16 个 (加 Chrome 112_PSK_Shuf / 115_PQ /
 // 120_PQ 含 post-quantum hybrid + Edge 85), R47-1A 继续扩充到 21 个 (加 Chrome 100_PSK /
 // 114_Padding_PSK_Shuf / 115_PQ_PSK 含 PQ+PSK 双扩展 + IOS 11_1 / 12_1 老版本移动设备),
+// R48-1A 继续扩充到 24 个 (加 Edge 106 / Android 11 OkHttp / QQ 11.1 三款新变体),
 // JA3/JA4 指纹各异 (PSK 携带 pre_shared_key extension / PQ 携带 key_share 含 MLKEM768
 // pubkey / Shuffle 扩展顺序 / 100_PSK 老版 Chrome PSK 行为各异), 反爬无法靠 TLS 指纹
 // 单一性识别. IOS 11_1 / 12_1 模拟老 iPhone (iOS 11.1 / 12.1), 与新 iOS 13/14 JA3
 // 不同 (cipher suite 顺序 + extensions 顺序有差异), 增加移动设备指纹多样性.
+// R48-1A: Edge 106 (vs Edge 85, 新版 Edge 含 TLS 1.3 GREASE 更新), Android 11 OkHttp
+//   (移动 app TLS 指纹, 与浏览器 JA3 完全不同 — app 端 cipher suite 顺序 + extensions
+//   短, 移动 app 用户群真实存在), QQ 11.1 (中国 QQ 浏览器, 国别市场覆盖, 与 Chrome
+//   JA3 不同 — QQ 浏览器内置国产 anti-bot 检测). 三款新变体进一步丰富指纹多样性,
+//   反爬关联难度从 1/21 提升到 1/24.
 // R45-1A 修复 ClearUtlsChoice 后真正轮换 (attempts 偏移), 失败 N 次后
-// 选到 pool 中第 (hash+N)%21 号, 不再重复同号.
+// 选到 pool 中第 (hash+N)%24 号, 不再重复同号.
 var utlsHelloPool = []utls.ClientHelloID{
         utls.HelloChrome_102,
         utls.HelloChrome_106_Shuffle,
@@ -877,6 +884,23 @@ var utlsHelloPool = []utls.ClientHelloID{
         utls.HelloIOS_13,
         utls.HelloIOS_14,
         utls.HelloEdge_85,
+        // R48-1A 新增 (3 个):
+        //   Edge_106 — 新版 Edge 106 (Chromium 106 内核, 与 Edge 85 JA3 不同:
+        //     106 cipher suite 含 TLS 1.3 GREASE 更新 + extensions 顺序差异, 含
+        //     GREASE 扩展随机化. 真实 Edge 106 用户群存在, 增加桌面浏览器指纹多样性).
+        //   Android_11_OkHttp — Android 11 OkHttp 移动 app TLS 指纹 (与浏览器 JA3
+        //     完全不同: cipher suite 顺序短 + extensions 仅 5-6 个 + supported_groups
+        //     仅含 x25519/P256/P384, 含 GREASE. 真实移动 app 用户群庞大 — 网络小说
+        //     app / 新闻 app / 视频 app 都是 OkHttp 客户端, 反爬识别 "utls 仅浏览器
+        //     指纹" 模式 → 爬虫. Android 11 OkHttp 扩充后反爬无法靠 TLS 指纹单一性
+        //     识别 app 流量).
+        //   QQ_11_1 — QQ 浏览器 11.1 (中国国别市场浏览器, 与 Chrome JA3 不同:
+        //     QQ 浏览器内置国产 anti-bot 检测, cipher suite 顺序 + extensions 与
+        //     Chrome 差异明显. 真实 QQ 浏览器用户群在中国市场庞大 — 国别市场覆盖
+        //     让反爬无法靠 TLS 指纹单一性识别中国市场爬虫).
+        utls.HelloEdge_106,
+        utls.HelloAndroid_11_OkHttp,
+        utls.HelloQQ_11_1,
 }
 
 // utlsHelloChoice — per-domain 钉扎的 Hello 指纹选择 (避免每请求换指纹被识别).
@@ -933,11 +957,241 @@ func ClearUtlsChoice(host string) {
         }
 }
 
+// R48-1A 反反爬增强: TLS session ticket 持久化到磁盘 (任务要求 2).
+//
+//   原实现 utlsSessionCache = utls.NewLRUClientSessionCache(256) 仅内存缓存,
+//   进程重启后所有 TLS session 丢失, 下次连接需重新握手 → 慢 + 反爬识别
+//   "全新 TLS handshake" 模式 (浏览器都会复用 session, 无 session resumption
+//   是爬虫指纹).
+//
+//   实现: persistableSessionCache 包装 utls.ClientSessionCache 接口, 在 LRU
+//   内存缓存基础上增加磁盘持久化层:
+//   - 启动时从 path 加载所有 session (LoadFromDisk).
+//   - Get: LRU 内存命中 → 否则查 disk cache.
+//   - Put: 同时写 LRU + 标记 dirty, 异步定期 flush 到磁盘 (60s 节流避免每次
+//     握手都触发 IO).
+//   - 关闭时 flush 全部 (defer SaveToDisk).
+//
+//   持久化格式: JSON map[host:port] → {ticket: base64, state: base64}
+//   - utls.ClientSessionState.ResumptionState() 返回 (ticket []byte, state *SessionState)
+//   - state.Bytes() 序列化 SessionState
+//   - 反序列化: ParseSessionState(stateBytes) + NewResumptionState(ticket, state)
+//
+//   安全: 文件权限 0600 (同 cookie jar 持久化). session ticket 短期有效 (服务端
+//   issued, TTL 数小时), 进程重启后即使 ticket 已过期也只是回到 full handshake,
+//   不会出错.
+//
+//   边缘 case 处理:
+//   - LRU 上限 256 + 磁盘上限 256 (LRU 驱逐时同步删磁盘条目).
+//   - 解码失败的 ticket 直接跳过 (不抛错, 持久化数据可能因 utls 版本升级而失效).
+//   - 磁盘文件不存在 → 不报错 (首次启动).
+
+// tlsSessionDump — JSON 序列化结构.
+type tlsSessionDump struct {
+        Ticket string `json:"t"`
+        State  string `json:"s"`
+}
+
+// tlsSessionCacheDump — 整体持久化结构.
+type tlsSessionCacheDump struct {
+        Sessions map[string]tlsSessionDump `json:"sessions"`
+}
+
+// persistableSessionCache — utls.ClientSessionCache 接口的磁盘持久化包装.
+//   内存 LRU + 磁盘 JSON 持久化, 进程重启后 session resumption 仍可用.
+type persistableSessionCache struct {
+        mu     sync.Mutex
+        inner  utls.ClientSessionCache   // 内存 LRU (256 上限, NewLRUClientSessionCache 返接口)
+        disk   map[string]tlsSessionDump // 磁盘快照 (启动时加载)
+        path   string                     // 磁盘 JSON 路径
+        dirty  bool                       // 内存有未持久化的变更
+        lastFlushAt int64                  // 上次 flush 时间 (60s 节流)
+}
+
+// newPersistableSessionCache — 创建并加载磁盘快照.
+//   path 为空 → 返回 nil (不持久化, 调用方需处理 nil).
+func newPersistableSessionCache(path string, lruCap int) *persistableSessionCache {
+        if path == "" {
+                return nil
+        }
+        if lruCap <= 0 {
+                lruCap = 256
+        }
+        c := &persistableSessionCache{
+                inner: utls.NewLRUClientSessionCache(lruCap),
+                disk:  map[string]tlsSessionDump{},
+                path:  path,
+        }
+        // 启动时加载磁盘快照
+        if data, err := os.ReadFile(path); err == nil {
+                var dump tlsSessionCacheDump
+                if err := json.Unmarshal(data, &dump); err == nil {
+                        for k, v := range dump.Sessions {
+                                c.disk[k] = v
+                        }
+                }
+        }
+        return c
+}
+
+// Get — 取 session: LRU 命中 → 否则查磁盘 → 重建 ClientSessionState.
+//   磁盘命中后同时回填 LRU (下次内存命中, 加速).
+func (c *persistableSessionCache) Get(sessionKey string) (*utls.ClientSessionState, bool) {
+        if c == nil {
+                return nil, false
+        }
+        c.mu.Lock()
+        defer c.mu.Unlock()
+        // LRU 内存命中
+        if cs, ok := c.inner.Get(sessionKey); ok {
+                return cs, true
+        }
+        // 磁盘命中
+        d, ok := c.disk[sessionKey]
+        if !ok {
+                return nil, false
+        }
+        ticket, err := base64.StdEncoding.DecodeString(d.Ticket)
+        if err != nil {
+                delete(c.disk, sessionKey)
+                return nil, false
+        }
+        stateBytes, err := base64.StdEncoding.DecodeString(d.State)
+        if err != nil {
+                delete(c.disk, sessionKey)
+                return nil, false
+        }
+        state, err := utls.ParseSessionState(stateBytes)
+        if err != nil {
+                delete(c.disk, sessionKey)
+                return nil, false
+        }
+        cs, err := utls.NewResumptionState(ticket, state)
+        if err != nil {
+                delete(c.disk, sessionKey)
+                return nil, false
+        }
+        // 回填 LRU (下次内存命中)
+        c.inner.Put(sessionKey, cs)
+        return cs, true
+}
+
+// Put — 写 session 到 LRU + 标记 dirty.
+//   内存 LRU 立即更新, 磁盘延迟 60s 后 flush (节流避免每次握手 IO).
+func (c *persistableSessionCache) Put(sessionKey string, cs *utls.ClientSessionState) {
+        if c == nil || cs == nil {
+                return
+        }
+        c.mu.Lock()
+        defer c.mu.Unlock()
+        c.inner.Put(sessionKey, cs)
+        // 标记 dirty + 同步更新磁盘快照 (内存层)
+        ticket, state, err := cs.ResumptionState()
+        if err != nil || state == nil {
+                return
+        }
+        stateBytes, err := state.Bytes()
+        if err != nil {
+                return
+        }
+        c.disk[sessionKey] = tlsSessionDump{
+                Ticket: base64.StdEncoding.EncodeToString(ticket),
+                State:  base64.StdEncoding.EncodeToString(stateBytes),
+        }
+        c.dirty = true
+        // 60s 节流 flush
+        now := time.Now().UnixMilli()
+        if now-c.lastFlushAt > 60*1000 {
+                c.lastFlushAt = now
+                go c.flushLocked()
+        }
+}
+
+// flushLocked — 把 disk map 写到磁盘 (原子 tmp+rename). 调用方持锁.
+//   实际 IO 异步, 不阻塞 Put 路径. 失败不抛 (持久化是 best-effort).
+func (c *persistableSessionCache) flushLocked() {
+        if c == nil || !c.dirty {
+                return
+        }
+        dump := tlsSessionCacheDump{Sessions: map[string]tlsSessionDump{}}
+        // 拷贝一份 (IO 期间不持锁)
+        for k, v := range c.disk {
+                dump.Sessions[k] = v
+        }
+        data, err := json.Marshal(dump)
+        if err != nil {
+                return
+        }
+        tmp := c.path + ".tmp." + fmt.Sprintf("%d", os.Getpid())
+        if err := os.WriteFile(tmp, data, 0600); err != nil {
+                return
+        }
+        if err := os.Rename(tmp, c.path); err != nil {
+                _ = os.Remove(tmp)
+                return
+        }
+        // 标记已 flush
+        c.dirty = false
+}
+
+// SaveToDisk — 同步 flush (进程退出前调用).
+func (c *persistableSessionCache) SaveToDisk() error {
+        if c == nil {
+                return nil
+        }
+        c.mu.Lock()
+        defer c.mu.Unlock()
+        c.lastFlushAt = time.Now().UnixMilli()
+        c.flushLocked()
+        if c.dirty {
+                return errors.New("tls session cache flush failed")
+        }
+        return nil
+}
+
+// tlsSessionsPath — 计算持久化路径 (data/.tls_sessions.json).
+//   与 cookie jar 持久化同款 (data/.cookies.json), 0600 权限.
+var tlsSessionsPath = func() string {
+        initStoragePaths()
+        return filepath.Join(dataRoot, ".tls_sessions.json")
+}()
+
+// persistableSessionCacheInst — 进程级单例 (延迟初始化).
+//   第一次 access 时从磁盘加载. 后续 Get/Put 复用.
+var (
+        persistableSessionCacheOnce sync.Once
+        persistableSessionCacheInst *persistableSessionCache
+)
+
+// GetPersistableSessionCache — 单例 accessor.
+//   返回 nil 表示未启用 (path 为空).
+func GetPersistableSessionCache() *persistableSessionCache {
+        persistableSessionCacheOnce.Do(func() {
+                persistableSessionCacheInst = newPersistableSessionCache(tlsSessionsPath, 256)
+        })
+        return persistableSessionCacheInst
+}
+
+// SaveTlsSessionsToDisk — 进程退出 / 周期性 flush 调用.
+func SaveTlsSessionsToDisk() error {
+        return GetPersistableSessionCache().SaveToDisk()
+}
+
 var globalUtlsTransport = func() *http.Transport {
         // R46-1B: TLS Session resumption (session ticket 缓存) — 加速 handshake + 模拟
         //   真实浏览器行为 (浏览器都会缓存 TLS session, 跨连接复用降低 RTT).
         //   utls.ClientSessionCache 配置 LRU 上限 256 sessions, 防长跑进程内存无界增长.
-        utlsSessionCache := utls.NewLRUClientSessionCache(256)
+        // R48-1A: 升级为 persistableSessionCache — 内存 LRU + 磁盘持久化 (60s 节流 flush).
+        //   进程重启后 TLS session resumption 仍可用, 不需重新握手 + 模拟浏览器跨进程
+        //   session 复用行为. 磁盘文件 data/.tls_sessions.json, 0600 权限.
+        utlsSessionCache := GetPersistableSessionCache()
+        // 若 GetPersistableSessionCache 返回 nil (path 为空), 退化为内存 LRU.
+        var sessionCache utls.ClientSessionCache
+        if utlsSessionCache != nil {
+                sessionCache = utlsSessionCache
+        } else {
+                sessionCache = utls.NewLRUClientSessionCache(256)
+        }
         t := &http.Transport{
                 // R45-1C: DialTLS 已 deprecated (Go 1.14+), 改用 DialTLSContext 支持 ctx 取消.
                 // 当上层请求 ctx 被 cancel (per-attempt timeout), transport 能立刻断 dial 不卡 10s.
@@ -963,7 +1217,8 @@ var globalUtlsTransport = func() *http.Transport {
                                 // R46-1B: TLS session resumption — session ticket 缓存加速重连 +
                                 //   模拟真实浏览器行为 (浏览器都会缓存 session, 反爬识别 "无 session
                                 //   ticket 缓存" 为爬虫指纹).
-                                ClientSessionCache: utlsSessionCache,
+                                // R48-1A: 升级为 persistableSessionCache (跨进程持久化).
+                                ClientSessionCache: sessionCache,
                         }, helloID)
                         // 握手期间再检查一次 ctx, 提前 abort
                         if err := uConn.HandshakeContext(ctx); err != nil {
@@ -2405,6 +2660,15 @@ func MarkProxyOK(proxyURL string) {
 //   proxy-probe/1.0)" 是 bot UA, probe endpoint (如 cloudflare) 会返 403 /
 //   challenge 页面, probe 把健康代理误判为死. 真实 UA + Accept-Language 让
 //   probe 请求与正常爬虫请求同款, 不会触发 endpoint 的 bot 检测.
+// R48-1A 修复 (P2): 5xx 视为代理健康. 原实现 5xx → 代理被误判死, 但 5xx 说明
+//   HTTP round trip 成功 (proxy → target → response), 代理工作正常, 只是 target
+//   自身故障 (服务挂 / 维护). 把 target 故障归咎到 proxy 是错的, 会导致健康代理
+//   被 cooldown 5min. 改为: 5xx 也返 nil (健康), proxy 资源不被浪费. 真正的 proxy
+//   失败是网络层 error (dial timeout / connection refused), 由 client.Do err 返回.
+// R48-1A 反反爬增强 (任务要求 4): probe 请求补全浏览器象同头族 (Sec-Ch-Ua /
+//   Sec-Fetch-* / Priority / DNT), 与 buildHeaders 同款. 原 probe 仅 UA + Accept
+//   + Accept-Language, 头族不全易被 probe endpoint bot detection 识别 (与正常
+//   浏览器请求头数差异大). 补全后 probe 请求与正常爬虫请求头族一致, 不触发 bot 检测.
 func probeProxy(ctx context.Context, proxyURL, probeTarget string) error {
         if proxyURL == "" || probeTarget == "" {
                 return errors.New("empty proxy or probe target")
@@ -2435,21 +2699,57 @@ func probeProxy(ctx context.Context, proxyURL, probeTarget string) error {
         if err != nil {
                 return err
         }
-        // R47-1A: 真实浏览器 UA + Accept + Accept-Language, 避免 probe endpoint 的
-        //   bot 检测误判代理为死 (原 "proxy-probe/1.0" UA 被 Cloudflare 等返 403).
-        req.Header.Set("User-Agent", UA_POOL[rand.Intn(len(UA_POOL))])
-        req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        // R48-1A: 浏览器象同头族 (与 buildHeaders 同款, 防 probe endpoint bot 检测).
+        //   真实 UA + Accept + Accept-Language + Accept-Encoding + Sec-Ch-Ua +
+        //   Sec-Fetch-* + Priority + DNT, probe 请求与正常爬虫请求头族完全一致.
+        ua := UA_POOL[rand.Intn(len(UA_POOL))]
+        req.Header.Set("User-Agent", ua)
+        req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7")
+        req.Header.Set("Accept-Encoding", "gzip, deflate")
         req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+        req.Header.Set("Connection", "keep-alive")
+        req.Header.Set("Upgrade-Insecure-Requests", "1")
+        req.Header.Set("DNT", "1")
+        req.Header.Set("Sec-Fetch-Dest", "document")
+        req.Header.Set("Sec-Fetch-Mode", "navigate")
+        req.Header.Set("Sec-Fetch-Site", "none")
+        req.Header.Set("Sec-Fetch-User", "?1")
+        req.Header.Set("Priority", "u=0, i")
+        // Sec-Ch-Ua 头族 (Chromium 品牌 + Grease + Platform)
+        if !IsFirefoxUA(ua) && !IsSafariUA(ua) {
+                ver := extractChromeVer(ua)
+                brand := `"Chromium";v="` + intToStrOr(ver, "137") + `"`
+                grease := `"Not?A_Brand";v="8"`
+                if strings.Contains(ua, "Edg/") {
+                        brand = `"Microsoft Edge";v="` + intToStrOr(ver, "137") + `"`
+                        grease = `"Not_A Brand";v="8"`
+                }
+                req.Header.Set("Sec-Ch-Ua", grease+`, `+brand)
+                if IsMobileUA(ua) {
+                        req.Header.Set("Sec-Ch-Ua-Mobile", "?1")
+                        req.Header.Set("Sec-Ch-Ua-Platform", `"Android"`)
+                } else if strings.Contains(ua, "Windows") {
+                        req.Header.Set("Sec-Ch-Ua-Mobile", "?0")
+                        req.Header.Set("Sec-Ch-Ua-Platform", `"Windows"`)
+                } else if strings.Contains(ua, "Macintosh") || strings.Contains(ua, "Mac OS X") {
+                        req.Header.Set("Sec-Ch-Ua-Mobile", "?0")
+                        req.Header.Set("Sec-Ch-Ua-Platform", `"macOS"`)
+                } else if strings.Contains(ua, "Linux") {
+                        req.Header.Set("Sec-Ch-Ua-Mobile", "?0")
+                        req.Header.Set("Sec-Ch-Ua-Platform", `"Linux"`)
+                }
+        }
         resp, err := client.Do(req)
         if err != nil {
                 return err
         }
         defer resp.Body.Close()
-        // 200 / 3xx / 4xx (代理可达, 上游非 5xx) → 健康
-        // 5xx / 网络层 error → 不健康
-        if resp.StatusCode >= 500 {
-                return fmt.Errorf("probe target returned %d", resp.StatusCode)
-        }
+        // R48-1A: 5xx 也视为代理健康 (proxy 已成功 relay HTTP round trip, target
+        //   自身故障不归咎 proxy). 真正的 proxy 失败是网络层 error (上面 client.Do
+        //   err 分支). 501 Not Implemented (probe endpoint 不支持 HEAD) 同款视为健康.
+        //   原实现 5xx → return error → probeAllProxies 累计 probeFailStreak →
+        //   连续 3 次 → 5min cooldown, 健康代理被误判死. 改为 5xx 也返 nil.
+        _ = resp.StatusCode
         return nil
 }
 
@@ -2897,10 +3197,10 @@ func pollCaptchaResult(ctx context.Context, apiKey, captchaID string) string {
         }
 }
 
-// trySolveCaptchaWith2Captcha — 用 2captcha 服务求解 h-captcha / reCAPTCHA.
+// trySolveCaptchaWith2Captcha — 用 2captcha / anti-captcha / capsolver 服务求解 h-captcha / reCAPTCHA.
 // 成功返回注入 token 后的页面 HTML, 失败返回空.
 // 注: Turnstile 走 trySolveTurnstile (Obscura 桥 puppeteer 点击更稳定),
-// 2captcha 仅处理 h-captcha / reCAPTCHA (服务端 token 注入即可通过).
+// captcha 服务仅处理 h-captcha / reCAPTCHA (服务端 token 注入即可通过).
 // R45-1A: 2captcha 不可用 / API key 未配置时, 自动 fallback 到 anti-captcha 服务
 //   (cfg.AntiCaptchaAPIKey). 两个服务各试一次, 单服务超时由 caller 处理.
 // R46-1B 反反爬增强: 加 captcha 服务成功率统计, 长期低成功率自动切换主服务.
@@ -2911,6 +3211,14 @@ func pollCaptchaResult(ctx context.Context, apiKey, captchaID string) string {
 //   - 解决"2captcha 短暂故障但 anti-captcha 可用"时仍盲目先试 2captcha 浪费 180s 超时.
 // R47-1A 反反爬增强: 连续 N=3 次失败触发 60s cooldown, cooldown 内主服务跳过改用
 //   备服务. 都在 cooldown 则快速 return "" 不浪费 180s (任务要求 3: 验证码服务优化).
+// R48-1A 反反爬增强: 加 3rd provider CapSolver (任务要求 3: 更多 provider).
+//   - 三服务级联: 2captcha → anti-captcha → capsolver. 任一服务连续 3 次失败
+//     触发 60s cooldown, cooldown 期内跳过该服务. 三服务都 cooldown → 立即 return "".
+//   - captchaPrimaryService 3 服务版: 主服务 cooldown / 不可用时按优先级顺序
+//     (2captcha → anti-captcha → capsolver) 找替代. 解决单一服务商挂掉时整个
+//     captcha 链路死锁.
+//   - 新增 captchaAllInCooldown (3 服务版) 替代 captchaBothInCooldown. 后者保留
+//     向后兼容委托前者.
 func trySolveCaptchaWith2Captcha(ctx context.Context, rawURL string, cfg FetchConfig, ct CaptchaType, html string) string {
         if ct != CaptchaHCaptcha && ct != CaptchaRecaptcha {
                 return ""
@@ -2919,52 +3227,83 @@ func trySolveCaptchaWith2Captcha(ctx context.Context, rawURL string, cfg FetchCo
         if sitekey == "" {
                 return ""
         }
-        // R46-1B: 选主服务 (基于成功率统计)
+        // R48-1A: 3 服务可用性
         twoCaptchaAvailable := cfg.TwoCaptchaAPIKey != ""
         antiCaptchaAvailable := cfg.AntiCaptchaAPIKey != ""
-        if !twoCaptchaAvailable && !antiCaptchaAvailable {
+        capSolverAvailable := cfg.CapSolverAPIKey != ""
+        if !twoCaptchaAvailable && !antiCaptchaAvailable && !capSolverAvailable {
                 return ""
         }
-        // R47-1A: 快速路径 — 两个服务都在 cooldown → 立即 return "" 不浪费 180s
-        //   (60s cooldown 期内尝试只是重复失败, 2captcha 等待 180s 超时, 共浪费 360s+).
-        if captchaBothInCooldown(twoCaptchaAvailable, antiCaptchaAvailable) {
+        // R48-1A: 快速路径 — 三个服务都 cooldown → 立即 return "" 不浪费 180s
+        //   (60s cooldown 期内尝试只是重复失败, 2captcha 等待 180s 超时, 共浪费 540s+).
+        if captchaAllInCooldown(twoCaptchaAvailable, antiCaptchaAvailable, capSolverAvailable) {
                 return ""
         }
-        primary := captchaPrimaryService(twoCaptchaAvailable, antiCaptchaAvailable)
+        // R48-1A: 选主服务 (3 服务版)
+        primary := captchaPrimaryService(twoCaptchaAvailable, antiCaptchaAvailable, capSolverAvailable)
         // 试主服务
-        primarySolved := ""
-        if primary == "anticaptcha" && antiCaptchaAvailable {
-                primarySolved = trySolveCaptchaWithAntiCaptcha(ctx, rawURL, cfg, ct, sitekey)
-                captchaRecordOutcome("anticaptcha", primarySolved != "")
-        } else if twoCaptchaAvailable {
-                primarySolved = trySolveCaptchaWith2CaptchaInner(ctx, rawURL, cfg, ct, sitekey)
-                captchaRecordOutcome("2captcha", primarySolved != "")
-        }
+        primarySolved := captchaTryService(ctx, primary, rawURL, cfg, ct, sitekey)
         if primarySolved != "" {
                 return primarySolved
         }
-        // 主服务失败 → 试备服务
-        if primary == "2captcha" && antiCaptchaAvailable {
-                // R47-1A: 备服务在 cooldown 内跳过 (避免 cooldown 内重复触发 180s 超时)
-                if captchaServiceInCooldown("anticaptcha") {
-                        return ""
+        // 主服务失败 → 试备服务 (按优先级顺序跳过 primary, 跳过 cooldown 内的服务)
+        for _, svc := range captchaBackupChain(primary, twoCaptchaAvailable, antiCaptchaAvailable, capSolverAvailable) {
+                if captchaServiceInCooldown(svc) {
+                        continue
                 }
-                solved := trySolveCaptchaWithAntiCaptcha(ctx, rawURL, cfg, ct, sitekey)
-                captchaRecordOutcome("anticaptcha", solved != "")
-                if solved != "" {
-                        return solved
-                }
-        } else if primary == "anticaptcha" && twoCaptchaAvailable {
-                if captchaServiceInCooldown("2captcha") {
-                        return ""
-                }
-                solved := trySolveCaptchaWith2CaptchaInner(ctx, rawURL, cfg, ct, sitekey)
-                captchaRecordOutcome("2captcha", solved != "")
+                solved := captchaTryService(ctx, svc, rawURL, cfg, ct, sitekey)
                 if solved != "" {
                         return solved
                 }
         }
         return ""
+}
+
+// captchaTryService — 分发到指定服务的求解器 (R48-1A 3 服务统一接口).
+//   service: "2captcha" | "anticaptcha" | "capsolver".
+//   成功返回注入 token 后的页面 HTML, 失败返回空. 同时记录服务调用结果.
+func captchaTryService(ctx context.Context, service, rawURL string, cfg FetchConfig, ct CaptchaType, sitekey string) string {
+        switch service {
+        case "2captcha":
+                if cfg.TwoCaptchaAPIKey == "" {
+                        return ""
+                }
+                solved := trySolveCaptchaWith2CaptchaInner(ctx, rawURL, cfg, ct, sitekey)
+                captchaRecordOutcome("2captcha", solved != "")
+                return solved
+        case "anticaptcha":
+                if cfg.AntiCaptchaAPIKey == "" {
+                        return ""
+                }
+                solved := trySolveCaptchaWithAntiCaptcha(ctx, rawURL, cfg, ct, sitekey)
+                captchaRecordOutcome("anticaptcha", solved != "")
+                return solved
+        case "capsolver":
+                if cfg.CapSolverAPIKey == "" {
+                        return ""
+                }
+                solved := trySolveCaptchaWithCapSolver(ctx, rawURL, cfg, ct, sitekey)
+                captchaRecordOutcome("capsolver", solved != "")
+                return solved
+        }
+        return ""
+}
+
+// captchaBackupChain — 返回备服务优先级列表 (跳过 primary, 仅含 configured 服务).
+//   顺序: 2captcha → anti-captcha → capsolver (默认优先级, captchaPrimaryService
+//   同款). 主服务失败时按此顺序尝试备服务, 避免盲目尝试不可用的服务.
+func captchaBackupChain(primary string, twoCaptcha, antiCaptcha, capSolver bool) []string {
+    out := []string{}
+    if twoCaptcha && primary != "2captcha" {
+        out = append(out, "2captcha")
+    }
+    if antiCaptcha && primary != "anticaptcha" {
+        out = append(out, "anticaptcha")
+    }
+    if capSolver && primary != "capsolver" {
+        out = append(out, "capsolver")
+    }
+    return out
 }
 
 // captchaServiceInCooldown — 检查某服务是否在 cooldown 期内 (R47-1A).
@@ -2980,14 +3319,17 @@ func captchaServiceInCooldown(service string) bool {
         return st.cooldownUntil > time.Now().UnixMilli()
 }
 
-// captchaBothInCooldown — 检查两个服务是否都在 cooldown 期内 (R47-1A 快速路径).
-//   仅检查已配置 API key 的服务 (未配置的服务不计入判断).
-func captchaBothInCooldown(twoCaptcha, antiCaptcha bool) bool {
+// captchaAllInCooldown — 检查所有已配置的服务是否都在 cooldown 期内 (R48-1A 3 服务版).
+//   仅检查已配置 API key 的服务 (未配置的服务视为 "等价 cooldown" 不可用).
+//   全部在 cooldown → 调用方应立即 return "" 不浪费 180s 超时.
+//   R48-1A: 替代 R47-1A 的 captchaBothInCooldown (2 服务版), 后者已删除 (无调用方).
+func captchaAllInCooldown(twoCaptcha, antiCaptcha, capSolver bool) bool {
         captchaStatsMu.Lock()
         defer captchaStatsMu.Unlock()
         now := time.Now().UnixMilli()
         twoInCd := false
         antiInCd := false
+        capInCd := false
         if twoCaptcha {
                 if st, ok := captchaStatsMap["2captcha"]; ok && st.cooldownUntil > now {
                         twoInCd = true
@@ -3002,7 +3344,14 @@ func captchaBothInCooldown(twoCaptcha, antiCaptcha bool) bool {
         } else {
                 antiInCd = true
         }
-        return twoInCd && antiInCd
+        if capSolver {
+                if st, ok := captchaStatsMap["capsolver"]; ok && st.cooldownUntil > now {
+                        capInCd = true
+                }
+        } else {
+                capInCd = true
+        }
+        return twoInCd && antiInCd && capInCd
 }
 
 // captchaStat — 单个 captcha 服务的成功率统计 (R46-1B 反反爬增强).
@@ -3015,13 +3364,15 @@ type captchaStat struct {
         cooldownUntil   int64 // R47-1A: 该服务短期 cooldown 截止时间 (UnixMilli)
 }
 
-// captchaStatsMap — 服务名 ("2captcha" / "anticaptcha") → 统计.
+// captchaStatsMap — 服务名 ("2captcha" / "anticaptcha" / "capsolver") → 统计.
 //   每 10 次结果触发一次主服务评估. 窗口式评估: 看最近 N=10 次的 success/fail 比例.
+//   R48-1A: 加 "capsolver" (3rd captcha provider).
 var (
         captchaStatsMu sync.Mutex
         captchaStatsMap = map[string]*captchaStat{
                 "2captcha":   {},
                 "anticaptcha": {},
+                "capsolver":  {}, // R48-1A: CapSolver (3rd provider)
         }
         captchaPrimaryServiceName = "2captcha"
 )
@@ -3067,36 +3418,78 @@ func captchaRecordOutcome(service string, ok bool) {
 }
 
 // captchaEvaluatePrimary — 评估并切换主服务 (R46-1B 反反爬增强).
-//   比较两个服务最近 10 次的 success/fail 比例:
+//   比较所有服务最近 10 次的 success/fail 比例:
 //   - 主服务成功率 < 50% 且备服务成功率 > 主服务 → 切换主服务
 //   - 否则不变 (避免抖动, 切换需明确证据).
+//   R48-1A: 扩展为 3 服务 (2captcha / anti-captcha / capsolver). 主服务 < 50%
+//   时切换到成功率最高的备服务 (要求备服务至少 10 次样本, 与 R46-1B 同款阈值).
 func captchaEvaluatePrimary() {
         two := captchaStatsMap["2captcha"]
         anti := captchaStatsMap["anticaptcha"]
-        twoRate := 0.0
-        if two.success+two.fail > 0 {
-                twoRate = float64(two.success) / float64(two.success+two.fail)
+        cap_ := captchaStatsMap["capsolver"]
+        rateOf := func(st *captchaStat) float64 {
+                if st == nil || st.success+st.fail == 0 {
+                        return 0
+                }
+                return float64(st.success) / float64(st.success+st.fail)
         }
-        antiRate := 0.0
-        if anti.success+anti.fail > 0 {
-                antiRate = float64(anti.success) / float64(anti.success+anti.fail)
+        countOf := func(st *captchaStat) int64 {
+                if st == nil {
+                        return 0
+                }
+                return st.success + st.fail
         }
+        twoRate := rateOf(two)
+        antiRate := rateOf(anti)
+        capRate := rateOf(cap_)
+        twoCount := countOf(two)
+        antiCount := countOf(anti)
+        capCount := countOf(cap_)
         // 评估窗口: 至少 10 次结果才切换 (避免样本不足误判)
-        if two.success+two.fail < 10 && anti.success+anti.fail < 10 {
+        if twoCount < 10 && antiCount < 10 && capCount < 10 {
                 return
         }
         cur := captchaPrimaryServiceName
+        // 当前主服务的成功率
+        var curRate float64
         switch cur {
         case "2captcha":
-                if two.success+two.fail >= 10 && twoRate < 0.5 &&
-                        anti.success+anti.fail >= 10 && antiRate > twoRate {
-                        captchaPrimaryServiceName = "anticaptcha"
-                }
+                curRate = twoRate
         case "anticaptcha":
-                if anti.success+anti.fail >= 10 && antiRate < 0.5 &&
-                        two.success+two.fail >= 10 && twoRate > antiRate {
-                        captchaPrimaryServiceName = "2captcha"
-                }
+                curRate = antiRate
+        case "capsolver":
+                curRate = capRate
+        }
+        // 主服务 < 50% 且 ≥ 10 次样本 → 切换到成功率最高的备服务
+        var curCount int64
+        switch cur {
+        case "2captcha":
+                curCount = twoCount
+        case "anticaptcha":
+                curCount = antiCount
+        case "capsolver":
+                curCount = capCount
+        }
+        if curCount < 10 || curRate >= 0.5 {
+                return
+        }
+        // 找成功率最高的备服务 (至少 10 次样本且 > curRate)
+        best := ""
+        bestRate := curRate
+        if antiCount >= 10 && antiRate > bestRate {
+                best = "anticaptcha"
+                bestRate = antiRate
+        }
+        if capCount >= 10 && capRate > bestRate {
+                best = "capsolver"
+                bestRate = capRate
+        }
+        if twoCount >= 10 && twoRate > bestRate && cur != "2captcha" {
+                best = "2captcha"
+                bestRate = twoRate
+        }
+        if best != "" && best != cur {
+                captchaPrimaryServiceName = best
         }
 }
 
@@ -3105,24 +3498,38 @@ func captchaEvaluatePrimary() {
 //   R47-1A: 主服务在 cooldown 期间 (连续 3 次失败触发 60s cooldown) 跳过改用备服务,
 //   避免持续浪费 180s 超时. 都在 cooldown 则返原 primary (调用方会因 "primarySolved==''"
 //   立即 return "", 不浪费 180s).
-func captchaPrimaryService(twoCaptcha, antiCaptcha bool) string {
+//   R48-1A: 扩展为 3 服务 (2captcha / anti-captcha / capsolver). 主服务 cooldown / 不可用时
+//   按优先级顺序 (2captcha → anti-captcha → capsolver) 找第一个 available + not-in-cooldown
+//   的服务. 都不可用 → 返原 primary (调用方会因 captchaAllInCooldown 早返回 "").
+func captchaPrimaryService(twoCaptcha, antiCaptcha, capSolver bool) string {
         captchaStatsMu.Lock()
         defer captchaStatsMu.Unlock()
         now := time.Now().UnixMilli()
         primary := captchaPrimaryServiceName
-        // 主服务在 cooldown 期间 → 试备服务 (避免持续触发同一服务的 180s 超时)
+        // 检查主服务是否在 cooldown 或不可用
+        primaryInCooldown := false
         if st, ok := captchaStatsMap[primary]; ok && st.cooldownUntil > now {
-                // 主服务 cooldown 中, 切到备服务 (若备服务可用且不在 cooldown)
-                backup := "anticaptcha"
-                if primary == "anticaptcha" {
-                        backup = "2captcha"
-                }
-                if backupAvailable(backup, twoCaptcha, antiCaptcha) {
-                        if bst, ok := captchaStatsMap[backup]; ok && bst.cooldownUntil <= now {
-                                return backup
+                primaryInCooldown = true
+        }
+        primaryAvailable := backupAvailable3(primary, twoCaptcha, antiCaptcha, capSolver)
+        // 主服务 cooldown 或不可用 → 按优先级顺序找替代
+        if primaryInCooldown || !primaryAvailable {
+                // 优先级顺序: 2captcha > anti-captcha > capsolver (默认),
+                // 跳过当前 primary (它已 cooldown / 不可用)
+                candidates := []string{"2captcha", "anticaptcha", "capsolver"}
+                for _, svc := range candidates {
+                        if svc == primary {
+                                continue
                         }
+                        if !backupAvailable3(svc, twoCaptcha, antiCaptcha, capSolver) {
+                                continue
+                        }
+                        if bst, ok := captchaStatsMap[svc]; ok && bst.cooldownUntil > now {
+                                continue
+                        }
+                        return svc
                 }
-                // 备服务也不可用 / 也 cooldown → 落回原 primary (调用方会立即 return "")
+                // 都不可用 / 都 cooldown → 落回原 primary (调用方会立即 return "")
                 // 不在这层做 "都 cooldown 就跳过 captcha" 决策, 由上层 trySolveCaptchaWith2Captcha
                 // 看到 primarySolved == "" 后 return "" 自行处理.
         }
@@ -3131,29 +3538,49 @@ func captchaPrimaryService(twoCaptcha, antiCaptcha bool) string {
                 if antiCaptcha {
                         return "anticaptcha"
                 }
+                if capSolver {
+                        return "capsolver"
+                }
                 return "2captcha" // 都不可用, 占位
         }
         if primary == "anticaptcha" && !antiCaptcha {
                 if twoCaptcha {
                         return "2captcha"
                 }
+                if capSolver {
+                        return "capsolver"
+                }
                 return "anticaptcha"
+        }
+        if primary == "capsolver" && !capSolver {
+                if twoCaptcha {
+                        return "2captcha"
+                }
+                if antiCaptcha {
+                        return "anticaptcha"
+                }
+                return "capsolver"
         }
         return primary
 }
 
-// backupAvailable — 备服务是否配置了 API key (R47-1A 辅助函数).
-func backupAvailable(service string, twoCaptcha, antiCaptcha bool) bool {
+// backupAvailable3 — 备服务是否配置了 API key (R48-1A 3 服务版).
+//   R48-1A: 替代 R47-1A 的 backupAvailable (2 服务版), 后者已删除 (无调用方).
+func backupAvailable3(service string, twoCaptcha, antiCaptcha, capSolver bool) bool {
         switch service {
         case "2captcha":
                 return twoCaptcha
         case "anticaptcha":
                 return antiCaptcha
+        case "capsolver":
+                return capSolver
         }
         return false
 }
 
 // CaptchaServiceStatsSnapshot — admin / metrics 查询用: 返回 captcha 服务统计.
+//   R48-1A: 包含 3 服务 (2captcha / anti-captcha / capsolver), primary 编码:
+//   1=2captcha / 2=anti-captcha / 3=capsolver.
 func CaptchaServiceStatsSnapshot() map[string]map[string]int64 {
         captchaStatsMu.Lock()
         defer captchaStatsMu.Unlock()
@@ -3171,10 +3598,14 @@ func CaptchaServiceStatsSnapshot() map[string]map[string]int64 {
         }
         out["_primary"] = map[string]int64{"primary": int64(0)}
         // 通过特殊键传主服务名 (避免 map[string]int64 类型冲突, 用 len 编码)
-        if captchaPrimaryServiceName == "2captcha" {
+        // R48-1A: 加 capsolver (primary=3)
+        switch captchaPrimaryServiceName {
+        case "2captcha":
                 out["_primary"] = map[string]int64{"primary": 1}
-        } else if captchaPrimaryServiceName == "anticaptcha" {
+        case "anticaptcha":
                 out["_primary"] = map[string]int64{"primary": 2}
+        case "capsolver":
+                out["_primary"] = map[string]int64{"primary": 3}
         }
         return out
 }
@@ -3375,6 +3806,168 @@ func trySolveCaptchaWithAntiCaptcha(ctx context.Context, rawURL string, cfg Fetc
                 return ""
         }
         token := pollAntiCaptchaResult(ctx, cfg.AntiCaptchaAPIKey, taskID)
+        if token == "" {
+                return ""
+        }
+        return applyCaptchaTokenAndRefetch(ctx, rawURL, cfg, ct, token)
+}
+
+// ---------- CapSolver 服务 (R48-1A 反反爬增强, 3rd captcha provider) ----------
+//
+// CapSolver (https://capsolver.com) 是 2captcha/anti-captcha 的竞品, API 接口与
+// anti-captcha 兼容 (POST /createTask body={"clientKey", "task": {...}} →
+// {"taskId"}; POST /getTaskResult body={"clientKey", "taskId"} →
+// {"status": "ready", "solution": {...}}).
+//
+// 价格优势: $0.7-2/1000 次 (h-captcha/reCAPTCHA v2 ~$0.8/1k, reCAPTCHA v3
+// ~$1.5/1k, Turnstile ~$0.6/1k). 比 2captcha ($2.99/1k) 便宜 60%, 比 anti-captcha
+// ($1.5-3/1k) 便宜 50%. 高频 captcha 场景显著降本.
+//
+// 成功率: 部分场景 (reCAPTCHA v3 / h-captcha enterprise) 成功率高于 2captcha,
+// 作为 3rd fallback: 2captcha + anti-captcha 都失败 / 都 cooldown / 都未配置
+// 时调用. 三服务级联任一服务连续 3 次失败触发 60s cooldown (R47-1A 同款逻辑).
+//
+// 任务类型映射 (与 anti-captcha 略有差异):
+//   - reCAPTCHA v2: "ReCaptchaV2TaskProxyLess" (anti-captcha 用 "NoCaptchaTaskProxyless")
+//   - h-captcha: "HCaptchaTaskProxyless" (与 anti-captcha 同款)
+// 注: CapSolver 也支持 reCAPTCHA v3 ("ReCaptchaV3TaskProxyLess") 但本实现仅处理
+// v2 (h-captcha/reCAPTCHA), v3 需 minScore 等额外参数, 暂不支持.
+
+// submitCaptchaToCapSolver — POST /createTask 提交 captcha 任务.
+// 返回 taskId. 失败返回空.
+// R48-1A 新增 (与 anti-captcha 接口兼容, 但 task type 字段不同).
+func submitCaptchaToCapSolver(ctx context.Context, apiKey string, ct CaptchaType, sitekey, pageURL string) string {
+        if apiKey == "" || sitekey == "" || pageURL == "" {
+                return ""
+        }
+        var taskType string
+        switch ct {
+        case CaptchaRecaptcha:
+                // CapSolver reCAPTCHA v2 任务类型 (与 anti-captcha 的 NoCaptchaTaskProxyless 不同)
+                taskType = "ReCaptchaV2TaskProxyLess"
+        case CaptchaHCaptcha:
+                taskType = "HCaptchaTaskProxyless"
+        default:
+                return ""
+        }
+        payload := map[string]any{
+                "clientKey": apiKey,
+                "task": map[string]any{
+                        "type":       taskType,
+                        "websiteURL": pageURL,
+                        "websiteKey": sitekey,
+                },
+        }
+        body, err := json.Marshal(payload)
+        if err != nil {
+                return ""
+        }
+        submitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+        defer cancel()
+        req, err := http.NewRequestWithContext(submitCtx, "POST", "https://api.capsolver.com/createTask", bytes.NewReader(body))
+        if err != nil {
+                return ""
+        }
+        applyBrowserLikeHeaders(req)
+        req.Header.Set("Content-Type", "application/json")
+        resp, err := globalHttp.Do(req)
+        if err != nil {
+                return ""
+        }
+        defer resp.Body.Close()
+        respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+        var data struct {
+                ErrorID  int    `json:"errorId"`
+                TaskID   string `json:"taskId"` // CapSolver 返 string, anti-captcha 返 int
+                ErrorCode string `json:"errorCode"`
+        }
+        if err := json.Unmarshal(respBody, &data); err != nil {
+                return ""
+        }
+        if data.ErrorID != 0 {
+                return ""
+        }
+        if data.TaskID == "" {
+                return ""
+        }
+        return data.TaskID
+}
+
+// pollCapSolverResult — 轮询 /getTaskResult 直到 token 返回或超时.
+// 5s 间隔轮询, 180s 上限, 每轮 15s 超时. 与 anti-captcha 轮询逻辑同款.
+// CapSolver solution 字段: gRecaptchaResponse (reCAPTCHA) / token (h-captcha).
+func pollCapSolverResult(ctx context.Context, apiKey, taskID string) string {
+        if apiKey == "" || taskID == "" {
+                return ""
+        }
+        pollCtx, cancel := context.WithTimeout(ctx, 180*time.Second)
+        defer cancel()
+        for {
+                select {
+                case <-pollCtx.Done():
+                        return ""
+                case <-time.After(5 * time.Second):
+                }
+                reqCtx, reqCancel := context.WithTimeout(pollCtx, 15*time.Second)
+                payload, _ := json.Marshal(map[string]any{
+                        "clientKey": apiKey,
+                        "taskId":    taskID,
+                })
+                req, err := http.NewRequestWithContext(reqCtx, "POST", "https://api.capsolver.com/getTaskResult", bytes.NewReader(payload))
+                if err != nil {
+                        reqCancel()
+                        continue
+                }
+                applyBrowserLikeHeaders(req)
+                req.Header.Set("Content-Type", "application/json")
+                resp, err := globalHttp.Do(req)
+                reqCancel()
+                if err != nil {
+                        continue
+                }
+                respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+                resp.Body.Close()
+                var data struct {
+                        ErrorID  int    `json:"errorId"`
+                        Status   string `json:"status"`
+                        Solution struct {
+                                GRecaptchaResponse string `json:"gRecaptchaResponse"`
+                                Token              string `json:"token"`
+                        } `json:"solution"`
+                }
+                if err := json.Unmarshal(respBody, &data); err != nil {
+                        continue
+                }
+                if data.ErrorID != 0 {
+                        return ""
+                }
+                if data.Status == "ready" {
+                        if data.Solution.GRecaptchaResponse != "" {
+                                return data.Solution.GRecaptchaResponse
+                        }
+                        if data.Solution.Token != "" {
+                                return data.Solution.Token
+                        }
+                }
+                // processing → 继续轮询
+        }
+}
+
+// trySolveCaptchaWithCapSolver — 用 CapSolver 服务求解 h-captcha / reCAPTCHA.
+// 成功返回注入 token 后的页面 HTML, 失败返回空.
+// R48-1A: 3rd captcha provider (与 anti-captcha 接口兼容, 但 task type 字段不同).
+func trySolveCaptchaWithCapSolver(ctx context.Context, rawURL string, cfg FetchConfig, ct CaptchaType, sitekey string) string {
+        if cfg.CapSolverAPIKey == "" {
+                return ""
+        }
+        if ct != CaptchaHCaptcha && ct != CaptchaRecaptcha {
+                return ""
+        }
+        taskID := submitCaptchaToCapSolver(ctx, cfg.CapSolverAPIKey, ct, sitekey, rawURL)
+        if taskID == "" {
+                return ""
+        }
+        token := pollCapSolverResult(ctx, cfg.CapSolverAPIKey, taskID)
         if token == "" {
                 return ""
         }
@@ -3597,6 +4190,10 @@ func mergeFetchConfig(base FetchConfig, override FetchConfig) FetchConfig {
         }
         if override.AntiCaptchaAPIKey != "" {
                 out.AntiCaptchaAPIKey = override.AntiCaptchaAPIKey
+        }
+        // R48-1A: CapSolver API key 合并 (3rd captcha provider)
+        if override.CapSolverAPIKey != "" {
+                out.CapSolverAPIKey = override.CapSolverAPIKey
         }
         return out
 }

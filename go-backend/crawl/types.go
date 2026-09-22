@@ -142,6 +142,14 @@ type FetchConfig struct {
         // 2captcha 服务不可用 / 返错 / 未配置时自动 fallback. 两个服务各试一次,
         // 单服务 180s 超时 (caller 控制). 价格 $1.5-3/1000 次, 与 2captcha 相当.
         AntiCaptchaAPIKey     string            `json:"antiCaptchaApiKey,omitempty"`
+        // R48-1A 反反爬增强: CapSolver 验证码服务 API key (3rd provider).
+        // CapSolver (https://capsolver.com) 是 2captcha/anti-captcha 的竞品, API 接口
+        // 与 anti-captcha 兼容 (POST /createTask /getTaskResult). 价格 $0.7-2/1000 次
+        // (h-captcha/reCAPTCHA v2 ~$0.8/1k, reCAPTCHA v3 ~$1.5/1k, 更便宜).
+        // 配置后, 2captcha + anti-captcha 都失败 / 都在 cooldown / 都未配置时, 自动 fallback
+        // 到 CapSolver. 三服务级联, 任一服务连续 3 次失败触发 60s cooldown (R47-1A 同款逻辑),
+        // cooldown 期内跳过该服务改用下一个. 解决单一服务商挂掉时整个 captcha 链路死锁.
+        CapSolverAPIKey       string            `json:"capSolverApiKey,omitempty"`
 }
 
 // CleanConfig — 内容清洗配置.
@@ -488,6 +496,10 @@ func sanitizeFetchConfig(m map[string]any) FetchConfig {
         // R45-1A: anti-captcha API key (同 2captcha, 长度上限 64)
         if v, ok := m["antiCaptchaApiKey"].(string); ok {
                 out.AntiCaptchaAPIKey = safeStr(v, 64)
+        }
+        // R48-1A: CapSolver API key (3rd captcha provider, 同 2captcha/anti-captcha 长度上限 64)
+        if v, ok := m["capSolverApiKey"].(string); ok {
+                out.CapSolverAPIKey = safeStr(v, 64)
         }
         return out
 }
