@@ -235,8 +235,14 @@ func (j *CookieJar) prune() {
 // IP / localhost 不做父域遍历 (不是 DNS 层级结构).
 // R41-1A: 修复 TLD 误入 hosts 的 bug — 原实现 append 在 break 之前, 把末段 "com" 也加入 hosts,
 //          若任一调用方 Store(domain="com", ...) 会污染所有 *.com 请求. 改为不 append 末段.
+// R47-1A: 修复端口污染 — originHost 可能返 "example.com:8080" (非默认端口), parentDomainChain
+//          拆 "." 后会把 "com:8080" 视为 TLD, 父域链断裂 (cf_clearance cookie 跨子域失败).
+//          改为 stripPort 先剥端口再走父域遍历, 跨子域 cookie 合并不受端口影响 (RFC 6265
+//          cookie 是 domain-scoped 不是 port-scoped).
 func parentDomainChain(domain string) []string {
         domain = strings.ToLower(strings.TrimSpace(domain))
+        // R47-1A: 剥端口 (RFC 6265 cookie 是 domain-scoped, port 不影响跨子域合并)
+        domain = stripPort(domain)
         if domain == "" {
                 return nil
         }
@@ -263,6 +269,28 @@ func parentDomainChain(domain string) []string {
                 hosts = append(hosts, h)
         }
         return hosts
+}
+
+// stripPort — 剥域名中的端口 (host[:port] → host). 已无端口则原样返回 (R47-1A).
+//   IPv6 字面量 [::1]:8080 → [::1] (用 net.SplitHostPort 兼容). 简单情况 (无 [)
+//   直接 strings.Split 切最后一个 ":".
+func stripPort(host string) string {
+        if host == "" {
+                return ""
+        }
+        // IPv6 字面量: [::1]:8080 / [::1]
+        if strings.HasPrefix(host, "[") {
+                // [::1]:port → [::1]
+                if idx := strings.LastIndex(host, "]:"); idx > 0 {
+                        return host[:idx+1]
+                }
+                return host // [::1] 无端口
+        }
+        // 普通 host:port (取最后一个 : 切分, 防 IPv6 误切)
+        if idx := strings.LastIndex(host, ":"); idx > 0 {
+                return host[:idx]
+        }
+        return host
 }
 
 func isIPLiteral(s string) bool {
@@ -328,6 +356,8 @@ func (j *CookieJar) Count(domain string) int {
         j.mu.Lock()
         defer j.mu.Unlock()
         key := strings.ToLower(strings.TrimSpace(domain))
+        // R47-1A: 剥端口与 parentDomainChain 同款 (跨子域 cookie 合并不受端口影响)
+        key = stripPort(key)
         jar, ok := j.jars[key]
         if !ok {
                 j.prune()
@@ -351,6 +381,10 @@ func (j *CookieJar) Count(domain string) int {
 //  - 拒收畸形 Set-Cookie (首段无 = / 名为属性关键字的伪 cookie)
 //  - domain 属性安全校验 (RFC 6265 5.3 步 6: 必须是 request host 自身或其父域)
 //  - domain 属性同时存到 cookie 自身 domain 罐 (跨子域跳转 cf_clearance 复用)
+//  R47-1A: reqHost 剥端口与 parentDomainChain 一致, 让 cookieDomain 属性
+//    (RFC 6265 不带端口) 匹配 reqHost 即使 reqHost 来自非默认端口 (8080 等).
+//    原实现 cookieDomain="example.com" 不匹配 reqHost="example.com:8080" →
+//    副罐不写, cf_clearance 跨子域跳转丢失.
 func (j *CookieJar) Store(domain string, setCookieHeaders []string) {
         if len(setCookieHeaders) == 0 {
                 return
@@ -358,6 +392,8 @@ func (j *CookieJar) Store(domain string, setCookieHeaders []string) {
         j.mu.Lock()
         defer j.mu.Unlock()
         reqHost := strings.ToLower(strings.TrimSpace(domain))
+        // R47-1A: 剥端口 (cookie 是 domain-scoped, port 不影响)
+        reqHost = stripPort(reqHost)
         src := reqHost
         attrNames := map[string]bool{
                 "path": true, "domain": true, "expires": true, "max-age": true,
@@ -429,6 +465,8 @@ func (j *CookieJar) Clear(domain string) {
         j.mu.Lock()
         defer j.mu.Unlock()
         reqHost := strings.ToLower(strings.TrimSpace(domain))
+        // R47-1A: 剥端口与 Store 同款
+        reqHost = stripPort(reqHost)
         if reqHost == "" {
                 return
         }
@@ -791,16 +829,20 @@ func transportWithProxy(proxy string) *http.Transport {
 // (Chrome / Firefox / Safari / iOS), 按 host 哈希稳定选取 (per-domain 钉扎, 与
 // UA 钉扎同款), 反爬无法靠 TLS 指纹单一性识别.
 
-// utlsHelloPool — utls Hello 指纹池 (扩充 16 款具体浏览器版本, R46-1B 反反爬增强).
+// utlsHelloPool — utls Hello 指纹池 (扩充 21 款具体浏览器版本, R47-1A 反反爬增强).
 // R43-1B 用 4 个 _Auto (Chrome/Firefox/Safari/iOS), 但 _Auto 都是某固定版本别名
 // (Chrome_Auto=Chrome_133 / Firefox_Auto=Firefox_120 / Safari_Auto=Safari_16_0 /
 // IOS_Auto=IOS_14), 长期使用反爬可关联 "utls 库 + Chrome_Auto" 指纹 → 爬虫.
 // R45-1A 扩充到 12 个 (Chrome 102/106_Shuffle/120/131/133 + Firefox 99/102/105/120 +
 // Safari 16.0 + iOS 13/14), R46-1B 继续扩充到 16 个 (加 Chrome 112_PSK_Shuf / 115_PQ /
-// 120_PQ 含 post-quantum hybrid + Edge 85), JA3/JA4 指纹各异 (PSK 携带 / PQ 密钥协商 /
-// Shuffle 扩展顺序均不同), 反爬无法靠 TLS 指纹单一性识别.
+// 120_PQ 含 post-quantum hybrid + Edge 85), R47-1A 继续扩充到 21 个 (加 Chrome 100_PSK /
+// 114_Padding_PSK_Shuf / 115_PQ_PSK 含 PQ+PSK 双扩展 + IOS 11_1 / 12_1 老版本移动设备),
+// JA3/JA4 指纹各异 (PSK 携带 pre_shared_key extension / PQ 携带 key_share 含 MLKEM768
+// pubkey / Shuffle 扩展顺序 / 100_PSK 老版 Chrome PSK 行为各异), 反爬无法靠 TLS 指纹
+// 单一性识别. IOS 11_1 / 12_1 模拟老 iPhone (iOS 11.1 / 12.1), 与新 iOS 13/14 JA3
+// 不同 (cipher suite 顺序 + extensions 顺序有差异), 增加移动设备指纹多样性.
 // R45-1A 修复 ClearUtlsChoice 后真正轮换 (attempts 偏移), 失败 N 次后
-// 选到 pool 中第 (hash+N)%16 号, 不再重复同号.
+// 选到 pool 中第 (hash+N)%21 号, 不再重复同号.
 var utlsHelloPool = []utls.ClientHelloID{
         utls.HelloChrome_102,
         utls.HelloChrome_106_Shuffle,
@@ -810,11 +852,28 @@ var utlsHelloPool = []utls.ClientHelloID{
         utls.HelloChrome_120_PQ,
         utls.HelloChrome_131,
         utls.HelloChrome_133,
+        // R47-1A 新增 Chrome PSK/PQ 变体 (3 个):
+        //   100_PSK — 早期 Chrome 100 + PSK (pre_shared_key extension, 与 112_PSK_Shuf
+        //     JA3 不同: 100 cipher suite 顺序 + 无 112 shuffled extensions)
+        //   114_Padding_PSK_Shuf — Chrome 114 + Padding extension + PSK + shuffled
+        //     extensions (与 112_PSK_Shuf JA3 不同: 114 cipher suite 含 TLS 1.3
+        //     GREASE 更新 + Padding extension 长度差异)
+        //   115_PQ_PSK — Chrome 115 + PQ (post-quantum) + PSK 双扩展 (与 115_PQ JA3
+        //     不同: 含 pre_shared_key extension + PQ key_share 含 MLKEM768 pubkey)
+        utls.HelloChrome_100_PSK,
+        utls.HelloChrome_114_Padding_PSK_Shuf,
+        utls.HelloChrome_115_PQ_PSK,
         utls.HelloFirefox_99,
         utls.HelloFirefox_102,
         utls.HelloFirefox_105,
         utls.HelloFirefox_120,
         utls.HelloSafari_16_0,
+        // R47-1A 新增 iOS 老版本 (2 个): 模拟老 iPhone 用户 (iOS 11.1 / 12.1),
+        //   JA3 与 IOS_13/14 不同 (cipher suite 顺序 + extensions 顺序有差异,
+        //   老版本 cipher suite 较少, supported_groups 顺序不同). 老版本 iOS 真实
+        //   存在 (二手 iPhone 用户群), 反爬识别 "utls 仅新 iOS" 指纹模式 → 爬虫.
+        utls.HelloIOS_11_1,
+        utls.HelloIOS_12_1,
         utls.HelloIOS_13,
         utls.HelloIOS_14,
         utls.HelloEdge_85,
@@ -1265,6 +1324,15 @@ func (e *HTTPError) Error() string {
         return fmt.Sprintf("HTTP %d", e.StatusCode)
 }
 
+// Unwrap — 暴露内部 Err 字段供 errors.Is / errors.As 透传 (R47-1A 修复).
+//   原实现无 Unwrap 方法, errors.Is(err, context.Canceled) 即使 e.Err==context.Canceled
+//   也返回 false (HTTPError 不被识别为 wrapping context.Canceled). 这导致 isRetriableNetErr
+//   走字符串匹配 + 默认 return true 分支, ctx 已取消的错误被误判可重试, 浪费 attempt
+//   预算 + 让上层 fetchHttp 等满 backoff 后才退出.
+func (e *HTTPError) Unwrap() error {
+        return e.Err
+}
+
 // fetchHttp — native HTTP 请求 (Go net/http + http.Client).
 // 返回响应体 (解码为 UTF-8). 失败抛 HTTPError (含状态码 / Set-Cookie / WAF 头).
 //
@@ -1412,10 +1480,19 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
 }
 
 // isRetriableNetErr — 网络层错误是否可重试 (超时 / 连接重置 / EOF / context).
+// R47-1A 修复: errors.Is 检查移到字符串匹配之前 (HTTPError.Unwrap 已支持, 透传到
+//   context.Canceled / context.DeadlineExceeded). ctx 已取消不可重试 (调用方主动取消,
+//   重试只会浪费 attempt 预算 + 让 fetchHttp 等满 backoff 后才退出).
 func isRetriableNetErr(err error) bool {
         if err == nil {
                 return false
         }
+        // ctx 已取消 / 已超时 — 不可重试 (调用方主动取消或已超时, 重试只会延长生命周期)
+        if errors.Is(err, context.Canceled) {
+                return false
+        }
+        // context.DeadlineExceeded 是 per-attempt 超时, 可重试 (上层 attempt 循环会
+        //   重新 wrap timeout). errors.Is 单独判断 + 返回 true, 不走字符串匹配兜底.
         s := err.Error()
         if strings.Contains(s, "timeout") || strings.Contains(s, "context deadline exceeded") ||
                 strings.Contains(s, "connection reset") || strings.Contains(s, "EOF") ||
@@ -1423,11 +1500,9 @@ func isRetriableNetErr(err error) bool {
                 strings.Contains(s, "connection refused") || strings.Contains(s, "i/o timeout") {
                 return true
         }
-        // context 取消不可重试 (调用方主动取消)
-        if errors.Is(err, context.Canceled) {
-                return false
-        }
-        return true // 默认重试
+        // context.Canceled 已在 errors.Is 分支早返回 false. 此处 fallthrough 都是
+        // 真正的未知错误, 默认重试 (与 TS 端 fetcher.ts isRetriableNetErr 同口径).
+        return true
 }
 
 // isRetriableStatus — HTTP 状态码是否可重试 (429 / 5xx 临时性失败).
@@ -2185,7 +2260,12 @@ func pickProxyFor(rawURL string, cfg FetchConfig) string {
                         proxyInst.lastProbeAt = now
                         probeTarget := cfg.ProxyProbeURL
                         if probeTarget == "" {
-                                probeTarget = "https://www.google.com"
+                                // R47-1A: probe target 轮换 (避免单一 endpoint 持续被探).
+                                //   原 default https://www.google.com 每次都打 Google, 长期被
+                                //   Google bot detection 识别 → 返 429 / challenge 页面 →
+                                //   健康代理被误判死. 改为从 5 个 reliable endpoint 中轮选,
+                                //   每次 probe 取不同的 target, 降低单 endpoint 命中频率.
+                                probeTarget = pickProbeTarget()
                         }
                         // 复制 pool (避免 goroutine 读 race)
                         poolCopy := make([]string, len(pool))
@@ -2314,6 +2394,17 @@ func MarkProxyOK(proxyURL string) {
 // 启用条件: cfg.ProxyHealthCheck=true (默认 false, opt-in 避免误触发 probe 风暴).
 
 // probeProxy — 对单个代理发 HEAD 5s timeout 请求, 返回 err=nil 表示健康.
+// R47-1A 修复 (P1): socks5 实现原 override transport.DialContext 拨 p.Host
+//   (proxy 的 TCP 地址), 而非用 SOCKS5 协议把 addr 隧道转发到目标. 这导致
+//   socks5 代理 probe 永远失败 — http.Client 期待连接到 addr (probeTarget host)
+//   但 transport.DialContext 返回的是到 proxy 的 TCP 连接, 客户端发 HTTP 请求
+//   到一个不识 HTTP 的 socks5 端口 → 失败. 健康的 socks5 代理被误判为死代理.
+//   修复: socks5/socks5h 也用 transport.Proxy = http.ProxyURL(p) (Go net/http
+//   原生支持 socks5 URL via Proxy), 不再 override DialContext. http/https 同款.
+// R47-1A 修复 (P2): UA 改用 UA_POOL 真实浏览器 UA, 原 "Mozilla/5.0 (compatible;
+//   proxy-probe/1.0)" 是 bot UA, probe endpoint (如 cloudflare) 会返 403 /
+//   challenge 页面, probe 把健康代理误判为死. 真实 UA + Accept-Language 让
+//   probe 请求与正常爬虫请求同款, 不会触发 endpoint 的 bot 检测.
 func probeProxy(ctx context.Context, proxyURL, probeTarget string) error {
         if proxyURL == "" || probeTarget == "" {
                 return errors.New("empty proxy or probe target")
@@ -2322,25 +2413,20 @@ func probeProxy(ctx context.Context, proxyURL, probeTarget string) error {
         if err != nil {
                 return err
         }
-        // 构造 transport + proxy (复用 globalTransport.Clone + ProxyURL, 与 transportWithProxy 同款)
+        // 构造 transport + proxy (复用 globalTransport.Clone)
         transport := globalTransport.Clone()
         switch p.Scheme {
-        case "http", "https":
+        case "http", "https", "socks5", "socks5h":
+                // R47-1A: socks5 也用 ProxyURL, Go net/http 原生支持 socks5 URL
+                //   (经 ProxyURL 时走 http 1.1 CONNECT 或 socks5 协议握手). 不再
+                //   override DialContext (原实现拨 p.Host 而非走 socks5 协议).
                 transport.Proxy = http.ProxyURL(p)
-        case "socks5", "socks5h":
-                // socks5 用 net.Dialer + socks dialer (避免引入 x/net/proxy 依赖污染主包)
-                dialer := &net.Dialer{Timeout: 5 * time.Second}
-                transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-                        // 简化: 直 dial socks5 代理 (不支持 socks5 auth)
-                        return dialer.DialContext(ctx, network, p.Host)
-                }
-                transport.Proxy = nil
         default:
                 return fmt.Errorf("unsupported proxy scheme: %s", p.Scheme)
         }
         client := &http.Client{
                 Transport: transport,
-                Timeout:   5 * time.Second,
+                Timeout:  5 * time.Second,
                 CheckRedirect: func(req *http.Request, via []*http.Request) error {
                         return http.ErrUseLastResponse
                 },
@@ -2349,8 +2435,11 @@ func probeProxy(ctx context.Context, proxyURL, probeTarget string) error {
         if err != nil {
                 return err
         }
-        req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; proxy-probe/1.0)")
-        req.Header.Set("Accept", "*/*")
+        // R47-1A: 真实浏览器 UA + Accept + Accept-Language, 避免 probe endpoint 的
+        //   bot 检测误判代理为死 (原 "proxy-probe/1.0" UA 被 Cloudflare 等返 403).
+        req.Header.Set("User-Agent", UA_POOL[rand.Intn(len(UA_POOL))])
+        req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
         resp, err := client.Do(req)
         if err != nil {
                 return err
@@ -2401,6 +2490,30 @@ func probeAllProxies(pool []string, probeTarget string) {
                 }(p)
         }
         wg.Wait()
+}
+
+// R47-1A 反反爬增强: probe target 轮换 (5 个 reliable endpoint, 每次轮选).
+//   原实现固定 https://www.google.com, 长期被 Google bot detection 识别 →
+//   返 429 / challenge 页面 → 健康代理被误判死. 改为从 5 个 endpoint 轮选,
+//   每次取不同的 target, 降低单 endpoint 命中频率.
+//   endpoint 选择标准: 全球可达 + 5xx 概率低 + 不返 challenge 页面 (HEAD 请求).
+//   Cloudflare / Microsoft / Apple / Mozilla / IANA 都是大厂稳定 endpoint.
+var probeTargetPool = []string{
+        "https://www.google.com",
+        "https://www.cloudflare.com",
+        "https://www.microsoft.com",
+        "https://www.apple.com",
+        "https://www.iana.org",
+}
+
+// probeTargetCounter — probe target 轮换计数器 (atomic).
+var probeTargetCounter atomic.Uint64
+
+// pickProbeTarget — 从 probeTargetPool 中轮选一个 endpoint (round-robin 风格).
+//   返回 target URL. 5 个 endpoint 轮换, 单 endpoint 命中频率 1/5.
+func pickProbeTarget() string {
+        n := int(probeTargetCounter.Add(1) - 1) // 第一次返回 0 (取 [0])
+        return probeTargetPool[n%len(probeTargetPool)]
 }
 
 // ---------- 镜像组故障切换 ----------
@@ -2796,6 +2909,8 @@ func pollCaptchaResult(ctx context.Context, apiKey, captchaID string) string {
 //     最近 10 次成功率更高 → 主服务切到 anti-captcha (反之亦然).
 //   - 滑动窗口风格: 每 10 次结果触发一次主服务评估, 决定下次的主服务.
 //   - 解决"2captcha 短暂故障但 anti-captcha 可用"时仍盲目先试 2captcha 浪费 180s 超时.
+// R47-1A 反反爬增强: 连续 N=3 次失败触发 60s cooldown, cooldown 内主服务跳过改用
+//   备服务. 都在 cooldown 则快速 return "" 不浪费 180s (任务要求 3: 验证码服务优化).
 func trySolveCaptchaWith2Captcha(ctx context.Context, rawURL string, cfg FetchConfig, ct CaptchaType, html string) string {
         if ct != CaptchaHCaptcha && ct != CaptchaRecaptcha {
                 return ""
@@ -2808,6 +2923,11 @@ func trySolveCaptchaWith2Captcha(ctx context.Context, rawURL string, cfg FetchCo
         twoCaptchaAvailable := cfg.TwoCaptchaAPIKey != ""
         antiCaptchaAvailable := cfg.AntiCaptchaAPIKey != ""
         if !twoCaptchaAvailable && !antiCaptchaAvailable {
+                return ""
+        }
+        // R47-1A: 快速路径 — 两个服务都在 cooldown → 立即 return "" 不浪费 180s
+        //   (60s cooldown 期内尝试只是重复失败, 2captcha 等待 180s 超时, 共浪费 360s+).
+        if captchaBothInCooldown(twoCaptchaAvailable, antiCaptchaAvailable) {
                 return ""
         }
         primary := captchaPrimaryService(twoCaptchaAvailable, antiCaptchaAvailable)
@@ -2825,12 +2945,19 @@ func trySolveCaptchaWith2Captcha(ctx context.Context, rawURL string, cfg FetchCo
         }
         // 主服务失败 → 试备服务
         if primary == "2captcha" && antiCaptchaAvailable {
+                // R47-1A: 备服务在 cooldown 内跳过 (避免 cooldown 内重复触发 180s 超时)
+                if captchaServiceInCooldown("anticaptcha") {
+                        return ""
+                }
                 solved := trySolveCaptchaWithAntiCaptcha(ctx, rawURL, cfg, ct, sitekey)
                 captchaRecordOutcome("anticaptcha", solved != "")
                 if solved != "" {
                         return solved
                 }
         } else if primary == "anticaptcha" && twoCaptchaAvailable {
+                if captchaServiceInCooldown("2captcha") {
+                        return ""
+                }
                 solved := trySolveCaptchaWith2CaptchaInner(ctx, rawURL, cfg, ct, sitekey)
                 captchaRecordOutcome("2captcha", solved != "")
                 if solved != "" {
@@ -2840,10 +2967,52 @@ func trySolveCaptchaWith2Captcha(ctx context.Context, rawURL string, cfg FetchCo
         return ""
 }
 
+// captchaServiceInCooldown — 检查某服务是否在 cooldown 期内 (R47-1A).
+//   不取锁 (供 trySolveCaptchaWith2Captcha 在已持有 captchaPrimaryService 返回的
+//   primary 后做额外检查; 实际取锁是必要的).
+func captchaServiceInCooldown(service string) bool {
+        captchaStatsMu.Lock()
+        defer captchaStatsMu.Unlock()
+        st, ok := captchaStatsMap[service]
+        if !ok {
+                return false
+        }
+        return st.cooldownUntil > time.Now().UnixMilli()
+}
+
+// captchaBothInCooldown — 检查两个服务是否都在 cooldown 期内 (R47-1A 快速路径).
+//   仅检查已配置 API key 的服务 (未配置的服务不计入判断).
+func captchaBothInCooldown(twoCaptcha, antiCaptcha bool) bool {
+        captchaStatsMu.Lock()
+        defer captchaStatsMu.Unlock()
+        now := time.Now().UnixMilli()
+        twoInCd := false
+        antiInCd := false
+        if twoCaptcha {
+                if st, ok := captchaStatsMap["2captcha"]; ok && st.cooldownUntil > now {
+                        twoInCd = true
+                }
+        } else {
+                twoInCd = true // 未配置视为 "不可用 = 等价 cooldown"
+        }
+        if antiCaptcha {
+                if st, ok := captchaStatsMap["anticaptcha"]; ok && st.cooldownUntil > now {
+                        antiInCd = true
+                }
+        } else {
+                antiInCd = true
+        }
+        return twoInCd && antiInCd
+}
+
 // captchaStat — 单个 captcha 服务的成功率统计 (R46-1B 反反爬增强).
+//   R47-1A 增加 consecutiveFail + cooldownUntil 字段: 连续 N 次失败后短期
+//   cooldown 避免浪费 180s 超时 (任务要求 3: 验证码服务优化).
 type captchaStat struct {
-        success int64
-        fail    int64
+        success         int64
+        fail            int64
+        consecutiveFail int64 // R47-1A: 连续失败计数, 成功时清零
+        cooldownUntil   int64 // R47-1A: 该服务短期 cooldown 截止时间 (UnixMilli)
 }
 
 // captchaStatsMap — 服务名 ("2captcha" / "anticaptcha") → 统计.
@@ -2857,8 +3026,17 @@ var (
         captchaPrimaryServiceName = "2captcha"
 )
 
+// captchaCooldownThreshold — 连续失败触发 cooldown 的阈值 (R47-1A).
+const captchaCooldownThreshold = 3
+
+// captchaCooldownMs — cooldown 持续时间 60s (R47-1A).
+//   60s 足够 2captcha/anti-captcha 服务端恢复, 又不会让请求等待太久.
+const captchaCooldownMs = 60 * 1000
+
 // captchaRecordOutcome — 记录 captcha 服务调用结果 (R46-1B 反反爬增强).
 //   成功 → success++; 失败 → fail++. 每 10 次结果触发主服务评估.
+//   R47-1A: 成功时清 consecutiveFail; 失败时 consecutiveFail++. 连续 N=3 次失败 →
+//   该服务进入 60s cooldown, captchaPrimaryService 跳过该服务改用备服务.
 func captchaRecordOutcome(service string, ok bool) {
         captchaStatsMu.Lock()
         defer captchaStatsMu.Unlock()
@@ -2866,10 +3044,20 @@ func captchaRecordOutcome(service string, ok bool) {
         if !ok2 {
                 return
         }
+        now := time.Now().UnixMilli()
         if ok {
                 st.success++
+                st.consecutiveFail = 0
+                st.cooldownUntil = 0 // 成功 → 清 cooldown
         } else {
                 st.fail++
+                st.consecutiveFail++
+                // R47-1A: 连续 N 次失败 → 进入 cooldown (避免持续浪费 180s 超时)
+                if st.consecutiveFail >= captchaCooldownThreshold {
+                        st.cooldownUntil = now + captchaCooldownMs
+                        // 重置 consecutiveFail 避免 cooldown 期间再触发 (cooldownUntil 已是更晚)
+                        st.consecutiveFail = 0
+                }
         }
         // 每 10 次结果触发一次主服务评估 (窗口式)
         total := st.success + st.fail
@@ -2914,10 +3102,30 @@ func captchaEvaluatePrimary() {
 
 // captchaPrimaryService — 返回当前主服务名 (R46-1B 反反爬增强).
 //   优先用成功率统计选定的主服务; 仅一个服务可用时直接返回那个.
+//   R47-1A: 主服务在 cooldown 期间 (连续 3 次失败触发 60s cooldown) 跳过改用备服务,
+//   避免持续浪费 180s 超时. 都在 cooldown 则返原 primary (调用方会因 "primarySolved==''"
+//   立即 return "", 不浪费 180s).
 func captchaPrimaryService(twoCaptcha, antiCaptcha bool) string {
         captchaStatsMu.Lock()
         defer captchaStatsMu.Unlock()
+        now := time.Now().UnixMilli()
         primary := captchaPrimaryServiceName
+        // 主服务在 cooldown 期间 → 试备服务 (避免持续触发同一服务的 180s 超时)
+        if st, ok := captchaStatsMap[primary]; ok && st.cooldownUntil > now {
+                // 主服务 cooldown 中, 切到备服务 (若备服务可用且不在 cooldown)
+                backup := "anticaptcha"
+                if primary == "anticaptcha" {
+                        backup = "2captcha"
+                }
+                if backupAvailable(backup, twoCaptcha, antiCaptcha) {
+                        if bst, ok := captchaStatsMap[backup]; ok && bst.cooldownUntil <= now {
+                                return backup
+                        }
+                }
+                // 备服务也不可用 / 也 cooldown → 落回原 primary (调用方会立即 return "")
+                // 不在这层做 "都 cooldown 就跳过 captcha" 决策, 由上层 trySolveCaptchaWith2Captcha
+                // 看到 primarySolved == "" 后 return "" 自行处理.
+        }
         // 主服务不可用 (无 API key) → 用备服务
         if primary == "2captcha" && !twoCaptcha {
                 if antiCaptcha {
@@ -2934,15 +3142,31 @@ func captchaPrimaryService(twoCaptcha, antiCaptcha bool) string {
         return primary
 }
 
+// backupAvailable — 备服务是否配置了 API key (R47-1A 辅助函数).
+func backupAvailable(service string, twoCaptcha, antiCaptcha bool) bool {
+        switch service {
+        case "2captcha":
+                return twoCaptcha
+        case "anticaptcha":
+                return antiCaptcha
+        }
+        return false
+}
+
 // CaptchaServiceStatsSnapshot — admin / metrics 查询用: 返回 captcha 服务统计.
 func CaptchaServiceStatsSnapshot() map[string]map[string]int64 {
         captchaStatsMu.Lock()
         defer captchaStatsMu.Unlock()
         out := map[string]map[string]int64{}
+        now := time.Now().UnixMilli()
         for name, st := range captchaStatsMap {
                 out[name] = map[string]int64{
-                        "success": st.success,
-                        "fail":    st.fail,
+                        "success":         st.success,
+                        "fail":            st.fail,
+                        "consecutiveFail": st.consecutiveFail,
+                        // cooldownRemaining: 该服务 cooldown 剩余毫秒 (0 = 不在 cooldown)
+                        "cooldownUntil": st.cooldownUntil,
+                        "cooldownActive": boolToInt64(st.cooldownUntil > now),
                 }
         }
         out["_primary"] = map[string]int64{"primary": int64(0)}
@@ -2953,6 +3177,14 @@ func CaptchaServiceStatsSnapshot() map[string]map[string]int64 {
                 out["_primary"] = map[string]int64{"primary": 2}
         }
         return out
+}
+
+// boolToInt64 — true → 1, false → 0 (R47-1A 辅助函数, JSON 序列化 bool 为 int).
+func boolToInt64(b bool) int64 {
+        if b {
+                return 1
+        }
+        return 0
 }
 
 // trySolveCaptchaWith2CaptchaInner — 2captcha 实际请求逻辑 (R45-1A 拆出供 fallback 复用).

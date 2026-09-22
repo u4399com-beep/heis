@@ -51,6 +51,7 @@ import (
         "unicode/utf8"
 
         "github.com/chromedp/cdproto/emulation"
+        "github.com/chromedp/cdproto/input"
         "github.com/chromedp/cdproto/network"
         "github.com/chromedp/cdproto/page"
         "github.com/chromedp/chromedp"
@@ -604,28 +605,90 @@ func utf8ValidTruncate(s string, max int) string {
 //   2. 随机鼠标移动到 viewport 内随机点 (input.dispatchMouseEvent mouseMoved)
 //   3. 短停顿 200-500ms (模拟用户阅读节奏)
 //   每次随机, 避免轨迹完全一致被识别.
+// R47-1A 反反爬增强 (任务要求 5: 行为模拟增强):
+//   - 鼠标移动改用 CDP input.DispatchMouseEvent(MouseMoved, x, y) — 原 JS-level
+//     MouseEvent('mousemove') 的 isTrusted=false, WAF (Cloudflare Bot Management
+//     / Akamai Bot Detection) 检测 isTrusted=false 直接判 bot. CDP-native 事件
+//     isTrusted=true, 与真实用户事件无差异.
+//   - 多步鼠标轨迹 (Bezier 曲线插值 5-8 个中间点): 原 1 个 mouseMoved 太突兀,
+//     真实用户鼠标移动是连续轨迹 (通过数百个 mousemove 事件). WAF 检测 "单次
+//     mousemove 后立即 click" 是自动化特征. 改为 Bezier 曲线 5-8 个中间点 +
+//     每点 50-150ms 延迟, 模拟真实轨迹.
+//   - 多步滚动 (3 段滚动 + 间隔): 原 scrollTo 一次到位是机器人特征. 改为 3 段
+//     scrollBy + 间隔 200-500ms, 模拟用户连续滚动.
+//   - 随机停顿 (300-800ms 总, 分 2-3 段): 真实用户阅读节奏不固定, 模拟多段
+//     阅读停顿.
 func simulateHumanBehaviorActions() []chromedp.Action {
         actions := []chromedp.Action{}
-        // 1. 随机滚动到 viewport 25-75% 位置
-        scrollPct := 25 + rand.Intn(51) // 25..75
-        scrollJS := fmt.Sprintf(
-                `window.scrollTo({top: Math.floor((document.body.scrollHeight - window.innerHeight) * %d / 100), behavior: 'smooth'});`,
-                scrollPct,
-        )
-        actions = append(actions, chromedp.Evaluate(scrollJS, nil))
-        // 2. 随机鼠标移动 (CDP input.dispatchMouseEvent, 走 chromedp.Evaluate 调 CDP)
-        x := 100 + rand.Intn(800)  // 100..900
-        y := 100 + rand.Intn(500) // 100..600
-        mouseMoveJS := fmt.Sprintf(`
-                (function() {
-                        var ev = new MouseEvent('mousemove', {clientX: %d, clientY: %d, bubbles: true});
-                        document.dispatchEvent(ev);
-                })();
-        `, x, y)
-        actions = append(actions, chromedp.Evaluate(mouseMoveJS, nil))
-        // 3. 短停顿 200-500ms (模拟阅读节奏)
-        sleepMs := 200 + rand.Intn(301) // 200..500
-        actions = append(actions, chromedp.Sleep(time.Duration(sleepMs)*time.Millisecond))
+        // 1. 多步滚动 (3 段 scrollBy + 间隔, 模拟用户连续滚动)
+        scrollSegments := 2 + rand.Intn(2) // 2..3 段
+        for i := 0; i < scrollSegments; i++ {
+                // 每段滚动 viewport 的 15-35%
+                scrollPct := 15 + rand.Intn(21) // 15..35
+                scrollJS := fmt.Sprintf(
+                        `window.scrollBy({top: Math.floor(window.innerHeight * %d / 100), behavior: 'smooth'});`,
+                        scrollPct,
+                )
+                actions = append(actions, chromedp.Evaluate(scrollJS, nil))
+                // 段间停顿 200-500ms
+                segSleepMs := 200 + rand.Intn(301)
+                actions = append(actions, chromedp.Sleep(time.Duration(segSleepMs)*time.Millisecond))
+        }
+        // 2. 多步鼠标轨迹 (Bezier 曲线 5-8 个中间点, CDP input.DispatchMouseEvent)
+        //   起点 + 终点 + 1 个控制点 (Quadratic Bezier) → 沿曲线插值
+        startX := 100 + rand.Intn(800)  // 100..900
+        startY := 100 + rand.Intn(500)  // 100..600
+        endX := 100 + rand.Intn(800)
+        endY := 100 + rand.Intn(500)
+        // 控制点 (偏离直线 50-150px, 模拟鼠标微抖)
+        ctrlOffsetX := 50 + rand.Intn(101)
+        if rand.Intn(2) == 0 {
+                ctrlOffsetX = -ctrlOffsetX
+        }
+        ctrlOffsetY := 50 + rand.Intn(101)
+        if rand.Intn(2) == 0 {
+                ctrlOffsetY = -ctrlOffsetY
+        }
+        midX := (startX + endX) / 2
+        midY := (startY + endY) / 2
+        ctrlX := midX + ctrlOffsetX
+        ctrlY := midY + ctrlOffsetY
+        // 限制在 viewport 内 (1920x1080)
+        if ctrlX < 50 {
+                ctrlX = 50
+        }
+        if ctrlX > 1870 {
+                ctrlX = 1870
+        }
+        if ctrlY < 50 {
+                ctrlY = 50
+        }
+        if ctrlY > 1030 {
+                ctrlY = 1030
+        }
+        steps := 5 + rand.Intn(4) // 5..8 步
+        for i := 1; i <= steps; i++ {
+                t := float64(i) / float64(steps)
+                // Quadratic Bezier: B(t) = (1-t)^2 * P0 + 2(1-t)t * P1 + t^2 * P2
+                // R47-1A: 闭包捕获 xVal/yVal (Go 1.22+ 循环变量 per-iteration 安全)
+                xVal := (1-t)*(1-t)*float64(startX) + 2*(1-t)*t*float64(ctrlX) + t*t*float64(endX)
+                yVal := (1-t)*(1-t)*float64(startY) + 2*(1-t)*t*float64(ctrlY) + t*t*float64(endY)
+                // R47-1A: CDP-native input.DispatchMouseEvent(MouseMoved, x, y)
+                //   isTrusted=true, 与真实用户事件无差异. 原 JS MouseEvent 的
+                //   isTrusted=false 被 Cloudflare Bot Management 等 WAF 检测为 bot.
+                actions = append(actions, chromedp.ActionFunc(func(ctx context.Context) error {
+                        return input.DispatchMouseEvent(input.MouseMoved, xVal, yVal).Do(ctx)
+                }))
+                // 每步 50-150ms (鼠标移动间隔)
+                stepSleepMs := 50 + rand.Intn(101)
+                actions = append(actions, chromedp.Sleep(time.Duration(stepSleepMs)*time.Millisecond))
+        }
+        // 3. 随机停顿 300-800ms (模拟用户阅读节奏, 总停顿分散在 2 段)
+        pauseSegments := 1 + rand.Intn(2) // 1..2 段
+        for i := 0; i < pauseSegments; i++ {
+                pauseMs := 150 + rand.Intn(301) // 150..450ms 每段
+                actions = append(actions, chromedp.Sleep(time.Duration(pauseMs)*time.Millisecond))
+        }
         return actions
 }
 

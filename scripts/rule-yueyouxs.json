@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "exportedAt": "2026-09-22",
+  "counts": {
+    "rules": 1
+  },
+  "warnings": [],
+  "data": {
+    "rules": [
+      {
+        "id": "rule-yueyouxs-sma",
+        "name": "神马小说 (sma.yueyouxs.com)",
+        "description": "神马小说 (sma.yueyouxs.com) 阅友系 SPA+zepto.js 四段采集: list=JSON API(/api/book/classify) /book=SSR HTML/CSS+regex/toc=独立目录页(/c/{id}.html 全量章节单页)/content=章节页(div.book 整块+clean 剥 nav/ad/h2)。 站点 SSR 完整 (无 JS 渲染依赖), fetch engine=http + UA rotate + autoCookie + referer 即可。 list 默认 classify_id=1100 (都市人生男频), 可改 1101 玄幻/1102 武侠/1103 都市异能/1104 历史军事/1105 网游/1107 科幻/1108 灵异。 章节页同 URL 内含 5 sub-section (同章分页, JS 切换显隐), content 段取 div.book 整块 HTML + clean.removeSelectors 剥 nav/广告/h2, plainText 输出全 5 页正文 (adPatterns 剥 \"本章未完请翻页\"/\"本章完\"/下载提示)。 toc.title 剥 \"免费/付费/VIP\" span 前缀; book.author/category 用 regex 锁定 v-words span (CSS first-match 不够)。",
+        "config": "{\"list\": {\"enabled\": true, \"urlTemplate\": \"https://sma.yueyouxs.com/api/book/classify?site_id=&classify_id=1100&page={page}\", \"itemSelector\": {\"type\": \"json\", \"expression\": \"data.list\"}, \"fields\": {\"name\": {\"type\": \"json\", \"expression\": \"bookName\"}, \"author\": {\"type\": \"json\", \"expression\": \"authorName\"}, \"intro\": {\"type\": \"json\", \"expression\": \"intro\"}, \"category\": {\"type\": \"json\", \"expression\": \"classifySecondName\"}, \"cover\": {\"type\": \"json\", \"expression\": \"bookPic\"}, \"latestChapter\": {\"type\": \"json\", \"expression\": \"latestChapterName\"}, \"bookUrl\": {\"type\": \"json\", \"expression\": \"wapBookId\", \"replaceFrom\": \"^(\\\\d+)$\", \"replaceTo\": \"https://sma.yueyouxs.com/b/$1.html\"}}, \"pagination\": {\"enabled\": true, \"maxPages\": 20}}, \"book\": {\"enabled\": true, \"fields\": {\"name\": {\"type\": \"css\", \"expression\": \"p.face-info-title\"}, \"author\": {\"type\": \"regex\", \"expression\": \"作者：([^<\\\\n]+)\", \"attr\": \"1\"}, \"category\": {\"type\": \"regex\", \"expression\": \"分类：([^<\\\\n]+)\", \"attr\": \"1\"}, \"status\": {\"type\": \"css\", \"expression\": \"div.content-label\"}, \"cover\": {\"type\": \"css\", \"expression\": \"img.face-cover-img\", \"attr\": \"src\"}, \"intro\": {\"type\": \"css\", \"expression\": \"#intro\", \"stripTags\": true}, \"latestChapter\": {\"type\": \"css\", \"expression\": \"#idNewIds .chapter-entrance\"}, \"bookId\": {\"type\": \"css\", \"expression\": \"div.sumchapter a\", \"attr\": \"href\", \"replaceFrom\": \"^/c/(\\\\d+)\\\\.html$\", \"replaceTo\": \"$1\"}}}, \"toc\": {\"enabled\": true, \"tocLink\": {\"type\": \"const\", \"expression\": \"https://sma.yueyouxs.com/c/{q.bookId}.html\"}, \"itemSelector\": {\"type\": \"css\", \"expression\": \"ul.catalog_ls li\"}, \"fields\": {\"title\": {\"type\": \"css\", \"expression\": \"a\", \"replaceFrom\": \"^(免费|付费|VIP|收费)\\\\s*\", \"replaceTo\": \"\"}, \"url\": {\"type\": \"css\", \"expression\": \"a\", \"attr\": \"href\"}}, \"pagination\": {\"enabled\": false, \"maxPages\": 1}}, \"content\": {\"enabled\": true, \"fields\": {\"title\": {\"type\": \"css\", \"expression\": \"div.section h2\", \"replaceFrom\": \"\\\\s*\\\\(\\\\d+/\\\\d+\\\\)\\\\s*\", \"replaceTo\": \"\"}, \"content\": {\"type\": \"css\", \"expression\": \"div.book\", \"attr\": \"html\"}}, \"pagination\": {\"enabled\": false, \"maxPages\": 1}}, \"fetch\": {\"engine\": \"http\", \"uaMode\": \"rotate\", \"autoCookie\": true, \"referer\": true, \"timeout\": 20000, \"retries\": 2, \"waitMs\": 500, \"hostGateLimit\": 3}, \"clean\": {\"removeSelectors\": [\"script\", \"style\", \"iframe\", \"ins\", \"noscript\", \".r-header\", \".nav\", \".xcyjgnLfeL\", \".dJoicqeaQqOgbgC\", \".wanzheng-dl\", \".bookfunbtn\", \".foot-img-down\", \"#advert_up\", \"#advert_down1\", \"#advert_down2\", \".tips\", \"h2\"], \"adPatterns\": [\"（本章未完，请翻页）\", \"（本章完）\", \"页面篇幅有限.*?下载安装客户端.*?算我输！\", \"(www\\\\.)?[a-z0-9-]+\\\\.(com|net|cc|org|info|top|xyz|vip|site)(\\\\/\\\\S*)?\", \"一秒记住.*?免费读\", \"请记住本书.*?域名\"], \"whitelist\": [\"p\", \"br\", \"b\", \"strong\", \"em\", \"i\", \"u\"], \"normalize\": true, \"plainText\": true}}",
+        "enabled": true,
+        "createdAt": "",
+        "updatedAt": ""
+      }
+    ]
+  }
+}

@@ -11,7 +11,7 @@
 //
 // 已知限制 (与 TS 端差异):
 //   - OpenCC 繁简转换无 Go 原生绑定, T2SText/T2SHtml 当前为 stub (原样返回)
-//     trafilatura 桥侧可承担繁简转换 (Python 端 OpenCC 词典加载, 与 R29-1C 兼容)
+//     trafilatura 桥侧可承担繁简转换 (Python 端 OpenCC 词典加载, 同口径)
 //   - EXTRA_AD_PATTERNS 与 cfg.AdPatterns 合并去重 (与 TS 端同口径)
 package crawl
 
@@ -254,6 +254,62 @@ var (
         reDoSNestedQuantifierAd = regexp.MustCompile(`[+*]\s*\)\s*[+*{]`)
         urlProtectRe            = regexp.MustCompile(`https?://[^\s"'<>]+`)
         urlPlaceholderRe        = regexp.MustCompile("\x00(\\d+)\x00")
+
+        // R47-1A: 预编译 cleaner.go 内 hot path 用的 regexp (原每次调用 cleanContentHtmlSync
+        //   / NormalizeParagraphs 都重编译, 高频路径 GC 压力大. R45-1C 已对 smart.go 同款优化).
+
+        // NormalizeParagraphs 内层
+        twoNewlineRe = regexp.MustCompile(`\n{2,}`)
+        wsCollapseRe = regexp.MustCompile(`\s+`)
+
+        // cleanContentHtmlSync plainText 分支
+        plainTextScriptStyleRe = regexp.MustCompile(`(?is)<(?:script|style|noscript|iframe|object|embed)\b[^>]*>.*?</(?:script|style|noscript|iframe|object|embed)\s*>`)
+        plainTextScriptStyleSelfRe = regexp.MustCompile(`(?is)<(?:script|style|noscript|iframe|object|embed)\b[^>]*/>`)
+        plainTextScriptStyleTailRe = regexp.MustCompile(`(?is)<(?:script|style|noscript|iframe|object|embed)\b[^>]*>.*`)
+        plainTextBrRe       = regexp.MustCompile(`(?i)<\s*br\s*/?\s*>`)
+        plainTextBlockEndRe = regexp.MustCompile(`(?i)</(p|div|h[1-6]|li)>`)
+        plainTextTagStripRe = regexp.MustCompile(`<[^>]+>`)
+
+        // cleanContentHtmlSync HTML 分支 (在函数内联, 每章节重编译. R47-1A 提为包级)
+        navLinkRe = regexp.MustCompile(`^(下一页|上一页|下页|上页|目录|首?页|尾?页|返回目录|继续阅读|点击阅读|分页阅读?|加入书签|推荐本书?|报错).{0,4}$`)
+        watermarkDomainRe = regexp.MustCompile(`(?i)(www\.)?[a-z0-9-]+\.(com|net|cc|org|info|top|xyz|vip|site)`)
+        watermarkPromoRe1 = regexp.MustCompile(`敬请(?:期待|关注)|扫码(?:关注|下载)|加入书签|关注微信公众号|为了方便下次阅读`)
+        watermarkPromoRe2 = regexp.MustCompile(`本章(?:未完|未完待续|继续阅读)|点击下一(?:页|章)`)
+        watermarkPromoRe3 = regexp.MustCompile(`本书首发于|请记住本书|最新章节请到|一秒记住`)
+        watermarkPromoRe4 = regexp.MustCompile(`为您提供.*?精彩小说|本站(?:首发|更新最快)`)
+        watermarkPromoRe5 = regexp.MustCompile(`下载(?:APP|客户端|手机版)`)
+
+        // 5.5 段内 br 压单空格 + 全角空格 + 多空白合并 (在 Each 内层, 每段都重编译)
+        indentBrRe    = regexp.MustCompile(`(?i)<\s*br\s*/?\s*>`)
+        indentWsRe    = regexp.MustCompile(`\s+`)
+        // 6. 首末段剥离的章节号 / Chapter N 识别
+        chapterHeadCNRe = regexp.MustCompile(`^第[一二三四五六七八九十百千万0-9]+(?:章|节|回|话|集)\b`)
+        chapterHeadENRe = regexp.MustCompile(`(?i)^Chapter\s+\d+`)
+        chapterTailRe   = regexp.MustCompile(`本章(?:未完|未完待续|继续阅读)|点击下一(?:页|章)|敬请(?:期待|关注)|加入书签|为了方便下次阅读`)
+
+        // 4. 规范化 (空段落合并 + <br><br> → </p><p>)
+        normBrDoubleRe = regexp.MustCompile(`(?i)<\s*br\s*/?\s*>\s*<\s*br\s*/?\s*>`)
+        normEmptyPRe   = regexp.MustCompile(`(?i)<p>(?:\s|&nbsp;|<br\s*/?\s*>)*</p>`)
+        normPOpenRe    = regexp.MustCompile(`(?i)<p>\s+`)
+        normPCloseRe   = regexp.MustCompile(`(?i)\s+</p>`)
+        // 5. 无 p 标签的检测
+        hasPOrBrRe     = regexp.MustCompile(`(?i)<(p|br)\b`)
+        // 7. </p>\s*<p> 压缩
+        pBoundaryRe   = regexp.MustCompile(`(?i)</p>\s*<p>`)
+
+        // R47-1A: CleanTextField / CleanIntro / stripTrailingPromo / stripLeadingMetadata
+        //   内联 regexp 提为包级 (原每书/每章节都重编译, hot path GC 压力大)
+        cleanTextFieldTagStripRe = regexp.MustCompile(`<[^>]+>`)
+        cleanTextFieldWsRe       = regexp.MustCompile(`[\r\n\t]+`)
+        cleanTextFieldWs2Re     = regexp.MustCompile(`\s{2,}`)
+        cleanTextFieldWatermarkRe = regexp.MustCompile(`^(?:本书首发于|转载请注明出处|本书来源于|本书首发自)[^，。；]*[，。；]?`)
+
+        cleanIntroBrRe      = regexp.MustCompile(`(?i)<\s*br\s*/?\s*>`)
+        cleanIntroBlockEndRe = regexp.MustCompile(`(?i)</(p|div)>`)
+        cleanIntroTagStripRe = regexp.MustCompile(`<[^>]+>`)
+
+        promoTrailRe = regexp.MustCompile(`本书首发于|请记住本书|最新章节请到|一秒记住|为您提供.*?精彩小说|本站(?:首发|更新最快)|下载(?:APP|客户端|手机版)`)
+        metaLeadingRe = regexp.MustCompile(`(?m)^\s*(?:字数|状态|分类|类型|作者|更新时间|最后更新)[:：].{0,80}$`)
 )
 
 // RemoveAdLines — 广告正则清洗 + URL 保护.
@@ -310,7 +366,7 @@ func RemoveAdLines(text string, patterns []string) string {
 // ---------- 控制字符 + 零宽字符剥离 ----------
 
 // CcAndZwStripRe — 控制字符 (除 \t \n \r) + 零宽字符 (U+200B-C / U+2060 / U+FEFF) 剥离正则.
-//  R26-1A: 同口径追加 U+2060 (Word Joiner, 与 downloader.ZW_CHARS 同口径).
+//  含 U+2060 (Word Joiner, 与 downloader.ZW_CHARS 同口径).
 //  R39-1C: Go RE2 不支持 \u 转义, 改用 \x{XXXX} 语法 (与 init 不再 panic).
 var CcAndZwStripRe = regexp.MustCompile(`[\x00-\x08\x0B\x0C\x0E-\x1F\x{200B}-\x{200D}\x{2060}\x{FEFF}]`)
 
@@ -326,12 +382,13 @@ var CcStripOnlyRe = regexp.MustCompile(`[\x00-\x08\x0B\x0C\x0E-\x1F]`)
 //  - 入参 s (任意换行形式: \r\n / \n / \r)
 //  - 出参按 \n\n 分段 (双换行段间分隔)
 //  - 段内多换行压单空格; 全角空格 U+3000 → 半角; 多空白合并
+// R47-1A: 内层 regexp (twoNewlineRe / wsCollapseRe) 提为包级预编译, 避免每次
+//   调用都重编译 (NormalizeParagraphs 是 hot path, 每章节正文 + 简介都跑).
 func NormalizeParagraphs(s string, separator string) string {
         if s == "" {
                 return ""
         }
         // 按双换行 (>=2 个连续换行) 分段
-        twoNewlineRe := regexp.MustCompile(`\n{2,}`)
         segs := twoNewlineRe.Split(s, -1)
         out := []string{}
         for _, seg := range segs {
@@ -339,8 +396,7 @@ func NormalizeParagraphs(s string, separator string) string {
                 seg = strings.ReplaceAll(seg, "\r", " ")
                 seg = strings.ReplaceAll(seg, "\n", " ")
                 seg = strings.ReplaceAll(seg, "\u3000", " ")
-                wsRe := regexp.MustCompile(`\s+`)
-                seg = wsRe.ReplaceAllString(seg, " ")
+                seg = wsCollapseRe.ReplaceAllString(seg, " ")
                 seg = strings.TrimSpace(seg)
                 if seg != "" {
                         out = append(out, seg)
@@ -368,16 +424,19 @@ func cleanContentHtmlSync(raw string, cfg CleanConfig) string {
                 text := html
                 // 1. 先剥危险标签 (script/style/noscript/iframe/object/embed) 及其内部文本
                 // RE2 不支持 \1 反向引用, 关闭标签用独立 alternation 匹配 (R45-1C 修原 panic bug)
-                text = regexp.MustCompile(`(?is)<(?:script|style|noscript|iframe|object|embed)\b[^>]*>.*?</(?:script|style|noscript|iframe|object|embed)\s*>`).ReplaceAllString(text, " ")
-                text = regexp.MustCompile(`(?is)<(?:script|style|noscript|iframe|object|embed)\b[^>]*/>`).ReplaceAllString(text, " ")
+                // R47-1A: 预编译为包级 plainTextScriptStyleRe / plainTextScriptStyleSelfRe /
+                //   plainTextScriptStyleTailRe (原每次调用 cleanContentHtmlSync 都重编译,
+                //   hot path GC 压力大).
+                text = plainTextScriptStyleRe.ReplaceAllString(text, " ")
+                text = plainTextScriptStyleSelfRe.ReplaceAllString(text, " ")
                 // 截断/未闭合的 script|style|... 段 — 贪婪匹配到串尾
-                text = regexp.MustCompile(`(?is)<(script|style|noscript|iframe|object|embed)\b[^>]*>.*`).ReplaceAllString(text, " ")
+                text = plainTextScriptStyleTailRe.ReplaceAllString(text, " ")
                 // 2. <br> → \n
-                text = regexp.MustCompile(`(?i)<\s*br\s*/?\s*>`).ReplaceAllString(text, "\n")
+                text = plainTextBrRe.ReplaceAllString(text, "\n")
                 // 3. 块级闭合标签 → \n
-                text = regexp.MustCompile(`(?i)</(p|div|h[1-6]|li)>`).ReplaceAllString(text, "\n")
+                text = plainTextBlockEndRe.ReplaceAllString(text, "\n")
                 // 4. 剥全部标签
-                text = regexp.MustCompile(`<[^>]+>`).ReplaceAllString(text, "")
+                text = plainTextTagStripRe.ReplaceAllString(text, "")
                 // 5. 实体单遍解码
                 text = DecodeEntitiesOnce(text)
                 // 6. 广告正则清洗
@@ -417,20 +476,16 @@ func cleanContentHtmlSync(raw string, cfg CleanConfig) string {
                 root.Find(sel).Remove()
         }
         // 1.5 移除分页/导航链接 (下一页/上一页/目录/继续阅读等短链接)
-        navRe := regexp.MustCompile(`^(下一页|上一页|下页|上页|目录|首?页|尾?页|返回目录|继续阅读|点击阅读|分页阅读?|加入书签|推荐本书?|报错).{0,4}$`)
+        // R47-1A: navRe 提为包级 navLinkRe (原每次 cleanContentHtmlSync 都重编译)
         root.Find("a").Each(func(_ int, s *goquery.Selection) {
                 t := strings.TrimSpace(s.Text())
-                if t != "" && navRe.MatchString(t) {
+                if t != "" && navLinkRe.MatchString(t) {
                         s.Remove()
                 }
         })
         // 1.55 水印段落识别 (短段 ≤120 字 + 命中水印特征词 → 整段删)
-        watermarkRe1 := regexp.MustCompile(`(?i)(www\.)?[a-z0-9-]+\.(com|net|cc|org|info|top|xyz|vip|site)`)
-        watermarkRe2 := regexp.MustCompile(`敬请(?:期待|关注)|扫码(?:关注|下载)|加入书签|关注微信公众号|为了方便下次阅读`)
-        watermarkRe3 := regexp.MustCompile(`本章(?:未完|未完待续|继续阅读)|点击下一(?:页|章)`)
-        watermarkRe4 := regexp.MustCompile(`本书首发于|请记住本书|最新章节请到|一秒记住`)
-        watermarkRe5 := regexp.MustCompile(`为您提供.*?精彩小说|本站(?:首发|更新最快)`)
-        watermarkRe6 := regexp.MustCompile(`下载(?:APP|客户端|手机版)`)
+        // R47-1A: watermarkRe1..6 提为包级 watermarkDomainRe / watermarkPromoRe1..5
+        //   (原每次 cleanContentHtmlSync 都重编译, hot path GC 压力大)
         root.Find("p").Each(func(_ int, s *goquery.Selection) {
                 t := strings.TrimSpace(s.Text())
                 if t == "" {
@@ -439,8 +494,8 @@ func cleanContentHtmlSync(raw string, cfg CleanConfig) string {
                 if utf8.RuneCountInString(t) > 120 {
                         return
                 }
-                if watermarkRe1.MatchString(t) || watermarkRe2.MatchString(t) || watermarkRe3.MatchString(t) ||
-                        watermarkRe4.MatchString(t) || watermarkRe5.MatchString(t) || watermarkRe6.MatchString(t) {
+                if watermarkDomainRe.MatchString(t) || watermarkPromoRe1.MatchString(t) || watermarkPromoRe2.MatchString(t) ||
+                        watermarkPromoRe3.MatchString(t) || watermarkPromoRe4.MatchString(t) || watermarkPromoRe5.MatchString(t) {
                         s.Remove()
                 }
         })
@@ -486,15 +541,17 @@ func cleanContentHtmlSync(raw string, cfg CleanConfig) string {
         // 3. 广告正则清洗
         out = RemoveAdLines(out, cfg.AdPatterns)
         // 4. 规范化 (空段落合并 + <br><br> → </p><p>)
+        // R47-1A: 内联 regexp 提为包级 normBrDoubleRe / normEmptyPRe / normPOpenRe /
+        //   normPCloseRe / hasPOrBrRe / pBoundaryRe (原每次调用都重编译)
         if cfg.Normalize {
                 out = "<p>" + out + "</p>"
-                out = regexp.MustCompile(`(?i)<\s*br\s*/?\s*>\s*<\s*br\s*/?\s*>`).ReplaceAllString(out, "</p><p>")
-                out = regexp.MustCompile(`(?i)<p>(?:\s|&nbsp;|<br\s*/?\s*>)*</p>`).ReplaceAllString(out, "")
-                out = regexp.MustCompile(`(?i)<p>\s+`).ReplaceAllString(out, "<p>")
-                out = regexp.MustCompile(`(?i)\s+</p>`).ReplaceAllString(out, "</p>")
+                out = normBrDoubleRe.ReplaceAllString(out, "</p><p>")
+                out = normEmptyPRe.ReplaceAllString(out, "")
+                out = normPOpenRe.ReplaceAllString(out, "<p>")
+                out = normPCloseRe.ReplaceAllString(out, "</p>")
         }
         // 5. 若无任何 p 标签, 按换行重建段落
-        if !regexp.MustCompile(`(?i)<(p|br)\b`).MatchString(out) {
+        if !hasPOrBrRe.MatchString(out) {
                 lines := strings.Split(out, "\n")
                 var b strings.Builder
                 for _, l := range lines {
@@ -512,15 +569,16 @@ func cleanContentHtmlSync(raw string, cfg CleanConfig) string {
                 root2 := doc2.Find("#__indent_root")
                 root2.Find("p").Each(func(_ int, s *goquery.Selection) {
                         h, _ := s.Html()
-                        h = regexp.MustCompile(`(?i)<\s*br\s*/?\s*>`).ReplaceAllString(h, " ")
+                        // R47-1A: indentBrRe / indentWsRe 提为包级 (原每段都重编译)
+                        h = indentBrRe.ReplaceAllString(h, " ")
                         h = strings.ReplaceAll(h, "\u3000", " ")
-                        h = regexp.MustCompile(`\s+`).ReplaceAllString(h, " ")
+                        h = indentWsRe.ReplaceAllString(h, " ")
                         h = strings.TrimSpace(h)
                         s.SetHtml(h)
                 })
                 out, _ = root2.Html()
         }
-        out = regexp.MustCompile(`(?i)</p>\s*<p>`).ReplaceAllString(out, "</p><p>")
+        out = pBoundaryRe.ReplaceAllString(out, "</p><p>")
         // 6. 首末段剥离 (短段 ≤80 字匹配章节号归一化形态 / 末段 ≤200 字命中水印特征词)
         if doc3, err := goquery.NewDocumentFromReader(strings.NewReader(`<div id="__strip_root">` + out + `</div>`)); err == nil {
                 root3 := doc3.Find("#__strip_root")
@@ -529,8 +587,8 @@ func cleanContentHtmlSync(raw string, cfg CleanConfig) string {
                         first := paras.First()
                         headText := strings.TrimSpace(first.Text())
                         if utf8.RuneCountInString(headText) <= 80 {
-                                if regexp.MustCompile(`^第[一二三四五六七八九十百千万0-9]+(?:章|节|回|话|集)\b`).MatchString(headText) ||
-                                        regexp.MustCompile(`(?i)^Chapter\s+\d+`).MatchString(headText) {
+                                // R47-1A: chapterHeadCNRe / chapterHeadENRe 提为包级 (原每次调用都重编译)
+                                if chapterHeadCNRe.MatchString(headText) || chapterHeadENRe.MatchString(headText) {
                                         first.Remove()
                                 }
                         }
@@ -540,8 +598,8 @@ func cleanContentHtmlSync(raw string, cfg CleanConfig) string {
                         last := paras2.Last()
                         tailText := strings.TrimSpace(last.Text())
                         if utf8.RuneCountInString(tailText) <= 200 {
-                                tailRe := regexp.MustCompile(`本章(?:未完|未完待续|继续阅读)|点击下一(?:页|章)|敬请(?:期待|关注)|加入书签|为了方便下次阅读`)
-                                if tailRe.MatchString(tailText) || watermarkRe1.MatchString(tailText) || watermarkRe4.MatchString(tailText) {
+                                // R47-1A: chapterTailRe 提为包级 (原每次调用都重编译)
+                                if chapterTailRe.MatchString(tailText) || watermarkDomainRe.MatchString(tailText) || watermarkPromoRe3.MatchString(tailText) {
                                         last.Remove()
                                 }
                         }
@@ -562,7 +620,7 @@ func matchedHTTP(val string) bool {
 }
 
 // CleanContentHtml — 清洗章节正文 HTML (同步, 不调 trafilatura 桥).
-// 与 TS 端 cleanContentHtml 同口径 (R29-1C useTrafilatura=true 走 caller-side 分流).
+// 与 TS 端 cleanContentHtml 同口径 (useTrafilatura=true 走 caller-side 分流).
 func CleanContentHtml(raw string, cfgOverride *CleanConfig) string {
         cfg := DefaultCleanConfig
         if cfgOverride != nil {
@@ -571,7 +629,7 @@ func CleanContentHtml(raw string, cfgOverride *CleanConfig) string {
         return cleanContentHtmlSync(raw, cfg)
 }
 
-// CleanContentHtmlWithTrafilatura — trafilatura first 路径 (R29-1C useTrafilatura=true).
+// CleanContentHtmlWithTrafilatura — trafilatura first 路径 (useTrafilatura=true).
 // 调桥提取正文 → 喂入 plainText 段落规整链 (跳过 cheerio DOM 剥壳阶段).
 // 桥不可达/异常/空文本 → 降级回 cheerio 链 (零回归).
 func CleanContentHtmlWithTrafilatura(ctx context.Context, raw string, cfgOverride *CleanConfig, bridgeURL string) string {
@@ -599,7 +657,7 @@ func CleanContentHtmlWithTrafilatura(ctx context.Context, raw string, cfgOverrid
         return cleanContentHtmlSync(raw, cfg)
 }
 
-// TryTrafilaturaFallback — trafilatura 兜底模式 (R29-1A → R29-1C).
+// TryTrafilaturaFallback — trafilatura 兜底模式.
 // runner 在 sync cleanContentHtml 后, 若结果过短 (<200 字符) 且原 HTML 较长 (>2KB),
 // 调本桥做规则无关兜底; 桥结果 >2x cleaner 结果才采纳 (防误判).
 func TryTrafilaturaFallback(ctx context.Context, html, cleaned string, cfg CleanConfig, bridgeURL string) string {
@@ -636,16 +694,17 @@ func CleanTextField(raw string, maxLength int) string {
         if raw == "" {
                 return ""
         }
-        v := regexp.MustCompile(`<[^>]+>`).ReplaceAllString(raw, "")
+        // R47-1A: 内联 regexp 提为包级 (原每书/每章节都重编译)
+        v := cleanTextFieldTagStripRe.ReplaceAllString(raw, "")
         v = DecodeEntitiesOnce(v)
         v = CcStripOnlyRe.ReplaceAllString(v, "")
         v = ZWStripOnlyRe.ReplaceAllString(v, "")
         v = T2SText(v)
         v = strings.ReplaceAll(v, "\\n", "\n")
-        v = regexp.MustCompile(`[\r\n\t]+`).ReplaceAllString(v, " ")
-        v = regexp.MustCompile(`\s{2,}`).ReplaceAllString(v, " ")
+        v = cleanTextFieldWsRe.ReplaceAllString(v, " ")
+        v = cleanTextFieldWs2Re.ReplaceAllString(v, " ")
         // 站点水印清洗
-        v = regexp.MustCompile(`^(?:本书首发于|转载请注明出处|本书来源于|本书首发自)[^，。；]*[，。；]?`).ReplaceAllString(v, "")
+        v = cleanTextFieldWatermarkRe.ReplaceAllString(v, "")
         v = strings.TrimSpace(v)
         // 重复标点压缩 (! ? 。 及其全角形式) — RE2 不支持 \1 反向引用,
         // 用单遍扫描压扁相邻相同标点 (R45-1C 修原 panic bug).
@@ -665,9 +724,10 @@ func CleanIntro(raw string, maxLength int) string {
         if maxLength <= 0 {
                 maxLength = 2000
         }
-        v := regexp.MustCompile(`(?i)<\s*br\s*/?\s*>`).ReplaceAllString(raw, "\n")
-        v = regexp.MustCompile(`(?i)</(p|div)>`).ReplaceAllString(v, "\n")
-        v = regexp.MustCompile(`<[^>]+>`).ReplaceAllString(v, "")
+        // R47-1A: 内联 regexp 提为包级 (原每书简介都重编译)
+        v := cleanIntroBrRe.ReplaceAllString(raw, "\n")
+        v = cleanIntroBlockEndRe.ReplaceAllString(v, "\n")
+        v = cleanIntroTagStripRe.ReplaceAllString(v, "")
         v = DecodeEntitiesOnce(v)
         v = CcStripOnlyRe.ReplaceAllString(v, "")
         v = ZWStripOnlyRe.ReplaceAllString(v, "")
@@ -690,13 +750,13 @@ func CleanIntro(raw string, maxLength int) string {
 // stripTrailingPromo — 从末尾向前扫, 连续命中推广词的段全删 (遇到非推广段即停).
 func stripTrailingPromo(s string) string {
         lines := strings.Split(s, "\n")
-        promoRe := regexp.MustCompile(`本书首发于|请记住本书|最新章节请到|一秒记住|为您提供.*?精彩小说|本站(?:首发|更新最快)|下载(?:APP|客户端|手机版)`)
+        // R47-1A: promoRe 提为包级 promoTrailRe (原每简介都重编译)
         for i := len(lines) - 1; i >= 0; i-- {
                 t := strings.TrimSpace(lines[i])
                 if t == "" {
                         continue
                 }
-                if !promoRe.MatchString(t) {
+                if !promoTrailRe.MatchString(t) {
                         break
                 }
                 lines = append(lines[:i], lines[i+1:]...)
@@ -706,14 +766,14 @@ func stripTrailingPromo(s string) string {
 
 // stripLeadingMetadata — 简介开头元数据剥离 (字数：xxx万字 / 状态：连载中 / 分类：玄幻 等).
 func stripLeadingMetadata(s string) string {
-        metaRe := regexp.MustCompile(`(?m)^\s*(?:字数|状态|分类|类型|作者|更新时间|最后更新)[:：].{0,80}$`)
+        // R47-1A: metaRe 提为包级 metaLeadingRe (原每简介都重编译)
         lines := strings.Split(s, "\n")
         for i, l := range lines {
                 t := strings.TrimSpace(l)
                 if t == "" {
                         continue
                 }
-                if !metaRe.MatchString(t) {
+                if !metaLeadingRe.MatchString(t) {
                         if i == 0 {
                                 return s
                         }

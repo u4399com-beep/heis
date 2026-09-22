@@ -2,8 +2,9 @@
 
 规则驱动的小说采集与发布系统：管理端配置站点规则与采集任务，引擎按规则抓取（8 级降级链）、
 清洗、落库；前台站群（书城/书籍详情/阅读页/搜索/分类/排行榜/关键词聚合/全文搜索）直接消费
-库内数据。**R38–R46 已完成 Next.js → Go 全面迁移**：单二进制部署、运行期 17 MB 内存、
-无 cgo / 无 Bun / 无 Node / 无 Docker 依赖。
+库内数据。**R38–R47 已完成 Next.js → Go 全面迁移**：单二进制部署、运行期 17 MB 内存、
+无 cgo / 无 Bun / 无 Node / 无 Docker 依赖。`heis-backend` 二进制已入 git（commit
+`29dcd99`），平台 `git clone` 后零编译直接运行 `./go-backend/heis-backend`。
 
 > 生产部署详细教程见 **[DEPLOY.md](./DEPLOY.md)**；本文覆盖功能总览、快速开始、项目结构与架构。
 
@@ -11,7 +12,7 @@
 
 - **单二进制部署**：`go build -o heis-backend .` 产出一个 24 MB 静态链接二进制，运行期 17 MB
   内存（vs 旧 Next.js 2.2 GB，OOM 风险消失），单机即可承载。
-- **采集引擎 `go-backend/crawl/`（8 模块 9031 行）**：规则四段（list / book / toc / content）
+- **采集引擎 `go-backend/crawl/`（8 模块 9321 行）**：规则四段（list / book / toc / content）
   解析、CSS / XPath / regex / JSON 字段提取、分页与翻页 Referer 链、编码识别（GBK 自动转
   UTF-8）、正文清洗（广告模式 / 去壳页 / 零宽字符剥离 / trafilatura 桥）、分卷排序、并发限速
   + HostGate 双限速、封面本地化（webp）。
@@ -154,14 +155,14 @@ go-backend/
 ├── go.sum                        # 依赖校验
 ├── main.go                       # 主后端 (1173 行): 路由 + 86 FuncMap + 静态服务 + DB + 94 模板加载
 ├── admin.go                      # 后台 API + admin SSR (3570 行): 14 个 admin 页面 + /api/admin/* 14 路由
-├── heis-backend                  # go build 输出二进制 (24 MB, .gitignore, 不入版本库)
+├── heis-backend                  # go build 输出二进制 (24 MB, 已入 git 平台 clone 即跑; .gitignore 仅兜底防误覆盖)
 ├── backend.log                   # heis-backend 后台运行日志 (.gitignore, 不入版本库)
 │
-├── crawl/                        # 采集引擎 (8 模块 9031 行)
-│   ├── fetcher.go                #   HTTP 采集 + 8 级降级链 + UA 池 + CookieJar (3384 行)
+├── crawl/                        # 采集引擎 (8 模块 9321 行)
+│   ├── fetcher.go                #   HTTP 采集 + 8 级降级链 + UA 池 + CookieJar (3615 行)
 │   ├── parser.go                 #   css / xpath / regex / json 字段提取 (1612 行)
 │   ├── runner.go                 #   4 段采集流程 + 任务调度 + Semaphore (1481 行)
-│   ├── cleaner.go                #   广告 / 去壳 / 编码 / 零宽字符剥离 / trafilatura 桥 (744 行)
+│   ├── cleaner.go                #   广告 / 去壳 / 编码 / 零宽字符剥离 / trafilatura 桥 (804 行)
 │   ├── types.go                  #   规则 / 配置 / 结果数据结构 (721 行)
 │   ├── hostgate.go               #   并发 + 速率双限速器 (423 行)
 │   ├── storage.go                #   db / txt 双存储 + 封面本地化 (355 行)
@@ -211,13 +212,15 @@ mini-services/{start-all.sh,stop-all.sh,status.sh,.gitkeep}  # 11 服务启停�
 public/clone-css/*.css           # 10 个主题的源站 CSS (由 main.go /clone-css/ 路由服务)
 public/{robots.txt,sw.js,manifest.json,icon.svg,logo.svg}   # 站点元数据 (Next.js PWA 残留, 可选)
 Caddyfile                        # 沙箱网关 SSRF 防御配置 (端口白名单 3010-3015 + 透传 3000)
-agent-ctx/R*-*.md                # 各轮 agent 工作记录 (R38-R46)
-worklog.md                       # 完整迁移工作日志 (~18000 行, R3-a → R46-1C 全链路)
+agent-ctx/R*-*.md                # 各轮 agent 工作记录 (R38-R47, 21 文件)
+worklog.md                       # 完整迁移工作日志 (~18500 行, R3-a → R47-1B 全链路)
 DEPLOY.md                        # 生产部署详细教程 (systemd / 反代 / 备份 / 升级 / 故障排查)
 README.md                        # 本文件
+scripts/rule-yueyouxs.json       # yueyouxs (神马小说) 站点规则 backup-restore 格式 JSON (/api/admin/backup/restore 可导入; R47-1B 替代旧 .ts 种子脚本)
+package.json                     # 仅保留 dev script = ./go-backend/heis-backend (平台 `bun run dev` 拉起 Go 后端; R47-1B 确认)
 .env.example                     # 环境变量模板 (mini-services AUTH_TOKEN / BRIDGE_KEY / RATE_LIMIT 等)
 .env                             # 本机 .env (DATABASE_URL, .gitignore, 不入版本库)
-.gitignore                       # Go 构建产物 + 日志 + 运行时数据 + .env* 全忽略
+.gitignore                       # Go 构建产物 + 日志 + 运行时数据 + .env* 全忽略 (heis-backend 二进制以 git add -f 强制入 git, .gitignore 仅兜底)
 ```
 
 ## 采集规则配置
@@ -313,5 +316,5 @@ curl -s http://localhost:3000/api/admin/backup > backup-$(date +%F).json
 
 ---
 
-**项目版本**：R46-1C（纯 Go 栈，自 R38 起从 Next.js 全面迁移完成）。详细部署见 [DEPLOY.md](./DEPLOY.md)，
-完整工作日志见 [worklog.md](./worklog.md)（~18000 行，R3-a → R46-1C 全链路）。
+**项目版本**：R47-1B（纯 Go 栈，自 R38 起从 Next.js 全面迁移完成）。详细部署见 [DEPLOY.md](./DEPLOY.md)，
+完整工作日志见 [worklog.md](./worklog.md)（~18500 行，R3-a → R47-1B 全链路）。

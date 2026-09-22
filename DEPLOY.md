@@ -4,7 +4,9 @@
 > 替换：主后端 `go-backend/main.go`（heis-backend，:3000）+ 11 个 Go mini-services（端口
 > 3010–3020，已 R43-1C 全删旧 TS/Python 版本）+ bridgeserver 共享包。Go 二进制单文件部署，
 > **无 cgo、无 Bun、无 Node、无 Docker 依赖**，运行期内存 17 MB（vs 旧 Next.js 2.2 GB），
-> 单机即可承载。（R46-1A 起项目根目录已彻底删除 Next.js/Bun/Docker 残留，纯 Go 栈。）
+> 单机即可承载。（R46-1A 起项目根目录已彻底删除 Next.js/Bun/Docker 残留，纯 Go 栈；R47-1B
+> 起根 `package.json` 仅保留 `scripts.dev = ./go-backend/heis-backend` 供平台 `bun run dev`
+> 拉起，heis-backend 二进制已入 git 可 clone 即跑。）
 
 ---
 
@@ -65,6 +67,11 @@ go build -o heis-backend .
 # 产出二进制 heis-backend (24 MB, 静态链接, 无外部依赖)
 # macOS/Linux 通用; Windows 用 GOOS=windows go build -o heis-backend.exe .
 ```
+
+> **平台 clone 后零编译直接运行**：`heis-backend` 二进制已入 git（commit `29dcd99`），
+> 仅当 `go-backend/*.go` 或 `go-backend/services/*/main.go` 源码变更时才需重建。
+> 平台 `bun run dev` 实际拉起 `./go-backend/heis-backend`（见根 `package.json` 的
+> `scripts.dev`）。
 
 ### 2.2 初始化数据库
 
@@ -189,7 +196,12 @@ bash mini-services/status.sh
 ### 4.2 参考规则
 
 历史参考脚本位于 `scripts/seed-rule-*.ts`（22 个站点规则种子，已 R42-1C + R46-1A 清理；
-如需重新入库，请直接在 `/admin/rules` 后台手动新建，参考下表的关键点配置）：
+R47-1B 将仅剩的 `seed-rule-yueyouxs.ts` 转为 portable JSON `scripts/rule-yueyouxs.json`（/api/admin/backup/restore 可直接导入）。如需重新入库，用以下两种方式之一：
+
+1. 后台手动新建：浏览器 `/admin/rules` 点「新建规则」，填名称 + 描述 + 完整 config JSON（schema 见 `prisma/schema.prisma` 中 `Rule.config`），保存后点「在线测试」验证，再启用。
+2. 一键导入：`curl -X POST -H 'Content-Type: application/json' --data-binary @scripts/rule-yueyouxs.json http://localhost:3000/api/admin/backup/restore?dryRun=1`（先 dry-run 校验, 去掉 `?dryRun=1` 实际入库）。
+
+参考规则的关键点见下表：
 
 | 站点 | 规则关键点 |
 | --- | --- |
@@ -285,12 +297,12 @@ bash mini-services/status.sh
                           │
                           ▼
               ┌───────────────────────┐
-              │  采集引擎 crawl/        │  (9031 行 Go)
+              │  采集引擎 crawl/        │  (9321 行 Go)
               │  ───────────────────  │
-              │  fetcher.go  3384 行  │  ← 8 级降级链总调度 (R45-1C DialTLSContext + R46-1B utls 16 池/session cache + brotli miss + 代理 probe + captcha 成功率)
+              │  fetcher.go  3615 行  │  ← 8 级降级链总调度 (R45-1C DialTLSContext + R46-1B utls 16 池/session cache + brotli miss + 代理 probe + captcha 成功率 + R47-1A cookie 跨子域 stripPort)
               │  parser.go   1612 行  │  ← css/xpath/regex/json 提取
-              │  runner.go   1481 行  │  ← 4 段采集流程 + 任务调度 (R45-1A defer recover + R46-1B ThreadsMax 兜底)
-              │  cleaner.go   744 行  │  ← 广告/去壳/编码/trafilatura (R45-1C collapseDupPunct)
+              │  runner.go   1481 行  │  ← 4 段采集流程 + 任务调度 (R45-1A defer recover + R46-1B ThreadsMax 兜底 + R47-1A 删 `_ = i` dead code)
+              │  cleaner.go   804 行  │  ← 广告/去壳/编码/trafilatura (R45-1C collapseDupPunct + R47-1A ~40 段 regexp 预编译)
               │  types.go     721 行  │  ← 规则/配置/结果数据结构 (R46-1B 新增 ProxyProbeURL)
               │  hostgate.go  423 行  │  ← 并发 + 速率双限速器 (R45-1A settleRateLimitExpiry)
               │  storage.go    355 行  │  ← db/txt 双存储 + 封面本地化
@@ -538,7 +550,8 @@ curl -s http://localhost:3000/api/admin/backup > backup-$(date +%F).json
 cd /home/z/my-project
 git pull
 
-# 重建主后端
+# 主后端二进制已入 git (commit 29dcd99, 平台 clone 即跑).
+# 仅当 go-backend/*.go 或 go-backend/services/*/main.go 有源码变更时才需重建:
 cd go-backend && go build -o heis-backend .
 
 # 重启 mini-services (增量构建会自动识别变更的源码)
@@ -549,6 +562,9 @@ bash mini-services/start-all.sh
 # 重启主后端 (systemd 模式)
 sudo systemctl restart heis-backend
 ```
+
+> 平台 clone 后零编译直接运行: `cd go-backend && ./heis-backend` (二进制 24 MB 静态链接, 无 cgo
+> / 无 Bun / 无 Node / 无 Docker 依赖, Go 工具链仅源码变更时需要).
 
 ---
 
@@ -563,7 +579,7 @@ sudo systemctl restart heis-backend
 | 依赖 | Bun + Node + Prisma Client + React 19 | Go 标准库 + modernc.org/sqlite（无 cgo） |
 | 前端 | React 19 SSR（src/app/*，R46-1A 起整目录已删） | Go html/template（go-backend/templates/*） |
 | 模板数 | 173 文件（src/components + src/app） | 94 个（10 主题 × 8 页型 + 14 admin） |
-| 采集引擎 | TS（src/lib/crawl/*，8302 行，已 R42-1C 删） | Go（go-backend/crawl/*，9031 行） |
+| 采集引擎 | TS（src/lib/crawl/*，8302 行，已 R42-1C 删） | Go（go-backend/crawl/*，9321 行） |
 | mini-services | 5 Bun + 1 Python（已删） | 11 Go 二进制（端口 3010-3020）+ bridgeserver 共享包 |
 | 降级链 | 5 级 | **8 级**（+uc/moli/curl-impersonate） |
 | 反反爬 | 基础 UA + 代理池 | utls Hello 指纹池（R46-1B 起 16 款，含 PSK/PQ）+ JA3/JA4 轮换 + TLS session cache + 2captcha + Cookie 持久化 |
@@ -588,12 +604,13 @@ sudo systemctl restart heis-backend
 - **清理重构**：`agent-ctx/R43-1C-full-stack-developer.md`（删旧 TS/Python mini-services + start-all.sh 重写）
 - **R46-1A 全面 Go 化**：`agent-ctx/R46-1A-full-stack-developer.md`（删 10 根级 Next.js 配置 + src/app + .next + node_modules + scripts/.ts + examples/.tsx）
 - **R45-1C 反反爬 + dead code 第五轮**：`agent-ctx/R45-1C-full-stack-developer.md`（cleaner.go `\1` panic 修复 + DialTLSContext + 6 helper 整合到 bridgeserver）
-- **完整工作日志**：`worklog.md`（~18,054 行，R3-a → R46-1C 全链路迁移记录）
+- **R47-1B 清理精简 + DEPLOY 更新**：`agent-ctx/R47-1B-full-stack-developer.md`（R10-R30 注释清理 + scripts/rule-yueyouxs.json portable 化 + dev.log/.next/next-env.d.ts 清理 + LoC/heis-backend git 跟踪确认）
+- **完整工作日志**：`worklog.md`（~18,500 行，R3-a → R47-1B 全链路迁移记录）
 - **数据库 schema**：`prisma/schema.prisma`（11 + 1 表，Feedback R40 新增）
-- **采集引擎源码**：`go-backend/crawl/*.go`（8 模块 9031 行）
+- **采集引擎源码**：`go-backend/crawl/*.go`（8 模块 9321 行）
 - **主后端源码**：`go-backend/main.go`（1173 行）+ `go-backend/admin.go`（3570 行）
 - **mini-services 源码**：`go-backend/services/*/main.go`（11 个）+ `services/bridgeserver/bridgeserver.go`（共享样板 917 行）
 
 ---
 
-**文档版本**：R46-1C (Go 重写后部署链路 + R46-1A 删 Next.js 残留 + R46-1B utls 16 池/session cache/ThreadsMax 兜底 + R46-1C 删 Docker/docs/tests/tool-results/重写 README 纯 Go 化)，对应 worklog.md R38–R46 全程迁移记录。
+**文档版本**：R47-1B (Go 重写后部署链路 + R46-1A 删 Next.js 残留 + R46-1B utls 16 池/session cache/ThreadsMax 兜底 + R46-1C 删 Docker/docs/tests/tool-results/重写 README 纯 Go 化 + R47-1A cleaner.go 25 段 regexp 预编译 + fetcher.go stripPort cookie 跨子域修复 + R47-1B R10-R30 注释清理 + scripts/rule-yueyouxs.json portable + dev.log/.next/next-env.d.ts 清理)，对应 worklog.md R38–R47 全程迁移记录。

@@ -1264,8 +1264,8 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
 
         // 构建 BookMetaContext
         idMap := map[string]string{}
-        for i, toc := range toc.Items {
-                _ = i
+        // R47-1A: 删 `_ = i` dead code (for-range 不需要 i 时直接用 _)
+        for _, toc := range toc.Items {
                 idMap[toc.URL] = "" // 暂为空, 阶段 2 落库后填充
         }
 

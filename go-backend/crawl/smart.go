@@ -82,7 +82,7 @@ var categoryAliases = map[string]string{
         "现实生活": "现实", "职场": "现实", "商战": "现实", "社会": "现实", "现实主义": "现实",
 }
 
-// NormalizeCategory — R30: 归一化分类名 → 标准分类.
+// NormalizeCategory — 归一化分类名 → 标准分类.
 //  1. 精确别名命中 → 返回标准分类
 //  2. 标准 14 分类直接返回
 //  3. 模糊: 源站分类名包含标准分类名 → 合并 ("玄幻魔法" includes "玄幻" → "玄幻")
@@ -124,7 +124,7 @@ func MatchCategoryByText(text string, existingCategories []string) string {
         if text == "" {
                 return ""
         }
-        // 1. 直接命中已有分类名 (R30: 归一化后匹配)
+        // 1. 直接命中已有分类名 (归一化后匹配)
         if len(existingCategories) > 0 {
                 normalized := []string{}
                 for _, c := range existingCategories {
