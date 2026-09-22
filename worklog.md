@@ -17965,3 +17965,471 @@ Stage Summary:
   crawl 8296→8663, fetcher 2743→3036, 等). staticcheck 11 → 0 issues. 编译 0 errors, vet 0
   warnings, 4 个 service 子项目独立 build 0 errors, heis-backend 启动 + 3 端点 curl 200.
   详细工作记录: agent-ctx/R45-1C-full-stack-developer.md
+
+---
+Task ID: R46-1A
+Agent: full-stack-developer (全面Go化删Next.js残留)
+Task: 删 package.json/tsconfig/next.config/src 项目纯 Go 化
+Work Log:
+- 读 worklog.md 最后 150 行 (R45-1C 收尾) 了解 Go 迁移历史: 19183 行 Go 代码已就位,
+  94 模板 + 11 mini-services + bridgeserver 共享包 + crawl 采集引擎全通.
+- 删除 10 个根级 Next.js 配置文件:
+  · package.json (2906B, Next.js 16 + React 19 + Radix UI + Prisma 38 依赖)
+  · tsconfig.json (TS 5 配置, jsx: react-jsx)
+  · next.config.ts (Next.js standalone 构建配置)
+  · postcss.config.mjs (Tailwind 4 PostCSS 插件链)
+  · eslint.config.mjs (Next.js + TS ESLint 规则集)
+  · tailwind.config.ts (shadcn/ui 设计 token + animate)
+  · components.json (shadcn/ui New York 风格 + RSC)
+  · next-env.d.ts (Next.js TS 路由声明)
+  · bun.lock (220KB 全依赖 lockfile)
+  · dev.log (Next.js dev server 旧日志, Go 后端独立用 go-backend/backend.log)
+- 删除 src/ 整个目录 (4 文件): app/page.tsx (R42-1C 占位首页 90 行) +
+  app/layout.tsx (Next.js App Router 根布局) + app/not-found.tsx (404 页) +
+  app/globals.css (Tailwind 4 + CSS 变量).
+- 删除 .next/ (Next.js build cache) + node_modules/ (400 顶级 npm 依赖包).
+- 删除剩余 .ts/.tsx 文件 (3 个, 满足"删除所有 .ts/.tsx 文件"):
+  · scripts/seed-rule-yueyouxs.ts (R44-1A bun seed 脚本, Prisma client + DATABASE_URL;
+    Go 后端 main.go 已直接 modernc.org/sqlite 操作 DB, 此 seed 已非必需, 需时由
+    /api/admin/rules POST 重新写入)
+  · examples/websocket/frontend.tsx (Next.js socket.io-client + shadcn/ui demo)
+  · examples/websocket/server.ts (Node http + socket.io 服务端 demo)
+  · 父空目录 scripts/ + examples/websocket/ + examples/ 一并清理 (不留空目录).
+- 保留 (尊重用户"不要碰"约束):
+  · go-backend/* 全保留 (B agent 审查范围, 本次未触碰任何 .go 文件)
+  · prisma/schema.prisma (DB schema 参考, Go 用 modernc.org/sqlite 读 DB)
+  · public/clone-css/ (10 个源站 CSS)
+  · mini-services/{start-all.sh, stop-all.sh, status.sh, .gitkeep}
+  · Caddyfile + .gitignore + DEPLOY.md + worklog.md + agent-ctx/*.md
+- 项目纯 Go 化确认 (用户第三步 5 项):
+  1. go-backend/go.mod 是唯一模块定义 (module heis-backend, go 1.26, 13 direct deps,
+     无其他 go.mod, mini-services 全用主模块, bridgeserver 是共享包非子模块) ✓
+  2. go-backend/main.go 是唯一入口 (1174 行, 路由 + 86 FuncMap + 静态服务 + DB +
+     94 模板加载, ListenAndServe :3000) ✓
+  3. go-backend/services/ 含 11 mini-services (bqg713-proxy/cloak-browser/
+     curl-impersonate-bridge/deqixs-proxy/fetch-relay/moli-bridge/qimao-proxy/
+     scrapling-bridge/trafilatura-bridge/uc-bridge/xjp-proxy) + bridgeserver 共享 lib ✓
+  4. go-backend/templates/ 含 94 个 Go html/template (11 主题 × 8 页型 + 6 admin) ✓
+  5. go-backend/crawl/ 是采集引擎 8 模块 (fetcher/parser/cleaner/runner/storage/
+     hostgate/smart/types) ✓
+  6. .ts/.tsx 文件全部清除 (find 验证 0 个剩余, 排除 skills/ 外部包) ✓
+  7. node_modules/ 已删 ✓
+- 验证 (用户第四步 3 项):
+  · go build: cd go-backend && ~/go/go/bin/go build -o heis-backend . → 0 errors,
+    binary 24,198,929 bytes (~24.2MB, 与 R45-1A 持平).
+  · go vet ./... → 0 warnings.
+  · 11 mini-services 子项目独立 build → 全部 0 errors (bqg713-proxy/cloak-browser/
+    curl-impersonate-bridge/deqixs-proxy/fetch-relay/moli-bridge/qimao-proxy/
+    scrapling-bridge/trafilatura-bridge/uc-bridge/xjp-proxy).
+  · heis-backend 重启: pkill -9 -f heis-backend; setsid ./heis-backend > backend.log
+    2>&1 < /dev/null & disown → PID 25084 listening :3000.
+  · backend.log: 数据库 /home/z/my-project/db/custom.db + 已加载 94 个模板 +
+    heis-backend 启动 http://localhost:3000 (内存 13MB).
+  · 端到端 curl 5 端点全 200:
+    - GET /             → 200, SSR HTML (theme=shipsay, link /clone-css/shipsay.css)
+    - GET /health       → 200, {"lang":"go","memMB":17,"ok":true}
+    - GET /admin        → 200
+    - GET /admin/tasks  → 200
+    - GET /admin/books  → 200
+  · bun run lint → error: Script not found "lint" (预期, package.json 已删, 无 TS 代码).
+  · Next.js 残留扫描: find package.json/tsconfig.json/next.config*/*.ts/*.tsx 全 0
+    (排除 skills/ 外部包).
+Stage Summary:
+- R46-1A 全面 Go 化第一轮完成. 删除 10 根级 Next.js 配置文件 (package.json/
+  tsconfig.json/next.config.ts/postcss.config.mjs/eslint.config.mjs/tailwind.config.ts/
+  components.json/next-env.d.ts/bun.lock/dev.log) + src/app/ 4 占位 (.tsx + globals.css,
+  R42-1C 保留的过渡首页) + .next/ + node_modules/ (400 顶级包) + 3 跨目录 .ts/.tsx
+  (scripts/seed-rule-yueyouxs.ts + examples/websocket/{frontend,server}.{tsx,ts})
+  + 父空目录 scripts/ + examples/ 全清. 项目根目录现仅保留 Go 代码 (go-backend/) + DB
+  (db/custom.db + prisma/schema.prisma 参考) + 部署 (Caddyfile/Dockerfile/
+  docker-compose/install.sh/docker/) + 公共资源 (public/clone-css + sw.js + manifest.json)
+  + 文档 (DEPLOY.md/README.md/docs/) + 协作 (worklog.md/agent-ctx/) +
+  .git/.gitignore/.env*. 项目纯 Go 化确认: go-backend/go.mod 唯一模块, go-backend/main.go
+  唯一入口, services/ 11 mini-services + bridgeserver 共享包, templates/ 94 模板, crawl/
+  8 模块. 验证: go build 0 errors (24.2MB), vet 0 warnings, 11 子项目独立 build 0 errors,
+  heis-backend 重启 :3000 5 端点全 200 (/, /health, /admin, /admin/tasks, /admin/books),
+  bun run lint "Script not found" 预期, Next.js 残留扫描 find 全 0. 项目从 R42-1C 的
+  "Go 后端 + Next.js 占位" 过渡态彻底纯化为 "Go 唯一栈". 未触碰 go-backend/* (B agent
+  审查范围), prisma/schema.prisma, public/clone-css/, mini-services/*.sh 全保留.
+- 详细工作记录: agent-ctx/R46-1A-full-stack-developer.md
+
+---
+Task ID: R46-1C
+Agent: full-stack-developer (清理精简 + README 纯 Go + DEPLOY 校对)
+Work Log:
+- 读交接: worklog.md 末 200 行 (R45-1C 收尾 + R46-1A 全面 Go 化第一轮 删 10 根级 Next.js
+  配置 + src/app + .next + node_modules + scripts/.ts + examples/.tsx) + DEPLOY.md 全 595 行
+  + agent-ctx/R46-1A-full-stack-developer.md 全 173 行.
+
+- 审查范围: go-backend/ 全 Go 代码 19211 行 (R45-1C 后) = crawl/* 8 模块 8691 + main.go 1173
+  + admin.go 3570 + services/* 11 服务 4860 + bridgeserver 917. 含 R46-1B 新增 fetcher.go
+  +328 行 (utls Hello 池 12→16 款含 PSK/PQ/Edge + TLS session ticket cache + brotli miss
+  计数 + 代理主动 probe + captcha 服务成功率统计) + runner.go +7 行 (ThreadsMax==0
+  死循环兜底) + types.go +12 行 (ProxyProbeURL 字段 + sanitize 白名单).
+
+- 工具链: /home/z/go/go/bin/go version (go1.23.2) + GOTOOLCHAIN=auto 自动下载 go1.26.8
+  (~/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.linux-amd64/bin/go) + staticcheck@latest
+  (需 go1.26+). vet 0 warnings + staticcheck 1 issue (fetcher.go:2848 lastCheckAt 字段 U1000,
+  R46-1B 新增但从未被赋值/读取 → R46-1C 删除该字段 + 注释同步).
+
+第一步: Go dead code 扫描 + 修复
+- staticcheck 扫描结果 (1 issue, R45-1C 后首次出现):
+  · crawl/fetcher.go:2848:9 | U1000 | field lastCheckAt is unused
+  (R46-1B captchaStat struct 声明 success/fail/lastCheckAt 三字段, lastCheckAt 仅在
+  注释 "captchaStats map[service]captchaStat {success, fail, lastCheckAt}" 提及,
+  代码未赋值/读取 → dead field).
+- 修复: 删除 captchaStat.lastCheckAt 字段 (3 行变 2 字段) + 注释同步
+  ({success, fail, lastCheckAt} → {success, fail}). 3385 → 3384 行 (-1).
+- 复查 staticcheck@latest: 0 issues.
+
+第二步: 重复逻辑整合审查 (不动, R45-1C 已充分整合)
+- bridgeserver 6 helper (SsrfCheckProxy/CollectHeaders/CollectSetCookies/ReadReaderCapped/
+  PassFromURL/SafeHostPath) + ReadBodyCapped 委托已 R45-1C 完成, fetch-relay -55 /
+  curl-impersonate -56 / cloak-browser -1 已落地.
+- 当前 main.go truncate (utf8.RuneStart 字节级) + runner.go truncate ([]rune) + bridgeserver
+  TruncStr ([]rune) 三处相似: 不同包私有 helper, 语义等价但实现各异; main.go 用字节级
+  避免 []rune 分配 (高频路径), runner.go/bridgeserver 用 []rune (低频日志路径).
+  跨包共享需引入 import cycle 风险 (bridgeserver 不应被 crawl 引入) → 不动.
+- 94 templates: admin 已 dedup (admin/head + admin/sidebar partial), 前台 80 文件
+  主题定制深 + DOM 差异大, dedup 风险 > 收益 → R45-1C 已结论不动.
+- crawl/ 模块间 helper 无新重复可抽.
+
+第三步: 过时注释清理 (无新可清, R45-1C 已充分)
+- 扫描 go-backend/*.go 中 R10-R30 注释 6 处全部 FUNCTIONAL (描述当前行为):
+  · R26-1A U+2060 注释 (cleaner.go:313)
+  · R29-1C trafilatura 注释 (cleaner.go:574)
+  · R30 NormalizeCategory (smart.go:85)
+  · R31-1B Semaphore (runner.go:81, types.go:114)
+  · R32-1A AddToFailed (runner.go:342)
+  · R34-1B 段落保真 (runner.go:15)
+- TS 端引用 34 处 (crawl/*.go): R38+ Go 迁移设计决策 (与 TS 端同口径), 用户指令
+  "保留 R37+ Go 迁移设计决策" 直接覆盖 → 全保留.
+- 无新可清, R45-1C 已充分.
+
+第四步: 临时文件清理 (深度清理, R46-1A 之后的 Next.js 残留 + Docker 残留 + 调试产物)
+- R46-1A 删除 10 根级 Next.js 配置 + src/app + .next + node_modules + scripts/.ts +
+  examples/.tsx 已 untrack 但未 commit, R46-1C git add 一并 stage commit:
+  · package.json / tsconfig.json / next.config.ts / postcss.config.mjs /
+    eslint.config.mjs / tailwind.config.ts / components.json / bun.lock
+  · src/app/{page,layout,not-found}.tsx + globals.css (R42-1C 占位)
+  · examples/websocket/{frontend.tsx,server.ts}
+  · scripts/seed-rule-yueyouxs.ts (R44-1A 创建, R46-1A 删除)
+- R46-1C 新删除 (从 git + disk):
+  · Docker 相关 (Next.js + Bun + compose, 与纯 Go 部署冲突):
+    - Dockerfile (149 行, multi-stage oven/bun + node:22-slim + standalone)
+    - Dockerfile.scrapling (60 行, python:3.12-slim + scrapling)
+    - docker-compose.yml (126 行, novel-system + scrapling-bridge 两个 service)
+    - docker-entrypoint.sh (156 行, prisma db push + 5 bun 代理共置 + autofill 引导)
+    - install.sh (866 行, 一键 Docker + 国内镜像 + 自动填充)
+    - docker/autofill.mjs (239 行, Node autofill 引导, 依赖 Next.js API)
+    - docker/autofill-rules.json (7 站点规则种子, 与 autofill.mjs 配对)
+  · 文档 (Next.js 安装教程):
+    - docs/INSTALL-GUIDE.md (小白零基础教程, 全 Next.js + Bun + Docker 内容)
+    - docs/images/*.png (17 张 Next.js 安装步骤截图, 01-version-check →
+      17-docker-deploy)
+    - docs/rule-limits.md (采集规则极限校准方法论, 引用 scripts/ratelimit-site.ts
+      已 R46-1A 删的 TS 文件, 过时)
+    - rmdir docs/ (空目录)
+  · 测试 (Next.js + Python runtime build):
+    - tests/database-runtime-build.sh (Next.js DB runtime build)
+    - tests/python-runtime-build.sh (Python runtime build)
+    - tests/python-runtime-container.sh (Python runtime container)
+    - rmdir tests/ (空目录)
+  · 调试产物 (一次性 agent 工作快照, 不入库):
+    - agent-ZZ-report.json (2026-09-13 14:14 单次任务报告 snapshot)
+    - tool-results/*.txt (9 个 bash/read 命令输出快照, R46-1A 前 agent 留下的
+      调试 dump, 引用已删的 src/app/api/admin/books/[id]/keywords/route.ts 等
+      Next.js 路由 + next.config.ts TS 错误)
+    - rmdir tool-results/
+  · 本机 .env (含 DATABASE_URL=file:/home/z/my-project/db/custom.db 机器特定路径,
+    不应入库; .gitignore .env* 兜底已含, 但曾 commit 前已 tracked → git rm --cached
+    untrack, 磁盘保留供 prisma CLI 本机使用).
+
+第五步: .env.example 重写 (纯 Go, 删 Next.js/Docker 项)
+- 原版 116 行, Next.js + Docker 全栈环境变量 (ADMIN_PASSWORD/SESSION_SECRET/LOG_LEVEL/
+  AUTO_FILL/AUTO_FILL_RULES/HOST_PORT/WAIT_TIMEOUT/REPO_URL/INSTALL_DIR/
+  USE_CN_MIRROR/REGISTRY_MIRRORS/SKIP_REGISTRY_MIRROR/BUN_IMAGE/NODE_IMAGE/
+  PYTHON_IMAGE/NPM_REGISTRY/PIP_INDEX_URL/DEBIAN_MIRROR/PLAYWRIGHT_DOWNLOAD_HOST/
+  BRIDGE_KEY/OBSCURA_CONCURRENCY 等), 全部不再适用.
+- 新版 47 行, 仅 mini-services 用到的环境变量:
+  · DATABASE_URL (仅 prisma db push 用, Go 后端不读)
+  · AUTH_TOKEN / BRIDGE_KEY (bridgeserver 鉴权)
+  · RATE_LIMIT_PER_MIN (mini-services 限速)
+  · BRIDGE_SSRF_ALLOW_LOOPBACK (SSRF 守卫放行回环)
+  · MOLI_BIN / SCRAPLING_FETCH_SCRIPT / UC_CHROME_PATH / PLAYWRIGHT_BROWSERS_PATH /
+    DISPLAY (服务特定路径)
+  · MAIN_APP_URL / XJP_MAX_PAGES (xjp-proxy)
+  净 -69 行.
+
+第六步: .gitignore 重写 (纯 Go, 删 Next.js 残余规则但兜底防误入库)
+- 原版 122 行, 含大量 Next.js 残余规则 (node_modules / .pnp / .yarn / coverage /
+  .next/ / out/ / build / vercel / npm-debug.log / pnpm-debug.log / next-env.d.ts /
+  tsbuildinfo 等) + 多代历史 R-注释 (R30/R41-1C/R42-1C/R43-1C/R45-1C).
+- 新版 71 行, 按主题分组:
+  · Go 构建产物 (heis-backend + 11 服务二进制 + bin/ + services/* 子目录白名单)
+  · 运行时日志 (*.log + go-backend/*.log + server.log + dev.log)
+  · 环境变量 (.env* + !.env.example 例外)
+  · 运行时数据 (db/*.db + data/ + backups/ + tmp/)
+  · mini-services PID (.zscripts/ + *.pid)
+  · 调试产物 (/tool-results/ + /tmp/ + /prompt + tmp-shots/)
+  · Python venv 兜底 (.venv/ + __pycache__/)
+  · 系统/编辑器 (.DS_Store + *.pem + *.tsbuildinfo + .claude + .z-ai-config + .vercel)
+  · 历史 Next.js/Bun 残留防御 (node_modules + .next/ + bun.lock 等, 兜底防误入库)
+  净 -51 行, 删除 R30/R41-1C/R42-1C/R43-1C/R45-1C 历史注释 (保留 R46-1C 风格简短).
+- git check-ignore -v 验证: .env (.env*) + heis-backend (*-backend) + backend.log
+  (*.log) + db/custom.db (db/*.db) 全覆盖.
+
+第七步: README.md 完整重写 (纯 Go 项目说明)
+- 原版 125 行, 全 Next.js + Bun + Docker + Prisma 描述 (Next.js 16 + React 19 +
+  TypeScript 5 + Bun 1.3 + Docker 多阶段 + docker compose + install.sh 一键 + 5 bun
+  代理 + 1 Python 桥 + mini-services 端口表只到 3015 + src/app + src/components +
+  src/lib/crawl + scripts/ archive + bunx tsc --noEmit 质量门 等).
+- 新版 317 行, 纯 Go 项目:
+  · 项目介绍 (单二进制部署 + 8 级降级链 + 反反爬 + 站群 + 14 admin 页面)
+  · 技术栈表 (Go 1.26 + net/http + html/template + modernc.org/sqlite + crawl 8 模块
+    9031 行 + 11 mini-services + bridgeserver)
+  · 快速开始 5 步 (go build / prisma db push / ./heis-backend / start-all.sh / curl 验证)
+  · 访问地址表 (9 前台 + 1 admin)
+  · 11 mini-services 端口表 (3010-3020 全列, 含用途)
+  · 完整目录结构 (go-backend/{main,admin,crawl,services,templates} + 项目根其它文件
+    含 prisma/ db/ mini-services/*.sh public/clone-css/ Caddyfile agent-ctx/
+    worklog.md DEPLOY.md README.md .env* .gitignore)
+  · 采集规则配置 (创建规则 + 参考规则表 8 站点 + 8 级降级链说明)
+  · 反反爬能力 (utls 16 款 + TLS session + JA3/JA4 + Cookie + Referer + 重试 + 拦截识别
+    + SSRF + mirrorDomains + 2captcha + 代理池)
+  · 数据备份 (在线 cp + VACUUM + /admin/backup JSON 导出)
+  · 免责声明 5 条
+  · 项目版本 R46-1C + 引用 DEPLOY.md + worklog.md
+
+第八步: DEPLOY.md 校对 (命令链路 + 端口 + 服务数 + LoC + 文档版本)
+- 头注 banner: "12 个 Go mini-services" → "11 个 Go mini-services + bridgeserver 共享包"
+  + 加 "R46-1A 起项目根目录已彻底删除 Next.js/Bun/Docker 残留, 纯 Go 栈".
+- §2.4 启动 11 mini-services: "首次跑会构建全部 12 个" → "11 个".
+- §3.4 启停表: "增量构建 + 后台启动 12 个服务" → "11 个服务".
+- §4.2 参考规则: "scripts/seed-rule-*.ts 已 R43-1C 删除 src/ 时一并清理; 用
+  docker/autofill-rules.json 7 站点规则" → "已 R42-1C + R46-1A 清理; 直接 /admin/rules
+  后台手动新建" (因 docker/autofill-rules.json 已 R46-1C 删).
+- §6 架构图:
+  · "采集引擎 crawl/ (8663 行 Go)" → "(9031 行 Go)" (R46-1B +340 行)
+  · "fetcher.go 3036 行 (R45-1C DialTLSContext)" → "3384 行 (R45-1C DialTLSContext +
+    R46-1B utls 16 池/session cache + brotli miss + 代理 probe + captcha 成功率)"
+  · "runner.go 1474 行 (R45-1A defer recover)" → "1481 行 (R45-1A + R46-1B ThreadsMax 兜底)"
+  · "types.go 709 行" → "721 行 (R46-1B 新增 ProxyProbeURL)"
+  · 反反爬栏新增 "TLS session cache / brotli miss 计数 / 代理主动 probe / captcha 成功率"
+    四条 R46-1B 能力.
+- §9 迁移说明表新增 "项目根" 行 (旧 Next.js 全栈 vs 现纯 Go 仅 go-backend/ + prisma/ +
+  public/ + mini-services/*.sh) + 升级路径补 "Dockerfile / docker-compose.yml / install.sh /
+  docker-entrypoint.sh 也由 R46-1C 清理".
+- §10 参考新增 R46-1A + R45-1C agent-ctx 引用 + worklog 行数 ~17761 → ~18054 + admin.go
+  3562 → 3570 + crawl 8663 → 9031.
+- 文档版本 R45-1C → R46-1C.
+
+文件改动统计 (本 R46-1C 轮, 8 文件改动):
+- README.md: 125 → 317 行 (+192 行, 全文重写为纯 Go 项目说明)
+- DEPLOY.md: 595 → 596 行 (+1 行净, banner 改 + 启停表改 + 架构图扩 + §4.2 改 + §9 加 +
+  §10 加 + 文档版本改 + LoC 校准)
+- .env.example: 116 → 47 行 (-69 行, 删 Next.js/Docker 项, 仅留 Go mini-services 变量)
+- .gitignore: 122 → 71 行 (-51 行, 重组按主题分组 + 删历史 R-注释 + 兜底 Next.js 防御)
+- go-backend/crawl/fetcher.go: 3385 → 3384 行 (-1 行, 删 captchaStat.lastCheckAt dead field)
+- 删除文件 38 个 (.env + 6 Docker + 7 Docker/ + 19 docs/ + 3 tests/ + 1 agent-ZZ +
+  9 tool-results/ + bun.lock + components.json + eslint.config.mjs + next.config.ts +
+  package.json + postcss.config.mjs + tailwind.config.ts + tsconfig.json +
+  examples/websocket/{frontend,server} + src/app/* + scripts/seed-rule-yueyouxs.ts)
+
+未修改 (尊重约束):
+- go-backend/main.go (1173 行, R42-1A rune-safe 修复 + R46-1A 验证 0 改动) ✓
+- go-backend/admin.go (3570 行, R44-1C rune-safe) ✓
+- go-backend/crawl/{parser,hostgate,smart,cleaner,storage,runner}.go (R45-1A/C 已充分,
+  runner.go 仅 R46-1B +7 行 ThreadsMax 兜底不在 R46-1C 范围) ✓
+- go-backend/crawl/types.go 仅 R46-1B +12 行 ProxyProbeURL 不在 R46-1C 范围 ✓
+- go-backend/services/{bridgeserver,11 mini-services}/main.go (R45-1C 已整合, 无新可抽) ✓
+- go-backend/templates/* (94 文件, admin 已 dedup, 前台 80 文件主题定制深不动) ✓
+- prisma/schema.prisma + public/clone-css/ + mini-services/*.sh + Caddyfile 0 改动 ✓
+- agent-ctx/{R38-R45}*.md + R46-1A*.md 全保留 (R46-1C 新增 R46-1C-*.md 见下) ✓
+
+验证:
+- cd /home/z/my-project/go-backend && /home/z/go/go/bin/go build -o heis-backend . → 0
+  errors, binary 24,232,844 bytes (24.2MB, R45-1C 24,198,929 + R46-1B utls 16 池/session
+  cache/proxy probe/captcha 统计 +33KB).
+- /home/z/go/go/bin/go vet ./... → 0 warnings (主包 + 11 services + bridgeserver + crawl
+  全 pass).
+- go1.26.8 toolchain (~/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.linux-amd64/bin/go)
+  + staticcheck@latest → 0 issues (扫描前 1 issue: fetcher.go:2848 lastCheckAt U1000
+  R46-1B 新增 dead field → R46-1C 删除 → 0).
+- 子项目独立 build:
+  · go build ./services/bqg713-proxy/ → 0 errors
+  · go build ./services/cloak-browser/ → 0 errors
+  · go build ./services/curl-impersonate-bridge/ → 0 errors
+  · go build ./services/deqixs-proxy/ → 0 errors
+  · go build ./services/fetch-relay/ → 0 errors
+  · go build ./services/moli-bridge/ → 0 errors
+  · go build ./services/qimao-proxy/ → 0 errors
+  · go build ./services/scrapling-bridge/ → 0 errors
+  · go build ./services/trafilatura-bridge/ → 0 errors
+  · go build ./services/uc-bridge/ → 0 errors
+  · go build ./services/xjp-proxy/ → 0 errors
+  · go build ./services/bridgeserver/ → 0 errors (lib)
+- heis-backend 重启: pkill -9 -f heis-backend; setsid ./heis-backend > backend.log 2>&1
+  < /dev/null & disown → backend.log: 数据库 /home/z/my-project/db/custom.db + 已加载 94
+  个模板 + heis-backend 启动 http://localhost:3000 (内存 17MB).
+- 端到端 curl: GET / → 200 ✓, GET /health → 200 ✓, GET /admin → 200 ✓.
+- git status: 38 删除 + 6 修改 + 1 新增 (agent-ctx/R46-1A*.md) = 45 文件改动.
+
+Stage Summary:
+- R46-1C Go 清理精简第七轮 (R46 系列第二轮) 完成. R45-1C staticcheck 0 → R46-1B 新增
+  captchaStat.lastCheckAt dead field → R46-1C 删除 → 复查 staticcheck 0. 重复逻辑整合
+  审查: R45-1C 已充分 (bridgeserver 6 helper + 3 服务 -112 行), 当前 main/runner/
+  bridgeserver 3 处 truncate 不动 (跨包 import cycle 风险 + 不同实现各有所长). 94 templates
+  + R10-R30 注释 + crawl 模块间 helper 全部 R45-1C 已结论不动.
+- 临时文件深度清理: R46-1A 已删 10 根级 Next.js 配置 + src/app + .next + node_modules +
+  scripts/.ts + examples/.tsx (untrack 未 commit), R46-1C git add 一并 stage + 新删 38
+  文件 (Docker 5 + docker/ 2 + docs/ 19 含 INSTALL-GUIDE + 17 PNG + rule-limits + tests/ 3
+  + agent-ZZ-report + tool-results/ 9 + .env untrack). docs/ tests/ tool-results/ 父空目录
+  rmdir.
+- .env.example 重写 116 → 47 行 (删 Next.js/Docker 全栈变量, 仅留 Go mini-services AUTH_TOKEN/
+  BRIDGE_KEY/RATE_LIMIT_PER_MIN/BRIDGE_SSRF_ALLOW_LOOPBACK/MOLI_BIN/SCRAPLING_FETCH_SCRIPT/
+  UC_CHROME_PATH/PLAYWRIGHT_BROWSERS_PATH/DISPLAY/MAIN_APP_URL/XJP_MAX_PAGES).
+- .gitignore 重写 122 → 71 行 (按主题分组 + 删 R30/R41-1C/R42-1C/R43-1C/R45-1C 历史注释 +
+  兜底 Next.js/Bun 残余防御). git check-ignore -v 验证全覆盖.
+- README.md 全文重写 125 → 317 行 (纯 Go 项目说明: 单二进制部署 + 8 级降级链 + 反反爬
+  + 站群 + 14 admin + 11 mini-services 端口表 + 完整目录结构 + 采集规则 + 数据备份 + 免责).
+- DEPLOY.md 校对: 12 → 11 mini-services (banner + §2.4 + §3.4 + §6 架构图) + LoC 校准
+  (crawl 8663 → 9031, fetcher 3036 → 3384, runner 1474 → 1481, types 709 → 721) +
+  §4.2 删 docker/autofill-rules.json 引用 + §9 加项目根对比行 + §10 加 R46-1A/R45-1C
+  agent-ctx 引用 + 文档版本 R45-1C → R46-1C.
+- 验证: go build 0 errors (24.2MB binary) + go vet 0 warnings + staticcheck 0 issues (删
+  lastCheckAt dead field) + 11 子项目独立 build 0 errors + bridgeserver lib build 0 errors
+  + heis-backend 重启 :3000 + 3 端点 curl 全 200 (/, /health, /admin).
+- 详细工作记录: agent-ctx/R46-1C-full-stack-developer.md
+
+---
+Task ID: R46-1B
+Agent: full-stack-developer (Go第六轮+反反爬)
+Work Log:
+- 读交接: worklog.md 末 250 行 (R44-R45 修复历史 55 bug + 12 反反爬) + agent-ctx/R45-1A
+  + R45-1C (5 P0 + 5 P1 + 5 反反爬增强 + 清理精简 staticcheck 11→0).
+- 审查范围: go-backend/ 全 Go 代码 ~19183 行 = crawl/* 8663 + main.go 1173 + admin.go 3570
+  + services/* 11 服务 5325 + bridgeserver 917.
+
+P1 bug 修复 (1 处) — runner.go 阶段 2 章节并发死循环防御:
+- 位置: crawl/runner.go L860 (阶段 2 goroutine 内 threads := cfg.ThreadsMax).
+- 现象: ThreadsMax=0 + ThreadsMin=0 时 threads=0 → batchSize=0 → batch=globalQueue[:0]
+  空 slice → globalQueue=globalQueue[0:] 不变 → 死循环 (循环条件 len(globalQueue)>0 永真).
+- 影响: admin.go clampIntAdm 保证 threadMax>=1, 但 ExecuteTaskConfig 是公开 API, 未来
+  扩展或 wiring 测试直接构造 ThreadsMax=0 的 cfg → 死循环占满 CPU. R45 后该路径无防御.
+- 修复: 在 ThreadsMax 读取后立即加 `if threads < 1 { threads = chapterConcurrency }`
+  兜底, 即使外部传 0 也用 chapterConcurrency (bookConcurrency 兜底, 默认 3) 保证
+  batchSize >= 1, 避免死循环.
+
+P2 bug 修复 (3 处):
+- P2-1 ClearUtlsChoice 误清 utls choice (fetcher.go globalUtlsTransport DialTLSContext):
+  R45-1A 原实现 dial 失败和 handshake 失败都无条件 ClearUtlsChoice, 但 dial 失败 (网络层
+  错误, 如 connection refused/timeout) 与 TLS 指纹无关, 换号无意义, 反而浪费 attempts
+  偏移. 连续 dial 失败 N 次 → attempts++ 累积到 len(pool), 归零, 下次重新哈希选号 → 与
+  "失败累积偏移换号"设计意图相反. 修复: 仅 TLS handshake 失败调 ClearUtlsChoice; dial
+  失败不清, 保留 attempts 不浪费偏移.
+- P2-2 pickUtlsHello host=="" 返 HelloChrome_Auto (fetcher.go L833):
+  R45-1A 后 utlsHelloPool 是 12 个具体版本, 不含 _Auto. host=="" 返 _Auto 与 pool 元素
+  JA3 不一致 (反爬识别 "host=='' 路径为 _Auto 固定别名") + _Auto 不响应 attempts 偏移.
+  修复: 改返 utlsHelloPool[0] (HelloChrome_102), 与 pool 元素 JA3 一致 + 行为统一.
+- P2-3 brotli miss 无 per-host 计数 (fetcher.go decodeBody L1474):
+  R45-1A 加全局 brotliMissCount, 但不分 host. 运维不知哪些 host 全返 br (需走桥
+  scrapling/cloak-browser 含 brotli 解码). 修复: 加 brotliMissHostCount sync.Map[host]
+  -> *atomic.Int64 + recordBrotliMiss(host) 在 case "br" 分支调用. lazy sweep 每 1000
+  次 brotli miss 触发一次清零计数条目, 防长跑进程内存无界. 导出 BrotliMissHostSnapshot()
+  供 admin / metrics 查询.
+
+反反爬增强 (5 大类, 任务要求 1-5):
+- ① utls Hello 池继续扩充 12 → 16 (含 PSK / PQ / Edge):
+  R45-1A 12 个 (Chrome 102/106_Shuffle/120/131/133 + Firefox 99/102/105/120 + Safari 16.0
+  + iOS 13/14). R46-1B 扩充到 16 个, 加 Chrome 112_PSK_Shuf (PSK + shuffled extensions) /
+  115_PQ (post-quantum hybrid X25519MLKEM768) / 120_PQ (Chrome 120 PQ) + Edge 85. JA3/JA4
+  指纹各异 (PSK 携带 pre_shared_key extension / PQ 携带 key_share extension 含 MLKEM768
+  pubkey / Shuffle 扩展顺序均不同), 反爬无法靠 TLS 指纹单一性识别.
+  (注意: 初版用了 HelloChrome_115/124/127/IOS_15/Safari_17 这些 utls v1.8.2 不存在的
+  常量, 编译期会报 undeclared. 用 go doc + 直接 grep u_common.go 确认实际可用常量:
+  HelloChrome_115_PQ / HelloChrome_112_PSK_Shuf / HelloChrome_120_PQ / HelloEdge_85 真实
+  存在, 不存在的删除.)
+- ② TLS Session resumption (session ticket 缓存):
+  真实浏览器都会缓存 TLS session, 跨连接复用降低 RTT. utls 无 ClientSessionCache 时每次
+  都 full handshake, 反爬可识别 "无 session ticket 缓存" 为爬虫指纹. 加
+  utlsSessionCache := utls.NewLRUClientSessionCache(256) (LRU 上限 256 sessions, 防长跑
+  进程内存无界), 注入 utls.Config.ClientSessionCache. 跨连接复用 session ticket (Chrome
+  行为同款), TLS handshake 加速 + 反爬识别降低.
+- ③ 验证码服务优化 (2captcha + anti-captcha 成功率统计 + 自动主备切换):
+  R45-1A: 2captcha 优先 + anti-captcha 备用 (各试一次). R46-1B: 加成功率统计 +
+  自动主备切换. 新增 captchaStatsMap map[string]*captchaStat{success, fail, lastCheckAt}
+  + captchaRecordOutcome(service, ok) 每次结果记录 + 每 10 次结果触发主服务评估.
+  评估逻辑: 主服务最近 10 次成功率 < 50% 且备服务成功率 > 主服务 → 切换主服务 (避免
+  抖动, 切换需明确证据 + 至少 10 次样本). 解决 R45-1A 后边缘 case: 2captcha 短暂故障但
+  anti-captcha 可用时仍盲目先试 2captcha 浪费 180s 超时. R46-1B 自动切换主服务, 下次
+  先试 anti-captcha. 导出 CaptchaServiceStatsSnapshot() 供 admin 查询.
+- ④ 代理池主动健康检查 (periodic probe):
+  R45-1A: 被动健康检查 (失败 30s 冷却). 但若代理已死, 需等到下次 pickProxyFor 失败才被
+  标记, 浪费请求预算. R46-1B: 主动 probe 5min 间隔异步 goroutine 全池 HEAD 5s timeout.
+  proxyState 加 probeFailStreak map[string]int + lastProbeAt int64. pickProxyFor 5min
+  sweep 内, 若 cfg.ProxyHealthCheck=true 且 lastProbeAt 距今 > 5min → 启动 goroutine
+  异步 probe 全池 (不阻塞 pick, 复制 pool 防 race). probeTarget 优先 cfg.ProxyProbeURL,
+  否则默认 https://www.google.com. probeProxy(ctx, proxyURL, probeTarget) 构造 transport
+  + proxy (http(s) 用 ProxyURL, socks5 用 net.Dialer+socks dialer), client.Timeout=5s,
+  HEAD 请求, 200/3xx/4xx → 健康, 5xx/网络层 error → 不健康. 失败累计 probeFailStreak,
+  连续 3 次 → failedUntil += 5min. 成功 → 清零 + 恢复健康. probe 限并发 5. 启用条件:
+  cfg.ProxyHealthCheck=true (默认 false, opt-in 避免误触发 probe 风暴). FetchConfig 加
+  ProxyProbeURL string 字段 + sanitize 白名单 (http(s) + 长度 ≤ 2048 + URL parse 校验)
+  + mergeFetchConfig 透传.
+- ⑤ brotli per-host miss 计数 (识别需走桥的 host): 详见 P2-3.
+
+其他修复:
+- fetcher.go 镜像组故障切换循环 `_ = i` dead code 删除 (改 `for i, host := range` →
+  `for _, host := range`, i 仅在 `_ = i` 占位未实际使用).
+
+未修改 (尊重约束):
+- go-backend/main.go + admin.go (深度审查无 R45 后边缘 case) ✓
+- go-backend/templates/* (已完成) ✓
+- go-backend/crawl/{parser,cleaner,storage,hostgate,smart}.go (深度审查无边缘 case) ✓
+- go-backend/services/{bridgeserver,cloak-browser,curl-impersonate-bridge,fetch-relay,
+  scrapling-bridge,trafilatura-bridge,uc-bridge,moli-bridge,bqg713-proxy,deqixs-proxy,
+  xjp-proxy,qimao-proxy}/main.go (深度审查无边缘 case) ✓
+- scripts/seed-rule-yueyouxs.ts (R44-1A 创建, 保留) ✓
+- agent-ctx/*.md (R38-R45 全部保留) ✓
+- prisma/schema.prisma + package.json + .gitignore + DEPLOY.md 0 改动 ✓
+
+验证:
+- cd /home/z/my-project/go-backend && /home/z/go/go/bin/go build -o heis-backend . → 0 errors,
+  binary 24,232,844 bytes (24.2MB, 与 R45-1C 24,166,400 持平, 仅 +66KB 因 utls 池扩
+  + TLS session cache + brotli per-host + captcha stats + proxy probe).
+- /home/z/go/go/bin/go vet ./... → 0 warnings (主包 + 11 services + bridgeserver + crawl 全 pass).
+- 12 个 services 独立 build 全 0 errors:
+  fetch-relay / curl-impersonate-bridge / cloak-browser / bridgeserver / scrapling-bridge /
+  uc-bridge / moli-bridge / trafilatura-bridge / bqg713-proxy / deqixs-proxy / xjp-proxy /
+  qimao-proxy.
+- heis-backend 启动: "数据库: /home/z/my-project/db/custom.db" + "已加载 94 个模板" +
+  "heis-backend 启动: http://localhost:3000 (内存 12MB)".
+- 端到端 curl:
+  - GET / → 200 ✓
+  - GET /health → 200 {"lang":"go","memMB":13,"ok":true} ✓
+  - GET /admin → 200 ✓
+  - GET /api/admin/health → 200 {"data":{"lang":"go","memMB":17,"ok":true,...},"ok":true} ✓
+
+Stage Summary:
+- Go 采集引擎第六轮深度审查 ~19500 行, 抓 R45 修复后边缘 case 共 1 P1 (runner 阶段 2
+  ThreadsMax=0 死循环, 防御式兜底 chapterConcurrency) + 3 P2 (ClearUtlsChoice 误清 /
+  pickUtlsHello host=='' 返 _Auto 不在 pool / brotli 无 per-host 计数). 全部修复落地.
+- 反反爬增强 5 大类: ① utls Hello 池扩充 12 → 16 (加 Chrome 112_PSK_Shuf / 115_PQ /
+  120_PQ + Edge 85, JA3/JA4 各异含 PSK/PQ/Shuffle/Edge 品牌); ② TLS Session resumption
+  (ClientSessionCache LRU 256, 跨连接复用 session ticket 加速 handshake + 模拟真实浏览器
+  行为); ③ 验证码服务优化 (2captcha + anti-captcha 成功率统计 + 自动主备切换, 主服务
+  最近 10 次成功率 < 50% 且备服务更高时自动切换); ④ 代理池主动健康检查 (periodic probe
+  5min 间隔异步 goroutine 全池 HEAD 5s timeout, 连续 3 次失败 → 5min 冷却, 启用条件
+  cfg.ProxyHealthCheck=true opt-in); ⑤ brotli per-host miss 计数 (识别需走桥的 host,
+  供运维针对性配置 fetchMode 强制走 scrapling/cloak-browser 含 brotli 解码的桥).
+- 编译 0 errors, vet 0 warnings, binary 24.2MB (与 R45-1C 持平, 仅 +66KB). 12 个 services
+  独立 build 全 0 errors. heis-backend 启动 + 4 端点 curl 200. 核心保留 R41-R45 全部
+  修复 (hostgate pump/Acquire drain / utls per-host 钉扎 + attempts 偏移真正轮换 /
+  Turnstile 8s / 2captcha 180s + per-attempt timeout / Cookie 持久化 / BudgetExceeded
+  上抛 / truncate rune-based / per-attempt timeout / Referer 一致性 / pickProxyFor sweep
+  完整 / trafilatura clients 单例 / jsonLdTypeRe 预编译 / batchMu defer / discoverBooks
+  newCount==0 break / MarkProxyFailed/OK / IncCaptcha / ReportRateLimited / cloak-browser
+  page.AddScriptToEvaluateOnNewDocument + simulateHumanBehaviorActions / scrapling-bridge
+  Accept-Encoding 移除 br / cleaner.go collapseDupPunct / DialTLSContext ctx 取消 / 13 处
+  []rune 安全截断). 详细工作记录: agent-ctx/R46-1B-full-stack-developer.md

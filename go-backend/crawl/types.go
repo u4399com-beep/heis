@@ -115,6 +115,10 @@ type FetchConfig struct {
         GlobalRateLimitPerMin  int               `json:"globalRateLimitPerMin,omitempty"`
         CaptchaCooldownMs      int               `json:"captchaCooldownMs,omitempty"`
         ProxyHealthCheck       bool              `json:"proxyHealthCheck,omitempty"`
+        // R46-1B 反反爬增强: 代理池主动 probe 目标 URL (ProxyHealthCheck=true 启用).
+        //   默认 https://www.google.com (全球可达 + 5xx 概率低). 用户可改自定义 endpoint
+        //   (如 https://www.cloudflare.com 或自建 ping endpoint).
+        ProxyProbeURL          string            `json:"proxyProbeUrl,omitempty"`
         ProxyCascadePauseMs   int               `json:"proxyCascadePauseMs,omitempty"`
         FingerprintRotation    int               `json:"fingerprintRotationInterval,omitempty"`
         AdaptiveRateLimit      bool              `json:"adaptiveRateLimit,omitempty"`
@@ -450,6 +454,14 @@ func sanitizeFetchConfig(m map[string]any) FetchConfig {
         }
         if v, ok := m["proxyHealthCheck"].(bool); ok {
                 out.ProxyHealthCheck = v
+        }
+        // R46-1B: ProxyProbeURL 白名单 (http(s) + 长度 ≤ 2048 + URL parse 校验)
+        if v, ok := m["proxyProbeUrl"].(string); ok && v != "" {
+                if len(v) <= 2048 {
+                        if u, err := url.Parse(v); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
+                                out.ProxyProbeURL = v
+                        }
+                }
         }
         if v, ok := m["proxyCascadePauseMs"].(float64); ok {
                 out.ProxyCascadePauseMs = clampInt(int(v), 10000, 300000)

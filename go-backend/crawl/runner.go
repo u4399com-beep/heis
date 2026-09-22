@@ -858,6 +858,13 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) error {
                         }
 
                         threads := cfg.ThreadsMax
+                        // R46-1B 防御式: ThreadsMax == 0 (ExecuteTaskConfig 公开 API 可被外部
+                        // 直接构造, admin.go clamp 保证 threadMax>=1, 但 wiring 测试或其它路径
+                        // 可能传 0) 时 threads=0 → batchSize=0 → batch=globalQueue[:0] 空 →
+                        // globalQueue=globalQueue[0:] 不变 → 死循环. 兜底用 chapterConcurrency.
+                        if threads < 1 {
+                                threads = chapterConcurrency
+                        }
                         if cfg.ThreadsMin > 0 && cfg.ThreadsMax > cfg.ThreadsMin {
                                 threads = cfg.ThreadsMin + rand.Intn(cfg.ThreadsMax-cfg.ThreadsMin+1)
                         }
