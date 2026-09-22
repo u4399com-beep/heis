@@ -42,13 +42,13 @@ import (
         "fmt"
         "math/rand"
         "net/http"
-        "net/url"
         "os"
         "regexp"
         "strings"
         "sync"
         "sync/atomic"
         "time"
+        "unicode/utf8"
 
         "github.com/chromedp/cdproto/emulation"
         "github.com/chromedp/cdproto/network"
@@ -113,12 +113,75 @@ type renderResult struct {
 }
 
 // UA 池 — 随机选 UA 防指纹钉 (与原 DEFAULT_UA 同款, 加 3 个变体).
+// R45-1A: 并补全 UA 品牌元数据 (brand / platform / bit), 供 emulation.SetUserAgentOverride
+//   传 Brands 字段使用. UA 与元数据不一致会暴露 Chrome 131 UA + Chrome 142 brand
+//   的指纹不一致 → 被 puppeteer-extra-stealth WAF 识别.
 var userAgents = []string{
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
+}
+
+// userAgentMeta — 从 UA 字符串提取品牌元数据 (供 emulation.SetUserAgentOverride).
+// R45-1A: 原实现 brand 硬编码为 "Chromium 131" / "Google Chrome 131", 但 UA 池含
+//   Chrome 130 / 131 / Edge 131, UA-品牌不一致 (UA=Chrome130 但 brand=131) 被 WAF 识别.
+//   本函数解析 UA 提取主版本号 + brand, 返 UserAgentMetadata.
+func userAgentMeta(ua string) *emulation.UserAgentMetadata {
+        meta := &emulation.UserAgentMetadata{
+                Brands:          []*emulation.UserAgentBrandVersion{},
+                FullVersionList: []*emulation.UserAgentBrandVersion{},
+                Mobile:          false,
+                Bitness:         "64",
+        }
+        // 提取 Chrome 主版本号
+        chromeVer := ""
+        edgeVer := ""
+        if m := regexp.MustCompile(`Chrome/(\d+)`).FindStringSubmatch(ua); len(m) >= 2 {
+                chromeVer = m[1]
+        }
+        if m := regexp.MustCompile(`Edg/(\d+)`).FindStringSubmatch(ua); len(m) >= 2 {
+                edgeVer = m[1]
+        }
+        if chromeVer != "" {
+                meta.Brands = append(meta.Brands,
+                        &emulation.UserAgentBrandVersion{Brand: "Chromium", Version: chromeVer},
+                        &emulation.UserAgentBrandVersion{Brand: "Google Chrome", Version: chromeVer},
+                )
+                meta.FullVersionList = append(meta.FullVersionList,
+                        &emulation.UserAgentBrandVersion{Brand: "Chromium", Version: chromeVer + ".0.0.0"},
+                        &emulation.UserAgentBrandVersion{Brand: "Google Chrome", Version: chromeVer + ".0.0.0"},
+                )
+                if edgeVer != "" {
+                        meta.Brands = append(meta.Brands,
+                                &emulation.UserAgentBrandVersion{Brand: "Microsoft Edge", Version: edgeVer},
+                        )
+                        meta.FullVersionList = append(meta.FullVersionList,
+                                &emulation.UserAgentBrandVersion{Brand: "Microsoft Edge", Version: edgeVer + ".0.0.0"},
+                        )
+                }
+        }
+        // platform 从 UA 提取
+        switch {
+        case strings.Contains(ua, "Windows"):
+                meta.Platform = "Windows"
+                meta.PlatformVersion = "15.0.0"
+                meta.Architecture = "x86"
+        case strings.Contains(ua, "Macintosh") || strings.Contains(ua, "Mac OS X"):
+                meta.Platform = "macOS"
+                meta.PlatformVersion = "14.0.0"
+                meta.Architecture = "arm"
+        case strings.Contains(ua, "X11") || strings.Contains(ua, "Linux"):
+                meta.Platform = "Linux"
+                meta.PlatformVersion = "6.6.0"
+                meta.Architecture = "x86"
+        default:
+                meta.Platform = "Windows"
+                meta.PlatformVersion = "15.0.0"
+                meta.Architecture = "x86"
+        }
+        return meta
 }
 
 // CF challenge 标志(与原 CF_CHALLENGE_MARKERS 同口径)
@@ -279,7 +342,7 @@ func handle(w http.ResponseWriter, r *http.Request) {
         // SSRF 守卫
         ok, reason := bridgeserver.AssertSafeSsrfTarget(u, ssrfAllowLB)
         if !ok {
-                fmt.Printf("[cloak-browser] SSRF 拒绝 %s: %s\n", safeHostPath(u), reason)
+                fmt.Printf("[cloak-browser] SSRF 拒绝 %s: %s\n", bridgeserver.SafeHostPath(u), reason)
                 bridgeserver.WriteJSON(w, http.StatusOK, renderResult{OK: false, Error: "SSRF blocked: " + reason})
                 return
         }
@@ -312,16 +375,16 @@ func handle(w http.ResponseWriter, r *http.Request) {
         result, ferr := fetchPage(r.Context(), u, body.Actions, timeoutMs, waitUntil, body.Screenshot, tier)
         if ferr != nil {
                 fmt.Printf("[cloak-browser] FAIL %s tier=%s (%dms): %s\n",
-                        safeHostPath(u), tier, time.Since(started).Milliseconds(), bridgeserver.SanitizeError(ferr))
+                        bridgeserver.SafeHostPath(u), tier, time.Since(started).Milliseconds(), bridgeserver.SanitizeError(ferr))
                 bridgeserver.WriteJSON(w, http.StatusOK, renderResult{OK: false, Error: bridgeserver.SanitizeError(ferr)})
                 return
         }
         if !result.OK {
                 fmt.Printf("[cloak-browser] EMPTY %s tier=%s status=%d html=%dB (%dms)\n",
-                        safeHostPath(u), tier, result.Status, len(result.HTML), time.Since(started).Milliseconds())
+                        bridgeserver.SafeHostPath(u), tier, result.Status, len(result.HTML), time.Since(started).Milliseconds())
         } else {
                 fmt.Printf("[cloak-browser] OK %s tier=%s status=%d html=%dB (%dms)\n",
-                        safeHostPath(u), tier, result.Status, len(result.HTML), time.Since(started).Milliseconds())
+                        bridgeserver.SafeHostPath(u), tier, result.Status, len(result.HTML), time.Since(started).Milliseconds())
         }
         bridgeserver.WriteJSON(w, http.StatusOK, result)
 }
@@ -346,25 +409,19 @@ func fetchPage(parent context.Context, targetURL string, actions []renderAction,
         //   加载前自动执行, 跨导航持久. 直接传 script 原文 (无包裹), 多 IIFE 语句被 V8 视为
         //   程序顶层语句序列, 合法执行.
         ua := userAgents[rand.Intn(len(userAgents))]
-        _ = chromedp.Run(browserCtx,
+        // R45-1A: stealth 注入错误不静默 (原 _ = chromedp.Run 让注入失败不可见, 仅靠
+        //   flags 兜底, WAF 站点会顺剩被识别). 失败时记日志供运维 debug.
+        if err := chromedp.Run(browserCtx,
                 network.Enable(),
-                emulation.SetUserAgentOverride(ua).WithUserAgentMetadata(&emulation.UserAgentMetadata{
-                        Brands:          []*emulation.UserAgentBrandVersion{{Brand: "Chromium", Version: "131"}, {Brand: "Google Chrome", Version: "131"}},
-                        FullVersionList: []*emulation.UserAgentBrandVersion{{Brand: "Chromium", Version: "131.0.0.0"}, {Brand: "Google Chrome", Version: "131.0.0.0"}},
-                        Platform:        "Windows",
-                        PlatformVersion: "15.0.0",
-                        Architecture:    "x86",
-                        Model:           "",
-                        Mobile:          false,
-                        Bitness:         "64",
-                }),
+                emulation.SetUserAgentOverride(ua).WithUserAgentMetadata(userAgentMeta(ua)),
                 // stealth 脚本注入到 Page.addScriptToEvaluateOnNewDocument (每个新文档前执行, 跨导航持久)
                 chromedp.ActionFunc(func(ctx context.Context) error {
                         _, err := page.AddScriptToEvaluateOnNewDocument(stealthScript(tier)).Do(ctx)
                         return err
                 }),
-        )
-        // 注入失败容忍: stealth flags 仍部分生效(automation controlled off + UA)
+        ); err != nil {
+                fmt.Printf("[cloak-browser] stealth injection failed (continuing with flags only): %s\n", bridgeserver.SanitizeError(err))
+        }
 
         // 导航 + actions + 抓 HTML + screenshot
         var htmlStr string
@@ -373,6 +430,11 @@ func fetchPage(parent context.Context, targetURL string, actions []renderAction,
                 chromedp.Navigate(targetURL),
                 chromedp.WaitReady(`body`, chromedp.ByQuery),
         }
+        // R45-1A: 行为模拟 (人类象同鼠标/滚动/停顿). chromedp flags + stealth 桩注入后,
+        //   反爬 WAF 仍会看鼠标轨迹/滚动节奏/点击间隔. 加随机鼠标移动 + 滚动 + 停顿,
+        //   让流量看上去更像真实用户 (任务要求 3: 行为模拟 chromedp 鼠标/滚动/点击).
+        //   放在 WaitReady 之后, 用户定义 actions 之前, 不干扰用户 actions.
+        runActions = append(runActions, simulateHumanBehaviorActions()...)
         // actions 执行
         for _, a := range actions {
                 switch strings.ToLower(a.Type) {
@@ -466,8 +528,12 @@ func fetchPage(parent context.Context, targetURL string, actions []renderAction,
         }
 
         // 响应体上限校验
+        // R45-1A 修复: 原 htmlStr[:cbMaxBodyBytes] 按字节切片, 中文/emoji (3-4 byte/rune)
+        //   在边界处会斩半留下非法 UTF-8 (孤立 continuation byte), 下游 JSON 序列化 /
+        //   parser 解析会乱码. 改用 utf8ValidTruncate 找安全 rune 边界 (回退到上一个
+        //   rune 起始 byte, 保证切片是合法 UTF-8).
         if len(htmlStr) > cbMaxBodyBytes {
-                htmlStr = htmlStr[:cbMaxBodyBytes]
+                htmlStr = utf8ValidTruncate(htmlStr, cbMaxBodyBytes)
         }
 
         result := &renderResult{
@@ -507,13 +573,60 @@ func waitCfChallenge(ctx context.Context, max time.Duration) bool {
         return false
 }
 
-// safeHostPath — 日志脱钉: 仅 host+path(查询串可能含 token, 不落日志).
-func safeHostPath(raw string) string {
-        u, err := url.Parse(raw)
-        if err != nil {
-                return "(unparseable-url)"
+// safeHostPath — 已于 R45-1C 抽到 bridgeserver.SafeHostPath.
+
+// utf8ValidTruncate — 截断字符串到 max 字节, 回退到最近的 UTF-8 rune 边界.
+// R45-1A: 防 cbMaxBodyBytes 字节切片斩半中文 (3-byte UTF-8) / emoji (4-byte).
+// 走 rune 解码, 累加 byte 长度, 下一个 rune 会超 max 则停. 返回的切片合法 UTF-8.
+func utf8ValidTruncate(s string, max int) string {
+        if max <= 0 {
+                return ""
         }
-        return u.Host + u.Path
+        if len(s) <= max {
+                return s
+        }
+        end := 0
+        for end < len(s) {
+                _, size := utf8.DecodeRuneInString(s[end:])
+                if end+size > max {
+                        break
+                }
+                end += size
+        }
+        return s[:end]
+}
+
+// simulateHumanBehaviorActions — 生成行为模拟 chromedp actions (任务要求 3).
+// R45-1A: 反爬 WAF (Cloudflare Bot Management / Akamai / DataDome) 会分析鼠标轨迹
+//   / 滚动节奏 / 点击间隔, chromedp 默认无任何鼠标活动 → 立即被识别为自动化.
+//   本函数生成 3 个 actions:
+//   1. 随机滚动到页面中段 (模拟用户向下浏览)
+//   2. 随机鼠标移动到 viewport 内随机点 (input.dispatchMouseEvent mouseMoved)
+//   3. 短停顿 200-500ms (模拟用户阅读节奏)
+//   每次随机, 避免轨迹完全一致被识别.
+func simulateHumanBehaviorActions() []chromedp.Action {
+        actions := []chromedp.Action{}
+        // 1. 随机滚动到 viewport 25-75% 位置
+        scrollPct := 25 + rand.Intn(51) // 25..75
+        scrollJS := fmt.Sprintf(
+                `window.scrollTo({top: Math.floor((document.body.scrollHeight - window.innerHeight) * %d / 100), behavior: 'smooth'});`,
+                scrollPct,
+        )
+        actions = append(actions, chromedp.Evaluate(scrollJS, nil))
+        // 2. 随机鼠标移动 (CDP input.dispatchMouseEvent, 走 chromedp.Evaluate 调 CDP)
+        x := 100 + rand.Intn(800)  // 100..900
+        y := 100 + rand.Intn(500) // 100..600
+        mouseMoveJS := fmt.Sprintf(`
+                (function() {
+                        var ev = new MouseEvent('mousemove', {clientX: %d, clientY: %d, bubbles: true});
+                        document.dispatchEvent(ev);
+                })();
+        `, x, y)
+        actions = append(actions, chromedp.Evaluate(mouseMoveJS, nil))
+        // 3. 短停顿 200-500ms (模拟阅读节奏)
+        sleepMs := 200 + rand.Intn(301) // 200..500
+        actions = append(actions, chromedp.Sleep(time.Duration(sleepMs)*time.Millisecond))
+        return actions
 }
 
 func main() {

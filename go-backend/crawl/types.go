@@ -20,7 +20,6 @@ import (
         "encoding/json"
         "fmt"
         "net/url"
-        "strconv"
         "strings"
 )
 
@@ -135,6 +134,10 @@ type FetchConfig struct {
         // API 提交任务, 等待人工/AI 解出 token, 注入到页面重新抓取. 无配置则走原
         // Obscura 桥 (puppeteer 自动点击) 路径.
         TwoCaptchaAPIKey       string            `json:"twoCaptchaApiKey,omitempty"`
+        // R45-1A 反反爬增强: anti-captcha 验证码服务 API key (2captcha 备用).
+        // 2captcha 服务不可用 / 返错 / 未配置时自动 fallback. 两个服务各试一次,
+        // 单服务 180s 超时 (caller 控制). 价格 $1.5-3/1000 次, 与 2captcha 相当.
+        AntiCaptchaAPIKey     string            `json:"antiCaptchaApiKey,omitempty"`
 }
 
 // CleanConfig — 内容清洗配置.
@@ -470,6 +473,10 @@ func sanitizeFetchConfig(m map[string]any) FetchConfig {
         if v, ok := m["twoCaptchaApiKey"].(string); ok {
                 out.TwoCaptchaAPIKey = safeStr(v, 64)
         }
+        // R45-1A: anti-captcha API key (同 2captcha, 长度上限 64)
+        if v, ok := m["antiCaptchaApiKey"].(string); ok {
+                out.AntiCaptchaAPIKey = safeStr(v, 64)
+        }
         return out
 }
 
@@ -699,17 +706,4 @@ func (t FieldRuleType) String() string { return string(t) }
 func (c FetchConfig) String() string {
         return fmt.Sprintf("FetchConfig{engine=%s, ua=%s, timeout=%d, retries=%d, concurrency=%d}",
                 c.Engine, c.UAMode, c.Timeout, c.Retries, c.Concurrency)
-}
-
-// parseInt — flexible int parse (with default).
-func parseInt(s string, def int) int {
-        s = strings.TrimSpace(s)
-        if s == "" {
-                return def
-        }
-        n, err := strconv.Atoi(s)
-        if err != nil {
-                return def
-        }
-        return n
 }

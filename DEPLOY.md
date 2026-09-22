@@ -13,7 +13,7 @@
 
 | 组件 | 版本 | 说明 | 下载 |
 | --- | --- | --- | --- |
-| **Go 工具链** | **1.23+**（go.mod 声明 1.26） | 编译主后端 + 12 mini-services，纯 Go 标准库即可，**无 cgo** | https://go.dev/dl/ |
+| **Go 工具链** | **1.23+**（go.mod 声明 1.26） | 编译主后端 + 11 mini-services + bridgeserver 共享包，纯 Go 标准库即可，**无 cgo** | https://go.dev/dl/ |
 | **SQLite 驱动** | modernc.org/sqlite v1.59.0 | 纯 Go 实现，无 cgo/系统 lib 依赖，`go build` 直接产出可移植二进制 | 已在 go.mod |
 | **curl** | 任意版本 | mini-services 健康探针 + 采集降级链用，Linux/macOS 系统自带 | 系统 |
 | **bash** | 4+ | `mini-services/*.sh` 启动脚本依赖（macOS 默认 bash 3 需 `brew install bash`） | 系统 |
@@ -27,8 +27,8 @@
 
 | 资源 | 最低 | 推荐 | 备注 |
 | --- | --- | --- | --- |
-| **内存** | 256 MB | **4 GB** | Go 主后端运行期 17 MB；4 GB 是为同时跑 12 mini-services + 采集并发 + 浏览器桥（cloak-browser/scrapling 可选启 chromium 时吃内存） |
-| **磁盘** | 1 GB | 5 GB | Go 二进制 24 MB × 13 ≈ 312 MB；SQLite 库 + 封面 + TXT 下载产物随书籍数线性增长 |
+| **内存** | 256 MB | **4 GB** | Go 主后端运行期 17 MB；4 GB 是为同时跑 11 mini-services + 采集并发 + 浏览器桥（cloak-browser/scrapling 可选启 chromium 时吃内存） |
+| **磁盘** | 1 GB | 5 GB | Go 二进制 24 MB × 12 (主后端 + 11 mini-services) ≈ 288 MB；SQLite 库 + 封面 + TXT 下载产物随书籍数线性增长 |
 | **CPU** | 1 核 | 2 核 | 单核足以承载采集 + SSR，2 核更流畅 |
 | **对比旧 Next.js** | — | — | 旧版本 Next.js standalone 运行期 2.2 GB（Turbopack 构建峰值超 2 GB，2 GB 机器直接 OOM）；Go 版本运行期 17 MB，**OOM 风险消失** |
 
@@ -49,7 +49,7 @@
 | 3019 | trafilatura-bridge | go-readability + trafilatura 正文抽取桥 |
 | 3020 | cloak-browser | 隐身 chromium 反检测渲染（cloak 模式，需 token；缺则 selfTest=false） |
 
-> 全部 12 mini-services 由 `mini-services/start-all.sh` 一键拉起，端口独占、互不冲突；如改端口需
+> 全部 11 mini-services 由 `mini-services/start-all.sh` 一键拉起，端口独占、互不冲突；如改端口需
 > 同步修改各服务 `main.go` 顶部常量 + `start-all.sh`/`stop-all.sh`/`status.sh` 三处端口表。
 
 ---
@@ -96,7 +96,7 @@ cd /home/z/my-project/go-backend
 > 后台运行用 `nohup ./heis-backend > backend.log 2>&1 &`；停止 `pkill -f heis-backend`。
 > 进程启动后监听 `:3000`，根路径 `/` 渲染前台首页（`?view=home`），`/admin` 渲染管理后台。
 
-### 2.4 启动 12 mini-services
+### 2.4 启动 11 mini-services
 
 ```bash
 cd /home/z/my-project
@@ -116,7 +116,7 @@ curl -s http://localhost:3000/health         # 200 OK
 curl -s http://localhost:3000/               # 前台首页 HTML
 curl -s http://localhost:3000/admin         # 管理后台 HTML
 
-# 12 mini-services 状态
+# 11 mini-services 状态
 bash mini-services/status.sh
 # 期望: 11 行全 ALIVE 200 (其中 moli/cloak/trafilatura selfTest=false 是预期, 见第六节)
 ```
@@ -223,7 +223,7 @@ bash mini-services/status.sh
 
 ## 五、预览
 
-部署完成 + 12 mini-services 全 ALIVE 后，浏览器访问：
+部署完成 + 11 mini-services 全 ALIVE 后，浏览器访问：
 
 | 地址 | 用途 |
 | --- | --- |
@@ -284,16 +284,16 @@ bash mini-services/status.sh
                           │
                           ▼
               ┌───────────────────────┐
-              │  采集引擎 crawl/        │  (8296 行 Go)
+              │  采集引擎 crawl/        │  (8663 行 Go)
               │  ───────────────────  │
-              │  fetcher.go  2743 行  │  ← 8 级降级链总调度
+              │  fetcher.go  3036 行  │  ← 8 级降级链总调度 (R45-1C DialTLSContext)
               │  parser.go   1612 行  │  ← css/xpath/regex/json 提取
-              │  runner.go   1436 行  │  ← 4 段采集流程 + 任务调度
-              │  cleaner.go   722 行  │  ← 广告/去壳/编码/trafilatura
-              │  types.go     715 行  │  ← 规则/配置/结果数据结构
-              │  hostgate.go  414 行  │  ← 并发 + 速率双限速器
-              │  storage.go    363 行  │  ← db/txt 双存储 + 封面本地化
-              │  smart.go     291 行  │  ← LLM 智能分类/完结判断
+              │  runner.go   1474 行  │  ← 4 段采集流程 + 任务调度 (R45-1A defer recover)
+              │  cleaner.go   744 行  │  ← 广告/去壳/编码/trafilatura (R45-1C collapseDupPunct)
+              │  types.go     709 行  │  ← 规则/配置/结果数据结构
+              │  hostgate.go  423 行  │  ← 并发 + 速率双限速器 (R45-1A settleRateLimitExpiry)
+              │  storage.go    355 行  │  ← db/txt 双存储 + 封面本地化
+              │  smart.go     310 行  │  ← LLM 智能分类/完结判断 (R45-1A 正则缓存)
               │                       │
               │  反反爬:              │
               │    utls Hello 指纹池  │  (R43-1B)
@@ -305,7 +305,7 @@ bash mini-services/status.sh
               └───────────┬───────────┘
                           │
               ┌───────────┴───────────┐
-              │  12 Go mini-services   │  (端口 3010-3020)
+              │  11 Go mini-services   │  (端口 3010-3020)
               │  ───────────────────  │
               │  3010 bqg713-proxy    │  笔趣阁 token+AES
               │  3011 fetch-relay     │  通用 HTTP 中继
@@ -558,8 +558,8 @@ sudo systemctl restart heis-backend
 | 依赖 | Bun + Node + Prisma Client + React 19 | Go 标准库 + modernc.org/sqlite（无 cgo） |
 | 前端 | React 19 SSR（src/app/*） | Go html/template（go-backend/templates/*） |
 | 模板数 | 173 文件（src/components + src/app） | 94 个（10 主题 × 8 页型 + 14 admin） |
-| 采集引擎 | TS（src/lib/crawl/*，8302 行） | Go（go-backend/crawl/*，8296 行） |
-| mini-services | 5 Bun + 1 Python（已删） | 12 Go 二进制（端口 3010-3020） |
+| 采集引擎 | TS（src/lib/crawl/*，8302 行） | Go（go-backend/crawl/*，8663 行） |
+| mini-services | 5 Bun + 1 Python（已删） | 11 Go 二进制（端口 3010-3020）+ bridgeserver 共享包 |
 | 降级链 | 5 级 | **8 级**（+uc/moli/curl-impersonate） |
 | 反反爬 | 基础 UA + 代理池 | utls Hello 指纹池 + JA3/JA4 轮换 + 2captcha + Cookie 持久化 |
 | 数据库 | Prisma/SQLite | 同（schema 不变，db/custom.db 可直接迁移） |
@@ -568,7 +568,7 @@ sudo systemctl restart heis-backend
 1. 停旧服务：`docker compose down`（旧 Docker 部署）或 `pkill -f 'node server.js'`
 2. 保留 `db/custom.db` 和 `public/clone-css/*` 和 `data/*`（封面/TXT 产物）
 3. 删除 `src/`、`node_modules/`、`.next/`（已被 R42-1C 清理）
-4. 按 §二 编译 + 启动 Go 后端 + 启动 12 mini-services
+4. 按 §二 编译 + 启动 Go 后端 + 启动 11 mini-services
 5. 浏览器访问 `http://localhost:3000/` 验证
 
 数据库 schema 完全兼容，无需迁移；Prisma schema 仅作建表用，Go 后端直接读 SQLite，不依赖 Prisma。
@@ -580,12 +580,12 @@ sudo systemctl restart heis-backend
 - **架构审计**：`agent-ctx/R43-1A-full-stack-developer.md`（A agent 新增 3 服务）
 - **引擎深度审查**：`agent-ctx/R43-1B-full-stack-developer.md`（B agent utls + 2captcha）
 - **清理重构**：`agent-ctx/R43-1C-full-stack-developer.md`（删旧 TS/Python mini-services + start-all.sh 重写）
-- **完整工作日志**：`worklog.md`（17291 行，R3-a → R43-1C 全链路）
+- **完整工作日志**：`worklog.md`（~17,761 行，R3-a → R44-1C 全链路，R45-1A/B/C 追加中）
 - **数据库 schema**：`prisma/schema.prisma`（11 + 1 表，Feedback R40 新增）
-- **采集引擎源码**：`go-backend/crawl/*.go`（8 模块 8296 行）
+- **采集引擎源码**：`go-backend/crawl/*.go`（8 模块 8663 行）
 - **主后端源码**：`go-backend/main.go`（1173 行）+ `go-backend/admin.go`（3562 行）
-- **mini-services 源码**：`go-backend/services/*/main.go`（12 个）+ `services/bridgeserver/bridgeserver.go`（共享样板 843 行）
+- **mini-services 源码**：`go-backend/services/*/main.go`（11 个）+ `services/bridgeserver/bridgeserver.go`（共享样板 917 行）
 
 ---
 
-**文档版本**：R44-1B（Go 重写后部署链路），对应 worklog.md R38–R43 全程迁移记录。
+**文档版本**：R45-1C (Go 重写后部署链路 + R45-1A/B/C 清理后行数校准)，对应 worklog.md R38–R44 全程迁移记录。

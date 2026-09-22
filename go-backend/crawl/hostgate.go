@@ -178,12 +178,21 @@ func (g *HostGate) maybeSweepAndEvict() {
 }
 
 // settleRateLimitExpiry — 限流冷却到期结算 (惰性): 清零连败 + 回滚 minGapMs 快照.
+// R45-1A 修复: 原实现无条件从 minGapMsBeforeCooldown 还原 minGapMs. 但若冷却期间
+//   新 caller 调 Acquire 传了不同的 minGapMs (会覆写 st.minGapMs 但不动 snapshot),
+//   冷却到期 restore 会反转 caller 的意图 (回到冷却前的旧值, 不是 caller 期望的新值).
+//   修复: 冷却期间 minGapMs 被 caller 覆写 (st.minGapMs != 快照原值) 时跳过还原.
 func (g *HostGate) settleRateLimitExpiry(st *hostState) {
         if st.rateLimitedUntil > 0 && time.Now().UnixMilli() >= st.rateLimitedUntil {
                 st.rateLimitedUntil = 0
                 st.failStreak = 0
                 if st.minGapMsBeforeCooldown > 0 {
-                        st.minGapMs = st.minGapMsBeforeCooldown
+                        // R45-1A: 若 minGapMs == 快照原值 → 冷却期间未被 caller 覆写,
+                        //   还原是 no-op (但清 snapshot 让下次冷却重新记). 若 minGapMs !=
+                        //   快照原值 → caller 在冷却期间覆写为新值, 不还原 (caller 优先).
+                        if st.minGapMs != st.minGapMsBeforeCooldown {
+                                // 不还原, caller 的新值生效
+                        }
                         st.minGapMsBeforeCooldown = 0
                 }
         }

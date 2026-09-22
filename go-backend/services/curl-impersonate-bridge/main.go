@@ -37,7 +37,6 @@ import (
         "encoding/base64"
         "encoding/json"
         "fmt"
-        "io"
         "net"
         "net/http"
         "net/url"
@@ -134,7 +133,7 @@ func handle(w http.ResponseWriter, r *http.Request) {
         // SSRF 守卫
         ok, reason := bridgeserver.AssertSafeSsrfTarget(u, ssrfAllowLB)
         if !ok {
-                fmt.Printf("[curl-impersonate-bridge] SSRF 拒绝 %s: %s\n", safeHostPath(u), reason)
+                fmt.Printf("[curl-impersonate-bridge] SSRF 拒绝 %s: %s\n", bridgeserver.SafeHostPath(u), reason)
                 bridgeserver.WriteJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "SSRF blocked: " + reason})
                 return
         }
@@ -145,7 +144,7 @@ func handle(w http.ResponseWriter, r *http.Request) {
                         bridgeserver.WriteJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "proxy 形态非法(超长)"})
                         return
                 }
-                if pErr := ssrfCheckProxy(proxyURL); pErr != "" {
+                if pErr := bridgeserver.SsrfCheckProxy(proxyURL, ssrfAllowLB); pErr != "" {
                         bridgeserver.WriteJSON(w, http.StatusOK, map[string]any{"ok": false, "error": pErr})
                         return
                 }
@@ -202,7 +201,7 @@ func handle(w http.ResponseWriter, r *http.Request) {
         if err != nil {
                 msg := bridgeserver.SanitizeError(err)
                 fmt.Printf("[curl-impersonate-bridge] FAIL %s %s profile=%s (%dms): %s\n",
-                        upstreamMethod, safeHostPath(u), profile.Client, time.Since(started).Milliseconds(), msg)
+                        upstreamMethod, bridgeserver.SafeHostPath(u), profile.Client, time.Since(started).Milliseconds(), msg)
                 bridgeserver.WriteJSON(w, http.StatusOK, map[string]any{"ok": false, "error": msg})
                 return
         }
@@ -210,10 +209,10 @@ func handle(w http.ResponseWriter, r *http.Request) {
 
         // HEAD: 只回 status+headers, 不下载 body
         if upstreamMethod == http.MethodHead {
-                hdrs := collectHeaders(resp.Header)
-                setCookies := collectSetCookies(resp.Header)
+                hdrs := bridgeserver.CollectHeaders(resp.Header)
+                setCookies := bridgeserver.CollectSetCookies(resp.Header)
                 fmt.Printf("[curl-impersonate-bridge] HEAD %d %s profile=%s (%dms)\n",
-                        resp.StatusCode, safeHostPath(u), profile.Client, time.Since(started).Milliseconds())
+                        resp.StatusCode, bridgeserver.SafeHostPath(u), profile.Client, time.Since(started).Milliseconds())
                 bridgeserver.WriteJSON(w, http.StatusOK, map[string]any{
                         "ok":        true,
                         "method":    "HEAD",
@@ -226,17 +225,17 @@ func handle(w http.ResponseWriter, r *http.Request) {
                 return
         }
         // 流式限量读响应体
-        bodyBytes, err := readBodyCapped(resp.Body, impMaxBodyBytes)
+        bodyBytes, err := bridgeserver.ReadReaderCapped(resp.Body, impMaxBodyBytes)
         if err != nil {
                 fmt.Printf("[curl-impersonate-bridge] FAIL %d %s profile=%s (%dms): 响应体超限(>%dB, 已中止)\n",
-                        resp.StatusCode, safeHostPath(u), profile.Client, time.Since(started).Milliseconds(), impMaxBodyBytes)
+                        resp.StatusCode, bridgeserver.SafeHostPath(u), profile.Client, time.Since(started).Milliseconds(), impMaxBodyBytes)
                 bridgeserver.WriteJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
                 return
         }
-        hdrs := collectHeaders(resp.Header)
-        setCookies := collectSetCookies(resp.Header)
+        hdrs := bridgeserver.CollectHeaders(resp.Header)
+        setCookies := bridgeserver.CollectSetCookies(resp.Header)
         fmt.Printf("[curl-impersonate-bridge] %d %s profile=%s (%dms, %dB)\n",
-                resp.StatusCode, safeHostPath(u), profile.Client, time.Since(started).Milliseconds(), len(bodyBytes))
+                resp.StatusCode, bridgeserver.SafeHostPath(u), profile.Client, time.Since(started).Milliseconds(), len(bodyBytes))
         bridgeserver.WriteJSON(w, http.StatusOK, map[string]any{
                 "ok":        true,
                 "status":    resp.StatusCode,
@@ -247,15 +246,10 @@ func handle(w http.ResponseWriter, r *http.Request) {
         })
 }
 
-// ssrfCheckProxy — 校验代理 URL host 不为内网/链路本地/元数据端点.
-//   返回 ""=放行, 非空=拒绝原因. allowLoopback 与 target URL 共用 ssrfAllowLB.
-func ssrfCheckProxy(proxyURL string) string {
-        ok, reason := bridgeserver.AssertSafeSsrfTarget(proxyURL, ssrfAllowLB)
-        if !ok {
-                return "proxy SSRF 拒绝: " + reason
-        }
-        return ""
-}
+// ssrfCheckProxy / passFromURL / collectHeaders / collectSetCookies / readBodyCapped /
+// safeHostPath 已于 R45-1C 全部抽到 bridgeserver (SsrfCheckProxy / PassFromURL /
+// CollectHeaders / CollectSetCookies / ReadReaderCapped / SafeHostPath);
+// wrapDialContext 因依赖 x/net/proxy 留在本地, 不污染共享包.
 
 // buildUtlsTransport — 构造 utls TLS 指纹 transport, 支持 http/https/socks5/socks4 代理.
 //
@@ -264,10 +258,15 @@ func ssrfCheckProxy(proxyURL string) string {
 // golang.org/x/net/proxy.DialContext (utls 在 DialTLS 之上, socks 代理先 dial TCP 再握手).
 func buildUtlsTransport(proxyStr string, profile utls.ClientHelloID) (*http.Transport, error) {
         tr := &http.Transport{
-                // DialTLS: 用 utls.UClient 替代 crypto/tls.Client. http.Transport 连接池正常复用 utls 连接.
-                DialTLS: func(network, addr string) (net.Conn, error) {
+                // R45-1C: DialTLS 已 deprecated (Go 1.14+), 改用 DialTLSContext 支持 ctx 取消.
+                // 与 fetcher.go globalUtlsTransport 同口径, ctx.Done() 时立即断 dial.
+                DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
                         host, _, _ := net.SplitHostPort(addr)
-                        rawConn, err := net.DialTimeout(network, addr, 10*time.Second)
+                        if err := ctx.Err(); err != nil {
+                                return nil, err
+                        }
+                        dialer := &net.Dialer{Timeout: 10 * time.Second}
+                        rawConn, err := dialer.DialContext(ctx, network, addr)
                         if err != nil {
                                 return nil, err
                         }
@@ -277,7 +276,7 @@ func buildUtlsTransport(proxyStr string, profile utls.ClientHelloID) (*http.Tran
                                 ServerName:         host,
                                 InsecureSkipVerify: false,
                         }, profile)
-                        if err := uConn.Handshake(); err != nil {
+                        if err := uConn.HandshakeContext(ctx); err != nil {
                                 _ = rawConn.Close()
                                 return nil, err
                         }
@@ -307,7 +306,7 @@ func buildUtlsTransport(proxyStr string, profile utls.ClientHelloID) (*http.Tran
         case "socks5", "socks5h":
                 dialer, err := proxy.SOCKS5("tcp", u.Host, &proxy.Auth{
                         User:     u.User.Username(),
-                        Password: passFromURL(u),
+                        Password: bridgeserver.PassFromURL(u),
                 }, proxy.Direct)
                 if err != nil {
                         return nil, fmt.Errorf("socks5 dialer: %w", err)
@@ -325,16 +324,9 @@ func buildUtlsTransport(proxyStr string, profile utls.ClientHelloID) (*http.Tran
         return tr, nil
 }
 
-func passFromURL(u *url.URL) string {
-        if u == nil || u.User == nil {
-                return ""
-        }
-        p, _ := u.User.Password()
-        return p
-}
-
 // wrapDialContext — 将 proxy.Dialer 适配为 DialContext 签名.
 //   优先用 ContextDialer 实现; 否则 fallback 不响应 ctx 取消.
+// R45-1C: 因依赖 x/net/proxy 留在本地, 不污染共享包.
 func wrapDialContext(d proxy.Dialer) func(ctx context.Context, network, addr string) (net.Conn, error) {
         if cd, ok := d.(proxy.ContextDialer); ok {
                 return cd.DialContext
@@ -347,51 +339,9 @@ func wrapDialContext(d proxy.Dialer) func(ctx context.Context, network, addr str
         }
 }
 
-// collectHeaders — 把 http.Header 展开为 [k,v] 对(排除 Set-Cookie, 由专用通道).
-func collectHeaders(h http.Header) [][2]string {
-        out := [][2]string{}
-        for k, vs := range h {
-                kk := strings.ToLower(k)
-                if kk == "set-cookie" {
-                        continue
-                }
-                for _, v := range vs {
-                        out = append(out, [2]string{k, bridgeserver.SafeHeaderValue(v)})
-                }
-        }
-        return out
-}
-
-// collectSetCookies — 提取 Set-Cookie 全部值(保留多 Set-Cookie 头).
-func collectSetCookies(h http.Header) []string {
-        out := []string{}
-        for _, v := range h.Values("Set-Cookie") {
-                out = append(out, bridgeserver.SafeHeaderValue(v))
-        }
-        return out
-}
-
-// readBodyCapped — 流式限量读 body(超限返回 error).
-func readBodyCapped(r io.Reader, cap int) ([]byte, error) {
-        lr := io.LimitReader(r, int64(cap)+1)
-        data, err := io.ReadAll(lr)
-        if err != nil {
-                return data, err
-        }
-        if len(data) > cap {
-                return data, fmt.Errorf("目标响应体超过 %d 字节上限, 已中止", cap)
-        }
-        return data, nil
-}
-
-// safeHostPath — 日志脱钉: 仅 host+path(查询串可能含 token, 不落日志).
-func safeHostPath(raw string) string {
-        u, err := url.Parse(raw)
-        if err != nil {
-                return "(unparseable-url)"
-        }
-        return u.Host + u.Path
-}
+// ssrfCheckProxy / passFromURL / collectHeaders / collectSetCookies / readBodyCapped /
+// safeHostPath 已于 R45-1C 抽到 bridgeserver (SsrfCheckProxy / PassFromURL /
+// CollectHeaders / CollectSetCookies / ReadReaderCapped / SafeHostPath).
 
 func main() {
         bs := bridgeserver.New(bridgeserver.BridgeServerOptions{

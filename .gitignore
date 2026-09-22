@@ -106,6 +106,7 @@ go-backend/*-proxy
 go-backend/*-bridge
 go-backend/*-backend
 go-backend/*-browser
+go-backend/*-relay
 # start-all.sh 构建输出目录(11 个 Go 服务二进制, 每个约 10MB, 不入版本库)
 go-backend/bin/
 go-backend/services/*/*
@@ -115,5 +116,7 @@ go-backend/services/*/*
 !go-backend/services/*/scripts/
 !go-backend/services/*/.env.example
 # 显式覆盖 *.log 通用规则已存在, 此处补充 go-backend/ 路径注释明确意图
+# R45-1C: backend.log 由 heis-backend 后台运行时写入 (nohup ./heis-backend > backend.log 2>&1 &),
+#         go build/test 输出二进制 heis-backend + ./*.log 均不入版本库
 go-backend/*.log
 

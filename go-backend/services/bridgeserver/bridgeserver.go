@@ -458,20 +458,81 @@ var (
 )
 
 // ---------- POST 体限量读 ----------
-// ReadBodyCapped — 限量读 body(超限返回 size + error)。
+// ReadBodyCapped — 限量读 *http.Request body(超限返回 size + error)。
 func ReadBodyCapped(r *http.Request, cap int) ([]byte, error) {
         if r.Body == nil {
                 return nil, nil
         }
-        lr := io.LimitReader(r.Body, int64(cap)+1)
+        return ReadReaderCapped(r.Body, cap)
+}
+
+// ---------- 通用 HTTP 桥辅助 (R45-1C 抽自 fetch-relay/curl-impersonate-bridge/cloak-browser 重复实现) ----------
+
+// SsrfCheckProxy — 校验代理 URL host 不为内网/链路本地/元数据端点.
+// 返回 ""=放行, 非空=拒绝原因. allowLB 与目标 URL 共用 (BRIDGE_SSRF_ALLOW_LOOPBACK).
+func SsrfCheckProxy(proxyURL string, allowLB bool) string {
+        ok, reason := AssertSafeSsrfTarget(proxyURL, allowLB)
+        if !ok {
+                return "proxy SSRF 拒绝: " + reason
+        }
+        return ""
+}
+
+// CollectHeaders — 把 http.Header 展开为 [k,v] 对(排除 Set-Cookie, 由专用通道).
+// 值经 SafeHeaderValue 脱敏(剥 CR/LF/NUL, 截 8192 rune).
+func CollectHeaders(h http.Header) [][2]string {
+        out := [][2]string{}
+        for k, vs := range h {
+                if strings.EqualFold(k, "set-cookie") {
+                        continue
+                }
+                for _, v := range vs {
+                        out = append(out, [2]string{k, SafeHeaderValue(v)})
+                }
+        }
+        return out
+}
+
+// CollectSetCookies — 提取 Set-Cookie 全部值(保留多 Set-Cookie 头).
+// 值经 SafeHeaderValue 脱敏.
+func CollectSetCookies(h http.Header) []string {
+        out := []string{}
+        for _, v := range h.Values("Set-Cookie") {
+                out = append(out, SafeHeaderValue(v))
+        }
+        return out
+}
+
+// ReadReaderCapped — 任意 io.Reader 限量读(超限返回 size + error).
+// ReadBodyCapped 的 io.Reader 变体, 供服务读目标响应体(非 http.Request.Body).
+func ReadReaderCapped(r io.Reader, cap int) ([]byte, error) {
+        lr := io.LimitReader(r, int64(cap)+1)
         data, err := io.ReadAll(lr)
         if err != nil {
                 return data, err
         }
         if len(data) > cap {
-                return data, fmt.Errorf("请求体超限(>%dB)", cap)
+                return data, fmt.Errorf("响应体超限(>%dB)", cap)
         }
         return data, nil
+}
+
+// PassFromURL — 取 URL 中的 password 部分, 无则空串.
+func PassFromURL(u *url.URL) string {
+        if u == nil || u.User == nil {
+                return ""
+        }
+        p, _ := u.User.Password()
+        return p
+}
+
+// SafeHostPath — 日志脱钉: 仅 host+path(查询串可能含 token, 不落日志).
+func SafeHostPath(raw string) string {
+        u, err := url.Parse(raw)
+        if err != nil {
+                return "(unparseable-url)"
+        }
+        return u.Host + u.Path
 }
 
 // ---------- Server ----------

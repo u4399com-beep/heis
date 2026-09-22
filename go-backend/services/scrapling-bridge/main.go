@@ -29,6 +29,8 @@ package main
 
 import (
         "bytes"
+        "compress/gzip"
+        "compress/zlib"
         "context"
         "encoding/json"
         "fmt"
@@ -213,6 +215,10 @@ func doFetchStatic(u string, timeoutMs int, headers map[string]string, proxyURL 
         if len(bodyBytes) > maxBodyBytes {
                 return map[string]any{"ok": false, "error": fmt.Sprintf("响应体超限(>%dB)", maxBodyBytes)}
         }
+        // R45-1A 修复: 手动解码 Content-Encoding (Go 不自解显式 Accept-Encoding, 与 fetcher.go 同款).
+        // R44-1C 已移除 Accept-Encoding: br, 但服务器可能仍返 br (反爬蓄意不议 / 配置错误),
+        //   该情况返原始字节供上层调用方降级 (parser 识别为乱码).
+        bodyBytes = decodeContentEncoding(resp, bodyBytes)
         finalURL := resp.Request.URL.String()
         if finalURL == "" {
                 finalURL = u
@@ -223,6 +229,35 @@ func doFetchStatic(u string, timeoutMs int, headers map[string]string, proxyURL 
                 "html":     string(bodyBytes),
                 "finalUrl": finalURL,
         }
+}
+
+// decodeContentEncoding — R45-1A: 手动解码 Content-Encoding (gzip / deflate).
+// Go net/http 仅在 Transport 自加 Accept-Encoding (Request 无该头) 时自解,
+// 我们显式设了 Accept-Encoding: gzip, deflate → Go 不自解, 需手动.
+// brotli (br) 无 Go 原生库, 返原始字节 (上层降级).
+func decodeContentEncoding(resp *http.Response, body []byte) []byte {
+        ce := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding")))
+        switch ce {
+        case "gzip":
+                if gr, err := gzip.NewReader(bytes.NewReader(body)); err == nil {
+                        if decoded, err := io.ReadAll(gr); err == nil {
+                                gr.Close()
+                                return decoded
+                        }
+                        gr.Close()
+                }
+        case "deflate":
+                if zr, err := zlib.NewReader(bytes.NewReader(body)); err == nil {
+                        if decoded, err := io.ReadAll(zr); err == nil {
+                                zr.Close()
+                                return decoded
+                        }
+                        zr.Close()
+                }
+        case "br":
+                // Brotli 不支持, 返原始字节 (上层识别为乱码后走桥降级)
+        }
+        return body
 }
 
 // doFetchBrowser — exec python3 scrapling_fetch.py 调用 Python scrapling。

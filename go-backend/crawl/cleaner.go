@@ -367,8 +367,9 @@ func cleanContentHtmlSync(raw string, cfg CleanConfig) string {
                 // 纯文本模式: 剥全部标签
                 text := html
                 // 1. 先剥危险标签 (script/style/noscript/iframe/object/embed) 及其内部文本
-                text = regexp.MustCompile(`(?is)<(script|style|noscript|iframe|object|embed)\b[^>]*>.*?</\1\s*>`).ReplaceAllString(text, " ")
-                text = regexp.MustCompile(`(?is)<(script|style|noscript|iframe|object|embed)\b[^>]*/>`).ReplaceAllString(text, " ")
+                // RE2 不支持 \1 反向引用, 关闭标签用独立 alternation 匹配 (R45-1C 修原 panic bug)
+                text = regexp.MustCompile(`(?is)<(?:script|style|noscript|iframe|object|embed)\b[^>]*>.*?</(?:script|style|noscript|iframe|object|embed)\s*>`).ReplaceAllString(text, " ")
+                text = regexp.MustCompile(`(?is)<(?:script|style|noscript|iframe|object|embed)\b[^>]*/>`).ReplaceAllString(text, " ")
                 // 截断/未闭合的 script|style|... 段 — 贪婪匹配到串尾
                 text = regexp.MustCompile(`(?is)<(script|style|noscript|iframe|object|embed)\b[^>]*>.*`).ReplaceAllString(text, " ")
                 // 2. <br> → \n
@@ -458,7 +459,7 @@ func cleanContentHtmlSync(raw string, cfg CleanConfig) string {
         // 2.5 白名单标签属性消毒 (a href / img src 必须 http(s); img alt 任意; 其余剥)
         root.Find("*").Each(func(_ int, s *goquery.Selection) {
                 tag := strings.ToLower(goquery.NodeName(s))
-                if s.Nodes == nil || len(s.Nodes) == 0 {
+                if len(s.Nodes) == 0 {
                         return
                 }
                 // 收集所有属性名, 非白名单的 RemoveAttr
@@ -646,8 +647,9 @@ func CleanTextField(raw string, maxLength int) string {
         // 站点水印清洗
         v = regexp.MustCompile(`^(?:本书首发于|转载请注明出处|本书来源于|本书首发自)[^，。；]*[，。；]?`).ReplaceAllString(v, "")
         v = strings.TrimSpace(v)
-        // 重复标点压缩 (! ? 。 及其全角形式)
-        v = regexp.MustCompile(`([!?。！？])\1+`).ReplaceAllString(v, "$1")
+        // 重复标点压缩 (! ? 。 及其全角形式) — RE2 不支持 \1 反向引用,
+        // 用单遍扫描压扁相邻相同标点 (R45-1C 修原 panic bug).
+        v = collapseDupPunct(v)
         if maxLength > 0 && utf8.RuneCountInString(v) > maxLength {
                 runes := []rune(v)
                 v = string(runes[:maxLength])
@@ -719,4 +721,24 @@ func stripLeadingMetadata(s string) string {
                 }
         }
         return s
+}
+
+// collapseDupPunct — 压扁相邻相同标点 (! ? 。 全角 ！？) 为单个出现.
+// 原 regexp `([!?。！？])\1+` 用 \1 反向引用, 但 Go RE2 不支持 backref → MustCompile panic.
+// 改用单遍 rune 扫描, 语义等价 (仅当连续相同才合并, 不同标点保持原序).
+func collapseDupPunct(s string) string {
+        var b strings.Builder
+        b.Grow(len(s))
+        prev := rune(0)
+        for _, r := range s {
+                if r == prev {
+                        switch r {
+                        case '!', '?', '。', '！', '？':
+                                continue
+                        }
+                }
+                b.WriteRune(r)
+                prev = r
+        }
+        return b.String()
 }

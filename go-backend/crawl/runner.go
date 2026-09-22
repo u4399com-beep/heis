@@ -879,18 +879,31 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) error {
                                 wg.Add(1)
                                 go func(q *ChapterTask) {
                                         defer wg.Done()
+                                        // R45-1A: defer recover 保证 logf/cfg.Logger/DB panic 不会
+                                        // 让 goroutine 静默崩溃 (导致 wg.Wait 永久阻塞).
+                                        defer func() {
+                                                if r := recover(); r != nil {
+                                                        batchMu.Lock()
+                                                        stats.Errors++
+                                                        consecutiveErrs++
+                                                        batchMu.Unlock()
+                                                        logf(LogError, "🔴 章节采集 goroutine panic: %v", r)
+                                                }
+                                        }()
                                         if err := chapterSem.Acquire(ctx); err != nil {
                                                 return
                                         }
                                         defer chapterSem.Release()
 
                                         ok, kind, msg := CrawlChapterContent(ctx, cfg, rt, myEpoch, q)
-                                        // R41-1A: 用 batchMu 保护共享变量写
-                                        // R43-1B: 改用 defer batchMu.Unlock() 保证 panic 时也能解锁
-                                        // (logf 内 cfg.Logger/DB 调用 panic 会让 batchMu 永久锁住,
-                                        // 后续批次 goroutine 全部死锁)
+                                        // R45-1A: 缩小 batchMu 临界区 (R43-1B defer 修复 panic 但 logf
+                                        // 内 cfg.DB.InsertTaskLog 走 DB I/O, 全 goroutine 串行化降低并发).
+                                        // 改为: 锁内仅写共享变量 + 准备 logMsg, 锁外执行 logf (DB 写).
+                                        // panic 安全由外层 defer recover 保证.
                                         batchMu.Lock()
-                                        defer batchMu.Unlock()
+                                        var logLevel LogLevel
+                                        var logMsg string
+                                        var shouldLog bool
                                         if ok {
                                                 stats.ChaptersUpdated++
                                                 consecutiveErrs = 0
@@ -901,29 +914,43 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) error {
                                                 switch kind {
                                                 case "no-url":
                                                         stats.Errors++
-                                                        logf(LogWarn, "章节无有效链接, 跳过: %s", truncate(q.Title, 60))
+                                                        logLevel = LogWarn
+                                                        logMsg = fmt.Sprintf("章节无有效链接, 跳过: %s", truncate(q.Title, 60))
+                                                        shouldLog = true
                                                         done++
                                                         progress.ContentDone = done
                                                 case "timeout":
                                                         stats.Errors++
                                                         consecutiveErrs++
-                                                        logf(LogError, "%s", msg)
+                                                        logLevel = LogError
+                                                        logMsg = msg
+                                                        shouldLog = true
                                                 case "abort":
                                                         // 停止/换代造成的中止不计失败
                                                 case "hostgate":
-                                                        logf(LogWarn, "%s", msg)
+                                                        logLevel = LogWarn
+                                                        logMsg = msg
+                                                        shouldLog = true
                                                 case "other":
                                                         // R42-1B: 检测 BudgetExceeded 并上抛任务级
                                                         // (CrawlChapterContent 内部 CheckBudget 失败时返回 "other" + BudgetExceeded msg)
                                                         if strings.Contains(msg, "BudgetExceeded") {
                                                                 budgetExceeded.Store(true)
-                                                                logf(LogError, "🔴 预算超限: %s", msg)
+                                                                logLevel = LogError
+                                                                logMsg = fmt.Sprintf("🔴 预算超限: %s", msg)
+                                                                shouldLog = true
                                                         } else {
                                                                 stats.Errors++
                                                                 consecutiveErrs++
-                                                                logf(LogError, "%s", msg)
+                                                                logLevel = LogError
+                                                                logMsg = msg
+                                                                shouldLog = true
                                                         }
                                                 }
+                                        }
+                                        batchMu.Unlock()
+                                        if shouldLog {
+                                                logf(logLevel, "%s", logMsg)
                                         }
                                 }(q)
                         }
@@ -1038,12 +1065,23 @@ func discoverBooks(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                 if rt.IsStopped() || rt.IsStale(myEpoch) {
                         break
                 }
+                // R45-1A 修复: 原实现 discoverBooks 不调 rt.CheckBudget / IncRequest, 列表页
+                // 抓取绕过预算跟踪, maxPages=20 + maxRequests=100 时实际可消耗 20 列表 +
+                // N 书 + M 章节 = M+N+20 远超 100. 加预算检查 + 请求计数, 超限 break.
+                if err := rt.CheckBudget(); err != nil {
+                        return discovered, err
+                }
+                rt.IncRequest()
                 url := strings.ReplaceAll(urlTemplate, "{page}", fmt.Sprintf("%d", p))
                 res, err := FetchPage(ctx, url, cfg.Override)
                 if err != nil {
                         // R43-1B: 列表页 fetch 失败 → break (避免无效页继续浪费预算)
                         // (原实现 continue 会无限重试同 URL, 且首页失败时继续翻 page=2 无意义)
                         break
+                }
+                // R45-1A: 命中验证码 → 累计 captchaEncountered (与 CrawlBookMeta / CrawlChapterContent 同款)
+                if res.CaptchaDetected {
+                        rt.IncCaptcha()
                 }
                 if res.Blocked {
                         break

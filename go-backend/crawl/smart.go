@@ -17,6 +17,7 @@ package crawl
 import (
         "regexp"
         "strings"
+        "sync"
 )
 
 // 标准分类 + 关键词权重 (与 TS 端 CATEGORY_KEYWORDS 同款)
@@ -200,14 +201,27 @@ var ongoingWords = []string{
 
 var englishWordRe = regexp.MustCompile(`^[a-z]+$`)
 
+// R45-1A: wordMatchesReCache 缓存英文关键词预编译的正则, 避免每次 MatchString
+// 都 regexp.Compile. MatchCategoryByText 会遍历 15 个分类 × ~11 关键词 = 165 次,
+// 若每次重编译 100+ 正则 GC 压力大. sync.Map 高并发读路径几乎无锁.
+var wordMatchesReCache sync.Map
+
 // wordMatches — 英文单词 \b 词边界匹配, 中文走 Contains.
 //  - 'final' 不再命中 'finally'; 'complete' 不再命中 'completely' (Bug 28)
 //  - 含连字符/空格的英文短语走 Contains (短语形态本身隔离良好)
+// R45-1A: 缓存预编译正则, 避免每次 regexp.Compile.
 func wordMatches(t, w string) bool {
         if englishWordRe.MatchString(w) {
-                re, err := regexp.Compile(`\b` + regexp.QuoteMeta(w) + `\b`)
-                if err != nil {
-                        return strings.Contains(t, w)
+                var re *regexp.Regexp
+                if v, ok := wordMatchesReCache.Load(w); ok {
+                        re = v.(*regexp.Regexp)
+                } else {
+                        r, err := regexp.Compile(`\b` + regexp.QuoteMeta(w) + `\b`)
+                        if err != nil {
+                                return strings.Contains(t, w)
+                        }
+                        re = r
+                        wordMatchesReCache.Store(w, re)
                 }
                 return re.MatchString(strings.ToLower(t))
         }

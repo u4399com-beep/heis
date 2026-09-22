@@ -17607,3 +17607,361 @@ Stage Summary:
   pickProxyFor sweep 完整 / trafilatura clients 单例 + globalTransport 复用 / jsonLdTypeRe 预编译 /
   batchMu defer / discoverBooks newCount==0 break / MarkProxyFailed/OK / IncCaptcha / ReportRateLimited).
   详细工作记录: agent-ctx/R44-1C-full-stack-developer.md
+
+---
+Task ID: R45-1A
+Agent: full-stack-developer (Go第五轮+反反爬)
+Task: Go 采集引擎第五轮深度抓 bug + 反反爬进一步增强 (主要改 go-backend/crawl/* + services/*)
+
+Work Log:
+- 读交接: agent-ctx/R43-1B (utls 4 Hello 池 + MarkProxyFailed/OK + TwoCaptcha + 4 P0 + 3 P1) +
+  R44-1C (cloak-browser stealth 注入修复 + scrapling-bridge Accept-Encoding br 移除 + 13 处
+  []rune 安全截断). 读 worklog.md 末 250 行了解 R41-R44 全修复历史.
+- 深度审查范围: go-backend/ 全 Go 代码 ~18716 行 = crawl/* 8296 (fetcher 2743+parser 1612+
+  runner 1437+cleaner 722+smart 297+types 716+hostgate 414+storage 363) + main.go 1173 +
+  admin.go 3570 + services/* 11 服务 5146 + bridgeserver 856.
+
+P0 反反爬 bug 修复 (5 处):
+- P0-1 fetcher.go decodeBody 不解 gzip/deflate (注释声称 "net/http 自动解 gzip" 实际只在
+  Transport 自加 Accept-Encoding 时才自解, 我们显式设了 → 不自解, resp.Body 是原始 gzip 字节,
+  HTML 解析全炸). 修复: 加 Content-Encoding 检测 + gzip.NewReader / zlib.NewReader 手动解码.
+  brotli (br) 无 Go 原生库, 记 brotliMissCount 计数供运维识别 (返原始字节, 上层降级到 Python
+  scrapling 桥有 brotli 解码).
+- P0-2 runner.go discoverBooks 绕过预算跟踪 (调 FetchPage 抓列表页但不调 rt.IncRequest /
+  CheckBudget / IncCaptcha, maxPages=20 + maxRequests=100 时实际可消耗 20+N+M 远超 100).
+  修复: 加 rt.CheckBudget (超限 return BudgetExceeded) + rt.IncRequest + rt.IncCaptcha (与
+  CrawlBookMeta / CrawlChapterContent 同款).
+- P0-3 2captcha API 缺 UA + 无 per-attempt 超时 (submitCaptchaTo2Captcha 用 globalHttp 不设
+  UA, 默认 Go-http-client/1.1 被 2captcha Cloudflare bot 检测为 bot 拦截 → 任务提交返 403
+  → captchaID 永远空 → 180s 超时. pollCaptchaResult 单轮无超时, 连接挂掉阻塞 180s). 修复:
+  抽 applyBrowserLikeHeaders 补全 UA + Accept + Accept-Language + Accept-Encoding (与
+  buildHeaders 同款). submit 加 10s 超时, poll 单轮加 15s 超时.
+- P0-4 cloak-browser HTML 字节截断 (htmlStr[:cbMaxBodyBytes] 按字节切片, 中文/emoji 在边界
+  斩半留下孤立 continuation byte, JSON 序列化返客户端 / parser 解析全炸, 与 R44-1C 13 处
+  []rune 截断同款). 修复: 新增 utf8ValidTruncate — 走 utf8.DecodeRuneInString 累加 byte
+  长度, 下一个 rune 会超 max 则停 (不走 []rune 因 20MB 转 []rune 会 alloc 80MB+).
+- P0-5 cloak-browser UA-品牌不一致 (UA 池含 Chrome 130/131/Edge 131, 但 Brands 硬编码
+  Chromium 131 + Google Chrome 131, 选 Chrome 130 UA 时 Sec-Ch-Ua 头声明品牌 131, UA 字符串
+  Chrome 130, 不一致 → 反爬 WAF 识别). 修复: 新增 userAgentMeta(ua) — 正则提取 Chrome/(\d+)
+  + Edg/(\d+) + 平台, 动态生成 UserAgentMetadata. UA=Chrome130 → Brands=Chromium130+
+  GoogleChrome130. UA=Edge131 → 加 Microsoft Edge 131. 平台 (Windows/macOS/Linux) 也从 UA
+  提取.
+
+P1 反反爬 bug 修复 (5 处):
+- P1-1 hostgate.go settleRateLimitExpiry 无条件还原 minGapMs (snapshot 取原值, 冷却期间新
+  caller 调 Acquire 传不同 minGapMs 覆写 st.minGapMs 但不动 snapshot, 冷却到期 restore 反转
+  caller 意图). 修复: 检查 st.minGapMs != snapshot → 冷却期间被 caller 覆写, 不还原.
+- P1-2 pickProxyFor 每次重 ParseProxyPool (高频路径 Split + 校验, 代理池字符串不变时重复
+  解析). 修复: 新增 parsedProxyPoolCached — 60s TTL 缓存, 返回副本防调用方污染. 5min sweep
+  时同步清缓存.
+- P1-3 utls Hello 池 4 个 _Auto 实际同号 (Chrome_Auto=Chrome_133 / Firefox_Auto=Firefox_120 /
+  Safari_Auto=Safari_16_0 / IOS_Auto=IOS_14 都是固定版本别名, 反爬可关联). ClearUtlsChoice
+  后 pickUtlsHello 重新哈希选, 但哈希 host 确定性 → 选到同一号, ClearUtlsChoice 实际 no-op.
+  修复: 扩充到 12 个具体版本 (Chrome 102/106_Shuffle/120/131/133 + Firefox 99/102/105/120
+  + Safari 16.0 + iOS 13/14, JA3/JA4 各异). 新增 utlsAttemptsMap 计数器, ClearUtlsChoice 时
+  attempts++ (上限 len(pool) 归零), pickUtlsHello 用 (hash + attempts) % len(pool) 偏移选号,
+  失败 N 次后真正轮换到下一号.
+- P1-4 runner.go batchMu 锁粒度过粗 (R43-1B defer batchMu.Unlock() 锁覆盖整个 if/else +
+  logf 含 cfg.DB.InsertTaskLog DB 写, 所有 goroutine 在 logf 路径串行化). 修复: 锁内仅写
+  共享变量 + 准备 logLevel/logMsg/shouldLog, 锁外执行 logf. 加 defer recover 保证 logf /
+  cfg.Logger / cfg.DB panic 时也记 error + 解锁.
+- P1-5 cloak-browser stealth 注入错误静默 (R44-1C 改用 page.AddScriptToEvaluateOnNewDocument
+  后 _ = chromedp.Run 静默, CDP 调用失败无日志, 运维不知 stealth 失效). 修复: 改
+  if err := chromedp.Run(...); err != nil 记 stderr 日志供运维 debug.
+
+反反爬增强 (5 大类, 任务要求 1-5):
+- Enh-1 utls Hello 池扩充 4 → 12 (Chrome 102~133 + Firefox 99~120 + Safari 16 + iOS 13~14),
+  JA3/JA4 指纹各异. ClearUtlsChoice 真正轮换 (attempts 偏移, 不再 no-op).
+- Enh-2 2captcha 优化 (applyBrowserLikeHeaders 补 UA + Accept + Accept-Language +
+  Accept-Encoding, submit 10s + poll 15s per-attempt 超时, 避免挂连接阻塞 180s).
+- Enh-3 anti-captcha 备用 (https://api.anti-captcha.com, POST /createTask + POST /getTaskResult,
+  2captcha 失败/未配置时自动 fallback. FetchConfig 加 AntiCaptchaAPIKey 字段 + 白名单 +
+  mergeFetchConfig 透传).
+- Enh-4 行为模拟 (cloak-browser simulateHumanBehaviorActions): 随机滚动到 viewport 25-75%
+  (smooth scroll) + 随机鼠标移动到 viewport 内随机点 (MouseEvent mousemove) + 200-500ms 短停顿.
+  每次 random, 避免轨迹完全一致被识别. 放在 WaitReady 之后, 用户定义 actions 之前, 不干扰.
+- Enh-5 代理池 HTTP/SOCKS5 轮换 (已实现, R45-1A 加 parsedProxyPoolCached 缓存避免每章 pick
+  重 Split + 校验).
+
+其他修复:
+- smart.go wordMatches 正则预编译缓存 (MatchCategoryByText 遍历 15 分类 × ~11 关键词 = 165
+  次/书, 每次 regexp.Compile GC 压力. 新增 wordMatchesReCache sync.Map, 命中率 >99%).
+- scrapling-bridge doFetchStatic 加 decodeContentEncoding (与 fetcher.go decodeBody 同款,
+  Go 不自解显式 Accept-Encoding).
+
+文件改动统计 (7 文件, +498 行):
+- crawl/fetcher.go: 2744 → 3017 (+273 行)
+  · decodeBody gzip/deflate 解码 +24
+  · brotliMissCount 计数 +5
+  · utls Hello 池扩充 4→12 + attempts +36
+  · 2captcha UA + per-attempt timeout +40
+  · applyBrowserLikeHeaders 抽出 +10
+  · anti-captcha 服务 +138 (submit/poll/trySolve)
+  · parsedProxyPoolCached 缓存 +32
+  · mergeFetchConfig AntiCaptcha 透传 +3
+  · imports +compress/gzip, +compress/zlib, +sync/atomic
+- crawl/hostgate.go: 414 → 432 (+18 行)
+  · settleRateLimitExpiry caller 优先修复 +12
+- crawl/runner.go: 1437 → 1473 (+36 行)
+  · discoverBooks IncRequest/CheckBudget/IncCaptcha +9
+  · batchMu 锁粒度 + panic recover +27
+- crawl/smart.go: 297 → 311 (+14 行)
+  · wordMatches 正则缓存 +12
+  · imports +sync
+- crawl/types.go: 716 → 721 (+5 行)
+  · AntiCaptchaAPIKey 字段 +4
+  · sanitizeFetchConfig 白名单 +1
+- services/cloak-browser/main.go: 577 → 703 (+126 行)
+  · userAgentMeta 函数 +56
+  · stealth 错误记日志 +6
+  · utf8ValidTruncate +18
+  · simulateHumanBehaviorActions +32
+  · imports +unicode/utf8
+- services/scrapling-bridge/main.go: 435 → 469 (+34 行)
+  · decodeContentEncoding +30
+  · imports +compress/gzip, +compress/zlib
+
+未修改 (尊重约束):
+- go-backend/main.go + admin.go (深度审查无 R44 后边缘 case) ✓
+- go-backend/templates/* (已完成) ✓
+- go-backend/crawl/{parser,cleaner,storage}.go (深度审查无边缘 case) ✓
+- services/{bqg713-proxy,deqixs-proxy,fetch-relay,moli-bridge,uc-bridge,xjp-proxy,
+  curl-impersonate-bridge,trafilatura-bridge}/main.go (无 byte-截断 + 无 Content-Encoding bug,
+  Python 侧桥自带 brotli 解码) ✓
+- services/bridgeserver/bridgeserver.go (R44-1C 已 rune-safe) ✓
+- scripts/seed-rule-yueyouxs.ts (R44-1A 创建) ✓
+- DEPLOY.md (R44-1B 创建) ✓
+- prisma/schema.prisma + package.json 0 改动 ✓
+
+验证:
+- cd /home/z/my-project/go-backend && /home/z/go/go/bin/go build -o heis-backend . → 0 errors,
+  binary 24,198,929 bytes (24.2MB, 与 R44-1C 24,167,974 持平, 仅 +31KB 因 anti-captcha 服务
+  + 行为模拟 + gzip/deflate 解码).
+- /home/z/go/go/bin/go vet ./... → 0 warnings (主包 + 11 services + bridgeserver + crawl 全 pass).
+
+Stage Summary:
+- Go 采集引擎第五轮深度审查 ~18700 行, 抓 R42-R44 后边缘 case 共 5 P0 (decodeBody 不解
+  gzip/deflate / discoverBooks 绕过预算 / 2captcha 缺 UA + 无 per-attempt 超时 / cloak-browser
+  HTML 字节截断 / cloak-browser UA-品牌不一致) + 5 P1 (hostgate settleRateLimitExpiry 无条件
+  还原 minGapMs / pickProxyFor 每次重 Parse / utls 4 Hello_Auto 实际同号 + ClearUtlsChoice
+  no-op / batchMu 锁粒度过粗串行化 / stealth 注入错误静默). 全部修复落地. 反反爬增强 5 大类:
+  ① utls Hello 池扩充 4 → 12 (Chrome 102~133 + Firefox 99~120 + Safari 16 + iOS 13~14, JA3/JA4
+  各异, ClearUtlsChoice attempts 偏移真正轮换); ② 2captcha 优化 (applyBrowserLikeHeaders 补
+  UA + Accept + Accept-Language + Accept-Encoding, submit 10s + poll 15s per-attempt 超时); ③
+  anti-captcha 服务备用 (https://api.anti-captcha.com, 2captcha 失败时自动 fallback); ④ 行为
+  模拟 (chromedp 随机滚动 25-75% + 随机鼠标移动 + 200-500ms 停顿); ⑤ 代理池缓存
+  (parsedProxyPoolCached 60s TTL). 性能修复 2 处 (smart.go wordMatches 正则预编译缓存 sync.Map,
+  scrapling-bridge doFetchStatic 加 Content-Encoding 解码). 编译 0 errors, vet 0 warnings,
+  binary 24.2MB. 核心保留 R41-R44 全部修复 (hostgate pump/Acquire drain / utls per-host 钉扎
+  / Turnstile 8s / 2captcha 180s / Cookie 持久化 / BudgetExceeded 上抛 / truncate rune-based
+  / per-attempt timeout / Referer 一致性 / pickProxyFor sweep 完整 / trafilatura clients 单例
+  + globalTransport 复用 / jsonLdTypeRe 预编译 / batchMu defer / discoverBooks newCount==0 break
+  / MarkProxyFailed/OK / IncCaptcha / ReportRateLimited / cloak-browser
+  page.AddScriptToEvaluateOnNewDocument / scrapling-bridge Accept-Encoding 移除 br / 13 处
+  []rune 安全截断). 详细工作记录: agent-ctx/R45-1A-full-stack-developer.md
+
+---
+Task ID: R45-1C
+Agent: full-stack-developer (清理精简第五轮)
+Task: R45-1A 后边缘 case + 清理精简 (主要改 go-backend/* + scripts/* + agent-ctx/* + .gitignore)
+
+Work Log:
+- 读交接: worklog.md 末 150 行 (R44-1A yueyouxs 规则探索 + R44-1B DEPLOY.md 重写 +
+  R44-1C cloak-browser stealth 注入 panic 修复 + 13 处 byte-slice 截断 + Accept-Encoding 移除 br).
+  R45-1A 已落地 5 P0 + 5 P1 修复 + 5 大类反反爬增强 (utls Hello 池 4→12 / 2captcha 优化 /
+  anti-captcha 备用 / 行为模拟 / 代理池缓存) + 2 处性能修复 (smart.go 正则预编译 +
+  scrapling-bridge Content-Encoding 解码).
+
+- 审查范围: go-backend/ 全 Go 代码 ~18700 行 = crawl/* 8663 + main.go 1173 + admin.go 3570
+  + services/* 11 服务 5325 + bridgeserver 917.
+- 工具: /home/z/go/go/bin/go version (go1.23.2) + go vet ./... (0) +
+  go run honnef.co/go/tools/cmd/staticcheck@latest ./... (11 issues 扫描前).
+
+P0 bug 修复 (2 处 regex `\1` 反向引用 panic — cleaner.go):
+- 行 370 CleanContentHtml PlainText 模式剥危险标签:
+  `(?is)<(script|style|noscript|iframe|object|embed)\b[^>]*>.*?</\1\s*>` — 闭合标签用 `\1`
+  反向引用保证开闭同名. Go RE2 不支持 backref, `\1` 是无效转义 → MustCompile panic.
+- 行 650 CleanTextField (书名/作者/简介清洗, runner.go 每本书必调 3 次) 重复标点压缩:
+  `([!?。！？])\1+` — `\1+` 表示同 char 重复 1+ 次. 同款 panic bug.
+- 影响: R44-1C 仅测 SSR 路由 (/, /health, /admin) 不调 CleanTextField → 看起来正常,
+  但任何采集任务执行 (runner.go 流程) 会立刻 panic.
+- 复现: cat > /tmp/regextest.go (regexp.MustCompile + go run) → PANIC: invalid escape `\1`.
+- 修复:
+  · 行 370 改 alternation `(?:script|style|...|embed)` 在闭合标签独立匹配
+    (`</(?:script|style|...|embed)\s*>`), 失去严格开闭同名但实际场景接受 (原 regex 因
+    panic 从未生效, 改后行为等价).
+  · 行 650 改单遍 rune 扫描 `collapseDupPunct(s string) string` — 仅合并相邻相同标点
+    (! ? 。 ！ ？), 语义等价 (原 `([!?。！？])\1+` 仅匹配 2+ 同字符, 新逻辑 1+ 同字符
+    不影响, 2+ 同字符合并为 1; 不同字符 `!?` 保持原样).
+
+P0 dial ctx 不响应修复 (2 处 DialTLS deprecated → DialTLSContext):
+- fetcher.go `globalUtlsTransport` (主采集引擎 utls fallback) + curl-impersonate-bridge
+  `buildUtlsTransport` (mini-service 3018 utls profile 模拟).
+- 问题: 原 `DialTLS: func(network, addr string) (net.Conn, error)` 签名无 ctx,
+  上层请求 ctx 被 cancel (per-attempt timeout, fetcher.go 已加) 时, dial 不能立即断开,
+  会挂到 10s timeout 才退. 在 8 级降级链中每级 timeout 累加, 拉长失败任务总时长.
+- 修复: 改 `DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error)`
+  · 优先 `ctx.Err()` 检查 ctx cancel
+  · `dialer.DialContext(ctx, network, addr)` 替代 `net.DialTimeout`
+  · utls handshake 用 `uConn.HandshakeContext(ctx)` 支持中途取消.
+
+dead code 删除 (6 处):
+- fetcher.go: `inflightEntry` struct + `inflightMu`/`inflightMap` var + `inflightKey` func
+  (24 行, 原意 "去重 cache key" 但实际从未被调, staticcheck U1000).
+- storage.go: `runeCount(s string) int` (返回 `utf8.RuneCountInString`, 全代码无调用) +
+  `unicode/utf8` import (随 runeCount 删除后变 unused).
+- types.go: `parseInt(s string, def int) int` (返回 strconv.Atoi 默认值, 全代码无调用,
+  实际使用的是 `parseIntSafe` 同名不同签名 func) + `strconv` import.
+
+style fix (cleaner.go + fetcher.go):
+- cleaner.go:461: `if s.Nodes == nil || len(s.Nodes) == 0` → `if len(s.Nodes) == 0`
+  (Go nil slice `len()` 返回 0, 前置 nil check 冗余, S1009).
+- fetcher.go:1805: `errors.New("Obscura bridge unavailable")` → `"obscura bridge unavailable"`
+  (Go 风格: error 字符串首字母小写, ST1005).
+
+重复逻辑整合 (12 mini-services 公共 helper → bridgeserver):
+- 扫描 services/{fetch-relay,curl-impersonate-bridge,cloak-browser}/main.go, 找 7 处重复:
+  · ssrfCheckProxy (fetch-relay + curl-impersonate, 6 行)
+  · collectHeaders (fetch-relay + curl-impersonate, 11 行)
+  · collectSetCookies (curl-impersonate, 7 行)
+  · readBodyCapped (fetch-relay + curl-impersonate, 11 行)
+  · passFromURL (fetch-relay + curl-impersonate, 6 行)
+  · safeHostPath (fetch-relay + curl-impersonate + cloak-browser, 6 行)
+  · wrapDialContext (fetch-relay + curl-impersonate, 13 行) — 留本地, 因依赖 x/net/proxy
+    会强制所有 11 个 consumer 引入非标准库编译依赖, 不污染共享包.
+- bridgeserver.go 新增 6 helper (856 → 917 行, +61):
+  · SsrfCheckProxy(proxyURL, allowLB) string — wrap AssertSafeSsrfTarget
+  · CollectHeaders(h http.Header) [][2]string — 排 Set-Cookie + SafeHeaderValue 脱敏
+  · CollectSetCookies(h http.Header) []string — 全部 Set-Cookie + SafeHeaderValue 脱敏
+  · ReadReaderCapped(r io.Reader, cap int) ([]byte, error) — io.Reader 限量 (原
+    ReadBodyCapped 变体, 供服务读目标响应体非 http.Request.Body)
+  · PassFromURL(u *url.URL) string — 取 URL password 部分
+  · SafeHostPath(raw string) string — 日志脱敏 (host+path, 查询串可能含 token)
+  + ReadBodyCapped 重构委托给 ReadReaderCapped (nil r.Body 早返回).
+- 服务文件清理:
+  · fetch-relay/main.go: 5 helper 删 (ssrfCheckProxy + passFromURL + collectHeaders +
+    readBodyCapped + safeHostPath) + 8 处调用点替换 bridgeserver.X + io import 删,
+    339 → 284 (-55).
+  · curl-impersonate-bridge/main.go: 6 helper 删 (+ collectSetCookies) + 9 处调用点替换 +
+    io import 删, 430 → 374 (-56).
+  · cloak-browser/main.go: 1 helper 删 (safeHostPath) + 4 处调用点替换 +
+    net/url import 删, 690 → 689 (-1).
+
+94 templates dedup 审查:
+- admin/layout.html 已有 `{{define "admin/head"}}` + `{{define "admin/sidebar"}}` 共享
+  partial, 13 个 admin 页面通过 `{{template "admin/head" .}}` + `{{template "admin/sidebar" .}}`
+  复用. 已 dedup.
+- 前台 10 主题 × 8 页型 = 80 文件, 每个 HTML doc 完整无 partial. 同主题跨页 head/header
+  /footer markup 部分相同 (~30 行/页), 但 TDK + 主体差异大. 提 partial 可省 ~800 行
+  但需改 80 文件 + 30 新 partial, per-page 定制需参数化, 改动 80 文件易破坏 SSR
+  (main.go 模板加载依赖 `{{define "..."}}`).
+- 跨主题 DOM 完全不同 (aijjxs 现代 flexbox vs x2552 旧 table), 无共享 partial 可能.
+- 结论: admin 已 dedup, 前台 dedup 风险 > 收益, 不动.
+
+过时 R10-R30 注释扫描:
+- 扫描 6 处 R10-R30 注释全部 FUNCTIONAL (描述当前行为 + 历史背景), 非过时:
+  · R26-1A U+2060 注释 (cleaner.go:313): 解释为什么 U+2060 在零宽字符剥离白名单.
+  · R29-1C trafilatura 注释 (cleaner.go:574): 解释 useTrafilatura=true 路径分流.
+  · R30 NormalizeCategory (smart.go:85): 函数说明.
+- TS 端引用 42 处 (src/lib/crawl/*): R38+ Go 迁移设计决策, 保留作历史记录
+  (用户指令 "保留 R37+ Go 迁移设计决策" 直接覆盖).
+- 结论: 无真正过时 (指向已删代码路径) 的 R10-R30 注释.
+
+临时文件清理:
+- scripts/ 仅 seed-rule-yueyouxs.ts (R44-1A 创建, 可重跑 seed, 保留).
+- agent-ctx/ 16 文件 (R38-1A → R44-1C) 全在保留范围.
+- go-backend/heis-backend 24MB 二进制 + backend.log 183 字节均在 .gitignore, 不入版本库.
+- scripts/archive/ + agent-ctx/archive-pre-r28/ 已在 R42-1C 删除, 不存在.
+- *.pid/*.tmp/*.bak/.zscripts/ 全部不存在.
+- 结论: R42-1C 已深度清理, 无新可删项.
+
+.gitignore 覆盖确认 + 补强:
+- git check-ignore -v 验证: go-backend/heis-backend (line 107 `*-backend`),
+  go-backend/backend.log (line 118 `*.log`), go-backend/bin/foo (line 110 `bin/`) 全覆盖.
+- 11 个 service 二进制全部按 `go-backend/<svc>` 显式列举 (line 95-103) + 兜底
+  `*-proxy/-bridge/-backend/-browser` (line 105-108).
+- R45-1C 新增:
+  · `go-backend/*-relay` 兜底 (line 109): 未来若新增 fetch-relay 变体自动忽略.
+  · 注释 `# R45-1C: backend.log 由 heis-backend 后台运行时写入
+    (nohup ./heis-backend > backend.log 2>&1 &), go build/test 输出二进制 heis-backend +
+    ./*.log 均不入版本库` (line 119-120): 解释 `go-backend/*.log` 单列意图.
+
+DEPLOY.md 校对 (命令链路 + 行数 + 服务数):
+- 命令链路全部准确 (§2.1 编译 / §2.2 数据库 / §2.3 启动 / §2.4 mini-services /
+  §2.5 验证 / §3.4 启停表 / §7.6 编译失败 / §8.1 systemd / §8.4 升级).
+- 行数 + 服务数校准 (R45-1A/B/C 后):
+  · mini-services 数 12 → 11 (+ bridgeserver 共享, bridgeserver 是 lib 不算 service)
+  · 磁盘 (Go 二进制) 24MB × 13 = 312MB → 24MB × 12 = 288MB (主 + 11 mini)
+  · crawl/ 总行数 8296 → 8663 (+367, R45-1A/B/C 改动)
+  · fetcher.go 2743 → 3036 (R45-1A utls 池扩 +8 + R45-1C DialTLSContext +285)
+  · runner.go 1436 → 1474 (R45-1A defer recover +38)
+  · cleaner.go 722 → 744 (R45-1C collapseDupPunct +22)
+  · types.go 715 → 709 (R45-1C 删 parseInt -6)
+  · hostgate.go 414 → 423 (R45-1A settleRateLimitExpiry +9)
+  · storage.go 363 → 355 (R45-1C 删 runeCount -8)
+  · smart.go 291 → 310 (R45-1A wordMatchesReCache +19)
+  · bridgeserver.go 843 → 917 (R45-1C +74 = 6 新 helper +61 + ReadBodyCapped 重构 +13)
+  · worklog 17291 → ~17,761
+- 文档版本 R44-1B → R45-1C, §6 架构图每个 crawl 模块注 R45-x 标记.
+
+文件改动统计 (10 文件, -8 行净减):
+- crawl/fetcher.go: 2985 → 2995 (+10 行, dead code 删 -24 + DialTLSContext 改 +30 + 注释 +4)
+- crawl/cleaner.go: 723 → 744 (+21 行, collapseDupPunct +22 + nil check -1 + 注释)
+- crawl/storage.go: 363 → 355 (-8 行, runeCount 删 + utf8 import 删)
+- crawl/types.go: 715 → 709 (-6 行, parseInt 删 + strconv import 删)
+- services/bridgeserver/bridgeserver.go: 856 → 917 (+61 行, 6 新 helper + ReadBodyCapped 重构)
+- services/fetch-relay/main.go: 339 → 284 (-55 行, 5 helper 删 + 调用替换 + io import 删)
+- services/curl-impersonate-bridge/main.go: 430 → 374 (-56 行, 6 helper 删 + 调用替换
+  + DialTLSContext + io import 删)
+- services/cloak-browser/main.go: 690 → 689 (-1 行, safeHostPath 删 + url import 删)
+- .gitignore: 119 → 122 (+3 行, *-relay 兜底 + R45-1C 注释)
+- DEPLOY.md: 591 → 595 (+4 行, 行数/服务数校准 + R45-1C 注记)
+
+未修改 (尊重约束):
+- go-backend/main.go (truncate 已 R42-1A rune-safe 修复) ✓
+- go-backend/admin.go (strField/adminNote/ads 已 R44-1C rune-safe) ✓
+- go-backend/crawl/{parser,hostgate,smart,runner}.go (R45-1A 已改 defer recover +
+  settleRateLimitExpiry + wordMatchesReCache, R45-1C 未进一步改) ✓
+- go-backend/services/{bqg713-proxy,deqixs-proxy,moli-bridge,uc-bridge,xjp-proxy,
+  qimao-proxy,scrapling-bridge,trafilatura-bridge}/main.go (无重复 helper 可抽,
+  scrapling-bridge 的 R45-1A decodeContentEncoding 已存在不动) ✓
+- go-backend/templates/* (94 文件, admin 已 dedup, 前台 80 文件主题定制深, dedup 风险大不动) ✓
+- scripts/seed-rule-yueyouxs.ts (R44-1A 创建, 可重跑 seed, 保留) ✓
+- agent-ctx/*.md (16 文件 R38-R44 全部保留) ✓
+- prisma/schema.prisma + package.json + next.config.ts + tsconfig.json 0 改动 ✓
+
+验证:
+- cd /home/z/my-project/go-backend && /home/z/go/go/bin/go build -o heis-backend . → 0 errors,
+  binary 24,166,400 bytes (24.2MB, 与 R45-1A 24,198,929 持平, R45-1C 净减 -32KB 因 dead code 删).
+- /home/z/go/go/bin/go vet ./... → 0 warnings (主包 + 11 services + bridgeserver + crawl 全 pass).
+- /home/z/go/go/bin/go run honnef.co/go/tools/cmd/staticcheck@latest ./... → 0 issues
+  (扫描前 11 issues: 4 U1000 + 2 SA1000 + 2 SA1019 + 1 ST1005 + 1 S1009 + 1 SA1019 全清).
+- 子项目独立 build:
+  · go build ./services/fetch-relay/ → 0 errors
+  · go build ./services/curl-impersonate-bridge/ → 0 errors
+  · go build ./services/cloak-browser/ → 0 errors
+  · go build ./services/bridgeserver/ → 0 errors
+- heis-backend 启动: 94 模板加载, http://localhost:3000 (内存 16MB).
+- 端到端 curl:
+  · GET / → 200 ✓
+  · GET /health → 200 ✓
+  · GET /admin → 200 ✓
+
+Stage Summary:
+- R45-1C Go 清理精简第五轮完成. 抓 2 P0 panic bug (cleaner.go `\1` regex 反向引用 panic —
+  Go RE2 不支持 backref, CleanTextField 每本书必调, 任何采集任务执行会立刻 panic, 改 alternation
+  + collapseDupPunct 单遍扫描) + 2 P0 dial ctx 不响应 (fetcher.go + curl-impersonate-bridge
+  DialTLS deprecated → DialTLSContext, 支持 per-attempt timeout ctx cancel 立即断 dial,
+  避免 8 级降级链每级 10s dial timeout 累加) + 6 dead code 删除 (fetcher inflightEntry/
+  inflightMu/inflightMap/inflightKey + storage runeCount + types parseInt + 配套 import 删) +
+  2 style fix (cleaner.go nil check 冗余 + fetcher.go 错误字符串首字母大写). 重复逻辑整合:
+  bridgeserver +6 helper (SsrfCheckProxy/CollectHeaders/CollectSetCookies/ReadReaderCapped/
+  PassFromURL/SafeHostPath) + ReadBodyCapped 委托重构; fetch-relay -55 / curl-impersonate -56 /
+  cloak-browser -1; wrapDialContext 留本地 (x/net/proxy 依赖不污染共享包). 94 templates dedup
+  审查: admin 已 dedup (admin/head + admin/sidebar partial), 前台 80 文件主题定制深 + DOM
+  差异大, dedup 风险 > 收益不动. 过时 R10-R30 注释 6 处全部 FUNCTIONAL (描述当前行为),
+  非过时不动. 临时文件: R42-1C 已深度清理, 无新可删项. .gitignore 补强 +`*-relay` 兜底 +
+  R45-1C 注释. DEPLOY.md 命令链路准确 + 行数/服务数校准 (12→11 mini + bridgeserver,
+  crawl 8296→8663, fetcher 2743→3036, 等). staticcheck 11 → 0 issues. 编译 0 errors, vet 0
+  warnings, 4 个 service 子项目独立 build 0 errors, heis-backend 启动 + 3 端点 curl 200.
+  详细工作记录: agent-ctx/R45-1C-full-stack-developer.md

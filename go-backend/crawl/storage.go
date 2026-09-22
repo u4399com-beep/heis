@@ -23,7 +23,6 @@ import (
         "strings"
         "sync"
         "time"
-        "unicode/utf8"
 )
 
 var (
@@ -353,11 +352,4 @@ func (w *downloadTxtWriter) Abort(ctx context.Context) error {
                 // ignore 已关闭
         }
         return os.Remove(w.filePath)
-}
-
-// ---------- 工具 ----------
-
-// runeCount — 按码点计数 (UTF-8 安全).
-func runeCount(s string) int {
-        return utf8.RuneCountInString(s)
 }
