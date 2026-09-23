@@ -15,6 +15,7 @@ import (
         "regexp"
         "runtime"
         "strconv"
+        "time"
         "strings"
         "unicode/utf8"
 
@@ -567,7 +568,7 @@ func bookDetailHandler(w http.ResponseWriter, r *http.Request) {
         writeJSON(w, map[string]interface{}{"ok": true, "data": map[string]interface{}{
                 "id": bid.String, "name": name.String, "author": author.String, "intro": intro.String, "cover": "/" + cover.String,
                 "status": status.String, "wordCount": wordCount, "latestChapter": latestChapter.String,
-                "category": category.String, "categoryId": categoryId.String, "updatedAt": updatedAt.String,
+                "category": category.String, "categoryId": categoryId.String, "updatedAt": formatUpdatedAt(updatedAt.String),
         }})
 }
 
@@ -663,7 +664,7 @@ func getBooks(limit int) ([]map[string]interface{}, error) {
                         "id": id.String, "name": name.String, "author": author.String,
                         "intro": truncate(intro.String, 120), "cover": "/" + cover.String,
                         "status": status.String, "wordCount": wordCount, "latestChapter": latestChapter.String,
-                        "category": category.String, "categoryId": categoryId.String, "updatedAt": updatedAt,
+                        "category": category.String, "categoryId": categoryId.String, "updatedAt": formatUpdatedAt(updatedAt),
                 })
         }
         return books, nil
@@ -761,6 +762,26 @@ func writeJSON(w http.ResponseWriter, v interface{}) {
 // truncate 按字节截断到 n, 但回退到最后一个完整 UTF-8 rune 边界 (防中文等
 // 多字节字符被切半造成乱码 / 无效 UTF-8 输出 / 模板渲染 U+FFFD).
 // R42-1A: 之前直接 s[:n] 在 3-byte 中文处会切出孤立 continuation byte.
+// R52: updatedAt 格式化 — SQLite 可能存 Unix 时间戳(秒或毫秒), 转成 2006-01-02 15:04
+func formatUpdatedAt(s string) string {
+        if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+                // 毫秒 (> 1e12) → 除以 1000 转秒
+                if i > 1000000000000 {
+                        i = i / 1000
+                }
+                return time.Unix(i, 0).Format("2006-01-02 15:04")
+        }
+        // 尝试 ISO 字符串
+        if t, err := time.Parse("2006-01-02T15:04:05", s); err == nil {
+                return t.Format("2006-01-02 15:04")
+        }
+        // 尝试 SQLite TEXT 格式 "2006-01-02 15:04:05"
+        if t, err := time.Parse("2006-01-02 15:04:05", s); err == nil {
+                return t.Format("2006-01-02 15:04")
+        }
+        return s
+}
+
 func truncate(s string, n int) string {
         if n <= 0 {
                 return ""
@@ -896,7 +917,7 @@ func bookRowFromScan(id, name, author, intro, cover, status, latestChapter, cate
                 "id": id.String, "name": name.String, "author": author.String,
                 "intro": truncate(intro.String, 120), "cover": "/" + cover.String,
                 "status": status.String, "wordCount": wordCount, "latestChapter": latestChapter.String,
-                "category": category.String, "categoryId": categoryId.String, "updatedAt": updatedAt,
+                "category": category.String, "categoryId": categoryId.String, "updatedAt": formatUpdatedAt(updatedAt),
         }
 }
 
@@ -915,7 +936,7 @@ func getBookViewData(id string) (map[string]interface{}, []map[string]interface{
                 "intro": intro.String, "cover": "/" + cover.String, "status": status.String,
                 "wordCount": wordCount, "latestChapter": latestChapter.String,
                 "category": category.String, "categoryId": categoryId.String,
-                "keywords": keywords.String, "updatedAt": updatedAt.String,
+                "keywords": keywords.String, "updatedAt": formatUpdatedAt(updatedAt.String),
         }
 
         // 2. 完整章节列表 (按 idx asc, 取前 200 防止超大书)
