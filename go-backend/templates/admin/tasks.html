@@ -75,10 +75,14 @@
               {{else if eq .status "paused"}}
                 <button class="btn btn-sm btn-primary" onclick="controlTask('{{.id}}','start')">恢复</button>
                 <button class="btn btn-sm btn-err" onclick="controlTask('{{.id}}','stop')">停止</button>
+                <button class="btn btn-sm" onclick="deleteTask('{{.id}}','{{.name}}')" title="删除任务">🗑</button>
               {{else}}
                 <button class="btn btn-sm btn-primary" onclick="controlTask('{{.id}}','start')">启动</button>
+                <button class="btn btn-sm" onclick="openDetailModal('{{.id}}')">详情</button>
+                <button class="btn btn-sm btn-err" onclick="deleteTask('{{.id}}','{{.name}}')">删除</button>
               {{end}}
-              <button class="btn btn-sm" onclick="openDetailModal('{{.id}}')">详情</button>
+              {{if eq .status "running"}}<button class="btn btn-sm" onclick="openDetailModal('{{.id}}')">详情</button>{{end}}
+              {{if eq .status "paused"}}<button class="btn btn-sm" onclick="openDetailModal('{{.id}}')">详情</button>{{end}}
             </td>
           </tr>
         {{else}}
@@ -243,6 +247,15 @@ function controlTask(id,action){
     if(j&&j.ok){showToast('操作成功: '+action,true);setTimeout(function(){location.reload();},800);}
     else{showToast('操作失败: '+(j&&j.error||'未知错误'),false);}
   }).catch(function(e){showToast('请求失败: '+e.message,false);});
+}
+// R55-1A: 删除任务 (DELETE /api/admin/tasks/:id). 运行中任务必须先停止.
+function deleteTask(id,name){
+  if(!confirm('删除任务「'+name+'」? \n将删除任务行 + 关联日志, 不可恢复'))return;
+  fetch('/api/admin/tasks/'+encodeURIComponent(id),{method:'DELETE'})
+    .then(function(r){return r.json();}).then(function(j){
+      if(j&&j.ok){showToast('已删除',true);setTimeout(function(){location.reload();},800);}
+      else{showToast('失败: '+(j&&j.error||''),false);}
+    }).catch(function(e){showToast('请求失败: '+e.message,false);});
 }
 function submitCreate(){
   var form=document.getElementById('createForm');

@@ -210,6 +210,16 @@ func main() {
                         }
                         return fmt.Sprintf("%v", s)
                 },
+                // R55-1A: row → JSON-in-HTML-attribute (data-site='{{toJSON .}}').
+                //   返回 template.HTMLAttr 让 html/template 不再二次转义 (& < > 已被 json.Marshal
+                //   转为 \u00xx 安全序列), 单引号属性包住 JSON 双引号串即可.
+                "toJSON": func(v interface{}) template.HTMLAttr {
+                        b, err := json.Marshal(v)
+                        if err != nil {
+                                return template.HTMLAttr("{}")
+                        }
+                        return template.HTMLAttr(b)
+                },
         })
         // 收集所有 template 文件 (templates/*.html + templates/*/*.html)
         tmplFiles := []string{}
@@ -336,10 +346,11 @@ func main() {
         // R39-1C: 采集后台 API (与 src/app/api/admin/* 同口径, 调 crawl 包)
         http.HandleFunc("/api/admin/health", adminHealthHandler)
         http.HandleFunc("/api/admin/tasks", adminTasksHandler)
-        http.HandleFunc("/api/admin/tasks/", adminTaskSubHandler) // /:id/control + /:id/snapshot
+        http.HandleFunc("/api/admin/tasks/", adminTaskSubHandler) // /:id/control + /:id/snapshot + DELETE /:id (R55-1A)
         http.HandleFunc("/api/admin/rules", adminRulesHandler)
-        http.HandleFunc("/api/admin/rules/", adminRuleByIDHandler) // /:id
-        http.HandleFunc("/api/admin/books", adminBooksAPIHandler)
+        http.HandleFunc("/api/admin/rules/", adminRuleByIDHandler) // /:id (GET/PUT/DELETE - R55-1A)
+        http.HandleFunc("/api/admin/books", adminBooksAPIHandler)  // GET list + POST create (R55-1A)
+        http.HandleFunc("/api/admin/books/", adminBookByIDHandler) // /:id (PUT/DELETE - R55-1A)
 
         // R40-1B: admin 后台扩展 API (categories/links/themes/downloads/settings/feedback/backup/seo-audit)
         http.HandleFunc("/api/admin/categories", adminCategoriesHandler)
@@ -348,12 +359,16 @@ func main() {
         http.HandleFunc("/api/admin/links/", adminLinkByIDHandler) // /:id (PUT/DELETE) — path 风格, 兼容 body.id
         http.HandleFunc("/api/admin/themes", adminThemesHandler)
         http.HandleFunc("/api/admin/downloads", adminDownloadsHandler)
-        http.HandleFunc("/api/admin/downloads/", adminDownloadFileHandler) // /:id/file (GET TXT 下载)
+        http.HandleFunc("/api/admin/downloads/", adminDownloadsSubHandler) // /:id/file GET + DELETE /:id (R55-1A 重构: 原 adminDownloadFileHandler)
         http.HandleFunc("/api/admin/settings", adminSettingsHandler)
+        http.HandleFunc("/api/admin/settings/", adminSettingsDeleteHandler) // DELETE /:key (R55-1A)
         http.HandleFunc("/api/admin/feedback", adminFeedbackHandler)
         http.HandleFunc("/api/admin/feedback/", adminFeedbackByIDHandler) // /:id (GET/PATCH/DELETE)
         http.HandleFunc("/api/admin/backup", adminBackupHandler)           // GET 导出 JSON
-        http.HandleFunc("/api/admin/backup/", adminBackupSubHandler)      // /restore + /vacuum
+        http.HandleFunc("/api/admin/backup/", adminBackupSubHandler)      // /restore + /vacuum + /clear (R55-1A)
+        // R55-1A: 站点 CRUD API (GET list / POST create / PUT-DELETE /:id)
+        http.HandleFunc("/api/admin/sites", adminSitesHandler)
+        http.HandleFunc("/api/admin/sites/", adminSiteByIDHandler)
         http.HandleFunc("/api/admin/seo-audit", adminSeoAuditHandler)
 
         // R39-1C: 采集后台页面 (Go templates SSR, 深色主题)

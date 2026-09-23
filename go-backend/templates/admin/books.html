@@ -10,6 +10,7 @@
   <div class="topbar">
     <h1>{{.Title}}</h1>
     <div class="actions">
+      <button class="btn btn-primary" onclick="openCreateModal()">+ 新建书籍</button>
       <a href="/api/admin/books" class="btn" target="_blank">API</a>
     </div>
   </div>
@@ -51,7 +52,7 @@
         </thead>
         <tbody>
         {{range .Books}}
-          <tr>
+          <tr data-book='{{toJSON .}}'>
             <td>
               <a href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a>
               <div style="color:var(--dim);font-size:11px;">{{.id}}</div>
@@ -63,10 +64,14 @@
             <td>{{.chapterCount}}</td>
             <td><span class="pill pill-{{if eq .storageMode "txt"}}unknown{{else}}ok{{end}}">{{.storageMode}}</span></td>
             <td><small style="color:var(--dim);">{{fmtDate .updatedAt}}</small></td>
-            <td><a class="btn btn-sm" href="/?view=book&id={{.id}}" target="_blank">查看</a></td>
+            <td style="white-space:nowrap;">
+              <a class="btn btn-sm" href="/?view=book&id={{.id}}" target="_blank">查看</a>
+              <button class="btn btn-sm btn-primary" onclick="editBookFromRow(this)">编辑</button>
+              <button class="btn btn-sm btn-err" onclick='deleteBook("{{.id}}","{{.name}}")'>删除</button>
+            </td>
           </tr>
         {{else}}
-          <tr><td colspan="9" class="empty-state"><span class="ic">📚</span>暂无书籍</td></tr>
+          <tr><td colspan="9" class="empty-state"><span class="ic">📚</span>暂无书籍,点击右上角新建</td></tr>
         {{end}}
         </tbody>
       </table>
@@ -83,6 +88,135 @@
   </div>
 </main>
 </div>
+
+<!-- 新建/编辑书籍 Modal (R55-1A) -->
+<div class="modal-backdrop" id="editModal">
+  <div class="modal" style="max-width:760px;">
+    <div class="modal-head"><h2 id="editTitle">新建书籍</h2><button class="btn btn-sm" onclick="closeModal('editModal')">✕</button></div>
+    <form id="editForm" class="modal-body" onsubmit="return false;">
+      <input type="hidden" name="id" value="">
+      <div class="form-grid">
+        <div class="field full">
+          <label>书名 *</label>
+          <input type="text" name="name" maxlength="200" required placeholder="如: 斗破苍穹">
+        </div>
+        <div class="field">
+          <label>作者 (留空默认"佚名")</label>
+          <input type="text" name="author" maxlength="100" placeholder="如: 天蚕土豆">
+        </div>
+        <div class="field">
+          <label>分类</label>
+          <select name="categoryId">
+            <option value="">— 未分类 —</option>
+            {{range .Categories}}
+            <option value="{{.id}}">{{.name}}</option>
+            {{end}}
+          </select>
+        </div>
+        <div class="field">
+          <label>状态</label>
+          <select name="status">
+            <option value="unknown">未知</option>
+            <option value="ongoing">连载中</option>
+            <option value="completed">已完结</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>封面 URL 或 /covers/ 路径</label>
+          <input type="text" name="cover" maxlength="2000" placeholder="https://... 或 /covers/xxx.webp">
+        </div>
+        <div class="field full">
+          <label>简介 (intro, 2000 字以内)</label>
+          <textarea name="intro" maxlength="2000" placeholder="一句话简介"></textarea>
+        </div>
+        <div class="field full">
+          <label>关键词 (keywords, 逗号分隔)</label>
+          <input type="text" name="keywords" maxlength="500" placeholder="玄幻,奇幻,修真">
+        </div>
+        <div class="field full">
+          <label>源 URL (sourceUrl, 仅 http/https)</label>
+          <input type="text" name="sourceUrl" maxlength="2000" placeholder="https://source.com/book/123">
+        </div>
+      </div>
+    </form>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeModal('editModal')">取消</button>
+      <button class="btn btn-primary" onclick="submitEdit()">保存</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+function editBookFromRow(btn){
+  var row=btn.closest('tr');
+  var raw=row.getAttribute('data-book');
+  var s;
+  try{s=JSON.parse(raw);}catch(e){showToast('行数据解析失败',false);return;}
+  document.getElementById('editTitle').textContent='编辑书籍 — '+(s.name||'');
+  var f=document.getElementById('editForm');
+  f.id.value=s.id||'';
+  f.name.value=s.name||'';
+  f.author.value=s.author||'';
+  f.categoryId.value=s.categoryId||'';
+  f.status.value=s.status||'unknown';
+  f.cover.value=s.cover||'';
+  f.intro.value=s.intro||'';
+  f.keywords.value=s.keywords||'';
+  f.sourceUrl.value=s.sourceUrl||'';
+  document.getElementById('editModal').classList.add('open');
+}
+function openCreateModal(){
+  document.getElementById('editTitle').textContent='新建书籍';
+  var f=document.getElementById('editForm');
+  f.id.value='';
+  f.name.value='';
+  f.author.value='';
+  f.categoryId.value='';
+  f.status.value='unknown';
+  f.cover.value='';
+  f.intro.value='';
+  f.keywords.value='';
+  f.sourceUrl.value='';
+  document.getElementById('editModal').classList.add('open');
+}
+function closeModal(id){document.getElementById(id).classList.remove('open');}
+function showToast(msg,ok){
+  var t=document.getElementById('toast');t.textContent=msg;t.className='toast '+(ok?'ok':'err');
+  setTimeout(function(){t.classList.add('show');},10);setTimeout(function(){t.classList.remove('show');},2500);
+}
+function submitEdit(){
+  var f=document.getElementById('editForm');
+  var body={
+    name:f.name.value.trim(),
+    author:f.author.value.trim(),
+    categoryId:f.categoryId.value,
+    status:f.status.value,
+    cover:f.cover.value.trim(),
+    intro:f.intro.value.trim(),
+    keywords:f.keywords.value.trim(),
+    sourceUrl:f.sourceUrl.value.trim()
+  };
+  if(!body.name){showToast('书名必填',false);return;}
+  var id=f.id.value;
+  var url='/api/admin/books';var method='POST';
+  if(id){url='/api/admin/books/'+encodeURIComponent(id);method='PUT';}
+  fetch(url,{method:method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(function(r){return r.json();}).then(function(j){
+      if(j&&j.ok){showToast(id?'已更新':'已创建',true);closeModal('editModal');setTimeout(function(){location.reload();},800);}
+      else{showToast('失败: '+(j&&j.error||''),false);}
+    }).catch(function(e){showToast('请求失败: '+e.message,false);});
+}
+function deleteBook(id,name){
+  if(!confirm('删除书籍「'+name+'」? \n将级联删除所有章节 + 标签 + 下载任务, 不可恢复!'))return;
+  fetch('/api/admin/books/'+encodeURIComponent(id),{method:'DELETE'})
+    .then(function(r){return r.json();}).then(function(j){
+      if(j&&j.ok){showToast('已删除',true);setTimeout(function(){location.reload();},800);}
+      else{showToast('失败: '+(j&&j.error||''),false);}
+    }).catch(function(e){showToast('请求失败: '+e.message,false);});
+}
+</script>
 </body>
 </html>
 {{end}}

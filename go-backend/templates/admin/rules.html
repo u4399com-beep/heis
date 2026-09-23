@@ -42,12 +42,14 @@
             <td>{{.taskCount}}</td>
             <td><small style="color:var(--dim);">{{fmtDate .updatedAt}}</small></td>
             <td>
-              <button class="btn btn-sm" onclick='viewConfig("{{.id}}","{{.name}}")'>查看配置</button>
+              <button class="btn btn-sm" onclick='viewConfig("{{.id}}","{{.name}}")'>查看</button>
+              <button class="btn btn-sm btn-primary" onclick='editRule("{{.id}}","{{.name}}","{{.description}}")'>编辑</button>
               {{if .enabled}}
               <button class="btn btn-sm btn-warn" onclick='toggleRule("{{.id}}",false)'>禁用</button>
               {{else}}
               <button class="btn btn-sm btn-primary" onclick='toggleRule("{{.id}}",true)'>启用</button>
               {{end}}
+              <button class="btn btn-sm btn-err" onclick='deleteRule("{{.id}}","{{.name}}")'>删除</button>
             </td>
           </tr>
         {{else}}
@@ -95,12 +97,48 @@
   </div>
 </div>
 
-<!-- 规则配置 Modal -->
+<!-- 规则配置 Modal (只读) -->
 <div class="modal-backdrop" id="configModal">
   <div class="modal">
     <div class="modal-head"><h2 id="configTitle">规则配置</h2><button class="btn btn-sm" onclick="closeModal('configModal')">✕</button></div>
     <div class="modal-body"><pre id="configBody" style="background:#0a0f1a;border:1px solid var(--border);padding:12px;border-radius:8px;font-size:12px;overflow:auto;max-height:60vh;color:var(--text);"></pre></div>
     <div class="modal-foot"><button class="btn" onclick="closeModal('configModal')">关闭</button></div>
+  </div>
+</div>
+
+<!-- 编辑规则 Modal (R55-1A: 全字段编辑) -->
+<div class="modal-backdrop" id="editModal">
+  <div class="modal">
+    <div class="modal-head"><h2 id="editTitle">编辑规则</h2><button class="btn btn-sm" onclick="closeModal('editModal')">✕</button></div>
+    <form id="editForm" class="modal-body">
+      <input type="hidden" name="id" value="">
+      <div class="form-grid">
+        <div class="field full">
+          <label>规则名称 *</label>
+          <input type="text" name="name" maxlength="100" required>
+        </div>
+        <div class="field full">
+          <label>描述</label>
+          <input type="text" name="description" maxlength="500">
+        </div>
+        <div class="field">
+          <label>启用</label>
+          <select name="enabled">
+            <option value="true">启用</option>
+            <option value="false">禁用</option>
+          </select>
+        </div>
+        <div class="field full">
+          <label>规则配置 (JSON)</label>
+          <textarea name="config" style="min-height:240px;">{}</textarea>
+          <div class="hint">完整配置参考 RuleConfig: list/book/toc/content 四段 + fetch 反反爬 + clean 清洗</div>
+        </div>
+      </div>
+    </form>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeModal('editModal')">取消</button>
+      <button class="btn btn-primary" onclick="submitRuleEdit()">保存</button>
+    </div>
   </div>
 </div>
 
@@ -120,6 +158,59 @@ function viewConfig(id,name){
     if(!j||!j.ok){document.getElementById('configBody').textContent='加载失败: '+(j&&j.error||'');return;}
     document.getElementById('configBody').textContent=JSON.stringify(j.data,null,2);
   }).catch(function(e){document.getElementById('configBody').textContent='错误: '+e.message;});
+}
+// R55-1A: 编辑规则 — 加载现有 config 填入表单, 保存时 PUT 全字段.
+function editRule(id,name,description){
+  document.getElementById('editTitle').textContent='编辑规则 — '+name;
+  var f=document.getElementById('editForm');
+  f.id.value=id;
+  f.name.value=name;
+  f.description.value=description||'';
+  // 先填默认空 config, 异步拉取后替换
+  f.config.value='{}';
+  f.enabled.value='true';
+  fetch('/api/admin/rules/'+encodeURIComponent(id)).then(function(r){return r.json();}).then(function(j){
+    if(!j||!j.ok){showToast('加载失败: '+(j&&j.error||''),false);return;}
+    var d=j.data||{};
+    f.name.value=d.name||name;
+    f.description.value=d.description||'';
+    f.enabled.value=d.enabled?'true':'false';
+    // config 可能是 object 或 string, 统一 pretty-print
+    var cfg=d.config;
+    if(typeof cfg==='object'){f.config.value=JSON.stringify(cfg,null,2);}
+    else{f.config.value=cfg||'{}';}
+  }).catch(function(e){showToast('请求失败: '+e.message,false);});
+  document.getElementById('editModal').classList.add('open');
+}
+function submitRuleEdit(){
+  var f=document.getElementById('editForm');
+  var id=f.id.value;
+  if(!id){showToast('缺少 id',false);return;}
+  var raw=f.config.value||'{}';
+  var cfg;
+  try{cfg=JSON.parse(raw);}catch(e){cfg=raw;}
+  var body={
+    name:f.name.value.trim(),
+    description:f.description.value.trim(),
+    enabled:f.enabled.value==='true',
+    config:cfg
+  };
+  if(!body.name){showToast('规则名必填',false);return;}
+  fetch('/api/admin/rules/'+encodeURIComponent(id),{
+    method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)
+  }).then(function(r){return r.json();}).then(function(j){
+    if(j&&j.ok){showToast('已保存',true);closeModal('editModal');setTimeout(function(){location.reload();},800);}
+    else{showToast('失败: '+(j&&j.error||''),false);}
+  }).catch(function(e){showToast('请求失败: '+e.message,false);});
+}
+// R55-1A: 删除规则 — 被任务引用时拒绝.
+function deleteRule(id,name){
+  if(!confirm('删除规则「'+name+'」? \n若该规则被任务引用, 后端将拒绝删除'))return;
+  fetch('/api/admin/rules/'+encodeURIComponent(id),{method:'DELETE'})
+    .then(function(r){return r.json();}).then(function(j){
+      if(j&&j.ok){showToast('已删除',true);setTimeout(function(){location.reload();},800);}
+      else{showToast('失败: '+(j&&j.error||''),false);}
+    }).catch(function(e){showToast('请求失败: '+e.message,false);});
 }
 function toggleRule(id,enabled){
   fetch('/api/admin/rules/'+encodeURIComponent(id),{

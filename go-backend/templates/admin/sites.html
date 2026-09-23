@@ -10,7 +10,8 @@
   <div class="topbar">
     <h1>{{.Title}}</h1>
     <div class="actions">
-      <a href="/api/public/sites" class="btn" target="_blank">API</a>
+      <button class="btn btn-primary" onclick="openCreateModal()">+ 新建站点</button>
+      <a href="/api/admin/sites" class="btn" target="_blank">API</a>
     </div>
   </div>
   <div class="page">
@@ -26,13 +27,15 @@
             <th>主题</th>
             <th>状态</th>
             <th>默认</th>
+            <th>链轮</th>
             <th>偏移</th>
+            <th>TDK</th>
             <th>操作</th>
           </tr>
         </thead>
         <tbody>
         {{range .Sites}}
-          <tr>
+          <tr data-site='{{toJSON .}}'>
             <td>
               {{.name}}
               <div style="color:var(--dim);font-size:11px;">{{.id}}</div>
@@ -41,14 +44,25 @@
             <td>{{.themeId}}</td>
             <td>{{if .status}}<span class="pill pill-ok">在线</span>{{else}}<span class="pill pill-off">下线</span>{{end}}</td>
             <td>{{if .isDefault}}<span class="pill pill-ok">默认</span>{{else}}-{{end}}</td>
+            <td>{{if .inLinkWheel}}<span class="pill pill-ok">参与</span>{{else}}<span class="pill pill-off">禁</span>{{end}}</td>
             <td>{{.offset}}</td>
-            <td>
+            <td style="font-size:11px;color:var(--dim);">
+              {{if .title}}T{{else}}-{{end}}{{if .description}}/D{{else}}/-{{end}}{{if .keywords}}/K{{else}}/-{{end}}
+              {{if .icbm}} · GEO{{end}}
+            </td>
+            <td style="white-space:nowrap;">
               <a class="btn btn-sm" href="https://{{.domain}}" target="_blank">访问</a>
               <a class="btn btn-sm" href="/?site={{.id}}" target="_blank">前台</a>
+              <button class="btn btn-sm btn-primary" onclick='editSiteFromRow(this)'>编辑</button>
+              {{if .isDefault}}
+              <button class="btn btn-sm" disabled title="默认站点不可删除">删除</button>
+              {{else}}
+              <button class="btn btn-sm btn-err" onclick='deleteSite("{{.id}}","{{.name}}")'>删除</button>
+              {{end}}
             </td>
           </tr>
         {{else}}
-          <tr><td colspan="7" class="empty-state"><span class="ic">🌐</span>暂无站点,请通过 Prisma Studio 或 SQL 直接添加 Site</td></tr>
+          <tr><td colspan="9" class="empty-state"><span class="ic">🌐</span>暂无站点,点击右上角新建</td></tr>
         {{end}}
         </tbody>
       </table>
@@ -56,6 +70,165 @@
   </div>
 </main>
 </div>
+
+<!-- 新建/编辑站点 Modal -->
+<div class="modal-backdrop" id="editModal">
+  <div class="modal" style="max-width:760px;">
+    <div class="modal-head"><h2 id="editTitle">新建站点</h2><button class="btn btn-sm" onclick="closeModal('editModal')">✕</button></div>
+    <form id="editForm" class="modal-body" onsubmit="return false;">
+      <input type="hidden" name="id" value="">
+      <div class="form-grid">
+        <div class="field">
+          <label>站点名 *</label>
+          <input type="text" name="name" maxlength="100" required placeholder="如: 玄幻小说网">
+        </div>
+        <div class="field">
+          <label>域名 *</label>
+          <input type="text" name="domain" maxlength="200" required placeholder="www.example.com (不含 http)">
+        </div>
+        <div class="field">
+          <label>主题 ID *</label>
+          <select name="themeId" required>
+            {{range .Themes}}
+            <option value="{{.id}}">{{.name}} ({{.id}})</option>
+            {{end}}
+          </select>
+        </div>
+        <div class="field">
+          <label>站点标题 (title, 建议 5-30 字)</label>
+          <input type="text" name="title" maxlength="200" placeholder="如: 玄幻小说 - 免费在线阅读">
+        </div>
+        <div class="field full">
+          <label>站点描述 (description, 建议 20-200 字)</label>
+          <textarea name="description" maxlength="500" placeholder="一句话站点简介, 出现在搜索结果"></textarea>
+        </div>
+        <div class="field full">
+          <label>关键词 (keywords, 逗号分隔 3-10 个核心词)</label>
+          <input type="text" name="keywords" maxlength="500" placeholder="玄幻小说,免费阅读,在线阅读">
+        </div>
+        <div class="field">
+          <label>ICBM 坐标 (lat,lng)</label>
+          <input type="text" name="icbm" maxlength="100" placeholder="35.86166,104.195397">
+        </div>
+        <div class="field">
+          <label>geoRegion (ISO 国家码)</label>
+          <input type="text" name="geoRegion" maxlength="20" placeholder="CN">
+        </div>
+        <div class="field">
+          <label>geoPlacename (地区名)</label>
+          <input type="text" name="geoPlacename" maxlength="100" placeholder="中国">
+        </div>
+        <div class="field">
+          <label>书籍偏移 (offset, 0-100万, 站群差异化)</label>
+          <input type="number" name="offset" value="0" min="0" max="1000000">
+        </div>
+        <div class="field">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" name="status" checked style="width:16px;height:16px;">在线 (status)</label>
+        </div>
+        <div class="field">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" name="inLinkWheel" checked style="width:16px;height:16px;">参与链轮 (inLinkWheel)</label>
+        </div>
+        <div class="field">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" name="isDefault" style="width:16px;height:16px;">设为默认站点</label>
+        </div>
+      </div>
+    </form>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeModal('editModal')">取消</button>
+      <button class="btn btn-primary" onclick="submitEdit()">保存</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// editSiteFromRow — 从 tr[data-site] 读取 JSON 后填表 (R55-1A).
+//   行数据通过 data-site 属性承载 JSON, 避免在 onclick 内联大对象字面量.
+function editSiteFromRow(btn){
+  var row=btn.closest('tr');
+  var raw=row.getAttribute('data-site');
+  var s;
+  try{s=JSON.parse(raw);}catch(e){showToast('行数据解析失败',false);return;}
+  document.getElementById('editTitle').textContent='编辑站点 — '+(s.name||'');
+  var f=document.getElementById('editForm');
+  f.id.value=s.id||'';
+  f.name.value=s.name||'';
+  f.domain.value=s.domain||'';
+  f.themeId.value=s.themeId||'aurora';
+  f.title.value=s.title||'';
+  f.description.value=s.description||'';
+  f.keywords.value=s.keywords||'';
+  f.icbm.value=s.icbm||'';
+  f.geoRegion.value=s.geoRegion||'';
+  f.geoPlacename.value=s.geoPlacename||'';
+  f.offset.value=s.offset||0;
+  f.status.checked=s.status!==false;
+  f.inLinkWheel.checked=s.inLinkWheel!==false;
+  f.isDefault.checked=s.isDefault===true;
+  document.getElementById('editModal').classList.add('open');
+}
+function openCreateModal(){
+  document.getElementById('editTitle').textContent='新建站点';
+  var f=document.getElementById('editForm');
+  f.id.value='';
+  f.name.value='';
+  f.domain.value='';
+  f.themeId.value='aurora';
+  f.title.value='';
+  f.description.value='';
+  f.keywords.value='';
+  f.icbm.value='';
+  f.geoRegion.value='CN';
+  f.geoPlacename.value='中国';
+  f.offset.value=0;
+  f.status.checked=true;
+  f.inLinkWheel.checked=true;
+  f.isDefault.checked=false;
+  document.getElementById('editModal').classList.add('open');
+}
+function closeModal(id){document.getElementById(id).classList.remove('open');}
+function showToast(msg,ok){
+  var t=document.getElementById('toast');t.textContent=msg;t.className='toast '+(ok?'ok':'err');
+  setTimeout(function(){t.classList.add('show');},10);setTimeout(function(){t.classList.remove('show');},2500);
+}
+function submitEdit(){
+  var f=document.getElementById('editForm');
+  var body={
+    name:f.name.value.trim(),
+    domain:f.domain.value.trim(),
+    themeId:f.themeId.value,
+    title:f.title.value.trim(),
+    description:f.description.value.trim(),
+    keywords:f.keywords.value.trim(),
+    icbm:f.icbm.value.trim(),
+    geoRegion:f.geoRegion.value.trim(),
+    geoPlacename:f.geoPlacename.value.trim(),
+    offset:parseInt(f.offset.value,10)||0,
+    status:f.status.checked,
+    inLinkWheel:f.inLinkWheel.checked,
+    isDefault:f.isDefault.checked
+  };
+  if(!body.name){showToast('站点名必填',false);return;}
+  if(!body.domain){showToast('域名必填',false);return;}
+  var id=f.id.value;
+  var url='/api/admin/sites';var method='POST';
+  if(id){url='/api/admin/sites/'+encodeURIComponent(id);method='PUT';}
+  fetch(url,{method:method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(function(r){return r.json();}).then(function(j){
+      if(j&&j.ok){showToast(id?'已更新':'已创建',true);closeModal('editModal');setTimeout(function(){location.reload();},800);}
+      else{showToast('失败: '+(j&&j.error||''),false);}
+    }).catch(function(e){showToast('请求失败: '+e.message,false);});
+}
+function deleteSite(id,name){
+  if(!confirm('删除站点「'+name+'」? 此操作不可恢复'))return;
+  fetch('/api/admin/sites/'+encodeURIComponent(id),{method:'DELETE'})
+    .then(function(r){return r.json();}).then(function(j){
+      if(j&&j.ok){showToast('已删除',true);setTimeout(function(){location.reload();},800);}
+      else{showToast('失败: '+(j&&j.error||''),false);}
+    }).catch(function(e){showToast('请求失败: '+e.message,false);});
+}
+</script>
 </body>
 </html>
 {{end}}

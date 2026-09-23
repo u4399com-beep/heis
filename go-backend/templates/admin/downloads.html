@@ -52,6 +52,7 @@
               <a class="btn btn-sm btn-primary" href="/api/admin/downloads/{{.id}}/file" target="_blank">下载</a>
               {{end}}
               <a class="btn btn-sm" href="/?view=book&id={{.bookId}}" target="_blank">查看书籍</a>
+              <button class="btn btn-sm btn-err" onclick='deleteDownload("{{.id}}","{{.bookName}}")'>删除</button>
             </td>
           </tr>
         {{else}}
@@ -130,6 +131,15 @@ function submitCreate(){
     .then(function(r){return r.json();}).then(function(j){
       if(j&&j.ok){showToast('下载任务已创建, 生成中',true);closeModal('createModal');setTimeout(function(){location.reload();},1200);}
       else{showToast('创建失败: '+(j&&j.error||''),false);}
+    }).catch(function(e){showToast('请求失败: '+e.message,false);});
+}
+// R55-1A: 删除下载任务 (DELETE /api/admin/downloads/:id) — 含内存缓存清理.
+function deleteDownload(id,bookName){
+  if(!confirm('删除下载任务「'+bookName+'」? 已生成的 TXT 文件将一并清除'))return;
+  fetch('/api/admin/downloads/'+encodeURIComponent(id),{method:'DELETE'})
+    .then(function(r){return r.json();}).then(function(j){
+      if(j&&j.ok){showToast('已删除',true);setTimeout(function(){location.reload();},800);}
+      else{showToast('失败: '+(j&&j.error||''),false);}
     }).catch(function(e){showToast('请求失败: '+e.message,false);});
 }
 </script>

@@ -107,8 +107,14 @@ func (a *adminDB) UpsertBook(b crawl.Book) (crawl.Book, error) {
         }
         // 新建
         b.ID = generateID()
+        // R55-1B 修复 BUG-5 (P0): 原 INSERT VALUES 子句多 1 个 `?` 占位符 (11 个 `?`
+        //   + 'db' + 2 个 datetime 字面量 = 14 values vs 13 cols → SQLite 报 "14
+        //   values for 13 columns", 自 R39-1C 起新建书路径始终失败, 仅有 UPDATE 路径
+        //   工作 → 新书入不了 DB. args = 10 (id/name/author/intro/cover/status/
+        //   wordCount/latestChapter/categoryId/sourceUrl), VALUES 应有 10 个 `?` +
+        //   'db' + 2 个 datetime = 13 values for 13 cols.
         _, err := a.db.Exec(
-                `INSERT INTO Book (id,name,author,intro,cover,status,wordCount,latestChapter,categoryId,sourceUrl,storageMode,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,'db',datetime('now'),datetime('now'))`,
+                `INSERT INTO Book (id,name,author,intro,cover,status,wordCount,latestChapter,categoryId,sourceUrl,storageMode,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,'db',datetime('now'),datetime('now'))`,
                 b.ID, b.Name, b.Author, b.Intro, b.Cover, b.Status, b.WordCount, b.LatestChapter,
                 nullIfEmpty(b.CategoryID), b.SourceURL,
         )
@@ -353,10 +359,11 @@ func likeSafe(s string) string {
 
 // ---------- 采集 API handlers ----------
 
-// adminTaskSubHandler — 分发 /api/admin/tasks/{id}/control 与 /api/admin/tasks/{id}/snapshot.
+// adminTaskSubHandler — 分发 /api/admin/tasks/{id}/control 与 /api/admin/tasks/{id}/snapshot
 //
 //      path 结尾为 /control → adminTaskControlHandler
 //      path 结尾为 /snapshot → adminTaskSnapshotHandler
+//      path 为 {id} 且 method=DELETE → adminTaskDeleteHandler (R55-1A 新增: 删除任务)
 //      否则返回 404.
 func adminTaskSubHandler(w http.ResponseWriter, r *http.Request) {
         path := strings.TrimPrefix(r.URL.Path, "/api/admin/tasks/")
@@ -369,7 +376,45 @@ func adminTaskSubHandler(w http.ResponseWriter, r *http.Request) {
                 adminTaskSnapshotHandler(w, r)
                 return
         }
+        // R55-1A: {id} (无后缀) + DELETE → 删除任务 (停止 runtime + 删 Task 行 + TaskLog 行)
+        if r.Method == http.MethodDelete && path != "" && !strings.Contains(path, "/") {
+                adminTaskDeleteHandler(w, r, path)
+                return
+        }
         writeJSONErr(w, "not found", 404)
+}
+
+// adminTaskDeleteHandler — DELETE /api/admin/tasks/:id 删除任务 (先停 runtime 再删 Task + TaskLog).
+//
+//   R55-1A: 全页面编辑功能补全. 原后台仅能 start/pause/stop, 无法删除已废弃任务.
+//   删除前先 stop runtime (如果在跑), 再删 Task 行 + 关联 TaskLog 行 (级联清理).
+//   禁止删除运行中任务 (必须先 stop).
+func adminTaskDeleteHandler(w http.ResponseWriter, r *http.Request, taskID string) {
+        // 查任务状态
+        var status string
+        err := db.QueryRow(`SELECT status FROM Task WHERE id=?`, taskID).Scan(&status)
+        if err != nil {
+                writeJSONErr(w, "任务不存在", 404)
+                return
+        }
+        // 运行中需先 stop (避免 goroutine 残留)
+        if status == "running" {
+                writeJSONErr(w, "任务运行中, 请先停止再删除", 400)
+                return
+        }
+        // 尝试 stop runtime (幂等, 不在跑也无害)
+        tr := crawl.GetTaskRunner()
+        if rt := tr.GetRuntime(taskID); rt != nil {
+                rt.MarkStopped()
+        }
+        // 删 TaskLog + Task (TaskLog 无外键约束, 手动清)
+        _, _ = db.Exec(`DELETE FROM TaskLog WHERE taskId=?`, taskID)
+        _, err = db.Exec(`DELETE FROM Task WHERE id=?`, taskID)
+        if err != nil {
+                writeJSONErr(w, "删除失败: "+err.Error(), 500)
+                return
+        }
+        writeJSONOK(w, map[string]interface{}{"id": taskID, "deleted": true})
 }
 
 // adminHealthHandler — /api/admin/health 健康检查.
@@ -1009,13 +1054,41 @@ func adminRuleByIDHandler(w http.ResponseWriter, r *http.Request) {
                 }
                 writeJSONOK(w, map[string]interface{}{"id": ruleID, "updated": true})
 
+        case http.MethodDelete:
+                // R55-1A: 删除规则. 禁止删除被任务引用的规则 (避免悬空外键).
+                var taskCount int
+                _ = db.QueryRow(`SELECT COUNT(*) FROM Task WHERE ruleId=?`, ruleID).Scan(&taskCount)
+                if taskCount > 0 {
+                        writeJSONErr(w, fmt.Sprintf("该规则被 %d 个任务引用, 请先删除/迁移相关任务", taskCount), 400)
+                        return
+                }
+                _, err := db.Exec(`DELETE FROM Rule WHERE id=?`, ruleID)
+                if err != nil {
+                        writeJSONErr(w, "删除失败: "+err.Error(), 500)
+                        return
+                }
+                writeJSONOK(w, map[string]interface{}{"id": ruleID, "deleted": true})
+
         default:
                 writeJSONErr(w, "method not allowed", 405)
         }
 }
 
-// adminBooksAPIHandler — GET /api/admin/books 列书籍 (带 q/categoryId/status 过滤 + 分页).
+// adminBooksAPIHandler — GET /api/admin/books 列书籍 (带 q/categoryId/status 过滤 + 分页)
+// R55-1A: 新增 POST 手动建书 (与 PUT /api/admin/books/:id 配合, 后台可手动维护书籍元数据).
 func adminBooksAPIHandler(w http.ResponseWriter, r *http.Request) {
+        switch r.Method {
+        case http.MethodGet:
+                adminBooksList(w, r)
+        case http.MethodPost:
+                adminBooksCreate(w, r)
+        default:
+                writeJSONErr(w, "method not allowed", 405)
+        }
+}
+
+// adminBooksList — 原 adminBooksAPIHandler 的 GET 逻辑 (q/categoryId/status 过滤 + 分页 + JOIN 分类).
+func adminBooksList(w http.ResponseWriter, r *http.Request) {
         q := likeSafe(r.URL.Query().Get("q"))
         categoryID := strings.TrimSpace(r.URL.Query().Get("categoryId"))
         status := strings.TrimSpace(r.URL.Query().Get("status"))
@@ -1090,6 +1163,231 @@ func adminBooksAPIHandler(w http.ResponseWriter, r *http.Request) {
         writeJSONOK(w, map[string]interface{}{
                 "total": total, "page": page, "size": size, "books": books,
         })
+}
+
+// adminBooksCreate — POST /api/admin/books 手动建书 (R55-1A: 后台全页面编辑功能补全).
+//
+//   原后台 books 仅能看不能改, 全靠采集. 现支持手动录入书籍元数据:
+//   - name (必填 1-200), author (默认佚名), intro (2000 字), cover (URL 或 /covers/ 相对路径),
+//     status (unknown|ongoing|completed), categoryId (校验存在), sourceUrl, keywords.
+//   - storageMode 固定 'db' (手动建书无源文件); wordCount 默认 0 (后续章节自动累计).
+//   - 章节后续可单独 PUT/DELETE 添加.
+func adminBooksCreate(w http.ResponseWriter, r *http.Request) {
+        body := readJSONBody(r)
+        name := strField(body, "name", 200)
+        if name == "" {
+                writeJSONErr(w, "书名必填(1~200字)", 400)
+                return
+        }
+        author := strField(body, "author", 100)
+        if author == "" {
+                author = "佚名"
+        }
+        intro := strField(body, "intro", 2000)
+        cover := strField(body, "cover", 2000)
+        // cover 仅接受 http(s) 或 /covers/ 路径 (与 normalizeLinkLogo 同口径, 防 file:// 等协议注入)
+        if cover != "" && !strings.HasPrefix(cover, "http://") && !strings.HasPrefix(cover, "https://") && !strings.HasPrefix(cover, "/covers/") && !strings.HasPrefix(cover, "/") {
+                writeJSONErr(w, "封面地址非法(仅支持 http(s) 或 / 开头站内路径)", 400)
+                return
+        }
+        status := strField(body, "status", 20)
+        switch status {
+        case "", "unknown":
+                status = "unknown"
+        case "ongoing", "completed":
+                // ok
+        default:
+                writeJSONErr(w, "status 必须是 unknown/ongoing/completed 之一", 400)
+                return
+        }
+        categoryID := strings.TrimSpace(strField(body, "categoryId", 64))
+        if categoryID != "" {
+                var exist string
+                _ = db.QueryRow(`SELECT id FROM Category WHERE id=?`, categoryID).Scan(&exist)
+                if exist == "" {
+                        writeJSONErr(w, "categoryId 不存在", 400)
+                        return
+                }
+        }
+        sourceURL := strField(body, "sourceUrl", 2000)
+        if sourceURL != "" && httpURL(sourceURL) == "" {
+                writeJSONErr(w, "sourceUrl 必须是 http/https URL", 400)
+                return
+        }
+        keywords := strField(body, "keywords", 500)
+        bookID := generateID()
+        catArg := nullIfEmpty(categoryID)
+        // R55-1B 修复 BUG-6 (P0): 原 INSERT VALUES 子句多 1 个 `?` 占位符 (10 个 `?`
+        //   + 7 个字面量 ('' / 0 / NULL / 'db' / NULL + 2 个 datetime) = 17 values vs
+        //   16 cols → SQLite 报 "17 values for 16 columns", R55-1A 起 adminBooksCreate
+        //   全部 POST 失败. args = 9 (id/name/author/categoryId/intro/cover/status/
+        //   keywords/sourceUrl), VALUES 应有 9 个 `?` + '' + 0 + ? + NULL + 'db' +
+        //   NULL + 2 datetime = 16 values for 16 cols (其中 sourceUrl 单独 `?` 是第 10
+        //   个 args — 但 args 列里 sourceURL 是第 9 个, 与 SQL 第 10 个 ? 对应; 原
+        //   SQL 第 9 个 ? 实际指向 latestChapter 列应为字面量 '').修复: 删去多出
+        //   的第 9 个 ? (latestChapter 列改用 '' 字面量).
+        _, err := db.Exec(
+                `INSERT INTO Book (id,name,author,categoryId,intro,cover,status,keywords,latestChapter,wordCount,sourceUrl,sourceRuleId,storageMode,collectedAt,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,?,'',0,?,NULL,'db',NULL,datetime('now'),datetime('now'))`,
+                bookID, name, author, catArg, intro, cover, status, keywords, sourceURL,
+        )
+        if err != nil {
+                writeJSONErr(w, "创建失败: "+err.Error(), 500)
+                return
+        }
+        writeJSONOK(w, map[string]interface{}{
+                "id": bookID, "name": name, "author": author,
+                "categoryId": categoryID, "status": status,
+                "intro": truncate(intro, 200), "cover": cover,
+                "keywords": keywords, "sourceUrl": sourceURL,
+                "storageMode": "db", "wordCount": 0, "chapterCount": 0,
+        })
+}
+
+// adminBookByIDHandler — PUT/DELETE /api/admin/books/:id (R55-1A 新增).
+//
+//   PUT    /api/admin/books/:id  → 按字段增量更新 (name/author/intro/cover/status/categoryId/keywords/sourceUrl)
+//   DELETE /api/admin/books/:id  → 删除书籍 + 关联章节 + BookTag + DownloadJob (级联清理)
+func adminBookByIDHandler(w http.ResponseWriter, r *http.Request) {
+        parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/admin/books/"), "/")
+        if len(parts) < 1 || parts[0] == "" {
+                writeJSONErr(w, "缺少书籍 id", 400)
+                return
+        }
+        bookID := parts[0]
+        switch r.Method {
+        case http.MethodPut:
+                body := readJSONBody(r)
+                var exist string
+                _ = db.QueryRow(`SELECT id FROM Book WHERE id=?`, bookID).Scan(&exist)
+                if exist == "" {
+                        writeJSONErr(w, "书籍不存在", 404)
+                        return
+                }
+                sets := []string{}
+                args := []interface{}{}
+                if v, ok := body["name"]; ok && v != nil {
+                        s := strField(body, "name", 200)
+                        if s == "" {
+                                writeJSONErr(w, "书名不能为空", 400)
+                                return
+                        }
+                        sets = append(sets, "name=?")
+                        args = append(args, s)
+                }
+                if v, ok := body["author"]; ok && v != nil {
+                        sets = append(sets, "author=?")
+                        args = append(args, strField(body, "author", 100))
+                }
+                if v, ok := body["intro"]; ok && v != nil {
+                        sets = append(sets, "intro=?")
+                        args = append(args, strField(body, "intro", 2000))
+                }
+                if v, ok := body["cover"]; ok && v != nil {
+                        cover := strField(body, "cover", 2000)
+                        if cover != "" && !strings.HasPrefix(cover, "http://") && !strings.HasPrefix(cover, "https://") && !strings.HasPrefix(cover, "/covers/") && !strings.HasPrefix(cover, "/") {
+                                writeJSONErr(w, "封面地址非法(仅支持 http(s) 或 / 开头站内路径)", 400)
+                                return
+                        }
+                        sets = append(sets, "cover=?")
+                        args = append(args, cover)
+                }
+                if v, ok := body["status"]; ok && v != nil {
+                        s := strField(body, "status", 20)
+                        switch s {
+                        case "unknown", "ongoing", "completed":
+                        default:
+                                writeJSONErr(w, "status 必须是 unknown/ongoing/completed 之一", 400)
+                                return
+                        }
+                        sets = append(sets, "status=?")
+                        args = append(args, s)
+                }
+                if v, ok := body["categoryId"]; ok {
+                        var catID string
+                        if v != nil {
+                                catID = strings.TrimSpace(strField(body, "categoryId", 64))
+                        }
+                        if catID != "" {
+                                var existCat string
+                                _ = db.QueryRow(`SELECT id FROM Category WHERE id=?`, catID).Scan(&existCat)
+                                if existCat == "" {
+                                        writeJSONErr(w, "categoryId 不存在", 400)
+                                        return
+                                }
+                        }
+                        sets = append(sets, "categoryId=?")
+                        args = append(args, nullIfEmpty(catID))
+                }
+                if v, ok := body["keywords"]; ok && v != nil {
+                        sets = append(sets, "keywords=?")
+                        args = append(args, strField(body, "keywords", 500))
+                }
+                if v, ok := body["sourceUrl"]; ok && v != nil {
+                        su := strField(body, "sourceUrl", 2000)
+                        if su != "" && httpURL(su) == "" {
+                                writeJSONErr(w, "sourceUrl 必须是 http/https URL", 400)
+                                return
+                        }
+                        sets = append(sets, "sourceUrl=?")
+                        args = append(args, su)
+                }
+                if len(sets) == 0 {
+                        writeJSONErr(w, "无可更新字段", 400)
+                        return
+                }
+                sets = append(sets, "updatedAt=datetime('now')")
+                args = append(args, bookID)
+                _, err := db.Exec(`UPDATE Book SET `+strings.Join(sets, ",")+` WHERE id=?`, args...)
+                if err != nil {
+                        writeJSONErr(w, "更新失败: "+err.Error(), 500)
+                        return
+                }
+                writeJSONOK(w, map[string]interface{}{"id": bookID, "updated": true})
+        case http.MethodDelete:
+                var exist string
+                _ = db.QueryRow(`SELECT id FROM Book WHERE id=?`, bookID).Scan(&exist)
+                if exist == "" {
+                        writeJSONErr(w, "书籍不存在", 404)
+                        return
+                }
+                // R55-1B 修复 BUG-1 (P1): 原实现先 DELETE DownloadJob 行, 再循环查
+                //   DownloadJob.bookId 做内存缓存清理 — 但行已被删, Scan 返 ErrNoRows,
+                //   jbookID 恒空, 比对失败 → 内存缓存泄漏 (downloadFiles 残留已删 DownloadJob
+                //   的内容缓存, 永不释放). 修复: 在 DELETE 前先收集要清的 jobID 集, 用集
+                //   做内存清理, 顺序 = 先 SELECT jobID → 清内存 → DELETE DB 行.
+                jobIDsToClean := []string{}
+                jrows, _ := db.Query(`SELECT id FROM DownloadJob WHERE bookId=?`, bookID)
+                for jrows != nil && jrows.Next() {
+                        var jid string
+                        _ = jrows.Scan(&jid)
+                        if jid != "" {
+                                jobIDsToClean = append(jobIDsToClean, jid)
+                        }
+                }
+                if jrows != nil {
+                        jrows.Close()
+                }
+                // 先清扫内存下载缓存 (用预收集的 jobID 集, 不再依赖 DB 行存在)
+                if len(jobIDsToClean) > 0 {
+                        downloadFilesMu.Lock()
+                        for _, jid := range jobIDsToClean {
+                                delete(downloadFiles, jid)
+                        }
+                        downloadFilesMu.Unlock()
+                }
+                // 级联清理: Chapter + BookTag + DownloadJob (无外键约束, 手动清)
+                _, _ = db.Exec(`DELETE FROM Chapter WHERE bookId=?`, bookID)
+                _, _ = db.Exec(`DELETE FROM BookTag WHERE bookId=?`, bookID)
+                _, _ = db.Exec(`DELETE FROM DownloadJob WHERE bookId=?`, bookID)
+                _, err := db.Exec(`DELETE FROM Book WHERE id=?`, bookID)
+                if err != nil {
+                        writeJSONErr(w, "删除失败: "+err.Error(), 500)
+                        return
+                }
+                writeJSONOK(w, map[string]interface{}{"id": bookID, "deleted": true})
+        default:
+                writeJSONErr(w, "method not allowed", 405)
+        }
 }
 
 // toIntDefault — 字符串数字转 int, 失败给默认值.
@@ -1440,7 +1738,7 @@ func fillBooksPageData(data map[string]interface{}, r *http.Request) {
         queryArgs := append(args, size, offset)
         rows, err := db.Query(
                 `SELECT b.id,b.name,b.author,b.intro,b.cover,b.status,b.wordCount,b.latestChapter,
-                        COALESCE(c.name,'未分类'),b.categoryId,b.sourceUrl,b.storageMode,
+                        COALESCE(c.name,'未分类'),b.categoryId,b.sourceUrl,b.storageMode,b.keywords,
                         (SELECT COUNT(*) FROM Chapter ch WHERE ch.bookId=b.id) AS chapterCount,
                         b.updatedAt
                    FROM Book b LEFT JOIN Category c ON b.categoryId=c.id
@@ -1452,11 +1750,11 @@ func fillBooksPageData(data map[string]interface{}, r *http.Request) {
         if err == nil {
                 defer rows.Close()
                 for rows.Next() {
-                        var id, name, author, intro, cover, status, latestChapter, category, catID, sourceURL, storageMode, updatedAt string
+                        var id, name, author, intro, cover, status, latestChapter, category, catID, sourceURL, storageMode, keywords, updatedAt string
                         var wordCount int64
                         var chapterCount int
                         _ = rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter,
-                                &category, &catID, &sourceURL, &storageMode, &chapterCount, &updatedAt)
+                                &category, &catID, &sourceURL, &storageMode, &keywords, &chapterCount, &updatedAt)
                         books = append(books, map[string]interface{}{
                                 "id":            id,
                                 "name":          name,
@@ -1468,6 +1766,8 @@ func fillBooksPageData(data map[string]interface{}, r *http.Request) {
                                 "category":      category,
                                 "categoryId":    catID,
                                 "storageMode":   storageMode,
+                                "keywords":      keywords,
+                                "sourceUrl":     sourceURL,
                                 "chapterCount":  chapterCount,
                                 "updatedAt":     updatedAt,
                         })
@@ -1519,9 +1819,13 @@ func fillRulesPageData(data map[string]interface{}) {
 }
 
 // fillSitesPageData — 装配站点页数据.
+//
+//   R55-1A: SELECT 扩展含 icbm/geoRegion/geoPlacename/inLinkWheel, 供 edit 表单回填.
+//   附带 Themes 列表 (来自 adminThemes 静态注册表), 供 site edit modal 下拉主题选择.
 func fillSitesPageData(data map[string]interface{}) {
         rows, err := db.Query(
-                `SELECT id,name,domain,themeId,isDefault,title,description,keywords,offset,status
+                `SELECT id,name,domain,themeId,isDefault,title,description,keywords,
+                        COALESCE(icbm,''),COALESCE(geoRegion,''),COALESCE(geoPlacename,''),offset,status,inLinkWheel
                    FROM Site ORDER BY isDefault DESC, name ASC LIMIT 200`)
         sites := []map[string]interface{}{}
         total := 0
@@ -1529,19 +1833,26 @@ func fillSitesPageData(data map[string]interface{}) {
         if err == nil {
                 defer rows.Close()
                 for rows.Next() {
-                        var id, name, domain, themeID, title, desc, kw string
-                        var isDefault, status bool
+                        var id, name, domain, themeID, title, desc, kw, icbm, geoR, geoP string
+                        var isDefault, status, inLinkWheel bool
                         var offset int
-                        _ = rows.Scan(&id, &name, &domain, &themeID, &isDefault, &title, &desc, &kw, &offset, &status)
+                        _ = rows.Scan(&id, &name, &domain, &themeID, &isDefault, &title, &desc, &kw,
+                                &icbm, &geoR, &geoP, &offset, &status, &inLinkWheel)
                         sites = append(sites, map[string]interface{}{
-                                "id":         id,
-                                "name":       name,
-                                "domain":     domain,
-                                "themeId":    themeID,
-                                "isDefault":  isDefault,
-                                "title":      title,
-                                "status":     status,
-                                "offset":     offset,
+                                "id":           id,
+                                "name":         name,
+                                "domain":       domain,
+                                "themeId":      themeID,
+                                "isDefault":    isDefault,
+                                "title":        title,
+                                "description":  desc,
+                                "keywords":     kw,
+                                "icbm":         icbm,
+                                "geoRegion":    geoR,
+                                "geoPlacename": geoP,
+                                "status":       status,
+                                "offset":       offset,
+                                "inLinkWheel":  inLinkWheel,
                         })
                         total++
                         if isDefault {
@@ -1552,6 +1863,14 @@ func fillSitesPageData(data map[string]interface{}) {
         data["Sites"] = sites
         data["Total"] = total
         data["DefaultSiteName"] = defaultName
+        // R55-1A: 主题下拉列表 (供 site edit modal)
+        themeList := []map[string]interface{}{}
+        for _, t := range adminThemes {
+                themeList = append(themeList, map[string]interface{}{
+                        "id": t.ID, "name": t.Name,
+                })
+        }
+        data["Themes"] = themeList
 }
 
 // ---------- 辅助: 状态/模式 中文标签 ----------
@@ -2288,47 +2607,6 @@ func adminDownloadsCreate(w http.ResponseWriter, r *http.Request) {
         })
 }
 
-// adminDownloadFileHandler — GET /api/admin/downloads/:id/file 返回 TXT 文件下载.
-func adminDownloadFileHandler(w http.ResponseWriter, r *http.Request) {
-        if r.Method != http.MethodGet {
-                writeJSONErr(w, "method not allowed", 405)
-                return
-        }
-        parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/admin/downloads/"), "/")
-        if len(parts) < 2 || parts[1] != "file" {
-                writeJSONErr(w, "路径格式错误", 404)
-                return
-        }
-        jobID := parts[0]
-        var status, bookName string
-        err := db.QueryRow(`SELECT d.status, COALESCE(b.name,'book') FROM DownloadJob d LEFT JOIN Book b ON d.bookId=b.id WHERE d.id=?`, jobID).Scan(&status, &bookName)
-        if err != nil {
-                writeJSONErr(w, "任务不存在", 404)
-                return
-        }
-        if status != "done" {
-                writeJSONErr(w, "任务尚未完成", 400)
-                return
-        }
-        downloadFilesMu.Lock()
-        entry, ok := downloadFiles[jobID]
-        // R41-1B: TTL 过期校验
-        if ok && time.Since(entry.createdAt) > downloadFilesTTLSeconds*time.Second {
-                delete(downloadFiles, jobID)
-                ok = false
-        }
-        downloadFilesMu.Unlock()
-        if !ok {
-                writeJSONErr(w, "文件已过期, 请重新生成", 410)
-                return
-        }
-        txt := entry.content
-        w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-        w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.txt"`, url.QueryEscape(bookName)))
-        w.Header().Set("Content-Length", strconv.Itoa(len(txt)))
-        w.Write([]byte(txt))
-}
-
 // ---------- 系统设置 API ----------
 
 var settingKeyRE = regexp.MustCompile(`^[A-Za-z0-9_.\-]{1,64}$`)
@@ -2965,6 +3243,8 @@ func adminBackupSubHandler(w http.ResponseWriter, r *http.Request) {
                 adminBackupRestoreHandler(w, r)
         case path == "vacuum":
                 adminBackupVacuumHandler(w, r)
+        case path == "clear": // R55-1A: 清空采集产物 (危险操作)
+                adminBackupClearHandler(w, r)
         default:
                 writeJSONErr(w, "not found", 404)
         }
@@ -3424,6 +3704,478 @@ func sortAuditReports(reports []map[string]interface{}) {
         })
 }
 
+// ---------- 站点管理 API (R55-1A 新增) ----------
+
+// adminSitesHandler — GET 列站点 / POST 新建站点.
+//   GET  /api/admin/sites         → 列站点 (含 isDefault + status + themeId)
+//   POST /api/admin/sites         → 新建站点 (name/domain/themeId/...)
+func adminSitesHandler(w http.ResponseWriter, r *http.Request) {
+        switch r.Method {
+        case http.MethodGet:
+                adminSitesList(w, r)
+        case http.MethodPost:
+                adminSitesCreate(w, r)
+        default:
+                writeJSONErr(w, "method not allowed", 405)
+        }
+}
+
+// adminSiteByIDHandler — PUT/DELETE /api/admin/sites/:id (R55-1A 新增).
+//
+//   PUT    /api/admin/sites/:id  → 按字段增量更新 (name/domain/themeId/title/description/keywords/icbm/geoRegion/geoPlacename/offset/status/inLinkWheel/isDefault)
+//   DELETE /api/admin/sites/:id  → 删除站点 (禁止删除 isDefault 站点)
+func adminSiteByIDHandler(w http.ResponseWriter, r *http.Request) {
+        parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/admin/sites/"), "/")
+        if len(parts) < 1 || parts[0] == "" {
+                writeJSONErr(w, "缺少站点 id", 400)
+                return
+        }
+        id := parts[0]
+        switch r.Method {
+        case http.MethodPut:
+                body := readJSONBody(r)
+                var exist string
+                _ = db.QueryRow(`SELECT id FROM Site WHERE id=?`, id).Scan(&exist)
+                if exist == "" {
+                        writeJSONErr(w, "站点不存在", 404)
+                        return
+                }
+                sets := []string{}
+                args := []interface{}{}
+                if v, ok := body["name"]; ok && v != nil {
+                        s := strField(body, "name", 100)
+                        if s == "" {
+                                writeJSONErr(w, "站点名不能为空", 400)
+                                return
+                        }
+                        sets = append(sets, "name=?")
+                        args = append(args, s)
+                }
+                if v, ok := body["domain"]; ok && v != nil {
+                        d := strings.ToLower(strings.TrimSpace(strField(body, "domain", 200)))
+                        if d == "" {
+                                writeJSONErr(w, "domain 不能为空", 400)
+                                return
+                        }
+                        // 校验唯一 (排除自身)
+                        var otherID string
+                        _ = db.QueryRow(`SELECT id FROM Site WHERE domain=? AND id!=?`, d, id).Scan(&otherID)
+                        if otherID != "" {
+                                writeJSONErr(w, "domain 已被其他站点使用", 400)
+                                return
+                        }
+                        sets = append(sets, "domain=?")
+                        args = append(args, d)
+                }
+                if v, ok := body["themeId"]; ok && v != nil {
+                        t := strField(body, "themeId", 64)
+                        // 校验主题在已注册表 (adminThemes) 中
+                        if t != "" {
+                                valid := false
+                                for _, th := range adminThemes {
+                                        if th.ID == t {
+                                                valid = true
+                                                break
+                                        }
+                                }
+                                if !valid {
+                                        writeJSONErr(w, "themeId 不在已注册主题列表", 400)
+                                        return
+                                }
+                        }
+                        sets = append(sets, "themeId=?")
+                        args = append(args, t)
+                }
+                if v, ok := body["title"]; ok && v != nil {
+                        sets = append(sets, "title=?")
+                        args = append(args, strField(body, "title", 200))
+                }
+                if v, ok := body["description"]; ok && v != nil {
+                        sets = append(sets, "description=?")
+                        args = append(args, strField(body, "description", 500))
+                }
+                if v, ok := body["keywords"]; ok && v != nil {
+                        sets = append(sets, "keywords=?")
+                        args = append(args, strField(body, "keywords", 500))
+                }
+                if v, ok := body["icbm"]; ok && v != nil {
+                        icbm := strField(body, "icbm", 100)
+                        if icbm != "" && !validIcbm(icbm) {
+                                writeJSONErr(w, "icbm 格式非法 (期望 lat,lng)", 400)
+                                return
+                        }
+                        sets = append(sets, "icbm=?")
+                        args = append(args, icbm)
+                }
+                if v, ok := body["geoRegion"]; ok && v != nil {
+                        sets = append(sets, "geoRegion=?")
+                        args = append(args, strField(body, "geoRegion", 20))
+                }
+                if v, ok := body["geoPlacename"]; ok && v != nil {
+                        sets = append(sets, "geoPlacename=?")
+                        args = append(args, strField(body, "geoPlacename", 100))
+                }
+                if v, ok := body["offset"]; ok && v != nil {
+                        sets = append(sets, "offset=?")
+                        args = append(args, clampIntAdm(intField(body, "offset", 0, 0, 1000000), 0, 1000000))
+                }
+                if v, ok := body["status"]; ok && v != nil {
+                        sets = append(sets, "status=?")
+                        args = append(args, boolField(body, "status", true))
+                }
+                if v, ok := body["inLinkWheel"]; ok && v != nil {
+                        sets = append(sets, "inLinkWheel=?")
+                        args = append(args, boolField(body, "inLinkWheel", true))
+                }
+                if v, ok := body["isDefault"]; ok && v != nil {
+                        // 设为默认: 先清掉其他站点 isDefault, 再设自身
+                        if boolField(body, "isDefault", false) {
+                                _, _ = db.Exec(`UPDATE Site SET isDefault=0`)
+                        }
+                        sets = append(sets, "isDefault=?")
+                        args = append(args, boolField(body, "isDefault", false))
+                }
+                if len(sets) == 0 {
+                        writeJSONErr(w, "无可更新字段", 400)
+                        return
+                }
+                sets = append(sets, "updatedAt=datetime('now')")
+                args = append(args, id)
+                _, err := db.Exec(`UPDATE Site SET `+strings.Join(sets, ",")+` WHERE id=?`, args...)
+                if err != nil {
+                        writeJSONErr(w, "更新失败: "+err.Error(), 500)
+                        return
+                }
+                writeJSONOK(w, map[string]interface{}{"id": id, "updated": true})
+        case http.MethodDelete:
+                var exist, isDefault string
+                _ = db.QueryRow(`SELECT id, CASE WHEN isDefault THEN '1' ELSE '0' END FROM Site WHERE id=?`, id).Scan(&exist, &isDefault)
+                if exist == "" {
+                        writeJSONErr(w, "站点不存在", 404)
+                        return
+                }
+                if isDefault == "1" {
+                        writeJSONErr(w, "禁止删除默认站点, 请先转移默认到其他站点", 400)
+                        return
+                }
+                _, err := db.Exec(`DELETE FROM Site WHERE id=?`, id)
+                if err != nil {
+                        writeJSONErr(w, "删除失败: "+err.Error(), 500)
+                        return
+                }
+                writeJSONOK(w, map[string]interface{}{"id": id, "deleted": true})
+        default:
+                writeJSONErr(w, "method not allowed", 405)
+        }
+}
+
+// adminSitesList — GET /api/admin/sites 列站点 (含 isDefault/themeId/offset/status 等, 与 backup 同字段集).
+func adminSitesList(w http.ResponseWriter, r *http.Request) {
+        rows, err := db.Query(`SELECT id,name,domain,themeId,isDefault,title,description,keywords,icbm,geoRegion,geoPlacename,offset,status,inLinkWheel,createdAt,updatedAt FROM Site ORDER BY isDefault DESC, name ASC LIMIT 500`)
+        if err != nil {
+                writeJSONErr(w, "查询失败: "+err.Error(), 500)
+                return
+        }
+        defer rows.Close()
+        out := []map[string]interface{}{}
+        for rows.Next() {
+                var id, name, domain, themeID, title, desc, kw, icbm, geoR, geoP, createdAt, updatedAt string
+                var offset int
+                var isDefault, status, inLinkWheel bool
+                _ = rows.Scan(&id, &name, &domain, &themeID, &isDefault, &title, &desc, &kw, &icbm, &geoR, &geoP, &offset, &status, &inLinkWheel, &createdAt, &updatedAt)
+                out = append(out, map[string]interface{}{
+                        "id": id, "name": name, "domain": domain, "themeId": themeID,
+                        "isDefault": isDefault, "title": title, "description": desc, "keywords": kw,
+                        "icbm": icbm, "geoRegion": geoR, "geoPlacename": geoP, "offset": offset,
+                        "status": status, "inLinkWheel": inLinkWheel,
+                        "createdAt": createdAt, "updatedAt": updatedAt,
+                })
+        }
+        writeJSONOK(w, out)
+}
+
+// adminSitesCreate — POST /api/admin/sites 新建站点 (R55-1A: 后台全页面编辑功能补全).
+//
+//   入参: name (必填 1-100) / domain (必填唯一) / themeId (校验在 adminThemes 内) /
+//         title/description/keywords/icbm/geoRegion/geoPlacename/offset/status/inLinkWheel/isDefault
+//   isDefault=true 时先清掉其他站点 isDefault 再插入.
+func adminSitesCreate(w http.ResponseWriter, r *http.Request) {
+        body := readJSONBody(r)
+        name := strField(body, "name", 100)
+        if name == "" {
+                writeJSONErr(w, "站点名必填(1~100字)", 400)
+                return
+        }
+        domain := strings.ToLower(strings.TrimSpace(strField(body, "domain", 200)))
+        if domain == "" {
+                writeJSONErr(w, "domain 必填", 400)
+                return
+        }
+        var existDomain string
+        _ = db.QueryRow(`SELECT id FROM Site WHERE domain=?`, domain).Scan(&existDomain)
+        if existDomain != "" {
+                writeJSONErr(w, "domain 已存在", 400)
+                return
+        }
+        themeID := strField(body, "themeId", 64)
+        if themeID == "" {
+                // R55-1B 修复 BUG-3 (P2): 原默认 "aurora" 不在 adminThemes 列表 (实际主题
+                //   ID 形如 "clone-shipsay"), 用户不传 themeId 时校验失败返 400. 改用
+                //   "clone-shipsay" (homeHandler 默认主题 + 兜底模板路径).
+                themeID = "clone-shipsay"
+        }
+        valid := false
+        for _, th := range adminThemes {
+                if th.ID == themeID {
+                        valid = true
+                        break
+                }
+        }
+        if !valid {
+                writeJSONErr(w, "themeId 不在已注册主题列表", 400)
+                return
+        }
+        title := strField(body, "title", 200)
+        desc := strField(body, "description", 500)
+        kw := strField(body, "keywords", 500)
+        icbm := strField(body, "icbm", 100)
+        if icbm == "" {
+                icbm = "35.86166,104.195397"
+        }
+        if !validIcbm(icbm) {
+                writeJSONErr(w, "icbm 格式非法 (期望 lat,lng)", 400)
+                return
+        }
+        geoR := strField(body, "geoRegion", 20)
+        if geoR == "" {
+                geoR = "CN"
+        }
+        geoP := strField(body, "geoPlacename", 100)
+        if geoP == "" {
+                geoP = "中国"
+        }
+        offset := clampIntAdm(intField(body, "offset", 0, 0, 1000000), 0, 1000000)
+        status := boolField(body, "status", true)
+        inLinkWheel := boolField(body, "inLinkWheel", true)
+        isDefault := boolField(body, "isDefault", false)
+        if isDefault {
+                _, _ = db.Exec(`UPDATE Site SET isDefault=0`)
+        }
+        id := generateID()
+        // R55-1B 修复 BUG-4 (P0): 原实现 VALUES 子句多 1 个 `?` 占位符 (15 个 `?` + 2 个
+        //   datetime 字面量 = 17 values vs 16 columns → SQLite 报 "17 values for 16 columns"
+        //   全部 Site 新建失败). args = 14 个 (id/name/domain/themeId/title/desc/kw/icbm/
+        //   geoR/geoP/offset/isDefault/status/inLinkWheel), VALUES 应有 14 个 `?` + 2 个
+        //   datetime('now') 字面量 (createdAt/updatedAt) = 16 values for 16 columns.
+        _, err := db.Exec(
+                `INSERT INTO Site (id,name,domain,themeId,title,description,keywords,icbm,geoRegion,geoPlacename,offset,isDefault,status,inLinkWheel,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),datetime('now'))`,
+                id, name, domain, themeID, title, desc, kw, icbm, geoR, geoP, offset, isDefault, status, inLinkWheel,
+        )
+        if err != nil {
+                writeJSONErr(w, "创建失败: "+err.Error(), 500)
+                return
+        }
+        writeJSONOK(w, map[string]interface{}{
+                "id": id, "name": name, "domain": domain, "themeId": themeID,
+                "isDefault": isDefault, "status": status, "inLinkWheel": inLinkWheel,
+                "offset": offset,
+        })
+}
+
+// ---------- 下载任务删除 API (R55-1A 新增) ----------
+
+// adminDownloadsSubHandler — 分发 /api/admin/downloads/:id/file (GET TXT) 与 /api/admin/downloads/:id (DELETE).
+//
+//   R55-1A: 原 adminDownloadFileHandler 仅支持 GET :id/file. 现扩展为子路由分发器,
+//   同时支持 DELETE /:id 删除下载任务 (含内存缓存清理). R55-1B 清理: 原 stub
+//   adminDownloadFileHandler 已废弃 (注释中已说明), 现仅本函数处理 /api/admin/downloads/ 路径.
+func adminDownloadsSubHandler(w http.ResponseWriter, r *http.Request) {
+        parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/admin/downloads/"), "/")
+        if len(parts) < 1 || parts[0] == "" {
+                writeJSONErr(w, "缺少 id", 400)
+                return
+        }
+        jobID := parts[0]
+        // /:id/file → 下载文件 (GET)
+        if len(parts) >= 2 && parts[1] == "file" {
+                if r.Method != http.MethodGet {
+                        writeJSONErr(w, "method not allowed", 405)
+                        return
+                }
+                adminDownloadFileHandlerImpl(w, r, jobID)
+                return
+        }
+        // /:id (无后缀) → 删除下载任务 (DELETE)
+        if r.Method == http.MethodDelete && len(parts) == 1 {
+                adminDownloadsDelete(w, r, jobID)
+                return
+        }
+        writeJSONErr(w, "not found", 404)
+}
+
+// adminDownloadsDelete — 删除下载任务 (DELETE /api/admin/downloads/:id).
+//
+//   先从内存缓存删除 (如有), 再删 DownloadJob 行.
+func adminDownloadsDelete(w http.ResponseWriter, r *http.Request, jobID string) {
+        var exist string
+        _ = db.QueryRow(`SELECT id FROM DownloadJob WHERE id=?`, jobID).Scan(&exist)
+        if exist == "" {
+                writeJSONErr(w, "下载任务不存在", 404)
+                return
+        }
+        // 内存缓存清理
+        downloadFilesMu.Lock()
+        delete(downloadFiles, jobID)
+        downloadFilesMu.Unlock()
+        _, err := db.Exec(`DELETE FROM DownloadJob WHERE id=?`, jobID)
+        if err != nil {
+                writeJSONErr(w, "删除失败: "+err.Error(), 500)
+                return
+        }
+        writeJSONOK(w, map[string]interface{}{"id": jobID, "deleted": true})
+}
+
+// adminDownloadFileHandlerImpl — 原 adminDownloadFileHandler 实现 (按 jobID 返回 TXT 内容).
+//   从原 handler 抽出, 让 adminDownloadsSubHandler 调用.
+func adminDownloadFileHandlerImpl(w http.ResponseWriter, r *http.Request, jobID string) {
+        var status, bookName string
+        err := db.QueryRow(`SELECT d.status, COALESCE(b.name,'book') FROM DownloadJob d LEFT JOIN Book b ON d.bookId=b.id WHERE d.id=?`, jobID).Scan(&status, &bookName)
+        if err != nil {
+                writeJSONErr(w, "任务不存在", 404)
+                return
+        }
+        if status != "done" {
+                writeJSONErr(w, "任务尚未完成", 400)
+                return
+        }
+        downloadFilesMu.Lock()
+        entry, ok := downloadFiles[jobID]
+        if ok && time.Since(entry.createdAt) > downloadFilesTTLSeconds*time.Second {
+                delete(downloadFiles, jobID)
+                ok = false
+        }
+        downloadFilesMu.Unlock()
+        if !ok {
+                writeJSONErr(w, "文件已过期, 请重新生成", 410)
+                return
+        }
+        txt := entry.content
+        w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+        w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.txt"`, url.QueryEscape(bookName)))
+        w.Header().Set("Content-Length", strconv.Itoa(len(txt)))
+        w.Write([]byte(txt))
+}
+
+// ---------- 系统设置删除 API (R55-1A 新增) ----------
+
+// adminSettingsDeleteHandler — DELETE /api/admin/settings/:key 删除单个设置项.
+//
+//   原 admin/settings 仅能 GET/PUT 批量更新, 无法删除冗余 key. R55-1A 补齐 DELETE.
+//   禁止删除 feedbackEnabled (反馈模块开关需通过 toggle 切换, 不能直删否则前台状态不一致).
+func adminSettingsDeleteHandler(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodDelete {
+                writeJSONErr(w, "method not allowed", 405)
+                return
+        }
+        parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/admin/settings/"), "/")
+        if len(parts) < 1 || parts[0] == "" {
+                writeJSONErr(w, "缺少 key", 400)
+                return
+        }
+        key := parts[0]
+        if !settingKeyRE.MatchString(key) {
+                writeJSONErr(w, "非法的设置项 key", 400)
+                return
+        }
+        if key == "feedbackEnabled" {
+                writeJSONErr(w, "feedbackEnabled 不能删除, 请通过开关切换", 400)
+                return
+        }
+        var exist string
+        _ = db.QueryRow(`SELECT key FROM Setting WHERE key=?`, key).Scan(&exist)
+        if exist == "" {
+                writeJSONErr(w, "设置项不存在", 404)
+                return
+        }
+        _, err := db.Exec(`DELETE FROM Setting WHERE key=?`, key)
+        if err != nil {
+                writeJSONErr(w, "删除失败: "+err.Error(), 500)
+                return
+        }
+        writeJSONOK(w, map[string]interface{}{"key": key, "deleted": true})
+}
+
+// ---------- 备份清空 API (R55-1A 新增) ----------
+
+// adminBackupClearHandler — POST /api/admin/backup/clear 清空采集数据 (危险操作).
+//
+//   原 admin/backup 仅能 VACUUM 碎片整理, 无法清空数据. R55-1A 补齐 "清空" 编辑功能.
+//   清空范围: Book + Chapter + BookTag + Task + TaskLog + DownloadJob (采集产物).
+//   保留: Site + Category + Rule + FriendLink + Setting (基础设施, 删了系统就废了).
+//   入参 body: {confirm: true} 必须显式传 true 才执行 (防误触).
+func adminBackupClearHandler(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodPost {
+                writeJSONErr(w, "method not allowed", 405)
+                return
+        }
+        body := readJSONBody(r)
+        if !boolField(body, "confirm", false) {
+                writeJSONErr(w, "请显式传 confirm=true 确认清空操作", 400)
+                return
+        }
+        // R55-1B 修复 BUG-2 (P1): 原实现顺序 = 先 DELETE FROM Task → 后查
+        //   `SELECT id FROM Task WHERE status='running'` 做停止 runtime. 但 Task 行
+        //   已被删, 查询返 0 行, runtime 永不被 MarkStopped → 后台 goroutine 继续
+        //   跑, 往已删 Task 表写 UpdateTaskStatus/UpdateTaskProgress 全失败 (日志噪声)
+        //   且 RunInflight 仍持 ctx, 任务可能在 goroutine 内 panic. 修复: 先查
+        //   running 任务 IDs → MarkStopped runtime → 再 DELETE FROM Task.
+        tr := crawl.GetTaskRunner()
+        type runningTask struct{ id string }
+        runningTasks := []runningTask{}
+        runRows, _ := db.Query(`SELECT id FROM Task WHERE status='running'`)
+        for runRows != nil && runRows.Next() {
+                var tid string
+                _ = runRows.Scan(&tid)
+                if tid != "" {
+                        runningTasks = append(runningTasks, runningTask{id: tid})
+                }
+        }
+        if runRows != nil {
+                runRows.Close()
+        }
+        // 先停止所有运行中 task 的 runtime (避免 goroutine 往已删 DB 行写)
+        for _, rt := range runningTasks {
+                if runtime := tr.GetRuntime(rt.id); runtime != nil {
+                        runtime.MarkStopped()
+                }
+        }
+        // 清空采集产物 (按依赖顺序: TaskLog → Task → DownloadJob → BookTag → Chapter → Book)
+        type op struct{ label, sql string }
+        ops := []op{
+                {"taskLogs", `DELETE FROM TaskLog`},
+                {"tasks", `DELETE FROM Task`},
+                {"downloadJobs", `DELETE FROM DownloadJob`},
+                {"bookTags", `DELETE FROM BookTag`},
+                {"chapters", `DELETE FROM Chapter`},
+                {"books", `DELETE FROM Book`},
+        }
+        cleared := map[string]int{}
+        for _, o := range ops {
+                res, err := db.Exec(o.sql)
+                if err != nil {
+                        writeJSONErr(w, "清空 "+o.label+" 失败: "+err.Error(), 500)
+                        return
+                }
+                n, _ := res.RowsAffected()
+                cleared[o.label] = int(n)
+        }
+        // 清扫内存下载缓存
+        downloadFilesMu.Lock()
+        downloadFiles = map[string]downloadFileEntry{}
+        downloadFilesMu.Unlock()
+        writeJSONOK(w, map[string]interface{}{"cleared": cleared})
+}
+
 // ---------- R40-1B 页面数据装配 ----------
 
 func fillCategoriesPageData(data map[string]interface{}) {
@@ -3536,6 +4288,20 @@ func fillThemesPageData(data map[string]interface{}) {
                 })
         }
         data["ThemeStats"] = stats
+        // R55-1A: 站点列表 (供主题切换面板下拉选择)
+        srows, _ := db.Query(`SELECT id,name,domain,themeId FROM Site ORDER BY isDefault DESC, name ASC LIMIT 500`)
+        sites := []map[string]interface{}{}
+        if srows != nil {
+                defer srows.Close()
+                for srows.Next() {
+                        var id, name, domain, themeID string
+                        _ = srows.Scan(&id, &name, &domain, &themeID)
+                        sites = append(sites, map[string]interface{}{
+                                "id": id, "name": name, "domain": domain, "themeId": themeID,
+                        })
+                }
+        }
+        data["Sites"] = sites
 }
 
 func fillDownloadsPageData(data map[string]interface{}) {

@@ -17,6 +17,28 @@
     <div class="toolbar">
       <span style="color:var(--dim);font-size:12px;">共 {{len .Themes}} 套主题 · 已部署站点 {{.SiteTotal}} 个</span>
     </div>
+
+    <!-- R55-1A: 主题切换面板 (编辑功能: 把指定站点的 themeId 切到新主题) -->
+    <div class="card" style="margin-bottom:16px;">
+      <h3>🎨 主题切换</h3>
+      <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <select id="switchSite" style="min-width:240px;padding:7px 10px;border-radius:6px;border:1px solid var(--border);background:var(--card-2);color:var(--text);">
+          <option value="">— 选择站点 —</option>
+          {{range .Sites}}
+          <option value="{{.id}}">{{.name}} ({{.domain}}) · 当前 {{.themeId}}</option>
+          {{end}}
+        </select>
+        <span style="color:var(--dim);font-size:12px;">→ 切到 →</span>
+        <select id="switchTheme" style="min-width:200px;padding:7px 10px;border-radius:6px;border:1px solid var(--border);background:var(--card-2);color:var(--text);">
+          {{range .Themes}}
+          <option value="{{.id}}">{{.name}} ({{.id}})</option>
+          {{end}}
+        </select>
+        <button class="btn btn-primary" onclick="switchTheme()">应用切换</button>
+      </div>
+      <div class="hint" style="margin-top:6px;font-size:11px;color:var(--dim);">切换后该站点前台立即使用新主题 (无需重启). 完整 TDK / 偏移 / 链轮等参数请到「站点管理」编辑.</div>
+    </div>
+
     <div class="grid cols-2">
       {{range .Themes}}
       <div class="card" style="padding:0;overflow:hidden;">
@@ -65,6 +87,27 @@
   </div>
 </main>
 </div>
+<div class="toast" id="toast"></div>
+<script>
+function showToast(msg,ok){
+  var t=document.getElementById('toast');t.textContent=msg;t.className='toast '+(ok?'ok':'err');
+  setTimeout(function(){t.classList.add('show');},10);setTimeout(function(){t.classList.remove('show');},2500);
+}
+// R55-1A: 切换站点主题 — PUT /api/admin/sites/:id {themeId: newTheme}
+function switchTheme(){
+  var sid=document.getElementById('switchSite').value;
+  var tid=document.getElementById('switchTheme').value;
+  if(!sid){showToast('请选择站点',false);return;}
+  if(!tid){showToast('请选择新主题',false);return;}
+  fetch('/api/admin/sites/'+encodeURIComponent(sid),{
+    method:'PUT',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({themeId:tid})
+  }).then(function(r){return r.json();}).then(function(j){
+    if(j&&j.ok){showToast('主题已切换',true);setTimeout(function(){location.reload();},800);}
+    else{showToast('失败: '+(j&&j.error||''),false);}
+  }).catch(function(e){showToast('请求失败: '+e.message,false);});
+}
+</script>
 </body>
 </html>
 {{end}}

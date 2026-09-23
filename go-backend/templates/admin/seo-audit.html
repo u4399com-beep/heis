@@ -34,6 +34,13 @@
           </form>
         </div>
       </div>
+      <!-- R55-1A: 修复建议入口 — 跳到站点管理, 可逐项修复 TDK/domain/GEO 等 -->
+      <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <span style="font-size:12px;color:var(--muted);">🔧 修复入口:</span>
+        <a class="btn btn-sm btn-primary" href="/admin/sites">前往站点管理修复</a>
+        <a class="btn btn-sm" href="/admin/links">前往友链管理</a>
+        <a class="btn btn-sm" href="/admin/books">前往书籍管理</a>
+      </div>
     </div>
 
     <div class="grid cols-2">
@@ -44,7 +51,10 @@
             <div style="font-size:15px;font-weight:600;">{{.siteName}}</div>
             <div style="font-size:11px;color:var(--dim);">{{.domain}}</div>
           </div>
-          <div style="font-size:28px;font-weight:700;color:{{scoreColor .score}};">{{.score}}</div>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <div style="font-size:28px;font-weight:700;color:{{scoreColor .score}};">{{.score}}</div>
+            <a class="btn btn-sm" href="/admin/sites" title="前往编辑此站点">🔧 编辑</a>
+          </div>
         </div>
         {{if .issues}}
         <div style="margin-top:6px;">

@@ -75,8 +75,13 @@
     </div>
     <div class="grid cols-2">
       {{range .Settings}}
-      <div class="card">
-        <h3>{{.key}}{{if .isJson}} <span class="pill pill-unknown">JSON</span>{{end}}{{if .isFeedback}} <span class="pill pill-ok">模块开关</span>{{end}}</h3>
+      <div class="card" data-key="{{.key}}">
+        <h3 style="display:flex;align-items:center;justify-content:space-between;">
+          <span>{{.key}}{{if .isJson}} <span class="pill pill-unknown">JSON</span>{{end}}{{if .isFeedback}} <span class="pill pill-ok">模块开关</span>{{end}}</span>
+          {{if not .isFeedback}}
+          <button class="btn btn-sm btn-err" onclick='deleteSetting("{{.key}}")' title="删除此设置项">🗑</button>
+          {{end}}
+        </h3>
         {{if .desc}}<div class="hint" style="margin:4px 0 8px;font-size:12px;color:var(--muted);line-height:1.5;">{{.desc}}</div>{{end}}
         <div class="field" style="margin-top:6px;">
           {{if .isJson}}
@@ -176,6 +181,15 @@ function addSetting(){
       if(j&&j.ok){showToast('已添加',true);setTimeout(function(){location.reload();},800);}
       else{showToast('失败: '+(j&&j.error||''),false);}
     });
+}
+// R55-1A: 删除单个设置项 (DELETE /api/admin/settings/:key). feedbackEnabled 受保护, 不可删.
+function deleteSetting(key){
+  if(!confirm('删除设置项「'+key+'」? 此操作不可恢复'))return;
+  fetch('/api/admin/settings/'+encodeURIComponent(key),{method:'DELETE'})
+    .then(function(r){return r.json();}).then(function(j){
+      if(j&&j.ok){showToast('已删除',true);setTimeout(function(){location.reload();},800);}
+      else{showToast('失败: '+(j&&j.error||''),false);}
+    }).catch(function(e){showToast('请求失败: '+e.message,false);});
 }
 </script>
 </body>
