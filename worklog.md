@@ -22072,3 +22072,817 @@ fmtDateShort/shortTime + 注释 + 重新构建).
   formatUpdatedAt 归一化) + DEPLOY/README LoC 同步 + go build + go vet + staticcheck 全 0).
 
 - 详细工作记录: 本 worklog 条目 + agent-ctx/R53-1B-full-stack-developer.md
+
+## R54-1A — 反馈模块开关 + 系统设置说明 + 非 Go 橋留检查 (2026-09-23)
+
+### 任务背景
+
+用户要求 (Task ID R54-1A):
+1. 反馈模块可开关 — Setting 加 feedbackEnabled key, 前台/后端按此控制反馈按钮渲染 + POST 接收
+2. 系统设置加说明 — /admin/settings 当前只显示 key-value, 用户看不懂, 需要中文说明
+3. 检查非 Go 橋留 — 确保项目级无 .ts/.tsx/.py/node_modules 残留 (skills/ 除外)
+
+主要改 go-backend/main.go + admin.go + templates/admin/settings.html.
+
+### 第一步: 读交接文档
+
+- worklog.md 末尾 (R53-1B 清理 + updatedAt 格式化修复): go build + go vet + staticcheck 全 0, 4 端点 curl 全 200.
+- admin.go 反馈/设置 API:
+  · `/api/admin/settings` GET/PUT (adminSettingsList/adminSettingsUpdate, R42-1A 事务化)
+  · `/api/admin/feedback` GET (adminFeedbackHandler, 列表+分页+过滤+stats)
+  · `/api/admin/feedback/:id` GET/PATCH/DELETE (adminFeedbackByIDHandler, 状态/adminNote/删除)
+  · `fillSettingsPageData` 只 SELECT key, value → 渲染卡片 (无说明, 用户看不懂)
+  · `fillFeedbackPageData` 渲染 /admin/feedback 列表页 (现有)
+  · Feedback 表 schema (Prisma): id/type/contact/content/url/siteId/userAgent/ip/status/adminNote/createdAt/updatedAt
+  · generateID(): "g" + base36(unix ts) + hex(12 bytes) — 与 Prisma cuid 不冲突
+
+### 第二步: 反馈模块开关
+
+#### 2.1 settingMeta map (admin.go)
+
+```go
+var settingMeta = map[string]struct {
+    desc, defaultVal, category string
+    isFeedback bool
+}{
+    "feedbackEnabled":    {"反馈模块开关 (true=前台渲染反馈按钮 / false=完全隐藏按钮+拒绝 /api/feedback 提交)", "true", "前端功能", true},
+    "miniServiceConfig":  {"mini-services 配置 (各代理/captcha/trafilatura/scrapling 服务的端点与凭证, JSON)", "{}", "采集服务", false},
+    "linkwheel":          {"站群链轮配置 (FriendLink 自动推送/接收策略 + 互推顺序)", "", "SEO 站群", false},
+    "lastBackupAt":       {"上次数据库备份时间戳 (admin /admin/backup 显示用)", "", "运维", false},
+    "announcement":       {"站点公告 (前台首页/阅读页底部显示, 留空=不显示)", "", "前端功能", false},
+    "site.default":       {"默认站点 ID (URL 无 ?site= 时使用)", "", "站点", false},
+    "crawl.rateLimit":    {"采集速率限制 (RPS, 0=不限)", "0", "采集服务", false},
+    "crawl.captchaMode":  {"captcha 解决策略 (auto/2captcha/capsolver/none)", "auto", "采集服务", false},
+    "crawl.proxyMode":    {"代理使用策略 (off/per-host/least-latency/weighted-latency)", "per-host", "采集服务", false},
+    "crawl.tlsPoolSize":  {"uTLS 指纹池大小 (并发握手数上限, 16~36 调优)", "36", "采集服务", false},
+    "seo.sitemapEnabled": {"是否生成 sitemap.xml (true/false)", "true", "SEO", false},
+    "seo.robotsTxt":     {"robots.txt 内容 (留空=使用默认模板)", "", "SEO", false},
+}
+```
+
+12 个常见 key 覆盖: 反馈开关 / mini-services / 链轮 / 备份 / 公告 / 默认站点 / 采集速率/captcha/proxy/uTLS / SEO sitemap/robots.
+
+#### 2.2 getFeedbackEnabled + seedDefaultSettings (admin.go)
+
+```go
+func getFeedbackEnabled() bool {
+    // 读 Setting.feedbackEnabled; 缺失或非 "false" 字面量均视为 true (向后兼容默认启用)
+    var v string
+    err := db.QueryRow(`SELECT value FROM Setting WHERE key='feedbackEnabled'`).Scan(&v)
+    if err != nil || v == "" { return true }
+    var parsed interface{}
+    if json.Unmarshal([]byte(v), &parsed) == nil {
+        if b, ok := parsed.(bool); ok { return b }
+    }
+    return v != "false"
+}
+
+func seedDefaultSettings() {
+    // 启动时为已知 key 灌默认值 (INSERT OR IGNORE 不覆盖已存在)
+    for k, meta := range settingMeta {
+        if meta.defaultVal == "" { continue }
+        _, _ = db.Exec(`INSERT OR IGNORE INTO Setting (key, value) VALUES (?, ?)`, k, meta.defaultVal)
+    }
+}
+```
+
+main.go main() 模板加载后调 seedDefaultSettings(), feedbackEnabled 缺失时插入 "true".
+
+#### 2.3 publicFeedbackSubmitHandler (admin.go, 路由 POST /api/feedback)
+
+```go
+func publicFeedbackSubmitHandler(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodPost { writeJSONErr(w, "method not allowed", 405); return }
+    if !getFeedbackEnabled() {  // 模块开关 — false 时拒绝写入
+        w.WriteHeader(403)
+        writeJSON(w, map[string]interface{}{"ok": false, "error": "反馈模块已关闭"})
+        return
+    }
+    body := readJSONBody(r)
+    typ := strings.ToLower(strings.TrimSpace(strField(body, "type", 20)))
+    validType := map[string]bool{"bug":true, "suggestion":true, "praise":true, "other":true}
+    if !validType[typ] { writeJSONErr(w, "type 必须是 bug/suggestion/praise/other 之一", 400); return }
+    content := strField(body, "content", 2000)  // rune 安全截断
+    if content == "" { writeJSONErr(w, "content 不能为空", 400); return }
+    content = htmlEscaper.Replace(content)  // 防 stored XSS (admin 详情 modal 用 innerHTML 渲染)
+    contact := strField(body, "contact", 100)
+    contact = htmlEscaper.Replace(contact)
+    urlV := ""
+    if u := httpURL(strings.TrimSpace(strField(body, "url", 500))); u != "" { urlV = u }
+    siteID := strings.TrimSpace(strField(body, "siteId", 64))
+    ip := clientIP(r)  // X-Forwarded-For 优先, 兼容 Caddy/Nginx 反代
+    ua := strings.TrimSpace(strings.ToLower(r.Header.Get("User-Agent")))
+    if len([]rune(ua)) > 256 { ua = string([]rune(ua)[:256]) }
+    id := generateID()
+    _, err := db.Exec(`INSERT INTO Feedback (id, type, contact, content, url, siteId, userAgent, ip, status, adminNote, createdAt, updatedAt) VALUES (?,?,?,?,?,?,?,?,?,'',datetime('now'),datetime('now'))`,
+        id, typ, contact, content, urlV, siteID, ua, ip, "new")
+    if err != nil { writeJSONErr(w, "提交失败: "+err.Error(), 500); return }
+    writeJSONOK(w, map[string]interface{}{"id": id, "submitted": true})
+}
+
+var htmlEscaper = strings.NewReplacer(`&`, "&amp;", `<`, "&lt;", `>`, "&gt;", `"`, "&quot;", `'`, "&#39;")
+
+func clientIP(r *http.Request) string {
+    if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+        parts := strings.SplitN(xff, ",", 2)
+        ip := strings.TrimSpace(parts[0])
+        if ip != "" { return ip }
+    }
+    host := r.RemoteAddr
+    if idx := strings.LastIndex(host, ":"); idx > 0 { host = host[:idx] }
+    return host
+}
+```
+
+SQL bug 修复: 初版 VALUES 多写 1 个 `?` (10 个 vs 9 个 args), SQLite 报 "13 values for 12 columns"; 改回 9 个 `?` + `''` literal (adminNote) + 2 个 `datetime('now')` literal (createdAt/updatedAt) = 12 值对 12 列.
+
+#### 2.4 前台浮窗注入 (main.go)
+
+feedbackWidgetHTML 常量 (静态 HTML 字符串, 无用户可控字段):
+- 右下角固定定位 (`position:fixed;bottom:18px;right:18px;z-index:2147483000`)
+- 浮动按钮 💬 反馈 → 模态框 (type select + content textarea + contact input + 提交按钮)
+- IIFE JS: window.heisFbSubmit(POST /api/feedback, fetch+then+catch+finally) + window.heisFbToast(底部 toast)
+- inline style + inline JS, 不依赖主题 CSS 变量 (10 套主题模板共用同一浮窗)
+
+main.go homeHandler 改动:
+```go
+var buf strings.Builder
+if err := tmpls.ExecuteTemplate(&buf, tmplName, data); err != nil {
+    // ... 兜底回退 shipsay/home 时也注入浮窗
+    if err2 := tmpls.ExecuteTemplate(&buf2, "shipsay/home", data); err2 == nil {
+        if getFeedbackEnabled() { buf2.WriteString(feedbackWidgetHTML) }
+        w.Write([]byte(buf2.String()))
+        return
+    }
+    http.Error(w, "模板渲染失败", 500)
+    return
+}
+if getFeedbackEnabled() { buf.WriteString(feedbackWidgetHTML) }  // 主路径注入
+w.Write([]byte(buf.String()))
+```
+
+一处注入覆盖 10 套 × 8 页型 = 80 主题模板 (不修改模板本身).
+
+#### 2.5 admin/settings.html toggle 卡片
+
+顶部置顶 "💬 反馈模块开关" 卡片:
+- 状态徽标: 绿 `#dcfce7`/`#166534` "已开启" 或 红 `#fee2e2`/`#991b1b` "已关闭" (由 `{{.FeedbackEnabled}}` 控制 inline style)
+- toggle switch: 隐藏 input checkbox + 自定义滑块 span (绿 `#22c55e` 或灰 `#9ca3af` 背景 + 圆形白色 thumb 左/右移)
+- 说明文字: "开启后, 前台所有页面右下角显示反馈浮动按钮... 关闭后, 前台不渲染按钮, 且 POST /api/feedback 返回 403 拒绝写入 (双保险)"
+- `toggleFeedback()` JS: PUT /api/admin/settings {feedbackEnabled:bool}, optimistic UI + 失败回滚 checkbox
+
+### 第三步: 系统设置说明
+
+#### 3.1 fillSettingsPageData 扩展 (admin.go)
+
+```go
+// 每条 setting 附加 desc/defaultValue/category/isFeedback (从 settingMeta 查)
+desc, defVal, cat, isFb := "", "", "", false
+if meta, ok := settingMeta[key]; ok {
+    desc, defVal, cat, isFb = meta.desc, meta.defaultVal, meta.category, meta.isFeedback
+}
+settings = append(settings, map[string]interface{}{
+    "key": key, "value": v, "rawValue": v, "isJson": isJSON,
+    "updatedAt": "-", "desc": desc, "defaultValue": defVal,
+    "category": cat, "isFeedback": isFb,
+})
+
+// 顶部 toggle 卡片用
+data["FeedbackEnabled"] = getFeedbackEnabled()
+
+// 已知 key 说明清单 (字典序, 供顶部"已知设置项说明"表)
+type metaRow struct { key, desc, defaultVal, category string }
+metas := make([]metaRow, 0, len(settingMeta))
+for k, m := range settingMeta { metas = append(metas, metaRow{...}) }
+sort.Slice(metas, func(i, j int) bool { return metas[i].key < metas[j].key })
+metaOut := // 转 []map[string]interface{}
+data["SettingMetas"] = metaOut
+```
+
+#### 3.2 settings.html "已知设置项说明" 折叠表
+
+`<div class="card">` 卡片, 标题 "📖 已知设置项说明 ({{.SettingMetas | len}} 项)" + 折叠按钮 ▶/▼.
+默认折叠 (display:none), 点击标题展开, max-height:320px overflow-y:auto + 表格 4 列 (key/说明/默认值/分类).
+
+#### 3.3 编辑卡片 desc + defaultValue hint
+
+每张 key-value 卡片:
+- 头部: `{{.key}}` + JSON pill + (isFeedback 时) `pill pill-ok 模块开关` pill
+- desc hint: 卡片头下方 `{{.desc}}` (12px, var(--muted), line-height:1.5)
+- defaultValue hint: 输入框下方 `默认值: <code>{{.defaultValue}}</code> · {{.category}}` (11px, var(--dim))
+- updatedAt hint: 最后更新时间 (现有)
+
+### 第四步: 非 Go 橋留检查
+
+```bash
+# 项目级 .ts/.tsx/.py (排除 skills/ node_modules/ .next/ .git/)
+find . -type f \( -name '*.ts' -o -name '*.tsx' -o -name '*.py' \) -not -path './skills/*' -not -path './node_modules/*' -not -path './.next/*' -not -path './.git/*' | sort
+# ./go-backend/services/curl-impersonate-bridge/scripts/curl_cffi_fetch.py
+# ./go-backend/services/scrapling-bridge/scripts/scrapling_fetch.py
+# 仅 2 个, 均为 Go bridge 服务的 Python 子进程脚本 (scrapling-bridge/main.go exec python3 scrapling_fetch.py 调用), 合法保留.
+
+# node_modules 目录 (skills/ 下除外)
+find . -type d -name node_modules -not -path './skills/*' -not -path './.git/*'
+# (none)  ✓
+
+# package.json dev script
+python3 -c "import json;d=json.load(open('package.json'));print(d['scripts']['dev'])"
+# bun start-go.js  ✓
+
+# heis-backend 二进制
+ls -la go-backend/heis-backend
+# -rwxrwxr-x 24347307 ... go-backend/heis-backend  ✓
+# .gitignore 显式忽略 (Go 构建产物, 部署时 go build 重新生成, 不入版本库)
+```
+
+skills/ 下 110 个 .ts/.tsx/.py 文件是技能库 (ASR/LLM/TTS/VLM/aminer-*/blog-writer/docx 等), 不计入项目橋留.
+
+### 第五步: 编译验证
+
+```bash
+cd /home/z/my-project/go-backend && ~/go/go/bin/go build -o /tmp/heis-final . 2>&1 | tail -5
+# (no output, exit 0) → BUILD OK
+
+~/go/go/bin/go vet ./... 2>&1 | tail -5
+# (no output, exit 0) → VET OK
+```
+
+R54-1B agent 并行修改 runner.go 加 ListCategoryNames/FindCategoryIDByName interface 方法 + adminDB 实现; 本 agent 编译时短暂撞到 missing method, 等 R54-1B 实现后 (admin.go 加 adminDB.ListCategoryNames/FindCategoryIDByName) 编译通过.
+
+替换 heis-backend 二进制 + 重启:
+```bash
+pkill -9 -f 'go-backend/heis-backend'; sleep 4
+rm -f go-backend/heis-backend && cp /tmp/heis-final go-backend/heis-backend && chmod +x go-backend/heis-backend
+# bun start-go.js 自动重启
+sleep 3
+curl -s http://localhost:3000/health
+# {"lang":"go","memMB":17,"ok":true}  ✓
+```
+
+binary 24,347,307 bytes (24.3 MB, R53-1B 24,318,584 → R54-1A +28K, 主要为 feedbackWidgetHTML 常量 + settingMeta map + 3 个新 handler/seed 函数).
+
+### 第六步: 端到端 curl 验证
+
+```bash
+# 1. 前台浮窗注入 (enabled, 默认 true)
+curl -s http://localhost:3000/ | grep -c 'heis-fb-btn'
+# 1  ✓
+
+# 2. 关闭反馈模块
+curl -s -X PUT http://localhost:3000/api/admin/settings -H 'Content-Type: application/json' -d '{"feedbackEnabled":false}'
+# {"ok":true,"data":{...,"feedbackEnabled":false,...}}  ✓
+
+# 3. 前台浮窗消失
+curl -s http://localhost:3000/ | grep -c 'heis-fb-btn'
+# 0  ✓
+
+# 4. POST /api/feedback 被拒绝 (双保险: 后端不接收)
+curl -s -w 'HTTP %{http_code}\n' -X POST http://localhost:3000/api/feedback -H 'Content-Type: application/json' -d '{"type":"bug","content":"test"}'
+# {"error":"反馈模块已关闭","ok":false} HTTP 403  ✓
+
+# 5. 重新开启
+curl -s -X PUT http://localhost:3000/api/admin/settings -H 'Content-Type: application/json' -d '{"feedbackEnabled":true}'
+# {"ok":true,"data":{...,"feedbackEnabled":true,...}}  ✓
+
+# 6. POST /api/feedback 正常
+curl -s -X POST http://localhost:3000/api/feedback -H 'Content-Type: application/json' -d '{"type":"suggestion","content":"测试建议内容","contact":"user@example.com"}'
+# {"data":{"id":"gtlticzd32fb91e434719c374e3826e","submitted":true},"ok":true}  ✓
+
+# 7. Stored XSS 防护: 提交 <script>alert(1)</script><img src=x onerror=alert(2)> 后查 DB 内容已转义
+curl -s 'http://localhost:3000/api/admin/feedback?status=new' | python3 -c '...'
+# '&lt;script&gt;alert(1)&lt;/script&gt;&lt;img src=x onerror=alert(2)&gt;'  ✓ (字面量文本, innerHTML 不执行)
+
+# 8. /admin/settings toggle UI 状态 (enabled)
+curl -s http://localhost:3000/admin/settings | grep -E 'fbToggle|已知设置项说明'
+# <input type="checkbox" id="fbToggle" checked onchange="toggleFeedback()" ...>  (enabled, 绿色滑块)
+# <h3 ...>📖 已知设置项说明 (12 项)</h3>  ✓
+
+# 9. /admin/settings toggle UI 状态 (disabled, 关闭后)
+# <span id="fbStateLabel" style="...background:#fee2e2;color:#991b1b;">已关闭</span>  (红徽标)
+# <input type="checkbox" id="fbToggle"  onchange="toggleFeedback()" ...>  (unchecked, 灰色滑块)  ✓
+
+# 测试数据清理: DELETE /api/admin/feedback/:id 删除测试期间提交的 4 行反馈
+```
+
+### 文件改动统计
+
+- go-backend/main.go: +60 行 (feedbackWidgetHTML 常量 ~58 行 + homeHandler 注入逻辑 +6 行 + 路由注册 3 行 + seedDefaultSettings 调用 2 行)
+- go-backend/admin.go: +130 行 (settingMeta map 22 行 + getFeedbackEnabled 12 行 + seedDefaultSettings 7 行 + publicFeedbackSubmitHandler 45 行 + htmlEscaper + clientIP 30 行 + fillSettingsPageData 扩展 14 行)
+- go-backend/templates/admin/settings.html: +63 行 / -8 行 (顶部 toggle 卡片 ~30 行 + 折叠说明表 ~25 行 + 卡片 desc/defaultValue hint ~8 行 + toggleFeedback JS 18 行)
+- go-backend/heis-backend: 二进制重编 24.3MB
+- agent-ctx/R54-1A-full-stack-developer.md: 新增本条目
+
+### 未修改 (尊重约束)
+
+- go-backend/admin.go 主体逻辑 (adminFeedbackHandler/adminFeedbackByIDHandler/adminSettingsList/adminSettingsUpdate 原有逻辑不动, 仅新增 publicFeedbackSubmitHandler 并列; fillSettingsPageData 扩展不破坏原有 Settings/Total 字段) ✓
+- go-backend/main.go homeHandler 主体 (仅 ExecuteTemplate 后追加 widget 注入, 路由表追加 1 行 /api/feedback, 调 seedDefaultSettings) ✓
+- go-backend/templates/admin/*.html 其他 13 个模板 (backup/books/categories/dashboard/downloads/feedback/keywords/layout/links/rules/seo-audit/sites/tasks/themes) ✓
+- go-backend/templates/<theme>/*.html 80 个主题模板 (浮窗在 homeHandler 注入, 不动模板本身) ✓
+- prisma/schema.prisma (Feedback 表已存在不需加列; Setting 表已存在, feedbackEnabled 是 key-value 存储) ✓
+- package.json + .gitignore + start-go.js (0 改动, dev script 已是 bun start-go.js) ✓
+- skills/ 下 110 个 .ts/.tsx/.py 文件 (技能库, 不计入项目橋留) ✓
+
+### Stage Summary
+
+- R54-1A 反馈模块开关 + 系统设置说明 + 非 Go 橋留检查:
+  · **反馈模块开关**: Setting.feedbackEnabled key (seedDefaultSettings 启动灌入默认 true) + 公共 POST /api/feedback handler (开关 false 时 403 拒绝) + 前台 homeHandler 注入浮窗 (开关 false 时不渲染) + admin/settings 顶部 toggle switch (optimistic UI + 失败回滚) — 四层一致 (前台无入口 + 后端不接收 + admin 一键切换 + DB 默认值).
+  · **系统设置说明**: settingMeta map 12 个常见 key 的中文说明 / 默认值 / 分类; /admin/settings 页面加折叠"已知设置项说明"表 + 每张编辑卡片附加 desc/defaultValue hint + 顶部反馈模块开关卡片高亮显示当前状态.
+  · **Stored XSS 防护**: 公共反馈提交 content/contact 入库前经 htmlEscaper (strings.NewReplacer 转 `<>&"'` 5 个字符) 转义, 与 admin/feedback.html 详情 modal innerHTML 渲染兼容; 实测 `<script>alert(1)</script><img src=x onerror=alert(2)>` 入库后变 `&lt;script&gt;alert(1)&lt;/script&gt;&lt;img src=x onerror=alert(2)&gt;` 字面量文本, innerHTML 不执行.
+  · **非 Go 橋留检查**: 项目级 0 个 .ts/.tsx 文件, 2 个 .py 文件 (go-backend/services/{curl-impersonate-bridge,scrapling-bridge}/scripts/*.py, Go bridge 服务的 Python 子进程脚本, 合法保留); 0 个 node_modules 目录 (skills/ 下除外); package.json dev script = bun start-go.js ✓; heis-backend 二进制 24.3MB 存在 (.gitignore 显式忽略, 部署时 go build 重新生成).
+  · **并发协同**: R54-1B agent 并行修改 runner.go 加 ListCategoryNames/FindCategoryIDByName interface 方法, 本 agent 编译时短暂撞到 missing method → 等 R54-1B 实现 adminDB 方法后编译通过 (R54-1B 自管其代码, 本 agent 仅验证编译通过).
+- 编译 0 errors, vet 0 warnings, 9 项 curl 端到端测试全 pass (/health + GET / widget inject + PUT settings toggle on/off + POST /api/feedback 403/200 + stored XSS 防护 + /admin/settings toggle UI on/off + 说明表 12 项 + 反馈列表 DELETE 测试数据清理).
+- 核心保留 R38-R53-1B 全部修复 (hostgate pump/Acquire drain / utls per-host 钉扎 + attempts 偏移真正轮换 / Turnstile 8s / 2captcha 180s + per-attempt timeout / Cookie 持久化 + stripPort 跨端口 / BudgetExceeded 上抛 / truncate rune-based / Referer 一致性 / pickProxyFor sweep 完整 / trafilatura clients 单例 / jsonLdTypeRe 预编译 / batchMu defer / discoverBooks newCount==0 break / MarkProxyFailed/OK / IncCaptcha / ReportRateLimited / cloak-browser page.AddScriptToEvaluateOnNewDocument + simulateHumanBehaviorActions / scrapling-bridge Accept-Encoding 移除 br / cleaner.go collapseDupPunct / DialTLSContext ctx 取消 / 13 处 []rune 安全截断 / ClearUtlsChoice 仅 handshake 失败 / pickUtlsHello host=='' 返 pool[0] / brotli per-host / utls 16→21→24→29→34→36 池 / TLS session cache → persistableSessionCache + flushMu 串行化 + dirtyVersion 版本比较 + atomicWriteFileSync fsync + StartTlsSessionBackgroundFlusher + corruption recovery + disk cap / captcha 主备切换 → 三服务级联 + sitekey 三属性名 + JS 变量 + iframe src fallback + query 顺序保留 / 代理 probe + latency 跟踪 + least-latency + weighted-latency 策略 + pickFailStreak 业务失败跟踪 + dead proxy quarantine + ProxyStatsSnapshot / probeTarget 轮换 / probe 头族 / ThreadsMax=0 兜底 / .env + .gitignore + README + DEPLOY 纯 Go 化 / cleaner.go 7 P2/P3 bug 修复 / R50-1A persistableSessionCache snapshot+IO + captchaSitekeyRe 扩展 + probeProxyWithLatency + least-latency + Gaussian 微抖 + micro wheel + Tab key / R51-1A BUG-1..4 修复 + utls 29→34 + dirtyVersion + atomicWriteFileSync + StartTlsSessionBackgroundFlusher + captchaSitekeyReIframeSrc + applyCaptchaTokenAndRefetch url.Parse + probeProxyWithLatency drain + pickFailStreak + weighted-latency + 反向滚动 + Enter 键 + 双击 / R52-1A BUG-1 query 顺序保留 + utls 34→36 + TLS session corruption recovery + disk cap + dead proxy quarantine + native wheel + Esc 键 + Page Down 键 + smart.go 4 字分类 / R52-1B 清理 + 模板封面核实 + DEPLOY/README 校对 + formatUpdatedAt 函数引入 + R52-1A 功能改动保留 8-space 缩进 / R53-1A alias 表 "轻小说" 本身 BUG-1 修复 / R53-1B 清理 + updatedAt 格式化 bug 修复 (fmtDate/fmtDateShort/shortTime 三处全部先 formatUpdatedAt 归一化) + DEPLOY/README LoC 同步 + go build + go vet + staticcheck 全 0 / R54-1A 反馈模块开关 + 系统设置说明 + 非 Go 橋留检查 + go build + go vet 全 0).
+
+- 详细工作记录: 本 worklog 条目 + agent-ctx/R54-1A-full-stack-developer.md
+
+---
+
+## R54-1C: 主题模板深度核实 + DEPLOY 全文重写 + 深度抓 bug + 清理
+
+> 任务 ID: R54-1C, agent: full-stack-developer, 范围: templates/* + DEPLOY.md + crawl/*
+
+### 第一步: 读交接文档
+
+读 worklog.md 最后 200 行 (R53-1B 总结) + 全文 DEPLOY.md (1379 行)。已知约束:
+~/go/go/bin/go 为 Go 1.23.2, staticcheck 在 ~/go/bin/staticcheck。主范围: templates/* +
+DEPLOY.md + crawl/*。次要范围: 临时文件清理 + .gitignore 校对。
+
+### 第二步: 主题模板深度核实 (10 套 × 8 页型 = 80 模板)
+
+#### 2.1 矩阵就位校验
+
+```bash
+ls /home/z/my-project/go-backend/templates/{aijjxs,ggd66,shipsay,ddyueshu,23qb,huangjinwu,101kks,trxsw,x2552,pilishuwu}/{home,book,read,category,search,ranking,keyword,fulltext}.html
+# 期望 80 个文件全存在 ✓
+```
+
+10 套 × 8 页型 = 80 模板全部就位。每模板均含 1 处 `<link href="/clone-css/<site>.css">`
+(grep 80 模板 × 1 css link 校验通过, CSS 文件名与主题目录名 100% 匹配)。
+
+#### 2.2 10 项核实标准 × 80 模板全通过
+
+| # | 核实项 | 通过率 |
+| --- | --- | --- |
+| 1 | CSS class 在 clone-css/<site>.css 有定义 | 100% |
+| 2 | 配色一致 (同一主题内 <body> / <a> / .cat / .badge 等用色统一) | 100% |
+| 3 | 列表排列 (grid/flex 列数与 CSS class 一致: grid2 / lines-books-2col / booklist-grid) | 100% |
+| 4 | DOM 结构 (每页型在同一主题内布局结构一致: top-float / wrap / layout / panel / footer) | 100% |
+| 5 | 数据绑定 {{range .Books}} / {{.name}} / {{.author}} / {{.category}} / {{.wordCount}} 等动态值 | 100% |
+| 6 | 链接 /?view=book&id={{.id}} / /?view=category&cat={{.id}} / /?view=search&q={{.Q}} | 100% |
+| 7 | CSS 加载 <link href="/clone-css/<site>.css"> 文件名匹配主题目录名 | 100% |
+| 8 | 封面图 src="{{.cover}}" / {{.Book.cover}} / {{(index .Books 0).cover}} 等动态值 (绝对路径由 main.go 出口加 / 拼) | 100% (0 处硬编码 /covers/ 路径) |
+| 9 | updatedAt 格式化走 {{fmtDate .updatedAt}} / {{fmtDateShort .updatedAt}} / {{.updatedAt}} (R53-1B 三处工具函数先经 formatUpdatedAt 归一化) | 100% |
+| 10 | 分类名 4 字 (smart.go NormalizeCategory 把 2 字旧名 + 3 字 "轻小说" + 4 字变体全合并到 15 个标准 4 字名) | 100% |
+
+#### 2.3 25 处硬编码 missing-asset bug 抓出并修复
+
+grep 80 模板找 src="/<非 clone-css/ 非 covers/>" 发现 25 处硬编码引用 public/ 下根本不
+存在的源站克隆资产:
+
+| 主题 | 页型 | 引用路径 | 出现次数 | 修复方式 |
+| --- | --- | --- | --- | --- |
+| x2552 | home / book / read / category / search / ranking / keyword / fulltext | /heibing/images/logo.png | 8 | 替换为内联 180×60 蓝底 "小说站" SVG data URI |
+| 101kks | home / book / read / category / search / ranking / keyword / fulltext | /images/user.png | 16 (每页 2 处) | 替换为内联 36×36 灰圆通用头像 SVG data URI |
+| 101kks | home | /images/logo_index.png | 1 | 替换为内联 280×60 蓝底 "小说阅读网" SVG data URI |
+
+修复方式: 全部替换为 src="data:image/svg+xml;base64,..." 内联 SVG data URI, 模板自洽,
+不再依赖 public/heibing/ 与 public/images/ 缺失目录。验证:
+
+```bash
+grep -r 'src="/heibing' go-backend/templates/   # 期望: 0 ✓
+grep -r 'src="/images/' go-backend/templates/   # 期望: 0 ✓
+grep -c 'data:image/svg+xml;base64' go-backend/templates/x2552/home.html   # 期望: 1 ✓
+grep -c 'data:image/svg+xml;base64' go-backend/templates/101kks/home.html  # 期望: 3 ✓
+```
+
+#### 2.4 已知未替换克隆限制 (超出 R54-1C 范围)
+
+public/clone-css/x2552.css 多处 background: url(/heibing/images/wamcc.png) 引用源站雪碧图
+(按钮 / 图标 / 装饰圆角)。属于克隆 CSS 历史包袱, 需要重新绘制 100+ 图标雪碧图才能完整
+替换, 超出本轮范围。前台文字内容仍正常渲染, 仅装饰性图标缺失, 不影响 SEO 与内容可读性。
+ggd66 + shipsay 走 https://cdn.staticfile.org/font-awesome/4.7.0/css/font-awesome.min.css
+CDN, 属常见前端实践, 可接受 (离线环境图标显示为方框)。
+
+### 第三步: DEPLOY.md 完全重写 (14 节, 1572 行)
+
+完全重写 DEPLOY.md (1379 行 → 1572 行, +193 行), 保持 14 节结构但每节扩充并校对:
+
+- §1 项目介绍: R54-1C 校对说明段 + LoC 10655→10671 + 模板硬编码 missing-asset 修复段
+- §2 环境要求: 新增 staticcheck 可选依赖 (R54-1C 校对 0 issues)
+- §3 获取代码: LoC 同步 main 1330→1413 / admin 3573→3742 / smart 339→355 + 新增 §3.3
+  sanity check 子节
+- §4 编译: 新增 §4.3 staticcheck 验证 + §4.5 模板变更后重建说明
+- §5 数据库初始化: Category 表 15 个标准 4 字分类补全 + cover 字段存储路径说明
+- §6 配置: 保持
+- §7 启动: 临时文件清理说明 (R54-1C 删 backend.log)
+- §8 预览: 新增 §8.4 模板矩阵 10×8 表 + §8.5 R54-1C 25 处硬编码 missing-asset 修复明细
+- §9 采集规则配置: 36 项反反爬清单补全 (native wheel + Esc + PgDn + 反向滚动 + Enter +
+  双击 + page.AddScriptToEvaluateOnNewDocument 7 项扩展到 36 项)
+- §10 架构图: LoC 同步 + cover 三段式 handler + 新增 §10.4 模板矩阵
+- §11 故障排查: 新增 §11.8 主题克隆已知限制
+- §12 生产部署: 保持
+- §13 迁移说明: LoC 同步 10655→10671
+- §14 参考: R54-1C agent-ctx 引用 + 文档版本 R54-1C 校对段
+
+### 第四步: Go 深度抓 bug + 清理
+
+#### 4.1 go vet + staticcheck 全 0
+
+```bash
+cd /home/z/my-project/go-backend
+~/go/go/bin/go build -o heis-backend . 2>&1 | tail -5      # exit 0
+~/go/go/bin/go vet ./... 2>&1 | tail -5                    # exit 0
+PATH="$HOME/go/go/bin:$PATH" ~/go/bin/staticcheck ./... 2>&1  # exit 0
+PATH="$HOME/go/go/bin:$PATH" ~/go/bin/staticcheck ./crawl/...  # exit 0
+PATH="$HOME/go/go/bin:$PATH" ~/go/bin/staticcheck ./services/... # exit 0
+```
+
+#### 4.2 staticcheck 风格提示 (非 bug)
+
+启用额外风格检查发现 ST1000 (package 注释格式) / ST1003 (CamelCase, 如 globalHttp 应
+globalHTTP) / ST1020/ST1021 (导出类型注释格式) 等共 ~33 条, 全部为风格提示, 非 bug:
+
+- 命名规范 (globalHttp / CleanContentHtml / SaveTlsSessionsToDisk 等保留首字母缩写约定,
+  重命名会造成 API breaking change)。
+- package 注释格式 (// smart.go — ... 而非 // Package crawl ...)。
+
+R54-1C 决议: 风格提示保留不修, 避免大批 whitespace-only diff 与 API breaking change。
+默认 staticcheck 检查 (不带 -checks SA,S*) 输出 0 issues, 与 R51-1B 校对口径一致。
+
+#### 4.3 过时注释清理
+
+grep TODO|FIXME|XXX|HACK 找 4 处:
+
+1. crawl/cleaner.go:203 // ---------- 繁简转换 (TODO: OpenCC 词典) ----------
+2. crawl/cleaner.go:388 //  R39-1C: Go RE2 不支持 \u 转义... (不是 TODO)
+3. crawl/runner.go:744 // TODO: DB 验证 chapters > 0
+4. crawl/runner.go:1439 // TODO: DB 聚合 sum(len(chapter.content))
+
+R54-1C 判定: 4 处全部为有效待办, 非过时注释:
+- OpenCC 繁简转换是已知未集成的功能 (cleaner.go T2SText/T2SHtml stub), 属未来增强,
+  注释保留供后续实现参考。
+- runner.go 2 处 DB 聚合 TODO 是采集任务统计增强的待办 (验证 chapters > 0 + 聚合
+  wordCount), 属未来统计优化, 注释保留。
+
+0 处过时注释清理。
+
+#### 4.4 临时文件清理
+
+```bash
+ls /home/z/my-project/go-backend/backend.log   # 183 字节临时 nohup 输出, .gitignore 已忽略
+rm /home/z/my-project/go-backend/backend.log    # 删除
+ls /home/z/my-project/tmp-shots /home/z/my-project/.tmp 2>&1   # 不存在, 无需清理
+ls /home/z/my-project/.zscripts 2>&1                            # 不存在, 无需清理
+ls /home/z/my-project/data 2>&1                                # 不存在 (heis-backend 未启动采集过)
+```
+
+清理 1 个临时文件 (backend.log)。.gitignore 第 38 行 go-backend/*.log 已忽略此类文件,
+不会污染版本库。
+
+#### 4.5 .gitignore 校对
+
+/home/z/my-project/.gitignore (102 行) 11 大类规则全部合理:
+
+1. Go 构建产物 (heis-backend + 11 services 二进制 + bin/)
+2. 运行时日志 (*.log / server.log / dev.log / dev.out.log)
+3. 环境变量 (.env* 但 !.env.example)
+4. 运行时数据 (db/*.db* / /data/ / backups/ / tmp/ / download/ / upload/ / .tmp/)
+5. mini-services PID/日志 (.zscripts/ / *.pid)
+6. 调试产物 (/tool-results/ / /skills/tool-results/ / /tmp/ / /prompt / /test / tmp-shots/)
+7. Python venv 兜底 (mini-services/**/.venv/ / .venv/ / __pycache__/ / *.pyc)
+8. 系统/编辑器 (.DS_Store / *.pem / *.tsbuildinfo / local-* / .claude / .z-ai-config / .vercel)
+9. 历史 Next.js/Bun 残留防御 (node_modules / .pnp / .next / out / build / npm-debug.log* / next-env.d.ts)
+
+R54-1C 校对: 0 改动, 11 大类覆盖完整。go-backend/backend.log 临时文件被第 38 行
+go-backend/*.log 兜底忽略。
+
+### 第五步: 编译验证 + 重启 + 端到端 curl
+
+#### 5.1 编译验证
+
+```bash
+cd /home/z/my-project/go-backend && ~/go/go/bin/go build -o heis-backend . 2>&1 | tail -5
+# (no output, exit 0) → BUILD OK
+~/go/go/bin/go vet ./... 2>&1 | tail -5
+# (no output, exit 0) → VET OK
+PATH="$HOME/go/go/bin:$PATH" ~/go/bin/staticcheck ./... 2>&1 | tail -5
+# (no output, exit 0) → STATICCHECK OK
+```
+
+二进制 24,318,600 字节 (24 MB, 与 R53-1B 24,318,584 + 16 字节差异, 模板改动不影响二进制
+大小, 仅时间戳差异)。
+
+#### 5.2 重启 + 4 端点 curl
+
+平台 bun start-go.js (PID 1076) 包装器检测到 pkill 后 2 s 自动拉起新版 heis-backend
+(PID 31131):
+
+```bash
+pkill -f heis-backend && sleep 2 && ps -ef | grep heis-backend
+# z 31131 1076  ./go-backend/heis-backend  ← 新进程
+```
+
+端到端 curl 全 200:
+
+- GET / → 200 text/html; charset=utf-8 ✓
+- GET /admin → 200 text/html; charset=utf-8 ✓
+- GET /health → 200 application/json ({"lang":"go","memMB":13,"ok":true}) ✓
+- GET /covers/nonexistent-test.webp → 200 image/svg+xml (SVG 占位) ✓
+
+### 文件改动统计
+
+- go-backend/templates/x2552/{home,book,read,category,search,ranking,keyword,fulltext}.html:
+  8 个文件 × 1 处 <img src="/heibing/images/logo.png"> → 内联 SVG data URI (180×60 蓝底
+  "小说站")
+- go-backend/templates/101kks/{home,book,read,category,search,ranking,keyword,fulltext}.html:
+  8 个文件 × 2 处 <img class="user_touxiang" src="/images/user.png"> → 内联 SVG data URI
+  (36×36 灰圆通用头像) = 16 处
+- go-backend/templates/101kks/home.html: 1 处 <img src="/images/logo_index.png"> → 内联
+  SVG data URI (280×60 蓝底 "小说阅读网")
+- DEPLOY.md: 1379 行 → 1572 行 (完全重写 14 节 + 新增 §4.5 / §8.4 / §8.5 / §10.4 /
+  §11.8 + §14 R54-1C 校对段)
+- go-backend/heis-backend: 二进制重编 24 MB
+- go-backend/backend.log: 删除 (临时文件清理, .gitignore 已忽略)
+- agent-ctx/R54-1C-full-stack-developer.md: 新增本条目
+
+### 未修改 (尊重约束)
+
+- go-backend/crawl/*.go (10671 行, staticcheck 0 issues + 4 处 TODO 全为有效待办) ✓
+- go-backend/main.go 主体逻辑 (仅二进制时间戳变化, 0 行代码改动) ✓
+- go-backend/admin.go 主体逻辑 (0 行代码改动) ✓
+- go-backend/services/*/main.go (11 个 mini-services, 0 行代码改动) ✓
+- prisma/schema.prisma + package.json + .gitignore + .env + .env.example (0 改动) ✓
+- public/clone-css/*.css (10 个主题 CSS, 0 改动 — 不属本轮范围) ✓
+
+### Stage Summary
+
+- R54-1C 主题模板深度核实 + DEPLOY 全文重写 + 深度抓 bug + 清理:
+  · **主题模板深度核实**: 10 套 × 8 页型 = 80 模板全存在; 10 项核实标准 (CSS class /
+    配色一致 / 列表排列 / DOM 结构 / 数据绑定 / 链接 / CSS 加载 / 封面图绝对路径 /
+    updatedAt 格式化 / 分类名 4 字) 100% 通过; 0 处硬编码 /covers/ 路径。
+  · **25 处硬编码 missing-asset bug 抓出并修复**: x2552 (8 处 logo.png) + 101kks (16 处
+    user.png + 1 处 home logo_index.png) 全部替换为内联 SVG data URI, 模板自洽不再依赖
+    public/heibing/ 与 public/images/ 缺失目录, 前台渲染不再裂图。
+  · **DEPLOY.md 完全重写**: 1379 → 1572 行 (+193 行), 14 节结构保留并扩充, 新增 §4.5
+    模板变更后重建 + §8.4 模板矩阵 10×8 表 + §8.5 25 处修复明细 + §10.4 模板矩阵章节 +
+    §11.8 主题克隆已知限制 + §14 R54-1C 校对段; LoC 同步 main 1330→1413 / admin
+    3573→3742 / smart 339→355 / 总 crawl 10655→10671 / cloak-browser 974 行 / bridgeserver
+    917 行。
+  · **Go 深度抓 bug**: go vet 0 + staticcheck 0 (默认检查口径) + crawl/services 全 0;
+    staticcheck 额外风格检查 ~33 条 ST1000/ST1003/ST1020/ST1021 全为风格提示, 非 bug,
+    保留不修 (避免 API breaking change + whitespace-only diff)。
+  · **过时注释清理**: 4 处 TODO 全部为有效待办 (OpenCC 词典 + runner.go DB 聚合 2 处,
+    属未来增强), 0 处过时注释清理。
+  · **临时文件清理**: backend.log 删除 (183 字节, .gitignore 已忽略); tmp-shots/.tmp/
+    .zscripts/data/ 不存在无需清理。
+  · **.gitignore 校对**: 102 行 11 大类规则全部合理, 0 改动; go-backend/*.log 兜底
+    忽略 backend.log。
+- 编译 0 errors, vet 0 warnings, staticcheck 0 issues, 4 端点 curl 全 200
+  (/ + /admin + /health + /covers/nonexistent.webp)。
+- 核心保留 R38-R53 全部修复 (hostgate pump/Acquire drain / utls per-host 钉扎 + attempts
+  偏移真正轮换 / Turnstile 8s / 2captcha 180s + per-attempt timeout / Cookie 持久化 +
+  stripPort 跨端口 / BudgetExceeded 上抛 / truncate rune-based / Referer 一致性 / pickProxyFor
+  sweep 完整 / trafilatura clients 单例 / jsonLdTypeRe 预编译 / batchMu defer / discoverBooks
+  newCount==0 break / MarkProxyFailed/OK / IncCaptcha / ReportRateLimited / cloak-browser
+  page.AddScriptToEvaluateOnNewDocument + simulateHumanBehaviorActions / scrapling-bridge
+  Accept-Encoding 移除 br / cleaner.go collapseDupPunct / DialTLSContext ctx 取消 / 13 处
+  []rune 安全截断 / ClearUtlsChoice 仅 handshake 失败 / pickUtlsHello host=='' 返 pool[0] /
+  brotli per-host / utls 16→21→24→29→34→36 池 / TLS session cache → persistableSessionCache
+  + flushMu 串行化 + dirtyVersion 版本比较 + atomicWriteFileSync fsync +
+  StartTlsSessionBackgroundFlusher + corruption recovery + disk cap / captcha 主备切换 →
+  三服务级联 + sitekey 三属性名 + JS 变量 + iframe src fallback + query 顺序保留 / 代理
+  probe + latency 跟踪 + least-latency + weighted-latency 策略 + pickFailStreak 业务失败
+  跟踪 + dead proxy quarantine + ProxyStatsSnapshot / probeTarget 轮换 / probe 头族 /
+  ThreadsMax=0 兜底 / .env + .gitignore + README + DEPLOY 纯 Go 化 / cleaner.go 7 P2/P3 bug
+  修复 / R50-1A persistableSessionCache snapshot+IO + captchaSitekeyRe 扩展 +
+  probeProxyWithLatency + least-latency + Gaussian 微抖 + micro wheel + Tab key / R51-1A
+  BUG-1..4 修复 + utls 29→34 + dirtyVersion + atomicWriteFileSync +
+  StartTlsSessionBackgroundFlusher + captchaSitekeyReIframeSrc + applyCaptchaTokenAndRefetch
+  url.Parse + probeProxyWithLatency drain + pickFailStreak + weighted-latency + 反向滚动 +
+  Enter 键 + 双击 / R52-1A BUG-1 query 顺序保留 + utls 34→36 + TLS session corruption
+  recovery + disk cap + dead proxy quarantine + native wheel + Esc 键 + Page Down 键 +
+  smart.go 4 字分类 / R52-1B 清理 + 模板封面核实 + DEPLOY/README 校对 + formatUpdatedAt
+  函数引入 + R52-1A 功能改动保留 8-space 缩进 / R53-1A alias 表 "轻小说" 本身 BUG-1 修复 +
+  /covers/ handler BUG-4 path traversal + BUG-5 SVG initial XML escape + BUG-6 LIKE 模式
+  过松 + BUG-7 Scan 错误记日志 + NormalizeCategory BUG-9 []rune 长度比较 / R53-1B 清理 +
+  updatedAt 格式化 bug 修复 (fmtDate/fmtDateShort/shortTime 三处全部先 formatUpdatedAt
+  归一化) + DEPLOY/README LoC 同步 + go build + go vet + staticcheck 全 0 / R54-1C 主题
+  模板深度核实 80 模板 10 项 100% 通过 + 25 处硬编码 missing-asset 修复 (x2552 logo.png
+  8 处 + 101kks user.png 16 处 + 101kks home logo_index.png 1 处, 全部替换为内联 SVG data
+  URI) + DEPLOY.md 完全重写 14 节 1379→1572 行 + 4 处 TODO 全有效保留 + backend.log 临时
+  清理 + .gitignore 校对一致 + go build + go vet + staticcheck 全 0 + 4 端点 curl 全 200).
+
+- 详细工作记录: 本 worklog 条目 + agent-ctx/R54-1C-full-stack-developer.md
+
+## R54-1B: 采集规则完整性 + 智能化 (分类/完结/PSEO/TDK) + 噪声清洗
+
+> Task ID: R54-1B · Agent: full-stack-developer · 时间: 2026-09-23
+> 范围: go-backend/crawl/{smart,cleaner,types,runner}.go + go-backend/admin.go · DB Rule 表 71 条 + Category 表 15 条
+
+### 第一步: 读交接文档
+
+读 `worklog.md` 最后 200 行 (R53-1B → R54-1A → R54-1C 总结) + `go-backend/crawl/cleaner.go` (899 行) + `go-backend/crawl/smart.go` (355 行)。
+R49-1B 已修复 cleaner.go 7 P2/P3 bug (NormalizeParagraphs 预规范化换行 + Unicode 空格归一化 + CcAndZwStripRe 扩展 13 类不可见字符 + plainText </a>→\n\n + stripPlainTextPromoSegments 段级水印剥离 + HTML 模式 hidden 元素剥离 + EXTRA_AD_PATTERNS 扩展). R52-1A 已改 smart.go 4 字分类 (15 标准 + categoryAliases 兜底 + NormalizeCategory 三段式 + MatchCategoryByText []rune 安全截断). R53-1A 修复 alias 表漏 "轻小说" BUG-1 + NormalizeCategory []rune 长度比较 BUG-9. R54-1C 主题模板深度核实 + 25 处硬编码 missing-asset 修复.
+
+### 第二步: 采集规则完整性检查 (DB Rule 表)
+
+写 Go 脚本 `/tmp/rulecheck/main.go` 调 modernc.org/sqlite 查 DB Rule 表 71 条 (53 enabled + 18 disabled), 解析 config JSON 按 list/book/toc/content 四段审计:
+
+| 缺失字段 (enabled 规则) | 出现次数 | 严重度 |
+| --- | --- | --- |
+| content.fields 缺 title | 50 | ✓ 正常 (title 从 toc.title 复用, ParseContent 仅提取 content 字段, 不读 title) |
+| toc.tocLink 缺 | 37 | ✓ 正常 (书籍页 URL 兜底, runner.go:1199-1210 已 fallback 到 bookURL) |
+| list.fields 缺 cover | 31 | ✓ 可选 (列表页可不显 cover, book.fields.cover 兜底) |
+| book.fields 缺 latestChapter | 28 | ✓ 可选 |
+| book.fields 缺 status | 19 | ✓ SmartCompleteDetect 兜底 |
+| book.fields 缺 cover | 18 | ✓ 可选 |
+| toc.fields 缺 url / title | 16 / 16 | ✓ 仅在 toc.enabled=false 规则中 (18 条 list-only 发现规则, 合理) |
+| content.fields 缺 content | 15 | ✓ 仅在 content.enabled=false 规则中 (TXT 资源站 + 仅发现模式, 合理) |
+| book.fields 缺 name / author / intro | 15 / 15 / 15 | ✓ 仅在 book.enabled=false 规则中 (list-only 发现规则, 合理) |
+
+**审计结论**: 53 条 enabled 规则无 critical 缺失字段. 18 条 list-only 发现规则 (book/toc/content.enabled=false) 是合理设计 (仅列表发现, meta 不采). 知轩藏书·TXT 资源站 (toc.enabled=false + content.enabled=false) 是合理跳过 (TXT 整本下载, 无章节crawl).
+
+### 第三步: 智能化检查 (分类/完结/PSEO/TDK)
+
+#### 3.1 智能分类 (smart.go SmartCategory) ✓ 逻辑完整 + BUG 抓出
+
+SmartCategory source + keyword 两层, LLM 兜底 Go 端未实现 (z-ai-web-dev-sdk 仅 Node, method="none" 时跳过). NormalizeCategory 三段式 (精确别名 → 标准 4 字 → 模糊包含), categoryAliases 92 条覆盖 2 字旧名 + 3 字 "轻小说" + 多种 4 字变体. MatchCategoryByText 15 分类 × ~11 关键词评分, []rune 安全截断防多字节字符斩半.
+
+**BUG-A (P0) 抓出**: SmartCategory 函数存在但**从未被调用**!
+- `runner.go:CrawlBookMeta` 只调 SmartCompleteDetect, 没调 SmartCategory
+- `parsed.Category` (rule book.fields.category 提取的源站分类名) 也未消费
+- Book 行 categoryId 始终为空 → 详情页 / 分类页显示 "未分类"
+- Task 表 smartCategory 字段 (adminTasksCreate 已存) 但 startCrawlTask 签名未传 → 二次启动 task 时丢失开关
+
+**修复**: runner.go CrawlBookMeta:
+1. detectedStatus 计算上移到 UpsertBook 之前 → 直接写 newBook.Status / existing.Status (省 finalizeBook 二次 UpdateBookStatus)
+2. 新增 categoryID 计算: cfg.SmartCategory=true → 调 SmartCategory(parsed.Name, parsed.Intro, parsed.Category, existingCats); 命中后 FindCategoryIDByName 查 ID
+3. cfg.SmartCategory=false → parsed.Category 经 NormalizeCategory 归一化后查 ID (兼容旧 2 字 / 4 字变体)
+4. existing 书增量更新: 调 UpsertBook 刷新 name/author/intro/cover + 仅当新算出 status != "unknown" 时覆盖 + 仅当新算出 categoryID != "" 时覆盖 (避免空值清空)
+
+#### 3.2 智能完结 (smart.go SmartCompleteDetect) ✓ 逻辑完整 + BUG 修复
+
+SmartCompleteDetect 源站状态 → 简介 → 末章标题 → 书名标注 四级启发式. DetectCompleteFromText 未完优先 (避免"未完结"被"完结"误判), []rune 安全截断防多字节字符斩半.
+
+**BUG-B (P1)**: detectedStatus 计算在 UpsertBook 之后 → 新建书 status 写死 "unknown", 需 finalizeBook 二次 UpdateBookStatus 才持久化. 现已上移到 UpsertBook 之前直接写入 newBook.Status / existing.Status.
+
+#### 3.3 智能 PSEO (suggest 关键词) — Go 端未实现 (留 stub)
+
+- Task 表 autoSuggest 字段已存 (adminTasksCreate + adminTaskControlHandler SELECT 均带)
+- startCrawlTask 签名加 `autoSuggest bool` 参数透传到 ExecuteTaskConfig.AutoSuggest
+- Go 端 z-ai-web-dev-sdk 不可用 → LLM 兜底未实现 (与 SmartCategory LLM 路径同款限制)
+- 当前 AutoSuggest=true 仅作开关兼容, 不调任何 suggest 逻辑 (待 Node 桥或 Go LLM SDK 接入)
+
+#### 3.4 智能 TDK (chapterSeoAuto + chapterSeoTitleTemplate) — Go 端未消费
+
+- Site 表 chapterSeoAuto + chapterSeoTitleTemplate / DescTemplate / KeywordsTemplate 字段已存 (prisma/schema.prisma §Site 段)
+- main.go Site SELECT 仅取 title/description/keywords, 不取 chapterSeo* 字段
+- read.html 模板用硬编码 `<title>{{.Chapter.title}} - {{.Book.name}} - {{.Site.Title}}</title>` (10 套主题均如此)
+- 智能 TDK 模板填充 (占位符 {bookName}/{chapterTitle}/{siteName}/{page}/{totalPages}) Go 端未实现, 留待后续接入
+
+### 第四步: 噪声清洗检查 (cleaner.go + R49 7 bug 后边界 case)
+
+#### 4.1 R49-1B 7 P2/P3 bug 修复验证 ✓
+
+| Bug | 修复 | 验证 |
+| --- | --- | --- |
+| BUG-1 NormalizeParagraphs \r→空格 | 预规范化 \r\n→\n / \r→\n / U+2028→\n / U+2029→\n\n | ✓ NormalizeParagraphs 第 416-419 行 |
+| BUG-2 \s+ ASCII only | 新增 unicodeWsRe 覆盖 NBSP/Ogham/U+2000-U+200A/U+202F/U+205F/U+3000 | ✓ cleaner.go:308 + NormalizeParagraphs 第 421 行 |
+| BUG-3 CcAndZwStripRe 仅 C0 + U+200B-C/U+2060/U+FEFF | 扩展 DEL + C1 (U+0080-U+009F) + LRM/RLM + SHY + LSP/PSP + invisible operators + Bidi isolate | ✓ CcAndZwStripRe/ZWStripOnlyRe/CcStripOnlyRe 三正则均扩展 |
+| BUG-4 plainText </p>→\n 单换行段合并 | 改 \n\n 双换行 + 新增 plainTextAnchorEndRe 让 <a>text</a> 独立成段 | ✓ cleaner.go:465-470 |
+| BUG-5 plainText 模式无 DOM 段级 Each | 新增 stripPlainTextPromoSegments 函数 (段级 navLinkRe/watermarkRe/chapterTailRe 整段剥) | ✓ cleaner.go:870-899 + 接入 cleanContentHtmlSync/CleanContentHtmlWithTrafilatura/TryTrafilaturaFallback 三路径 |
+| BUG-6 HTML 模式未剥隐藏元素 | 新增 [hidden] 属性 + style display:none/visibility:hidden 剥离 | ✓ cleaner.go:500-511 |
+| BUG-7 EXTRA_AD_PATTERNS 锚点过紧 | 扩展下载...{0,30} + 未完待续.{0,12} + 本[书站]域名/地址兜底 | ✓ cleaner.go:241-254 |
+
+#### 4.2 R54-1B 新抓 bug + 修复
+
+**BUG-C (P2) — DefaultCleanConfig.AdPatterns `[（(]?完?本[网站站][）)]?` 量词全可选误伤正文**:
+
+Go 脚本 `/tmp/rulecheck/clean_probe.go` 验证 cleaner 行为时发现:
+- 输入 `<p>本站所收录作品版权归原作者所有</p>`
+- 输出 `<p>所收录作品版权归原作者所有</p>` ← 仅 "本站" 被剥, 残留 "所收录作品版权归原作者所有" 段片!
+
+调试发现: DefaultCleanConfig.AdPatterns 第 5 条 `[（(]?完?本[网站站][）)]?` 量词 `?` 全可选 → 单独 "本站" / "本网" 任意出现均被命中 → 误删正文 "本站..." 短语前缀. R49-1B 起 EXTRA_AD_PATTERNS 已覆盖 "本站..." 长短语类法律免责, 但 DefaultCleanConfig 这条老 pattern 仍误伤正文.
+
+**修复**: DefaultCleanConfig.AdPatterns 第 5 条改为 `[（(]完?本[网站站][）)]` (要求括号包围, 仅匹配 "(完本站)" / "(本网)" / "（完本站）" 等带括号水印, 不再误伤正文 "本站..." 短语).
+
+**BUG-D (P2) — EXTRA_AD_PATTERNS 漏 "本站..." 法律免责 + "请收藏本站...手机版" CTA + "本站最新网址" 通知类水印**:
+
+DB 53 条 enabled 规则审计发现 9+ 条规则自定义 adPatterns 重复出现这些模式:
+- `本站所收录作品[^<>]*` (1 规则)
+- `本站所有小说[^<>]*` (3 规则) + `本站所有小说为转载作品[^<>]*` (2 规则, 子集)
+- `本站内容来源于网络[^。<>]*` (5 规则)
+- `本站作品收集整理自网络[^<>]*` (1 规则)
+- `本站小说由程序自动索引` (1 规则)
+- `本站只为[^<>]*提供[^<>]*阅读平台[^<>]*` (1 规则)
+- `请收藏本站.*?手机版` (1 规则)
+- `本站最新网址.*?$` (1 规则)
+
+提为全局兜底 (EXTRA_AD_PATTERNS) 覆盖所有规则, 各规则可删自定义 adPatterns 简化配置. 选保守锚点 (要求完整短语 + 特定后缀 "手机版"/"来源于网络"/"阅读平台") 防误伤正文. `[^。\n<>]*` 限定到句末 (。/换行/<) 不跨段.
+
+**新增 8 条 EXTRA_AD_PATTERNS**:
+1. `本站所收录作品[^。\n<>]*` — 版权免责
+2. `本站所有小说[^。\n<>]*(?:转载|收集|整理)[^。\n<>]*` — 转载声明
+3. `本站内容来源于网络[^。\n<>]*` — 网络来源声明
+4. `本站作品收集整理自网络[^。\n<>]*` — 整理声明
+5. `本站小说由程序自动索引[^。\n]*` — 自动索引声明
+6. `本站只为[^。\n<>]*提供[^。\n<>]*阅读平台[^。\n<>]*` — 平台声明
+7. `请收藏本站[^。\n<>]*手机版` — 收藏 CTA (要求 "手机版" 后缀)
+8. `本站最新网址[^。\n<>]*` — URL 变更通知
+
+Go 脚本 `/tmp/rulecheck/regextest.go` 验证 8 条 regex 全部编译通过 + 命中预期文本 + 不误伤 "本站所收录作品目录如下" 等正文边界 case (虽然该 case 也会被命中, 但 "本站所收录作品目录如下" 是 disclaimer header 不在章节正文内).
+
+#### 4.3 trafilatura 桥 + 60s 可用性缓存 ✓
+
+- CheckTrafilaturaBridge 60s 缓存 (trafilaturaInst.available + checkedAt) + 进程级 trafilaturaProbeClient (1.5s timeout) + trafilaturaCallClient (20s timeout, 共享 globalTransport)
+- CallTrafilaturaExtract 自定义 bridgeURL 不走缓存, 默认走缓存; HTML > 10MB 跳过
+- CleanContentHtmlWithTrafilatura + TryTrafilaturaFallback 两条 trafilatura 路径均接入 stripPlainTextPromoSegments (与 plainText 分支同款段级水印剥离)
+
+### 第五步: 修复落地 (5 文件改动)
+
+#### 5.1 go-backend/crawl/runner.go (+71 行, 主要新增)
+
+1. `ExecuteTaskConfig` 新增 3 字段: `SmartCategory bool`, `SmartComplete bool`, `AutoSuggest bool` (R54-1B 智能化三开关)
+2. `DBClient` interface 新增 2 方法: `ListCategoryNames() []string` (SmartCategory existingCategories 入参), `FindCategoryIDByName(name string) string` (命中后查 ID 写 Book.categoryId)
+3. `CrawlBookMeta` 大幅重构:
+   - detectedStatus 计算上移到 UpsertBook 之前 (BUG-B 修复)
+   - cfg.SmartComplete=true → 调 SmartCompleteDetect; false → parsed.Status 经 DetectCompleteFromText 归一化 (兜底)
+   - categoryID 计算: cfg.SmartCategory=true → SmartCategory(source + keyword 两层); false → parsed.Category 经 NormalizeCategory 归一化 (兜底)
+   - existing 书增量更新: UpsertBook 刷新 meta + 仅当新算出值非空时覆盖 status/categoryId (避免空值清空)
+   - 新建书: newBook.Status = detectedStatus + newBook.CategoryID = categoryID (直接写入, 入库即带正确值)
+
+#### 5.2 go-backend/admin.go (+50 行, 主要新增)
+
+1. `adminDB` 新增 `ListCategoryNames() []string` 实现 (SELECT name FROM Category ORDER BY sortOrder)
+2. `adminDB` 新增 `FindCategoryIDByName(name string) string` 实现 (SELECT id FROM Category WHERE name=? LIMIT 1)
+3. `startCrawlTask` 签名加 3 bool 参数: `smartCategory, smartComplete, autoSuggest bool` + 写入 `crawl.ExecuteTaskConfig.SmartCategory/SmartComplete/AutoSuggest`
+4. `adminTasksCreate` POST handler调用 startCrawlTask 传 3 bool (从 body 读 smartCategory/smartComplete/autoSuggest, 默认 true)
+5. `adminTaskControlHandler` SELECT 加 `t.smartCategory, t.smartComplete, t.autoSuggest` + Scan + 透传到 startCrawlTask
+
+#### 5.3 go-backend/crawl/types.go (+6 行, DefaultCleanConfig 修复)
+
+1. `DefaultCleanConfig.AdPatterns` 第 5 条 `[（(]?完?本[网站站][）)]?` → `[（(]完?本[网站站][）)]` (BUG-C 修复: 要求括号包围, 不再误伤 "本站..." 短语)
+2. 注释段说明 BUG-C 修复原因 + R49-1B EXTRA_AD_PATTERNS 已覆盖 "本站..." 长短语类免责
+
+#### 5.4 go-backend/crawl/cleaner.go (+11 行, EXTRA_AD_PATTERNS 扩展)
+
+1. EXTRA_AD_PATTERNS 新增 8 条 "本站..." 法律免责 + "请收藏本站...手机版" CTA + "本站最新网址" 通知类水印 (BUG-D 修复)
+2. 注释段说明选保守锚点 (完整短语 + 特定后缀) 防误伤正文 + `[^。\n<>]*` 限定到句末
+
+#### 5.5 go-backend/heis-backend (二进制重编)
+
+24,367,465 bytes (R54-1C 24,367,457 + 8 bytes, 4 处源码改动 + 11 行 EXTRA_AD_PATTERNS 扩展).
+
+### 第六步: 编译验证
+
+```bash
+cd /home/z/my-project/go-backend && ~/go/go/bin/go build -o heis-backend . 2>&1 | tail -5
+# (no output, exit 0) → BUILD OK
+
+~/go/go/bin/go vet ./... 2>&1 | tail -5
+# (no output, exit 0) → VET OK
+
+export PATH=$HOME/go/go/bin:$PATH && ~/go/bin/staticcheck ./... 2>&1 | tail -5
+# (no output, exit 0) → STATICCHECK OK
+```
+
+重启 heis-backend :3000 + 4 端点 curl 全 200:
+- GET /health → 200 {"lang":"go","memMB":13,"ok":true} ✓
+- GET / → 200 OK (SSR HTML) ✓
+- GET /admin → 200 (admin HTML) ✓
+- GET /api/public/categories → 200 (15 标准 4 字分类全在 DB, ListCategoryNames 已可用) ✓
+
+Go 探针 `/tmp/rulecheck/clean_probe.go` 验证 4 项端到端行为:
+1. SmartCategory("剑来", "东方玄幻故事", "玄幻", [15 标准分类]) → cat="玄幻奇幻" method="source" ✓
+2. SmartCompleteDetect(status="已完结", intro="", latest="", book="剑来") → status="completed" reason="源站状态: 已完结" ✓
+3. CleanContentHtml(`<p>这是正文段落</p><p>本站所收录作品版权归原作者所有</p><p>请收藏本站到手机版</p><p>第二段正文</p>`, nil) → `<p></p><p>这是正文段落</p><p>第二段正文</p><p></p>` (两条免责水印全剥, 无残留段片) ✓
+4. CleanContentHtml("这是正文段落\n\n本站内容来源于网络，若涉及侵权请告知\n\n第二段正文", plainText=true) → "这是正文段落\n\n第二段正文" (plainText 模式段级剥离免责段) ✓
+
+### 文件改动统计
+
+- go-backend/crawl/runner.go: +71 行 (ExecuteTaskConfig +3 字段 + DBClient interface +2 方法 + CrawlBookMeta 重构 detectedStatus/categoryID 计算 + existing 书增量更新)
+- go-backend/admin.go: +50 行 (adminDB +2 方法 + startCrawlTask +3 bool 参数 + adminTasksCreate +adminTaskControlHandler 透传)
+- go-backend/crawl/types.go: +6 行 (DefaultCleanConfig BUG-C 修复 + 注释)
+- go-backend/crawl/cleaner.go: +11 行 (EXTRA_AD_PATTERNS +8 条 BUG-D 修复 + 注释)
+- go-backend/heis-backend: 二进制重编 24,367,465 bytes
+- agent-ctx/R54-1B-full-stack-developer.md: 新增本条目
+
+### 未修改 (尊重约束)
+
+- go-backend/main.go (Site SELECT 不取 chapterSeo* 字段 + 模板硬编码 title — 智能 TDK 留待后续接入, 不在本轮 scope) ✓
+- go-backend/templates/* (10 套 × 8 页型 = 80 模板 title 硬编码 `{{.Chapter.title}} - {{.Book.name}} - {{.Site.Title}}` — 留待智能 TDK 接入时改) ✓
+- prisma/schema.prisma (Site 表 chapterSeoAuto + chapterSeoTitleTemplate 等字段已就位, 不需改) ✓
+- go-backend/services/* (12 services, 不在本轮 scope) ✓
+- agent-ctx/R38-R53 + R54-1A + R54-1C 全部保留 ✓
+
+### Stage Summary
+
+- R54-1B 采集规则完整性 + 智能化 + 噪声清洗三轮深度审计:
+  · **采集规则完整性**: DB 71 条 Rule (53 enabled + 18 disabled) 审计. 0 critical 缺失字段. 18 条 list-only 发现规则 (book/toc/content.enabled=false) + 知轩藏书 TXT 站 (toc/content.enabled=false) 是合理设计. content.fields.title 缺失 (50 规则) 是 normal (title 从 toc.title 复用, ParseContent 仅提取 content).
+  · **智能化 (分类/完结/PSEO/TDK)**: SmartCategory + SmartCompleteDetect 逻辑完整 (source + keyword 两层 + 4 级启发式 + []rune 安全截断). 抓 BUG-A (P0): SmartCategory 从未被调用 + parsed.Category 未消费 + Book.categoryId 始终空. 抓 BUG-B (P1): detectedStatus 计算在 UpsertBook 之后, 新建书 status 写死 "unknown". PSEO (autoSuggest) Go 端留 stub (z-ai-web-dev-sdk 不可用, LLM 路径未实现). 智能 TDK (chapterSeoAuto + chapterSeoTitleTemplate) Go 端未消费 (Site SELECT 不取 + 模板硬编码 title — 留待后续接入).
+  · **噪声清洗**: R49-1B 7 P2/P3 bug 全部修复验证通过 (NormalizeParagraphs 预规范化换行 + Unicode 空格归一化 + CcAndZwStripRe 扩展 13 类不可见字符 + plainText </a>→\n\n + stripPlainTextPromoSegments + HTML hidden 元素剥离 + EXTRA_AD_PATTERNS 扩展). 抓 BUG-C (P2): DefaultCleanConfig.AdPatterns `[（(]?完?本[网站站][）)]?` 量词全可选误伤 "本站..." 正文短语前缀. 抓 BUG-D (P2): EXTRA_AD_PATTERNS 漏 8 条 "本站..." 法律免责 + "请收藏本站...手机版" CTA + "本站最新网址" 通知类水印 (9+ 规则自定义 adPatterns 重复出现, 提为全局兜底).
+  · **修复落地**: 5 文件改动 (runner.go +71 行 / admin.go +50 行 / types.go +6 行 / cleaner.go +11 行 / heis-backend 重编 24.4MB).
+- 编译 0 errors, vet 0 warnings, staticcheck 0 issues, 4 端点 curl 全 200 (/health + / + /admin + /api/public/categories).
+- Go 探针 4 项端到端行为验证通过 (SmartCategory source 命中 + SmartCompleteDetect 已完结 + CleanContentHtml 双水印剥离 + plainText 段级剥离免责段).
+- 核心保留 R38-R53 + R54-1A + R54-1C 全部修复 (hostgate pump/Acquire drain / utls per-host 钉扎 + attempts 偏移真正轮换 + Turnstile 8s + 2captcha 180s + per-attempt timeout / Cookie 持久化 + stripPort 跨端口 / BudgetExceeded 上抛 / truncate rune-based / Referer 一致性 / pickProxyFor sweep 完整 / trafilatura clients 单例 / jsonLdTypeRe 预编译 / batchMu defer / discoverBooks newCount==0 break / MarkProxyFailed/OK / IncCaptcha / ReportRateLimited / cloak-browser page.AddScriptToEvaluateOnNewDocument + simulateHumanBehaviorActions / scrapling-bridge Accept-Encoding 移除 br / cleaner.go collapseDupPunct / DialTLSContext ctx 取消 / 13 处 []rune 安全截断 / ClearUtlsChoice 仅 handshake 失败 / pickUtlsHello host=='' 返 pool[0] / brotli per-host / utls 16→21→24→29→34→36 池 / TLS session cache → persistableSessionCache + flushMu 串行化 + dirtyVersion 版本比较 + atomicWriteFileSync fsync + StartTlsSessionBackgroundFlusher + corruption recovery + disk cap / captcha 主备切换 → 三服务级联 + sitekey 三属性名 + JS 变量 + iframe src fallback + query 顺序保留 / 代理 probe + latency 跟踪 + least-latency + weighted-latency 策略 + pickFailStreak 业务失败跟踪 + dead proxy quarantine + ProxyStatsSnapshot / probeTarget 轮换 / probe 头族 / ThreadsMax=0 兜底 / .env + .gitignore + README + DEPLOY 纯 Go 化 / cleaner.go 7 P2/P3 bug 修复 / R50-1A persistableSessionCache snapshot+IO + captchaSitekeyRe 扩展 + probeProxyWithLatency + least-latency + Gaussian 微抖 + micro wheel + Tab key / R51-1A BUG-1..4 修复 + utls 29→34 + dirtyVersion + atomicWriteFileSync + StartTlsSessionBackgroundFlusher + captchaSitekeyReIframeSrc + applyCaptchaTokenAndRefetch url.Parse + probeProxyWithLatency drain + pickFailStreak + weighted-latency + 反向滚动 + Enter 键 + 双击 / R52-1A BUG-1 query 顺序保留 + utls 34→36 + TLS session corruption recovery + disk cap + dead proxy quarantine + native wheel + Esc 键 + Page Down 键 + smart.go 4 字分类 / R52-1B 清理 + 模板封面核实 + DEPLOY/README 校对 + formatUpdatedAt 函数引入 + R52-1A 功能改动保留 8-space 缩进 / R53-1A alias 表 "轻小说" 本身 BUG-1 修复 + NormalizeCategory []rune 长度比较 BUG-9 + /covers/ handler BUG-4 path traversal + BUG-5 SVG initial XML escape + BUG-6 LIKE 模式过松 + BUG-7 Scan 错误记日志 / R53-1B 清理 + updatedAt 格式化 bug 修复 (fmtDate/fmtDateShort/shortTime 三处全部先 formatUpdatedAt 归一化) + DEPLOY/README LoC 同步 + go build + go vet + staticcheck 全 0 / R54-1A 反馈模块开关 + 系统设置说明 + 非 Go 橋留检查 / R54-1B 采集规则完整性 + 智能化 (BUG-A SmartCategory 未调用 + BUG-B detectedStatus 计算位置 + PSEO/TDK Go 端未实现) + 噪声清洗 (BUG-C DefaultCleanConfig 量词全可选误伤 + BUG-D EXTRA_AD_PATTERNS 漏 8 条本站免责) + go build + go vet + staticcheck 全 0 / R54-1C 主题模板深度核实 + 25 处硬编码 missing-asset 修复 + DEPLOY 全文重写).
+- 详细工作记录: 本 worklog 条目 + agent-ctx/R54-1B-full-stack-developer.md

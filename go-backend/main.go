@@ -232,6 +232,9 @@ func main() {
                 log.Printf("警告: 未找到模板文件")
         }
 
+        // R54-1A: 启动时灌入已知 setting 默认值 (feedbackEnabled=true 等, INSERT OR IGNORE 不覆盖已存在)
+        seedDefaultSettings()
+
         // 静态文件 (clone-css + public) — R51 修复: StripPrefix 剥离了 clone-css/ 但文件在 public/clone-css/ 下
         // 改为 FileServer 指向 public/clone-css/ + StripPrefix, 这样 /clone-css/shipsay.css → shipsay.css → 在 clone-css/ 找到
         publicDir := filepath.Join(basePath, "public")
@@ -326,6 +329,9 @@ func main() {
         http.HandleFunc("/api/public/sites", sitesHandler)
         http.HandleFunc("/api/public/book", bookDetailHandler)
         http.HandleFunc("/api/public/chapter", chapterHandler)
+
+        // R54-1A: 公共反馈提交 (前台浮窗按钮的 POST 目标, 受 Setting.feedbackEnabled 开关控制)
+        http.HandleFunc("/api/feedback", publicFeedbackSubmitHandler)
 
         // R39-1C: 采集后台 API (与 src/app/api/admin/* 同口径, 调 crawl 包)
         http.HandleFunc("/api/admin/health", adminHealthHandler)
@@ -552,6 +558,10 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 if tmplName != "shipsay/home" {
                         var buf2 strings.Builder
                         if err2 := tmpls.ExecuteTemplate(&buf2, "shipsay/home", data); err2 == nil {
+                                // R54-1A: 注入反馈浮窗 (开关在 Setting.feedbackEnabled)
+                                if getFeedbackEnabled() {
+                                        buf2.WriteString(feedbackWidgetHTML)
+                                }
                                 w.Header().Set("Content-Type", "text/html; charset=utf-8")
                                 w.Write([]byte(buf2.String()))
                                 return
@@ -560,9 +570,82 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 http.Error(w, "模板渲染失败", 500)
                 return
         }
+        // R54-1A: 开关开启时在 </body> 前注入反馈浮窗 (前台所有 view 都走 homeHandler, 一处注入覆盖全部主题模板)
+        if getFeedbackEnabled() {
+                buf.WriteString(feedbackWidgetHTML)
+        }
         w.Header().Set("Content-Type", "text/html; charset=utf-8")
         w.Write([]byte(buf.String()))
 }
+
+// R54-1A: feedbackWidgetHTML — 前台浮窗反馈按钮 (右下角固定定位, inline 样式避免依赖主题 CSS 变量).
+//
+//   1. 浮动按钮 💬 反馈 — 点击展开模态框
+//   2. 模态框: type select + content textarea + contact input + 提交按钮
+//   3. JS: POST /api/feedback, 关闭模态框 + Toast 反馈成功/失败
+//   4. z-index 极高 (2147483000) 保证不被主题样式遮盖; inline style + IIFE 不污染全局作用域
+//
+// 注入策略: homeHandler 在 ExecuteTemplate 后追加到响应 buffer 末尾 (即 </html> 之后).
+//   浏览器对 </html> 后的内容容错渲染, 模态框 fixed 定位 + z-index 保证视觉一致.
+//   该常量全静态, 无用户可控字段, 无注入风险.
+var feedbackWidgetHTML = `
+<div id="heis-fb-root" style="position:fixed;bottom:18px;right:18px;z-index:2147483000;font-family:system-ui,-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;">
+  <button id="heis-fb-btn" type="button" onclick="document.getElementById('heis-fb-modal').style.display='block'" style="background:#1f6feb;color:#fff;border:0;border-radius:28px;padding:10px 18px;box-shadow:0 4px 12px rgba(0,0,0,.18);cursor:pointer;font-size:14px;font-weight:600;letter-spacing:.5px;">💬 反馈</button>
+  <div id="heis-fb-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);" onclick="if(event.target===this)this.style.display='none'">
+    <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:#fff;color:#222;border-radius:10px;padding:20px;width:92%;max-width:440px;box-shadow:0 12px 32px rgba(0,0,0,.22);">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <h3 style="margin:0;font-size:16px;font-weight:700;">用户反馈</h3>
+        <button type="button" onclick="document.getElementById('heis-fb-modal').style.display='none'" style="background:transparent;border:0;font-size:18px;color:#666;cursor:pointer;line-height:1;">✕</button>
+      </div>
+      <form id="heis-fb-form" onsubmit="return heisFbSubmit(event)">
+        <label style="display:block;font-size:12px;color:#555;margin-bottom:4px;">类型 <span style="color:#c00;">*</span></label>
+        <select id="heis-fb-type" name="type" required style="width:100%;padding:7px 10px;border:1px solid #ccc;border-radius:6px;font-size:13px;margin-bottom:10px;">
+          <option value="bug">Bug 报告</option>
+          <option value="suggestion">建议</option>
+          <option value="praise">表扬</option>
+          <option value="other">其它</option>
+        </select>
+        <label style="display:block;font-size:12px;color:#555;margin-bottom:4px;">内容 <span style="color:#c00;">*</span> <span style="color:#999;">(最多 2000 字)</span></label>
+        <textarea id="heis-fb-content" name="content" required maxlength="2000" rows="5" placeholder="请描述您遇到的问题或建议..." style="width:100%;padding:8px 10px;border:1px solid #ccc;border-radius:6px;font-size:13px;resize:vertical;min-height:90px;margin-bottom:10px;box-sizing:border-box;"></textarea>
+        <label style="display:block;font-size:12px;color:#555;margin-bottom:4px;">联系方式 <span style="color:#999;">(选填, 邮箱/QQ)</span></label>
+        <input id="heis-fb-contact" name="contact" type="text" maxlength="100" placeholder="选填" style="width:100%;padding:7px 10px;border:1px solid #ccc;border-radius:6px;font-size:13px;margin-bottom:12px;box-sizing:border-box;">
+        <div style="display:flex;gap:8px;justify-content:flex-end;">
+          <button type="button" onclick="document.getElementById('heis-fb-modal').style.display='none'" style="padding:7px 16px;border:1px solid #ccc;background:#f5f5f5;color:#333;border-radius:6px;cursor:pointer;font-size:13px;">取消</button>
+          <button type="submit" id="heis-fb-submit" style="padding:7px 18px;background:#1f6feb;color:#fff;border:0;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">提交</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  <div id="heis-fb-toast" style="display:none;position:fixed;bottom:80px;right:18px;left:18px;max-width:380px;margin-left:auto;background:#0a7d3a;color:#fff;padding:10px 14px;border-radius:6px;font-size:13px;box-shadow:0 4px 12px rgba(0,0,0,.2);"></div>
+</div>
+<script>(function(){
+  window.heisFbSubmit=function(e){
+    e.preventDefault();
+    var btn=document.getElementById('heis-fb-submit');
+    if(btn){btn.disabled=true;btn.textContent='提交中...';}
+    var type=document.getElementById('heis-fb-type').value;
+    var content=document.getElementById('heis-fb-content').value.trim();
+    var contact=document.getElementById('heis-fb-contact').value.trim();
+    if(!content){heisFbToast('请填写反馈内容',false);if(btn){btn.disabled=false;btn.textContent='提交';}return false;}
+    var body={type:type,content:content,contact:contact,url:location.href};
+    fetch('/api/feedback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+      .then(function(r){return r.json();})
+      .then(function(j){
+        if(j&&j.ok){heisFbToast('感谢反馈! 已提交',true);document.getElementById('heis-fb-modal').style.display='none';document.getElementById('heis-fb-content').value='';document.getElementById('heis-fb-contact').value='';}
+        else{heisFbToast('提交失败: '+(j&&j.error||''),false);}
+      })
+      .catch(function(err){heisFbToast('网络错误: '+err.message,false);})
+      .finally(function(){if(btn){btn.disabled=false;btn.textContent='提交';}});
+    return false;
+  };
+  window.heisFbToast=function(msg,ok){
+    var t=document.getElementById('heis-fb-toast');if(!t)return;
+    t.textContent=msg;t.style.background=ok?'#0a7d3a':'#c0392b';t.style.display='block';
+    clearTimeout(window.__heisFbToastT);window.__heisFbToastT=setTimeout(function(){t.style.display='none';},2800);
+  };
+})();
+</script>
+`
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
         writeJSON(w, map[string]interface{}{"ok": true, "lang": "go", "memMB": getMemMB()})

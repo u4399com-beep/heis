@@ -184,6 +184,37 @@ func (a *adminDB) MarkChapterFetched(chapterID string, fetched bool) error {
         return err
 }
 
+// ListCategoryNames — R54-1B 智能分类辅助: 返回 DB 所有分类名 (供 SmartCategory existingCategories 入参).
+//   与 NormalizeCategory 配合: SmartCategory 第 1 步 source 路径会 normalize(parsed.Category)
+//   后与 existingCategories 比较 — DB 15 个标准 4 字分类名 + 部分历史 2 字/变体名均会进入.
+func (a *adminDB) ListCategoryNames() []string {
+        rows, err := a.db.Query(`SELECT name FROM Category ORDER BY sortOrder ASC`)
+        if err != nil {
+                return nil
+        }
+        defer rows.Close()
+        out := []string{}
+        for rows.Next() {
+                var n string
+                if err := rows.Scan(&n); err == nil && n != "" {
+                        out = append(out, n)
+                }
+        }
+        return out
+}
+
+// FindCategoryIDByName — R54-1B 智能分类辅助: 通过分类名查 ID (SmartCategory 命中后写 Book.categoryId).
+//   精确匹配 name (DB 15 个标准 4 字分类名 + 历史变体). 返回空串表示未命中 (SmartCategory
+//   返回的标准 4 字名应总能命中, 除非 DB Category 表为空).
+func (a *adminDB) FindCategoryIDByName(name string) string {
+        if name == "" {
+                return ""
+        }
+        var id string
+        _ = a.db.QueryRow(`SELECT id FROM Category WHERE name=? LIMIT 1`, name).Scan(&id)
+        return id
+}
+
 func nullIfEmpty(s string) interface{} {
         if s == "" {
                 return nil
@@ -547,7 +578,8 @@ func adminTasksCreate(w http.ResponseWriter, r *http.Request) {
 
         // 异步启动采集
         go startCrawlTask(taskID, ruleID, ruleConfig, mode, bookURL, listURL, fetchConfigStr,
-                threadMin, threadMax, intervalMin, intervalMax, recrawlMode)
+                threadMin, threadMax, intervalMin, intervalMax, recrawlMode,
+                smartCategory, smartComplete, autoSuggest)
 
         writeJSONOK(w, map[string]interface{}{
                 "id": taskID, "name": name, "ruleId": ruleID, "ruleName": ruleName,
@@ -559,8 +591,13 @@ func adminTasksCreate(w http.ResponseWriter, r *http.Request) {
 //
 //      构建 crawl.ExecuteTaskConfig + 调 crawl.ExecuteTask (R38-1C 三阶段采集主入口).
 //      错误隔离: 单任务失败不影响其他; 终态写回 DB.
+//      R54-1B: 新增 smartCategory/smartComplete/autoSuggest 三 bool 参数, 与 Task 表字段
+//        一致传入 crawl.ExecuteTaskConfig. crawl.CrawlBookMeta 据此条件调 SmartCategory /
+//        SmartCompleteDetect (原 R38-1C 重写后 SmartCategory 函数存在但从未被调用,
+//        detectedStatus 也仅用于运行时分流不持久化 — 已修).
 func startCrawlTask(taskID, ruleID, ruleConfig, mode, bookURL, listURL, fetchConfigStr string,
-        threadMin, threadMax, intervalMin, intervalMax int, recrawlMode string) {
+        threadMin, threadMax, intervalMin, intervalMax int, recrawlMode string,
+        smartCategory, smartComplete, autoSuggest bool) {
 
         // 更新状态为 running
         _, _ = db.Exec(`UPDATE Task SET status='running', updatedAt=datetime('now') WHERE id=?`, taskID)
@@ -603,20 +640,23 @@ func startCrawlTask(taskID, ruleID, ruleConfig, mode, bookURL, listURL, fetchCon
         // 5. 构建 cfg
         adb := newAdminDB()
         cfg := crawl.ExecuteTaskConfig{
-                TaskID:      taskID,
-                Rule:        rule,
-                Override:    override,
-                URLTemplate: listURL,
-                ThreadsMin:  threadMin,
-                ThreadsMax:  threadMax,
-                IntervalMin: intervalMin,
-                IntervalMax: intervalMax,
-                MaxRequests: override.MaxRequests,
-                RecrawlMode: recrawlMode,
-                DB:          adb,
+                TaskID:         taskID,
+                Rule:           rule,
+                Override:       override,
+                URLTemplate:    listURL,
+                ThreadsMin:     threadMin,
+                ThreadsMax:     threadMax,
+                IntervalMin:    intervalMin,
+                IntervalMax:    intervalMax,
+                MaxRequests:    override.MaxRequests,
+                RecrawlMode:    recrawlMode,
+                DB:             adb,
                 Logger: func(tid string, level crawl.LogLevel, msg string) {
                         log.Printf("[task:%s][%s] %s", tid, level, msg)
                 },
+                SmartCategory: smartCategory,
+                SmartComplete: smartComplete,
+                AutoSuggest:   autoSuggest,
         }
 
         // 6. 执行 (三阶段并发采集)
@@ -671,15 +711,21 @@ func adminTaskControlHandler(w http.ResponseWriter, r *http.Request) {
                 name, ruleID, mode, bookURL, listURL, fetchConfigStr, recrawlMode, status string
                 ruleConfig                                                                string
                 threadMin, threadMax, intervalMin, intervalMax                            int
+                smartCategory, smartComplete, autoSuggest                                 bool
         )
+        // R54-1B: SELECT 加 t.smartCategory, t.smartComplete, t.autoSuggest 字段 (原 startCrawlTask
+        //   二次启动时丢失智能化开关 → SmartCategory/SmartComplete 不被调). 修复后 startCrawlTask
+        //   签名带这三个 bool, 从 Task 行读出后透传.
         err := db.QueryRow(
                 `SELECT t.name,t.ruleId,t.mode,t.bookUrl,t.listUrl,t.fetchConfig,t.recrawlMode,
                         t.threadMin,t.threadMax,t.intervalMin,t.intervalMax,t.status,
+                        t.smartCategory,t.smartComplete,t.autoSuggest,
                         COALESCE(r.config,'{}')
                    FROM Task t LEFT JOIN Rule r ON t.ruleId=r.id
                   WHERE t.id=?`, taskID,
         ).Scan(&name, &ruleID, &mode, &bookURL, &listURL, &fetchConfigStr, &recrawlMode,
-                &threadMin, &threadMax, &intervalMin, &intervalMax, &status, &ruleConfig)
+                &threadMin, &threadMax, &intervalMin, &intervalMax, &status,
+                &smartCategory, &smartComplete, &autoSuggest, &ruleConfig)
         if err != nil {
                 writeJSONErr(w, "任务不存在", 404)
                 return
@@ -700,7 +746,8 @@ func adminTaskControlHandler(w http.ResponseWriter, r *http.Request) {
                         // 从 stopped/done/error 状态重新启动
                         _, _ = db.Exec(`UPDATE Task SET status='running', updatedAt=datetime('now') WHERE id=?`, taskID)
                         go startCrawlTask(taskID, ruleID, ruleConfig, mode, bookURL, listURL, fetchConfigStr,
-                                threadMin, threadMax, intervalMin, intervalMax, recrawlMode)
+                                threadMin, threadMax, intervalMin, intervalMax, recrawlMode,
+                                smartCategory, smartComplete, autoSuggest)
                         writeJSONOK(w, map[string]interface{}{"action": "start", "taskId": taskID})
                         return
                 }
@@ -2286,6 +2333,60 @@ func adminDownloadFileHandler(w http.ResponseWriter, r *http.Request) {
 
 var settingKeyRE = regexp.MustCompile(`^[A-Za-z0-9_.\-]{1,64}$`)
 
+// R54-1A: 系统设置项的中文说明 / 默认值 / 分类.
+//   fillSettingsPageData 在装配每条设置时附带 desc/defaultValue/category 字段, 让
+//   admin/settings 页面不再只显示 "key-value" 让人看不懂.
+//   key 不在表内时前端显示空 desc/value "-" (用户仍可在表单中编辑任意 key).
+var settingMeta = map[string]struct {
+        desc        string
+        defaultVal  string
+        category    string
+        isFeedback  bool
+}{
+        "feedbackEnabled":    {"反馈模块开关 (true=前台渲染反馈按钮 / false=完全隐藏按钮+拒绝 /api/feedback 提交)", "true", "前端功能", true},
+        "miniServiceConfig":  {"mini-services 配置 (各代理/captcha/trafilatura/scrapling 服务的端点与凭证, JSON)", "{}", "采集服务", false},
+        "linkwheel":          {"站群链轮配置 (FriendLink 自动推送/接收策略 + 互推顺序)", "", "SEO 站群", false},
+        "lastBackupAt":       {"上次数据库备份时间戳 (admin /admin/backup 显示用)", "", "运维", false},
+        "announcement":       {"站点公告 (前台首页/阅读页底部显示, 留空=不显示)", "", "前端功能", false},
+        "site.default":       {"默认站点 ID (URL 无 ?site= 时使用)", "", "站点", false},
+        "crawl.rateLimit":    {"采集速率限制 (RPS, 0=不限)", "0", "采集服务", false},
+        "crawl.captchaMode":  {"captcha 解决策略 (auto/2captcha/capsolver/none)", "auto", "采集服务", false},
+        "crawl.proxyMode":    {"代理使用策略 (off/per-host/least-latency/weighted-latency)", "per-host", "采集服务", false},
+        "crawl.tlsPoolSize":  {"uTLS 指纹池大小 (并发握手数上限, 16~36 调优)", "36", "采集服务", false},
+        "seo.sitemapEnabled": {"是否生成 sitemap.xml (true/false)", "true", "SEO", false},
+        "seo.robotsTxt":      {"robots.txt 内容 (留空=使用默认模板)", "", "SEO", false},
+}
+
+// R54-1A: getFeedbackEnabled — 读 Setting 表的 feedbackEnabled 值.
+//   缺失或非 "false" 字面量均视为 true (向后兼容默认启用), 与 prisma 端 default 行为一致.
+//   每次调用一次 SELECT (SQLite 单行查询, <0.1ms, 不需要缓存层).
+func getFeedbackEnabled() bool {
+        var v string
+        err := db.QueryRow(`SELECT value FROM Setting WHERE key='feedbackEnabled'`).Scan(&v)
+        if err != nil || v == "" {
+                return true
+        }
+        var parsed interface{}
+        if json.Unmarshal([]byte(v), &parsed) == nil {
+                if b, ok := parsed.(bool); ok {
+                        return b
+                }
+        }
+        return v != "false"
+}
+
+// R54-1A: seedDefaultSettings — 启动时为已知 key 灌默认值 (INSERT OR IGNORE).
+//   feedbackEnabled 缺失时插入 "true", 让 /admin/settings 页面一开始就有这条记录可点开关.
+//   其他 settingMeta 内有 default 的 key 同样灌入 (用户后续可改).
+func seedDefaultSettings() {
+        for k, meta := range settingMeta {
+                if meta.defaultVal == "" {
+                        continue
+                }
+                _, _ = db.Exec(`INSERT OR IGNORE INTO Setting (key, value) VALUES (?, ?)`, k, meta.defaultVal)
+        }
+}
+
 // R42-1A: 包级预编译正则 (替代 inline regexp.MustCompile, 防 per-request 重复编译开销 + 防
 //         每次 PATCH 反馈都重新编译正则导致的高频路径 GC 压力)
 var (
@@ -2537,6 +2638,94 @@ func adminFeedbackByIDHandler(w http.ResponseWriter, r *http.Request) {
         default:
                 writeJSONErr(w, "method not allowed", 405)
         }
+}
+
+// ---------- 公共反馈提交 API (R54-1A) ----------
+
+// publicFeedbackSubmitHandler — 前台浮窗反馈按钮的 POST 目标.
+//
+// 路由: POST /api/feedback
+// 入参 JSON: {type: bug|suggestion|praise|other, content: string, contact?: string}
+// 行为:
+//   1. 先查 Setting.feedbackEnabled; 若 false → 403 "反馈模块已关闭" (与前台不渲染按钮一致)
+//   2. 校验 type 必为 4 选 1; content 1~2000 字符 (rune 安全截断); contact 0~100
+//   3. content 经 HTML 转义后入库 (admin/feedback.html 详情 modal 用 innerHTML 渲染, 防 stored XSS)
+//   4. ip / userAgent / referer(url) 一并写入, 供管理员溯源
+//   5. status='new', createdAt/updatedAt = now, id = generateID()
+func publicFeedbackSubmitHandler(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodPost {
+                writeJSONErr(w, "method not allowed", 405)
+                return
+        }
+        // 模块开关 — false 时拒绝写入 (与前台不渲染按钮的行为一致)
+        if !getFeedbackEnabled() {
+                w.WriteHeader(403)
+                writeJSON(w, map[string]interface{}{"ok": false, "error": "反馈模块已关闭"})
+                return
+        }
+        body := readJSONBody(r)
+        typ := strings.ToLower(strings.TrimSpace(strField(body, "type", 20)))
+        validType := map[string]bool{"bug": true, "suggestion": true, "praise": true, "other": true}
+        if !validType[typ] {
+                writeJSONErr(w, "type 必须是 bug/suggestion/praise/other 之一", 400)
+                return
+        }
+        content := strField(body, "content", 2000)
+        if content == "" {
+                writeJSONErr(w, "content 不能为空", 400)
+                return
+        }
+        // HTML 转义: admin 详情 modal 用 innerHTML 渲染 f.content, 必须转义 <>&"' 防 stored XSS
+        content = htmlEscaper.Replace(content)
+        contact := strField(body, "contact", 100)
+        contact = htmlEscaper.Replace(contact)
+        urlV := ""
+        if u := httpURL(strings.TrimSpace(strField(body, "url", 500))); u != "" {
+                urlV = u
+        }
+        siteID := strings.TrimSpace(strField(body, "siteId", 64))
+        ip := clientIP(r)
+        ua := strings.TrimSpace(strings.ToLower(r.Header.Get("User-Agent")))
+        if len([]rune(ua)) > 256 {
+                ua = string([]rune(ua)[:256])
+        }
+        id := generateID()
+        _, err := db.Exec(`INSERT INTO Feedback (id, type, contact, content, url, siteId, userAgent, ip, status, adminNote, createdAt, updatedAt) VALUES (?,?,?,?,?,?,?,?,?,'',datetime('now'),datetime('now'))`,
+                id, typ, contact, content, urlV, siteID, ua, ip, "new")
+        if err != nil {
+                writeJSONErr(w, "提交失败: "+err.Error(), 500)
+                return
+        }
+        writeJSONOK(w, map[string]interface{}{"id": id, "submitted": true})
+}
+
+// htmlEscaper — 反馈内容入库前转义 (与 html.EscapeString 等价但用 strings.Replacer 更轻量).
+//   admin/feedback.html 详情 modal 用 innerHTML 模板字符串拼 f.content, 不转义会触发
+//   <img onerror=alert(1)> 等存储型 XSS; 转义后 innerHTML 显示为字面量文本.
+var htmlEscaper = strings.NewReplacer(
+        `&`, "&amp;",
+        `<`, "&lt;",
+        `>`, "&gt;",
+        `"`, "&quot;",
+        `'`, "&#39;",
+)
+
+// clientIP — 提取客户端 IP (X-Forwarded-For 优先, 兼容 Caddy/Nginx 反代场景).
+//   无 XFF 时取 r.RemoteAddr 去掉端口部分.
+func clientIP(r *http.Request) string {
+        if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+                // 取第一个 (最接近客户端的) IP, 去空白
+                parts := strings.SplitN(xff, ",", 2)
+                ip := strings.TrimSpace(parts[0])
+                if ip != "" {
+                        return ip
+                }
+        }
+        host := r.RemoteAddr
+        if idx := strings.LastIndex(host, ":"); idx > 0 {
+                host = host[:idx]
+        }
+        return host
 }
 
 // ---------- 数据备份 API ----------
@@ -3399,14 +3588,41 @@ func fillSettingsPageData(data map[string]interface{}) {
                                         v = string(b)
                                 }
                         }
+                        // R54-1A: 附加中文说明 / 默认值 / 分类, 让 admin/settings 页面不再只显示 raw key
+                        desc, defVal, cat, isFb := "", "", "", false
+                        if meta, ok := settingMeta[key]; ok {
+                                desc = meta.desc
+                                defVal = meta.defaultVal
+                                cat = meta.category
+                                isFb = meta.isFeedback
+                        }
                         settings = append(settings, map[string]interface{}{
                                 "key": key, "value": v, "rawValue": v, "isJson": isJSON,
-                                "updatedAt": "-",
+                                "updatedAt": "-", "desc": desc, "defaultValue": defVal,
+                                "category": cat, "isFeedback": isFb,
                         })
                 }
         }
         data["Settings"] = settings
         data["Total"] = len(settings)
+        // R54-1A: 当前反馈模块开关状态 (供 admin/settings 顶部 toggle 卡片高亮显示)
+        data["FeedbackEnabled"] = getFeedbackEnabled()
+        // R54-1A: 已知 key 的说明清单 (按 settingMeta 字典序, 供页面顶部"说明表格"渲染)
+        type metaRow struct {
+                key, desc, defaultVal, category string
+        }
+        metas := make([]metaRow, 0, len(settingMeta))
+        for k, m := range settingMeta {
+                metas = append(metas, metaRow{key: k, desc: m.desc, defaultVal: m.defaultVal, category: m.category})
+        }
+        sort.Slice(metas, func(i, j int) bool { return metas[i].key < metas[j].key })
+        metaOut := make([]map[string]interface{}, 0, len(metas))
+        for _, m := range metas {
+                metaOut = append(metaOut, map[string]interface{}{
+                        "key": m.key, "desc": m.desc, "defaultValue": m.defaultVal, "category": m.category,
+                })
+        }
+        data["SettingMetas"] = metaOut
 }
 
 func fillFeedbackPageData(data map[string]interface{}, r *http.Request) {

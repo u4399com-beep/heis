@@ -216,6 +216,12 @@ var DefaultFetchConfig = FetchConfig{
 }
 
 // DefaultCleanConfig — 与 TS 端 DEFAULT_CLEAN_CONFIG 同口径.
+//  R54-1B 修复 BUG-D1: 原 AdPatterns 第 5 条 `[（(]?完?本[网站站][）)]?` 量词全可选,
+//    导致单独 "本站" / "本网" / "完本网" 任意出现均被命中 → 误删 "本站所收录作品..."
+//    等正文中的 "本站" 前缀 (留下 "所收录作品..." 残片). 改为要求括号包围
+//    `[（(]完?本[网站站][）)]` (匹配 "(完本站)" / "(本网)" / "（完本站）" 等带括号
+//    水印, 不再误伤正文 "本站..." 短语). R49-1B 起 EXTRA_AD_PATTERNS 已覆盖
+//    "本站..." 长短语类法律免责 (本站所收录作品... / 本站内容来源于网络... 等).
 var DefaultCleanConfig = CleanConfig{
         RemoveSelectors: []string{"script", "style", "iframe", "ins", "noscript", ".adsbygoogle", ".ad", "#ad"},
         AdPatterns: []string{
@@ -223,7 +229,7 @@ var DefaultCleanConfig = CleanConfig{
                 `本章未完.*?点击下一页继续阅读`,
                 `请记住本书.*?域名`,
                 `最新章节请到.*?查看`,
-                `[（(]?完?本[网站站][）)]?`,
+                `[（(]完?本[网站站][）)]`,
                 `一秒记住.*?免费读`,
         },
         Whitelist:      []string{"p", "br", "b", "strong", "em", "i", "u", "h1", "h2", "h3", "h4", "h5", "h6"},

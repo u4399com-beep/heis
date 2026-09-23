@@ -1,7 +1,8 @@
 # HEIS 小说采集与发布系统 — 安装部署图文教程
 
-> **本文件覆盖 Go 重写后的完整部署链路**（R38–R51 全链路迁移 + R50-1C 重写 + R51-1B 校对）。主后端
-> `go-backend/main.go`（heis-backend，:3000）+ 11 个 Go mini-services（端口 3010–3020）+
+> **本文件覆盖 Go 重写后的完整部署链路**（R38–R54 全链路迁移 + R50-1C 重写 + R51-1B 校对 +
+> R52-1A/1B + R53-1A/1B + **R54-1C 主题模板核实 + DEPLOY 全文重写 + 深度抓 bug + 清理**）。
+> 主后端 `go-backend/main.go`（heis-backend，:3000）+ 11 个 Go mini-services（端口 3010–3020）+
 > bridgeserver 共享包。Go 二进制单文件部署，**无 cgo / 无 Bun / 无 Node / 无 Docker 依赖**，
 > 运行期内存 17 MB（vs 旧 Next.js 2.2 GB），单机即可承载。
 >
@@ -9,6 +10,13 @@
 > `./go-backend/heis-backend`。仅当 `go-backend/*.go` 或 `go-backend/services/*/main.go`
 > 源码变更时才需重建。平台 `bun run dev` 实际拉起 `bun start-go.js`，后者循环
 > `./go-backend/heis-backend`，进程异常退出后 2 s 自动重启。
+>
+> **R54-1C 校对说明**：10 套 × 8 页型 = 80 模板深度核实（CSS class / 配色一致 / 列表排列 /
+> DOM 结构 / 数据绑定 / 链接 / CSS 加载 / 封面图绝对路径 / updatedAt 格式化 / 分类名 4 字）+
+> 25 处硬编码 missing asset 路径修复（x2552 logo.png 8 处 + 101kks user.png 16 处 + 101kks
+> home logo_index.png 1 处，全部替换为内联 SVG data URI，模板自洽不再依赖 public/ 下
+> 缺失文件）+ 4 项 TODO 全部为有效待办（OpenCC + DB 聚合，非过时注释）+ backend.log 临时
+> 文件清理 + .gitignore 校对一致 + go build/vet/staticcheck 全 0。
 
 ---
 
@@ -26,7 +34,7 @@
 10. [架构图](#十架构图)
 11. [故障排查](#十一故障排查)
 12. [生产部署](#十二生产部署)
-13. [迁移说明](#十三迁移说明从旧-nextjs-版本升级)
+13. [迁移说明（从旧 Next.js 版本升级）](#十三迁移说明从旧-nextjs-版本升级)
 14. [参考](#十四参考)
 
 ---
@@ -45,7 +53,7 @@
 | 主后端 | Go 1.23+ + `net/http` 标准库（go.mod 声明 1.26，但 1.21+ API 即可编译） |
 | 模板 | `html/template`（94 个 = 10 主题 × 8 页型 + 14 admin） |
 | 数据库 | modernc.org/sqlite v1.59.0（纯 Go SQLite，**无 cgo**）+ Prisma schema（仅建表用） |
-| 采集引擎 | `go-backend/crawl/*.go`（8 模块 10655 行，纯 Go 标准库 + goquery + utls + chromedp） |
+| 采集引擎 | `go-backend/crawl/*.go`（8 模块 10671 行，纯 Go 标准库 + goquery + utls + chromedp） |
 | mini-services | `go-backend/services/*/main.go`（11 个独立 Go 二进制，端口 3010–3020）+ bridgeserver 共享包 |
 | 部署 | 单二进制 + bash 脚本（start-all.sh / stop-all.sh / status.sh），**无 Docker / 无 compose** |
 
@@ -53,7 +61,7 @@
 
 - **单二进制部署**：`go build -o heis-backend .` 产出 24 MB 静态链接二进制，运行期 17 MB 内存
   （vs 旧 Next.js 2.2 GB，OOM 风险消失），单机即可承载。
-- **采集引擎**（`go-backend/crawl/` 8 模块 10655 行）：规则四段（list / book / toc / content）
+- **采集引擎**（`go-backend/crawl/` 8 模块 10671 行）：规则四段（list / book / toc / content）
   解析、CSS / XPath / regex / JSON 字段提取、分页与翻页 Referer 链、编码识别（GBK 自动转
   UTF-8）、正文清洗（广告 / 去壳页 / 零宽字符剥离 / trafilatura 桥）、分卷排序、并发限速 +
   HostGate 双限速、封面本地化（webp）。
@@ -70,7 +78,8 @@
   least-latency 旋转策略 + ProxyStatsSnapshot admin 查询）+ brotli miss 计数 + probe target 轮换 +
   主动 probe 5 min 间隔 + 3 次失败冷却 + SSRF 守卫 + mirrorDomains 镜像组 + per-host UA 钉扎 +
   CookieJar 跨子域合并 + 网络层错误不清 utls choice + Token 挑战 HTTP 求解 + Cookie 挑战重试 +
-  TLS handshake 失败清 utls + 行为模拟 Gaussian 微抖 + micro wheel events + 15% 概率 Tab key。
+  TLS handshake 失败清 utls + 行为模拟 Gaussian 微抖 + micro wheel events + 15% 概率 Tab key +
+  native wheel + Esc 键 + Page Down 键。
 - **站级签名 / 解密代理**：对 token / 签名 / AES 类站点（笔趣阁 / 七猫 / 得奇 / xjp 等）以外置
   Go mini-service 承载，引擎 `tokenUrl` 钩子对接。
 - **管理端**：14 个后台页面（dashboard / tasks / rules / books / categories / sites / links /
@@ -90,7 +99,21 @@
 - **分类名 4 字化**（R52-1A）：标准分类从 2 字 (玄幻/武侠/...) 改 4 字 (玄幻奇幻/武侠江湖/...)
   共 15 个，与 DB schema 一致。`NormalizeCategory` 三段式归一化：①精确别名命中 →
   ②标准 4 字名直接返回 → ③模糊包含匹配 (源站名含 4 字名 → 合并)。原 2 字源站分类
-  通过 `categoryAliases` 兑底转 4 字（兼容旧源站未升级场景）。
+  通过 `categoryAliases` 兜底转 4 字（兼容旧源站未升级场景）。
+- **updatedAt 格式化修复**（R53-1B）：Prisma `@updatedAt` 把 DateTime 写成 Unix ms
+  时间戳（13 位整数字符串），原 `fmtDate` / `fmtDateShort` / `shortTime` 三处模板/工具函数
+  直接 `s[:10]` / `s[5:7]+s[8:10]` 切片会把时间戳切成残片。修复后三处全部先调用
+  `formatUpdatedAt(s)` 归一化（Unix ms → `"2006-01-02 15:04"`）再切片，admin dashboard /
+  tasks / rules / books 多页端到端实测从 `"16560/71510/04577"` 时间戳残片修复为
+  `"09-15 23:56"` 正常日期。
+- **模板硬编码 missing-asset 修复**（R54-1C）：x2552 + 101kks 两套主题共 25 处硬编码
+  `<img src="/heibing/images/logo.png">` / `<img src="/images/user.png">` /
+  `<img src="/images/logo_index.png">` 引用 `public/` 下根本不存在的源站克隆资产，
+  运行时全部 404 走到 `homeHandler` 返回 HTML 而非图片 → 浏览器渲染裂图。修复：全部
+  替换为内联 `data:image/svg+xml;base64,...` 占位 SVG（180×60 蓝底「小说站」/ 36×36 灰圆
+  通用头像 / 280×60 蓝底「小说阅读网」三款），模板自洽，不再依赖 `public/heibing/` 与
+  `public/images/` 缺失目录。x2552.css 仍引用源站 `/heibing/images/wamcc.png` 雪碧图作为
+  多处背景，属于已知未替换克隆限制（见 §11.8）。
 
 ---
 
@@ -106,6 +129,7 @@
 | **bash** | 4+ | `mini-services/*.sh` 启动脚本依赖（macOS 默认 bash 3 需 `brew install bash`） | 系统 |
 | **Prisma CLI**（可选） | 5+ | 仅当需要 `prisma db push` 重新建表时才需要；Go 后端启动会直接 open 既有 SQLite 文件，不依赖 Prisma | https://www.prisma.io/ 或 `bunx prisma` / `npx prisma` |
 | **Node / Bun**（可选） | Node 18+ 或 Bun 1.0+ | 仅当用 `bunx prisma db push` 建表，或用 `bun start-go.js` 自动重启包装时需要；Go 后端本身**不依赖** | https://nodejs.org/ / https://bun.sh/ |
+| **staticcheck**（可选） | 2023.1+ | 源码深度静态检查（命名规范 ST1000/ST1003/ST1020/ST1021 全部为风格提示，非 bug）；R54-1C 校对 0 issues | `go install honnef.co/go/tools/cmd/staticcheck@latest` |
 
 ### 2.2 安装 Go 工具链（详细步骤）
 
@@ -180,7 +204,7 @@ sqlite3 --version   # 验证
 
 | 端口 | 进程 | 用途 |
 | --- | --- | --- |
-| **3000** | `heis-backend`（go-backend/main.go） | 主后端：前台 SSR + /admin 后台 + /api/public/* + /api/admin/* + 静态资源 /clone-css/* |
+| **3000** | `heis-backend`（go-backend/main.go） | 主后端：前台 SSR + /admin 后台 + /api/public/* + /api/admin/* + 静态资源 /clone-css/* + /covers/* |
 | 3010 | bqg713-proxy | 笔趣阁 token / AES 站点签名代理 |
 | 3011 | fetch-relay | 通用 HTTP 中继桥（降级链 3 级） |
 | 3012 | scrapling-bridge | Scrapling 抓取桥（static / stealthy / playwright，含可选 Python 子进程） |
@@ -209,9 +233,10 @@ git clone https://github.com/u4399com-beep/heis.git
 cd heis
 
 # 验证关键文件就位
-ls -la go-backend/main.go          # 主后端源码 (53KB)
+ls -la go-backend/main.go          # 主后端源码 (55KB, 1413 行)
+ls -la go-backend/admin.go         # 后台 API + admin SSR (173KB, 3742 行)
 ls -la go-backend/heis-backend     # 预编译二进制 (24MB, 已入 git, 平台 clone 即跑)
-ls -la go-backend/crawl/           # 8 模块采集引擎 (10655 行)
+ls -la go-backend/crawl/           # 8 模块采集引擎 (10671 行)
 ls -la go-backend/services/        # 11 mini-services + bridgeserver 共享包
 ls -la go-backend/templates/       # 94 个模板 (10 主题 × 8 + 14 admin)
 ls -la prisma/schema.prisma        # 11+1 表 schema (Go 后端不依赖, 仅 prisma db push 用)
@@ -224,11 +249,11 @@ ls -la public/clone-css/           # 10 套主题的源站 CSS
 ```
 heis/                                 # 项目根
 ├── go-backend/                       # Go 后端 (主后端 + 采集引擎 + 11 mini-services + 94 模板)
-│   ├── main.go                       #   主后端 (1330 行): 路由 + 86 FuncMap + 静态服务 + DB + 94 模板加载
-│   ├── admin.go                      #   后台 API + admin SSR (3573 行): 14 个 admin 页面 + /api/admin/* 14 路由
+│   ├── main.go                       #   主后端 (1413 行): 路由 + 86 FuncMap + 静态服务 + DB + 94 模板加载
+│   ├── admin.go                      #   后台 API + admin SSR (3742 行): 14 个 admin 页面 + /api/admin/* 14 路由
 │   ├── go.mod / go.sum               #   Go 模块定义 + 依赖校验
 │   ├── heis-backend                  #   go build 输出二进制 (24 MB, 已入 git 平台 clone 即跑)
-│   ├── crawl/                        #   采集引擎 (8 模块 10655 行)
+│   ├── crawl/                        #   采集引擎 (8 模块 10671 行)
 │   │   ├── fetcher.go                #     HTTP 采集 + 8 级降级链 + UA 池 + CookieJar (4809 行)
 │   │   ├── parser.go                 #     css / xpath / regex / json 字段提取 (1612 行)
 │   │   ├── runner.go                 #     4 段采集流程 + 任务调度 + Semaphore (1481 行)
@@ -236,7 +261,7 @@ heis/                                 # 项目根
 │   │   ├── types.go                  #     规则 / 配置 / 结果数据结构 (737 行)
 │   │   ├── hostgate.go               #     并发 + 速率双限速器 (423 行)
 │   │   ├── storage.go                #     db / txt 双存储 + 封面本地化 (355 行)
-│   │   └── smart.go                  #     LLM 智能分类 / 完结判断 + 正则缓存 (339 行)
+│   │   └── smart.go                  #     智能分类 / 完结判断 + 4 字分类 + 正则缓存 (355 行)
 │   ├── services/                     #   11 mini-services + bridgeserver 共享包
 │   │   ├── bridgeserver/bridgeserver.go  # 共享样板 (917 行): /health /metrics /info 鉴权 限速 SSRF 守卫
 │   │   ├── bqg713-proxy/main.go           # 3010 笔趣阁 token+AES
@@ -249,9 +274,11 @@ heis/                                 # 项目根
 │   │   ├── moli-bridge/main.go             # 3017 moli 桥
 │   │   ├── curl-impersonate-bridge/main.go # 3018 curl_cffi JA3 桥
 │   │   ├── trafilatura-bridge/main.go      # 3019 正文抽取桥
-│   │   └── cloak-browser/main.go           # 3020 隐身 chromium
+│   │   └── cloak-browser/main.go           # 3020 隐身 chromium (974 行, 行为模拟 6 项)
 │   └── templates/                    #   94 个 Go html/template 模板
-│       ├── admin/                    #     14 个后台页面
+│       ├── admin/                    #     14 个后台页面 (layout/dashboard/tasks/rules/books/
+│       │                             #                categories/sites/links/themes/downloads/
+│       │                             #                settings/feedback/backup/seo-audit)
 │       ├── aijjxs/  101kks/  x2552/  #     主题 1-3
 │       ├── 23qb/    ddyueshu/        #     主题 4-5
 │       ├── huangjinwu/  ggd66/       #     主题 6-7
@@ -271,8 +298,8 @@ heis/                                 # 项目根
 │   ├── clone-css/*.css               #   10 个主题的源站 CSS (由 main.go /clone-css/ 路由服务)
 │   ├── robots.txt  sw.js  manifest.json  icon.svg  logo.svg  # 站点元数据
 ├── scripts/rule-yueyouxs.json        # yueyouxs (神马小说) 站点规则 backup-restore 格式 JSON
-├── agent-ctx/R*-*.md                 # 各轮 agent 工作记录 (R38-R51, 32 文件)
-├── worklog.md                        # 完整迁移工作日志 (~20200 行, R3-a → R51-1B 全链路)
+├── agent-ctx/R*-*.md                 # 各轮 agent 工作记录 (R38-R54, 38 文件)
+├── worklog.md                        # 完整迁移工作日志 (~22500 行, R3-a → R54-1C 全链路)
 ├── package.json                      # 仅 scripts.dev = "bun start-go.js" (auto-restart 包装)
 ├── start-go.js                       # Bun 脚本: 循环启动 ./go-backend/heis-backend, 挂了 2s 重启
 ├── start.sh                          # Bash 等价: while true; do ./go-backend/heis-backend; sleep 2; done
@@ -281,6 +308,23 @@ heis/                                 # 项目根
 ├── Caddyfile                         # 沙箱网关 SSRF 防御配置 (端口白名单 3010-3015 + 透传 3000)
 ├── DEPLOY.md                         # 本文件
 └── README.md                         # 功能总览 + 快速开始 + 架构
+```
+
+### 3.3 项目根 sanity check
+
+```bash
+cd heis
+
+# 验证 Go 模块
+cd go-backend && go mod verify         # 期望: all modules verified
+ls crawl/                               # 期望: 8 个 .go 文件
+ls services/                            # 期望: 12 个子目录 (11 服务 + bridgeserver)
+ls templates/                           # 期望: 12 个子目录 (10 主题 + admin + .gitkeep)
+find templates -name '*.html' | wc -l   # 期望: 94 (10 主题 × 8 + 14 admin)
+
+# 验证 git pre-commit binary
+file go-backend/heis-backend            # 期望: ELF 64-bit LSB executable, x86-64
+./go-backend/heis-backend -h 2>&1 | head -1   # 期望: heis-backend 启动 (无效参数会 panic 但首行应输出数据库路径)
 ```
 
 ---
@@ -347,7 +391,7 @@ go build -o bin/fetch-relay ./services/fetch-relay
 ### 4.3 编译验证
 
 ```bash
-# 1. 主后端启动测试 (前台台运行, Ctrl+C 退出)
+# 1. 主后端启动测试 (前台运行, Ctrl+C 退出)
 cd /home/z/my-project
 ./go-backend/heis-backend
 # 期望控制台输出:
@@ -365,6 +409,11 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3000/
 # 3. 验证 go vet (源码静态检查, 应 0 warnings)
 cd go-backend && go vet ./...
 # 期望: 无任何输出 (0 warnings)
+
+# 4. 验证 staticcheck (可选, 风格检查, 0 issues)
+go install honnef.co/go/tools/cmd/staticcheck@latest
+cd go-backend && staticcheck ./...
+# 期望: 无任何输出 (R54-1C 校对: 0 issues)
 ```
 
 ### 4.4 编译失败排查
@@ -388,6 +437,25 @@ df -h /home/z/my-project        # 确保有 ≥ 1 GB 可用空间
 # 项目保守策略: 38 个 exported funcs 报 unreachable 但全保留 (供未来用, R48-1B 决议)
 ```
 
+### 4.5 R54-1C 模板变更后重建
+
+R54-1C 修改 `go-backend/templates/x2552/*.html` + `go-backend/templates/101kks/*.html` 共 17
+个文件（25 处硬编码 missing-asset `<img>` 替换为内联 SVG data URI）。**模板是运行时加载的
+资源**，不需 `go build`：重启 heis-backend 即可生效（main.go 启动时 `tmpls.ParseFiles` 重新
+解析 94 个模板）。如果使用 `bun start-go.js` 包装，`pkill -f heis-backend` 后 2s 自动重启
+即加载新模板。
+
+```bash
+# 模板变更后重启 (3 种方式任选)
+pkill -f heis-backend && sleep 2 && ./go-backend/heis-backend   # 直接
+bun start-go.js & pkill -f heis-backend                          # bun 自动重启
+bash start.sh & pkill -f heis-backend                            # bash 自动重启
+
+# 验证模板生效
+curl -s http://localhost:3000/ | grep -c 'data:image/svg'   # 期望 ≥ 1 (x2552 主题)
+curl -s 'http://localhost:3000/?view=home&site=101kks-demo' 2>&1 | grep -c 'data:image/svg'
+```
+
 ---
 
 ## 五、数据库初始化
@@ -398,9 +466,9 @@ Prisma schema 位于 `prisma/schema.prisma`，定义 11+1 张表（Feedback R40 
 
 | 表名 | 说明 |
 | --- | --- |
-| Category | 分类 |
+| Category | 分类（15 个标准 4 字：玄幻奇幻 / 奇幻魔幻 / 武侠江湖 / 仙侠修真 / 都市生活 / 言情小说 / 历史军事 / 军事战争 / 游戏竞技 / 科幻未来 / 悬疑推理 / 灵异鬼怪 / 体育竞技 / 轻小说类 / 现实生活） |
 | Rule | 采集规则（含完整 config JSON） |
-| Book | 书籍 |
+| Book | 书籍（cover 字段存 `covers/<name>.webp` 相对路径，main.go 出口加前导 `/` 拼绝对路径） |
 | Chapter | 章节 |
 | BookTag | 书籍标签（搜索引擎下拉词） |
 | Task | 采集任务 |
@@ -580,6 +648,10 @@ echo $!  # 记下 PID 用于停止
 pkill -f heis-backend
 ```
 
+> **临时文件清理**（R54-1C）：`go-backend/backend.log` 是 nohup 输出临时文件，`.gitignore`
+> 已忽略 `*.log` + `go-backend/*.log`；R54-1C 清理 session 期间产生的 1 个 183 字节
+> `backend.log` 临时文件，运行期再次生成时不会被 git 追踪。
+
 ### 7.2 方式 2：bun auto-restart（推荐，平台默认）
 
 平台 `bun run dev` 实际拉起 `bun start-go.js`，后者循环启动 `./go-backend/heis-backend`，
@@ -620,7 +692,7 @@ bash start.sh
 
 ```bash
 #!/bin/bash
-# Go 后端 auto-restart (Go 挂了 2 秒重启)
+# R49: Go 后端 auto-restart (Go 挂了 2 秒重启)
 cd "$(dirname "$0")"
 while true; do ./go-backend/heis-backend; sleep 2; done
 ```
@@ -692,7 +764,7 @@ bash mini-services/status.sh
 
 | 地址 | 用途 |
 | --- | --- |
-| `http://localhost:3000/admin` | 管理后台首页（dashboard 看板） |
+| `http://localhost:3000/admin` | 管理后台首页（dashboard 看板，R53-1B 修复 updatedAt 后显示正常日期） |
 | `http://localhost:3000/admin/tasks` | 采集任务（单书 / 批量 / 实时 / 定时增量 autoRefresh） |
 | `http://localhost:3000/admin/rules` | 采集规则（CRUD + 在线测试 + 极限校准） |
 | `http://localhost:3000/admin/books` | 书籍 / 章节管理 |
@@ -720,6 +792,52 @@ bash mini-services/status.sh
 > ⚠️ **后台无登录鉴权**：管理端 `/admin` 当前不要求登录，请勿直接暴露公网。生产环境务必
 > 前面套反向代理（Nginx / Caddy）做 Basic Auth + IP 白名单，或仅放内网访问。详见
 > [§12.2 反向代理](#122-反向代理生产必做因-admin-无鉴权)。
+
+### 8.4 10 主题 × 8 页型 模板矩阵
+
+R54-1C 已对全部 80 个前台模板做深度核实（10 套主题 × 8 页型），每套每页型确认：
+
+| # | 核实项 | 全 80 模板通过情况 |
+| --- | --- | --- |
+| 1 | CSS class 在 `clone-css/<site>.css` 有定义 | ✓ 100%（10 个 CSS 文件全部就位） |
+| 2 | 配色一致（同一主题内 `<body>` / `<a>` / `.cat` / `.badge` 等用色统一） | ✓ 100% |
+| 3 | 列表排列（grid/flex 列数与 CSS class 一致，如 `grid2` / `lines-books-2col` / `booklist-grid`） | ✓ 100% |
+| 4 | DOM 结构（每页型在同一主题内布局结构一致：top-float / wrap / layout / panel / footer） | ✓ 100% |
+| 5 | 数据绑定 `{{range .Books}}` / `{{.name}}` / `{{.author}}` / `{{.category}}` / `{{.wordCount}}` 等动态值 | ✓ 100% |
+| 6 | 链接 `/?view=book&id={{.id}}` / `/?view=category&cat={{.id}}` / `/?view=search&q={{.Q}}` | ✓ 100% |
+| 7 | CSS 加载 `<link href="/clone-css/<site>.css">` 文件名匹配主题目录名 | ✓ 100%（grep 80 模板 × 1 css link） |
+| 8 | 封面图 `src="{{.cover}}"` / `{{.Book.cover}}` / `{{(index .Books 0).cover}}` 等动态值（绝对路径由 main.go 出口加 `/` 拼） | ✓ 100%（0 处硬编码 `/covers/` 路径） |
+| 9 | updatedAt 格式化走 `{{fmtDate .updatedAt}}` / `{{fmtDateShort .updatedAt}}` / `{{.updatedAt}}` （R53-1B 三处工具函数先经 formatUpdatedAt 归一化） | ✓ 100% |
+| 10 | 分类名 4 字（smart.go `NormalizeCategory` 把 2 字旧名 + 3 字"轻小说" + 4 字变体全合并到 15 个标准 4 字名） | ✓ 100% |
+
+### 8.5 R54-1C 25 处硬编码 missing-asset 修复
+
+R54-1C 修复前，x2552 与 101kks 两套主题共 25 处 `<img>` 标签引用 `public/` 下根本不存在的
+源站克隆资产，运行时全部 404：
+
+| 主题 | 页型 | 引用路径 | 出现次数 | 修复后 |
+| --- | --- | --- | --- | --- |
+| x2552 | home / book / read / category / search / ranking / keyword / fulltext | `/heibing/images/logo.png` | 8 | 内联 180×60 蓝底「小说站」SVG |
+| 101kks | home / book / read / category / search / ranking / keyword / fulltext | `/images/user.png` | 16（每页 2 处） | 内联 36×36 灰圆通用头像 SVG |
+| 101kks | home | `/images/logo_index.png` | 1 | 内联 280×60 蓝底「小说阅读网」SVG |
+
+修复方式：全部替换为 `src="data:image/svg+xml;base64,..."` 内联 SVG data URI，模板自洽，
+不再依赖 `public/heibing/` 与 `public/images/` 缺失目录。验证：
+
+```bash
+# 修复后 grep 期望 0 匹配
+grep -r 'src="/heibing' go-backend/templates/   # 期望: 0
+grep -r 'src="/images/' go-backend/templates/   # 期望: 0
+
+# 验证 SVG data URI 已写入
+grep -c 'data:image/svg+xml;base64' go-backend/templates/x2552/home.html   # 期望: 1
+grep -c 'data:image/svg+xml;base64' go-backend/templates/101kks/home.html  # 期望: 3
+```
+
+> **已知未替换克隆限制**：`public/clone-css/x2552.css` 仍引用源站
+> `/heibing/images/wamcc.png` 雪碧图作为多处 `background-image`（按钮 / 图标 / 装饰圆角），
+> 属于克隆 CSS 历史包袱，需要重新绘制 100+ 图标雪碧图才能完整替换，超出 R54-1C 范围。前台
+> 文字内容仍正常渲染，仅装饰性图标缺失，不影响 SEO 与内容可读性。详见 §11.8。
 
 ---
 
@@ -847,6 +965,13 @@ R47-1B 将仅剩的 `seed-rule-yueyouxs.ts` 转为 portable JSON
 | 27 | 行为模拟 Gaussian 微抖 | R50-1A | `rand.NormFloat64` stddev=1.5px 替代均匀分布 ±3px，抖动分布更接近真实用户生理抖动 |
 | 28 | 滚轮 micro wheel events | R50-1A | 5-15px deltaY × 2-4 步插入主滚动间，模拟真实用户 wheel 事件连续触发 |
 | 29 | 15% 概率 Tab 键 focus 切换 | R50-1A | `chromedp.KeyEvent "\t"` 在 focusable 元素间切换 + 200-500ms 短停顿，避免被检测为无键盘自动化 |
+| 30 | native wheel events | R51-1A | cloak-browser 直接合成 `mouse.Event` 注入 (绕过 DevTools Protocol 检测层) + Tab + Enter + 双击 + 反向滚动 |
+| 31 | Esc 键 dismiss 弹窗 | R52-1A | 5% 概率 chromedp.KeyEvent "\x1b" 关闭 dialog / popup / modal 干扰 |
+| 32 | Page Down 键翻页 | R52-1A | 10% 概率 chromedp.KeyEvent "\x12" 替代滚轮，模拟键盘用户翻页习惯 |
+| 33 | 行为模拟反向滚动 | R51-1A | 5% 概率 deltaY=-3..-15px 模拟用户回滚查看历史内容 |
+| 34 | Enter 键提交 | R51-1A | 5% 概率 chromedp.KeyEvent "\r" 在 search input 内提交搜索 |
+| 35 | 双击元素 | R51-1A | 3% 概率 mouse.NodeDetails 双击 focusable 元素 (与单击区分) |
+| 36 | cloak-browser page.AddScriptToEvaluateOnNewDocument | R51-1A | 隐身 chromium 注入反检测脚本，在每个新文档加载前执行 (navigator.webdriver=undefined 等) |
 
 ---
 
@@ -859,9 +984,10 @@ R47-1B 将仅剩的 `seed-rule-yueyouxs.ts` 转为 portable JSON
                           │
                           ▼
               ┌────────────────────────────────┐
-              │  Go heis-backend :3000          │  (go-backend/main.go, 1330 行)
+              │  Go heis-backend :3000          │  (go-backend/main.go, 1413 行)
               │  ────────────────────────────  │
               │  静态资源 /clone-css/*           │  (源站 CSS, public/clone-css/*.css)
+              │  封面 /covers/*                 │  (R52-1A 三段: data/covers → public/covers → SVG 占位)
               │  前台 SSR 94 个模板             │  (10 主题 × 8 页型 + 14 admin)
               │    10 主题:                     │
               │      aijjxs   101kks   x2552   │
@@ -878,6 +1004,11 @@ R47-1B 将仅剩的 `seed-rule-yueyouxs.ts` 转为 portable JSON
               │      sites links themes        │
               │      downloads settings        │
               │      feedback backup seo-audit │
+              │  FuncMap 86 个 (含 fmtDate /    │
+              │    fmtDateShort / shortTime 三 │
+              │    处先经 formatUpdatedAt 归一化│
+              │    防 Prisma @updatedAt Unix ms│
+              │    切片错位)                    │
               │  API 路由:                     │
               │    /api/public/*  6 个          │
               │    /api/admin/*  14 个         │
@@ -887,7 +1018,7 @@ R47-1B 将仅剩的 `seed-rule-yueyouxs.ts` 转为 portable JSON
                           │
                           ▼
               ┌────────────────────────────────┐
-              │  采集引擎 crawl/                  │  (10655 行 Go)
+              │  采集引擎 crawl/                  │  (10671 行 Go)
               │  ────────────────────────────  │
               │  fetcher.go  4809 行             │  ← 8 级降级链总调度
               │  parser.go   1612 行             │  ← css / xpath / regex / json 提取
@@ -895,8 +1026,8 @@ R47-1B 将仅剩的 `seed-rule-yueyouxs.ts` 转为 portable JSON
               │  cleaner.go   899 行             │  ← 广告 / 去壳 / 编码 / trafilatura
               │  types.go     737 行             │  ← 规则 / 配置 / 结果数据结构
               │  hostgate.go  423 行             │  ← 并发 + 速率双限速器
-              │  storage.go    355 行             │  ← db / txt 双存储 + 封面本地化
-              │  smart.go     339 行             │  ← LLM 智能分类 / 完结判断
+              │  storage.go    355 行             │  ← db / txt 双存储 + 封面本地化 + 路径穿越防御
+              │  smart.go     355 行             │  ← 智能分类 / 完结判断 + 4 字分类 + 正则缓存
               │                                 │
               │  反反爬:                        │
               │    utls Hello 指纹池 36 款      │  (含 PSK / PQ / 老 iOS / Chrome 老版 / Firefox 老版 ESR / 2016 era Chrome 58)
@@ -910,6 +1041,7 @@ R47-1B 将仅剩的 `seed-rule-yueyouxs.ts` 转为 portable JSON
               │    2captcha 验证码               │  (可选, 连续 3 次失败 60s cooldown)
               │    MarkProxyFailed / OK          │  (代理健康跟踪 + least-latency)
               │    行为模拟 Gaussian 微抖        │  (rand.NormFloat64 stddev=1.5px)
+              │    native wheel + Esc + PgDn     │  (R51-1A + R52-1A 行为模拟 6 项)
               └───────────┬────────────────────┘
                           │
               ┌───────────┴────────────────────┐
@@ -925,7 +1057,7 @@ R47-1B 将仅剩的 `seed-rule-yueyouxs.ts` 转为 portable JSON
               │  3017 moli-bridge                │  moli 桥
               │  3018 curl-impersonate-bridge    │  curl_cffi JA3 桥
               │  3019 trafilatura-bridge         │  正文抽取桥
-              │  3020 cloak-browser              │  隐身 chromium
+              │  3020 cloak-browser              │  隐身 chromium (974 行)
               │                                 │
               │  全部 Go 二进制                 │  (R43-1C 删旧 TS/Python 版)
               │  start-all.sh 一键拉起          │
@@ -943,6 +1075,8 @@ R47-1B 将仅剩的 `seed-rule-yueyouxs.ts` 转为 portable JSON
 heis-backend (main.go mux 路由)
    │
    ├── /clone-css/*  →  public/clone-css/<theme>.css     (静态资源)
+   ├── /covers/*     →  data/covers/<name> 或 public/covers/<name> 或 SVG 占位 (R52-1A 三段式)
+   ├── /icon.svg /robots.txt /manifest.json /favicon.ico  →  public/ 静态文件
    ├── /api/public/*  →  admin.go 6 个公开 API
    ├── /api/admin/*  →  admin.go 14 个管理 API
    │
@@ -951,7 +1085,9 @@ heis-backend (main.go mux 路由)
               ├── getSite(siteId)           →  Site 表查站点配置
               ├── 注册表查 themeId           →  对应主题目录 (templates/<theme>/)
               ├── 视图数据查询               →  Book / Chapter / Category / BookTag 表
+              │                              (cover 字段出口加前导 '/' 拼绝对路径 /covers/foo.webp)
               └── template.ExecuteTemplate  →  渲染 home.html 输出 HTML
+                                              (模板 <img src="{{.cover}}"> 渲染输出 <img src="/covers/foo.webp">)
 ```
 
 ### 10.3 请求流（采集任务）
@@ -985,8 +1121,28 @@ crawl/runner.go (TaskRuntime.Run)
    │
    └── 5. storage           →  crawl/storage.go (db / txt + 封面本地化)
                                    │
-                                   └── SQLite WAL (db/custom.db)
+                                   ├── SQLite WAL (db/custom.db)
+                                   └── data/covers/<name>.webp (SaveCoverWebp 落盘)
+                                       └── 模板 src="{{.cover}}" → 浏览器 GET /covers/<name>.webp
+                                           → 文件存在返回 WebP, 不存在返回 SVG 占位 (R52-1A)
 ```
+
+### 10.4 模板矩阵（10 × 8 = 80 + 14 admin = 94）
+
+| 主题 \ 页型 | home | book | read | category | search | ranking | keyword | fulltext |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| **aijjxs** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **101kks** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **x2552** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **23qb** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **ddyueshu** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **huangjinwu** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **ggd66** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **pilishuwu** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **trxsw** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **shipsay** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+
+每模板均含 1 处 `<link href="/clone-css/<theme>.css">`（grep 80 模板 × 1 css link 校验通过）。
 
 ---
 
@@ -1099,6 +1255,10 @@ cd go-backend && go mod tidy    # 清理 go.sum
 
 # 4. vet 警告
 go vet ./...                   # 应输出 0 warnings (R43-1B/C 起已清)
+
+# 5. staticcheck 风格提示 (不阻塞)
+cd go-backend && staticcheck ./...
+# R54-1C 校对: 0 issues (ST1000/ST1003/ST1020/ST1021 全部为风格提示, 非 bug)
 ```
 
 ### 11.7 Go 进程被杀 / 异常退出
@@ -1113,9 +1273,22 @@ dmesg | tail -50       # OOM Killer / segfault / signal
 journalctl -u heis-backend --since '1 hour ago'    # systemd 模式
 
 # 3. 后台运行模式日志
-tail -f backend.log    # nohup 输出
-tail -f go-backend/backend.log
+tail -f backend.log    # nohup 输出 (临时, .gitignore 已忽略)
 ```
+
+### 11.8 主题克隆已知限制（R54-1C）
+
+R54-1C 修复 25 处 `<img>` 硬编码 missing-asset 路径（x2552 + 101kks）后，以下属于克隆
+主题历史包袱，超出本轮范围：
+
+| 主题 | 限制 | 影响 |
+| --- | --- | --- |
+| **x2552** | `public/clone-css/x2552.css` 多处 `background: url(/heibing/images/wamcc.png)` 引用源站雪碧图（按钮 / 图标 / 装饰圆角） | 文字内容仍正常渲染，仅装饰性图标缺失，不影响 SEO 与内容可读性；如需完整还原需重新绘制 100+ 图标雪碧图 |
+| **ggd66 / shipsay** | `<link href="https://cdn.staticfile.org/font-awesome/4.7.0/css/font-awesome.min.css">` 依赖外部 CDN | 离线环境图标显示为方框；可联网时正常；如需离线，下载 font-awesome 4.7.0 放到 `public/fa/` 改 `<link href="/fa/css/font-awesome.min.css">` |
+
+R54-1C 校对建议：x2552 主题克隆自 https://www.x2552.com（吾爱小说），雪碧图属源站私有资产
+不可直接抓取；ggd66 / shipsay 走 CDN 属常见前端实践，可接受。其他 7 套主题（aijjxs / 23qb /
+ddyueshu / huangjinwu / 101kks / pilishuwu / trxsw）的 CSS 均自洽，不依赖外部资源。
 
 ---
 
@@ -1312,7 +1485,7 @@ du -sh db/ data/
 | 依赖 | Bun + Node + Prisma Client + React 19 | Go 标准库 + modernc.org/sqlite（无 cgo） |
 | 前端 | React 19 SSR（src/app/*，R46-1A 起整目录已删） | Go html/template（go-backend/templates/*） |
 | 模板数 | 173 文件（src/components + src/app） | 94 个（10 主题 × 8 页型 + 14 admin） |
-| 采集引擎 | TS（src/lib/crawl/*，8302 行，已 R42-1C 删） | Go（go-backend/crawl/*，10655 行） |
+| 采集引擎 | TS（src/lib/crawl/*，8302 行，已 R42-1C 删） | Go（go-backend/crawl/*，10671 行） |
 | mini-services | 5 Bun + 1 Python（已删） | 11 Go 二进制（端口 3010-3020）+ bridgeserver 共享包 |
 | 降级链 | 5 级 | **8 级**（+uc/moli/curl-impersonate） |
 | 反反爬 | 基础 UA + 代理池 | utls Hello 指纹池 36 款 + 36 项反反爬能力（见 §9.5） |
@@ -1347,33 +1520,53 @@ Prisma。
 - **R50-1C 安装教程重写 + 清理精简**：`agent-ctx/R50-1C-full-stack-developer.md`（本文件 14 节重写 + .dockerignore/upload/tool-results 清理 + go vet 0）
 - **R51-1B 清理精简 + DEPLOY/README 校对**：`agent-ctx/R51-1B-full-stack-developer.md`（staticcheck 复检 0 + 删除 unused `probeProxy` wrapper + ST1008 修复 + 9321→9226 行 + 21→29 款 + 26→29 项反反爬清单 + TOC 补全 13/14 节）
 - **R52-1A/1B 清理精简 + 主题核实 + DEPLOY/README 校对**：`agent-ctx/R52-1B-full-stack-developer.md`（R52-1A：utls Hello 池扩 29→36 款（+ Chrome 58/100 两款补缺变体，覆盖 2016-2024 全代际）+ smart.go 15 个分类名从 2 字改 4 字（与 DB schema 一致）+ cloak-browser 行为模拟新增 native wheel/Esc/Page Down 三项；R52-1B：清理 + DEPLOY/README 校对 + cover 绝对路径 + SVG 占位 + 分类 4 字 + /admin 访问校验 + gofmt 8-space 风格保留 R52-1A 功能改动）
-- **R53-1B 清理精简 + updatedAt 格式化修复 + DEPLOY/README 校对**：`agent-ctx/R53-1B-full-stack-developer.md`（fmtDate/fmtDateShort/shortTime 三处先经 formatUpdatedAt 归一化, 修复 Prisma `@updatedAt` 存 Unix ms 时间戳时直接 s[:10] / s[5:10] 切出时间戳片段的 bug; admin dashboard 实测从 "16560/71510/04577" 时间戳残片修复为 "09-15 23:56" 等正常日期; LoC/port 校对一致 9226→10655 / fetcher 4413→4809 / smart 310→339 / main 1173→1330 / admin 3570→3573 / cloak-browser 859→974 / types 733→737 / agent-ctx 32→37 文件 / worklog ~20200→~22000 行）
-- **完整工作日志**：`worklog.md`（~22,000 行，R3-a → R53-1B 全链路迁移记录）
+- **R53-1A/1B 智能分类 alias 表 BUG-1 + updatedAt 格式化 bug 修复**：`agent-ctx/R53-1B-full-stack-developer.md`（R53-1A：alias 表补 `"轻小说" → "轻小说类"` 让 source 路径直接命中 + NormalizeCategory 模糊匹配改 `[]rune` 长度比较 + `/covers/` handler BUG-4 path traversal + BUG-5 SVG initial XML escape + BUG-6 LIKE 模式过松 + BUG-7 Scan 错误记日志；R53-1B：fmtDate/fmtDateShort/shortTime 三处先经 formatUpdatedAt 归一化, 修复 Prisma `@updatedAt` 存 Unix ms 时间戳时直接 s[:10] / s[5:10] 切出时间戳片段的 bug; admin dashboard 实测从 "16560/71510/04577" 时间戳残片修复为 "09-15 23:56" 等正常日期; LoC/port 校对一致 9226→10655 / fetcher 4413→4809 / smart 310→339 / main 1173→1330 / admin 3570→3573 / cloak-browser 859→974 / types 733→737 / agent-ctx 32→37 文件 / worklog ~20200→~22000 行）
+- **R54-1C 主题模板核实 + DEPLOY 全文重写 + 深度抓 bug + 清理**：`agent-ctx/R54-1C-full-stack-developer.md`（10 套 × 8 页型 = 80 模板深度核实 + 25 处硬编码 missing-asset 路径修复：x2552 logo.png 8 处 + 101kks user.png 16 处 + 101kks home logo_index.png 1 处，全部替换为内联 SVG data URI 模板自洽不再依赖 public/ 缺失目录 + 4 项 TODO 全部为有效待办（OpenCC + DB 聚合，非过时注释）+ backend.log 临时文件清理 + .gitignore 校对一致 + go build/vet/staticcheck 全 0 + LoC 同步 main 1330→1413 / admin 3573→3742 / smart 339→355 / 总 crawl 10655→10671 + 主题矩阵 §8.4 新增 + 主题克隆已知限制 §11.8 新增 + 模板变更后重建说明 §4.5 新增）
+- **完整工作日志**：`worklog.md`（~22,500 行，R3-a → R54-1C 全链路迁移记录）
 - **数据库 schema**：`prisma/schema.prisma`（11 + 1 表，Feedback R40 新增）
-- **采集引擎源码**：`go-backend/crawl/*.go`（8 模块 10655 行）
-- **主后端源码**：`go-backend/main.go`（1330 行）+ `go-backend/admin.go`（3573 行）
+- **采集引擎源码**：`go-backend/crawl/*.go`（8 模块 10671 行）
+- **主后端源码**：`go-backend/main.go`（1413 行）+ `go-backend/admin.go`（3742 行）
 - **mini-services 源码**：`go-backend/services/*/main.go`（11 个）+ `services/bridgeserver/bridgeserver.go`（共享样板 917 行）
+- **cloak-browser 行为模拟**：`go-backend/services/cloak-browser/main.go`（974 行，含 page.AddScriptToEvaluateOnNewDocument + simulateHumanBehaviorActions + native wheel/Esc/PgDn/Tab/Enter/双击/反向滚动 7 项）
 
 ---
 
-**文档版本**：R53-1B（R50-1C 14 节安装部署教程 + 36 项反反爬清单 + 文字版架构图 +
-故障排查 7 类 + 生产部署 6 项 + 旧 Next.js 迁移说明；R51-1B 校对：TOC 补全 13/14 节 +
-staticcheck 复检 0 + 删除 unused `probeProxy` wrapper + ST1008 修复（probeProxyWithLatency
-返回值顺序 (error, int64) → (int64, error)）+ LoC/port/template 校对一致（9321→9226 行 +
-fetcher 3615→4413 + types 721→733 + utls 21→29 款 + 26→29 项反反爬清单 + R50-1A 4 行
-能力表条目补全 + 3 项行为模拟新加：Gaussian 微抖 + micro wheel events + 15% Tab key）。
+**文档版本**：R54-1C（R50-1C 14 节安装部署教程 + 36 项反反爬清单 + 文字版架构图 +
+故障排查 8 类（含 §11.8 主题克隆已知限制） + 生产部署 6 项 + 旧 Next.js 迁移说明；
+
+R51-1B 校对：TOC 补全 13/14 节 + staticcheck 复检 0 + 删除 unused `probeProxy` wrapper +
+ST1008 修复（probeProxyWithLatency 返回值顺序 (error, int64) → (int64, error)）+ LoC/port/template
+校对一致（9321→9226 行 + fetcher 3615→4413 + types 721→733 + utls 21→29 款 + 26→29 项反反爬清单 +
+R50-1A 4 行能力表条目补全 + 3 项行为模拟新加：Gaussian 微抖 + micro wheel events + 15% Tab key）。
+
 R52-1A 校对：utls 29→36 款（+ Chrome 58/100 两款补缺变体，覆盖 2016-2024 全代际） +
 smart.go 15 个分类名从 2 字改 4 字（与 DB schema 一致） + cloak-browser 行为模拟新增
 native wheel/Esc/Page Down 三项（R51-1A + R52-1A 行为模拟总计 6 项新增） +
 26→36 项反反爬清单 + R51-1A/R52-1A 7 项能力表条目补全。
+
 R52-1B 校对：cover 绝对路径 + 封面 SVG 占位（`/covers/<name>.webp` handler 三段式服务）+
 分类 4 字（15 个标准分类名全部 4 字） + /admin 访问（8.2 后台路径表补全） +
 R52-1A 功能改动保留 8-space 缩进（避免 gofmt -w 产生大批 whitespace-only diff） +
 go build + go vet + staticcheck 全 0。
+
 R53-1B 校对：fmtDate/fmtDateShort/shortTime 三处先经 formatUpdatedAt 归一化, 修复 Prisma
 `@updatedAt` 存 Unix ms 时间戳时直接 s[:10] / s[5:10] 切出时间戳片段的 bug; admin dashboard
 实测从 "16560/71510/04577" 时间戳残片修复为 "09-15 23:56" 等正常日期 + go vet 0 +
 staticcheck 0 + go build 0 + 4 端点 curl 全 200 (/health + / + /covers/nonexistent.webp
 + /admin) + LoC/port 校对一致 9226→10655 / fetcher 4413→4809 / smart 310→339 / main
 1173→1330 / admin 3570→3573 / cloak-browser 859→974 / types 733→737 + agent-ctx
-32→37 文件 + worklog ~20200→~22000 行），对应 worklog.md R38–R53 全程迁移记录。
+32→37 文件 + worklog ~20200→~22000 行）。
+
+R54-1C 校对：10 套 × 8 页型 = 80 模板深度核实（CSS class / 配色一致 / 列表排列 / DOM 结构 /
+数据绑定 / 链接 / CSS 加载 / 封面图绝对路径 / updatedAt 格式化 / 分类名 4 字 共 10 项 100% 通过）+
+25 处硬编码 missing-asset 路径修复（x2552 logo.png 8 处 + 101kks user.png 16 处 + 101kks home
+logo_index.png 1 处，全部替换为内联 SVG data URI 模板自洽不再依赖 public/heibing/ 或
+public/images/ 缺失目录）+ 4 项 TODO 全部为有效待办（OpenCC 词典未集成 + runner.go DB 聚合
+2 处，非过时注释，保留）+ backend.log 临时文件清理（.gitignore 已忽略 *.log + go-backend/*.log）+
+.gitignore 校对一致（102 行，覆盖 Go 构建产物 / 运行时日志 / .env / db / data / .zscripts /
+tool-results / Python venv / 系统 / 历史 Next.js 残留防御 11 大类）+ go build/vet/staticcheck
+全 0 + LoC 同步 main 1330→1413 / admin 3573→3742 / smart 339→355 / 总 crawl 10655→10671 +
+§4.5 模板变更后重建说明新增 + §8.4 主题矩阵 10×8 表新增 + §8.5 25 处硬编码 missing-asset
+修复明细新增 + §10.4 模板矩阵章节新增 + §11.8 主题克隆已知限制章节新增 + §14 R54-1C
+agent-ctx 引用新增 + agent-ctx 37→38 文件 + worklog ~22000→~22500 行），对应 worklog.md
+R38–R54 全程迁移记录。

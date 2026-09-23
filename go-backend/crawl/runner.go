@@ -477,6 +477,9 @@ type DBClient interface {
         FindChapterByURL(bookID, sourceURL string) (Chapter, error)
         UpsertChapter(c Chapter) (Chapter, error)
         MarkChapterFetched(chapterID string, fetched bool) error
+        // R54-1B 智能分类辅助 — SmartCategory existingCategories 入参 + 命中后查 ID 写 Book.categoryId
+        ListCategoryNames() []string
+        FindCategoryIDByName(name string) string
 }
 
 // Book — 书籍 DB 实体 (简化口径, 与 Prisma Book 同款字段).
@@ -561,6 +564,15 @@ type ExecuteTaskConfig struct {
         RecrawlMode string // full | incremental
         DB          DBClient
         Logger      func(taskID string, level LogLevel, msg string)
+        // R54-1B 智能化三开关 (与 Task 表 smartCategory/smartComplete/autoSuggest 同口径).
+        //   SmartCategory=true → CrawlBookMeta 调 SmartCategory 算 categoryId 写入 Book 行
+        //     (source + keyword 两层; LLM 兜底 Go 端未实现, method="none" 时跳过)
+        //   SmartComplete=true → CrawlBookMeta 调 SmartCompleteDetect 算 status 写入 Book 行
+        //     (源站状态 → 简介 → 末章标题 → 书名标注 四级启发式)
+        //   AutoSuggest=true → PSEO 关键词自动生成 (Go 端未实现 LLM 路径, 仅留开关兼容)
+        SmartCategory bool
+        SmartComplete bool
+        AutoSuggest   bool
 }
 
 // BookMetaResult — 阶段 1 (书籍 meta 采集) 的返回值.
@@ -1158,6 +1170,52 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
 
         // 解析书籍页 (parseBook)
         parsed := ParseBook(bookRes.HTML, bookURL, cfg.Rule.Book)
+
+        // R54-1B 智能完结判断 (smartCompleteDetect) — 先算 status 再 upsert (status 入库).
+        //   原 R38-1C 重写后此处算出 detectedStatus 仅用于运行时分流 (AddToCompleted/
+        //   AddToOngoing), Book 行 status 字段始终写 "unknown" → finalizeBook 阶段才调
+        //   UpdateBookStatus 持久化. 修复: 此处直接把 detectedStatus 写入 newBook.Status /
+        //   existing.Status, 入库即带正确状态 (省 finalizeBook 二次 update).
+        //   cfg.SmartComplete=false 时: 若源站 parsed.Status 非空 → 用 DetectCompleteFromText
+        //   归一化 (e.g. "连载中" → "ongoing"); 否则 "unknown".
+        detectedStatus := "unknown"
+        if cfg.SmartComplete {
+                completeResult := SmartCompleteDetect(SmartCompleteDetectInput{
+                        StatusField:        parsed.Status,
+                        Intro:              parsed.Intro,
+                        LatestChapterTitle: parsed.LatestChapter,
+                        BookName:           parsed.Name,
+                })
+                detectedStatus = completeResult.Status
+        } else if parsed.Status != "" {
+                // 未启用智能完结, 但源站 status 字段有值 → 直接归一化 (e.g. "已完结" → "completed")
+                detectedStatus = DetectCompleteFromText(parsed.Status)
+        }
+
+        // R54-1B 智能分类 (smartCategory) — 先算 categoryID 再 upsert (categoryId 入库).
+        //   原 R38-1C 重写后 SmartCategory 函数存在但从未被调用, Book 行 categoryId 始终为
+        //   空; parsed.Category (rule book.fields.category 提取的源站分类名) 也未消费.
+        //   修复: cfg.SmartCategory=true → 调 SmartCategory (source + keyword 两层),
+        //   命中标准 4 字分类后查 DB 拿 categoryID 写入 newBook.CategoryID.
+        //   cfg.SmartCategory=false → parsed.Category 经 NormalizeCategory 归一化后查 ID
+        //   (e.g. 源站 "玄幻" → "玄幻奇幻" → DB ID), 命中则写入.
+        categoryID := ""
+        if cfg.DB != nil {
+                if cfg.SmartCategory {
+                        existingCats := cfg.DB.ListCategoryNames()
+                        catResult := SmartCategory(parsed.Name, parsed.Intro, parsed.Category, existingCats)
+                        if catResult.Category != "" {
+                                categoryID = cfg.DB.FindCategoryIDByName(catResult.Category)
+                        }
+                } else if parsed.Category != "" {
+                        // 未启用智能分类, 但源站分类有值 → 归一化后查 DB (兼容旧 2 字 / 4 字变体)
+                        normalized := NormalizeCategory(parsed.Category)
+                        if normalized != "" {
+                                categoryID = cfg.DB.FindCategoryIDByName(normalized)
+                        }
+                }
+        }
+
         // 简化: 直接 upsert 书籍 (假设无 DB 时跳过)
         var bookID string
         if cfg.DB != nil {
@@ -1165,6 +1223,31 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                 existing, ferr := cfg.DB.FindBookBySourceURL(bookURL)
                 if ferr == nil && existing.ID != "" {
                         bookID = existing.ID
+                        // R54-1B 增量更新: 原代码此处仅 set bookID, 不刷新 meta 字段 (name/author/
+                        //   intro/cover 不更新), 也不写 status/categoryId. 修复: 调 UpsertBook 刷新
+                        //   meta 字段 + 仅当新算出 status != "unknown" 时覆盖 + 仅当新算出
+                        //   categoryID != "" 时覆盖 (避免空值清空已有值).
+                        existing.Name = CleanTextField(parsed.Name, 200)
+                        existing.Author = CleanTextField(parsed.Author, 100)
+                        existing.Intro = CleanIntro(parsed.Intro, 2000)
+                        if parsed.Cover != "" {
+                                existing.Cover = parsed.Cover
+                        }
+                        existing.SourceURL = bookURL
+                        existing.UpdatedAt = time.Now()
+                        if detectedStatus != "unknown" {
+                                existing.Status = detectedStatus
+                        } else if existing.Status == "" {
+                                existing.Status = "unknown"
+                        }
+                        if categoryID != "" {
+                                existing.CategoryID = categoryID
+                        }
+                        // 保留 existing.WordCount + existing.LatestChapter (UpsertBook UPDATE 直接用 b 字段,
+                        //   不会清零, finalizeBook 阶段会重新 UpdateBookWordCount/UpdateBookLatestChapter)
+                        if _, err := cfg.DB.UpsertBook(existing); err == nil {
+                                // bookID 已为 existing.ID
+                        }
                 } else {
                         // 新建书
                         newBook := Book{
@@ -1172,7 +1255,8 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                                 Author:        CleanTextField(parsed.Author, 100),
                                 Intro:         CleanIntro(parsed.Intro, 2000),
                                 Cover:         parsed.Cover,
-                                Status:        "unknown",
+                                Status:        detectedStatus,
+                                CategoryID:    categoryID,
                                 SourceURL:     bookURL,
                                 UpdatedAt:     time.Now(),
                         }
@@ -1186,14 +1270,7 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                 bookID = "tmp_" + fmt.Sprintf("%d", time.Now().UnixNano())
         }
 
-        // 智能完结判断 (smartCompleteDetect)
-        completeResult := SmartCompleteDetect(SmartCompleteDetectInput{
-                StatusField:        parsed.Status,
-                Intro:              parsed.Intro,
-                LatestChapterTitle: parsed.LatestChapter,
-                BookName:           parsed.Name,
-        })
-        detectedStatus := completeResult.Status
+        // (R54-1B: detectedStatus 计算已上移到 UpsertBook 之前, 不再此处重复算)
 
         // 抓目录页 (用 toc 规则, 若 toc 未配置 tocLink 则用书籍页 URL)
         tocURL := bookURL
