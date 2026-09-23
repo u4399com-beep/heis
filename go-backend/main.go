@@ -227,10 +227,16 @@ func main() {
                 log.Printf("警告: 未找到模板文件")
         }
 
-        // 静态文件 (clone-css + public)
+        // 静态文件 (clone-css + public) — R51 修复: StripPrefix 剥离了 clone-css/ 但文件在 public/clone-css/ 下
+        // 改为 FileServer 指向 public/clone-css/ + StripPrefix, 这样 /clone-css/shipsay.css → shipsay.css → 在 clone-css/ 找到
         publicDir := filepath.Join(basePath, "public")
-        fs := http.FileServer(http.Dir(publicDir))
-        http.Handle("/clone-css/", http.StripPrefix("/clone-css/", fs))
+        cloneCssDir := filepath.Join(publicDir, "clone-css")
+        cssFs := http.FileServer(http.Dir(cloneCssDir))
+        http.Handle("/clone-css/", http.StripPrefix("/clone-css/", cssFs))
+        // 其他 public/ 静态文件 (icon.svg 等) — 不剥前缀, 直接服务
+        http.Handle("/icon.svg", http.FileServer(http.Dir(publicDir)))
+        http.Handle("/manifest.json", http.FileServer(http.Dir(publicDir)))
+        http.Handle("/favicon.ico", http.FileServer(http.Dir(publicDir)))
 
         // 前台页面 (Go templates SSR)
         http.HandleFunc("/", homeHandler) // 首页 + 路由分发
