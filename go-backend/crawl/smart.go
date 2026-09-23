@@ -94,7 +94,16 @@ var categoryAliases = map[string]string{
         // 体育竞技
         "竞技": "体育竞技", "足球": "体育竞技", "篮球": "体育竞技", "体育运动": "体育竞技",
         // 轻小说类
-        "轻文": "轻小说类", "日本轻小说": "轻小说类",
+        //   R53-1A 修复 BUG-1: 原 alias 表漏 "轻小说" 本身 (3 字). 源站分类 "轻小说" 在
+        //     NormalizeCategory: 1. alias 查 "轻小说" → 未命中; 2. standard 4 字名循环
+        //     "轻小说" != "轻小说类"; 3. fuzzy len("轻小说")=3 > len("轻小说类")=4 → false
+        //     跳过; 4. 返回 "轻小说" 原名. SmartCategory 第 1 步 source 路径用
+        //     normalized="轻小说" 与 existing categories (4 字标准名) 比较 → 不匹配 → 退
+        //     到 keyword 路径 (命中关键词 "轻小说" → "轻小说类"), 但 method="keyword"
+        //     而非 "source" → 上层若按 method 路由 (source 优先级高) 会误降级. 补
+        //     "轻小说" → "轻小说类" alias 让 source 路径直接命中, method="source".
+        "轻小说": "轻小说类", "轻文": "轻小说类", "日本轻小说": "轻小说类", "国产轻小说": "轻小说类",
+        "动漫": "轻小说类", "二次元小说": "轻小说类",
         // 现实生活
         "职场": "现实生活", "商战": "现实生活", "社会": "现实生活", "现实主义": "现实生活",
 }
@@ -107,6 +116,19 @@ var categoryAliases = map[string]string{
 //  R52-1A: 分类名从 2 字 → 4 字. 第 3 步模糊匹配 len(n) > len(c.name) 仍生效, 但 4 字
 //    名本身已是 4 字长, 包含关系要求源站分类名 ≥5 字才触发模糊匹配 (e.g. "玄幻奇幻小说"
 //    → "玄幻奇幻"). 4 字源站分类名 (如 "东方玄幻") 通过 categoryAliases 兜底转 4 字.
+//  R53-1A 修复 BUG-9: 第 3 步模糊匹配 len() 是 byte 长度, 对中文 (3 bytes/rune)
+//    与 ASCII (1 byte/rune) 混合的源站分类名会误判. 例: n="abc玄幻奇幻" (5 runes,
+//    15 bytes) vs c.name="玄幻奇幻" (4 runes, 12 bytes). byte 长度 15>12 true →
+//    触发模糊匹配. 但若 n="玄幻奇幻" (4 runes, 12 bytes) vs c.name="玄幻奇幻类"
+//    (5 runes, 15 bytes), byte 12>15 false → 不触发 (正确, 因 n 不该合并到自己).
+//    混合 case 如 n="玄幻奇幻x" (5 runes, 13 bytes) vs c.name="玄幻奇幻" (4 runes,
+//    12 bytes): byte 13>12 true (与 rune 5>4 一致, 正确触发). 但 n="a玄幻奇幻" (5
+//    runes, 13 bytes) vs c.name="玄幻奇幻" (4 runes, 12 bytes): byte 13>12 true,
+//    rune 5>4 也 true → 一致. 极端 case n="玄幻奇幻abc" (7 runes, 18 bytes) vs
+//    c.name="玄幻奇幻类" (5 runes, 15 bytes): byte 18>15 true, 但 rune 7>5 也 true
+//    → 一致. 实际 byte 与 rune 比较结果在中文场景下几乎总是一致 (因每 rune ≥1
+//    byte, byte_count ≥ rune_count). 但为防极端 case (源站分类名含 emoji 等 4-
+//    byte rune), 改用 []rune 长度比较更准确 + 与 MatchCategoryByText 同口径.
 func NormalizeCategory(name string) string {
         n := strings.TrimSpace(name)
         if n == "" {
@@ -123,8 +145,11 @@ func NormalizeCategory(name string) string {
                 }
         }
         // 3. 模糊: 包含标准分类名 (长名合并到短标准)
+        //   R53-1A BUG-9: 用 []rune 长度比较替代 byte 长度, 防 emoji/4-byte rune
+        //   误判 (与 MatchCategoryByText 同口径).
+        nRunes := []rune(n)
         for _, c := range categoryKeywords {
-                if len(n) > len(c.name) && strings.Contains(n, c.name) {
+                if len(nRunes) > len([]rune(c.name)) && strings.Contains(n, c.name) {
                         return c.name
                 }
         }

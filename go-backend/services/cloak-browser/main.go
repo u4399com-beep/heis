@@ -861,10 +861,21 @@ func simulateHumanBehaviorActions() []chromedp.Action {
         //      consent banner / 模态对话框 / 广告弹窗时会按 Esc 关闭. 纯 mousemove
         //      + Tab 无 Esc 被检测为 "无 modal 交互 = 自动化". Esc 后 300-600ms
         //      短停顿 (用户视觉确认 modal 关闭).
-        //   3. 2% 概率 Page Down 键 (chromedp.KeyEvent "\x0c" form feed = Page
-        //      Down 控制字符) — 真实用户用 Page Down 翻页 (大段滚动, 比 wheel
-        //      跨度大). 纯 wheel 无 Page Down 被检测为 "单一滚动方式 = 自动化".
+        //   3. 2% 概率 Page Down 键 — 真实用户用 Page Down 翻页 (大段滚动, 比
+        //      wheel 跨度大). 纯 wheel 无 Page Down 被检测为 "单一滚动方式 = 自动化".
         //      Page Down 后 500-900ms 短停顿 (用户阅读翻页后内容).
+        //      R53-1A 修复 BUG-8: 原用 chromedp.KeyEvent("\x0c") (FF 表单换页字符).
+        //        FF (0x0C) 是 ASCII 控制字符, 但 Chrome 不把 FF 字符映射到 PageDown
+        //        键 (PageDown 是 virtual key, 不是 printable char). W3C UI Events
+        //        规范里 PageDown 只能通过 KeyDown/KeyUp + key="PageDown" + code="PageDown"
+        //        + windowsVirtualKeyCode=34 触发. 原实现实际是 no-op (页面无滚动 →
+        //        反爬监听 PageDown 缺失 = 自动化). 修复: 直接用 input.DispatchKeyEvent
+        //        发送 keyDown + keyUp, 显式设置 key/code/windowsVirtualKeyCode 让
+        //        Chrome 触发真实 PageDown 键事件 (keydown + keyup).
+        //        Tab ("\t") / Enter ("\r") / Esc ("\x1b") 在 R50-1A/R51-1A/R52-1A
+        //        经验证 Chrome 字符级默认行为生效 (Tab 切 focus / Enter 提交 / Esc
+        //        关 modal), 故保留 chromedp.KeyEvent 字符级发送. 仅 PageDown 必须
+        //        走 virtual key 路径 (无可打印字符).
         if rand.Intn(100) < 5 { // 5% 概率 native mouse wheel
                 wheelX := float64(endX)
                 wheelY := float64(endY)
@@ -881,8 +892,22 @@ func simulateHumanBehaviorActions() []chromedp.Action {
                 escSleepMs := 300 + rand.Intn(301) // 300..600ms 短停顿
                 actions = append(actions, chromedp.Sleep(time.Duration(escSleepMs)*time.Millisecond))
         }
-        if rand.Intn(100) < 2 { // 2% 概率 Page Down 键 (大段翻页)
-                actions = append(actions, chromedp.KeyEvent("\x0c"))
+        if rand.Intn(100) < 2 { // 2% 概率 Page Down 键 (大段翻页, virtual key)
+                // R53-1A BUG-8: 用 input.DispatchKeyEvent 显式发送 PageDown virtual key
+                actions = append(actions, chromedp.ActionFunc(func(ctx context.Context) error {
+                        return input.DispatchKeyEvent(input.KeyDown).
+                                WithKey("PageDown").
+                                WithCode("PageDown").
+                                WithWindowsVirtualKeyCode(34).
+                                Do(ctx)
+                }))
+                actions = append(actions, chromedp.ActionFunc(func(ctx context.Context) error {
+                        return input.DispatchKeyEvent(input.KeyUp).
+                                WithKey("PageDown").
+                                WithCode("PageDown").
+                                WithWindowsVirtualKeyCode(34).
+                                Do(ctx)
+                }))
                 pageDownSleepMs := 500 + rand.Intn(401) // 500..900ms 短停顿
                 actions = append(actions, chromedp.Sleep(time.Duration(pageDownSleepMs)*time.Millisecond))
         }

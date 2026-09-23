@@ -2,7 +2,7 @@
 
 规则驱动的小说采集与发布系统：管理端配置站点规则与采集任务，引擎按规则抓取（8 级降级链）、
 清洗、落库；前台站群（书城/书籍详情/阅读页/搜索/分类/排行榜/关键词聚合/全文搜索）直接消费
-库内数据，封面图走 `/covers/<name>.webp` 绝对路径 + SVG 占位兑底（不存在返渐变色块 + 书名首字）。**R38–R52 已完成 Next.js → Go 全面迁移 + 安装教程重写**：单二进制部署、运行期 17 MB 内存、
+库内数据，封面图走 `/covers/<name>.webp` 绝对路径 + SVG 占位兑底（不存在返渐变色块 + 书名首字）。**R38–R53 已完成 Next.js → Go 全面迁移 + 安装教程重写 + updatedAt 格式化修复**：单二进制部署、运行期 17 MB 内存、
 无 cgo / 无 Bun / 无 Node / 无 Docker 依赖。`heis-backend` 二进制已入 git（commit
 `29dcd99`），平台 `git clone` 后零编译直接运行 `./go-backend/heis-backend`。
 
@@ -12,7 +12,7 @@
 
 - **单二进制部署**：`go build -o heis-backend .` 产出一个 24 MB 静态链接二进制，运行期 17 MB
   内存（vs 旧 Next.js 2.2 GB，OOM 风险消失），单机即可承载。
-- **采集引擎 `go-backend/crawl/`（8 模块 9226 行）**：规则四段（list / book / toc / content）
+- **采集引擎 `go-backend/crawl/`（8 模块 10655 行）**：规则四段（list / book / toc / content）
   解析、CSS / XPath / regex / JSON 字段提取、分页与翻页 Referer 链、编码识别（GBK 自动转
   UTF-8）、正文清洗（广告模式 / 去壳页 / 零宽字符剥离 / trafilatura 桥）、分卷排序、并发限速
   + HostGate 双限速、封面本地化（webp）。
@@ -51,7 +51,7 @@
 | 语言 | Go（无 TypeScript / 无 JSX） |
 | 模板 | `html/template`（94 个，10 主题 × 8 页型 + 14 admin） |
 | 数据库 | modernc.org/sqlite v1.59.0（纯 Go SQLite，无 cgo）+ Prisma schema（仅建表用） |
-| 采集引擎 | `go-backend/crawl/*.go`（8 模块 9226 行，纯 Go 标准库 + goquery + utls + chromedp） |
+| 采集引擎 | `go-backend/crawl/*.go`（8 模块 10655 行，纯 Go 标准库 + goquery + utls + chromedp） |
 | mini-services | `go-backend/services/*/main.go`（11 个独立 Go 二进制，端口 3010–3020）+ bridgeserver 共享包 |
 | 部署 | 单二进制 + bash 脚本（start-all.sh / stop-all.sh / status.sh），无 Docker / 无 compose |
 
@@ -159,20 +159,20 @@ JSON-IO helper 等通用样板，本身不是独立服务。
 go-backend/
 ├── go.mod                       # Go 模块定义 (module heis-backend, go 1.26, 13 direct deps)
 ├── go.sum                        # 依赖校验
-├── main.go                       # 主后端 (1173 行): 路由 + 86 FuncMap + 静态服务 + DB + 94 模板加载
-├── admin.go                      # 后台 API + admin SSR (3570 行): 14 个 admin 页面 + /api/admin/* 14 路由
+├── main.go                       # 主后端 (1330 行): 路由 + 86 FuncMap + 静态服务 + DB + 94 模板加载
+├── admin.go                      # 后台 API + admin SSR (3573 行): 14 个 admin 页面 + /api/admin/* 14 路由
 ├── heis-backend                  # go build 输出二进制 (24 MB, 已入 git 平台 clone 即跑; .gitignore 仅兜底防误覆盖)
 ├── backend.log                   # heis-backend 后台运行日志 (.gitignore, 不入版本库)
 │
-├── crawl/                        # 采集引擎 (8 模块 9226 行)
-│   ├── fetcher.go                #   HTTP 采集 + 8 级降级链 + UA 池 + CookieJar (4413 行)
+├── crawl/                        # 采集引擎 (8 模块 10655 行)
+│   ├── fetcher.go                #   HTTP 采集 + 8 级降级链 + UA 池 + CookieJar (4809 行)
 │   ├── parser.go                 #   css / xpath / regex / json 字段提取 (1612 行)
 │   ├── runner.go                 #   4 段采集流程 + 任务调度 + Semaphore (1481 行)
 │   ├── cleaner.go                #   广告 / 去壳 / 编码 / 零宽字符剥离 / trafilatura 桥 (899 行)
-│   ├── types.go                  #   规则 / 配置 / 结果数据结构 (733 行)
+│   ├── types.go                  #   规则 / 配置 / 结果数据结构 (737 行)
 │   ├── hostgate.go               #   并发 + 速率双限速器 (423 行)
 │   ├── storage.go                #   db / txt 双存储 + 封面本地化 (355 行)
-│   └── smart.go                  #   LLM 智能分类 / 完结判断 + 正则缓存 (310 行)
+│   └── smart.go                  #   LLM 智能分类 / 完结判断 + 正则缓存 (339 行)
 │
 ├── services/                     # 11 mini-services + bridgeserver 共享包
 │   ├── bridgeserver/bridgeserver.go   # 共享样板 (917 行)
@@ -186,7 +186,7 @@ go-backend/
 │   ├── moli-bridge/main.go             # 3017 (303 行)
 │   ├── curl-impersonate-bridge/main.go # 3018 (374 行) + scripts/curl_cffi_fetch.py
 │   ├── trafilatura-bridge/main.go     # 3019 (367 行)
-│   └── cloak-browser/main.go           # 3020 (859 行)
+│   └── cloak-browser/main.go           # 3020 (974 行)
 │
 └── templates/                    # 94 个 Go html/template 模板
     ├── admin/                    #   14 个后台页面 (layout + dashboard + tasks + rules + books
@@ -218,8 +218,8 @@ mini-services/{start-all.sh,stop-all.sh,status.sh,.gitkeep}  # 11 服务启停�
 public/clone-css/*.css           # 10 个主题的源站 CSS (由 main.go /clone-css/ 路由服务)
 public/{robots.txt,sw.js,manifest.json,icon.svg,logo.svg}   # 站点元数据 (Next.js PWA 残留, 可选)
 Caddyfile                        # 沙箱网关 SSRF 防御配置 (端口白名单 3010-3015 + 透传 3000)
-agent-ctx/R*-*.md                # 各轮 agent 工作记录 (R38-R51, 32 文件)
-worklog.md                       # 完整迁移工作日志 (~20200 行, R3-a → R51-1B 全链路)
+agent-ctx/R*-*.md                # 各轮 agent 工作记录 (R38-R53, 37 文件)
+worklog.md                       # 完整迁移工作日志 (~22000 行, R3-a → R53-1B 全链路)
 DEPLOY.md                        # 生产部署详细教程 (systemd / 反代 / 备份 / 升级 / 故障排查)
 README.md                        # 本文件
 scripts/rule-yueyouxs.json       # yueyouxs (神马小说) 站点规则 backup-restore 格式 JSON (/api/admin/backup/restore 可导入; R47-1B 替代旧 .ts 种子脚本)
@@ -341,5 +341,5 @@ curl -s http://localhost:3000/api/admin/backup > backup-$(date +%F).json
 
 ---
 
-**项目版本**：R52-1B（纯 Go 栈，自 R38 起从 Next.js 全面迁移完成；R50-1C 重写 14 节安装部署教程 + 29 项反反爬清单 + 清理 .dockerignore/upload/tool-results 等过时产物；R51-1B 校对：staticcheck 复检 0 + 删除 unused `probeProxy` wrapper + ST1008 修复（probeProxyWithLatency 返回值顺序 (error, int64) → (int64, error)）+ LoC/port/template 校对一致（9321→9226 行 + fetcher 3615→4413 + types 721→733 + cloak-browser 689→859 + utls 21→29 款 + 26→29 项反反爬清单 + TOC 补全 13/14 节 + R50-1A 行为模拟 3 项补全 + agent-ctx 22→32 文件 + worklog 19000→20200 行）；R52-1A：utls 29→36 款（+ Chrome 58/100 两款补缺变体，覆盖 2016-2024 全代际）+ smart.go 15 个分类名从 2 字改 4 字 + cloak-browser 行为模拟新增 native wheel/Esc/Page Down 三项；R52-1B：cover 绝对路径 + 封面 SVG 占位（`/covers/<name>.webp` handler 三段式服务）+ 分类 4 字（15 个标准分类名全部 4 字） + /admin 访问校验 + R52-1A 功能改动保留 8-space 缩进避免大批 whitespace-only diff + go build + go vet + staticcheck 全 0）。详细部署见 [DEPLOY.md](./DEPLOY.md)，
-完整工作日志见 [worklog.md](./worklog.md)（~22000 行，R3-a → R52-1B 全链路）。
+**项目版本**：R53-1B（纯 Go 栈，自 R38 起从 Next.js 全面迁移完成；R50-1C 重写 14 节安装部署教程 + 29 项反反爬清单 + 清理 .dockerignore/upload/tool-results 等过时产物；R51-1B 校对：staticcheck 复检 0 + 删除 unused `probeProxy` wrapper + ST1008 修复（probeProxyWithLatency 返回值顺序 (error, int64) → (int64, error)）+ LoC/port/template 校对一致（9321→9226 行 + fetcher 3615→4413 + types 721→733 + cloak-browser 689→859 + utls 21→29 款 + 26→29 项反反爬清单 + TOC 补全 13/14 节 + R50-1A 行为模拟 3 项补全 + agent-ctx 22→32 文件 + worklog 19000→20200 行）；R52-1A：utls 29→36 款（+ Chrome 58/100 两款补缺变体，覆盖 2016-2024 全代际）+ smart.go 15 个分类名从 2 字改 4 字 + cloak-browser 行为模拟新增 native wheel/Esc/Page Down 三项；R52-1B：cover 绝对路径 + 封面 SVG 占位（`/covers/<name>.webp` handler 三段式服务）+ 分类 4 字（15 个标准分类名全部 4 字） + /admin 访问校验 + R52-1A 功能改动保留 8-space 缩进避免大批 whitespace-only diff + go build + go vet + staticcheck 全 0；R53-1B：fmtDate/fmtDateShort/shortTime 三处先经 formatUpdatedAt 归一化, 修复 Prisma `@updatedAt` 存 Unix ms 时间戳时直接 s[:10] / s[5:10] 切出时间戳片段的 bug; admin dashboard 实测从 "16560/71510/04577" 时间戳残片修复为 "09-15 23:56" 等正常日期 + go vet 0 + staticcheck 0 + go build 0 + 4 端点 curl 全 200 (/health + / + /covers/nonexistent.webp + /admin) + LoC/port 校对一致 9226→10655 / fetcher 4413→4809 / smart 310→339 / main 1173→1330 / admin 3570→3573 / cloak-browser 859→974 / types 733→737 + agent-ctx 32→37 文件 + worklog ~20200→~22000 行）。详细部署见 [DEPLOY.md](./DEPLOY.md)，
+完整工作日志见 [worklog.md](./worklog.md)（~22000 行，R3-a → R53-1B 全链路）。

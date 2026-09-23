@@ -82,16 +82,20 @@ func main() {
                         return "连载"
                 },
                 // R38-1B: ISO/SQLite datetime 字符串 → YYYY-MM-DD
+                // R53-1B: 先经 formatUpdatedAt 归一化 (Unix ms 时间戳 / SQLite TEXT / ISO 串
+                //   均转成 "2006-01-02 15:04"), 再切前 10 字; 修复 Prisma @updatedAt 存 Unix ms
+                //   时 fmtDate 直接 s[:10] 取出时间戳片段的 bug.
                 "fmtDate": func(s interface{}) string {
-                        d := fmt.Sprintf("%v", s)
+                        d := formatUpdatedAt(fmt.Sprintf("%v", s))
                         if len(d) >= 10 {
                                 return d[:10]
                         }
                         return d
                 },
                 // R38-1B: ISO/SQLite datetime 字符串 → MMDD (无分隔, 排行榜日期用)
+                // R53-1B: 同 fmtDate, 先 formatUpdatedAt 归一化, 再切 [5:7]+[8:10].
                 "fmtDateShort": func(s interface{}) string {
-                        d := fmt.Sprintf("%v", s)
+                        d := formatUpdatedAt(fmt.Sprintf("%v", s))
                         if len(d) >= 10 {
                                 return d[5:7] + d[8:10]
                         }
@@ -240,30 +244,76 @@ func main() {
         http.Handle("/favicon.ico", http.FileServer(http.Dir(publicDir)))
 
         // R52: 封面图服务 /covers/ — 文件存在返回图片, 不存在返回 SVG 占位(书名首字+渐变色块)
+        //   R53-1A 修复 BUG-4 (path traversal): 原 filepath.Join(coversDir, name) 在
+        //     name="../etc/passwd.webp" 时 join 成 "data/covers/../etc/passwd.webp" →
+        //     filepath.Clean 解析为 "data/etc/passwd.webp" (coversDir 之外). net/http
+        //     会清理 URL 的 ".." 段, 但恶意 URL 编码 %2e%2e%2f 经某些 proxy 可能
+        //     不被 net/http 清理 (取决于 Caddy/nginx 转发行为). 修复: 用
+        //     filepath.Base(name) 取 basename 剥所有目录组件 (类似 ReadCover 安全路径
+        //     模式), 再 join + 验证 Clean 后仍在 coversDir 内. 双保险: Base + HasPrefix.
+        //   R53-1A 修复 BUG-5 (SVG initial 未 XML escape): 原 fmt.Fprintf "%s" 直接拼
+        //     initial 到 SVG <text> 内, 若书名首字是 < / > / & / " / ' (源站抓取
+        //     异常时 HTML 标签字符可能渗入书名), SVG 输出会破图 (浏览器无法解析
+        //     XML) 或注入恶意 <script> (虽然 SVG <script> 不执行 JS 在 <img> 上下
+        //     文, 但在直接访问 /covers/ URL 的浏览器上下文可执行 — XSS 风险).
+        //     修复: 用 template.HTMLEscapeString 转义 5 个 XML 特殊字符 (< > & " ').
+        //   R53-1A 修复 BUG-6 (LIKE 模式过松): 原 LIKE "%"+name 把 name 当 LIKE
+        //     pattern, 若 name 含 % 或 _ (SQL LIKE 通配符) 会误匹配. 同时 LIKE
+        //     "%foo.webp" 会匹配 "covers/foo.webp" + "other_foo.webp" + "xfoo.webp"
+        //     等所有以 foo.webp 结尾的 cover, 取第一个 → 可能取到错书名. 修复:
+        //     改用 cover = ? exact match, param = "covers/"+base (与 SaveCoverWebp
+        //     存储路径 "covers/{name}.webp" 一致). 失败 (无 DB 行) 用默认 "书" 占位.
+        //   R53-1A 修复 BUG-7 (Scan 错误忽略): 原 db.QueryRow(...).Scan(&bookName)
+        //     不检查 err, 若 SQL 错误 (DB 损坏 / 表缺失) bookName="" → initial="书"
+        //     兜底. 但 err != sql.ErrNoRows 时是真实错误, 应记日志供操作员排查.
         coversDir := filepath.Join(basePath, "data/covers")
+        publicCoversDir := filepath.Join(publicDir, "covers")
         http.HandleFunc("/covers/", func(w http.ResponseWriter, r *http.Request) {
-                name := strings.TrimPrefix(r.URL.Path, "/covers/")
-                if name == "" { http.NotFound(w, r); return }
-                // 尝试 data/covers/name
-                fp := filepath.Join(coversDir, name)
-                if _, err := os.Stat(fp); err == nil {
-                        http.ServeFile(w, r, fp)
+                rawName := strings.TrimPrefix(r.URL.Path, "/covers/")
+                if rawName == "" { http.NotFound(w, r); return }
+                // R53-1A BUG-4: Base + 路径验证 (防 path traversal)
+                base := filepath.Base(rawName)
+                if base == "" || base == "." || base == ".." {
+                        http.NotFound(w, r); return
+                }
+                // 尝试 data/covers/base (SaveCoverWebp 落盘位置)
+                fp := filepath.Join(coversDir, base)
+                fpClean := filepath.Clean(fp)
+                if !strings.HasPrefix(fpClean, coversDir+string(filepath.Separator)) && fpClean != coversDir {
+                        http.NotFound(w, r); return
+                }
+                if _, err := os.Stat(fpClean); err == nil {
+                        http.ServeFile(w, r, fpClean)
                         return
                 }
-                // 尝试 public/covers/name
-                fp2 := filepath.Join(publicDir, "covers", name)
-                if _, err := os.Stat(fp2); err == nil {
-                        http.ServeFile(w, r, fp2)
+                // 尝试 public/covers/base (手放资源)
+                fp2 := filepath.Join(publicCoversDir, base)
+                fp2Clean := filepath.Clean(fp2)
+                if !strings.HasPrefix(fp2Clean, publicCoversDir+string(filepath.Separator)) && fp2Clean != publicCoversDir {
+                        http.NotFound(w, r); return
+                }
+                if _, err := os.Stat(fp2Clean); err == nil {
+                        http.ServeFile(w, r, fp2Clean)
                         return
                 }
                 // 占位图: SVG 渐变色块 + 书名首字
                 w.Header().Set("Content-Type", "image/svg+xml")
                 w.Header().Set("Cache-Control", "public, max-age=3600")
+                // R53-1A BUG-6: exact match 替代 LIKE, 防 % 通配符误匹配
                 var bookName string
-                db.QueryRow(`SELECT name FROM Book WHERE cover LIKE ?`, "%"+name).Scan(&bookName)
+                coverField := "covers/" + base
+                err := db.QueryRow(`SELECT name FROM Book WHERE cover = ? LIMIT 1`, coverField).Scan(&bookName)
+                // R53-1A BUG-7: Scan 错误记日志 (ErrNoRows 静默 — 兜底 "书" 是预期行为)
+                if err != nil && err != sql.ErrNoRows {
+                        log.Printf("[covers] 查询书名失败 cover=%s err=%v", coverField, err)
+                }
                 initial := "书"
                 if runes := []rune(bookName); len(runes) > 0 { initial = string(runes[0]) }
-                fmt.Fprintf(w, `<svg xmlns="http://www.w3.org/2000/svg" width="120" height="160"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#667eea"/><stop offset="1" stop-color="#764ba2"/></linearGradient></defs><rect width="120" height="160" fill="url(#g)" rx="4"/><text x="60" y="85" font-size="48" text-anchor="middle" dominant-baseline="middle" fill="white" font-family="sans-serif">%s</text></svg>`, initial)
+                // R53-1A BUG-5: SVG <text> 内 initial 必须 XML escape
+                //   template.HTMLEscapeString 转义 < > & " ' (5 个 XML 特殊字符)
+                //   bookName 首字可能是这些字符的边缘 case (源站抓取异常 / HTML 标签渗入).
+                escaped := template.HTMLEscapeString(initial)
+                fmt.Fprintf(w, `<svg xmlns="http://www.w3.org/2000/svg" width="120" height="160"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#667eea"/><stop offset="1" stop-color="#764ba2"/></linearGradient></defs><rect width="120" height="160" fill="url(#g)" rx="4"/><text x="60" y="85" font-size="48" text-anchor="middle" dominant-baseline="middle" fill="white" font-family="sans-serif">%s</text></svg>`, escaped)
         })
 
         // 前台页面 (Go templates SSR)
@@ -763,21 +813,62 @@ func writeJSON(w http.ResponseWriter, v interface{}) {
 // 多字节字符被切半造成乱码 / 无效 UTF-8 输出 / 模板渲染 U+FFFD).
 // R42-1A: 之前直接 s[:n] 在 3-byte 中文处会切出孤立 continuation byte.
 // R52: updatedAt 格式化 — SQLite 可能存 Unix 时间戳(秒或毫秒), 转成 2006-01-02 15:04
+// R53-1A 修复 BUG-2: 原 formatUpdatedAt 仅处理 "秒 + 毫秒 (>1e12)" 两级,
+//   漏微秒 (1e15+, Go time.Now().UnixMicro() 来源) 与纳秒 (1e18+, Go time.Now().UnixNano()
+//   来源). 若上游 (TS admin API 写入 / 第三方同步) 用 UnixMicro / UnixNano, 原 i/1000
+//   把微秒当毫秒除 → 1698765432000000 / 1000 = 1698765432000 (仍是毫秒) →
+//   time.Unix(1698765432000, 0) → 公元 56000+ 年. 修复: 按数量级 4 级判断 —
+//   ≥1e17 纳秒 /1e9, ≥1e14 微秒 /1e6, ≥1e11 毫秒 /1e3, 否则秒. 阈值取
+//   "今年各精度下限的 100x" 防边界 (e.g. 2024-01-01 秒=1704067200, 毫秒=1.7e12,
+//   微秒=1.7e15, 纳秒=1.7e18; 阈值 1e11/1e14/1e17 在各精度下限 + 100 年内仍稳定).
+// R53-1A 修复 BUG-3: 原 time.Parse 仅尝试 "2006-01-02T15:04:05" (ISO 无时区) +
+//   "2006-01-02 15:04:05" (SQLite TEXT), 漏:
+//   - "2006-01-02T15:04:05Z" (ISO 8601 UTC, TS admin API 常见)
+//   - "2006-01-02T15:04:05+08:00" / "-07:00" (ISO 带时区)
+//   - time.RFC3339 (完整 ISO 8601, 含毫秒 + 时区)
+//   - "2006-01-02" (SQLite DATE 类型, 仅日期无时分)
+//   - "2006/01/02 15:04:05" (slash 分隔, 部分中文源站格式)
+//   - "2006/01/02" (slash 日期)
+//   原 "2024-01-01T12:00:00Z" → Parse("2006-01-02T15:04:05") 失败 (因 layout 无 Z) →
+//   回退返原字符串 "2024-01-01T12:00:00Z" 给前端, 显示带 T 和 Z 的乱码时间. 修复:
+//   补 5 个 layout 兜底 + 时区感知 Parse (用 time.ParseInLocation 防本地时区漂移).
 func formatUpdatedAt(s string) string {
+        s = strings.TrimSpace(s)
+        if s == "" {
+                return ""
+        }
+        // 数值时间戳 — 4 级数量级判断 (R53-1A 修复 BUG-2)
         if i, err := strconv.ParseInt(s, 10, 64); err == nil {
-                // 毫秒 (> 1e12) → 除以 1000 转秒
-                if i > 1000000000000 {
+                switch {
+                case i >= 1000000000000000000: // ≥ 1e18 纳秒 (含未来 100 年)
+                        i = i / 1000000000
+                case i >= 1000000000000000: // ≥ 1e15 微秒
+                        i = i / 1000000
+                case i >= 1000000000000: // ≥ 1e12 毫秒
                         i = i / 1000
                 }
+                // 否则视为秒 (R52 原行为)
+                // 时区用本地 (与 SQLite TEXT 行为一致, 数据库写入是本地时区).
                 return time.Unix(i, 0).Format("2006-01-02 15:04")
         }
-        // 尝试 ISO 字符串
-        if t, err := time.Parse("2006-01-02T15:04:05", s); err == nil {
-                return t.Format("2006-01-02 15:04")
+        // 文本时间 — 多 layout 尝试 (R53-1A 修复 BUG-3)
+        //   时区: 用 time.Parse (local TZ) 而非 time.ParseInLocation. 若字符串含
+        //   时区后缀 (Z / +08:00), Parse 会按字符串时区; 无时区后缀则按本地时区.
+        //   与 SQLite TEXT 行为一致 (SQLite 不存时区, 读出按本地时区).
+        layouts := []string{
+                time.RFC3339,                 // 2006-01-02T15:04:05Z07:00 (ISO 8601 含时区, Z / ±HH:MM)
+                "2006-01-02T15:04:05",        // ISO 无时区
+                "2006-01-02 15:04:05",        // SQLite TEXT
+                "2006-01-02 15:04",           // SQLite TEXT 精确到分
+                "2006-01-02",                  // SQLite DATE
+                "2006/01/02 15:04:05",        // slash 分隔 + 时分秒
+                "2006/01/02 15:04",           // slash 分隔 + 时分
+                "2006/01/02",                  // slash 日期
         }
-        // 尝试 SQLite TEXT 格式 "2006-01-02 15:04:05"
-        if t, err := time.Parse("2006-01-02 15:04:05", s); err == nil {
-                return t.Format("2006-01-02 15:04")
+        for _, layout := range layouts {
+                if t, err := time.Parse(layout, s); err == nil {
+                        return t.Format("2006-01-02 15:04")
+                }
         }
         return s
 }

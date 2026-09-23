@@ -1573,7 +1573,10 @@ func toIntFromInterface(v interface{}) int {
 }
 
 // shortTime — SQLite datetime 字符串 → 紧凑形式 "MM-DD HH:MM".
+// R53-1B: 先经 formatUpdatedAt 归一化 (Unix ms / SQLite TEXT / ISO 串 → "2006-01-02 15:04"),
+//   修复 Prisma @updatedAt 存 Unix ms 时 s[5:7]+s[8:10] 切出时间戳片段的 bug.
 func shortTime(s string) string {
+        s = formatUpdatedAt(s)
         if len(s) >= 16 {
                 // "2024-09-21 11:30" → "09-21 11:30"
                 return s[5:7] + "-" + s[8:10] + " " + s[11:16]

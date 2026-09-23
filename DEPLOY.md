@@ -45,7 +45,7 @@
 | 主后端 | Go 1.23+ + `net/http` 标准库（go.mod 声明 1.26，但 1.21+ API 即可编译） |
 | 模板 | `html/template`（94 个 = 10 主题 × 8 页型 + 14 admin） |
 | 数据库 | modernc.org/sqlite v1.59.0（纯 Go SQLite，**无 cgo**）+ Prisma schema（仅建表用） |
-| 采集引擎 | `go-backend/crawl/*.go`（8 模块 9226 行，纯 Go 标准库 + goquery + utls + chromedp） |
+| 采集引擎 | `go-backend/crawl/*.go`（8 模块 10655 行，纯 Go 标准库 + goquery + utls + chromedp） |
 | mini-services | `go-backend/services/*/main.go`（11 个独立 Go 二进制，端口 3010–3020）+ bridgeserver 共享包 |
 | 部署 | 单二进制 + bash 脚本（start-all.sh / stop-all.sh / status.sh），**无 Docker / 无 compose** |
 
@@ -53,7 +53,7 @@
 
 - **单二进制部署**：`go build -o heis-backend .` 产出 24 MB 静态链接二进制，运行期 17 MB 内存
   （vs 旧 Next.js 2.2 GB，OOM 风险消失），单机即可承载。
-- **采集引擎**（`go-backend/crawl/` 8 模块 9226 行）：规则四段（list / book / toc / content）
+- **采集引擎**（`go-backend/crawl/` 8 模块 10655 行）：规则四段（list / book / toc / content）
   解析、CSS / XPath / regex / JSON 字段提取、分页与翻页 Referer 链、编码识别（GBK 自动转
   UTF-8）、正文清洗（广告 / 去壳页 / 零宽字符剥离 / trafilatura 桥）、分卷排序、并发限速 +
   HostGate 双限速、封面本地化（webp）。
@@ -211,7 +211,7 @@ cd heis
 # 验证关键文件就位
 ls -la go-backend/main.go          # 主后端源码 (53KB)
 ls -la go-backend/heis-backend     # 预编译二进制 (24MB, 已入 git, 平台 clone 即跑)
-ls -la go-backend/crawl/           # 8 模块采集引擎 (9226 行)
+ls -la go-backend/crawl/           # 8 模块采集引擎 (10655 行)
 ls -la go-backend/services/        # 11 mini-services + bridgeserver 共享包
 ls -la go-backend/templates/       # 94 个模板 (10 主题 × 8 + 14 admin)
 ls -la prisma/schema.prisma        # 11+1 表 schema (Go 后端不依赖, 仅 prisma db push 用)
@@ -224,19 +224,19 @@ ls -la public/clone-css/           # 10 套主题的源站 CSS
 ```
 heis/                                 # 项目根
 ├── go-backend/                       # Go 后端 (主后端 + 采集引擎 + 11 mini-services + 94 模板)
-│   ├── main.go                       #   主后端 (1173 行): 路由 + 86 FuncMap + 静态服务 + DB + 94 模板加载
-│   ├── admin.go                      #   后台 API + admin SSR (3570 行): 14 个 admin 页面 + /api/admin/* 14 路由
+│   ├── main.go                       #   主后端 (1330 行): 路由 + 86 FuncMap + 静态服务 + DB + 94 模板加载
+│   ├── admin.go                      #   后台 API + admin SSR (3573 行): 14 个 admin 页面 + /api/admin/* 14 路由
 │   ├── go.mod / go.sum               #   Go 模块定义 + 依赖校验
 │   ├── heis-backend                  #   go build 输出二进制 (24 MB, 已入 git 平台 clone 即跑)
-│   ├── crawl/                        #   采集引擎 (8 模块 9226 行)
-│   │   ├── fetcher.go                #     HTTP 采集 + 8 级降级链 + UA 池 + CookieJar (4413 行)
+│   ├── crawl/                        #   采集引擎 (8 模块 10655 行)
+│   │   ├── fetcher.go                #     HTTP 采集 + 8 级降级链 + UA 池 + CookieJar (4809 行)
 │   │   ├── parser.go                 #     css / xpath / regex / json 字段提取 (1612 行)
 │   │   ├── runner.go                 #     4 段采集流程 + 任务调度 + Semaphore (1481 行)
 │   │   ├── cleaner.go                #     广告 / 去壳 / 编码 / 零宽字符剥离 / trafilatura 桥 (899 行)
-│   │   ├── types.go                  #     规则 / 配置 / 结果数据结构 (733 行)
+│   │   ├── types.go                  #     规则 / 配置 / 结果数据结构 (737 行)
 │   │   ├── hostgate.go               #     并发 + 速率双限速器 (423 行)
 │   │   ├── storage.go                #     db / txt 双存储 + 封面本地化 (355 行)
-│   │   └── smart.go                  #     LLM 智能分类 / 完结判断 + 正则缓存 (310 行)
+│   │   └── smart.go                  #     LLM 智能分类 / 完结判断 + 正则缓存 (339 行)
 │   ├── services/                     #   11 mini-services + bridgeserver 共享包
 │   │   ├── bridgeserver/bridgeserver.go  # 共享样板 (917 行): /health /metrics /info 鉴权 限速 SSRF 守卫
 │   │   ├── bqg713-proxy/main.go           # 3010 笔趣阁 token+AES
@@ -859,7 +859,7 @@ R47-1B 将仅剩的 `seed-rule-yueyouxs.ts` 转为 portable JSON
                           │
                           ▼
               ┌────────────────────────────────┐
-              │  Go heis-backend :3000          │  (go-backend/main.go, 1173 行)
+              │  Go heis-backend :3000          │  (go-backend/main.go, 1330 行)
               │  ────────────────────────────  │
               │  静态资源 /clone-css/*           │  (源站 CSS, public/clone-css/*.css)
               │  前台 SSR 94 个模板             │  (10 主题 × 8 页型 + 14 admin)
@@ -887,16 +887,16 @@ R47-1B 将仅剩的 `seed-rule-yueyouxs.ts` 转为 portable JSON
                           │
                           ▼
               ┌────────────────────────────────┐
-              │  采集引擎 crawl/                  │  (9226 行 Go)
+              │  采集引擎 crawl/                  │  (10655 行 Go)
               │  ────────────────────────────  │
-              │  fetcher.go  4413 行             │  ← 8 级降级链总调度
+              │  fetcher.go  4809 行             │  ← 8 级降级链总调度
               │  parser.go   1612 行             │  ← css / xpath / regex / json 提取
               │  runner.go   1481 行             │  ← 4 段采集流程 + 任务调度
               │  cleaner.go   899 行             │  ← 广告 / 去壳 / 编码 / trafilatura
-              │  types.go     733 行             │  ← 规则 / 配置 / 结果数据结构
+              │  types.go     737 行             │  ← 规则 / 配置 / 结果数据结构
               │  hostgate.go  423 行             │  ← 并发 + 速率双限速器
               │  storage.go    355 行             │  ← db / txt 双存储 + 封面本地化
-              │  smart.go     310 行             │  ← LLM 智能分类 / 完结判断
+              │  smart.go     339 行             │  ← LLM 智能分类 / 完结判断
               │                                 │
               │  反反爬:                        │
               │    utls Hello 指纹池 36 款      │  (含 PSK / PQ / 老 iOS / Chrome 老版 / Firefox 老版 ESR / 2016 era Chrome 58)
@@ -1312,7 +1312,7 @@ du -sh db/ data/
 | 依赖 | Bun + Node + Prisma Client + React 19 | Go 标准库 + modernc.org/sqlite（无 cgo） |
 | 前端 | React 19 SSR（src/app/*，R46-1A 起整目录已删） | Go html/template（go-backend/templates/*） |
 | 模板数 | 173 文件（src/components + src/app） | 94 个（10 主题 × 8 页型 + 14 admin） |
-| 采集引擎 | TS（src/lib/crawl/*，8302 行，已 R42-1C 删） | Go（go-backend/crawl/*，9226 行） |
+| 采集引擎 | TS（src/lib/crawl/*，8302 行，已 R42-1C 删） | Go（go-backend/crawl/*，10655 行） |
 | mini-services | 5 Bun + 1 Python（已删） | 11 Go 二进制（端口 3010-3020）+ bridgeserver 共享包 |
 | 降级链 | 5 级 | **8 级**（+uc/moli/curl-impersonate） |
 | 反反爬 | 基础 UA + 代理池 | utls Hello 指纹池 36 款 + 36 项反反爬能力（见 §9.5） |
@@ -1347,15 +1347,16 @@ Prisma。
 - **R50-1C 安装教程重写 + 清理精简**：`agent-ctx/R50-1C-full-stack-developer.md`（本文件 14 节重写 + .dockerignore/upload/tool-results 清理 + go vet 0）
 - **R51-1B 清理精简 + DEPLOY/README 校对**：`agent-ctx/R51-1B-full-stack-developer.md`（staticcheck 复检 0 + 删除 unused `probeProxy` wrapper + ST1008 修复 + 9321→9226 行 + 21→29 款 + 26→29 项反反爬清单 + TOC 补全 13/14 节）
 - **R52-1A/1B 清理精简 + 主题核实 + DEPLOY/README 校对**：`agent-ctx/R52-1B-full-stack-developer.md`（R52-1A：utls Hello 池扩 29→36 款（+ Chrome 58/100 两款补缺变体，覆盖 2016-2024 全代际）+ smart.go 15 个分类名从 2 字改 4 字（与 DB schema 一致）+ cloak-browser 行为模拟新增 native wheel/Esc/Page Down 三项；R52-1B：清理 + DEPLOY/README 校对 + cover 绝对路径 + SVG 占位 + 分类 4 字 + /admin 访问校验 + gofmt 8-space 风格保留 R52-1A 功能改动）
-- **完整工作日志**：`worklog.md`（~22,000 行，R3-a → R52-1B 全链路迁移记录）
+- **R53-1B 清理精简 + updatedAt 格式化修复 + DEPLOY/README 校对**：`agent-ctx/R53-1B-full-stack-developer.md`（fmtDate/fmtDateShort/shortTime 三处先经 formatUpdatedAt 归一化, 修复 Prisma `@updatedAt` 存 Unix ms 时间戳时直接 s[:10] / s[5:10] 切出时间戳片段的 bug; admin dashboard 实测从 "16560/71510/04577" 时间戳残片修复为 "09-15 23:56" 等正常日期; LoC/port 校对一致 9226→10655 / fetcher 4413→4809 / smart 310→339 / main 1173→1330 / admin 3570→3573 / cloak-browser 859→974 / types 733→737 / agent-ctx 32→37 文件 / worklog ~20200→~22000 行）
+- **完整工作日志**：`worklog.md`（~22,000 行，R3-a → R53-1B 全链路迁移记录）
 - **数据库 schema**：`prisma/schema.prisma`（11 + 1 表，Feedback R40 新增）
-- **采集引擎源码**：`go-backend/crawl/*.go`（8 模块 9226 行）
-- **主后端源码**：`go-backend/main.go`（1173 行）+ `go-backend/admin.go`（3570 行）
+- **采集引擎源码**：`go-backend/crawl/*.go`（8 模块 10655 行）
+- **主后端源码**：`go-backend/main.go`（1330 行）+ `go-backend/admin.go`（3573 行）
 - **mini-services 源码**：`go-backend/services/*/main.go`（11 个）+ `services/bridgeserver/bridgeserver.go`（共享样板 917 行）
 
 ---
 
-**文档版本**：R52-1B（R50-1C 14 节安装部署教程 + 36 项反反爬清单 + 文字版架构图 +
+**文档版本**：R53-1B（R50-1C 14 节安装部署教程 + 36 项反反爬清单 + 文字版架构图 +
 故障排查 7 类 + 生产部署 6 项 + 旧 Next.js 迁移说明；R51-1B 校对：TOC 补全 13/14 节 +
 staticcheck 复检 0 + 删除 unused `probeProxy` wrapper + ST1008 修复（probeProxyWithLatency
 返回值顺序 (error, int64) → (int64, error)）+ LoC/port/template 校对一致（9321→9226 行 +
@@ -1368,4 +1369,11 @@ native wheel/Esc/Page Down 三项（R51-1A + R52-1A 行为模拟总计 6 项新�
 R52-1B 校对：cover 绝对路径 + 封面 SVG 占位（`/covers/<name>.webp` handler 三段式服务）+
 分类 4 字（15 个标准分类名全部 4 字） + /admin 访问（8.2 后台路径表补全） +
 R52-1A 功能改动保留 8-space 缩进（避免 gofmt -w 产生大批 whitespace-only diff） +
-go build + go vet + staticcheck 全 0），对应 worklog.md R38–R52 全程迁移记录。
+go build + go vet + staticcheck 全 0。
+R53-1B 校对：fmtDate/fmtDateShort/shortTime 三处先经 formatUpdatedAt 归一化, 修复 Prisma
+`@updatedAt` 存 Unix ms 时间戳时直接 s[:10] / s[5:10] 切出时间戳片段的 bug; admin dashboard
+实测从 "16560/71510/04577" 时间戳残片修复为 "09-15 23:56" 等正常日期 + go vet 0 +
+staticcheck 0 + go build 0 + 4 端点 curl 全 200 (/health + / + /covers/nonexistent.webp
++ /admin) + LoC/port 校对一致 9226→10655 / fetcher 4413→4809 / smart 310→339 / main
+1173→1330 / admin 3570→3573 / cloak-browser 859→974 / types 733→737 + agent-ctx
+32→37 文件 + worklog ~20200→~22000 行），对应 worklog.md R38–R53 全程迁移记录。
