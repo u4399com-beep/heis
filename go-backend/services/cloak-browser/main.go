@@ -796,6 +796,61 @@ func simulateHumanBehaviorActions() []chromedp.Action {
                 tabSleepMs := 200 + rand.Intn(301) // 200..500ms
                 actions = append(actions, chromedp.Sleep(time.Duration(tabSleepMs)*time.Millisecond))
         }
+        // R51-1A 反反爬增强 (任务要求 5: 行为模拟继续增强):
+        //   1. 8% 概率反向滚动 (scrollUp 微段) — 真实用户阅读时常向上回看上一段,
+        //      纯向下滚动被检测为 "持续单向 = 自动化". 反向滚动 5-10% viewport,
+        //      后跟 300-600ms 停顿 (用户重读时停顿比连续滚动长).
+        //   2. 10% 概率 Enter 键 (chromedp.KeyEvent "\r") — 真实用户在表单 /
+        //      搜索框 / 链接 上会按 Enter 提交. 纯 mousemove + Tab 无 Enter
+        //      被检测为 "无表单交互 = 自动化". Enter 后 200-500ms 短停顿
+        //      (等表单提交结果加载).
+        //   3. 5% 概率双击 (mousePressed x2 + mouseReleased) — 真实用户在
+        //      文字 / 图片 / 链接 上偶尔会双击 (选中文字 / 打开新标签). 纯单击
+        //      被检测为 "单一交互模式 = 自动化". 双击间隔 80-150ms (真实用户
+        //      双击间隔). 双击后 200-400ms 短停顿.
+        if rand.Intn(100) < 8 { // 8% 概率反向滚动
+                upPct := 5 + rand.Intn(6) // 5..10% viewport
+                upJS := fmt.Sprintf(
+                        `window.scrollBy({top: -Math.floor(window.innerHeight * %d / 100), behavior: 'smooth'});`,
+                        upPct,
+                )
+                actions = append(actions, chromedp.Evaluate(upJS, nil))
+                upSleepMs := 300 + rand.Intn(301) // 300..600ms 重读停顿
+                actions = append(actions, chromedp.Sleep(time.Duration(upSleepMs)*time.Millisecond))
+        }
+        if rand.Intn(100) < 10 { // 10% 概率 Enter 键
+                actions = append(actions, chromedp.KeyEvent("\r"))
+                enterSleepMs := 200 + rand.Intn(301) // 200..500ms
+                actions = append(actions, chromedp.Sleep(time.Duration(enterSleepMs)*time.Millisecond))
+        }
+        if rand.Intn(100) < 5 { // 5% 概率双击
+                dblX := float64(endX)
+                dblY := float64(endY)
+                // 第一次 click
+                actions = append(actions, chromedp.ActionFunc(func(ctx context.Context) error {
+                        return input.DispatchMouseEvent(input.MousePressed, dblX, dblY).
+                                WithButton(input.Left).WithClickCount(1).Do(ctx)
+                }))
+                actions = append(actions, chromedp.Sleep(time.Duration(50+rand.Intn(101))*time.Millisecond))
+                actions = append(actions, chromedp.ActionFunc(func(ctx context.Context) error {
+                        return input.DispatchMouseEvent(input.MouseReleased, dblX, dblY).
+                                WithButton(input.Left).WithClickCount(1).Do(ctx)
+                }))
+                // 双击间隔 80-150ms (真实用户双击间隔)
+                actions = append(actions, chromedp.Sleep(time.Duration(80+rand.Intn(71))*time.Millisecond))
+                // 第二次 click (ClickCount=2 标识双击)
+                actions = append(actions, chromedp.ActionFunc(func(ctx context.Context) error {
+                        return input.DispatchMouseEvent(input.MousePressed, dblX, dblY).
+                                WithButton(input.Left).WithClickCount(2).Do(ctx)
+                }))
+                actions = append(actions, chromedp.Sleep(time.Duration(50+rand.Intn(101))*time.Millisecond))
+                actions = append(actions, chromedp.ActionFunc(func(ctx context.Context) error {
+                        return input.DispatchMouseEvent(input.MouseReleased, dblX, dblY).
+                                WithButton(input.Left).WithClickCount(2).Do(ctx)
+                }))
+                // 双击后 200-400ms 短停顿
+                actions = append(actions, chromedp.Sleep(time.Duration(200+rand.Intn(201))*time.Millisecond))
+        }
         return actions
 }
 

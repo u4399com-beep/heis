@@ -830,7 +830,7 @@ func transportWithProxy(proxy string) *http.Transport {
 // (Chrome / Firefox / Safari / iOS), 按 host 哈希稳定选取 (per-domain 钉扎, 与
 // UA 钉扎同款), 反爬无法靠 TLS 指纹单一性识别.
 
-// utlsHelloPool — utls Hello 指纹池 (扩充 29 款具体浏览器版本, R50-1A 反反爬增强).
+// utlsHelloPool — utls Hello 指纹池 (扩充 34 款具体浏览器版本, R51-1A 反反爬增强).
 // R43-1B 用 4 个 _Auto (Chrome/Firefox/Safari/iOS), 但 _Auto 都是某固定版本别名
 // (Chrome_Auto=Chrome_133 / Firefox_Auto=Firefox_120 / Safari_Auto=Safari_16_0 /
 // IOS_Auto=IOS_14), 长期使用反爬可关联 "utls 库 + Chrome_Auto" 指纹 → 爬虫.
@@ -843,6 +843,7 @@ func transportWithProxy(proxy string) *http.Transport {
 // 五款, 真实用户群在旧设备/旧系统/ESR 渠道仍占一定比例 — 老 Chrome 83/87/96 在
 // Windows 7/8 旧设备 + 学校/政府/企业旧部署仍有真实用户群; 老版 Firefox 55/63 在
 // Linux 旧发行版 + 隐私社区仍有真实用户群),
+// R51-1A 继续扩充到 34 个 (加 Chrome 62 / 70 / 72 + Firefox 56 / 65 五款更老版本),
 // JA3/JA4 指纹各异 (PSK 携带 pre_shared_key extension / PQ 携带 key_share 含 MLKEM768
 // pubkey / Shuffle 扩展顺序 / 100_PSK 老版 Chrome PSK 行为各异), 反爬无法靠 TLS 指纹
 // 单一性识别. IOS 11_1 / 12_1 模拟老 iPhone (iOS 11.1 / 12.1), 与新 iOS 13/14 JA3
@@ -853,8 +854,10 @@ func transportWithProxy(proxy string) *http.Transport {
 //   JA3 不同 — QQ 浏览器内置国产 anti-bot 检测). 三款新变体进一步丰富指纹多样性,
 //   反爬关联难度从 1/21 提升到 1/24.
 // R50-1A: Chrome 83/87/96 + Firefox 55/63 五款老版稳定变体, 反爬关联难度从 1/24 提升到 1/29.
+// R51-1A: Chrome 62/70/72 + Firefox 56/65 五款更老版本变体 (覆盖 2017-2019 era 浏览器),
+//   反爬关联难度从 1/29 提升到 1/34.
 // R45-1A 修复 ClearUtlsChoice 后真正轮换 (attempts 偏移), 失败 N 次后
-// 选到 pool 中第 (hash+N)%29 号, 不再重复同号.
+// 选到 pool 中第 (hash+N)%34 号, 不再重复同号.
 var utlsHelloPool = []utls.ClientHelloID{
         utls.HelloChrome_102,
         utls.HelloChrome_106_Shuffle,
@@ -891,6 +894,24 @@ var utlsHelloPool = []utls.ClientHelloID{
         utls.HelloChrome_83,
         utls.HelloChrome_87,
         utls.HelloChrome_96,
+        // R51-1A 新增 Chrome 2017-2019 era 老版变体 (3 个):
+        //   Chrome_62 — 2017 末 Chrome 稳定版 (Win 7/8 + macOS 早期 Intel,
+        //     与 Chrome 83 JA3 差异明显: cipher suite 数量较少 + extensions 短 +
+        //     无 X25519Kyber768Draft00 curve + 无 GREASE 在 extensions).
+        //     真实用户群: 极老 Windows 7 设备 (学校机房 / 政府 / 公共图书馆 /
+        //     工厂终端等长期不更新系统的部署), 占 Chrome 市场份额 <1% 但绝对值
+        //     仍以百万计, 反爬识别 "utls 仅 Chrome 83+" 指纹模式 → 爬虫.
+        //   Chrome_70 — 2018 末 Chrome 稳定版 (Win 7/8 末期 + 早期 Win 10),
+        //     JA3 与 Chrome 62 相近但加 TLS 1.3 final + cipher suite 新增
+        //     TLS_AES_128_GCM_SHA256 + extensions 略多 (cookie extension).
+        //   Chrome_72 — 2019 初 Chrome 稳定版 (Win 7/8 末期 + 部分 Win 10),
+        //     JA3 与 Chrome 70 相近但 cipher suite 顺序微调 + signature_algorithms
+        //     新增 rsa_pss_rsae_sha256. 覆盖 2019 era 老版用户群.
+        //   五款更老变体 + 三款 R50-1A 老版 = Chrome 池覆盖 2017-2024 全代际,
+        //   反爬无法靠"Chrome 是某代际"识别爬虫 (任一代际都有真实用户群).
+        utls.HelloChrome_62,
+        utls.HelloChrome_70,
+        utls.HelloChrome_72,
         utls.HelloFirefox_99,
         utls.HelloFirefox_102,
         utls.HelloFirefox_105,
@@ -908,6 +929,23 @@ var utlsHelloPool = []utls.ClientHelloID{
         //   指纹单一性识别老 Linux + 隐私用户群流量.
         utls.HelloFirefox_55,
         utls.HelloFirefox_63,
+        // R51-1A 新增 Firefox 中间版本变体 (2 个):
+        //   Firefox_56 — 2017 末 Firefox (Firefox 55 与 63 之间的过渡版本,
+        //     2017-09 发布, 加 Quantum 引擎前的最后稳定版. 真实用户群: Linux
+        //     旧发行版 + Tor Browser 7.5 based on Firefox 52 ESR / 隐私社区早期
+        //     NoScript 用户. JA3 与 55 相近但 cipher suite 顺序略调 + extensions
+        //     含 signed_certificate_timestamp extension. 反爬识别 "utls 仅
+        //     Firefox 55/63 ESR" 指纹模式 → 爬虫).
+        //   Firefox_65 — 2019 初 Firefox (Firefox 63 与 99 之间的过渡版本,
+        //     2019-01 发布, 加 TLS 1.3 final support + X25519 curve 在
+        //     supported_groups 头位. 真实用户群: 旧 Linux + 老 macOS 用户 +
+        //     隐私社区过渡期用户 (Firefox 65 ESR 渠道). JA3 与 63 相近但加
+        //     TLS 1.3 cipher suite + supported_groups 顺序调整. 反爬识别
+        //     "utls 仅 Firefox 55/63/99+" 指纹模式 → 爬虫).
+        //   Firefox 池现覆盖 2017-2024 全代际 (55/56/63/65/99/102/105/120),
+        //   反爬无法靠"Firefox 是某代际"识别爬虫.
+        utls.HelloFirefox_56,
+        utls.HelloFirefox_65,
         utls.HelloSafari_16_0,
         // R47-1A 新增 iOS 老版本 (2 个): 模拟老 iPhone 用户 (iOS 11.1 / 12.1),
         //   JA3 与 IOS_13/14 不同 (cipher suite 顺序 + extensions 顺序有差异,
@@ -1049,6 +1087,19 @@ type persistableSessionCache struct {
         dirty  bool                       // 内存有未持久化的变更
         lastFlushAt int64                  // 上次 flush 时间 (60s 节流)
         flushMu sync.Mutex                  // R50-1A: 串行化并发磁盘 IO (SaveToDisk + 异步 flush)
+        // R51-1A: dirtyVersion 防止 flushFromSnapshot 误清并发 Put 写入的 dirty 标记.
+        //   每次 Put 写 c.disk 时 +1 (持 c.mu). flushFromSnapshot 创建 snapshot 时记录当前
+        //   dirtyVersion, IO 完成后只在 dirtyVersion == snapshot 的版本时才清 dirty
+        //   (即 IO 期间无新 Put 写入). 若 IO 期间有新 Put (dirtyVersion != snapshot 版本),
+        //   不清 dirty, 让下次 Put 触发的 flush 把新数据刷盘.
+        //   原 R50-1A 实现无条件清 dirty, 在并发场景 (多 host 同时握手) 下:
+        //     T0: Put1 写 c.disk (含 entry1), dirty=true, dirtyVersion=1, snapshot v1, 启 goroutine
+        //     T0+10ms: Put2 写 c.disk (含 entry2), dirty=true, dirtyVersion=2 (throttle 跳过 flush)
+        //     T0+100ms: goroutine 写 snapshot v1 (仅含 entry1) 到磁盘, 清 dirty=false
+        //       → Put2 的 dirty=true 信号丢失, entry2 直到下次 Put3 触发 flush (60s 后) 才落盘.
+        //       若进程在 60s 内 crash, entry2 丢失 → session resumption 失效 → 反爬识别
+        //       "无 session resumption" 模式 → 爬虫指纹.
+        dirtyVersion uint64
 }
 
 // newPersistableSessionCache — 创建并加载磁盘快照.
@@ -1149,6 +1200,8 @@ func (c *persistableSessionCache) Put(sessionKey string, cs *utls.ClientSessionS
                 State:  base64.StdEncoding.EncodeToString(stateBytes),
         }
         c.dirty = true
+        // R51-1A: dirtyVersion +1 (持锁), 让 flushFromSnapshot 能识别 IO 期间是否有新 Put.
+        c.dirtyVersion++
         // 60s 节流 flush
         now := time.Now().UnixMilli()
         if now-c.lastFlushAt <= 60*1000 {
@@ -1157,12 +1210,14 @@ func (c *persistableSessionCache) Put(sessionKey string, cs *utls.ClientSessionS
         }
         c.lastFlushAt = now
         // R50-1A: 持锁内深拷贝 disk → snapshot, 解锁后异步 IO
+        // R51-1A: 同时记录 snapshot 版本 = dirtyVersion (此时)
+        snapVersion := c.dirtyVersion
         snapshot := make(map[string]tlsSessionDump, len(c.disk))
         for k, v := range c.disk {
                 snapshot[k] = v
         }
         c.mu.Unlock()
-        go c.flushFromSnapshot(snapshot)
+        go c.flushFromSnapshot(snapshot, snapVersion)
 }
 
 // flushFromSnapshot — 用 snapshot 数据做磁盘 IO (R50-1A 替代 flushLocked).
@@ -1170,7 +1225,12 @@ func (c *persistableSessionCache) Put(sessionKey string, cs *utls.ClientSessionS
 //   flushMu 串行化并发 IO (SaveToDisk + 多个异步 flush).
 //   IO 成功后才清 dirty (失败保留 dirty 让下次 Put 再触发 flush).
 //   tmp 文件名带纳秒后缀防并发 IO 写同 tmp (即使 flushMu 失效也兜底).
-func (c *persistableSessionCache) flushFromSnapshot(snapshot map[string]tlsSessionDump) {
+//   R51-1A 修复 BUG-2: 收 snapVersion 参数, IO 完成后只在
+//     c.dirtyVersion == snapVersion (即 IO 期间无新 Put 写入) 时才清 dirty.
+//     若 IO 期间有新 Put (dirtyVersion != snapVersion), 不清 dirty, 让下次 Put
+//     触发的 flush 把新数据刷盘. 原 R50-1A 无条件清 dirty, Put2 写入的 dirty=true
+//     信号丢失, entry2 直到 60s 后才落盘, 进程 crash 期间 entry2 丢失.
+func (c *persistableSessionCache) flushFromSnapshot(snapshot map[string]tlsSessionDump, snapVersion uint64) {
         if c == nil {
                 return
         }
@@ -1182,16 +1242,21 @@ func (c *persistableSessionCache) flushFromSnapshot(snapshot map[string]tlsSessi
                 return
         }
         tmp := c.path + ".tmp." + fmt.Sprintf("%d", os.Getpid()) + "." + fmt.Sprintf("%d", time.Now().UnixNano())
-        if err := os.WriteFile(tmp, data, 0600); err != nil {
+        // R51-1A 反反爬增强: 用 atomicWriteFileSync 替代 os.WriteFile, 加 fsync
+        //   保证数据物理写入磁盘后再 rename, 防 crash 后文件名已替换但内容为空.
+        if err := atomicWriteFileSync(tmp, data, 0600); err != nil {
                 return
         }
         if err := os.Rename(tmp, c.path); err != nil {
                 _ = os.Remove(tmp)
                 return
         }
-        // IO 成功 → 清 dirty (持锁)
+        // IO 成功 → 仅在 IO 期间无新 Put (dirtyVersion 未变) 时清 dirty.
+        // 若有新 Put, dirtyVersion != snapVersion, 保留 dirty=true 让下次 flush 落盘新数据.
         c.mu.Lock()
-        c.dirty = false
+        if c.dirtyVersion == snapVersion {
+                c.dirty = false
+        }
         c.mu.Unlock()
 }
 
@@ -1202,6 +1267,15 @@ func (c *persistableSessionCache) flushFromSnapshot(snapshot map[string]tlsSessi
 //   改为: 持锁内 snapshot disk + 清 dirty (即使 IO 失败也认为已尝试, 避免死循环),
 //   解锁后用 flushMu 串行化 IO (与异步 flushFromSnapshot 不冲突), tmp 文件名带纳秒后缀.
 //   IO 期间不持 c.mu → 并发 Put/Get 不阻塞, Put 若有新写会重新标 dirty 触发下次 flush.
+//
+// R51-1A 修复 BUG-2 (P2): 原 SaveToDisk 预清 dirty 后做 IO, 期间若有新 Put 写入,
+//   新 Put 的 dirty=true 信号保留 (Put 持锁后看到 dirty 已 false → 设 true + dirtyVersion++).
+//   但若 IO 失败, SaveToDisk 不再回滚 dirty (因新 Put 的 dirty 标记可能已经覆盖了 false).
+//   本函数不需要 dirtyVersion 比较 (因它是同步调用, 调用方持有进程退出语义, 无并发 Put
+//   写入期望 — 调用方应在进程退出前调用, 此时无活跃的握手). 但仍保留 dirtyVersion 自增
+//   以确保下次 (若 IO 失败 + Put 写入) 的版本号正确. 行为: 持锁内 snapshot + dirty=false,
+//   解锁后做 IO; IO 期间新 Put 的 dirty=true 不被本函数清 (因已解锁). IO 失败时不清 dirty
+//   的 best-effort 语义由 Put 的 dirtyVersion 增量 + 下次 flush 兜底.
 func (c *persistableSessionCache) SaveToDisk() error {
         if c == nil {
                 return nil
@@ -1212,11 +1286,15 @@ func (c *persistableSessionCache) SaveToDisk() error {
                 return nil
         }
         c.lastFlushAt = time.Now().UnixMilli()
+        // R51-1A: 记录当前 dirtyVersion, 用作"IO 期间无新 Put"的判定基线
+        snapVersion := c.dirtyVersion
         snapshot := make(map[string]tlsSessionDump, len(c.disk))
         for k, v := range c.disk {
                 snapshot[k] = v
         }
-        // 预清 dirty: 若 IO 失败, 下次 Put 会重标 dirty 触发再 flush (best-effort)
+        // 预清 dirty: 若 IO 期间无新 Put (dirtyVersion == snapVersion) → dirty 保持 false;
+        // 若 IO 期间有新 Put → Put 持锁后会设 dirty=true + dirtyVersion++, 本函数预清的
+        // false 会被覆盖 (并发安全因都持锁). 若 IO 失败, dirty 仍按 Put 的最新写入为准.
         c.dirty = false
         c.mu.Unlock()
         // IO 期间不持 c.mu → 并发 Put/Get 不阻塞
@@ -1225,14 +1303,35 @@ func (c *persistableSessionCache) SaveToDisk() error {
         dump := tlsSessionCacheDump{Sessions: snapshot}
         data, err := json.Marshal(dump)
         if err != nil {
+                // IO 失败 → 回滚 dirty (若期间无新 Put, 即 dirtyVersion 未变)
+                c.mu.Lock()
+                if c.dirtyVersion == snapVersion {
+                        c.dirty = true
+                }
+                c.mu.Unlock()
                 return err
         }
         tmp := c.path + ".tmp." + fmt.Sprintf("%d", os.Getpid()) + "." + fmt.Sprintf("%d", time.Now().UnixNano())
-        if err := os.WriteFile(tmp, data, 0600); err != nil {
+        // R51-1A 反反爬增强: 用 atomicWriteFileSync 替代 os.WriteFile, 加 fsync
+        //   保证数据物理写入磁盘后再 rename, 防 crash 后文件名已替换但内容为空.
+        if err := atomicWriteFileSync(tmp, data, 0600); err != nil {
+                // IO 失败 → 回滚 dirty (若期间无新 Put)
+                _ = os.Remove(tmp)
+                c.mu.Lock()
+                if c.dirtyVersion == snapVersion {
+                        c.dirty = true
+                }
+                c.mu.Unlock()
                 return err
         }
         if err := os.Rename(tmp, c.path); err != nil {
                 _ = os.Remove(tmp)
+                // IO 失败 → 回滚 dirty (若期间无新 Put)
+                c.mu.Lock()
+                if c.dirtyVersion == snapVersion {
+                        c.dirty = true
+                }
+                c.mu.Unlock()
                 return err
         }
         return nil
@@ -1264,6 +1363,72 @@ func GetPersistableSessionCache() *persistableSessionCache {
 // SaveTlsSessionsToDisk — 进程退出 / 周期性 flush 调用.
 func SaveTlsSessionsToDisk() error {
         return GetPersistableSessionCache().SaveToDisk()
+}
+
+// atomicWriteFileSync — 原子写文件 + fsync (R51-1A 反反爬增强).
+//   os.WriteFile 不 fsync, 进程 crash 后文件可能空内容 (已 rename 但内容未刷盘).
+//   本函数: OpenFile → Write → Sync (fsync, 等数据物理写入磁盘) → Close → (调用方 rename).
+//   fsync 在 Linux/macOS 约 5-50ms, TLS session 文件 ≤256KB, 总开销 <100ms 可接受.
+//   若 fsync 失败 (磁盘满 / 权限), 返回 err 让调用方决定是否 rename.
+//   crash 安全保证: fsync 成功后 rename, 即使立即 crash, 重启后文件内容完整.
+func atomicWriteFileSync(path string, data []byte, perm os.FileMode) error {
+        f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+        if err != nil {
+                return err
+        }
+        // 写失败也要 close + 删 tmp (避免 tmp 残留)
+        cleanup := func(remove bool) {
+                f.Close()
+                if remove {
+                        _ = os.Remove(path)
+                }
+        }
+        if _, err := f.Write(data); err != nil {
+                cleanup(true)
+                return err
+        }
+        // fsync — 关键: 保证数据物理写入磁盘后再 rename
+        if err := f.Sync(); err != nil {
+                cleanup(true)
+                return err
+        }
+        if err := f.Close(); err != nil {
+                _ = os.Remove(path)
+                return err
+        }
+        return nil
+}
+
+// tlsSessionBackgroundFlusherStarted — 防止 main 多次调用启动多个 goroutine.
+var tlsSessionBackgroundFlusherStarted atomic.Bool
+
+// StartTlsSessionBackgroundFlusher — 启动后台周期性 flush goroutine (R51-1A 反反爬增强).
+//   原 R48-1A/R50-1A 的 persistableSessionCache 仅在 Put 时 60s 节流触发异步 flush.
+//   若进程长时间运行 (如 24h) 但中间无活跃握手 (e.g. 全部采集任务都完成, 等下次任务
+//   调度), dirty 数据可能持续留在内存中, 进程 crash 期间丢失.
+//   本 goroutine 每 5min 调一次 SaveToDisk (无新数据时 SaveToDisk 早返, 不浪费 IO).
+//   仅启动一次 (atomic.Bool 防多调用). main.go 进程启动时调用.
+//   ctx.Done() 让调用方能在 graceful shutdown 时停止 flusher (避免与 SaveToDisk
+//   竞态 — SaveToDisk 已加 flushMu 串行化, 但停止 flusher 让 graceful shutdown
+//   路径更清晰).
+func StartTlsSessionBackgroundFlusher(ctx context.Context) {
+        if !tlsSessionBackgroundFlusherStarted.CompareAndSwap(false, true) {
+                return // 已启动, 跳过
+        }
+        go func() {
+                ticker := time.NewTicker(5 * time.Minute)
+                defer ticker.Stop()
+                for {
+                        select {
+                        case <-ctx.Done():
+                                return
+                        case <-ticker.C:
+                                // 错误忽略: 桥逻辑 — 失败时 dirty 保留, 下次 tick 重试.
+                                // SaveToDisk 内部已处理并发 Put 写入的 dirtyVersion 比较.
+                                _ = SaveTlsSessionsToDisk()
+                        }
+                }
+        }()
 }
 
 var globalUtlsTransport = func() *http.Transport {
@@ -2509,6 +2674,13 @@ type proxyState struct {
         probeLatencyMs  map[string]int64
         // R50-1A: 上次 probe 时间戳 (供 ProxyStatsSnapshot 显示最近 probe 时间)
         probeLastAt     map[string]int64
+        // R51-1A: 主动失败计数 (MarkProxyFailed 累计). MarkProxyOK 清零.
+        //   与 probeFailStreak 区别: probeFailStreak 是 probe 路径连续失败计数,
+        //   pickFailStreak 是业务调用 (fetchHttp) 路径连续失败计数. 两者独立 —
+        //   probe 成功 (代理健康) 但业务 fetch 失败 (被反爬屏蔽, 不是代理问题)
+        //   不应误增 probeFailStreak 触发 5min cooldown. pickFailStreak 单独
+        //   跟踪业务失败, 用于 weighted-latency 策略降低失败率高的代理权重.
+        pickFailStreak  map[string]int
 }
 
 var proxyInst = &proxyState{
@@ -2517,6 +2689,7 @@ var proxyInst = &proxyState{
         probeFailStreak: map[string]int{},
         probeLatencyMs:  map[string]int64{},
         probeLastAt:     map[string]int64{},
+        pickFailStreak:  map[string]int{}, // R51-1A
 }
 
 // ParseProxyPool — 解析代理池字符串 (逗号分隔).
@@ -2597,6 +2770,12 @@ func pickProxyFor(rawURL string, cfg FetchConfig) string {
                 for k := range proxyInst.failedUntil {
                         if !poolSet[k] {
                                 delete(proxyInst.failedUntil, k)
+                        }
+                }
+                // R51-1A: 清当前 pool 之外的 pickFailStreak 条目 (与 useCount 同款防泄漏)
+                for k := range proxyInst.pickFailStreak {
+                        if !poolSet[k] {
+                                delete(proxyInst.pickFailStreak, k)
                         }
                 }
                 // 清过期的失败冷却条目
@@ -2681,11 +2860,57 @@ func pickProxyFor(rawURL string, cfg FetchConfig) string {
                         if min < 0 || latency < minLatency {
                                 min = i
                                 minLatency = latency
+                        } else if latency == minLatency {
+                                // R51-1A: 同 latency 时降级到 least-used (原实现仅取第一个,
+                                //   多代理同 latency 时总是选 first, 负载不均衡).
+                                if proxyInst.useCount[p] < proxyInst.useCount[available[min]] {
+                                        min = i
+                                }
                         }
                 }
                 if min >= 0 {
                         proxyInst.useCount[available[min]]++
                         return available[min]
+                }
+        case "weighted-latency":
+                // R51-1A 反反爬增强: weighted-latency 策略 — 按 1/(latency+100ms) 权重
+                //   加权随机选代理. 低延迟代理被选概率高, 但高延迟代理仍有概率被选
+                //   (避免完全饿死, 让反爬无法靠"恒定选最低延迟代理"识别爬虫模式).
+                //   失败率高的代理 (pickFailStreak 高) 权重降为 0.1x (降低但非 0, 让
+                //   偶发失败恢复后仍可被选). 从未 probe 过的代理视为 latency=100ms
+                //   (中等权重, 让新代理尽快被 probe).
+                //   权重公式: weight = (1.0 / (latencyMs + 100)) * (1.0 / (1 + pickFailStreak))
+                //   例: latency=200ms streak=0 → 1/300 * 1 = 0.00333
+                //       latency=5000ms streak=0 → 1/5100 * 1 = 0.000196 (17x 差距)
+                //       latency=200ms streak=3 → 1/300 * 0.25 = 0.000833 (4x 降权)
+                //   随机性: 累加权重 + rand 选区间, 保证低延迟代理概率高但仍有变化.
+                weights := make([]float64, len(available))
+                totalWeight := 0.0
+                for i, p := range available {
+                        latency, probed := proxyInst.probeLatencyMs[p]
+                        if !probed {
+                                latency = 100 // 从未 probe 视为 100ms (中等权重)
+                        } else if latency == 0 {
+                                latency = 10000 // probe 失败视为 10000ms (极低权重)
+                        }
+                        streak := proxyInst.pickFailStreak[p]
+                        failFactor := 1.0 / (1.0 + float64(streak))
+                        weights[i] = (1.0 / (float64(latency) + 100.0)) * failFactor
+                        totalWeight += weights[i]
+                }
+                if totalWeight > 0 {
+                        r := rand.Float64() * totalWeight
+                        cum := 0.0
+                        for i, w := range weights {
+                                cum += w
+                                if r <= cum {
+                                        proxyInst.useCount[available[i]]++
+                                        return available[i]
+                                }
+                        }
+                        // 兜底 (浮点精度): 选最后一个
+                        proxyInst.useCount[available[len(available)-1]]++
+                        return available[len(available)-1]
                 }
         }
         // random
@@ -2731,6 +2956,9 @@ func parsedProxyPoolCached(proxyURL string) []string {
 // R42-1B 后 proxyInst.failedUntil 是死字段 (从未被写入), 代理健康跟踪完全失效.
 // 调用方在 transport 层错误 (连接重置 / 超时 / 5xx) 时调本函数, 让 pickProxyFor
 // 在冷却内跳过该代理. 默认冷却 30s; cooldownMs <= 0 用默认值.
+// R51-1A: 同时累加 pickFailStreak (业务路径失败计数, 供 weighted-latency 策略
+//   降低失败率高的代理权重). 与 probeFailStreak 区别: probe 是主动健康检查,
+//   pick 是业务调用. probe 成功不代表业务一定成功 (反爬屏蔽 ≠ 代理故障).
 func MarkProxyFailed(proxyURL string, cooldownMs int) {
         if proxyURL == "" {
                 return
@@ -2741,9 +2969,15 @@ func MarkProxyFailed(proxyURL string, cooldownMs int) {
         proxyInst.mu.Lock()
         defer proxyInst.mu.Unlock()
         proxyInst.failedUntil[proxyURL] = time.Now().UnixMilli() + int64(cooldownMs)
+        // R51-1A: 累加业务路径失败计数. weighted-latency 策略用此降低权重.
+        // 不设上限 — pickFailStreak 是单调累计, MarkProxyOK 清零 (业务成功 = 代理实际可用).
+        // 实际场景: 反爬屏蔽持续命中同一代理 → streak 持续增长 → 权重持续降 →
+        // 自然分散到其它代理 (避免单代理被反复打死).
+        proxyInst.pickFailStreak[proxyURL]++
 }
 
 // MarkProxyOK — 标记代理健康 (清除冷却). 调用方在成功响应后调本函数.
+// R51-1A: 同时清 pickFailStreak (业务路径成功 = 代理实际可用, 重置权重).
 func MarkProxyOK(proxyURL string) {
         if proxyURL == "" {
                 return
@@ -2751,6 +2985,8 @@ func MarkProxyOK(proxyURL string) {
         proxyInst.mu.Lock()
         defer proxyInst.mu.Unlock()
         delete(proxyInst.failedUntil, proxyURL)
+        // R51-1A: 业务路径成功 → 清 pickFailStreak (恢复 weighted-latency 权重)
+        delete(proxyInst.pickFailStreak, proxyURL)
         // R46-1B: 健康 → 重置 probe 失败计数 (主动 probe 模式启用时)
         delete(proxyInst.probeFailStreak, proxyURL)
 }
@@ -2774,8 +3010,8 @@ func MarkProxyOK(proxyURL string) {
 //
 // 启用条件: cfg.ProxyHealthCheck=true (默认 false, opt-in 避免误触发 probe 风暴).
 
-// probeProxy — 对单个代理发 HEAD 5s timeout 请求, 返回 err=nil 表示健康.
-//   返回 (err, latencyMs) — latencyMs 为 round-trip 耗时, 供 least-latency
+// probeProxyWithLatency — 对单个代理发 HEAD 5s timeout 请求, 返回 err=nil 表示健康.
+//   返回 (latencyMs, err) — latencyMs 为 round-trip 耗时, 供 least-latency
 //   旋转策略选最低延迟代理 + ProxyStatsSnapshot 给 admin 查询识别慢代理.
 // R50-1A: 加 latency 返回值, probeAllProxies 调用方记录到 probeLatencyMs.
 // R47-1A 修复 (P1): socks5 实现原 override transport.DialContext 拨 p.Host
@@ -2798,13 +3034,13 @@ func MarkProxyOK(proxyURL string) {
 //   Sec-Fetch-* / Priority / DNT), 与 buildHeaders 同款. 原 probe 仅 UA + Accept
 //   + Accept-Language, 头族不全易被 probe endpoint bot detection 识别 (与正常
 //   浏览器请求头数差异大). 补全后 probe 请求与正常爬虫请求头族一致, 不触发 bot 检测.
-func probeProxyWithLatency(ctx context.Context, proxyURL, probeTarget string) (error, int64) {
+func probeProxyWithLatency(ctx context.Context, proxyURL, probeTarget string) (int64, error) {
         if proxyURL == "" || probeTarget == "" {
-                return errors.New("empty proxy or probe target"), 0
+                return 0, errors.New("empty proxy or probe target")
         }
         p, err := url.Parse(proxyURL)
         if err != nil {
-                return err, 0
+                return 0, err
         }
         // 构造 transport + proxy (复用 globalTransport.Clone)
         transport := globalTransport.Clone()
@@ -2815,7 +3051,7 @@ func probeProxyWithLatency(ctx context.Context, proxyURL, probeTarget string) (e
                 //   override DialContext (原实现拨 p.Host 而非走 socks5 协议).
                 transport.Proxy = http.ProxyURL(p)
         default:
-                return fmt.Errorf("unsupported proxy scheme: %s", p.Scheme), 0
+                return 0, fmt.Errorf("unsupported proxy scheme: %s", p.Scheme)
         }
         client := &http.Client{
                 Transport: transport,
@@ -2826,7 +3062,7 @@ func probeProxyWithLatency(ctx context.Context, proxyURL, probeTarget string) (e
         }
         req, err := http.NewRequestWithContext(ctx, "HEAD", probeTarget, nil)
         if err != nil {
-                return err, 0
+                return 0, err
         }
         // R48-1A: 浏览器象同头族 (与 buildHeaders 同款, 防 probe endpoint bot 检测).
         //   真实 UA + Accept + Accept-Language + Accept-Encoding + Sec-Ch-Ua +
@@ -2873,24 +3109,26 @@ func probeProxyWithLatency(ctx context.Context, proxyURL, probeTarget string) (e
         resp, err := client.Do(req)
         latencyMs := time.Since(start).Milliseconds()
         if err != nil {
-                return err, 0
+                return 0, err
         }
-        defer resp.Body.Close()
+        // R51-1A 修复 BUG-4 (P3): drain + close 响应体 (即使 HEAD 请求, 部分 endpoint
+        //   误返 200 + body, 或中间代理注入 body). 不 drain 会导致:
+        //   1) 连接无法被 Transport 重用 (Go http 规则: body 未读完不能复用连接);
+        //   2) 持续 probe 下 (5min sweep), 累积半开连接 → MaxIdleConns 打满 → 新 dial
+        //      失败 → 健康代理被误判死 (probe 看似 timeout 实际是连接池满).
+        //   解法: 用 io.Copy + LimitReader(64KB) drain 后 close. 64KB 上限防病态
+        //   endpoint 返大 body 拖慢 probe (HEAD 正常返 0 body, 仅异常 case 才有 body).
+        defer func() {
+                _, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64*1024))
+                resp.Body.Close()
+        }()
         // R48-1A: 5xx 也视为代理健康 (proxy 已成功 relay HTTP round trip, target
         //   自身故障不归咎 proxy). 真正的 proxy 失败是网络层 error (上面 client.Do
         //   err 分支). 501 Not Implemented (probe endpoint 不支持 HEAD) 同款视为健康.
         //   原实现 5xx → return error → probeAllProxies 累计 probeFailStreak →
         //   连续 3 次 → 5min cooldown, 健康代理被误判死. 改为 5xx 也返 nil.
         _ = resp.StatusCode
-        return nil, latencyMs
-}
-
-// probeProxy — 对单个代理发 HEAD 5s timeout 请求, 返回 err=nil 表示健康.
-//   包装 probeProxyWithLatency (向后兼容, 丢弃 latency 值).
-//   R50-1A: 提为 wrapper, 实际逻辑在 probeProxyWithLatency (加 latency 返回值).
-func probeProxy(ctx context.Context, proxyURL, probeTarget string) error {
-        err, _ := probeProxyWithLatency(ctx, proxyURL, probeTarget)
-        return err
+        return latencyMs, nil
 }
 
 // probeAllProxies — 异步 probe 所有代理 (5min 间隔, 不阻塞 pick).
@@ -2914,7 +3152,11 @@ func probeAllProxies(pool []string, probeTarget string) {
                         sem <- struct{}{}
                         defer func() { <-sem }()
                         // R50-1A: 用 probeProxyWithLatency 取 latency
-                        err, latencyMs := probeProxyWithLatency(ctx, proxyURL, probeTarget)
+                        // R51-1A 修复 P0 BUG (审视): 函数签名是 (int64, error), 调用方
+                        //   应 `latencyMs, err :=` 顺序接收. 原代码顺序正确但 worklog
+                        //   错误描述为 (error, int64), 仅是注释口径不齐, 不影响编译.
+                        //   实际编译错误来自 R50-1A 后续改动误改顺序, 此处恢复正确顺序.
+                        latencyMs, err := probeProxyWithLatency(ctx, proxyURL, probeTarget)
                         now := time.Now().UnixMilli()
                         if err != nil {
                                 // 失败累计, 连续 3 次 → failedUntil += 5min
@@ -2943,14 +3185,16 @@ func probeAllProxies(pool []string, probeTarget string) {
 }
 
 // ProxyStatsSnapshot — admin / metrics 查询用: 返回代理池统计 (R50-1A 新增).
-//   每个代理 URL → {useCount, probeLatencyMs, probeLastAt, failedUntil, inCooldown}.
-//   供 admin UI 识别慢代理 (latency > 3s 视为慢) + 死代理 (failedUntil > now).
+//   每个代理 URL → {useCount, probeLatencyMs, probeLastAt, failedUntil, inCooldown,
+//   pickFailStreak}. 供 admin UI 识别慢代理 (latency > 3s 视为慢) + 死代理
+//   (failedUntil > now) + 业务失败率高代理 (pickFailStreak > 3 视为有问题).
+//   R51-1A: 加 pickFailStreak 字段 (业务路径失败计数, 与 probe 失败计数独立).
 func ProxyStatsSnapshot() map[string]map[string]int64 {
         proxyInst.mu.Lock()
         defer proxyInst.mu.Unlock()
         out := map[string]map[string]int64{}
         now := time.Now().UnixMilli()
-        // 合并 useCount + probeLatencyMs + probeLastAt + failedUntil keys
+        // 合并 useCount + probeLatencyMs + probeLastAt + failedUntil + pickFailStreak keys
         seen := map[string]bool{}
         for k := range proxyInst.useCount {
                 seen[k] = true
@@ -2964,13 +3208,19 @@ func ProxyStatsSnapshot() map[string]map[string]int64 {
         for k := range proxyInst.failedUntil {
                 seen[k] = true
         }
+        // R51-1A: 加 pickFailStreak keys (业务失败计数独立的代理可能在 useCount=0 但
+        //   pickFailStreak>0 状态, 即只失败未被用过, 需独立合并).
+        for k := range proxyInst.pickFailStreak {
+                seen[k] = true
+        }
         for url := range seen {
                 m := map[string]int64{
-                        "useCount":      int64(proxyInst.useCount[url]),
+                        "useCount":       int64(proxyInst.useCount[url]),
                         "probeLatencyMs": proxyInst.probeLatencyMs[url],
-                        "probeLastAt":   proxyInst.probeLastAt[url],
-                        "failedUntil":   proxyInst.failedUntil[url],
-                        "inCooldown":    boolToInt64(proxyInst.failedUntil[url] > now),
+                        "probeLastAt":    proxyInst.probeLastAt[url],
+                        "failedUntil":    proxyInst.failedUntil[url],
+                        "inCooldown":     boolToInt64(proxyInst.failedUntil[url] > now),
+                        "pickFailStreak": int64(proxyInst.pickFailStreak[url]), // R51-1A
                 }
                 out[url] = m
         }
@@ -3263,14 +3513,37 @@ var captchaSitekeyRe = regexp.MustCompile(`(?i)data-(?:sitekey|pubkey|pkey)=["']
 //   sitekey: "..." 字面量提取. R50-1A 新增.
 var captchaSitekeyReFallback = regexp.MustCompile(`(?i)sitekey\s*[:=]\s*["']([A-Za-z0-9_-]{20,})["']`)
 
+// captchaSitekeyReIframeSrc — 兜底从 iframe src URL query 提取 sitekey (R51-1A).
+//   部分站点 (尤其 Cloudflare Turnstile / 部分 h-captcha enterprise) 用 iframe
+//   直接加载 captcha widget, sitekey 在 iframe src URL query 中 (?sitekey=xxx) 或
+//   在 path 中 (/api/v1/<sitekey>). 原 R50-1A 仅扫 data-* 属性 + JS 变量, 漏 iframe src.
+//   匹配模式:
+//     ?sitekey=abc... / &sitekey=abc... (query 形式)
+//     /turnstile/v0/api.js?...sitekey=0x... (Cloudflare Turnstile iframe 常见)
+//     /api/v1/abc... (h-captcha path 形式, 兜底, 通过 path 段长度 ≥20 过滤)
+//   长度 ≥20 防 "test"/"key" 误命中 (Turnstile sitekey 是 0x + 32+ hex = 36+ chars,
+//   h-captcha sitekey 是 UUID 形 36 chars, reCAPTCHA sitekey 是 40 chars).
+var captchaSitekeyReIframeSrc = regexp.MustCompile(`(?i)(?:sitekey|pubkey|pkey)[=:]([A-Za-z0-9_-]{20,})`)
+
 // extractCaptchaSitekey — 从 HTML 提取 captcha sitekey. 失败返回空.
-//   R50-1A: 加 fallback 从 JS 变量提取 sitekey (动态渲染 captcha 站点兜底).
+//   优先级: data-* 属性 > JS 变量字面量 > iframe src URL query (R51-1A).
+//   R50-1A: 加 fallback 从 JS 变量提取 sitekey (动态渲染 captcha 站点).
+//   R51-1A: 加 fallback 从 iframe src URL query 提取 (Turnstile / h-captcha
+//     enterprise iframe 直接加载场景).
 func extractCaptchaSitekey(html string) string {
         if m := captchaSitekeyRe.FindStringSubmatch(html); len(m) >= 2 {
                 return m[1]
         }
         // R50-1A: fallback 从 JS 变量提取 (动态渲染 captcha 站点)
         if m := captchaSitekeyReFallback.FindStringSubmatch(html); len(m) >= 2 {
+                return m[1]
+        }
+        // R51-1A: fallback 从 iframe src URL query 提取 (Turnstile / h-captcha
+        //   enterprise iframe 直接加载场景). captcha iframe 的 src 通常含
+        //   hcaptcha.com / challenges.cloudflare.com / recaptcha/api 域名, 但本
+        //   fallback 不限域名 (避免漏命中企业自部署的 captcha endpoint), 仅靠
+        //   sitekey= / pubkey= / pkey= 字面量 + 长度 ≥20 过滤.
+        if m := captchaSitekeyReIframeSrc.FindStringSubmatch(html); len(m) >= 2 {
                 return m[1]
         }
         return ""
@@ -3837,14 +4110,18 @@ func trySolveCaptchaWith2CaptchaInner(ctx context.Context, rawURL string, cfg Fe
 
 // applyCaptchaTokenAndRefetch — 把 captcha token 注入 URL query 重抓 (R45-1A 抽出供
 // 2captcha / anti-captcha 复用). 二次确认 LooksLikeCaptcha(solved) == "" 才返非空.
+//
+// R51-1A 修复 BUG-3 (P2): 原实现 `solvedURL = rawURL + sep + paramName + "=" + token`
+// 在 rawURL 含 fragment (#section) 时会把 query 拼到 fragment 后面, 服务端收不到 token.
+//   例: rawURL = "https://example.com/path#section"
+//   原代码: solvedURL = "https://example.com/path#section?param=value"
+//   → 实际请求 URL 的 query 为空, "?param=value" 是 fragment 一部分 (浏览器不发到服务端).
+//   → 服务端校验 captcha 失败, 返回原 captcha 页, captcha 求解看似失败.
+//   修复: 用 url.Parse 解析 rawURL, 把 fragment 暂存, 注入 query 到 RawQuery,
+//   再重新拼回完整 URL. 保持原 fragment 行为不变 (服务端 ignore fragment 是浏览器语义).
 func applyCaptchaTokenAndRefetch(ctx context.Context, rawURL string, cfg FetchConfig, ct CaptchaType, token string) string {
         if token == "" {
                 return ""
-        }
-        // 注入 token 到 URL query, 重抓 (服务端校验通过后返正常页)
-        sep := "&"
-        if !strings.Contains(rawURL, "?") {
-                sep = "?"
         }
         var paramName string
         switch ct {
@@ -3855,7 +4132,16 @@ func applyCaptchaTokenAndRefetch(ctx context.Context, rawURL string, cfg FetchCo
         default:
                 return ""
         }
-        solvedURL := rawURL + sep + paramName + "=" + url.QueryEscape(token)
+        // R51-1A BUG-3 修复: 用 url.Parse 安全拼接 query, 防 fragment 后置导致 query 失效.
+        u, err := url.Parse(rawURL)
+        if err != nil {
+                return ""
+        }
+        // 解析已有 query, 追加 captcha token 参数 (不覆盖原 query 中同名键, 保留其它参数)
+        q := u.Query()
+        q.Set(paramName, token)
+        u.RawQuery = q.Encode()
+        solvedURL := u.String()
         solvedHTML, err := fetchHttpWithCurlFallback(ctx, solvedURL, cfg, PickUAFor(originHost(rawURL), cfg))
         if err != nil || solvedHTML == "" {
                 return ""

@@ -3,6 +3,7 @@
 package main
 
 import (
+        "context"
         "database/sql"
         "encoding/json"
         "fmt"
@@ -16,6 +17,8 @@ import (
         "strconv"
         "strings"
         "unicode/utf8"
+
+        "heis-backend/crawl"
 
         _ "modernc.org/sqlite"
 )
@@ -269,6 +272,15 @@ func main() {
 
         addr := ":3000"
         log.Printf("heis-backend 启动: http://localhost%s (内存 %dMB)", addr, getMemMB())
+
+        // R51-1A 反反爬增强: 启动 TLS session 后台周期性 flush goroutine (5min 间隔).
+        //   原 R48-1A/R50-1A 仅在 Put 时 60s 节流触发异步 flush, 长时间无活跃握手时
+        //   dirty 数据持续留内存, 进程 crash 期间丢失. 后台 flusher 每 5min 调
+        //   SaveToDisk, 无新数据时早返不浪费 IO. ctx 在 graceful shutdown 时取消.
+        flusherCtx, flusherCancel := context.WithCancel(context.Background())
+        defer flusherCancel()
+        crawl.StartTlsSessionBackgroundFlusher(flusherCtx)
+
         if err := http.ListenAndServe(addr, nil); err != nil {
                 log.Fatal(err)
         }

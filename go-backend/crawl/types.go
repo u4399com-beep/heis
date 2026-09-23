@@ -441,7 +441,11 @@ func sanitizeFetchConfig(m map[string]any) FetchConfig {
         if v, ok := m["requestPriority"].(string); ok {
                 out.RequestPriority = safeStr(v, 20)
         }
-        if v, ok := m["proxyRotationStrategy"].(string); ok && (v == "round-robin" || v == "random" || v == "least-used" || v == "least-latency") {
+        // R51-1A: ProxyRotationStrategy 白名单加 "weighted-latency" (按 1/(latency+100) 权重
+        //   加权随机, 失败率高的代理权重降). 与 least-latency 区别: least-latency 恒定选
+        //   最低延迟代理 (反爬可识别固定模式), weighted-latency 加权随机让低延迟代理
+        //   概率高但仍有变化 (反爬无法靠"恒定选最低延迟"识别爬虫).
+        if v, ok := m["proxyRotationStrategy"].(string); ok && (v == "round-robin" || v == "random" || v == "least-used" || v == "least-latency" || v == "weighted-latency") {
                 out.ProxyRotationStrategy = v
         }
         if v, ok := m["urls"].([]any); ok {

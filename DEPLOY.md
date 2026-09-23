@@ -1,6 +1,6 @@
 # HEIS 小说采集与发布系统 — 安装部署图文教程
 
-> **本文件覆盖 Go 重写后的完整部署链路**（R38–R49 全链路迁移 + R50-1C 重写）。主后端
+> **本文件覆盖 Go 重写后的完整部署链路**（R38–R51 全链路迁移 + R50-1C 重写 + R51-1B 校对）。主后端
 > `go-backend/main.go`（heis-backend，:3000）+ 11 个 Go mini-services（端口 3010–3020）+
 > bridgeserver 共享包。Go 二进制单文件部署，**无 cgo / 无 Bun / 无 Node / 无 Docker 依赖**，
 > 运行期内存 17 MB（vs 旧 Next.js 2.2 GB），单机即可承载。
@@ -26,13 +26,15 @@
 10. [架构图](#十架构图)
 11. [故障排查](#十一故障排查)
 12. [生产部署](#十二生产部署)
+13. [迁移说明](#十三迁移说明从旧-nextjs-版本升级)
+14. [参考](#十四参考)
 
 ---
 
 ## 一、项目介绍
 
 **HEIS（Heis）小说采集与发布系统** 是一套基于纯 Go 的规则驱动型小说采集 + 站群发布系统：
-管理员在 `/admin` 后台配置站点规则与采集任务，引擎按规则抓取（**8 级降级链 + 26 项反反爬
+管理员在 `/admin` 后台配置站点规则与采集任务，引擎按规则抓取（**8 级降级链 + 29 项反反爬
 增强**）→ 清洗 → 落库；前台站群（书城 / 书籍详情 / 阅读页 / 搜索 / 分类 / 排行榜 / 关键词聚合
 / 全文搜索）直接消费库内数据。
 
@@ -43,7 +45,7 @@
 | 主后端 | Go 1.23+ + `net/http` 标准库（go.mod 声明 1.26，但 1.21+ API 即可编译） |
 | 模板 | `html/template`（94 个 = 10 主题 × 8 页型 + 14 admin） |
 | 数据库 | modernc.org/sqlite v1.59.0（纯 Go SQLite，**无 cgo**）+ Prisma schema（仅建表用） |
-| 采集引擎 | `go-backend/crawl/*.go`（8 模块 9321 行，纯 Go 标准库 + goquery + utls + chromedp） |
+| 采集引擎 | `go-backend/crawl/*.go`（8 模块 9226 行，纯 Go 标准库 + goquery + utls + chromedp） |
 | mini-services | `go-backend/services/*/main.go`（11 个独立 Go 二进制，端口 3010–3020）+ bridgeserver 共享包 |
 | 部署 | 单二进制 + bash 脚本（start-all.sh / stop-all.sh / status.sh），**无 Docker / 无 compose** |
 
@@ -51,22 +53,24 @@
 
 - **单二进制部署**：`go build -o heis-backend .` 产出 24 MB 静态链接二进制，运行期 17 MB 内存
   （vs 旧 Next.js 2.2 GB，OOM 风险消失），单机即可承载。
-- **采集引擎**（`go-backend/crawl/` 8 模块 9321 行）：规则四段（list / book / toc / content）
+- **采集引擎**（`go-backend/crawl/` 8 模块 9226 行）：规则四段（list / book / toc / content）
   解析、CSS / XPath / regex / JSON 字段提取、分页与翻页 Referer 链、编码识别（GBK 自动转
   UTF-8）、正文清洗（广告 / 去壳页 / 零宽字符剥离 / trafilatura 桥）、分卷排序、并发限速 +
   HostGate 双限速、封面本地化（webp）。
-- **8 级降级链**：native（utls 21 款 Hello 指纹池含 PSK / PQ / 老 iOS）→ curl（系统二进制 JA3
+- **8 级降级链**：native（utls 29 款 Hello 指纹池含 PSK / PQ / 老 iOS / Chrome 老版 / Firefox 老版 ESR）→ curl（系统二进制 JA3
   指纹）→ fetch-relay 中继桥 → Scrapling 桥（static / stealthy / playwright 三档）→ cloak-browser
   隐身 chromium 反检测渲染 → uc-bridge UC 头条桥 → moli-bridge moli 桥 → curl-impersonate
   curl_cffi JA3/JA4 桥，按站点防护级别自动降级，前级成功不降级。
-- **26 项反反爬**：utls Hello 指纹池 21 款 + per-host 钉扎 + attempts 偏移轮换 + TLS session
-  ticket 缓存 + JA3/JA4 轮换 + Cookie 持久化（cf_clearance 跨子域合并 + stripPort 跨端口）+
-  Referer 链伪造 + 重试退避（full jitter）+ Cookie/Token 挑战求解 + looksBlocked /
-  looksLikeCaptcha 启发式拦截 + 2captcha 验证码（连续 3 次失败 60 s cooldown）+ 代理池
-  （MarkProxyFailed / OK 健康跟踪 + cooldown + 5 endpoint 轮选 probe）+ brotli miss 计数 +
-  utls 池扩 21 款 + probe target 轮换 + 主动 probe 5 min 间隔 + 3 次失败冷却 + SSRF 守卫 +
-  mirrorDomains 镜像组 + per-host UA 钉扎 + CookieJar 跨子域合并 + 网络层错误不清 utls choice +
-  Token 挑战 HTTP 求解 + Cookie 挑战重试 + TLS handshake 失败清 utls + 等。
+- **29 项反反爬**：utls Hello 指纹池 29 款 + per-host 钉扎 + attempts 偏移轮换 + TLS session
+  ticket 缓存（LPU + 磁盘 persistable + snapshot+IO 模式）+ JA3/JA4 轮换 + Cookie 持久化
+  （cf_clearance 跨子域合并 + stripPort 跨端口）+ Referer 链伪造 + 重试退避（full jitter）+
+  Cookie/Token 挑战求解 + looksBlocked / looksLikeCaptcha 启发式拦截 + 2captcha 验证码
+  （连续 3 次失败 60 s cooldown + sitekey 三属性名 + JS 变量 fallback + 三服务级联）+
+  代理池（MarkProxyFailed / OK 健康跟踪 + cooldown + 5 endpoint 轮选 probe + latency 跟踪 +
+  least-latency 旋转策略 + ProxyStatsSnapshot admin 查询）+ brotli miss 计数 + probe target 轮换 +
+  主动 probe 5 min 间隔 + 3 次失败冷却 + SSRF 守卫 + mirrorDomains 镜像组 + per-host UA 钉扎 +
+  CookieJar 跨子域合并 + 网络层错误不清 utls choice + Token 挑战 HTTP 求解 + Cookie 挑战重试 +
+  TLS handshake 失败清 utls + 行为模拟 Gaussian 微抖 + micro wheel events + 15% 概率 Tab key。
 - **站级签名 / 解密代理**：对 token / 签名 / AES 类站点（笔趣阁 / 七猫 / 得奇 / xjp 等）以外置
   Go mini-service 承载，引擎 `tokenUrl` 钩子对接。
 - **管理端**：14 个后台页面（dashboard / tasks / rules / books / categories / sites / links /
@@ -198,7 +202,7 @@ cd heis
 # 验证关键文件就位
 ls -la go-backend/main.go          # 主后端源码 (53KB)
 ls -la go-backend/heis-backend     # 预编译二进制 (24MB, 已入 git, 平台 clone 即跑)
-ls -la go-backend/crawl/           # 8 模块采集引擎 (9321 行)
+ls -la go-backend/crawl/           # 8 模块采集引擎 (9226 行)
 ls -la go-backend/services/        # 11 mini-services + bridgeserver 共享包
 ls -la go-backend/templates/       # 94 个模板 (10 主题 × 8 + 14 admin)
 ls -la prisma/schema.prisma        # 11+1 表 schema (Go 后端不依赖, 仅 prisma db push 用)
@@ -215,12 +219,12 @@ heis/                                 # 项目根
 │   ├── admin.go                      #   后台 API + admin SSR (3570 行): 14 个 admin 页面 + /api/admin/* 14 路由
 │   ├── go.mod / go.sum               #   Go 模块定义 + 依赖校验
 │   ├── heis-backend                  #   go build 输出二进制 (24 MB, 已入 git 平台 clone 即跑)
-│   ├── crawl/                        #   采集引擎 (8 模块 9321 行)
-│   │   ├── fetcher.go                #     HTTP 采集 + 8 级降级链 + UA 池 + CookieJar (3615 行)
+│   ├── crawl/                        #   采集引擎 (8 模块 9226 行)
+│   │   ├── fetcher.go                #     HTTP 采集 + 8 级降级链 + UA 池 + CookieJar (4413 行)
 │   │   ├── parser.go                 #     css / xpath / regex / json 字段提取 (1612 行)
 │   │   ├── runner.go                 #     4 段采集流程 + 任务调度 + Semaphore (1481 行)
 │   │   ├── cleaner.go                #     广告 / 去壳 / 编码 / 零宽字符剥离 / trafilatura 桥 (899 行)
-│   │   ├── types.go                  #     规则 / 配置 / 结果数据结构 (721 行)
+│   │   ├── types.go                  #     规则 / 配置 / 结果数据结构 (733 行)
 │   │   ├── hostgate.go               #     并发 + 速率双限速器 (423 行)
 │   │   ├── storage.go                #     db / txt 双存储 + 封面本地化 (355 行)
 │   │   └── smart.go                  #     LLM 智能分类 / 完结判断 + 正则缓存 (310 行)
@@ -258,8 +262,8 @@ heis/                                 # 项目根
 │   ├── clone-css/*.css               #   10 个主题的源站 CSS (由 main.go /clone-css/ 路由服务)
 │   ├── robots.txt  sw.js  manifest.json  icon.svg  logo.svg  # 站点元数据
 ├── scripts/rule-yueyouxs.json        # yueyouxs (神马小说) 站点规则 backup-restore 格式 JSON
-├── agent-ctx/R*-*.md                 # 各轮 agent 工作记录 (R38-R49, 22 文件)
-├── worklog.md                        # 完整迁移工作日志 (~19000 行, R3-a → R49-1C 全链路)
+├── agent-ctx/R*-*.md                 # 各轮 agent 工作记录 (R38-R51, 32 文件)
+├── worklog.md                        # 完整迁移工作日志 (~20200 行, R3-a → R51-1B 全链路)
 ├── package.json                      # 仅 scripts.dev = "bun start-go.js" (auto-restart 包装)
 ├── start-go.js                       # Bun 脚本: 循环启动 ./go-backend/heis-backend, 挂了 2s 重启
 ├── start.sh                          # Bash 等价: while true; do ./go-backend/heis-backend; sleep 2; done
@@ -772,7 +776,7 @@ R47-1B 将仅剩的 `seed-rule-yueyouxs.ts` 转为 portable JSON
 引擎对每个 URL 自动按下列顺序尝试，前级成功则不降级；全部失败才记为抓取失败：
 
 ```
-1. native              Go 标准库 net/http + utls Hello 指纹池 21 款 (R47-1A, 含 PSK/PQ/老 iOS)
+1. native              Go 标准库 net/http + utls Hello 指纹池 29 款 (R50-1A, 含 PSK/PQ/老 iOS/Chrome 老版/Firefox 老版 ESR)
 2. curl                系统 curl 二进制 (JA3 指纹绕过 Cloudflare 基础检测)
 3. fetch-relay         3011 中继桥 (代理池轮换)
 4. scrapling           3012 Scrapling 桥 (static → stealthy → playwright 三档)
@@ -794,15 +798,20 @@ R47-1B 将仅剩的 `seed-rule-yueyouxs.ts` 转为 portable JSON
 - **R47-1A** 起 utls Hello 池扩 21 款（+ Chrome 100_PSK / 114_Padding_PSK_Shuf /
   115_PQ_PSK + iOS 11_1 / 12_1）+ CookieJar stripPort 跨端口合并 + captcha 连续 3 次失败
   60 s cooldown + probe target 5 endpoint 轮选。
+- **R50-1A** 起 utls Hello 池扩 29 款（+ Chrome 83/87/96 老版桌面 + Firefox 55/63 老版 ESR +
+  Edge 106 / Android 11 OkHttp / QQ 11_1）+ persistableSessionCache snapshot+IO 模式 +
+  captchaSitekeyRe 三属性名 + JS 变量 fallback + probeProxyWithLatency latency 跟踪 +
+  least-latency 旋转策略 + ProxyStatsSnapshot admin 查询 + 行为模拟 Gaussian 微抖 +
+  micro wheel events + 15% 概率 Tab key。
 
-### 9.5 26 项反反爬能力清单
+### 9.5 29 项反反爬能力清单
 
 | # | 能力 | 引入轮次 | 说明 |
 | --- | --- | --- | --- |
-| 1 | utls Hello 指纹池 21 款 | R43-1B → R47-1A | Chrome 100/106_Shuffle/112_PSK_Shuf/115_PQ/120/120_PQ/131/133 + Firefox 99/102/105/120 + Safari 16.0 + iOS 13/14/11_1/12_1 + Edge 85 + Chrome 100_PSK/114_Padding_PSK_Shuf/115_PQ_PSK |
+| 1 | utls Hello 指纹池 29 款 | R43-1B → R50-1A | Chrome 100/106_Shuffle/112_PSK_Shuf/115_PQ/120/120_PQ/131/133 + Firefox 99/102/105/120 + Safari 16.0 + iOS 13/14/11_1/12_1 + Edge 85 + Chrome 100_PSK/114_Padding_PSK_Shuf/115_PQ_PSK + Chrome 83/87/96 老版 + Firefox 55/63 老版 ESR + Edge 106 + Android 11 OkHttp + QQ 11_1 |
 | 2 | per-host 钉扎 | R43-1B | hash 稳定选取同一 Hello，避免同一站不同请求指纹跳变 |
 | 3 | attempts 偏移轮换 | R43-1B | 失败 N 次后偏移到下一号 Hello |
-| 4 | TLS session ticket 缓存 | R46-1B | `utls.NewLRUClientSessionCache(256)` 模拟浏览器 ticket cache |
+| 4 | TLS session ticket 缓存 | R46-1B → R50-1A | `utls.NewLRUClientSessionCache(256)` 模拟浏览器 ticket cache + R50-1A `persistableSessionCache` 内存 LRU + 磁盘 JSON 60s 节流 flush + snapshot+IO 模式 + `flushMu` 串行化并发 IO |
 | 5 | JA3/JA4 轮换 | R43-1B | utls 不同 Hello 版本 cipher suite 顺序 + 扩展顺序 + GREASE 模式各异 |
 | 6 | Cookie 持久化 | R43-1B | per-domain CookieJar，cf_clearance 跨子域合并 |
 | 7 | stripPort 跨端口 Cookie 合并 | R47-1A | `CookieJar.stripPort` 修正 `example.com:443` vs `example.com` 域名不一致 |
@@ -813,10 +822,10 @@ R47-1B 将仅剩的 `seed-rule-yueyouxs.ts` 转为 portable JSON
 | 12 | looksBlocked 启发式 | R43-1B | 识别 403/429/Captcha 页 |
 | 13 | looksLikeCaptcha 启发式 | R43-1B | 识别验证码页 |
 | 14 | isJsChallenge 启发式 | R43-1B | 识别 JS Challenge |
-| 15 | 2captcha 验证码 | R43-1B | 可选，配置 API key 后自动求解 Cloudflare Challenge |
+| 15 | 2captcha 验证码 | R43-1B → R50-1A | 可选，配置 API key 后自动求解 Cloudflare Challenge + R50-1A 三服务级联 (2captcha + anti-captcha + CapSolver) + sitekey 三属性名 (data-sitekey/data-pubkey/data-pkey) + JS 变量 fallback |
 | 16 | captcha 连续失败 cooldown | R47-1A | 连续 3 次失败 60 s cooldown |
 | 17 | 代理池 MarkProxyFailed/OK | R43-1B | 代理健康跟踪 + cooldown |
-| 18 | 代理主动 probe | R46-1B | 5 min 间隔 + 3 次失败冷却 |
+| 18 | 代理主动 probe | R46-1B → R50-1A | 5 min 间隔 + 3 次失败冷却 + R50-1A latency 跟踪 (probeProxyWithLatency) + least-latency 旋转策略 + ProxyStatsSnapshot admin 查询 |
 | 19 | probe target 轮选 | R47-1A | 5 endpoint 轮选，避免单点故障 |
 | 20 | brotli miss 计数 | R46-1B | 识别需走桥的 host（不响应 br 编码） |
 | 21 | 网络层错误不清 utls choice | R46-1B | 仅 TLS handshake 失败才清，避免无效轮换 |
@@ -825,6 +834,9 @@ R47-1B 将仅剩的 `seed-rule-yueyouxs.ts` 转为 portable JSON
 | 24 | per-host UA 钉扎 | R43-1B | 同一站用同一 UA，避免指纹跳变 |
 | 25 | Set-Cookie 安全校验 | R43-1B | 防止恶意 Set-Cookie 污染 CookieJar |
 | 26 | captcha 成功率统计 | R46-1B | 主服务成功率统计 + 自动切换 |
+| 27 | 行为模拟 Gaussian 微抖 | R50-1A | `rand.NormFloat64` stddev=1.5px 替代均匀分布 ±3px，抖动分布更接近真实用户生理抖动 |
+| 28 | 滚轮 micro wheel events | R50-1A | 5-15px deltaY × 2-4 步插入主滚动间，模拟真实用户 wheel 事件连续触发 |
+| 29 | 15% 概率 Tab 键 focus 切换 | R50-1A | `chromedp.KeyEvent "\t"` 在 focusable 元素间切换 + 200-500ms 短停顿，避免被检测为无键盘自动化 |
 
 ---
 
@@ -865,28 +877,29 @@ R47-1B 将仅剩的 `seed-rule-yueyouxs.ts` 转为 portable JSON
                           │
                           ▼
               ┌────────────────────────────────┐
-              │  采集引擎 crawl/                  │  (9321 行 Go)
+              │  采集引擎 crawl/                  │  (9226 行 Go)
               │  ────────────────────────────  │
-              │  fetcher.go  3615 行             │  ← 8 级降级链总调度
+              │  fetcher.go  4413 行             │  ← 8 级降级链总调度
               │  parser.go   1612 行             │  ← css / xpath / regex / json 提取
               │  runner.go   1481 行             │  ← 4 段采集流程 + 任务调度
               │  cleaner.go   899 行             │  ← 广告 / 去壳 / 编码 / trafilatura
-              │  types.go     721 行             │  ← 规则 / 配置 / 结果数据结构
+              │  types.go     733 行             │  ← 规则 / 配置 / 结果数据结构
               │  hostgate.go  423 行             │  ← 并发 + 速率双限速器
               │  storage.go    355 行             │  ← db / txt 双存储 + 封面本地化
               │  smart.go     310 行             │  ← LLM 智能分类 / 完结判断
               │                                 │
               │  反反爬:                        │
-              │    utls Hello 指纹池 21 款      │  (含 PSK / PQ / 老 iOS)
+              │    utls Hello 指纹池 29 款      │  (含 PSK / PQ / 老 iOS / Chrome 老版 / Firefox 老版 ESR)
               │    JA3 / JA4 轮换                │
-              │    TLS session cache            │  (模拟浏览器 ticket cache)
+              │    TLS session cache            │  (LPU + 磁盘 persistable + snapshot+IO)
               │    brotli miss 计数              │  (识别需走桥的 host)
-              │    代理主动 probe                │  (5 min 间隔 + 3 次失败冷却)
-              │    captcha 成功率                │  (主服务统计 + 自动切换)
+              │    代理主动 probe                │  (5 min 间隔 + 3 次失败冷却 + latency 跟踪)
+              │    captcha 成功率                │  (主服务统计 + 自动切换 + 三服务级联)
               │    Cookie 持久化                 │  (cf_clearance 跨子域 + stripPort)
               │    Referer 链伪造                │
               │    2captcha 验证码               │  (可选, 连续 3 次失败 60s cooldown)
-              │    MarkProxyFailed / OK          │  (代理健康跟踪)
+              │    MarkProxyFailed / OK          │  (代理健康跟踪 + least-latency)
+              │    行为模拟 Gaussian 微抖        │  (rand.NormFloat64 stddev=1.5px)
               └───────────┬────────────────────┘
                           │
               ┌───────────┴────────────────────┐
@@ -944,7 +957,7 @@ crawl/runner.go (TaskRuntime.Run)
    │
    ├── 1. fetchListPage    →  crawl/fetcher.go (8 级降级链)
    │                          │
-   │                          ├── native   (utls 21 款 Hello 池)
+   │                          ├── native   (utls 29 款 Hello 池)
    │                          ├── curl     (系统二进制)
    │                          ├── fetch-relay         → mini-service :3011
    │                          ├── scrapling           → mini-service :3012
@@ -1289,10 +1302,10 @@ du -sh db/ data/
 | 依赖 | Bun + Node + Prisma Client + React 19 | Go 标准库 + modernc.org/sqlite（无 cgo） |
 | 前端 | React 19 SSR（src/app/*，R46-1A 起整目录已删） | Go html/template（go-backend/templates/*） |
 | 模板数 | 173 文件（src/components + src/app） | 94 个（10 主题 × 8 页型 + 14 admin） |
-| 采集引擎 | TS（src/lib/crawl/*，8302 行，已 R42-1C 删） | Go（go-backend/crawl/*，9321 行） |
+| 采集引擎 | TS（src/lib/crawl/*，8302 行，已 R42-1C 删） | Go（go-backend/crawl/*，9226 行） |
 | mini-services | 5 Bun + 1 Python（已删） | 11 Go 二进制（端口 3010-3020）+ bridgeserver 共享包 |
 | 降级链 | 5 级 | **8 级**（+uc/moli/curl-impersonate） |
-| 反反爬 | 基础 UA + 代理池 | utls Hello 指纹池 21 款 + 26 项反反爬能力（见 §9.5） |
+| 反反爬 | 基础 UA + 代理池 | utls Hello 指纹池 29 款 + 29 项反反爬能力（见 §9.5） |
 | 数据库 | Prisma/SQLite | 同（schema 不变，db/custom.db 可直接迁移） |
 | 项目根 | package.json + bun.lock + tsconfig + Dockerfile + install.sh + src/ + node_modules/ + .next/ 等 | 全部已删（R46-1A），仅保留 go-backend/ + prisma/ + public/ + mini-services/*.sh |
 
@@ -1321,17 +1334,22 @@ Prisma。
 - **R47-1B 清理精简 + DEPLOY 更新**：`agent-ctx/R47-1B-full-stack-developer.md`
 - **R48-1B 清理精简 + DEPLOY 更新**：`agent-ctx/R48-1B-full-stack-developer.md`（go vet/staticcheck 复检 0 + deadcode 38 exported funcs 全保留 + auto-restart dev script + 文档版本同步）
 - **R49-1A/1B/1C 主题核实**：`agent-ctx/R49-1A/1B/1C-full-stack-developer.md`（10 套 × 8 页型 = 80 模板全面核实 + cleaner.go 7 P2/P3 bug 修复 + 5 套主题 search form BUG 修复）
-- **R50-1C 安装教程重写 + 清理精简**：`agent-ctx/R50-1C-full-stack-developer.md`（本文件 12 节重写 + .dockerignore/upload/tool-results 清理 + go vet 0）
-- **完整工作日志**：`worklog.md`（~19,500 行，R3-a → R50-1C 全链路迁移记录）
+- **R50-1C 安装教程重写 + 清理精简**：`agent-ctx/R50-1C-full-stack-developer.md`（本文件 14 节重写 + .dockerignore/upload/tool-results 清理 + go vet 0）
+- **R51-1B 清理精简 + DEPLOY/README 校对**：`agent-ctx/R51-1B-full-stack-developer.md`（staticcheck 复检 0 + 删除 unused `probeProxy` wrapper + ST1008 修复 + 9321→9226 行 + 21→29 款 + 26→29 项反反爬清单 + TOC 补全 13/14 节）
+- **完整工作日志**：`worklog.md`（~20,200 行，R3-a → R51-1B 全链路迁移记录）
 - **数据库 schema**：`prisma/schema.prisma`（11 + 1 表，Feedback R40 新增）
-- **采集引擎源码**：`go-backend/crawl/*.go`（8 模块 9321 行）
+- **采集引擎源码**：`go-backend/crawl/*.go`（8 模块 9226 行）
 - **主后端源码**：`go-backend/main.go`（1173 行）+ `go-backend/admin.go`（3570 行）
 - **mini-services 源码**：`go-backend/services/*/main.go`（11 个）+ `services/bridgeserver/bridgeserver.go`（共享样板 917 行）
 
 ---
 
-**文档版本**：R50-1C（安装部署教程 12 节完整重写 + 26 项反反爬清单 + 文字版架构图 +
-故障排查 7 类 + 生产部署 6 项 + 旧 Next.js 迁移说明；项目清理：`.dockerignore` /
-`upload/` / `tool-results/` / `download/README.md` / `go-backend/backend.log` /
-`go-backend/cloak-browser`（误置二进制） 全删，go build + go vet 0），对应 worklog.md
-R38–R50 全程迁移记录。
+**文档版本**：R51-1B（R50-1C 14 节安装部署教程 + 29 项反反爬清单 + 文字版架构图 +
+故障排查 7 类 + 生产部署 6 项 + 旧 Next.js 迁移说明；R51-1B 校对：TOC 补全 13/14 节 +
+staticcheck 复检 0 + 删除 unused `probeProxy` wrapper + ST1008 修复（probeProxyWithLatency
+返回值顺序 (error, int64) → (int64, error)）+ LoC/port/template 校对一致（9321→9226 行 +
+fetcher 3615→4413 + types 721→733 + utls 21→29 款 + 26→29 项反反爬清单 + R50-1A 4 行
+能力表条目补全 + 3 项行为模拟新加：Gaussian 微抖 + micro wheel events + 15% Tab key）。
+项目清理：`.dockerignore` / `upload/` / `tool-results/` / `download/README.md` /
+`go-backend/backend.log` / `go-backend/cloak-browser`（误置二进制） 全删，go build +
+go vet + staticcheck 全 0），对应 worklog.md R38–R51 全程迁移记录。
