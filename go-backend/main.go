@@ -238,6 +238,33 @@ func main() {
         http.Handle("/manifest.json", http.FileServer(http.Dir(publicDir)))
         http.Handle("/favicon.ico", http.FileServer(http.Dir(publicDir)))
 
+        // R52: 封面图服务 /covers/ — 文件存在返回图片, 不存在返回 SVG 占位(书名首字+渐变色块)
+        coversDir := filepath.Join(basePath, "data/covers")
+        http.HandleFunc("/covers/", func(w http.ResponseWriter, r *http.Request) {
+                name := strings.TrimPrefix(r.URL.Path, "/covers/")
+                if name == "" { http.NotFound(w, r); return }
+                // 尝试 data/covers/name
+                fp := filepath.Join(coversDir, name)
+                if _, err := os.Stat(fp); err == nil {
+                        http.ServeFile(w, r, fp)
+                        return
+                }
+                // 尝试 public/covers/name
+                fp2 := filepath.Join(publicDir, "covers", name)
+                if _, err := os.Stat(fp2); err == nil {
+                        http.ServeFile(w, r, fp2)
+                        return
+                }
+                // 占位图: SVG 渐变色块 + 书名首字
+                w.Header().Set("Content-Type", "image/svg+xml")
+                w.Header().Set("Cache-Control", "public, max-age=3600")
+                var bookName string
+                db.QueryRow(`SELECT name FROM Book WHERE cover LIKE ?`, "%"+name).Scan(&bookName)
+                initial := "书"
+                if runes := []rune(bookName); len(runes) > 0 { initial = string(runes[0]) }
+                fmt.Fprintf(w, `<svg xmlns="http://www.w3.org/2000/svg" width="120" height="160"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#667eea"/><stop offset="1" stop-color="#764ba2"/></linearGradient></defs><rect width="120" height="160" fill="url(#g)" rx="4"/><text x="60" y="85" font-size="48" text-anchor="middle" dominant-baseline="middle" fill="white" font-family="sans-serif">%s</text></svg>`, initial)
+        })
+
         // 前台页面 (Go templates SSR)
         http.HandleFunc("/", homeHandler) // 首页 + 路由分发
 
@@ -538,7 +565,7 @@ func bookDetailHandler(w http.ResponseWriter, r *http.Request) {
                 return
         }
         writeJSON(w, map[string]interface{}{"ok": true, "data": map[string]interface{}{
-                "id": bid.String, "name": name.String, "author": author.String, "intro": intro.String, "cover": cover.String,
+                "id": bid.String, "name": name.String, "author": author.String, "intro": intro.String, "cover": "/" + cover.String,
                 "status": status.String, "wordCount": wordCount, "latestChapter": latestChapter.String,
                 "category": category.String, "categoryId": categoryId.String, "updatedAt": updatedAt.String,
         }})
@@ -634,7 +661,7 @@ func getBooks(limit int) ([]map[string]interface{}, error) {
                 rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryId, &updatedAt)
                 books = append(books, map[string]interface{}{
                         "id": id.String, "name": name.String, "author": author.String,
-                        "intro": truncate(intro.String, 120), "cover": cover.String,
+                        "intro": truncate(intro.String, 120), "cover": "/" + cover.String,
                         "status": status.String, "wordCount": wordCount, "latestChapter": latestChapter.String,
                         "category": category.String, "categoryId": categoryId.String, "updatedAt": updatedAt,
                 })
@@ -867,7 +894,7 @@ func tabName(tab string) string {
 func bookRowFromScan(id, name, author, intro, cover, status, latestChapter, category, categoryId sql.NullString, wordCount int64, updatedAt string) map[string]interface{} {
         return map[string]interface{}{
                 "id": id.String, "name": name.String, "author": author.String,
-                "intro": truncate(intro.String, 120), "cover": cover.String,
+                "intro": truncate(intro.String, 120), "cover": "/" + cover.String,
                 "status": status.String, "wordCount": wordCount, "latestChapter": latestChapter.String,
                 "category": category.String, "categoryId": categoryId.String, "updatedAt": updatedAt,
         }
@@ -885,7 +912,7 @@ func getBookViewData(id string) (map[string]interface{}, []map[string]interface{
         }
         book := map[string]interface{}{
                 "id": bid.String, "name": name.String, "author": author.String,
-                "intro": intro.String, "cover": cover.String, "status": status.String,
+                "intro": intro.String, "cover": "/" + cover.String, "status": status.String,
                 "wordCount": wordCount, "latestChapter": latestChapter.String,
                 "category": category.String, "categoryId": categoryId.String,
                 "keywords": keywords.String, "updatedAt": updatedAt.String,
