@@ -1,5 +1,5 @@
 // R39-1C — admin 后台 wiring: API 路由 + 页面路由 + DBClient 适配器
-// 与 R38-1C 采集引擎 (go-backend/crawl/*) 接驳, 与 src/app/api/admin/* TS 路由逻辑同口径.
+// 与 R38-1C 采集引擎 (go-backend/crawl/*) 接驳.
 //
 // 主要内容:
 //   1. adminDB — 实现 crawl.DBClient 接口 (Task/Book/Chapter 持久化)
@@ -511,7 +511,7 @@ func adminTasksList(w http.ResponseWriter, r *http.Request) {
 
 // adminTasksCreate — POST 创建任务 + 启动.
 //
-//      与 src/app/api/admin/tasks POST 同口径: 校验 ruleId + normalizeTaskData + validateTaskPair
+//      入参校验: ruleId + normalizeTaskData + validateTaskPair
 //      创建 DB 行后异步调 crawl.ExecuteTask
 func adminTasksCreate(w http.ResponseWriter, r *http.Request) {
         body := readJSONBody(r)
@@ -723,7 +723,7 @@ func startCrawlTask(taskID, ruleID, ruleConfig, mode, bookURL, listURL, fetchCon
 
 // adminTaskControlHandler — POST /api/admin/tasks/:id/control (start/pause/stop).
 //
-//      与 src/app/api/admin/tasks/[id]/control POST 同口径.
+//      控制命令: start/pause/stop/resume.
 //      start: 若 runtime 不存在 → 启动新任务 (调 startCrawlTask); 若存在且未运行 → MarkResumed.
 //      pause: MarkPaused.
 //      stop:  MarkStopped.
@@ -1955,7 +1955,7 @@ func shortTime(s string) string {
 
 // ==================== R40-1B 新增: 分类/友链/主题/下载/设置/反馈/备份/SEO审计 ====================
 
-// ---------- 主题静态注册表 (与 src/lib/crawl/themes.ts THEMES 同口径) ----------
+// ---------- 主题静态注册表 (10 套精仿主题) ----------
 
 // adminTheme 简化的主题描述, 用于 admin 主题管理页面 + API 返回.
 // 与 TS THEMES 字段对齐: id/name/desc/layout/dark/contentSelector/read.{layout,fontBase}.
@@ -1972,7 +1972,7 @@ type adminTheme struct {
         PreviewText  string
 }
 
-// adminThemes 10 套精仿主题 (与 src/lib/crawl/themes.ts THEMES 数组同口径).
+// adminThemes 10 套精仿主题 (themeId → 主题元数据: title/description/preview).
 // 字段顺序与 TS 一致, 供 /api/admin/themes 与 /admin/themes SSR 直接消费.
 var adminThemes = []adminTheme{
         {ID: "clone-aijjxs", Name: "精仿·久久小说", Desc: "像素级精仿·久久小说 aijjxs.com: 实测 :root CSS 变量·双层 radial-gradient 奶油底+白卡+青绿+琥珀+14px圆角", Layout: "clone-aijjxs", Dark: false, ContentSel: "#view_content_txt", ReadLayout: "classic", ReadFontBase: 17, PreviewBg: "#f3efe7", PreviewText: "#115e59"},
@@ -3488,7 +3488,7 @@ func validIcbm(s string) bool {
 }
 
 // auditSite 对单站点执行 SEO 检查, 返回 {siteId,siteName,domain,score,issues,passed}.
-// 与 src/app/api/admin/seo-audit/route.ts auditSite 同口径.
+// auditSite: 对单个站点跑 SEO 审计 (TDK / sitemap / 伪静态 / ICBM / 链轮).
 func auditSite(siteID, name, domain, themeID, title, description, keywords, icbm, geoRegion, geoPlacename string, offset, totalBooks, linkWheelCount int, themeIDs map[string]bool) map[string]interface{} {
         issues := []seoIssue{}
         passed := []string{}

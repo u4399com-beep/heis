@@ -1,6 +1,6 @@
 // parser.go — HTML/JSON 解析 + CSS 选择器 + 翻页 + URL 绝对化 (R38-1C).
 //
-// 与 TS 端 src/lib/crawl/parser.ts 同口径核心功能:
+// 核心功能:
 //   - stripLeadingBom (剥前导 BOM / 前导空白)
 //   - extractMetaTags / extractJsonLd (og:* / article:* / JSON-LD 兜底)
 //   - decodeHtmlEntities (命名 + 数字实体, 单遍解码防链式二次)
@@ -12,7 +12,7 @@
 //   - absolutize (协议过滤 + 自引用过滤)
 //   - urlVars / jsonGet / jsonArrayAt / jsonToString
 //
-// Go 实现: goquery 替代 cheerio; regexp 替代 TS RegExp; encoding/json 替代
+// Go 实现: goquery (CSS 选择器); regexp RE2; encoding/json;
 // JSON.parse. XPath 暂不支持 (需 antchfx/xpath, 后续 wiring 引入).
 package crawl
 

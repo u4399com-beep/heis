@@ -102,7 +102,7 @@
 <h2>最近更新小说列表</h2>
 <ul>
 {{range .Books}}
-<li><span class="s1">[{{.category}}]</span><span class="s2"><a href="/?view=book&id={{.id}}">{{.name}}</a></span><span class="s3"><a href="/?view=book&id={{.id}}">{{if .latestChapter}}{{.latestChapter}}{{else}}查看最新{{end}}</a></span><span class="s4">{{.author}}</span><span class="s5">{{wordCount .wordCount}}</span></li>
+<li><span class="s1">[{{.category}}]</span><span class="s2"><a href="/?view=book&id={{.id}}">{{.name}}</a></span><span class="s3"><a href="/?view=book&id={{.id}}">{{if .latestChapter}}{{.latestChapter}}{{else}}查看最新{{end}}</a></span><span class="s4">{{.author}}</span><span class="s5">{{fmtDateMD .updatedAt}}</span></li>
 {{end}}
 </ul>
 </div>
@@ -110,7 +110,7 @@
 <h2>最热小说列表</h2>
 <ul>
 {{range .Popular}}
-<li><span class="s1">[{{.category}}]</span><span class="s2"><a href="/?view=book&id={{.id}}">{{.name}}</a></span><span class="s3"><a href="/?view=book&id={{.id}}">{{if .latestChapter}}{{.latestChapter}}{{else}}查看{{end}}</a></span><span class="s4">{{.author}}</span><span class="s5">{{wordCount .wordCount}}</span></li>
+<li><span class="s1">[{{.category}}]</span><span class="s2"><a href="/?view=book&id={{.id}}">{{.name}}</a></span><span class="s3"><a href="/?view=book&id={{.id}}">{{if .latestChapter}}{{.latestChapter}}{{else}}查看{{end}}</a></span><span class="s4">{{.author}}</span><span class="s5">{{fmtDateMD .updatedAt}}</span></li>
 {{end}}
 </ul>
 </div>

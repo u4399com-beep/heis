@@ -1,9 +1,9 @@
-// Package crawl — 采集引擎 Go 重写 (R38-1C)
+// Package crawl — 采集引擎 Go 实现 (R38-1C)
 //
-// 对应 TS 端 src/lib/crawl/* 的核心模块: fetcher / parser / cleaner / runner /
-// smart / storage / hostgate / types. 保留 8 级降级链 + CookieJar + 并发架构
-// (Semaphore + 三阶段) + cleaner trafilatura 桥等核心逻辑, 用 Go 标准库 +
-// goquery (CSS 选择器) + golang.org/x/net/html 实现.
+// 核心模块: fetcher / parser / cleaner / runner / smart / storage / hostgate /
+// types. 保留 8 级降级链 + CookieJar + 并发架构 (Semaphore + 三阶段) +
+// cleaner trafilatura 桥等核心逻辑, 用 Go 标准库 + goquery (CSS 选择器) +
+// golang.org/x/net/html 实现.
 //
 // 模块文件:
 //   types.go    — 共享配置/规则/结果类型 + 默认值 + 深消毒白名单
@@ -34,7 +34,7 @@ const (
         FieldConst  FieldRuleType = "const"
 )
 
-// FieldRule — 字段提取规则. 与 TS 端 src/lib/crawl/types.ts FieldRule 字段对齐.
+// FieldRule — 字段提取规则 (extractor + selector + fields + transform + pagination).
 type FieldRule struct {
         Type              FieldRuleType `json:"type"`
         Expression        string        `json:"expression"`
@@ -72,7 +72,7 @@ type Pagination struct {
         JoinWith string     `json:"joinWith,omitempty"`
 }
 
-// FetchConfig — 反反爬抓取配置 (与 TS 端 FetchConfig 字段对齐, 仅保留核心).
+// FetchConfig — 反反爬抓取配置 (保留核心字段).
 type FetchConfig struct {
         Engine                 string            `json:"engine"`              // auto | http | browser
         UAMode                 string            `json:"uaMode"`              // rotate | fixed | custom | mobile | desktop
@@ -202,7 +202,7 @@ type ParsedContent struct {
         Pages   int    `json:"pages"`
 }
 
-// DefaultFetchConfig — 与 TS 端 DEFAULT_FETCH_CONFIG 同口径.
+// DefaultFetchConfig — 默认抓取配置.
 var DefaultFetchConfig = FetchConfig{
         Engine:                "auto",
         UAMode:                "rotate",
@@ -215,7 +215,7 @@ var DefaultFetchConfig = FetchConfig{
         HostGateLimit:         3,
 }
 
-// DefaultCleanConfig — 与 TS 端 DEFAULT_CLEAN_CONFIG 同口径.
+// DefaultCleanConfig — 默认清洗配置.
 //  R54-1B 修复 BUG-C: 原 AdPatterns 第 5 条 `[（(]?完?本[网站站][）)]?` 量词全可选,
 //    导致单独 "本站" / "本网" / "完本网" 任意出现均被命中 → 误删 "本站所收录作品..."
 //    等正文中的 "本站" 前缀 (留下 "所收录作品..." 残片). 改为要求括号包围
@@ -239,7 +239,7 @@ var DefaultCleanConfig = CleanConfig{
         TrafilaturaFallback: false,
 }
 
-// DefaultRuleConfig — 默认规则配置 (与 TS 端 defaultRuleConfig 同口径).
+// DefaultRuleConfig — 默认规则配置.
 func DefaultRuleConfig() RuleConfig {
         return RuleConfig{
                 List: PageRule{Enabled: true, URLTemplate: "", Fields: PageFields{}, ItemSelector: nil},
@@ -259,7 +259,7 @@ func DefaultRuleConfig() RuleConfig {
         }
 }
 
-// ParseRuleConfig — 解析规则 JSON 字符串, 深消毒白名单重建 (与 TS 端 parseRuleConfig 同口径).
+// ParseRuleConfig — 解析规则 JSON 字符串, 深消毒白名单重建.
 // 防脏数据: JSON 根不是 map[string]any 时直接回退默认配置.
 func ParseRuleConfig(raw string) RuleConfig {
         base := DefaultRuleConfig()

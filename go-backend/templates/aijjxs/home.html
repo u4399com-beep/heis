@@ -48,7 +48,7 @@
 <a href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a>
 <span class="author">{{.author}}</span>
 </span>
-<span class="date new"><span class="new">{{wordCount .wordCount}}</span></span>
+<span class="date new"><span class="new">{{fmtDateMD .updatedAt}}</span></span>
 </li>
 {{end}}
 </ul>
@@ -65,7 +65,7 @@
 <div class="book">
 {{if .cover}}<img src="{{.cover}}" alt="{{.name}}封面">{{end}}
 <h4><span class="badge">荐</span><a href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a></h4>
-<div class="meta">{{.author}} · {{.category}} · {{wordCount .wordCount}} · {{if eq .status "completed"}}完结{{else}}连载{{end}}</div>
+<div class="meta">{{.author}} · {{.category}} · {{wordCount .wordCount}} · {{fmtDateMD .updatedAt}}</div>
 <div class="desc">{{.intro}}</div>
 </div>
 {{end}}
@@ -85,7 +85,7 @@
 <a href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a>
 <span class="author">{{.author}}</span>
 </span>
-<span class="date new"><span class="new">{{wordCount .wordCount}}</span></span>
+<span class="date new"><span class="new">{{fmtDateMD .updatedAt}}</span></span>
 </li>
 {{end}}
 </ul>
@@ -100,15 +100,78 @@
 <a href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a>
 <span class="author">{{.author}}</span>
 </span>
-<span class="date new"><span class="new">{{wordCount .wordCount}}</span></span>
+<span class="date new"><span class="new">{{fmtDateMD .updatedAt}}</span></span>
 </li>
 {{end}}
 </ul>
 </div>
 </div>
 </article>
+
+<article class="panel" style="margin-top:14px;">
+<h3>专题书单</h3>
+<div class="body grid3">
+<div class="desc"><strong>高分重生文</strong><br>节奏快、反转多、女性成长线清晰。</div>
+<div class="desc"><strong>穿越种田合集</strong><br>日常经营、家长里短、慢热耐看。</div>
+<div class="desc"><strong>都市爽文精选</strong><br>升级流、事业线、金手指开局。</div>
+</div>
+</article>
 </section>
+
+<aside>
+<article class="panel rank" style="margin-top:14px;">
+<h3>24小时热榜</h3>
+<div class="body">
+{{if .Popular}}
+<div class="book_r">
+{{if (index .Popular 0).cover}}<a href="/?view=book&id={{(index .Popular 0).id}}" target="_blank"><img src="{{(index .Popular 0).cover}}" alt="{{(index .Popular 0).name}}封面"></a>{{end}}
+<h4><a href="/?view=book&id={{(index .Popular 0).id}}" target="_blank">{{(index .Popular 0).name}}</a></h4>
+<div class="meta">{{(index .Popular 0).author}} · {{(index .Popular 0).category}} · {{wordCount (index .Popular 0).wordCount}}</div>
+<div class="desc">{{if (index .Popular 0).intro}}{{(index .Popular 0).intro}}{{else}}暂无简介{{end}}</div>
+</div>
+{{end}}
+<ul class="lines">
+{{range $i, $b := .Popular}}{{if gt $i 0}}{{if lt $i 11}}<li><span class="no">{{$i}}</span><a href="/?view=book&id={{$b.id}}" title="{{$b.name}}" target="_blank">{{$b.name}}</a><span class="date">{{$b.author}}</span></li>{{end}}{{end}}{{end}}
+</ul>
+</div>
+</article>
+
+<article class="panel rank" style="margin-top:14px;">
+<h3>一周热榜</h3>
+<div class="body">
+{{if .TopBooks}}
+<div class="book_r">
+{{if (index .TopBooks 0).cover}}<a href="/?view=book&id={{(index .TopBooks 0).id}}" target="_blank"><img src="{{(index .TopBooks 0).cover}}" alt="{{(index .TopBooks 0).name}}封面"></a>{{end}}
+<h4><a href="/?view=book&id={{(index .TopBooks 0).id}}" target="_blank">{{(index .TopBooks 0).name}}</a></h4>
+<div class="meta">{{(index .TopBooks 0).author}} · {{(index .TopBooks 0).category}} · {{wordCount (index .TopBooks 0).wordCount}}</div>
+<div class="desc">{{if (index .TopBooks 0).intro}}{{(index .TopBooks 0).intro}}{{else}}暂无简介{{end}}</div>
+</div>
+{{end}}
+<ul class="lines">
+{{range $i, $b := .TopBooks}}{{if gt $i 0}}{{if lt $i 11}}<li><span class="no">{{$i}}</span><a href="/?view=book&id={{$b.id}}" title="{{$b.name}}" target="_blank">{{$b.name}}</a><span class="date">{{$b.author}}</span></li>{{end}}{{end}}{{end}}
+</ul>
+</div>
+</article>
+
+<article class="panel" style="margin-top:14px;">
+<h3>热门作者</h3>
+<div class="body tags">
+{{range .Books}}<a href="/?view=search&q={{.author}}" title="{{.author}}" target="_blank">{{.author}}</a>{{end}}
+</div>
+</article>
+</aside>
 </main>
+
+<section class="hero">
+<h2>数据统计</h2><small>数据每30分钟更新</small>
+<p>每天更新热门小说，覆盖穿越、重生、都市、玄幻等主流分类；支持在线阅读与TXT免费下载。</p>
+<div class="kpi">
+<div class="item"><div class="num">{{len .Books}}部</div><div class="txt">今日上传电子书</div></div>
+<div class="item"><div class="num">{{len .Books}}部</div><div class="txt">本月上传电子书</div></div>
+<div class="item"><div class="num">{{len .Popular}}人</div><div class="txt">24h会员注册</div></div>
+<div class="item"><div class="num">{{if .Books}}{{(index .Books 0).author}}{{end}}</div><div class="txt">最新注册会员</div></div>
+</div>
+</section>
 
 <footer class="foot">
 <p>本站所有小说为转载作品，转载至本站只是为了宣传本书让更多读者欣赏。</p>

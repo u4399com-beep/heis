@@ -81,7 +81,7 @@
 <span class="s1">[{{.category}}]</span>
 <span class="s2"><a href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a></span>
 <span class="s3"><a href="/?view=book&id={{.id}}" target="_blank">{{if .latestChapter}}{{.latestChapter}}{{else}}查看详情{{end}}</a></span>
-<span class="s5">{{wordCount .wordCount}}</span>
+<span class="s5">{{fmtDateMD .updatedAt}}</span>
 <span class="s4">{{.author}}</span>
 </li>
 {{end}}

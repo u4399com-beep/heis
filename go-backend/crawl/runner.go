@@ -1,6 +1,6 @@
 // runner.go — 任务调度 + Semaphore + 三阶段并发采集 (R38-1C).
 //
-// 与 TS 端 src/lib/crawl/runner.ts 同口径核心架构:
+// 核心架构:
 //   - Semaphore (R31-1B): 并发上限控制 (acquire/release 配对 try/finally)
 //   - BudgetExceeded: 单任务 HTTP 请求总预算上限, 超出终止任务
 //   - TaskRuntime: 内存级任务运行时 (epoch / paused / stopped / 集合 / 统计)
@@ -12,7 +12,7 @@
 //   - epoch 漂移: stop→start 换代时旧循环只吞异常, 进度权归新循环
 //   - cookieJar 持久化 + bridgeUrl 透传
 //   - failedBookUrls 三路径对称 (add/delete/resume)
-//   - 段落保真: 章节正文 \n\n 分段 (与 R34-1B 同口径)
+//   - 段落保真: 章节正文 \n\n 分段
 //
 // Go 改造 (优于 TS):
 //   - Semaphore 用 buffered channel 取代 promise 队列 (更高效, 无锁)
@@ -616,7 +616,7 @@ type ChapterTask struct {
         Idx     int
 }
 
-// ExecuteTask — 三阶段采集主入口 (与 TS 端 executeTask 同口径).
+// ExecuteTask — 三阶段采集主入口.
 //
 //  阶段 1: 并发 crawlBookMeta (semaphore 限 N=concurrency)
 //  阶段 2: 全局并发 crawlChapterContent (channel 限 N)
@@ -1105,10 +1105,27 @@ func discoverBooks(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                 if res.Blocked {
                         break
                 }
-                listRes := ParseList(res.HTML, url, cfg.Rule.List, []string{"url"})
+                // R56-1B 修复 BUG-E (P0): 原 ParseList 硬编码 urlFields=['url'],
+                //   但 DB 53 条 enabled 规则中 50+ 条 list.fields 用 'bookUrl' 字段名
+                //   (e.g. 101kks / 久久小说 / 飘天文学 / 铅笔小说 / 黄金屋 / 西红柿 /
+                //    霹雳书屋 / 速读谷 / 夜伴书屋 / 努努书坊 / 二三阅读 / 零点看书 /
+                //    ttkan / 77读书 / UU读书 等). ParseList 内 hasURLField 检查
+                //   urlFields 含 'url' 或 'bookUrl', 但 hasAnyURLField 检查 rec[uf]
+                //   for uf in urlFields — urlFields=['url'] 时只检查 rec['url'], 规则
+                //   填 rec['bookUrl'] → hasAnyURLField 返 false → item 被 continue 跳过
+                //   → listRes.Items 全空 → discoverBooks 收 0 本书 → 任务"完成"但 0 本采集.
+                //   修复: urlFields 同时含 ['url', 'bookUrl'] (Absolutize 两个字段 +
+                //    hasAnyURLField 同时检查两个字段). ParseList 兼容旧 url 字段名 + 新
+                //    bookUrl 字段名, 都做 Absolutize + 入列.
+                listRes := ParseList(res.HTML, url, cfg.Rule.List, []string{"url", "bookUrl"})
                 newCount := 0
                 for _, item := range listRes.Items {
+                        // R56-1B 修复 BUG-E: item.Fields["url"] 优先, 缺则 fallback 到
+                        //   item.Fields["bookUrl"] (兼容 50+ 规则用 bookUrl 字段名).
                         u := item.Fields["url"]
+                        if u == "" {
+                                u = item.Fields["bookUrl"]
+                        }
                         if u == "" || seen[u] {
                                 continue
                         }

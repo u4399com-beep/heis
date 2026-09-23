@@ -92,7 +92,7 @@
 <span class="book-cat">{{.category}}</span>
 <span class="book-title-line"><a href="/?view=book&id={{.id}}">{{.name}}</a></span>
 <span class="book-author-line">{{.author}}</span>
-<span class="book-date">{{wordCount .wordCount}}</span>
+<span class="book-date">{{fmtDateMD .updatedAt}}</span>
 </li>
 {{end}}
 </ul>

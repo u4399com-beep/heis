@@ -53,17 +53,18 @@
 {{if .Books}}
 {{range $i, $b := .Books}}
 <div class="bookbox">
-<span class="num">{{add $i 1}}</span>
 <div class="p10">
+<span class="num">{{add $i 1}}</span>
 <a href="/?view=book&id={{$b.id}}" style="float:left;display:inline-block;margin-right:10px;">
 {{if $b.cover}}<img src="{{$b.cover}}" alt="{{$b.name}}" width="80" height="110">{{end}}
 </a>
 <div class="bookinfo">
-<div class="bookname"><a href="/?view=book&id={{$b.id}}">{{$b.name}}</a></div>
+<h4 class="bookname"><a href="/?view=book&id={{$b.id}}">{{$b.name}}</a></h4>
 <div class="author">作者：{{$b.author}}</div>
-<div class="cat">分类：{{$b.category}}</div>
-<div class="update">{{wordCount $b.wordCount}} / 更新于 {{fmtDateShort $b.updatedAt}}</div>
+<div class="cat"><span>更新到：</span><a href="/?view=book&id={{$b.id}}">{{$b.category}}</a></div>
+<div class="update"><span>简介：</span> {{$b.intro}}</div>
 </div>
+<div class="delbutton"><a class="del_but" href="/?view=book&id={{$b.id}}">阅读</a></div>
 </div>
 </div>
 {{end}}

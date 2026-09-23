@@ -1,6 +1,6 @@
 // storage.go — 章节 TXT / 封面 webp / 路径穿越防御 + 原子写入 (R38-1C).
 //
-// 与 TS 端 src/lib/crawl/storage.ts 同口径核心功能:
+// 核心功能:
 //   - DATA_ROOT / NOVELS_DIR / COVERS_DIR / DOWNLOADS_DIR (基于 CWD)
 //   - EnsureDirs (MkdirAll 三个目录)
 //   - SaveChapterTxt (bookId 路径穿越防御 + 标题 slug 清洗 + 原子写入 .tmp+rename)
@@ -221,7 +221,7 @@ func DeleteBookTxt(bookID string) error {
 
 // SaveCoverWebp — 封面字节存 .webp. Go 端无 sharp 库, 直接回存原始字节.
 //  - 公开封面接口按 .webp 文件名提供服务, 浏览器 <img> 解码时按魔数嗅探实际格式,
-//    不影响展示 (与 TS 端 saveCoverWebp 降级2 回存原始字节同口径)
+//    不影响展示 (与 saveCoverWebp 降级2 回存原始字节同口径)
 //  - 空文件/超大文件保护 (>20MB 拒绝)
 //  - 文件名: 仅保留 [\w-] 字符, 空串兜底 cover_{ts}_{rand}
 //  返回相对 data/ 的路径 (covers/{name}.webp)
@@ -348,8 +348,7 @@ func (w *downloadTxtWriter) Finish(ctx context.Context) (string, int64, error) {
 }
 
 func (w *downloadTxtWriter) Abort(ctx context.Context) error {
-        if err := w.file.Close(); err != nil && !os.IsExist(err) {
-                // ignore 已关闭
-        }
+        // Best-effort close; Abort 的目标是删除文件, Close 出错 (如已关闭) 不应阻塞清理.
+        _ = w.file.Close()
         return os.Remove(w.filePath)
 }

@@ -1,14 +1,14 @@
 // fetcher.go — HTTP 采集 + 8 级降级链 + UA 池 + CookieJar (R38-1C).
 //
-// 与 TS 端 src/lib/crawl/fetcher.ts 同口径核心架构:
-//   1. native (net/http)        — Go 标准库 HTTP
-//   2. curl (exec curl)         — 系统二进制 curl 兜底 (OpenSSL 栈, 防 undici 在线热更新)
-//   3. fetch-relay (HTTP 代理) — 127.0.0.1:3010, bun/node fetch 透传桥
-//   4. scrapling (HTTP 代理)    — 127.0.0.1:3012, curl_cffi TLS 指纹伪装
-//   5. Obscura (HTTP 代理)      — 127.0.0.1:3020, cloak-browser puppeteer-extra stealth
-//   6. uc-bridge (HTTP 代理)    — 127.0.0.1:3016, undici-fetch 桥
-//   7. moli-bridge (HTTP 代理)  — 127.0.0.1:3017, Rust AI 浏览器
-//   8. curl-impersonate (HTTP 代理) — 127.0.0.1:3018, Python curl_cffi 精确版本号
+// 8 级降级链:
+//   1. native (net/http)        — Go 标准库 HTTP + utls 36 款 Hello 指纹池
+//   2. curl (exec curl)         — 系统二进制 curl 兜底 (OpenSSL 栈)
+//   3. fetch-relay (HTTP 代理) — 127.0.0.1:3011, fetch 透传桥
+//   4. scrapling (HTTP 代理)    — 127.0.0.1:3012, Scrapling TLS 指纹伪装
+//   5. cloak-browser (HTTP 代理) — 127.0.0.1:3020, chromedp 隐身 chromium 反检测渲染
+//   6. uc-bridge (HTTP 代理)    — 127.0.0.1:3016, UC 头条小说桥
+//   7. moli-bridge (HTTP 代理)  — 127.0.0.1:3017, Rust AI 浏览器 (需外部 moli 二进制)
+//   8. curl-impersonate (HTTP 代理) — 127.0.0.1:3018, Python curl_cffi JA3/JA4 桥
 //
 // 核心保留:
 //   - UA 池 (40+ 浏览器 UA, Chrome 137~142 / Firefox 125~130 / Safari 17.4~18.0)
@@ -26,7 +26,7 @@
 //   - net/http + http.Client (内置 keep-alive, TLS 复用) 取代 bun fetch + undici Agent
 //   - sync.Map 取代 globalThis 钉扎表
 //   - context.Context 贯穿 cancel/timeout
-//   - exec.Command 调系统 curl (与 TS 端 spawn 同款)
+//   - exec.Command 调系统 curl (与 native 同款行为)
 package crawl
 
 import (
@@ -80,7 +80,7 @@ const (
         pickFailQuarantineMs              = 30 * 60 * 1000 // R52-1A: dead proxy quarantine cooldown 30min
 )
 
-// UA_POOL — 与 TS 端 fetcher.ts UA_POOL 同款 (Chrome 137~142 / Firefox 125~130 / Safari 17.4~18.0).
+// UA_POOL — 浏览器 UA 池 (Chrome 137~142 / Firefox 125~130 / Safari 17.4~18.0).
 // R41-1A: 扩充到 24 个 (新增 Chrome 143 / Firefox 129-131 / Safari 18.1-18.2 / Edge 142 / Chrome on macOS ARM / Linux Firefox).
 var UA_POOL = []string{
         // Chrome 137-143 desktop
@@ -596,7 +596,7 @@ func PickUAFor(domain string, cfg FetchConfig) string {
                 }
                 return RandomUA()
         case "fixed":
-                // 池内随机一次 (与 TS 端 fixed 同口径, 每进程仅一次)
+                // 池内随机一次 (固定本进程 UA)
                 cookieUaMu.Lock()
                 defer cookieUaMu.Unlock()
                 if v, ok := domainUa.Load("_fixed_"); ok {
@@ -805,7 +805,7 @@ var globalTransport = func() *http.Transport {
 // globalHttp — 全局 client (无 proxy); proxy 走 transport.Clone + Proxy.
 var globalHttp = &http.Client{
         Transport: globalTransport,
-        // 不自动跟随重定向 (与 TS 端 Bug 17 同口径, 3xx 视为失败)
+        // 不自动跟随重定向 (3xx 视为失败)
         CheckRedirect: func(req *http.Request, via []*http.Request) error {
                 return http.ErrUseLastResponse
         },
@@ -1959,7 +1959,7 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
         }
         client := &http.Client{
                 Transport: transport,
-                // 不自动跟随重定向 (3xx 视为失败, 与 TS 端 Bug 17 同口径)
+                // 不自动跟随重定向 (3xx 视为失败)
                 CheckRedirect: func(req *http.Request, via []*http.Request) error {
                         return http.ErrUseLastResponse
                 },
@@ -2029,7 +2029,7 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                         GetCookieJar().Store(originHost(rawURL), resp.Header["Set-Cookie"])
                 }
 
-                // 3xx / 4xx / 5xx 视为失败 (与 TS 端 Bug 17 同口径)
+                // 3xx / 4xx / 5xx 视为失败
                 if resp.StatusCode >= 300 {
                         herr := &HTTPError{
                                 StatusCode:   resp.StatusCode,
@@ -2096,7 +2096,7 @@ func isRetriableNetErr(err error) bool {
                 return true
         }
         // context.Canceled 已在 errors.Is 分支早返回 false. 此处 fallthrough 都是
-        // 真正的未知错误, 默认重试 (与 TS 端 fetcher.ts isRetriableNetErr 同口径).
+        // 真正的未知错误, 默认重试 (与 isRetriableNetErr 同口径).
         return true
 }
 
@@ -2303,7 +2303,7 @@ func stripControlChars(s string) string {
         }, s)
 }
 
-// fetchViaCurl — exec 系统二进制 curl. 与 TS 端 spawn curl 同款.
+// fetchViaCurl — exec 系统二进制 curl. 与 native fetch 同款语义.
 // R41-1A: 移除 --no-keepalive (curl 默认开 keepalive, 该 flag 反而禁用, 浪费且易触发频控);
 //          注入 Sec-Ch-Ua / Sec-Fetch-* 头族 (与 buildHeaders 同款, 防 curl 路径暴露);
 //          自定义 headers 剥控制字符 (与 buildHeaders 对称);
@@ -2741,7 +2741,7 @@ func isCurlFallbackError(err error) bool {
         return true
 }
 
-// pickProxyFor — 从代理池选一条 (random 模式, 与 TS 端 random 同款).
+// pickProxyFor — 从代理池选一条 (random 模式).
 // 失败冷却 30s, 冷却内跳过.
 // R41-1A: 增加 lastSweptAt 字段 (周期性清扫 useCount / failedUntil, 防长跑进程内存泄漏).
 type proxyState struct {
@@ -3404,7 +3404,7 @@ func isMirrorSwitchableError(err error) bool {
 
 // FetchPage — 统一抓取入口: 8 级降级链 + cookie 挑战重试 + 429/5xx 退避 + 镜像切换.
 //
-// 8 级降级链顺序 (与 TS 端 fetcher.ts 同款):
+// 8 级降级链顺序:
 //   1. native (net/http)
 //   2. curl (exec curl)
 //   3. fetch-relay (HTTP 代理)

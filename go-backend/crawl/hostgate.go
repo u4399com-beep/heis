@@ -1,6 +1,6 @@
 // hostgate.go — 同 host 并发 + 速率 双维闸门 (反反爬核心组件).
 //
-// 与 TS 端 src/lib/crawl/hostgate.ts 同口径:
+// 核心机制:
 //   - 每 host 一个槽位账本 (inFlight / limit / failStreak / successStreak / minGapMs)
 //   - 计账式准入: 释放只触发一次容量复查 (pump), 不把槽位"递给"任何特定等待者;
 //     等待者按 FIFO 队头次序自行复查 "limit - inFlight > 0" 并自计入账;
@@ -11,7 +11,7 @@
 //   - 限流冷却: 429 感知后推后 rateLimitedUntil; 该期间 pump 不放行.
 //   - LRU 治理: gates Map 软上限 1000; acquire 路径惰性 sweep + 驱逐 idle host.
 //
-// Go 实现要点: 用 chan struct 信号 + sync.Mutex 取代 TS 端 promise 队列; 单 goroutine
+// Go 实现要点: 用 chan struct 信号 + sync.Mutex 取代 promise 队列; 单 goroutine
 // pump 避免锁竞争; context.Context 支持取消 (与 Semaphore 配合 stop/换代).
 package crawl
 

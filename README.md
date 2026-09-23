@@ -1,8 +1,8 @@
 # HEIS 小说采集与发布系统（纯 Go 栈）
 
-规则驱动的小说采集与发布系统：管理端配置站点规则与采集任务，引擎按规则抓取（8 级降级链）、
-清洗、落库；前台站群（书城/书籍详情/阅读页/搜索/分类/排行榜/关键词聚合/全文搜索）直接消费
-库内数据，封面图走 `/covers/<name>.webp` 绝对路径 + SVG 占位兑底（不存在返渐变色块 + 书名首字）。**R38–R53 已完成 Next.js → Go 全面迁移 + 安装教程重写 + updatedAt 格式化修复**：单二进制部署、运行期 17 MB 内存、
+规则驱动的小说采集与发布系统：管理端配置站点规则与采集任务，引擎按规则抓取（8 级降级链 +
+41 项反反爬）、清洗、落库；前台站群（书城/书籍详情/阅读页/搜索/分类/排行榜/关键词聚合/全文搜索）直接消费
+库内数据，封面图走 `/covers/<name>.webp` 绝对路径 + SVG 占位兑底（不存在返渐变色块 + 书名首字）。**R38–R55 已完成 Next.js → Go 全面迁移 + 安装教程重写 + updatedAt 格式化修复 + admin 全页面 CRUD 补齐 + 100 本种子书填充**：单二进制部署、运行期 17 MB 内存、
 无 cgo / 无 Bun / 无 Node / 无 Docker 依赖。`heis-backend` 二进制已入 git（commit
 `29dcd99`），平台 `git clone` 后零编译直接运行 `./go-backend/heis-backend`。
 
@@ -12,25 +12,31 @@
 
 - **单二进制部署**：`go build -o heis-backend .` 产出一个 24 MB 静态链接二进制，运行期 17 MB
   内存（vs 旧 Next.js 2.2 GB，OOM 风险消失），单机即可承载。
-- **采集引擎 `go-backend/crawl/`（8 模块 10655 行）**：规则四段（list / book / toc / content）
+- **采集引擎 `go-backend/crawl/`（8 模块 10868 行）**：规则四段（list / book / toc / content）
   解析、CSS / XPath / regex / JSON 字段提取、分页与翻页 Referer 链、编码识别（GBK 自动转
   UTF-8）、正文清洗（广告模式 / 去壳页 / 零宽字符剥离 / trafilatura 桥）、分卷排序、并发限速
-  + HostGate 双限速、封面本地化（webp）。
+  + HostGate 双限速、封面本地化（webp）+ SmartCategory/SmartCompleteDetect 智能分类 + 完结检测 (R54-1B)。
 - **8 级降级链**：native (utls 36 款 Hello 指纹池含 PSK / PQ / 老 iOS / Chrome 老版 / Firefox 老版 ESR / 2016 era Chrome 58) → curl (系统二进制 JA3 指纹) →
   fetch-relay 中继桥 → Scrapling 桥（static / stealthy / playwright 三档）→ cloak-browser 隐身
   chromium 反检测渲染 → uc-bridge UC 头条桥 → moli-bridge moli 桥 → curl-impersonate curl_cffi
   JA3/JA4 桥，按站点防护级别自动降级，前级成功不降级。
-- **反反爬**：utls Hello 指纹池 36 款（R52-1A，含 Chrome PSK / PQ / 老 iOS / Chrome 老版 / Firefox 老版 ESR 五品牌）+ per-host 钉扎
-  + attempts 偏移轮换 + TLS session ticket 缓存（模拟浏览器 ticket cache）+ JA3/JA4 轮换 +
+- **反反爬 41 项**：utls Hello 指纹池 36 款（R52-1A，含 Chrome PSK / PQ / 老 iOS / Chrome 老版 / Firefox 老版 ESR 五品牌）+ per-host 钉扎
+  + attempts 偏移轮换 + TLS session ticket 缓存（模拟浏览器 ticket cache + dirtyVersion +
+  atomicWriteFileSync fsync + StartTlsSessionBackgroundFlusher + corruption recovery + disk cap）+ JA3/JA4 轮换 +
   Cookie 持久化（cf_clearance 跨子域合并 + stripPort 跨端口）+ Referer 链伪造 + 重试退避（full jitter）+
-  Cookie/Token 挑战求解 + looksBlocked / looksLikeCaptcha 启发式拦截 + 2captcha 验证码（可选 +
-  连续 3 次失败 60s cooldown）+ 代理池（MarkProxyFailed/OK 健康跟踪 + cooldown + 5 endpoint 轮选 probe）。
+  Cookie/Token 挑战求解 + looksBlocked / looksLikeCaptcha 启发式拦截 + 3 captcha 服务级联
+  (2captcha + anti-captcha + CapSolver) + sitekey 三属性名 + JS 变量 fallback +
+  连续 3 次失败 60s cooldown + 主备自动切换 + 代理池（MarkProxyFailed/OK 健康跟踪 + cooldown + 5 endpoint 轮选 probe +
+  latency 跟踪 + least-latency + weighted-latency + pickFailStreak + dead proxy quarantine + ProxyStatsSnapshot）。
 - **站级签名/解密代理**：对 token / 签名 / AES 类站点以外置 Go mini-service 承载（见下表），
   引擎 `tokenUrl` 钩子对接。
-- **管理端**：14 个后台页面（dashboard / tasks / rules / books / categories / sites / links /
-  themes / downloads / settings / feedback / backup / seo-audit / layout），规则 CRUD + 在线测试 +
+- **管理端**：14 个后台模板（12 admin 功能页 + dashboard + layout）：dashboard / tasks / rules / books /
+  categories / sites / links / themes / downloads / settings / feedback / backup / seo-audit / layout，规则 CRUD + 在线测试 +
   极限校准（对模拟源站三档封禁策略实测安全并发与速率）、任务（单书 / 批量 / 实时采集 / 定时
-  增量 autoRefresh）、书籍 / 章节管理、TXT 下载、统计看板、JSON 备份 / 恢复、SEO 审计。
+  增量 autoRefresh）、书籍 / 章节管理、TXT 下载、统计看板、JSON 备份 / 恢复 + 清空采集产物、SEO 审计。
+  **R55-1A 补齐 8 个页面 CRUD**：tasks +删除 / books +新建/编辑/删除含级联清章 / rules +编辑全 config + 删除 /
+  sites +新建/编辑/删除含主题切换 / themes +per-site 主题切换 / downloads +删除 / settings +删除单个 key
+  (feedbackEnabled 受保护) / backup +清空采集产物 / seo-audit +修复入口深链。
 - **前台**：10 主题站群（aijjxs / 101kks / x2552 / 23qb / ddyueshu / huangjinwu / ggd66 /
   pilishuwu / trxsw / shipsay，每主题 8 页型 = 80 文件 + 14 admin = 94 模板），主题注册表
   驱动，阅读页 / 搜索 / sitemap / 伪静态链接（query / numeric / alphanumeric / slug / short /
@@ -42,6 +48,7 @@
 - **分类名 4 字化**（R52-1A）：标准分类从 2 字 (玄幻/武侠/...) 改 4 字 (玄幻奇幻/武侠江湖/...)
   共 15 个，与 DB schema 一致；`NormalizeCategory` 三段式归一化 (别名命中 → 标准 4 字名 →
   模糊包含)，原 2 字源站分类通过 `categoryAliases` 兑底转 4 字。
+- **100 本种子书**（R55-1A）：DB 预填充 15 分类 × ~7 本 / 分类 = 100 本书，前台每分类页都有书可看，不空。
 
 ## 技术栈
 
@@ -159,20 +166,20 @@ JSON-IO helper 等通用样板，本身不是独立服务。
 go-backend/
 ├── go.mod                       # Go 模块定义 (module heis-backend, go 1.26, 13 direct deps)
 ├── go.sum                        # 依赖校验
-├── main.go                       # 主后端 (1330 行): 路由 + 86 FuncMap + 静态服务 + DB + 94 模板加载
-├── admin.go                      # 后台 API + admin SSR (3573 行): 14 个 admin 页面 + /api/admin/* 14 路由
+├── main.go                       # 主后端 (1428 行): 路由 + 86 FuncMap + 静态服务 + DB + 94 模板加载
+├── admin.go                      # 后台 API + admin SSR (4555 行): 14 个 admin 模板 + /api/admin/* 路由 (含 R55-1A 全页面 CRUD)
 ├── heis-backend                  # go build 输出二进制 (24 MB, 已入 git 平台 clone 即跑; .gitignore 仅兜底防误覆盖)
 ├── backend.log                   # heis-backend 后台运行日志 (.gitignore, 不入版本库)
 │
-├── crawl/                        # 采集引擎 (8 模块 10655 行)
+├── crawl/                        # 采集引擎 (8 模块 10868 行)
 │   ├── fetcher.go                #   HTTP 采集 + 8 级降级链 + UA 池 + CookieJar (4809 行)
 │   ├── parser.go                 #   css / xpath / regex / json 字段提取 (1612 行)
-│   ├── runner.go                 #   4 段采集流程 + 任务调度 + Semaphore (1481 行)
-│   ├── cleaner.go                #   广告 / 去壳 / 编码 / 零宽字符剥离 / trafilatura 桥 (899 行)
-│   ├── types.go                  #   规则 / 配置 / 结果数据结构 (737 行)
+│   ├── runner.go                 #   4 段采集流程 + 任务调度 + Semaphore (1558 行)
+│   ├── cleaner.go                #   广告 / 去壳 / 编码 / 零宽字符剥离 / trafilatura 桥 (914 行)
+│   ├── types.go                  #   规则 / 配置 / 结果数据结构 (743 行)
 │   ├── hostgate.go               #   并发 + 速率双限速器 (423 行)
-│   ├── storage.go                #   db / txt 双存储 + 封面本地化 (355 行)
-│   └── smart.go                  #   LLM 智能分类 / 完结判断 + 正则缓存 (339 行)
+│   ├── storage.go                #   db / txt 双存储 + 封面本地化 + 路径穿越防御 (354 行)
+│   └── smart.go                  #   智能分类 / 完结判断 + 4 字分类 + 正则缓存 (355 行)
 │
 ├── services/                     # 11 mini-services + bridgeserver 共享包
 │   ├── bridgeserver/bridgeserver.go   # 共享样板 (917 行)
@@ -218,8 +225,8 @@ mini-services/{start-all.sh,stop-all.sh,status.sh,.gitkeep}  # 11 服务启停�
 public/clone-css/*.css           # 10 个主题的源站 CSS (由 main.go /clone-css/ 路由服务)
 public/{robots.txt,sw.js,manifest.json,icon.svg,logo.svg}   # 站点元数据 (Next.js PWA 残留, 可选)
 Caddyfile                        # 沙箱网关 SSRF 防御配置 (端口白名单 3010-3015 + 透传 3000)
-agent-ctx/R*-*.md                # 各轮 agent 工作记录 (R38-R53, 37 文件)
-worklog.md                       # 完整迁移工作日志 (~22000 行, R3-a → R53-1B 全链路)
+agent-ctx/R*-*.md                # 各轮 agent 工作记录 (R38-R55, 41 文件)
+worklog.md                       # 完整迁移工作日志 (~23000 行, R3-a → R56-1C 全链路)
 DEPLOY.md                        # 生产部署详细教程 (systemd / 反代 / 备份 / 升级 / 故障排查)
 README.md                        # 本文件
 scripts/rule-yueyouxs.json       # yueyouxs (神马小说) 站点规则 backup-restore 格式 JSON (/api/admin/backup/restore 可导入; R47-1B 替代旧 .ts 种子脚本)
@@ -341,5 +348,5 @@ curl -s http://localhost:3000/api/admin/backup > backup-$(date +%F).json
 
 ---
 
-**项目版本**：R53-1B（纯 Go 栈，自 R38 起从 Next.js 全面迁移完成；R50-1C 重写 14 节安装部署教程 + 29 项反反爬清单 + 清理 .dockerignore/upload/tool-results 等过时产物；R51-1B 校对：staticcheck 复检 0 + 删除 unused `probeProxy` wrapper + ST1008 修复（probeProxyWithLatency 返回值顺序 (error, int64) → (int64, error)）+ LoC/port/template 校对一致（9321→9226 行 + fetcher 3615→4413 + types 721→733 + cloak-browser 689→859 + utls 21→29 款 + 26→29 项反反爬清单 + TOC 补全 13/14 节 + R50-1A 行为模拟 3 项补全 + agent-ctx 22→32 文件 + worklog 19000→20200 行）；R52-1A：utls 29→36 款（+ Chrome 58/100 两款补缺变体，覆盖 2016-2024 全代际）+ smart.go 15 个分类名从 2 字改 4 字 + cloak-browser 行为模拟新增 native wheel/Esc/Page Down 三项；R52-1B：cover 绝对路径 + 封面 SVG 占位（`/covers/<name>.webp` handler 三段式服务）+ 分类 4 字（15 个标准分类名全部 4 字） + /admin 访问校验 + R52-1A 功能改动保留 8-space 缩进避免大批 whitespace-only diff + go build + go vet + staticcheck 全 0；R53-1B：fmtDate/fmtDateShort/shortTime 三处先经 formatUpdatedAt 归一化, 修复 Prisma `@updatedAt` 存 Unix ms 时间戳时直接 s[:10] / s[5:10] 切出时间戳片段的 bug; admin dashboard 实测从 "16560/71510/04577" 时间戳残片修复为 "09-15 23:56" 等正常日期 + go vet 0 + staticcheck 0 + go build 0 + 4 端点 curl 全 200 (/health + / + /covers/nonexistent.webp + /admin) + LoC/port 校对一致 9226→10655 / fetcher 4413→4809 / smart 310→339 / main 1173→1330 / admin 3570→3573 / cloak-browser 859→974 / types 733→737 + agent-ctx 32→37 文件 + worklog ~20200→~22000 行）。详细部署见 [DEPLOY.md](./DEPLOY.md)，
-完整工作日志见 [worklog.md](./worklog.md)（~22000 行，R3-a → R53-1B 全链路）。
+**项目版本**：R56-1C（纯 Go 栈，自 R38 起从 Next.js 全面迁移完成；R50-1C 重写 14 节安装部署教程 + 29 项反反爬清单 + 清理 .dockerignore/upload/tool-results 等过时产物；R51-1B 校对：staticcheck 复检 0 + 删除 unused `probeProxy` wrapper + ST1008 修复 + LoC/port/template 校对一致；R52-1A：utls 29→36 款 + smart.go 15 个分类名从 2 字改 4 字 + cloak-browser 行为模拟新增 native wheel/Esc/Page Down 三项；R52-1B：cover 绝对路径 + 封面 SVG 占位（`/covers/<name>.webp` handler 三段式服务）+ 分类 4 字 + /admin 访问校验 + go build + go vet + staticcheck 全 0；R53-1B：fmtDate/fmtDateShort/shortTime 三处先经 formatUpdatedAt 归一化, 修复 Prisma `@updatedAt` 存 Unix ms 时间戳时切片错位 bug; admin dashboard 实测从 "16560/71510/04577" 时间戳残片修复为 "09-15 23:56" 等正常日期; R54-1A：反馈模块开关 + 系统设置说明; R54-1B：采集规则完整性 + SmartCategory BUG-A 未调用 + detectedStatus BUG-B 计算位置 + 噪声清洗 BUG-C DefaultCleanConfig 量词全可选误伤 + BUG-D EXTRA_AD_PATTERNS 漏 8 条本站免责; R54-1C：10 套 × 8 页型 = 80 模板深度核实 + 25 处硬编码 missing-asset 修复 + DEPLOY 全文重写; R55-1A：12 admin 功能页面 CRUD 补齐（tasks +删除 / books +新建/编辑/删除含级联清章 / rules +编辑全 config + 删除 / sites +新建/编辑/删除含主题切换 / themes +per-site 主题切换 / downloads +删除 / settings +删除单个 key / backup +清空采集产物 / seo-audit +修复入口深链）+ 填充 100 本不同类型书籍（15 分类 × ~7 本）+ go build + go vet 全 0; **R56-1C：DEPLOY 全文重写（14 节全面校对，LoC 同步 main 1413→1428 / admin 3742→4555 / 总 crawl 10671→10868）+ 反反爬清单 36→41 项（拆分 captcha 三服务级联 + persistableSessionCache 子项 + weighted-latency + pickFailStreak + dead proxy quarantine）+ 22 处过时 TS/Next.js 引用注释清理（src/lib/crawl/* + src/app/api/admin/* + RankingView.tsx + page.tsx 等已删除的源码路径引用）+ storage.go BUG-1 SA9003 修复（downloadTxtWriter.Abort empty branch + os.IsExist 误用改为 `_ = w.file.Close()` 显式 best-effort）+ backend.log 临时文件清理 + README.md 同步到 R56-1C + go build + go vet 全 0**）。详细部署见 [DEPLOY.md](./DEPLOY.md)，
+完整工作日志见 [worklog.md](./worklog.md)（~23000 行，R3-a → R56-1C 全链路）。

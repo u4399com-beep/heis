@@ -64,8 +64,8 @@
 {{range .Books}}
 <div class="listbg">
 <a href="/?view=book&id={{.id}}" title="{{.name}}" class="img" target="_blank">{{if .cover}}<img src="{{.cover}}" width="112" height="154" alt="《{{.name}}》封面">{{end}}</a>
-<span class="title"><a href="/?view=book&id={{.id}}" title="{{.name}}" target="_blank">{{.name}}</a></span>
-<span class="old"><span class="oldDate">{{fmtDate .updatedAt}}</span>上传</span>
+<span class="badge">荐</span><span class="title"><a href="/?view=book&id={{.id}}" title="{{.name}}" target="_blank">{{.name}}</a></span>
+<span class="new"><span class="oldDate">{{fmtDate .updatedAt}}</span>上传</span>
 <div style="padding:0 19px">{{if .intro}}{{.intro}}{{else}}暂无简介{{end}}</div>
 <div style="padding:0 19px">
 <span class="mainGreen">

@@ -1,6 +1,6 @@
 // smart.go — 智能分类 / 智能完结判断 (R38-1C).
 //
-// 与 TS 端 src/lib/crawl/smart.ts 同口径核心功能:
+// 核心功能:
 //   - CATEGORY_KEYWORDS (标准 15 分类 4 字名 + 关键词权重, R52-1A 改 4 字)
 //   - CATEGORY_ALIASES (源站分类名变体合并到标准 15 分类)
 //   - NormalizeCategory (归一化: 精确别名命中 → 标准分类 → 模糊包含 → 原名)
@@ -211,7 +211,7 @@ type SmartCategoryResult struct {
 }
 
 // SmartCategory — 智能分类 (Go 端: source + keyword 两层, LLM 兜底返回 none).
-// 与 TS 端 smartCategory 同口径, 仅 LLM 兜底路径未实现 (z-ai-web-dev-sdk 不可用).
+// 与 smartCategory 同口径, 仅 LLM 兜底路径未实现 (z-ai-web-dev-sdk 不可用).
 func SmartCategory(bookName, intro, sourceCategory string, existingCategories []string) SmartCategoryResult {
         // 1. 来源站点自带分类 (归一化合并)
         if sourceCategory != "" {

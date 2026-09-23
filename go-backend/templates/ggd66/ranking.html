@@ -52,17 +52,18 @@
 {{if .Books}}
 {{range .Books}}
 <div class="bookbox">
-<span class="num">{{.rank}}</span>
 <div class="p10">
+<span class="num">{{.rank}}</span>
 <a href="/?view=book&id={{.id}}" style="float:left;display:inline-block;margin-right:10px;">
 {{if .cover}}<img src="{{.cover}}" alt="{{.name}}" width="80" height="110">{{end}}
 </a>
 <div class="bookinfo">
-<div class="bookname"><a href="/?view=book&id={{.id}}">{{.name}}</a></div>
+<h4 class="bookname"><a href="/?view=book&id={{.id}}">{{.name}}</a></h4>
 <div class="author">作者：{{.author}}</div>
-<div class="cat">分类：{{.category}}</div>
-<div class="update">{{wordCount .wordCount}} / 更新于 {{fmtDateShort .updatedAt}}</div>
+<div class="cat"><span>更新到：</span><a href="/?view=book&id={{.id}}">{{.category}}</a></div>
+<div class="update"><span>简介：</span> {{.intro}}</div>
 </div>
+<div class="delbutton"><a class="del_but" href="/?view=book&id={{.id}}">阅读</a></div>
 </div>
 </div>
 {{end}}

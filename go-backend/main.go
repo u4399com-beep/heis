@@ -101,6 +101,15 @@ func main() {
                         }
                         return d
                 },
+                // R56-1A: ISO/SQLite datetime 字符串 → MM-DD (带连字符, 源站 aijjxs/ddyueshu/ggd66 等列表日期用)
+                // 同 fmtDateShort 先 formatUpdatedAt 归一化, 再切 [5:7]+"-"+[8:10].
+                "fmtDateMD": func(s interface{}) string {
+                        d := formatUpdatedAt(fmt.Sprintf("%v", s))
+                        if len(d) >= 10 {
+                                return d[5:7] + "-" + d[8:10]
+                        }
+                        return d
+                },
                 // R38-1B: 整数加减 (模板不支持原生算术, 用于分页上下页)
                 "add": func(a, b interface{}) int {
                         return toInt(a) + toInt(b)
@@ -343,7 +352,7 @@ func main() {
         // R54-1A: 公共反馈提交 (前台浮窗按钮的 POST 目标, 受 Setting.feedbackEnabled 开关控制)
         http.HandleFunc("/api/feedback", publicFeedbackSubmitHandler)
 
-        // R39-1C: 采集后台 API (与 src/app/api/admin/* 同口径, 调 crawl 包)
+        // R39-1C: 采集后台 API (调 crawl 包)
         http.HandleFunc("/api/admin/health", adminHealthHandler)
         http.HandleFunc("/api/admin/tasks", adminTasksHandler)
         http.HandleFunc("/api/admin/tasks/", adminTaskSubHandler) // /:id/control + /:id/snapshot + DELETE /:id (R55-1A)
@@ -547,7 +556,7 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 data["RelatedTags"] = relatedTags
                 data["HotBooks"] = takeBooks(books, 12)
         case "history":
-                // 简单占位: 复用 home 数据 (足迹页未在 tsx 复刻, 不渲染独立模板)
+                // 简单占位: 复用 home 数据 (足迹页未独立渲染模板)
                 books, _ := getBooks(48)
                 data["Books"] = books
                 data["TopBooks"] = topBooks(books, 6)
@@ -1077,7 +1086,7 @@ func withRank(books []map[string]interface{}, page, size int) []map[string]inter
         return books
 }
 
-// rankingTabs 排行榜 tab 列表 (与 RankingView.tsx TABS 同口径)
+// rankingTabs 排行榜 tab 列表 (按全本/连载/月点击/周点击/历史点击)
 func rankingTabs() []map[string]string {
         return []map[string]string{
                 {"id": "allvisit", "name": "总点击榜"},
@@ -1306,7 +1315,7 @@ func getCategoryViewData(catID string, page, size int) (string, []map[string]int
 
 // getRankingViewData 排行榜: 按 tab (sort) 排序 + 分页
 func getRankingViewData(tab string, page, size int) ([]map[string]interface{}, int) {
-        // 排序映射 (与 Next.js page.tsx SORT_MAP 同口径)
+        // 排序映射 (updated/wordCount/clickCount/monthClickCount/weekClickCount↕)
         // size → wordCount DESC; 其他 → updatedAt DESC (无 visit/vote 列)
         orderClause := "b.updatedAt DESC"
         if tab == "size" {
@@ -1378,7 +1387,7 @@ func getSearchViewData(q string, limit int) []map[string]interface{} {
                 var wordCount int64
                 var updatedAt string
                 rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryId, &updatedAt)
-                // 搜索结果简介取 150 字 (与 page.tsx 同口径)
+                // 搜索结果简介取 150 字
                 m := bookRowFromScan(id, name, author, intro, cover, status, latestChapter, category, categoryId, wordCount, updatedAt)
                 m["intro"] = truncate(intro.String, 150)
                 books = append(books, m)

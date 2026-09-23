@@ -1,0 +1,15 @@
+package main
+import (
+ "database/sql"
+ "fmt"
+ _ "modernc.org/sqlite"
+)
+func main() {
+ db, _ := sql.Open("sqlite", "/home/z/my-project/db/custom.db")
+ rows, _ := db.Query("SELECT id, name, domain, themeId FROM Site ORDER BY themeId")
+ for rows.Next() {
+  var id, name, domain, themeId string
+  rows.Scan(&id, &name, &domain, &themeId)
+  fmt.Printf("themeId=%-12s id=%-8s name=%-12s domain=%s\n", themeId, id, name, domain)
+ }
+}

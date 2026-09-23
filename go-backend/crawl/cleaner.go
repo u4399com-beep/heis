@@ -1,6 +1,6 @@
 // cleaner.go — 内容清洗 + 段落规整 + 零宽字符剥离 + trafilatura 桥 (R38-1C).
 //
-// 与 TS 端 src/lib/crawl/cleaner.ts 同口径核心功能:
+// 核心功能:
 //   - decodeEntitiesOnce (实体单遍解码防链式二次)
 //   - removeAdLines (URL 保护 + 内置 EXTRA_AD_PATTERNS + ReDoS 防护)
 //   - cleanContentHtml (plainText / HTML 双分支 + 控制字符剥离 + 零宽字符剥离 +
@@ -9,10 +9,10 @@
 //   - cleanIntro (多行简介清洗)
 //   - callTrafilaturaExtract (trafilatura 桥调用 + 60s 可用性缓存)
 //
-// 已知限制 (与 TS 端差异):
+// 已知限制:
 //   - OpenCC 繁简转换无 Go 原生绑定, T2SText/T2SHtml 当前为 stub (原样返回)
-//     trafilatura 桥侧可承担繁简转换 (Python 端 OpenCC 词典加载, 同口径)
-//   - EXTRA_AD_PATTERNS 与 cfg.AdPatterns 合并去重 (与 TS 端同口径)
+//     trafilatura 桥侧可承担繁简转换 (Python 端 OpenCC 词典加载)
+//   - EXTRA_AD_PATTERNS 与 cfg.AdPatterns 合并去重
 package crawl
 
 import (
@@ -262,7 +262,12 @@ var EXTRA_AD_PATTERNS = []string{
         `本站所有小说[^。\n<>]*(?:转载|收集|整理)[^。\n<>]*`,
         `本站内容来源于网络[^。\n<>]*`,
         `本站作品收集整理自网络[^。\n<>]*`,
-        `本站小说由程序自动索引[^。\n]*`,
+        // R56-1B 修复 BUG-F: 原 `本站小说由程序自动索引[^。\n]*` 漏 `<>` 排除, HTML 模式
+        //   下段间无换行/句号时 (`</p><p>`) 会跨段贪婪匹配到字符串末尾, 误删后续段落
+        //   (e.g. `<p>段落1</p><p>本站小说由程序自动索引，如有侵权请联系我们</p><p>段落2</p>`
+        //   → "本站小说...[^。\n]*" 一直匹配到末尾, 删掉 "段落2"). 改 `[^。\n<>]*` 与其他
+        //   7 条同款 (停在 。/换行/< 之前, 不跨段). plainText 模式段间是 \n, 也安全.
+        `本站小说由程序自动索引[^。\n<>]*`,
         `本站只为[^。\n<>]*提供[^。\n<>]*阅读平台[^。\n<>]*`,
         `请收藏本站[^。\n<>]*手机版`,
         `本站最新网址[^。\n<>]*`,
@@ -687,7 +692,7 @@ func matchedHTTP(val string) bool {
 }
 
 // CleanContentHtml — 清洗章节正文 HTML (同步, 不调 trafilatura 桥).
-// 与 TS 端 cleanContentHtml 同口径 (useTrafilatura=true 走 caller-side 分流).
+// 与 cleanContentHtml 同口径 (useTrafilatura=true 走 caller-side 分流).
 func CleanContentHtml(raw string, cfgOverride *CleanConfig) string {
         cfg := DefaultCleanConfig
         if cfgOverride != nil {
