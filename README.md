@@ -2,7 +2,7 @@
 
 规则驱动的小说采集与发布系统：管理端配置站点规则与采集任务，引擎按规则抓取（8 级降级链）、
 清洗、落库；前台站群（书城/书籍详情/阅读页/搜索/分类/排行榜/关键词聚合/全文搜索）直接消费
-库内数据。**R38–R51 已完成 Next.js → Go 全面迁移 + 安装教程重写**：单二进制部署、运行期 17 MB 内存、
+库内数据，封面图走 `/covers/<name>.webp` 绝对路径 + SVG 占位兑底（不存在返渐变色块 + 书名首字）。**R38–R52 已完成 Next.js → Go 全面迁移 + 安装教程重写**：单二进制部署、运行期 17 MB 内存、
 无 cgo / 无 Bun / 无 Node / 无 Docker 依赖。`heis-backend` 二进制已入 git（commit
 `29dcd99`），平台 `git clone` 后零编译直接运行 `./go-backend/heis-backend`。
 
@@ -16,11 +16,11 @@
   解析、CSS / XPath / regex / JSON 字段提取、分页与翻页 Referer 链、编码识别（GBK 自动转
   UTF-8）、正文清洗（广告模式 / 去壳页 / 零宽字符剥离 / trafilatura 桥）、分卷排序、并发限速
   + HostGate 双限速、封面本地化（webp）。
-- **8 级降级链**：native (utls 29 款 Hello 指纹池含 PSK / PQ / 老 iOS / Chrome 老版 / Firefox 老版 ESR) → curl (系统二进制 JA3 指纹) →
+- **8 级降级链**：native (utls 36 款 Hello 指纹池含 PSK / PQ / 老 iOS / Chrome 老版 / Firefox 老版 ESR / 2016 era Chrome 58) → curl (系统二进制 JA3 指纹) →
   fetch-relay 中继桥 → Scrapling 桥（static / stealthy / playwright 三档）→ cloak-browser 隐身
   chromium 反检测渲染 → uc-bridge UC 头条桥 → moli-bridge moli 桥 → curl-impersonate curl_cffi
   JA3/JA4 桥，按站点防护级别自动降级，前级成功不降级。
-- **反反爬**：utls Hello 指纹池 29 款（R50-1A，含 Chrome PSK / PQ / 老 iOS / Chrome 老版 / Firefox 老版 ESR 五品牌）+ per-host 钉扎
+- **反反爬**：utls Hello 指纹池 36 款（R52-1A，含 Chrome PSK / PQ / 老 iOS / Chrome 老版 / Firefox 老版 ESR 五品牌）+ per-host 钉扎
   + attempts 偏移轮换 + TLS session ticket 缓存（模拟浏览器 ticket cache）+ JA3/JA4 轮换 +
   Cookie 持久化（cf_clearance 跨子域合并 + stripPort 跨端口）+ Referer 链伪造 + 重试退避（full jitter）+
   Cookie/Token 挑战求解 + looksBlocked / looksLikeCaptcha 启发式拦截 + 2captcha 验证码（可选 +
@@ -36,6 +36,12 @@
   驱动，阅读页 / 搜索 / sitemap / 伪静态链接（query / numeric / alphanumeric / slug / short /
   classic / dir）/ 章节分页（off / byWords / byPages）/ 站群链轮（inLinkWheel）/ 自定义 TDK +
   ICBM 坐标 + geoRegion / geoPlacename。
+- **封面图 SVG 占位**（R52-1A）：模板 <img src="{{.cover}}"> 走 `/covers/<name>.webp` 绝对路径；
+  main.go `/covers/` handler 三段式服务：①`data/covers/<name>` → ②`public/covers/<name>` →
+  ③SVG 占位图（渐变色块 + 书名首字 96px 白字）。不存在走 SVG，浏览器不裂图。
+- **分类名 4 字化**（R52-1A）：标准分类从 2 字 (玄幻/武侠/...) 改 4 字 (玄幻奇幻/武侠江湖/...)
+  共 15 个，与 DB schema 一致；`NormalizeCategory` 三段式归一化 (别名命中 → 标准 4 字名 →
+  模糊包含)，原 2 字源站分类通过 `categoryAliases` 兑底转 4 字。
 
 ## 技术栈
 
@@ -251,7 +257,7 @@ package.json                     # 仅保留 scripts.dev 一项: "bun start-go.j
 引擎对每个 URL 自动按下列顺序尝试，前级成功则不降级；全部失败才记为抓取失败：
 
 ```
-1. native              Go 标准库 net/http + utls Hello 指纹池 29 款 (R50-1A, 含 PSK/PQ/老 iOS/Chrome 老版/Firefox 老版 ESR)
+1. native              Go 标准库 net/http + utls Hello 指纹池 36 款 (R52-1A, 含 PSK/PQ/老 iOS/Chrome 老版/Firefox 老版 ESR/2016 era Chrome 58)
 2. curl                系统 curl 二进制 (JA3 指纹绕过 Cloudflare 基础检测)
 3. fetch-relay         3011 中继桥 (代理池轮换)
 4. scrapling           3012 Scrapling 桥 (static → stealthy → playwright 三档)
@@ -272,11 +278,12 @@ R46-1B 起新增 TLS session ticket 缓存（模拟浏览器行为，加速重�
 ## 反反爬能力（R38–R50 累计）
 
 - **utls Hello 指纹池**：R43-1B 起 4 款 → R45-1A 扩 12 款 → R46-1B 扩 16 款 → R47-1A 扩 21 款
-  → R50-1A 扩 29 款（Chrome 102 / 106_Shuffle / 112_PSK_Shuf / 115_PQ / 120 / 120_PQ /
+  → R50-1A 扩 29 款 → R51-1A 扩 34 款 → R52-1A 扩 36 款（Chrome 102 / 106_Shuffle / 112_PSK_Shuf / 115_PQ / 120 / 120_PQ /
   131 / 133 + Firefox 99 / 102 / 105 / 120 + Safari 16.0 + iOS 13 / 14 + Edge 85 + R47-1A
   新增 Chrome 100_PSK / 114_Padding_PSK_Shuf / 115_PQ_PSK + iOS 11_1 / 12_1 + R50-1A
   新增 Chrome 83 / 87 / 96 老版桌面 + Firefox 55 / 63 老版 ESR + Edge 106 + Android 11
-  OkHttp + QQ 11_1）。
+  OkHttp + QQ 11_1 + R51-1A 新增 Chrome 62 / 70 / 72 + Firefox 56 / 65 + R52-1A 新增
+  Chrome 58 / 100 两款补缺变体，覆盖 2016-2024 全代际）。
   per-host 钉扎（hash 稳定选取）+ attempts 偏移轮换（失败 N 次后偏移到下一号）。
 - **TLS session resumption**：R46-1B 起 `utls.NewLRUClientSessionCache(256)` 缓存
   session ticket，模拟浏览器 ticket cache 行为，加速重连 + 反"无 session ticket"识别。
@@ -297,10 +304,13 @@ R46-1B 起新增 TLS session ticket 缓存（模拟浏览器行为，加速重�
 - **代理池**：MarkProxyFailed / OK 健康跟踪 + cooldown，避免连续踩雷。R50-1A 起 probe
   延迟跟踪（probeProxyWithLatency）+ least-latency 旋转策略 + ProxyStatsSnapshot
   admin 查询识别慢代理 / 死代理。
-- **行为模拟（R50-1A）**：cloak-browser Gaussian 微抖（rand.NormFloat64 stddev=1.5px
+- **行为模拟（R50-1A/R51-1A/R52-1A）**：cloak-browser Gaussian 微抖（rand.NormFloat64 stddev=1.5px
   替代均匀分布 ±3px）+ 滚轮 micro wheel events（5-15px deltaY × 2-4 步插入主滚动间）
-  + 15% 概率 Tab 键 focus 切换（chromedp.KeyEvent "\t"），模拟真实用户生理抖动分布
-  + wheel 事件连续触发 + 键盘导航，降低 WAF 检测概率。
+  + 15% 概率 Tab 键 focus 切换（chromedp.KeyEvent "\t"）+ R51-1A 反向滚动 (8%) + Enter 键
+  (10%) + 双击 (5%) + R52-1A native mouse wheel 事件 (5%) + Esc 键 (4%) + Page Down 键
+  (2%)，共 9 项行为模拟，模拟真实用户生理抖动分布 + wheel 事件连续触发 + 键盘导航 +
+  反向阅读回看 + 表单提交 + 文字选中/新标签 + native wheel 滚动 + modal 关闭 + 大段翻页，
+  降低 WAF 检测概率。
 
 ## 数据备份
 
@@ -331,5 +341,5 @@ curl -s http://localhost:3000/api/admin/backup > backup-$(date +%F).json
 
 ---
 
-**项目版本**：R51-1B（纯 Go 栈，自 R38 起从 Next.js 全面迁移完成；R50-1C 重写 14 节安装部署教程 + 29 项反反爬清单 + 清理 .dockerignore/upload/tool-results 等过时产物；R51-1B 校对：staticcheck 复检 0 + 删除 unused `probeProxy` wrapper + ST1008 修复（probeProxyWithLatency 返回值顺序 (error, int64) → (int64, error)）+ LoC/port/template 校对一致（9321→9226 行 + fetcher 3615→4413 + types 721→733 + cloak-browser 689→859 + utls 21→29 款 + 26→29 项反反爬清单 + TOC 补全 13/14 节 + R50-1A 行为模拟 3 项补全 + agent-ctx 22→32 文件 + worklog 19000→20200 行））。详细部署见 [DEPLOY.md](./DEPLOY.md)，
-完整工作日志见 [worklog.md](./worklog.md)（~20200 行，R3-a → R51-1B 全链路）。
+**项目版本**：R52-1B（纯 Go 栈，自 R38 起从 Next.js 全面迁移完成；R50-1C 重写 14 节安装部署教程 + 29 项反反爬清单 + 清理 .dockerignore/upload/tool-results 等过时产物；R51-1B 校对：staticcheck 复检 0 + 删除 unused `probeProxy` wrapper + ST1008 修复（probeProxyWithLatency 返回值顺序 (error, int64) → (int64, error)）+ LoC/port/template 校对一致（9321→9226 行 + fetcher 3615→4413 + types 721→733 + cloak-browser 689→859 + utls 21→29 款 + 26→29 项反反爬清单 + TOC 补全 13/14 节 + R50-1A 行为模拟 3 项补全 + agent-ctx 22→32 文件 + worklog 19000→20200 行）；R52-1A：utls 29→36 款（+ Chrome 58/100 两款补缺变体，覆盖 2016-2024 全代际）+ smart.go 15 个分类名从 2 字改 4 字 + cloak-browser 行为模拟新增 native wheel/Esc/Page Down 三项；R52-1B：cover 绝对路径 + 封面 SVG 占位（`/covers/<name>.webp` handler 三段式服务）+ 分类 4 字（15 个标准分类名全部 4 字） + /admin 访问校验 + R52-1A 功能改动保留 8-space 缩进避免大批 whitespace-only diff + go build + go vet + staticcheck 全 0）。详细部署见 [DEPLOY.md](./DEPLOY.md)，
+完整工作日志见 [worklog.md](./worklog.md)（~22000 行，R3-a → R52-1B 全链路）。

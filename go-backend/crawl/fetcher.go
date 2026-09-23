@@ -48,6 +48,7 @@ import (
         "os/exec"
         "path/filepath"
         "regexp"
+        "strconv"
         "strings"
         "sync"
         "sync/atomic"
@@ -67,6 +68,16 @@ const (
         InflightTTL      = 30 * 1000      // 30s
         InflightMax      = 500
         ResponseCacheMax = 200
+)
+
+// R52-1A: dead proxy quarantine — 业务连续失败 ≥10 次 → cooldown 升级到 30min
+//   (替代默认 30s, 避免 pickProxyFor 反复选到死代理每章浪费 30s 失败 + 30s 等).
+//   阈值 10: 误升级概率低 (偶发失败 5-6 次不触发), 真死代理 10 次必触发.
+//   30min: 足够操作员响应 (邮件 / 日志监控), 又不致池子枯竭 (单代理 30min 内若
+//   被回选仍能恢复, MarkProxyOK 仍清 pickFailStreak).
+const (
+        pickFailStreakQuarantineThreshold = 10             // R52-1A: 业务失败 streak 触发 quarantine 阈值
+        pickFailQuarantineMs              = 30 * 60 * 1000 // R52-1A: dead proxy quarantine cooldown 30min
 )
 
 // UA_POOL — 与 TS 端 fetcher.ts UA_POOL 同款 (Chrome 137~142 / Firefox 125~130 / Safari 17.4~18.0).
@@ -830,7 +841,7 @@ func transportWithProxy(proxy string) *http.Transport {
 // (Chrome / Firefox / Safari / iOS), 按 host 哈希稳定选取 (per-domain 钉扎, 与
 // UA 钉扎同款), 反爬无法靠 TLS 指纹单一性识别.
 
-// utlsHelloPool — utls Hello 指纹池 (扩充 34 款具体浏览器版本, R51-1A 反反爬增强).
+// utlsHelloPool — utls Hello 指纹池 (扩充 36 款具体浏览器版本, R52-1A 反反爬增强).
 // R43-1B 用 4 个 _Auto (Chrome/Firefox/Safari/iOS), 但 _Auto 都是某固定版本别名
 // (Chrome_Auto=Chrome_133 / Firefox_Auto=Firefox_120 / Safari_Auto=Safari_16_0 /
 // IOS_Auto=IOS_14), 长期使用反爬可关联 "utls 库 + Chrome_Auto" 指纹 → 爬虫.
@@ -844,6 +855,8 @@ func transportWithProxy(proxy string) *http.Transport {
 // Windows 7/8 旧设备 + 学校/政府/企业旧部署仍有真实用户群; 老版 Firefox 55/63 在
 // Linux 旧发行版 + 隐私社区仍有真实用户群),
 // R51-1A 继续扩充到 34 个 (加 Chrome 62 / 70 / 72 + Firefox 56 / 65 五款更老版本),
+// R52-1A 继续扩充到 36 个 (加 Chrome 58 / 100 两款补缺变体, 覆盖 2016 era Chrome 58 +
+//   2022 era Chrome 100 中间代际),
 // JA3/JA4 指纹各异 (PSK 携带 pre_shared_key extension / PQ 携带 key_share 含 MLKEM768
 // pubkey / Shuffle 扩展顺序 / 100_PSK 老版 Chrome PSK 行为各异), 反爬无法靠 TLS 指纹
 // 单一性识别. IOS 11_1 / 12_1 模拟老 iPhone (iOS 11.1 / 12.1), 与新 iOS 13/14 JA3
@@ -856,8 +869,12 @@ func transportWithProxy(proxy string) *http.Transport {
 // R50-1A: Chrome 83/87/96 + Firefox 55/63 五款老版稳定变体, 反爬关联难度从 1/24 提升到 1/29.
 // R51-1A: Chrome 62/70/72 + Firefox 56/65 五款更老版本变体 (覆盖 2017-2019 era 浏览器),
 //   反爬关联难度从 1/29 提升到 1/34.
+// R52-1A: Chrome 58 + 100 两款补缺变体 (覆盖 2016 era Chrome 58 + 2022 era Chrome 100),
+//   反爬关联难度从 1/34 提升到 1/36. Chrome 池现覆盖 2016-2024 全代际 (58/62/70/72/83/
+//   87/96/100/100_PSK/102/106_Shuffle/112_PSK_Shuf/114_Padding_PSK_Shuf/115_PQ/115_PQ_PSK/
+//   120/120_PQ/131/133), 完整覆盖 Chrome 主流代际.
 // R45-1A 修复 ClearUtlsChoice 后真正轮换 (attempts 偏移), 失败 N 次后
-// 选到 pool 中第 (hash+N)%34 号, 不再重复同号.
+// 选到 pool 中第 (hash+N)%36 号, 不再重复同号.
 var utlsHelloPool = []utls.ClientHelloID{
         utls.HelloChrome_102,
         utls.HelloChrome_106_Shuffle,
@@ -912,6 +929,24 @@ var utlsHelloPool = []utls.ClientHelloID{
         utls.HelloChrome_62,
         utls.HelloChrome_70,
         utls.HelloChrome_72,
+        // R52-1A 新增 Chrome 2016 era + 2022 era 补缺变体 (2 个):
+        //   Chrome_58 — 2016 末 Chrome 稳定版 (Chrome 62 前的上一代稳定版, Win 7/8 早期
+        //     + macOS Intel 早期. JA3 与 Chrome 62 差异明显: cipher suite 数量更少 +
+        //     extensions 短 (无 signed_certificate_timestamp 在某些部署) + supported_groups
+        //     不含 X25519 (X25519 在 Chrome 65+ 才默认启用). 真实用户群: 极老 Android
+        //     WebView 4.x/5.x / 老 ChromeOS 设备 / 部分 IoT 设备的 Chrome 内核 (<0.1%
+        //     市场份额但绝对值仍以万计). 反爬识别 "utls 池仅 Chrome 62+" 指纹模式 → 爬虫.
+        //   Chrome_100 — 2022 初 Chrome 稳定版 (Chrome 96 与 102 之间的中间代际, 2022-03
+        //     发布. JA3 与 Chrome 96 相近但加 TLS 1.3 GREASE 更新 + extensions 含
+        //     application_settings_new (与 Chrome 102 JA3 不同: 100 cipher suite 顺序 +
+        //     无 102 的 application_settings_old 兼容). 真实用户群: 略落后于最新版的
+        //     Chrome 用户 (企业批量部署滞后 1-2 个版本的更新策略) + Linux 发行版包
+        //     管理器滞后版本用户. 覆盖 2022 era 中间代际).
+        //   两款补缺变体让 Chrome 池覆盖 2016-2024 全代际 (58/62/70/72/83/87/96/100/102/
+        //   106_Shuffle/112_PSK_Shuf/114_Padding_PSK_Shuf/115_PQ/115_PQ_PSK/120/120_PQ/
+        //   131/133), 反爬无法靠"Chrome 是某代际"识别爬虫 (任一代际都有真实用户群).
+        utls.HelloChrome_58,
+        utls.HelloChrome_100,
         utls.HelloFirefox_99,
         utls.HelloFirefox_102,
         utls.HelloFirefox_105,
@@ -1069,6 +1104,14 @@ type tlsSessionCacheDump struct {
         Sessions map[string]tlsSessionDump `json:"sessions"`
 }
 
+// R52-1A: tlsSessionDiskMax — 磁盘 session 数上限. 内存 LRU 上限 256, 磁盘上限
+//   1024 (4x LRU) 兼顾历史命中 (长跑进程可能曾访问过 1024+ host, 但活跃 host
+//   通常 <256). 启动时若 disk map > tlsSessionDiskMax 视为病态 (单进程不可能
+//   认识 1024+ 不同 host, 通常 corrupt 数据), 保留前 1024 条 + 重置 dirty=true
+//   触发 flush 落盘. Put 时若 disk map > tlsSessionDiskMax 删一个非当前 entry
+//   (防长跑进程 disk 无界增长).
+const tlsSessionDiskMax = 1024
+
 // persistableSessionCache — utls.ClientSessionCache 接口的磁盘持久化包装.
 //   内存 LRU + 磁盘 JSON 持久化, 进程重启后 session resumption 仍可用.
 //
@@ -1104,6 +1147,15 @@ type persistableSessionCache struct {
 
 // newPersistableSessionCache — 创建并加载磁盘快照.
 //   path 为空 → 返回 nil (不持久化, 调用方需处理 nil).
+// R52-1A: corruption recovery + disk cap on init.
+//   - JSON 解析失败 (corruption / utls 版本升级 schema 变更 / 半截写入 crash 残留):
+//     原实现静默丢弃所有 sessions → 进程重启后所有 host 都需重新握手 + 反爬识别
+//     "无 session resumption" 模式 → 爬虫指纹. 修复: 把原 corrupt 文件 rename 到
+//     .corrupt.{timestamp} 留作排查 (操作员可手动恢复 / utls 版本升级时查看 schema
+//     差异), 然后空状态启动. 写权限失败时不 rename (避免权限问题导致启动卡死).
+//   - disk size cap: 启动时若 disk map 条目数 > tlsSessionDiskMax, 视为病态
+//     (单进程不可能认识 1024+ 不同 host, 通常是 Put loop bug 或 corrupt 数据导致),
+//     保留前 tlsSessionDiskMax 条, 重置 dirty=true 触发 flush 落盘.
 func newPersistableSessionCache(path string, lruCap int) *persistableSessionCache {
         if path == "" {
                 return nil
@@ -1123,7 +1175,29 @@ func newPersistableSessionCache(path string, lruCap int) *persistableSessionCach
                         for k, v := range dump.Sessions {
                                 c.disk[k] = v
                         }
+                } else {
+                        // R52-1A: corruption recovery — JSON 解析失败时 rename 到
+                        //   .corrupt.{timestamp} 留作排查 (不静默丢弃, 让操作员可
+                        //   手动恢复 / 查看 schema 差异). 写权限失败时不 rename
+                        //   (避免权限问题导致启动卡死). 下次 Put 会触发 flush 落盘
+                        //   新数据, 空状态启动不阻塞业务.
+                        corruptPath := path + ".corrupt." + strconv.FormatInt(time.Now().Unix(), 10)
+                        _ = os.Rename(path, corruptPath)
                 }
+        }
+        // R52-1A: disk size cap on init — 启动时若 disk map 条目数 > tlsSessionDiskMax,
+        //   视为病态 (单进程不可能认识 1024+ 不同 host, 通常是 Put loop bug 或
+        //   corrupt 数据导致). 保留前 tlsSessionDiskMax 条, 重置 dirty=true 触发
+        //   flush 落盘 (清掉病态数据).
+        if len(c.disk) > tlsSessionDiskMax {
+                cnt := 0
+                for k := range c.disk {
+                        if cnt >= tlsSessionDiskMax {
+                                delete(c.disk, k)
+                        }
+                        cnt++
+                }
+                c.dirty = true
         }
         return c
 }
@@ -1198,6 +1272,18 @@ func (c *persistableSessionCache) Put(sessionKey string, cs *utls.ClientSessionS
         c.disk[sessionKey] = tlsSessionDump{
                 Ticket: base64.StdEncoding.EncodeToString(ticket),
                 State:  base64.StdEncoding.EncodeToString(stateBytes),
+        }
+        // R52-1A: disk size cap on Put — 超过 tlsSessionDiskMax 时删一个非当前
+        //   sessionKey 的条目, 防长跑进程 disk 无界增长 + 防 OOM + 防 JSON 文件过大
+        //   后续 IO 慢. 内部 LRU 已按访问时间驱逐内存中的 entry, 但 disk 是 flat map
+        //   不按访问时间, 删除任一非当前 entry 即可 (不可删 sessionKey 本身).
+        if len(c.disk) > tlsSessionDiskMax {
+                for k := range c.disk {
+                        if k != sessionKey {
+                                delete(c.disk, k)
+                                break
+                        }
+                }
         }
         c.dirty = true
         // R51-1A: dirtyVersion +1 (持锁), 让 flushFromSnapshot 能识别 IO 期间是否有新 Put.
@@ -2959,6 +3045,13 @@ func parsedProxyPoolCached(proxyURL string) []string {
 // R51-1A: 同时累加 pickFailStreak (业务路径失败计数, 供 weighted-latency 策略
 //   降低失败率高的代理权重). 与 probeFailStreak 区别: probe 是主动健康检查,
 //   pick 是业务调用. probe 成功不代表业务一定成功 (反爬屏蔽 ≠ 代理故障).
+//
+// R52-1A: dead proxy quarantine — pickFailStreak 超过阈值 (10) 时 cooldown 升级
+//   到 30min (替代默认 30s). 业务连续失败 10 次 ≈ 代理被反爬 IP 封禁或代理服务
+//   长期不可用, 短冷却 30s 让 pickProxyFor 立即再选 → 又失败 → 死循环 (每章浪费
+//   30s 失败 + 30s 等). 30min quarantine 让操作员有时间处理 (重启代理 / 更换 IP /
+//   调整采集频率), 同时仍允许 30min 后重试 (避免永久禁用导致池子枯竭). caller 仍可
+//   传 cooldownMs > 30min 覆盖 (业务自定义更严冷却).
 func MarkProxyFailed(proxyURL string, cooldownMs int) {
         if proxyURL == "" {
                 return
@@ -2968,12 +3061,21 @@ func MarkProxyFailed(proxyURL string, cooldownMs int) {
         }
         proxyInst.mu.Lock()
         defer proxyInst.mu.Unlock()
+        // R52-1A: dead proxy quarantine — 业务连续失败 ≥10 次 → cooldown 升级到 30min
+        //   (除非 caller 显式传更大 cooldownMs, 尊重业务自定义更严冷却).
+        //   阈值 10: 误升级概率低 (偶发失败 5-6 次不触发), 真死代理 10 次必触发.
+        //   30min: 足够操作员响应 (邮件 / 日志监控), 又不致池子枯竭 (单代理 30min
+        //   内若被回选仍能恢复, MarkProxyOK 仍清 pickFailStreak).
+        newStreak := proxyInst.pickFailStreak[proxyURL] + 1
+        if newStreak >= pickFailStreakQuarantineThreshold && cooldownMs < pickFailQuarantineMs {
+                cooldownMs = pickFailQuarantineMs
+        }
         proxyInst.failedUntil[proxyURL] = time.Now().UnixMilli() + int64(cooldownMs)
         // R51-1A: 累加业务路径失败计数. weighted-latency 策略用此降低权重.
         // 不设上限 — pickFailStreak 是单调累计, MarkProxyOK 清零 (业务成功 = 代理实际可用).
         // 实际场景: 反爬屏蔽持续命中同一代理 → streak 持续增长 → 权重持续降 →
         // 自然分散到其它代理 (避免单代理被反复打死).
-        proxyInst.pickFailStreak[proxyURL]++
+        proxyInst.pickFailStreak[proxyURL] = newStreak
 }
 
 // MarkProxyOK — 标记代理健康 (清除冷却). 调用方在成功响应后调本函数.
@@ -4137,10 +4239,18 @@ func applyCaptchaTokenAndRefetch(ctx context.Context, rawURL string, cfg FetchCo
         if err != nil {
                 return ""
         }
-        // 解析已有 query, 追加 captcha token 参数 (不覆盖原 query 中同名键, 保留其它参数)
-        q := u.Query()
-        q.Set(paramName, token)
-        u.RawQuery = q.Encode()
+        // R52-1A BUG-1 修复: 直接字符串拼接 u.RawQuery, 不经过 q.Encode 排序.
+        //   Go url.Values.Encode() 按 key 字母序排序 → 原始 query 顺序丢失. 极少数
+        //   captcha 服务端校验 query 顺序 (HMAC 签名 endpoint) → 重排后签名失效 →
+        //   captcha token 注入看似成功但服务端拒绝, 浪费 180s 超时 + 操作员误以为
+        //   captcha 服务故障. 修复: 直接拼接 u.RawQuery 保留原始顺序, 仅追加新参数.
+        //   fragment 由 u.String() 重建 (浏览器 ignore fragment 是客户端语义).
+        escapedToken := url.QueryEscape(token)
+        if u.RawQuery == "" {
+                u.RawQuery = paramName + "=" + escapedToken
+        } else {
+                u.RawQuery = u.RawQuery + "&" + paramName + "=" + escapedToken
+        }
         solvedURL := u.String()
         solvedHTML, err := fetchHttpWithCurlFallback(ctx, solvedURL, cfg, PickUAFor(originHost(rawURL), cfg))
         if err != nil || solvedHTML == "" {

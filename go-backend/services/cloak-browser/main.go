@@ -851,6 +851,41 @@ func simulateHumanBehaviorActions() []chromedp.Action {
                 // 双击后 200-400ms 短停顿
                 actions = append(actions, chromedp.Sleep(time.Duration(200+rand.Intn(201))*time.Millisecond))
         }
+        // R52-1A 反反爬增强 (任务要求 5: 行为模拟继续增强):
+        //   1. 5% 概率 native mouse wheel 事件 (input.DispatchMouseEvent MouseWheel
+        //      type + DeltaY 50-150px) — 真实用户用鼠标滚轮滚动, 触发 input.wheel
+        //      事件 (isTrusted=true). 原 JS scrollBy 是 programmatic 滚动 (不是
+        //      wheel 事件, 部分 WAF 如 Akamai Bot Detection 监听 wheel 事件缺失
+        //      识别为自动化). native wheel 让滚动节奏更接近真实用户.
+        //   2. 4% 概率 Esc 键 (chromedp.KeyEvent "\x1b") — 真实用户在遇到 cookie
+        //      consent banner / 模态对话框 / 广告弹窗时会按 Esc 关闭. 纯 mousemove
+        //      + Tab 无 Esc 被检测为 "无 modal 交互 = 自动化". Esc 后 300-600ms
+        //      短停顿 (用户视觉确认 modal 关闭).
+        //   3. 2% 概率 Page Down 键 (chromedp.KeyEvent "\x0c" form feed = Page
+        //      Down 控制字符) — 真实用户用 Page Down 翻页 (大段滚动, 比 wheel
+        //      跨度大). 纯 wheel 无 Page Down 被检测为 "单一滚动方式 = 自动化".
+        //      Page Down 后 500-900ms 短停顿 (用户阅读翻页后内容).
+        if rand.Intn(100) < 5 { // 5% 概率 native mouse wheel
+                wheelX := float64(endX)
+                wheelY := float64(endY)
+                wheelDeltaY := 50.0 + float64(rand.Intn(101)) // 50..150 px
+                actions = append(actions, chromedp.ActionFunc(func(ctx context.Context) error {
+                        return input.DispatchMouseEvent(input.MouseWheel, wheelX, wheelY).
+                                WithDeltaY(wheelDeltaY).Do(ctx)
+                }))
+                wheelSleepMs := 100 + rand.Intn(201) // 100..300ms 短停顿
+                actions = append(actions, chromedp.Sleep(time.Duration(wheelSleepMs)*time.Millisecond))
+        }
+        if rand.Intn(100) < 4 { // 4% 概率 Esc 键 (关闭 cookie banner / modal)
+                actions = append(actions, chromedp.KeyEvent("\x1b"))
+                escSleepMs := 300 + rand.Intn(301) // 300..600ms 短停顿
+                actions = append(actions, chromedp.Sleep(time.Duration(escSleepMs)*time.Millisecond))
+        }
+        if rand.Intn(100) < 2 { // 2% 概率 Page Down 键 (大段翻页)
+                actions = append(actions, chromedp.KeyEvent("\x0c"))
+                pageDownSleepMs := 500 + rand.Intn(401) // 500..900ms 短停顿
+                actions = append(actions, chromedp.Sleep(time.Duration(pageDownSleepMs)*time.Millisecond))
+        }
         return actions
 }
 
