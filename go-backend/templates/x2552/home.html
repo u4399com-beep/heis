@@ -70,7 +70,7 @@
 <li>
 <p class="ul1"><a href="/?view=category&cat={{.categoryId}}">[{{.category}}]</a>《<a class="poptext" href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a>》</p>
 <p class="ul2"><a href="/?view=book&id={{.id}}" target="_blank">{{if .latestChapter}}{{.latestChapter}}{{else}}查看最新章节{{end}}</a></p>
-<p>{{.author}}</p>{{wordCount .wordCount}}
+<p>{{.author}}</p>{{fmtDateMD .updatedAt}}
 </li>
 {{end}}
 <li class="more"><a href="/?view=category">更多...</a></li>
@@ -84,8 +84,8 @@
 <div class="blocktitle"><span>总推荐榜</span></div>
 <div class="blockcontent">
 <ul class="ultop">
-{{range .Popular}}
-<li><p>{{wordCount .wordCount}}</p><a href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a></li>
+{{range $i, $b := .Popular}}
+<li><p>{{add $i 1}}</p><a href="/?view=book&id={{$b.id}}" target="_blank">{{$b.name}}</a></li>
 {{end}}
 <li style=" list-style:none; text-align:right; border:none;"><a href="/?view=fulltext">更多...</a></li>
 </ul>
@@ -96,8 +96,8 @@
 <div class="blocktitle"><span>最新入库</span></div>
 <div class="blockcontent">
 <ul class="ultop">
-{{range .Books}}
-<li><p>{{wordCount .wordCount}}</p><a href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a></li>
+{{range $i, $b := .Books}}
+<li><p>{{add $i 1}}</p><a href="/?view=book&id={{$b.id}}" target="_blank">{{$b.name}}</a></li>
 {{end}}
 <li style=" list-style:none; text-align:right; border:none;"><a href="/?view=category">更多...</a></li>
 </ul>

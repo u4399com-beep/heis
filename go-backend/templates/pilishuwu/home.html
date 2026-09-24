@@ -138,7 +138,7 @@
 </a>
 <p class="mod-cover-list-updata">
 <a class="mod-cover-list-mask" href="/?view=book&id={{.id}}" target="_blank">
-<span class="mod-cover-list-text">{{wordCount .wordCount}}</span>
+<span class="mod-cover-list-text">{{if .latestChapter}}{{.latestChapter}}{{else}}第1章{{end}}</span>
 </a>
 </p>
 <h5><a class="mod-cover-list-name" href="/?view=book&id={{.id}}" title="{{.name}}" target="_blank">{{.name}}</a></h5>

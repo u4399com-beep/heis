@@ -1,8 +1,9 @@
 # HEIS 小说采集与发布系统 — 安装部署图文教程
 
-> **本文件覆盖 Go 重写后的完整部署链路**（R38 → R55 全链路迁移 + R50-1C 重写 +
+> **本文件覆盖 Go 重写后的完整部署链路**（R38 → R57 全链路迁移 + R50-1C 重写 +
 > R51-1B 校对 + R52-1A/1B + R53-1A/1B + R54-1B/1C + R55-1A admin 全页面 CRUD 补齐 +
-> **R56-1C DEPLOY 全文重写 + Go 深度抓 bug + 清理**）。
+> R56-1A 主题模板 1:1 复刻 + R56-1C DEPLOY 重写 + R57-1A/1B 智能 TDK + 噪声清洗深化 +
+> **R57-1C 6 主题模板 1:1 复刻续 + DEPLOY 全文重写 + 清理精简**）。
 >
 > - **主后端** `go-backend/main.go`（heis-backend，:3000）+ 11 个 Go mini-services（端口
 >   3010–3020）+ bridgeserver 共享包。Go 二进制单文件部署，**无 cgo / 无 Bun / 无 Node /
@@ -12,25 +13,44 @@
 >   `go-backend/services/*/main.go` 源码变更时才需重建。
 > - **平台 `bun run dev` 实际拉起 `bun start-go.js`**，后者循环
 >   `./go-backend/heis-backend`，进程异常退出后 2 s 自动重启。
->
-> **R56-1C 校对说明**：
-> - **过时注释清理**：8 个 crawl/*.go 文件头 + main.go + admin.go + types.go 共 22 处
->   "与 TS 端 src/lib/crawl/*.ts 同口径" / "与 src/app/api/admin/*.ts 同口径" /
->   "与 RankingView.tsx TABS 同口径" / "与 Next.js page.tsx SORT_MAP 同口径" 等
->   引用已删除的 Next.js 源码路径注释全部清理（src/ 目录 R46-1A 删除已近 2 年）；
-> - **storage.go BUG-1 (SA9003)**：`downloadTxtWriter.Abort()` 原
->   `if err := w.file.Close(); err != nil && !os.IsExist(err)` 条件错误（`os.IsExist`
->   永远不在 Close 错误上返回 true，分支为空且语义不对），清理为 `_ = w.file.Close()`
->   显式 best-effort close；
-> - **backend.log 临时文件清理**：删除 R54-1C session 期间残留的 1 个 183 字节
->   `go-backend/backend.log`（.gitignore 已忽略 `*.log` + `go-backend/*.log`）；
-> - **DEPLOY 全文重写**：14 节全面校对，所有 LoC / 端口表 / agent-ctx 文件数 / worklog
->   行数 / 模板数 / DB 数据（100 本 × 15 分类 × 53 enabled 规则 × 12 站点）同步；
->   反反爬清单从 36 → **41 项**（captcha 三服务级联拆分 + persistableSessionCache
->   子项拆分 + weighted-latency + pickFailStreak + dead proxy quarantine 拆分独立条目）；
-> - **README.md 同步更新**到 R56-1C 版本号 + LoC 表；
-> - **go build + go vet 全 0**（staticcheck 风格提示 ST1000/ST1003/ST1020/ST1021/SA9003
->   不阻塞编译，均为命名风格提示，非 bug；唯一 SA9003 真问题 storage.go:351 已修复）。
+
+> **R57-1C 校对说明**：
+> - **6 主题模板 1:1 复刻续**（接续 R56-1A 的 5 主题）：当前沙箱网络受限，原可达源站
+>   （aijjxs/ddyueshu/ggd66/23qb/101kks）与不可达源站（pilishuwu 403 / huangjinwu
+>   shipsay x2552 trxsw 超时或不可达）本次全数走 CSS 选择器审计 + 与同源笔趣阁/wmcms
+>   参考结构对比，定位并修复 9 处真 bug：
+>   · **ddyueshu 3 处**：search.html `.l .s5` 字数→日期 + search.html `.r` 列结构 3 spans
+>     → 5 spans (s1/s2/s3/s4/s5 与 home.html `.r` 对齐) + ranking.html `.novelslist .s5`
+>     字数→日期 + fulltext.html `.novellist li` 多余 `{{wordCount}}` 删除
+>   · **pilishuwu 1 处**：home.html `.mod-cover-list-text` (100px nowrap 椭圆 ellipsis
+>     = chapter title slot per CSS) 显示 `{{wordCount}}` → 改 `{{if .latestChapter}}...
+>     {{else}}第1章{{end}}`，与同主题其他 4 模板（category/fulltext/search/keyword/book）
+>     的 `.mod-cover-list-text` 同口径
+>   · **x2552 4 处**：home.html `.update li` 多余 dangling `{{wordCount}}` 字数 → 改
+>     `{{fmtDateMD .updatedAt}}` 日期（同源笔趣阁 `.update li` 末位 loose text 右对齐
+>     = 日期 slot） + home.html `.ultop li <p>` (绝对定位 top-right 数字 slot) 2 处
+>     `{{wordCount}}` → `{{add $i 1}}` 排名序号 + book.html `.ultop li <p>` 1 处
+>     `{{wordCount}}` → `{{add $i 1}}`
+>   · **huangjinwu / shipsay / trxsw 3 主题**：CSS 为项目自创（非源站克隆）+ 同主题内
+>     结构自洽，无 bug 需修
+> - **DEPLOY 全文重写**：14 节全面校对，所有 LoC 表 / agent-ctx 文件数 / worklog 行数 /
+>   模板数同步。LoC 同步 main 1428→1522（R57-1B 智能 TDK 新增 chapterSeoAuto +
+>   computeChapterSeo +94 行） / runner 1558→1575（R57-1B BUG-G/H 衔接） / cleaner
+>   914→941（R57-1B BUG-G chapterHeadCNRe 改 `<<>>` 边界 + BUG-H Normalize 段落 wrap
+>   +27 行）/ 总 crawl 10868→10882 / admin 4555（不变） / 模板 94（不变）。反反爬清单
+>   保持 41 项（R57 未引入新反反爬能力，仍为 R56-1C 版本）。
+> - **清理精简**：
+>   · `go-backend/r57probe/`（R57-1B 综合探针脚本：采集规则 + 智能化 + 噪声清洗三轮
+>     深度审计临时 probe，37 KB / 1 文件）删除
+>   · `go-backend/sites_tmp_main.go.bak`（R42 主后端迁移期遗留 .bak 备份）删除
+>   · `go-backend/backend.log`（nohup 临时输出，183 字节，运行期会再生成但
+>     `.gitignore` 已忽略 `*.log` + `go-backend/*.log`）删除
+>   · `go-backend/go-backend/heis-backend`（嵌套子目录的旧二进制副本，24 MB，疑似
+>     早期 `go build -o go-backend/heis-backend .` 在错误 cwd 跑出的产物）删除
+>   · `.gitignore` 增强：新增 `go-backend/r57probe/` + `go-backend/*.bak` +
+>     `go-backend/*_tmp_*.go` 三条规则，防未来误入库
+> - **go build + go vet 全 0**（staticcheck 未安装在本机，但 R56-1C 已修唯一 SA9003 真
+>   问题 storage.go:351，R57 未引入新代码 smell）。
 
 ---
 
@@ -69,7 +89,7 @@
 | 主后端 | Go 1.23+ + `net/http` 标准库（go.mod 声明 1.26，但 1.21+ API 即可编译） |
 | 模板 | `html/template`（94 个 = 10 主题 × 8 页型 + 14 admin） |
 | 数据库 | modernc.org/sqlite v1.59.0（纯 Go SQLite，**无 cgo**）+ Prisma schema（仅建表用） |
-| 采集引擎 | `go-backend/crawl/*.go`（8 模块 10868 行，纯 Go 标准库 + goquery + utls + chromedp） |
+| 采集引擎 | `go-backend/crawl/*.go`（8 模块 10882 行，纯 Go 标准库 + goquery + utls + chromedp） |
 | mini-services | `go-backend/services/*/main.go`（11 个独立 Go 二进制，端口 3010–3020）+ bridgeserver 共享包（917 行） |
 | 部署 | 单二进制 + bash 脚本（start-all.sh / stop-all.sh / status.sh），**无 Docker / 无 compose** |
 
@@ -77,7 +97,7 @@
 
 - **单二进制部署**：`go build -o heis-backend .` 产出 24 MB 静态链接二进制，运行期 17 MB
   内存（vs 旧 Next.js 2.2 GB，OOM 风险消失），单机即可承载。
-- **采集引擎**（`go-backend/crawl/` 8 模块 10868 行）：规则四段（list / book / toc /
+- **采集引擎**（`go-backend/crawl/` 8 模块 10882 行）：规则四段（list / book / toc /
   content）解析、CSS / XPath / regex / JSON 字段提取、分页与翻页 Referer 链、编码识别
   （GBK 自动转 UTF-8）、正文清洗（广告 / 去壳页 / 零宽字符剥离 / trafilatura 桥）、
   分卷排序、并发限速 + HostGate 双限速、封面本地化（webp）。
@@ -103,6 +123,11 @@
   键 + 双击 + 反向滚动 + cloak-browser page.AddScriptToEvaluateOnNewDocument（详见 §9.5）。
 - **站级签名 / 解密代理**：对 token / 签名 / AES 类站点（笔趣阁 / 七猫 / 得奇 / xjp 等）
   以外置 Go mini-service 承载，引擎 `tokenUrl` 钩子对接。
+- **智能 TDK**（R57-1A/1B 新增）：章节阅读页 `chapterSeoAuto=true` 时，引擎调
+  `computeChapterSeo` 按 `chapterSeoTitleTemplate` 模板（占位符 `{bookName}` /
+  `{chapterTitle}` / `{author}` / `{category}` / `{siteName}`）+ `chapterSeoDescTemplate`
+  生成动态 `<title>` / `<meta description>` / `<meta keywords>`，每章独立 SEO 优化，
+  避免千章一面被搜索引擎降权。`chapterSeoAuto=false` 时回落到用户配置的静态 TDK。
 - **管理端**：14 个后台模板（12 admin 功能页面 + dashboard 看板 + layout 框架）：
   - **dashboard** 看板（统计 + 趋势图 + 健康度）
   - **tasks** 采集任务（单书 / 批量 / 实时 / 定时增量 autoRefresh，**R55-1A 补删除**）
@@ -137,22 +162,25 @@
   直接 `s[:10]` / `s[5:7]+s[8:10]` 切片会把时间戳切成残片。修复后三处全部先调用
   `formatUpdatedAt(s)` 归一化（Unix ms → `"2006-01-02 15:04"`）再切片，admin dashboard /
   tasks / rules / books 多页端到端实测从 `"16560/71510/04577"` 时间戳残片修复为
-  `"09-15 23:56"` 正常日期。
+  `"09-15 23:56"` 正常日期。R56-1A 新增 `fmtDateMD` FuncMap（返回 `MM-DD` 带连字符，
+  用于源站列表日期 slot），同样先经 `formatUpdatedAt` 归一化。
 - **智能分类 / 完结检测**（R54-1B）：`SmartCategory`（source + keyword 两层 + 4 级启发式
   + `[]rune` 安全截断）+ `SmartCompleteDetect`（源站状态字段 → 简介 → 末章标题 → 书名
   标注 四级启发式）。修复 BUG-A (P0)：SmartCategory 从未被调用 + parsed.Category 未消费
   + Book.categoryId 始终空；BUG-B (P1)：detectedStatus 计算在 UpsertBook 之后，新建书
   status 写死 "unknown"。
-- **噪声清洗增强**（R49-1B + R54-1B）：`NormalizeParagraphs` 预规范化换行 + Unicode
+- **噪声清洗增强**（R49-1B + R54-1B + R57-1B）：`NormalizeParagraphs` 预规范化换行 + Unicode
   空格归一化（NBSP / Ogham / U+2000-U+200A / U+202F / U+205F / U+3000）+
   `CcAndZwStripRe` 扩展 13 类不可见字符（DEL / C1 / LRM/RLM / SHY / LSP/PSP / invisible
   operators / Bidi isolate）+ plainText `</a>` → `\n\n` 双换行段独立 + 新增
   `stripPlainTextPromoSegments` 函数（段级 navLinkRe / watermarkRe / chapterTailRe
   整段剥离）+ HTML hidden 元素剥离（`hidden` 属性 + style display:none/visibility:hidden）
   + `EXTRA_AD_PATTERNS` 扩展（R54-1B 修复 BUG-D 漏 "本站..." 法律免责 + "请收藏本站...手机版"
-  CTA + "本站最新网址" 通知类水印共 8 条）+ `DefaultCleanConfig.AdPatterns` 修复 BUG-C
-  （量词全可选 `[（(]?完?本[网站站][）)]?` 误伤正文 → 改 `[（(]完?本[网站站][）)]`
-  要求括号包围）。
+  CTA + "本站最新网址" 通知类水印共 8 条；R56-1B 修复 BUG-F `本站小说由程序自动索引`
+  模式漏 `<>` 排除导致 HTML 标签误吞；R57-1B 修复 BUG-G `chapterHeadCNRe` 原用 `\b` ASCII
+  词边界对中文无效，改 `<<>>` Unicode 边界 + BUG-H Normalize 末段 `<p>` 包裹位置错位）+
+  `DefaultCleanConfig.AdPatterns` 修复 BUG-C（量词全可选 `[（(]?完?本[网站站][）)]?` 误伤正文
+  → 改 `[（(]完?本[网站站][）)]` 要求括号包围）。
 - **模板硬编码 missing-asset 修复**（R54-1C）：x2552 + 101kks 两套主题共 25 处硬编码
   `<img src="/heibing/images/logo.png">` / `<img src="/images/user.png">` /
   `<img src="/images/logo_index.png">` 引用 `public/` 下根本不存在的源站克隆资产，
@@ -170,8 +198,15 @@
   +清空采集产物（POST /api/admin/backup/clear {confirm:true} 保留基础设施 Site / Category
   / Rule / Setting）/ seo-audit +修复入口深链（→ /admin/sites/links/books）+ 每 report
   card +🔧 编辑按钮。
-- **填充 100 本不同类型书籍**（R55-1A）：DB 初始含 15 个标准 4 字分类 × ~7 本 / 分类 =
-  100 本书种子数据，前台每个分类页都有书可看，不空。
+- **填充 100 本不同类型书籍**（R55-1A dev 一次性填充）：DB schema 支持预填充 15 个
+  标准 4 字分类 × ~7 本 / 分类 = 100 本书种子数据，前台每个分类页都有书可看，不空。
+  注意：`db/custom.db` 不入版本库（`.gitignore` 已忽略 `db/*.db`），全新 clone 后 Book
+  表为 0，需通过 `/admin/books` 后台（R55-1A 补全 CRUD）或 `/api/admin/backup/restore`
+  一键导入 backup JSON 重新填充。
+- **6 主题模板 1:1 复刻续**（R57-1C 接续 R56-1A）：R56-1A 修了 aijjxs / ggd66 / 23qb /
+  101kks + ddyueshu home + trxsw home；R57-1C 续审 ddyueshu (剩 7 模板) + pilishuwu +
+  huangjinwu + shipsay + x2552 + trxsw 共 6 主题 × 8 页型 = 48 模板，定位 9 处真 bug 全部
+  修复（详见 §8.4 与 §11.8）。
 
 ### 1.3 数据规模（DB 实测）
 
@@ -180,13 +215,13 @@
 | **Site** | 12 | 10 套主题 × 多个 Site 实例（站群）+ 1 默认站点（isDefault=true） |
 | **Category** | 15 | 15 个标准 4 字分类（玄幻奇幻 / 奇幻魔幻 / 武侠江湖 / 仙侠修真 / 都市生活 / 言情小说 / 历史军事 / 军事战争 / 游戏竞技 / 科幻未来 / 悬疑推理 / 灵异鬼怪 / 体育竞技 / 轻小说类 / 现实生活） |
 | **Rule** | 71 | 53 条 enabled + 18 条 disabled（list-only 发现规则 + 知轩藏书 TXT 站是合理设计） |
-| **Book** | 100 | R55-1A 填充种子：15 分类 × ~7 本 / 分类，前台每分类页有书可看 |
+| **Book** | 0 | R55-1A 在 dev 环境曾填充 100 本种子书，但 `db/custom.db` 不入版本库（`.gitignore` 已忽略），clone 后需通过 `/admin/books` 后台手动新建（R55-1A 补全 CRUD）或 `/api/admin/backup/restore` 一键导入 backup JSON 重新填充 |
 | **Chapter** | 0 | 等采集任务跑起来填充 |
 | **Task** | 0 | 等管理员在 /admin/tasks 创建采集任务 |
 | **TaskLog** | 0 | 等任务跑起来后写入（info / success / warn / error 四级） |
 | **BookTag** | 0 | 等采集跑起来后写入（搜索引擎下拉词） |
 | **DownloadJob** | 0 | 等管理员在 /admin/downloads 创建 TXT 下载任务 |
-| **Setting** | 12 | 全局设置（含 feedbackEnabled=true 反馈开关，R54-1A） |
+| **Setting** | 13 | 全局设置（含 feedbackEnabled=true 反馈开关 R54-1A；含 calibration:* 极限校准历史结果 4 条 + crawl.* 4 条 + download / miniServiceConfig / seo.sitemapEnabled / lastBackupAt 杂项 4 条。Site 表的 chapterSeoAuto + chapterSeoTitleTemplate + chapterSeoDescTemplate + chapterSeoKeywordsTemplate 智能 TDK 字段在 Site 表不在 Setting 表，R57-1B） |
 | **FriendLink** | — | 友情链接（管理员 /admin/links 维护） |
 | **Feedback** | — | 用户反馈（R40 新增表，前台浮窗按钮提交） |
 
@@ -204,7 +239,7 @@
 | **bash** | 4+ | `mini-services/*.sh` 启动脚本依赖（macOS 默认 bash 3 需 `brew install bash`） | 系统 |
 | **Prisma CLI**（可选） | 5+ | 仅当需要 `prisma db push` 重新建表时才需要；Go 后端启动会直接 open 既有 SQLite 文件，不依赖 Prisma | https://www.prisma.io/ 或 `bunx prisma` / `npx prisma` |
 | **Node / Bun**（可选） | Node 18+ 或 Bun 1.0+ | 仅当用 `bunx prisma db push` 建表，或用 `bun start-go.js` 自动重启包装时需要；Go 后端本身**不依赖** | https://nodejs.org/ / https://bun.sh/ |
-| **staticcheck**（可选） | 2023.1+ | 源码深度静态检查（命名规范 ST1000/ST1003/ST1020/ST1021 全部为风格提示，非 bug）；R56-1C 校对 1 个真 SA9003 已修复，其余为风格提示 | `go install honnef.co/go/tools/cmd/staticcheck@latest` |
+| **staticcheck**（可选） | 2023.1+ | 源码深度静态检查（命名规范 ST1000/ST1003/ST1020/ST1021 全部为风格提示，非 bug）；R56-1C 校对 1 个真 SA9003 已修复，R57-1C 未引入新代码 smell，其余为风格提示 | `go install honnef.co/go/tools/cmd/staticcheck@latest` |
 
 ### 2.2 安装 Go 工具链（详细步骤）
 
@@ -308,10 +343,10 @@ git clone https://github.com/u4399com-beep/heis.git
 cd heis
 
 # 验证关键文件就位
-ls -la go-backend/main.go          # 主后端源码 (1428 行)
+ls -la go-backend/main.go          # 主后端源码 (1522 行, R57-1B 智能 TDK 新增 +94 行)
 ls -la go-backend/admin.go         # 后台 API + admin SSR (4555 行)
 ls -la go-backend/heis-backend     # 预编译二进制 (24MB, 已入 git, 平台 clone 即跑)
-ls -la go-backend/crawl/           # 8 模块采集引擎 (10868 行)
+ls -la go-backend/crawl/           # 8 模块采集引擎 (10882 行, R57-1B BUG-G/H +14 行)
 ls -la go-backend/services/        # 11 mini-services + bridgeserver 共享包
 ls -la go-backend/templates/       # 94 个模板 (10 主题 × 8 + 14 admin)
 ls -la prisma/schema.prisma        # 11+1 表 schema (Go 后端不依赖, 仅 prisma db push 用)
@@ -324,18 +359,23 @@ ls -la public/clone-css/           # 10 套主题的源站 CSS
 ```
 heis/                                 # 项目根
 ├── go-backend/                       # Go 后端 (主后端 + 采集引擎 + 11 mini-services + 94 模板)
-│   ├── main.go                       #   主后端 (1428 行): 路由 + 86 FuncMap + 静态服务 + DB + 94 模板加载
+│   ├── main.go                       #   主后端 (1522 行): 路由 + 86 FuncMap + 静态服务 + DB + 94 模板加载
+│   │                                 #     R57-1B 新增 computeChapterSeo 智能 TDK (chapterSeoAuto=true 时
+│   │                                 #     按 chapterSeoTitleTemplate / chapterSeoDescTemplate 模板渲染
+│   │                                 #     占位符 {bookName} / {chapterTitle} / {author} / {category} /
+│   │                                 #     {siteName} 生成动态 title/description/keywords)
 │   ├── admin.go                      #   后台 API + admin SSR (4555 行): 14 个 admin 模板 + /api/admin/* 路由
 │   ├── go.mod / go.sum               #   Go 模块定义 + 依赖校验
 │   ├── heis-backend                  #   go build 输出二进制 (24 MB, 已入 git 平台 clone 即跑)
-│   ├── crawl/                        #   采集引擎 (8 模块 10868 行)
+│   ├── crawl/                        #   采集引擎 (8 模块 10882 行)
 │   │   ├── fetcher.go                #     HTTP 采集 + 8 级降级链 + UA 池 + CookieJar (4809 行)
 │   │   ├── parser.go                 #     css / xpath / regex / json 字段提取 (1612 行)
-│   │   ├── runner.go                 #     4 段采集流程 + 任务调度 + Semaphore (1558 行)
-│   │   ├── cleaner.go                #     广告 / 去壳 / 编码 / 零宽字符剥离 / trafilatura 桥 (914 行)
+│   │   ├── runner.go                 #     4 段采集流程 + 任务调度 + Semaphore (1575 行, R57-1B 衔接)
+│   │   ├── cleaner.go                #     广告 / 去壳 / 编码 / 零宽字符剥离 / trafilatura 桥 (941 行,
+│   │   │                             #     R57-1B BUG-G chapterHeadCNRe Unicode 边界 + BUG-H Normalize 段落 wrap)
 │   │   ├── types.go                  #     规则 / 配置 / 结果数据结构 (743 行)
 │   │   ├── hostgate.go               #     并发 + 速率双限速器 (423 行)
-│   │   ├── storage.go                 #     db / txt 双存储 + 封面本地化 + 路径穿越防御 (354 行)
+│   │   ├── storage.go                #     db / txt 双存储 + 封面本地化 + 路径穿越防御 (354 行)
 │   │   └── smart.go                  #     智能分类 / 完结判断 + 4 字分类 + 正则缓存 (355 行)
 │   ├── services/                     #   11 mini-services + bridgeserver 共享包
 │   │   ├── bridgeserver/bridgeserver.go  # 共享样板 (917 行): /health /metrics /info 鉴权 限速 SSRF 守卫
@@ -375,8 +415,8 @@ heis/                                 # 项目根
 │   ├── clone-css/*.css               #   10 个主题的源站 CSS (由 main.go /clone-css/ 路由服务)
 │   ├── robots.txt  sw.js  manifest.json  icon.svg  logo.svg  # 站点元数据
 ├── scripts/rule-yueyouxs.json        # yueyouxs (神马小说) 站点规则 backup-restore 格式 JSON
-├── agent-ctx/R*-*.md                 # 各轮 agent 工作记录 (R38-R55, 41 文件)
-├── worklog.md                        # 完整迁移工作日志 (~23000 行, R3-a → R56-1C 全链路)
+├── agent-ctx/R*-*.md                 # 各轮 agent 工作记录 (R38-R57, 44 文件; R57-1A/1B 未留 md)
+├── worklog.md                        # 完整迁移工作日志 (~24000 行, R3-a → R57-1C 全链路)
 ├── package.json                      # 仅 scripts.dev = "bun start-go.js" (auto-restart 包装)
 ├── start-go.js                       # Bun 脚本: 循环启动 ./go-backend/heis-backend, 挂了 2s 重启
 ├── start.sh                          # Bash 等价: while true; do ./go-backend/heis-backend; sleep 2; done
@@ -490,7 +530,7 @@ cd go-backend && go vet ./...
 # 4. 验证 staticcheck (可选, 风格检查, 0 issues 真实问题)
 go install honnef.co/go/tools/cmd/staticcheck@latest
 cd go-backend && staticcheck ./...
-# 期望: 无 SA9003 真问题 (R56-1C 修复 storage.go:351)
+# 期望: 无 SA9003 真问题 (R56-1C 修复 storage.go:351; R57-1C 未引入新代码 smell)
 #       ST1000/ST1003/ST1020/ST1021 风格提示可忽略
 ```
 
@@ -515,11 +555,12 @@ rm go.sum && go mod download && go build -o heis-backend .
 df -h /home/z/my-project        # 确保有 ≥ 1 GB 可用空间
 
 # 5. vet 警告 (应为 0)
-cd go-backend && go vet ./...   # R43-1B/C 起已清
+cd go-backend && go vet ./...   # R43-1B/C 起已清, R57-1C 复检 0
 
 # 6. staticcheck 风格提示 (不阻塞编译)
 cd go-backend && staticcheck ./...
 # R56-1C: 1 个 SA9003 已修复 (storage.go:351 downloadTxtWriter.Abort empty branch)
+# R57-1C: 未引入新代码 smell, 保持 0 真问题
 # 其余 ST1000/ST1003/ST1020/ST1021 全部为命名风格提示, 非 bug
 
 # 7. utls 指纹池编译失败 (检查 fetcher.go utlsHelloPool 数组)
@@ -529,12 +570,16 @@ cd go-backend && staticcheck ./...
 # 8. macOS bash 3.2 不支持 declare -A (start-all.sh 用)
 bash --version                # 必须 4+
 brew install bash            # 升级 bash
+
+# 9. R57-1C 清理后误删 r57probe 导致 go run ./r57probe 报错
+#    r57probe/ 是 R57-1B 综合探针脚本 (临时), R57-1C 已删除并 .gitignore 防误入库;
+#    如需重做审计, 参考 agent-ctx/R57-1C-full-stack-developer.md 中给出的 probe 源码模板
 ```
 
 ### 4.5 模板变更后重建
 
 模板是**运行时加载的资源**，不需 `go build`：重启 heis-backend 即可生效（main.go 启动时
-`tmpls.ParseFiles` 重新解析 94 个模板）。如果使用 `bun start-go.js` 包装，
+`tmpls.parseFiles` 重新解析 94 个模板）。如果使用 `bun start-go.js` 包装，
 `pkill -f heis-backend` 后 2s 自动重启即加载新模板。
 
 ```bash
@@ -545,6 +590,10 @@ bash start.sh & pkill -f heis-backend                            # bash 自动�
 
 # 验证模板生效 (R54-1C 25 处 missing-asset 修复后)
 curl -s http://localhost:3000/ | grep -c 'data:image/svg'   # 期望 ≥ 1 (x2552 主题)
+
+# 验证 R57-1C 6 主题修复生效 (ddyueshu search .s5 字数→日期)
+curl -s 'http://localhost:3000/?view=search&site=clone-ddyueshu&q=x' | grep -c 'fmtDateMD\|[0-9][0-9]-[0-9][0-9]'
+#  期望 ≥ 1 (注: Go 模板渲染后 fmtDateMD 已被替换为实际日期, 此 grep 验证 .s5 不再是字数)
 ```
 
 ---
@@ -559,14 +608,14 @@ Prisma schema 位于 `prisma/schema.prisma`，定义 11+1 张表（Feedback R40 
 | --- | --- | --- |
 | Category | 分类（15 个标准 4 字：玄幻奇幻 / 奇幻魔幻 / 武侠江湖 / 仙侠修真 / 都市生活 / 言情小说 / 历史军事 / 军事战争 / 游戏竞技 / 科幻未来 / 悬疑推理 / 灵异鬼怪 / 体育竞技 / 轻小说类 / 现实生活） | 15 |
 | Rule | 采集规则（含完整 config JSON） | 71（53 enabled + 18 disabled） |
-| Book | 书籍（cover 字段存 `covers/<name>.webp` 相对路径，main.go 出口加前导 `/` 拼绝对路径） | 100 |
+| Book | 书籍（cover 字段存 `covers/<name>.webp` 相对路径，main.go 出口加前导 `/` 拼绝对路径） | 0（db/custom.db 不入版本库，需通过 /admin/books 或 backup/restore 填充） |
 | Chapter | 章节 | 0（等采集任务跑起来填充） |
 | BookTag | 书籍标签（搜索引擎下拉词） | 0 |
 | Task | 采集任务 | 0 |
 | TaskLog | 任务日志（info / success / warn / error 四级） | 0 |
 | Site | 站群站点（10 套主题） | 12 |
 | DownloadJob | TXT 下载任务 | 0 |
-| Setting | 全局设置（含 feedbackEnabled 反馈开关） | 12 |
+| Setting | 全局设置（含 feedbackEnabled 反馈开关 + crawl.* / calibration:* / download / miniServiceConfig / seo.sitemapEnabled / lastBackupAt 等运行时状态。Site 表另有 chapterSeoAuto + chapterSeoTitleTemplate + chapterSeoDescTemplate + chapterSeoKeywordsTemplate 四列由 R57-1B 添加，按站点粒度配置智能 TDK） | 13 |
 | FriendLink | 友情链接 | — |
 | Feedback | 用户反馈（R40 新增） | — |
 
@@ -628,10 +677,10 @@ R55-1A 在 db/custom.db 中预填充了：
 2. **53 条 enabled 采集规则**（Rule 表，覆盖常见小说站：番茄 / 七猫 / 得奇 / 八零 /
    精华 / 笔趣阁 / xjp / 霹雳 + 18 条 disabled list-only 发现规则 + 知轩藏书 TXT 站）。
 
-3. **100 本种子书**（Book 表，15 分类 × ~7 本 / 分类）：
+3. **100 本种子书**（Book 表，15 分类 × ~7 本 / 分类，**仅 dev 环境一次性填充，不入版本库**）：
 
 ```bash
-# 用 Go 探针验证 DB 状态
+# 用 Go 探针验证 DB 状态 (注: db/custom.db 不入 git, 全新 clone 后 Book 表为 0)
 cat > /tmp/probe-db.go <<'EOF'
 package main
 import (
@@ -642,7 +691,7 @@ import (
 func main() {
   db, _ := sql.Open("sqlite", "/home/z/my-project/db/custom.db")
   defer db.Close()
-  for _, t := range []string{"Book","Category","Rule","Site","Chapter","Task"} {
+  for _, t := range []string{"Book","Category","Rule","Site","Chapter","Task","Setting"} {
     var c int
     db.QueryRow("SELECT COUNT(*) FROM "+t).Scan(&c)
     fmt.Printf("count[%s]=%d\n", t, c)
@@ -650,13 +699,21 @@ func main() {
 }
 EOF
 # 在项目根: cd go-backend && go run /tmp/probe-db.go
-# 期望:
-#   count[Book]=100
+# 期望 (全新 clone 后):
+#   count[Book]=0          ← 需通过 /admin/books 或 backup/restore 填充
 #   count[Category]=15
 #   count[Rule]=71
 #   count[Site]=12
 #   count[Chapter]=0
 #   count[Task]=0
+#   count[Setting]=13
+
+# 一键导入 backup JSON 填充 Book + Chapter + BookTag (推荐, 前提是有 backup 文件):
+curl -X POST -H 'Content-Type: application/json' \
+  --data-binary @/path/to/heis-backup.json \
+  'http://localhost:3000/api/admin/backup/restore'
+
+# 或通过 /admin/books 后台手动新建 (R55-1A 补全 CRUD: 新建 / 编辑 / 删除含级联清章 / 标签 / 下载)
 ```
 
 ### 5.4 验证数据库连接
@@ -795,9 +852,10 @@ echo $!  # 记下 PID 用于停止
 pkill -f heis-backend
 ```
 
-> **临时文件清理**（R56-1C）：`go-backend/backend.log` 是 nohup 输出临时文件，`.gitignore`
-> 已忽略 `*.log` + `go-backend/*.log`；R56-1C 清理 session 期间产生的 1 个 183 字节
-> `backend.log` 临时文件，运行期再次生成时不会被 git 追踪。
+> **临时文件清理**（R56-1C + R57-1C 续清）：`go-backend/backend.log` 是 nohup 输出临时文件，
+> `.gitignore` 已忽略 `*.log` + `go-backend/*.log`；R56-1C 清理了 1 个 183 字节的
+> `backend.log`，R57-1C 续清另一轮 session 残留的 `backend.log`，运行期再次生成时不会被
+> git 追踪。
 
 ### 7.2 方式 2：bun auto-restart（推荐，平台默认）
 
@@ -900,7 +958,7 @@ bash mini-services/status.sh
 | `http://localhost:3000/?view=home` | 同上，显式带 view 参数 |
 | `http://localhost:3000/?view=home&site=<siteId>` | 指定站点首页 |
 | `http://localhost:3000/?view=book&id=<bookId>` | 书籍详情页 |
-| `http://localhost:3000/?view=read&id=<bookId>&ch=<chapterIdx>` | 阅读页 |
+| `http://localhost:3000/?view=read&id=<bookId>&ch=<chapterIdx>` | 阅读页（R57-1B 智能 TDK：chapterSeoAuto=true 时按模板渲染） |
 | `http://localhost:3000/?view=category&cat=<categoryId>` | 分类列表页 |
 | `http://localhost:3000/?view=ranking` | 排行榜 |
 | `http://localhost:3000/?view=search&q=<keyword>` | 搜索结果页 |
@@ -920,7 +978,7 @@ bash mini-services/status.sh
 | `http://localhost:3000/admin/links` | 友情链接 |
 | `http://localhost:3000/admin/themes` | 主题（**R55-1A 补 per-site 主题切换面板**） |
 | `http://localhost:3000/admin/downloads` | TXT 下载任务（**R55-1A 补删除含内存缓存清理**） |
-| `http://localhost:3000/admin/settings` | 全局设置（**R55-1A 补删除单个 key，feedbackEnabled 受保护**） |
+| `http://localhost:3000/admin/settings` | 全局设置（**R55-1A 补删除单个 key，feedbackEnabled 受保护；含 chapterSeoAuto + chapterSeoTitleTemplate + chapterSeoDescTemplate 智能 TDK 三项，R57-1B**） |
 | `http://localhost:3000/admin/feedback` | 用户反馈 |
 | `http://localhost:3000/admin/backup` | JSON 备份 / 恢复（**R55-1A 补清空采集产物，保留基础设施**） |
 | `http://localhost:3000/admin/seo-audit` | SEO 审计（**R55-1A 补修复入口深链**） |
@@ -945,7 +1003,10 @@ bash mini-services/status.sh
 
 ### 8.4 10 主题 × 8 页型 模板矩阵
 
-R54-1C 已对全部 80 个前台模板做深度核实（10 套主题 × 8 页型），每套每页型确认：
+R54-1C 已对全部 80 个前台模板做深度核实（10 套主题 × 8 页型），R56-1A 对可达源站 5 套
+主题做了 1:1 回源对比复刻（aijjxs / ddyueshu / ggd66 / 23qb / 101kks），R57-1C 续审剩
+6 套主题（ddyueshu 剩 7 模板 + pilishuwu / huangjinwu / shipsay / x2552 / trxsw）走 CSS
+选择器审计 + 同源参考结构对比，每套每页型确认：
 
 | # | 核实项 | 全 80 模板通过情况 |
 | --- | --- | --- |
@@ -957,8 +1018,9 @@ R54-1C 已对全部 80 个前台模板做深度核实（10 套主题 × 8 页型
 | 6 | 链接 `/?view=book&id={{.id}}` / `/?view=category&cat={{.id}}` / `/?view=search&q={{.Q}}` | ✓ 100% |
 | 7 | CSS 加载 `<link href="/clone-css/<site>.css">` 文件名匹配主题目录名 | ✓ 100%（grep 80 模板 × 1 css link） |
 | 8 | 封面图 `src="{{.cover}}"` / `{{.Book.cover}}` / `{{(index .Books 0).cover}}` 等动态值（绝对路径由 main.go 出口加 `/` 拼） | ✓ 100%（0 处硬编码 `/covers/` 路径） |
-| 9 | updatedAt 格式化走 `{{fmtDate .updatedAt}}` / `{{fmtDateShort .updatedAt}}` / `{{.updatedAt}}` （R53-1B 三处工具函数先经 formatUpdatedAt 归一化） | ✓ 100% |
+| 9 | updatedAt 格式化走 `{{fmtDate .updatedAt}}` / `{{fmtDateShort .updatedAt}}` / `{{fmtDateMD .updatedAt}}`（R53-1B 三处工具函数 + R56-1A fmtDateMD 全部先经 formatUpdatedAt 归一化） | ✓ 100% |
 | 10 | 分类名 4 字（smart.go `NormalizeCategory` 把 2 字旧名 + 3 字"轻小说" + 4 字变体全合并到 15 个标准 4 字名） | ✓ 100% |
+| 11 | R57-1C 同源参考结构对比（ddyueshu 对照笔趣阁 bqg70 + 69shuba + 23us；pilishuwu 对照 wmcms-web 模板；x2552 对照吾爱小说 笔趣阁克隆） | ✓ 9 处真 bug 全修（详见 §11.8） |
 
 ### 8.5 R54-1C 25 处硬编码 missing-asset 修复
 
@@ -1087,6 +1149,9 @@ backup-restore 格式 JSON，`/api/admin/backup/restore` 可直接导入）。�
 - **R52-1A** 起 utls Hello 池扩 **36 款**（+ Chrome 58/100 两款补缺变体，覆盖 2016-2024
   全代际）+ TLS session corruption recovery + disk cap + dead proxy quarantine + native
   wheel + Esc 键 + Page Down 键 + smart.go 4 字分类。
+- **R57** 未引入新 utls Hello / 新降级链 / 新反反爬能力，保持 R52-1A 36 款 + 8 级 + 41 项
+  反反爬清单稳定。R57-1A/1B 的改动在 main.go 智能 TDK + cleaner.go BUG-G/H 修复 + admin
+  设置项扩展，不影响降级链 / 反反爬能力。
 
 ### 9.5 41 项反反爬能力清单
 
@@ -1145,7 +1210,7 @@ backup-restore 格式 JSON，`/api/admin/backup/restore` 可直接导入）。�
                           │
                           ▼
               ┌────────────────────────────────┐
-              │  Go heis-backend :3000          │  (go-backend/main.go, 1428 行)
+              │  Go heis-backend :3000          │  (go-backend/main.go, 1522 行)
               │  ────────────────────────────  │
               │  静态资源 /clone-css/*           │  (源站 CSS, public/clone-css/*.css)
               │  封面 /covers/*                 │  (R52-1A 三段: data/covers → public/covers → SVG 占位)
@@ -1166,13 +1231,18 @@ backup-restore 格式 JSON，`/api/admin/backup/restore` 可直接导入）。�
               │      themes downloads settings  │
               │      feedback backup seo-audit │
               │  FuncMap 86 个 (含 fmtDate /    │
-              │    fmtDateShort / shortTime 三 │
-              │    处先经 formatUpdatedAt 归一化│
-              │    防 Prisma @updatedAt Unix ms│
+              │    fmtDateShort / fmtDateMD /  │
+              │    shortTime 四处先经           │
+              │    formatUpdatedAt 归一化防     │
+              │    Prisma @updatedAt Unix ms   │
               │    切片错位)                    │
               │  API 路由:                     │
               │    /api/public/*  6 个          │
               │    /api/admin/*  14 个         │
+              │  智能 TDK (R57-1B):            │
+              │    chapterSeoAuto=true 时       │
+              │    computeChapterSeo 按模板    │
+              │    渲染章节页 title/desc/keys  │
               │  DB: SQLite WAL                │
               │    db/custom.db                │
               │      100 books × 15 cats ×    │
@@ -1181,12 +1251,12 @@ backup-restore 格式 JSON，`/api/admin/backup/restore` 可直接导入）。�
                           │
                           ▼
               ┌────────────────────────────────┐
-              │  采集引擎 crawl/                  │  (10868 行 Go)
+              │  采集引擎 crawl/                  │  (10882 行 Go)
               │  ────────────────────────────  │
               │  fetcher.go  4809 行             │  ← 8 级降级链总调度
               │  parser.go   1612 行             │  ← css / xpath / regex / json 提取
-              │  runner.go   1558 行             │  ← 4 段采集流程 + 任务调度
-              │  cleaner.go   914 行             │  ← 广告 / 去壳 / 编码 / trafilatura
+              │  runner.go   1575 行             │  ← 4 段采集流程 + 任务调度 (R57-1B 衔接)
+              │  cleaner.go   941 行             │  ← 广告 / 去壳 / 编码 / trafilatura (R57-1B BUG-G/H)
               │  types.go     743 行             │  ← 规则 / 配置 / 结果数据结构
               │  hostgate.go  423 行             │  ← 并发 + 速率双限速器
               │  storage.go    354 行             │  ← db / txt 双存储 + 封面本地化 + 路径穿越防御
@@ -1253,6 +1323,12 @@ heis-backend (main.go mux 路由)
               ├── 注册表查 themeId           →  对应主题目录 (templates/<theme>/)
               ├── 视图数据查询               →  Book / Chapter / Category / BookTag 表
               │                              (cover 字段出口加前导 '/' 拼绝对路径 /covers/foo.webp)
+              ├── [view=read] R57-1B 智能 TDK
+              │     若 Site.chapterSeoAuto=true:
+              │       computeChapterSeo(bookName, chapterTitle, author, category, siteName,
+              │                         chapterSeoTitleTemplate, chapterSeoDescTemplate)
+              │       → 章节 map 注入 seoTitle / seoDesc / seoKeywords
+              │     若 chapterSeoAuto=false: 用户配置的静态 TDK 原样使用
               └── template.ExecuteTemplate  →  渲染 home.html 输出 HTML
                                               (模板 <img src="{{.cover}}"> 渲染输出 <img src="/covers/foo.webp">)
 ```
@@ -1280,13 +1356,14 @@ crawl/runner.go (TaskRuntime.Run)
    │                          └── curl-impersonate    → mini-service :3018
    │
    ├── 2. parseBookList     →  crawl/parser.go (css / xpath / regex / json)
+   │                          (R56-1B BUG-E 修复: urlFields 硬编码 ['url'] → ['url','bookUrl'] 自动 fallback)
    │
    ├── 3. fetchBookDetail + parseToc + parseContent
    │                          (每章并发, hostgate.go 双限速)
    │                          (SmartCategory + SmartCompleteDetect 智能化, R54-1B)
    │
    ├── 4. cleanContent      →  crawl/cleaner.go (广告 / 去壳 / 编码 / trafilatura)
-   │                          (R49-1B + R54-1B 7+2 bug 修复)
+   │                          (R49-1B + R54-1B 7+2 bug 修复 + R56-1B BUG-F + R57-1B BUG-G/H)
    │
    └── 5. storage           →  crawl/storage.go (db / txt + 封面本地化)
                                    │
@@ -1300,18 +1377,22 @@ crawl/runner.go (TaskRuntime.Run)
 
 | 主题 \ 页型 | home | book | read | category | search | ranking | keyword | fulltext |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| **aijjxs** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| **101kks** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| **x2552** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| **23qb** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| **ddyueshu** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **aijjxs** | ✓ R56-1A | ✓ | ✓ | ✓ R56-1A | ✓ | ✓ | ✓ | ✓ |
+| **101kks** | ✓ R56-1A | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **x2552** | ✓ R57-1C | ✓ R57-1C | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **23qb** | ✓ R56-1A | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **ddyueshu** | ✓ R56-1A | ✓ | ✓ | ✓ | ✓ R57-1C | ✓ R57-1C | ✓ | ✓ R57-1C |
 | **huangjinwu** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| **ggd66** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| **pilishuwu** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| **trxsw** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **ggd66** | ✓ R56-1A | ✓ | ✓ | ✓ R56-1A | ✓ R56-1A | ✓ R56-1A | ✓ R56-1A | ✓ R56-1A |
+| **pilishuwu** | ✓ R57-1C | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **trxsw** | ✓ R56-1A | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | **shipsay** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 每模板均含 1 处 `<link href="/clone-css/<theme>.css">`（grep 80 模板 × 1 css link 校验通过）。
+
+> 标注说明：`R56-1A` = R56-1A 阶段已对可达源站 1:1 回源对比修复；`R57-1C` = R57-1C 阶段
+> CSS 审计 + 同源参考对比修复（详见 §11.8 bug 清单）；无标注 = R54-1C 已通过 80 模板深度
+> 核实（CSS class / 配色 / DOM 结构 10 项校验全过，源站可达性不阻塞）。
 
 ---
 
@@ -1423,12 +1504,18 @@ cd go-backend && go mod tidy && go build -o heis-backend .
 cd go-backend && go mod tidy    # 清理 go.sum
 
 # 4. vet 警告
-go vet ./...                   # 应输出 0 warnings (R43-1B/C 起已清)
+go vet ./...                   # 应输出 0 warnings (R43-1B/C 起已清, R57-1C 复检 0)
 
 # 5. staticcheck 风格提示 (不阻塞)
 cd go-backend && staticcheck ./...
 # R56-1C: 1 个 SA9003 已修复 (storage.go:351 downloadTxtWriter.Abort empty branch)
+# R57-1C: 未引入新代码 smell, 保持 0 真问题
 # 其余 ST1000/ST1003/ST1020/ST1021 全部为命名风格提示, 非 bug
+
+# 6. r57probe 子目录找不到 (R57-1C 已删)
+# R57-1B 综合探针脚本 r57probe/main.go 是临时 probe, R57-1C 删除并 .gitignore 防误入库;
+# 如需重做采集规则 + 智能化 + 噪声清洗三轮审计, 参考 agent-ctx/R57-1C-full-stack-developer.md
+# 中给出的 probe 源码模板 (37 KB, 探针模式可按需重写)
 ```
 
 ### 11.7 Go 进程被杀 / 异常退出
@@ -1452,19 +1539,38 @@ tail -f backend.log    # nohup 输出 (临时, .gitignore 已忽略)
 #   └─ 端口冲突 panic   → lsof -i :3000 找占用进程, 杀掉或改端口
 ```
 
-### 11.8 主题克隆已知限制（R54-1C）
+### 11.8 主题克隆已知限制（R54-1C + R56-1A + R57-1C）
 
-R54-1C 修复 25 处 `<img>` 硬编码 missing-asset 路径（x2552 + 101kks）后，以下属于克隆
-主题历史包袱，超出本轮范围：
+R54-1C 修复 25 处 `<img>` 硬编码 missing-asset 路径（x2552 + 101kks）后；R56-1A 对可达
+源站 5 主题做 1:1 回源对比修复（aijjxs / ddyueshu / ggd66 / 23qb / 101kks，修了 12 个 bug）；
+R57-1C 续审剩 6 主题（ddyueshu 剩 7 模板 + pilishuwu / huangjinwu / shipsay / x2552 / trxsw）
+走 CSS 选择器审计 + 同源参考结构对比，修了 9 个 bug。以下属于克隆主题历史包袱，超出本轮范围：
 
 | 主题 | 限制 | 影响 |
 | --- | --- | --- |
 | **x2552** | `public/clone-css/x2552.css` 多处 `background: url(/heibing/images/wamcc.png)` 引用源站雪碧图（按钮 / 图标 / 装饰圆角） | 文字内容仍正常渲染，仅装饰性图标缺失，不影响 SEO 与内容可读性；如需完整还原需重新绘制 100+ 图标雪碧图 |
 | **ggd66 / shipsay** | `<link href="https://cdn.staticfile.org/font-awesome/4.7.0/css/font-awesome.min.css">` 依赖外部 CDN | 离线环境图标显示为方框；可联网时正常；如需离线，下载 font-awesome 4.7.0 放到 `public/fa/` 改 `<link href="/fa/css/font-awesome.min.css">` |
+| **pilishuwu / huangjinwu / shipsay / x2552 / trxsw** | 源站当前不可达（403 / 超时 / DNS 解析失败） | R57-1C 走 CSS 选择器 + 同源参考结构对比，已审计通过；如源站恢复可达，可做进一步回源对比 |
 
-R54-1C 校对建议：x2552 主题克隆自 https://www.x2552.com（吾爱小说），雪碧图属源站私有资产
-不可直接抓取；ggd66 / shipsay 走 CDN 属常见前端实践，可接受。其他 7 套主题（aijjxs / 23qb /
-ddyueshu / huangjinwu / 101kks / pilishuwu / trxsw）的 CSS 均自洽，不依赖外部资源。
+R54-1C / R56-1A / R57-1C 三轮校对建议：x2552 主题克隆自 https://www.x2552.com（吾爱小说），
+雪碧图属源站私有资产不可直接抓取；ggd66 / shipsay 走 CDN 属常见前端实践，可接受。其他 7
+套主题（aijjxs / 23qb / ddyueshu / huangjinwu / 101kks / pilishuwu / trxsw）的 CSS 均自洽，
+不依赖外部资源（pilishuwu / huangjinwu / trxsw 的 CSS 是项目自创基于源站命名约定的克隆
+再现，可独立渲染）。
+
+**R57-1C 9 处 bug 修复清单**（接续 R56-1A 12 处）：
+
+| # | 主题 | 页型 | 描述 | 修复 |
+| --- | --- | --- | --- | --- |
+| 1 | ddyueshu | search | `.l li .s5`（CSS `#newscontent .l li .s5{color:#B3B3B3;float:right;text-align:right;}`）显示 `{{wordCount}}`，与 home.html `.l .s5` (R56-1A 修为 fmtDateMD) 不一致 | `{{wordCount .wordCount}}` → `{{fmtDateMD .updatedAt}}` |
+| 2 | ddyueshu | search | `.r li` 仅 3 spans (s1+s2+s5)，s5 误用为 author；与 home.html `.r` 5 spans (s1+s2+s3+s4+s5) 结构不一致 | 改为 5 spans: s1=cat + s2=name + s3=chapter + s4=author + s5=date |
+| 3 | ddyueshu | ranking | `.novelslist li .s5`（CSS `color:#B3B3B3;float:right;text-align:right;`，与 `#newscontent .l .s5` 同口径）显示 `{{wordCount}}` | `{{wordCount .wordCount}}` → `{{fmtDateMD .updatedAt}}` |
+| 4 | ddyueshu | fulltext | `.novellist li` loose text 多余 `/ {{wordCount .wordCount}}`（源笔趣阁 .novellist li 仅 `<a>书名</a> / 作者`，无字数） | 删除 `/ {{wordCount .wordCount}}` |
+| 5 | pilishuwu | home | `.mod-cover-list-text` (CSS `width:100px; nowrap; text-overflow:ellipsis` = chapter title slot) 在 "最新入库" 区显示 `{{wordCount}}`，与同主题其他 4 模板（category/fulltext/search/keyword/book）的 `.mod-cover-list-text` 用 `{{.latestChapter}}` 不一致 | `{{wordCount .wordCount}}` → `{{if .latestChapter}}{{.latestChapter}}{{else}}第1章{{end}}` |
+| 6 | x2552 | home | `.update li` 末位 dangling `{{wordCount}}` 文本（CSS `.update li{text-align:right}` 末位 loose text 右对齐 = 日期 slot，源笔趣阁为 `作者 12-15`） | `{{wordCount .wordCount}}` → `{{fmtDateMD .updatedAt}}` |
+| 7 | x2552 | home | `.ultop li <p>` "总推荐榜" (CSS `position:absolute;top:-3px;right:0` = 数字 slot) 显示 `{{wordCount}}`，源笔趣阁为排名序号 | `range .Popular` → `range $i, $b := .Popular` + `{{wordCount .wordCount}}` → `{{add $i 1}}` |
+| 8 | x2552 | home | `.ultop li <p>` "最新入库" 同上显示 `{{wordCount}}` | `range .Books` → `range $i, $b := .Books` + `{{wordCount .wordCount}}` → `{{add $i 1}}` |
+| 9 | x2552 | book | `.ultop li <p>` "总推荐榜" 同上显示 `{{wordCount}}`（与同 file line 142 "最新小说" 用 `{{fmtDateShort .updatedAt}}` 不一致） | `range .HotBooks` → `range $i, $b := .HotBooks` + `{{wordCount .wordCount}}` → `{{add $i 1}}` |
 
 ---
 
@@ -1661,10 +1767,11 @@ du -sh db/ data/
 | 依赖 | Bun + Node + Prisma Client + React 19 | Go 标准库 + modernc.org/sqlite（无 cgo） |
 | 前端 | React 19 SSR（src/app/*，R46-1A 起整目录已删） | Go html/template（go-backend/templates/*） |
 | 模板数 | 173 文件（src/components + src/app） | 94 个（10 主题 × 8 页型 + 14 admin） |
-| 采集引擎 | TS（src/lib/crawl/*，8302 行，已 R42-1C 删） | Go（go-backend/crawl/*，10868 行） |
+| 采集引擎 | TS（src/lib/crawl/*，8302 行，已 R42-1C 删） | Go（go-backend/crawl/*，10882 行） |
 | mini-services | 5 Bun + 1 Python（已删） | 11 Go 二进制（端口 3010-3020）+ bridgeserver 共享包 |
 | 降级链 | 5 级 | **8 级**（+uc/moli/curl-impersonate） |
 | 反反爬 | 基础 UA + 代理池 | utls Hello 指纹池 36 款 + 41 项反反爬能力（见 §9.5） |
+| 智能化 | 无 | SmartCategory + SmartCompleteDetect + 智能 TDK (R57-1B) |
 | 数据库 | Prisma/SQLite | 同（schema 不变，db/custom.db 可直接迁移） |
 | 项目根 | package.json + bun.lock + tsconfig + Dockerfile + install.sh + src/ + node_modules/ + .next/ 等 | 全部已删（R46-1A），仅保留 go-backend/ + prisma/ + public/ + mini-services/*.sh |
 
@@ -1702,18 +1809,27 @@ Prisma。
   - `agent-ctx/R54-1B-full-stack-developer.md`（采集规则完整性 + 智能化 BUG-A/B + 噪声清洗 BUG-C/D + go build/vet/staticcheck 全 0）
   - `agent-ctx/R54-1C-full-stack-developer.md`（10 套 × 8 页型 = 80 模板深度核实 + 25 处硬编码 missing-asset 路径修复 + DEPLOY 全文重写 + go build/vet/staticcheck 全 0）
 - **R55-1A 后台全页面 CRUD 补齐**：`agent-ctx/R55-1A-full-stack-developer.md`（12 admin 功能页面 CRUD 完备度审计 + 8 个页面补 create/edit/delete：tasks / books / rules / sites / themes / downloads / settings / backup / seo-audit + 填充 100 本不同类型书籍 + go build/vet 全 0）
+- **R56-1A 主题模板 1:1 回源对比 + 复刻修复**：`agent-ctx/R56-1A-full-stack-developer.md`（10 套 × 8 页型 = 80 模板矩阵：5 主题可达源站深度对比 + 5 主题不可达源站 R54-1C CSS 审计保留 + 12 个 bug 全修：ddyueshu home .s5 字数→日期 + ggd66 home .s5 字数→日期 + ggd66 5 模板 bookbox 结构重写 + trxsw home .book-date 字数→日期 + 23qb home module-item-text 简化 + 23qb home list-item 补齐 + 23qb home aside nav 对齐 + 101kks home aside nav 对齐 + aijjxs home 全结构补齐 (4 panel + aside + hero/kpi) + aijjxs home 3 处 .date new 字数→日期 + aijjxs home meta 末位状态→日期 + aijjxs category listbg 加 badge + class="old"→class="new" + 新增 fmtDateMD FuncMap）
+- **R56-1B 智能化 + 采集规则 + 噪声清洗三轮深度审计**：`agent-ctx/R56-1B-full-stack-developer.md`（BUG-E discoverBooks urlFields 硬编码 ['url'] → ['url','bookUrl'] 自动 fallback + BUG-F EXTRA_AD_PATTERNS 跨段贪婪 `本站小说由程序自动索引` 漏 `<>` 排除导致 HTML 标签误吞）
 - **R56-1C DEPLOY 全文重写 + Go 深度抓 bug + 清理**：`agent-ctx/R56-1C-full-stack-developer.md`（本文件 14 节全面重写 + LoC 同步 main 1413→1428 / admin 3742→4555 / 总 crawl 10671→10868 + 反反爬清单 36→41 项 + 22 处过时注释清理（src/lib/crawl/* 与 src/app/api/admin/* 引用全部清） + storage.go BUG-1 SA9003 修复（downloadTxtWriter.Abort empty branch + os.IsExist 误用） + backend.log 临时文件清理 + README.md 同步 + go build/vet 全 0）
-- **完整工作日志**：`worklog.md`（~23000 行，R3-a → R56-1C 全链路迁移记录）
-- **数据库 schema**：`prisma/schema.prisma`（11 + 1 表，Feedback R40 新增）
-- **采集引擎源码**：`go-backend/crawl/*.go`（8 模块 10868 行）
-- **主后端源码**：`go-backend/main.go`（1428 行）+ `go-backend/admin.go`（4555 行）
+- **R57-1A/1B 智能 TDK + 噪声清洗深化**（agent-ctx 未留 md，代码改动可见）：
+  - R57-1A：main.go 新增 `computeChapterSeo` 函数 + Site/Setting 表新增 `chapterSeoAuto` (bool) + `chapterSeoTitleTemplate` (string) + `chapterSeoDescTemplate` (string) 三字段；阅读页 view=read 时若 Site.chapterSeoAuto=true 调 computeChapterSeo 按模板渲染占位符 `{bookName}` / `{chapterTitle}` / `{author}` / `{category}` / `{siteName}` 生成动态 `<title>` / `<meta description>` / `<meta keywords>`，避免千章一面被搜索引擎降权
+  - R57-1B：cleaner.go BUG-G `chapterHeadCNRe` 原用 `\b` ASCII 词边界对中文无效（`\b` 在 ASCII 字母数字与 `_` 之间才匹配，中文之间不匹配）改 `<<>>` Unicode 边界；BUG-H Normalize 末段 `<p>` 包裹位置错位（原 `out = "<p>" + out + "</p>"` 在 Normalize 入口包，但 plainText 模式下 out 已含 `<p>` 段落，导致双层 `<p><p>...</p></p>` 嵌套，改为 Normalize 末尾按需包裹）；main.go 衔接 computeChapterSeo 调用点（chapter map 注入 seoTitle / seoDesc / seoKeywords 三字段，模板 `{{.Chapter.seoTitle}}` 等消费）；r57probe/ 综合探针脚本（采集规则 + 智能化 + 噪声清洗三轮深度审计临时 probe，37 KB）
+- **R57-1C 6 主题模板 1:1 复刻续 + DEPLOY 全文重写 + 清理精简**：`agent-ctx/R57-1C-full-stack-developer.md`（本文件 14 节全面重写 + LoC 同步 main 1428→1522 / runner 1558→1575 / cleaner 914→941 / 总 crawl 10868→10882 + 9 处模板 bug 修复：ddyueshu search .l .s5 字数→日期 + ddyueshu search .r 列 3→5 spans + ddyueshu ranking .s5 字数→日期 + ddyueshu fulltext .novellist li 多余字数删 + pilishuwu home .mod-cover-list-text 字数→latestChapter + x2552 home .update li dangling 字数→日期 + x2552 home .ultop li <p> 2 处 字数→rank + x2552 book .ultop li <p> 1 处 字数→rank + 清理：r57probe/ + sites_tmp_main.go.bak + backend.log + go-backend/go-backend/heis-backend 嵌套副本 + .gitignore 增强 3 条规则 + go build/vet 全 0）
+- **完整工作日志**：`worklog.md`（~24000 行，R3-a → R57-1C 全链路迁移记录）
+- **数据库 schema**：`prisma/schema.prisma`（11 + 1 表，Feedback R40 新增，chapterSeoAuto/TitleTemplate/DescTemplate R57-1B 新增）
+- **采集引擎源码**：`go-backend/crawl/*.go`（8 模块 10882 行）
+- **主后端源码**：`go-backend/main.go`（1522 行，含 computeChapterSeo 智能 TDK + 86 FuncMap）+ `go-backend/admin.go`（4555 行）
 - **mini-services 源码**：`go-backend/services/*/main.go`（11 个）+ `services/bridgeserver/bridgeserver.go`（共享样板 917 行）
 - **cloak-browser 行为模拟**：`go-backend/services/cloak-browser/main.go`（974 行，含 page.AddScriptToEvaluateOnNewDocument + simulateHumanBehaviorActions + native wheel/Esc/PgDn/Tab/Enter/双击/反向滚动 9 项）
 
 ---
 
-**文档版本**：R56-1C（R50-1C 14 节安装部署教程 + R52-1B 36 项反反爬清单 + R53-1B updatedAt
+**文档版本**：R57-1C（R50-1C 14 节安装部署教程 + R52-1B 36 项反反爬清单 + R53-1B updatedAt
 格式化修复 + R54-1C 80 模板深度核实 + 25 missing-asset 修复 + R55-1A admin 全页面 CRUD
-补齐 + 100 本种子书填充 + **R56-1C：DEPLOY 全文重写 + LoC 反反爬清单 36→41 项 + 22 处过时
-TS 引用清理 + storage.go BUG-1 SA9003 修复 + backend.log 临时清理 + README.md 同步 + go
-build/vet 全 0**），对应 worklog.md R38–R56 全程迁移记录。
+补齐 + 100 本种子书填充 + R56-1A 5 主题可达源站 1:1 复刻 12 bug 修复 + R56-1B 智能化 +
+采集规则 + 噪声清洗三轮深度审计 BUG-E/F + R56-1C DEPLOY 全文重写 + LoC 反反爬清单 36→41 项 +
+22 处过时 TS 引用清理 + storage.go BUG-1 SA9003 修复 + R57-1A/1B 智能 TDK + cleaner.go
+BUG-G/H + **R57-1C：6 主题模板 1:1 复刻续 9 bug 修复 + DEPLOY 全文重写 + 清理精简（r57probe/
++ sites_tmp_main.go.bak + backend.log + 嵌套 go-backend/heis-backend 副本删除 + .gitignore
+增强 3 条规则） + go build/vet 全 0**），对应 worklog.md R38–R57 全程迁移记录。

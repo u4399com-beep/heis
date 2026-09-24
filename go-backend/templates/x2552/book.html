@@ -126,8 +126,8 @@
 <div class="blocktitle"><span>{{.Site.Name}}总推荐榜</span></div>
 <div class="blockcontent">
 <ul class="ultop">
-{{range .HotBooks}}
-<li><p>{{wordCount .wordCount}}</p><a href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a></li>
+{{range $i, $b := .HotBooks}}
+<li><p>{{add $i 1}}</p><a href="/?view=book&id={{$b.id}}" target="_blank">{{$b.name}}</a></li>
 {{end}}
 <li style="list-style:none;text-align:right;border:none;"><a href="/?view=ranking">更多...</a></li>
 </ul>

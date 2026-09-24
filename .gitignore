@@ -71,6 +71,10 @@ upload/
 /prompt
 /test
 tmp-shots/
+# R57-1C: agent 临时探针脚本 + 源码备份, 防误入库
+go-backend/r57probe/
+go-backend/*.bak
+go-backend/*_tmp_*.go
 
 # ── Python venv 兜底（部分 mini-services 可选 Python 子进程, 防误入库） ──
 mini-services/**/.venv/

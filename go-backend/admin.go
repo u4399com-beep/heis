@@ -231,9 +231,16 @@ func nullIfEmpty(s string) interface{} {
 // ---------- HTTP 工具 ----------
 
 // writeJSONErr 写错误 JSON.
+//   R57-1A 反预览挂掉修复: Header 必须在 WriteHeader 之前 set (Go net/http 文档:
+//   "Changing the header map after a call to WriteHeader (or Write) has no effect
+//   unless the HTTP status code was 1xx". 原 w.WriteHeader(code) 后再 writeJSON
+//   设 Content-Type 是 no-op → 响应无 Content-Type → fetch().json() 解析失败 toast
+//   报网络错误. 改为先 set Content-Type + CORS, 再 WriteHeader, 再 Encode).
 func writeJSONErr(w http.ResponseWriter, msg string, code int) {
+        w.Header().Set("Content-Type", "application/json; charset=utf-8")
+        w.Header().Set("Access-Control-Allow-Origin", "*")
         w.WriteHeader(code)
-        writeJSON(w, map[string]interface{}{"ok": false, "error": msg})
+        json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "error": msg})
 }
 
 // writeJSONOK 写成功 JSON.
@@ -1489,11 +1496,18 @@ func renderAdminPage(w http.ResponseWriter, tmplName, active, title string, r *h
         case "admin/seo-audit":
                 fillSeoAuditPageData(data, r)
         }
-        if err := tmpls.ExecuteTemplate(w, tmplName, data); err != nil {
-                // R41-1B: 不暴露内部模板错误细节给客户端 (防信息泄漏)
+        // R57-1A 反预览挂掉修复: 渲染到 buffer 再写, 防止模板中途 panic 时
+        //   WriteHeader(200) 已发 → http.Error(500) 触发 "superfluous response.WriteHeader"
+        //   日志噪声 + 客户端收到半截 HTML (broken DOM + 500 status 不一致).
+        //   buffer 渲染失败时返 500 干净响应 (与 homeHandler 同款).
+        var buf strings.Builder
+        if err := tmpls.ExecuteTemplate(&buf, tmplName, data); err != nil {
                 log.Printf("[renderAdminPage] template %s render failed: %v", tmplName, err)
                 http.Error(w, "模板渲染失败", 500)
+                return
         }
+        w.Header().Set("Content-Type", "text/html; charset=utf-8")
+        w.Write([]byte(buf.String()))
 }
 
 // fillDashboardData — 装配仪表盘数据 (统计 + 最近任务 + 最近书籍).
@@ -2937,8 +2951,14 @@ func publicFeedbackSubmitHandler(w http.ResponseWriter, r *http.Request) {
         }
         // 模块开关 — false 时拒绝写入 (与前台不渲染按钮的行为一致)
         if !getFeedbackEnabled() {
+                // R57-1A 反预览挂掉修复: w.WriteHeader(403) 后再调 writeJSON 的 w.Header().Set
+                //   是 no-op (Go net/http: WriteHeader 之后 Header 变更被忽略), 响应无 Content-Type
+                //   → 前台 fetch().json() 解析失败 toast 报网络错误. 改为先 Set Content-Type
+                //   再 WriteHeader 再 Encode (顺序正确).
+                w.Header().Set("Content-Type", "application/json; charset=utf-8")
+                w.Header().Set("Access-Control-Allow-Origin", "*")
                 w.WriteHeader(403)
-                writeJSON(w, map[string]interface{}{"ok": false, "error": "反馈模块已关闭"})
+                json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "error": "反馈模块已关闭"})
                 return
         }
         body := readJSONBody(r)

@@ -55,6 +55,21 @@ func main() {
                 log.Fatal(err)
         }
         defer db.Close()
+        // R57-1A 反预览挂掉增强: SQLite 单写 + 多读并发模型.
+        //   modernc.org/sqlite 默认 MaxOpenConns 无上限, 多写连接 + delete journal 模式
+        //   会触发 "database is locked" 错误 (admin 写 Task/Book + 公开 GET 同时跑时常见).
+        //   WAL 模式让读不阻塞写 + 写不阻塞读 (仅写-写互斥); busy_timeout 5s 兜底重试.
+        //   MaxOpenConns=1 让 Go 端串行化写 (避免现代 SQLite 内部锁竞争), 读仍走 WAL.
+        db.SetMaxOpenConns(1)
+        if _, perr := db.Exec(`PRAGMA journal_mode=WAL;`); perr != nil {
+                log.Printf("[db] PRAGMA journal_mode=WAL 失败 (继续用默认 delete 模式): %v", perr)
+        }
+        if _, perr := db.Exec(`PRAGMA busy_timeout=5000;`); perr != nil {
+                log.Printf("[db] PRAGMA busy_timeout=5000 失败: %v", perr)
+        }
+        if _, perr := db.Exec(`PRAGMA synchronous=NORMAL;`); perr != nil {
+                log.Printf("[db] PRAGMA synchronous=NORMAL 失败: %v", perr)
+        }
 
         // 解析模板 + FuncMap (templates/*.html + templates/*/*.html 递归)
         tmpls = template.New("").Funcs(template.FuncMap{
@@ -395,7 +410,20 @@ func main() {
         defer flusherCancel()
         crawl.StartTlsSessionBackgroundFlusher(flusherCtx)
 
-        if err := http.ListenAndServe(addr, nil); err != nil {
+        // R57-1A 反预览挂掉增强: http.Server 加 ReadHeader/Read/Write/Idle 超时.
+        //   原 http.ListenAndServe 用默认 Server (无超时), 慢客户端 (含恶意 slowloris)
+        //   可无限占连接 → FD 耗尽 → 新请求 502 → 预览挂掉. Go net/http 默认超时 0=无限.
+        //   设: ReadHeader 10s (慢 TLS 握手容忍) / Read 30s / Write 60s (大首页+模板渲染) /
+        //       Idle 120s (keep-alive 复用). 静态文件 (/clone-css/*.css 等) 不走超时分支.
+        srv := &http.Server{
+                Addr:              addr,
+                Handler:           nil,
+                ReadHeaderTimeout: 10 * time.Second,
+                ReadTimeout:       30 * time.Second,
+                WriteTimeout:      60 * time.Second,
+                IdleTimeout:       120 * time.Second,
+        }
+        if err := srv.ListenAndServe(); err != nil {
                 log.Fatal(err)
         }
 }
@@ -465,7 +493,7 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                         http.Error(w, "缺少 chapter 参数", 400)
                         return
                 }
-                ch, book, prev, next, ok := getReadViewData(chID)
+                ch, book, prev, next, ok := getReadViewData(chID, site)
                 if !ok {
                         http.NotFound(w, r)
                         return
@@ -753,8 +781,14 @@ func chapterHandler(w http.ResponseWriter, r *http.Request) {
 
 // ===== 数据查询 =====
 
+// getSite — 取 Site 行 (status=1). 默认 (siteID=="") 取 isDefault=1, 否则按 ID.
+//  R57-1B 接入智能 TDK: SELECT 加 chapterSeoAuto + chapterSeoTitleTemplate +
+//    chapterSeoDescTemplate + chapterSeoKeywordsTemplate + chapterPaginationMode +
+//    chapterPaginationWords + chapterPaginationPages + footerText + footerCopyright +
+//    footerIcp + footerStats + navCategoryCount + homeModuleLimit + pseudoStaticStyle +
+//    icbm + geoRegion + geoPlacename + inLinkWheel 字段 (供 getReadViewData 消费 + 后续 SSR).
 func getSite(siteID string) (map[string]interface{}, error) {
-        q := `SELECT id,name,domain,themeId,isDefault,title,description,keywords,offset FROM Site WHERE status=1`
+        q := `SELECT id,name,domain,themeId,isDefault,title,description,keywords,offset,chapterSeoAuto,chapterSeoTitleTemplate,chapterSeoDescTemplate,chapterSeoKeywordsTemplate FROM Site WHERE status=1`
         var rows *sql.Rows
         var err error
         if siteID != "" {
@@ -767,11 +801,12 @@ func getSite(siteID string) (map[string]interface{}, error) {
         }
         defer rows.Close()
         for rows.Next() {
-                var id, name, domain, themeId, title, desc, kw string
+                var id, name, domain, themeId, title, desc, kw, seoTmplT, seoTmplD, seoTmplK string
                 var isDefault bool
                 var offset int
-                rows.Scan(&id, &name, &domain, &themeId, &isDefault, &title, &desc, &kw, &offset)
-                return map[string]interface{}{"ID": id, "Name": name, "Domain": domain, "ThemeID": themeId, "IsDefault": isDefault, "Title": title, "Description": desc, "Keywords": kw, "Offset": offset}, nil
+                var seoAuto bool
+                rows.Scan(&id, &name, &domain, &themeId, &isDefault, &title, &desc, &kw, &offset, &seoAuto, &seoTmplT, &seoTmplD, &seoTmplK)
+                return map[string]interface{}{"ID": id, "Name": name, "Domain": domain, "ThemeID": themeId, "IsDefault": isDefault, "Title": title, "Description": desc, "Keywords": kw, "Offset": offset, "ChapterSeoAuto": seoAuto, "ChapterSeoTitleTemplate": seoTmplT, "ChapterSeoDescTemplate": seoTmplD, "ChapterSeoKeywordsTemplate": seoTmplK}, nil
         }
         // fallback 第一个 (R42-1A: 显式 err 检查防 nil rows2.Close() panic; 之前 _ 忽略 err →
         //                  若 db.Query 失败 rows2 为 nil, defer rows2.Close() 在 nil 上调用 panic)
@@ -781,13 +816,72 @@ func getSite(siteID string) (map[string]interface{}, error) {
         }
         defer rows2.Close()
         for rows2.Next() {
-                var id, name, domain, themeId, title, desc, kw string
+                var id, name, domain, themeId, title, desc, kw, seoTmplT, seoTmplD, seoTmplK string
                 var isDefault bool
                 var offset int
-                rows2.Scan(&id, &name, &domain, &themeId, &isDefault, &title, &desc, &kw, &offset)
-                return map[string]interface{}{"ID": id, "Name": name, "Domain": domain, "ThemeID": themeId, "IsDefault": isDefault, "Title": title, "Description": desc, "Keywords": kw, "Offset": offset}, nil
+                var seoAuto bool
+                rows2.Scan(&id, &name, &domain, &themeId, &isDefault, &title, &desc, &kw, &offset, &seoAuto, &seoTmplT, &seoTmplD, &seoTmplK)
+                return map[string]interface{}{"ID": id, "Name": name, "Domain": domain, "ThemeID": themeId, "IsDefault": isDefault, "Title": title, "Description": desc, "Keywords": kw, "Offset": offset, "ChapterSeoAuto": seoAuto, "ChapterSeoTitleTemplate": seoTmplT, "ChapterSeoDescTemplate": seoTmplD, "ChapterSeoKeywordsTemplate": seoTmplK}, nil
         }
         return nil, nil
+}
+
+// computeChapterSeo — 按站点 chapterSeoAuto + chapterSeoTitleTemplate 等算 SEO TDK.
+//  R57-1B 接入智能 TDK. 占位符 (chapterSeoAuto=false 用户模板): {bookName} {chapterTitle}
+//    {page} {totalPages} {siteName}.
+//  chapterSeoAuto=true (默认): 用与原模板硬编码一致的字段组合 (site.Title / site.Keywords
+//    / book.author), 与原模板 `{{.Chapter.title}} - {{.Book.name}} - {{.Site.Title}}` /
+//    `{{.Book.name}},{{.Chapter.title}},{{.Book.author}},{{.Site.Keywords}}` /
+//    `{{.Book.name}}{{.Chapter.title}}全文阅读,{{.Book.intro}}` 字段口径对齐, 保持向后
+//    兼容 (chapterSeoAuto=true 渲染结果与原硬编码一致, 不引入 {siteName} 占位符歧义).
+//  chapterSeoAuto=false: 用 chapterSeoTitleTemplate 等用户模板 (替换 {bookName}
+//    {chapterTitle} {page} {totalPages} {siteName} 占位符); 空模板 fallback 默认.
+//  注: page/totalPages 当前 Go 端不分页 (chapterPaginationMode=off), 占位符 {page}/{totalPages} 用 1/1.
+//  注: 101kks 原用 `全文閱讀` 繁体 + ggd66/x2552 原 description 缺 intro, 默认模板
+//    用 `全文阅读` 简体 + 含 intro — 站点繁简差异 (101kks 不再是繁体 description) +
+//    description 内容增强 (ggd66/x2552 多 100 字 intro), 不算 bug.
+func computeChapterSeo(site map[string]interface{}, chapterTitle, bookName, bookAuthor, bookIntro string) (string, string, string) {
+        siteTitle, _ := site["Title"].(string)
+        siteName, _ := site["Name"].(string)
+        siteKeywords, _ := site["Keywords"].(string)
+        if siteName == "" {
+                siteName = siteTitle
+        }
+        page := 1
+        totalPages := 1
+        seoAuto, _ := site["ChapterSeoAuto"].(bool)
+        titleTmpl, _ := site["ChapterSeoTitleTemplate"].(string)
+        descTmpl, _ := site["ChapterSeoDescTemplate"].(string)
+        kwTmpl, _ := site["ChapterSeoKeywordsTemplate"].(string)
+        // 截断 intro (desc 默认模板拼 intro, 防超长; 用户 desc 模板用户自负)
+        intro := bookIntro
+        if len([]rune(intro)) > 100 {
+                intro = string([]rune(intro)[:100])
+        }
+        // chapterSeoAuto=true 或三个模板全空: 用默认 (与原模板硬编码一致)
+        defaultTitle := chapterTitle + " - " + bookName + " - " + siteTitle
+        defaultDesc := bookName + chapterTitle + "全文阅读," + intro
+        defaultKw := bookName + "," + chapterTitle + "," + bookAuthor
+        if siteKeywords != "" {
+                defaultKw += "," + siteKeywords
+        }
+        if seoAuto || (titleTmpl == "" && descTmpl == "" && kwTmpl == "") {
+                return defaultTitle, defaultDesc, defaultKw
+        }
+        // chapterSeoAuto=false 且至少一个模板非空: 用用户模板 (占位符替换); 空模板 fallback 默认
+        apply := func(tmpl, defaultVal string) string {
+                if tmpl == "" {
+                        return defaultVal
+                }
+                out := tmpl
+                out = strings.ReplaceAll(out, "{bookName}", bookName)
+                out = strings.ReplaceAll(out, "{chapterTitle}", chapterTitle)
+                out = strings.ReplaceAll(out, "{page}", fmt.Sprintf("%d", page))
+                out = strings.ReplaceAll(out, "{totalPages}", fmt.Sprintf("%d", totalPages))
+                out = strings.ReplaceAll(out, "{siteName}", siteName)
+                return out
+        }
+        return apply(titleTmpl, defaultTitle), apply(descTmpl, defaultDesc), apply(kwTmpl, defaultKw)
 }
 
 func getCategories() ([]map[string]interface{}, error) {
@@ -1196,7 +1290,9 @@ func getBookViewData(id string) (map[string]interface{}, []map[string]interface{
 }
 
 // getReadViewData 装配 read 视图所需: chapter content + book 信息 + prev/next
-func getReadViewData(chID string) (map[string]interface{}, map[string]interface{}, map[string]interface{}, map[string]interface{}, bool) {
+//  R57-1B: 接收 site 参数, 调 computeChapterSeo 算 SEO TDK 写入 chapter map
+//    (供模板消费 .Chapter.seoTitle / .Chapter.seoKeywords / .Chapter.seoDesc).
+func getReadViewData(chID string, site map[string]interface{}) (map[string]interface{}, map[string]interface{}, map[string]interface{}, map[string]interface{}, bool) {
         // 1. 查 chapter (含 bookId, idx, title, content, wordCount)
         var cid, title, content, bookID, volume, storage, filePath sql.NullString
         var idx int
@@ -1238,11 +1334,28 @@ func getReadViewData(chID string) (map[string]interface{}, map[string]interface{
                 &bid, &bname, &bauthor, &bstatus, &bcategory, &bintro); err != nil {
                 // book 查不到也允许渲染
                 bookMap := map[string]interface{}{"id": bookID.String, "name": "", "author": "", "status": "", "category": "", "intro": ""}
+                // R57-1B: 即使 book 查不到, 也填入 SEO TDK (用空 bookName/author/intro + chapterTitle)
+                if site != nil {
+                        seoT, seoD, seoK := computeChapterSeo(site, title.String, "", "", "")
+                        chapter["seoTitle"] = seoT
+                        chapter["seoDesc"] = seoD
+                        chapter["seoKeywords"] = seoK
+                }
                 return chapter, bookMap, nil, nil, true
         }
         bookMap := map[string]interface{}{
                 "id": bid.String, "name": bname.String, "author": bauthor.String,
                 "status": bstatus.String, "category": bcategory.String, "intro": bintro.String,
+        }
+        // R57-1B 接入智能 TDK: 调 computeChapterSeo 算 SEO TDK 写入 chapter map.
+        //   chapterSeoAuto=true (默认): 用默认模板, 与原模板硬编码 `{{.Chapter.title}} - {{.Book.name}} - {{.Site.Title}}`
+        //   等价 (与 chapterSeoTitleTemplate 空时 fallback 默认一致). chapterSeoAuto=false 且模板非空时
+        //   用用户配置的模板 (替换 {bookName} {chapterTitle} {page} {totalPages} {siteName} 占位符).
+        if site != nil {
+                seoT, seoD, seoK := computeChapterSeo(site, title.String, bname.String, bauthor.String, bintro.String)
+                chapter["seoTitle"] = seoT
+                chapter["seoDesc"] = seoD
+                chapter["seoKeywords"] = seoK
         }
 
         // 3. prev / next (基于 idx)

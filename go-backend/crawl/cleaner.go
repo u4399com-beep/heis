@@ -309,7 +309,15 @@ var (
         indentBrRe    = regexp.MustCompile(`(?i)<\s*br\s*/?\s*>`)
         indentWsRe    = regexp.MustCompile(`\s+`)
         // 6. 首末段剥离的章节号 / Chapter N 识别
-        chapterHeadCNRe = regexp.MustCompile(`^第[一二三四五六七八九十百千万0-9]+(?:章|节|回|话|集)\b`)
+        // R57-1B 修复 BUG-G: chapterHeadCNRe 原用 `\b` (ASCII 词边界), 对中文无效.
+        //   Go RE2 的 `\b` 是 ASCII word boundary ([A-Za-z0-9_] vs non-ASCII word char).
+        //   "第一章 引子" 中 "章" (non-ASCII) 后接空格 (non-ASCII whitespace),
+        //   `\b` 在两个 non-ASCII word char 之间不匹配 → chapterHeadCNRe 整体不命中 →
+        //   首段章节号剥离功能失效 (R49-1B 起 latent, R47-1A 提为包级未发现).
+        //   修复: 去掉 `\b` (因 `第N章` 结构本身够独特, 不需要边界保护; 后续可选
+        //   lookahead 但无必要). 同步审计 chapterHeadENRe 无 `\b` (英文 Chapter N
+        //   后接 \s+ 已隔离良好), 不动.
+        chapterHeadCNRe = regexp.MustCompile(`^第[一二三四五六七八九十百千万0-9]+(?:章|节|回|话|集)`)
         chapterHeadENRe = regexp.MustCompile(`(?i)^Chapter\s+\d+`)
         chapterTailRe   = regexp.MustCompile(`本章(?:未完|未完待续|继续阅读)|点击下一(?:页|章)|敬请(?:期待|关注)|加入书签|为了方便下次阅读`)
 
@@ -655,8 +663,19 @@ func cleanContentHtmlSync(raw string, cfg CleanConfig) string {
         if doc3, err := goquery.NewDocumentFromReader(strings.NewReader(`<div id="__strip_root">` + out + `</div>`)); err == nil {
                 root3 := doc3.Find("#__strip_root")
                 paras := root3.Find("p")
-                if paras.Length() > 0 {
-                        first := paras.First()
+                // R57-1B 修复 BUG-H: 第 4 步 Normalize `out = "<p>" + out + "</p>"` 包裹
+                //   (cleaner.go:619) 让嵌套 <p> 被 HTML5 parser 修复为首末空 <p></p>,
+                //   paras.First() / paras.Last() 取到空段 → headText/tailText="" →
+                //   chapterHeadCNRe / chapterTailRe 不命中 → 首末段剥离失效.
+                //   原 R49-1B 起一直 latent (R49-1B 重点修 plainText 段级剥离, HTML
+                //   分支首末段剥离逻辑未审). 修复: 用 Filter 跳过空段, 找首个/末个
+                //   非空段做首/末段剥离. 与 plainText 分支 stripPlainTextPromoSegments
+                //   同口径 (空段跳过).
+                nonEmpty := paras.FilterFunction(func(_ int, s *goquery.Selection) bool {
+                        return strings.TrimSpace(s.Text()) != ""
+                })
+                if nonEmpty.Length() > 0 {
+                        first := nonEmpty.First()
                         headText := strings.TrimSpace(first.Text())
                         if utf8.RuneCountInString(headText) <= 80 {
                                 // R47-1A: chapterHeadCNRe / chapterHeadENRe 提为包级 (原每次调用都重编译)
@@ -666,8 +685,11 @@ func cleanContentHtmlSync(raw string, cfg CleanConfig) string {
                         }
                 }
                 paras2 := root3.Find("p")
-                if paras2.Length() > 0 {
-                        last := paras2.Last()
+                nonEmptyLast := paras2.FilterFunction(func(_ int, s *goquery.Selection) bool {
+                        return strings.TrimSpace(s.Text()) != ""
+                })
+                if nonEmptyLast.Length() > 0 {
+                        last := nonEmptyLast.Last()
                         tailText := strings.TrimSpace(last.Text())
                         if utf8.RuneCountInString(tailText) <= 200 {
                                 // R47-1A: chapterTailRe 提为包级 (原每次调用都重编译)
