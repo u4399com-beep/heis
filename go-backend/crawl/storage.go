@@ -132,9 +132,14 @@ func sanitizeCoverName(name string) string {
 //  - bookId 路径穿越防御 (剥路径分隔符 + 父目录指针字符)
 //  - 标题 slug 清洗 (控制字符 + Windows 保留字符 + 按码点截断)
 //  - 标题强制单行 (剥 \r\n → 单空格, 防 readChapterTxt.split('\n').slice(1) 误把标题尾行当正文首段)
-//  - 原子写入: 先写 .tmp + os.Rename (POSIX 同文件系统原子 inode 替换)
+//  - 原子写入: 先写 .tmp + atomicWriteFileSync (fsync) + os.Rename (POSIX 同文件系统原子 inode 替换)
 //  - 临时文件名加 PID + 随机段防并发同章节写入互踩
 //  返回相对 data/ 的路径 (供 DB 存储 + 公共 read API 使用).
+// R65-C BUG-43 (P3) 修复: 原用 os.WriteFile (无 fsync) → crash 在 WriteFile 后 / Rename
+//   前文件内容未刷盘, 重启后 .txt 可能空 (与 R64-B BUG-35 fetcher CookieJar SaveToDisk
+//   同款). 修复: 改用 atomicWriteFileSync (含 fsync, R51-1A 在 fetcher.go 已实现, 同
+//   crawl 包内可直接调), 保证 crash 安全. fsync 在 Linux 约 5-50ms, 章节 .txt 通常
+//   <100KB, 总开销 <100ms 可接受.
 func SaveChapterTxt(bookID string, idx int, title, content string) (string, error) {
         if err := EnsureDirs(); err != nil {
                 return "", err
@@ -163,7 +168,8 @@ func SaveChapterTxt(bookID string, idx int, title, content string) (string, erro
         _, _ = rand.Read(randBuf[:])
         randNum := binary.LittleEndian.Uint64(randBuf[:])
         tmpPath := fmt.Sprintf("%s.%d.%d.tmp", filePath, os.Getpid(), randNum)
-        if err := os.WriteFile(tmpPath, []byte(body), 0644); err != nil {
+        // R65-C BUG-43: 用 atomicWriteFileSync (含 fsync) 替代 os.WriteFile, 保证 crash 安全.
+        if err := atomicWriteFileSync(tmpPath, []byte(body), 0644); err != nil {
                 _ = os.Remove(tmpPath)
                 return "", err
         }
@@ -225,6 +231,13 @@ func DeleteBookTxt(bookID string) error {
 //  - 空文件/超大文件保护 (>20MB 拒绝)
 //  - 文件名: 仅保留 [\w-] 字符, 空串兜底 cover_{ts}_{rand}
 //  返回相对 data/ 的路径 (covers/{name}.webp)
+// R65-C BUG-44 (P3) 修复: 原用 os.WriteFile 直接写最终路径 (无 .tmp+rename, 无 fsync).
+//   ① crash 在 WriteFile 中途 → 文件部分字节 (破损 .webp, 浏览器 <img> 解码失败);
+//   ② 并发同 name (e.g. 两本书 cover URL 相同 → sanitizeCoverName 同结果) → 交错写,
+//      最终文件混合两本书字节 (无法预测). 修复: 改用 atomicWriteFileSync (含 fsync)
+//   + .tmp + rename 模式 (与 SaveChapterTxt 同款). fileName 已含 random suffix 时无
+//   并发冲突, 但 crash 中途写仍可能留半成品, atomicWriteFileSync + rename 保证
+//   "要么完整要么不存在" 语义.
 func SaveCoverWebp(buf []byte, name string) (string, error) {
         if len(buf) == 0 || len(buf) > 20*1024*1024 {
                 return "", nil
@@ -241,7 +254,17 @@ func SaveCoverWebp(buf []byte, name string) (string, error) {
         }
         fileName := safeName + ".webp"
         filePath := filepath.Join(coversDir, fileName)
-        if err := os.WriteFile(filePath, buf, 0644); err != nil {
+        // R65-C BUG-44: 临时文件 + atomicWriteFileSync + rename (crash 安全)
+        var randBuf [8]byte
+        _, _ = rand.Read(randBuf[:])
+        randNum := binary.LittleEndian.Uint64(randBuf[:])
+        tmpPath := fmt.Sprintf("%s.%d.%d.tmp", filePath, os.Getpid(), randNum)
+        if err := atomicWriteFileSync(tmpPath, buf, 0644); err != nil {
+                _ = os.Remove(tmpPath)
+                return "", err
+        }
+        if err := os.Rename(tmpPath, filePath); err != nil {
+                _ = os.Remove(tmpPath)
                 return "", err
         }
         return "covers/" + fileName, nil
@@ -290,18 +313,16 @@ type downloadTxtWriter struct {
 }
 
 // downloadTxtTarget — 下载成品文件名计算 (清洗控制字符 + 按码点截断防超长).
+// R65-C BUG-46 (P3) 修复: 原实现做两次 []rune 转换 + 两次截断 (100 → 80), 第二次
+//   截断在已 cap 到 100 的切片上做, 实际等价于直接 cap 到 80. 删除冗余转换 + 截断,
+//   单次 []rune + cap 80, 语义等价, 省一次 []rune 分配 (大文件名场景).
 func downloadTxtTarget(name string) (filePath, rel, fileName string) {
         cleaned := chapterSlugRe.ReplaceAllString(name, "_")
         runes := []rune(cleaned)
-        if len(runes) > 100 {
-                runes = runes[:100]
+        if len(runes) > 80 {
+                runes = runes[:80]
         }
-        base := string(runes)
-        runes2 := []rune(base)
-        if len(runes2) > 80 {
-                runes2 = runes2[:80]
-        }
-        fileName = string(runes2) + ".txt"
+        fileName = string(runes) + ".txt"
         filePath = filepath.Join(downloadsDir, fileName)
         rel = "downloads/" + fileName
         return

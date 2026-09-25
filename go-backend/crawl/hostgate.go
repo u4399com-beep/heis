@@ -366,6 +366,10 @@ func (g *HostGate) Release(t *HostGateTicket) {
 }
 
 // ReportFailure — 记录失败 (连续 ≥3 触发降额). 返回降额事件 (无降额时 nil).
+// R65-B 反反爬第 58 项协同: 触发降额时调 EvictHostProxyPin (定义在 fetcher.go)
+//   清 host proxy 钉扎, 让下次 pickProxyFor 选新代理. hostgate 与 fetcher 同包
+//   (crawl), 无导入循环. 假设当前代理被反爬识别 → host 失败累计 → 换代理可能
+//   解决. 仅在降额事件触发时调 (避免每次失败都清钉扎, 影响代理稳定性).
 func (g *HostGate) ReportFailure(host string) *HostGateDerateEvent {
         if host == "" {
                 return nil
@@ -385,6 +389,9 @@ func (g *HostGate) ReportFailure(host string) *HostGateDerateEvent {
                         st.limit--
                 }
                 st.penaltyUntil = now + DerateCooldownMs
+                // R65-B 第 58 项协同: derate 触发 → 清 host proxy 钉扎.
+                //   g.mu 不嵌套取, 直接调 EvictHostProxyPin (内部用 sync.Map, 原子操作).
+                EvictHostProxyPin(host)
                 return &HostGateDerateEvent{Host: host, FailStreak: st.failStreak, OldLimit: old, NewLimit: st.limit}
         }
         return nil

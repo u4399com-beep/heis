@@ -3144,19 +3144,40 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
                 rows.Close()
         }
         // sites
+        // R65-D BUG-49 (P1): R64-C 给 adminSitesList/fillSitesPageData/adminSitesCreate/
+        //   adminSiteByIDHandler 加了 14 个高级 SEO 字段 (pseudoStaticStyle + 13 高级 SEO):
+        //   footerText/footerCopyright/footerIcp/footerStats/navCategoryCount/homeModuleLimit/
+        //   chapterPaginationMode/chapterPaginationWords/chapterPaginationPages/chapterSeoAuto/
+        //   chapterSeoTitleTemplate/chapterSeoDescTemplate/chapterSeoKeywordsTemplate. 但本
+        //   backup SELECT 漏了这 14 字段 → backup/restore cycle 丢失用户站点风格 + SEO 模板配置
+        //   (恢复后所有站 pseudoStaticStyle=默认 "query", 高级 SEO 全默认). 修复: SELECT + 输出
+        //   map + restore struct + restore INSERT 全补齐 (与 adminSitesList SELECT 字段集对齐).
         sites := []map[string]interface{}{}
-        if rows, err := db.Query(`SELECT id, name, domain, themeId, COALESCE(title,''), COALESCE(description,''), COALESCE(keywords,''), COALESCE(icbm,''), COALESCE(geoRegion,''), COALESCE(geoPlacename,''), offset, isDefault, status, inLinkWheel, createdAt, updatedAt FROM Site LIMIT 500`); err == nil {
+        if rows, err := db.Query(`SELECT id, name, domain, themeId, COALESCE(title,''), COALESCE(description,''), COALESCE(keywords,''), COALESCE(icbm,''), COALESCE(geoRegion,''), COALESCE(geoPlacename,''), offset, isDefault, status, inLinkWheel, COALESCE(pseudoStaticStyle,'query'), COALESCE(footerText,''), COALESCE(footerCopyright,''), COALESCE(footerIcp,''), COALESCE(footerStats,1), COALESCE(navCategoryCount,16), COALESCE(homeModuleLimit,20), COALESCE(chapterPaginationMode,'off'), COALESCE(chapterPaginationWords,3000), COALESCE(chapterPaginationPages,3), COALESCE(chapterSeoAuto,1), COALESCE(chapterSeoTitleTemplate,''), COALESCE(chapterSeoDescTemplate,''), COALESCE(chapterSeoKeywordsTemplate,''), createdAt, updatedAt FROM Site LIMIT 500`); err == nil {
                 for rows.Next() {
-                        var id, name, domain, themeID, title, desc, kw, icbm, geoR, geoP string
-                        var offset int
-                        var isDefault, status, inLinkWheel bool
+                        var id, name, domain, themeID, title, desc, kw, icbm, geoR, geoP, pseudoStaticStyle, footerText, footerCopyright, footerIcp, chapterPaginationMode, chapterSeoTitleTemplate, chapterSeoDescTemplate, chapterSeoKeywordsTemplate string
+                        var offset, navCategoryCount, homeModuleLimit, chapterPaginationWords, chapterPaginationPages int
+                        var isDefault, status, inLinkWheel, footerStats, chapterSeoAuto bool
                         var createdAt, updatedAt string
-                        _ = rows.Scan(&id, &name, &domain, &themeID, &title, &desc, &kw, &icbm, &geoR, &geoP, &offset, &isDefault, &status, &inLinkWheel, &createdAt, &updatedAt)
+                        _ = rows.Scan(&id, &name, &domain, &themeID, &title, &desc, &kw, &icbm, &geoR, &geoP, &offset, &isDefault, &status, &inLinkWheel, &pseudoStaticStyle, &footerText, &footerCopyright, &footerIcp, &footerStats, &navCategoryCount, &homeModuleLimit, &chapterPaginationMode, &chapterPaginationWords, &chapterPaginationPages, &chapterSeoAuto, &chapterSeoTitleTemplate, &chapterSeoDescTemplate, &chapterSeoKeywordsTemplate, &createdAt, &updatedAt)
+                        if pseudoStaticStyle == "" {
+                                pseudoStaticStyle = "query"
+                        }
+                        if chapterPaginationMode == "" {
+                                chapterPaginationMode = "off"
+                        }
                         sites = append(sites, map[string]interface{}{
                                 "id": id, "name": name, "domain": domain, "themeId": themeID,
                                 "title": title, "description": desc, "keywords": kw,
                                 "icbm": icbm, "geoRegion": geoR, "geoPlacename": geoP, "offset": offset,
                                 "isDefault": isDefault, "status": status, "inLinkWheel": inLinkWheel,
+                                "pseudoStaticStyle": pseudoStaticStyle,
+                                "footerText": footerText, "footerCopyright": footerCopyright, "footerIcp": footerIcp,
+                                "footerStats": footerStats, "navCategoryCount": navCategoryCount,
+                                "homeModuleLimit": homeModuleLimit, "chapterPaginationMode": chapterPaginationMode,
+                                "chapterPaginationWords": chapterPaginationWords, "chapterPaginationPages": chapterPaginationPages,
+                                "chapterSeoAuto": chapterSeoAuto, "chapterSeoTitleTemplate": chapterSeoTitleTemplate,
+                                "chapterSeoDescTemplate": chapterSeoDescTemplate, "chapterSeoKeywordsTemplate": chapterSeoKeywordsTemplate,
                                 "createdAt": createdAt, "updatedAt": updatedAt,
                         })
                 }
@@ -3390,8 +3411,9 @@ func adminBackupRestoreHandler(w http.ResponseWriter, r *http.Request) {
                         } `json:"categories"`
                         Sites []struct {
                                 ID, Name, Domain, ThemeID, Title, Description, Keywords, Icbm, GeoRegion, GeoPlacename, CreatedAt, UpdatedAt string
-                                Offset int  `json:"offset"`
-                                IsDefault, Status, InLinkWheel bool
+                                PseudoStaticStyle, FooterText, FooterCopyright, FooterIcp, ChapterPaginationMode, ChapterSeoTitleTemplate, ChapterSeoDescTemplate, ChapterSeoKeywordsTemplate string
+                                Offset, NavCategoryCount, HomeModuleLimit, ChapterPaginationWords, ChapterPaginationPages int
+                                IsDefault, Status, InLinkWheel, FooterStats, ChapterSeoAuto bool
                         } `json:"sites"`
                         FriendLinks []struct {
                                 ID, Name, URL, Logo, CreatedAt, UpdatedAt string
@@ -3474,10 +3496,20 @@ func adminBackupRestoreHandler(w http.ResponseWriter, r *http.Request) {
                 // R42-1A: 16 cols + 16 ? + 16 args (R41-1B 把 createdAt/updatedAt 当字面字符串 "datetime('now')" 作 arg 传入 →
                 //         SQLite 会把字面串入库而非当前时间, 且若以 SQL 函数调用必须出现在 VALUES 子句而非 args 列表。
                 //         改用 nullIfEmpty(s.CreatedAt/UpdatedAt) 保留备份原时间戳, 与其它表统一.)
-                if _, err := tx.Exec(`INSERT INTO Site (id, name, domain, themeId, title, description, keywords, icbm, geoRegion, geoPlacename, offset, isDefault, status, inLinkWheel, createdAt, updatedAt)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                        ON CONFLICT(id) DO UPDATE SET name=excluded.name, domain=excluded.domain, themeId=excluded.themeId, title=excluded.title, description=excluded.description, keywords=excluded.keywords, icbm=excluded.icbm, geoRegion=excluded.geoRegion, geoPlacename=excluded.geoPlacename, offset=excluded.offset, isDefault=excluded.isDefault, status=excluded.status, inLinkWheel=excluded.inLinkWheel`,
-                        s.ID, s.Name, s.Domain, s.ThemeID, s.Title, s.Description, s.Keywords, s.Icbm, s.GeoRegion, s.GeoPlacename, s.Offset, s.IsDefault, s.Status, s.InLinkWheel, nullIfEmpty(s.CreatedAt), nullIfEmpty(s.UpdatedAt)); err != nil {
+                // R65-D BUG-49 (P1): 补齐 14 高级 SEO 字段 (pseudoStaticStyle + 13 高级 SEO) 的 INSERT + UPDATE SET,
+                //   与 backup SELECT 字段集对齐 (详见 adminBackupHandler SELECT 注释).
+                pseudoStyle := s.PseudoStaticStyle
+                if pseudoStyle == "" {
+                        pseudoStyle = "query"
+                }
+                chapterPaginationMode := s.ChapterPaginationMode
+                if chapterPaginationMode == "" {
+                        chapterPaginationMode = "off"
+                }
+                if _, err := tx.Exec(`INSERT INTO Site (id, name, domain, themeId, title, description, keywords, icbm, geoRegion, geoPlacename, offset, isDefault, status, inLinkWheel, pseudoStaticStyle, footerText, footerCopyright, footerIcp, footerStats, navCategoryCount, homeModuleLimit, chapterPaginationMode, chapterPaginationWords, chapterPaginationPages, chapterSeoAuto, chapterSeoTitleTemplate, chapterSeoDescTemplate, chapterSeoKeywordsTemplate, createdAt, updatedAt)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        ON CONFLICT(id) DO UPDATE SET name=excluded.name, domain=excluded.domain, themeId=excluded.themeId, title=excluded.title, description=excluded.description, keywords=excluded.keywords, icbm=excluded.icbm, geoRegion=excluded.geoRegion, geoPlacename=excluded.geoPlacename, offset=excluded.offset, isDefault=excluded.isDefault, status=excluded.status, inLinkWheel=excluded.inLinkWheel, pseudoStaticStyle=excluded.pseudoStaticStyle, footerText=excluded.footerText, footerCopyright=excluded.footerCopyright, footerIcp=excluded.footerIcp, footerStats=excluded.footerStats, navCategoryCount=excluded.navCategoryCount, homeModuleLimit=excluded.homeModuleLimit, chapterPaginationMode=excluded.chapterPaginationMode, chapterPaginationWords=excluded.chapterPaginationWords, chapterPaginationPages=excluded.chapterPaginationPages, chapterSeoAuto=excluded.chapterSeoAuto, chapterSeoTitleTemplate=excluded.chapterSeoTitleTemplate, chapterSeoDescTemplate=excluded.chapterSeoDescTemplate, chapterSeoKeywordsTemplate=excluded.chapterSeoKeywordsTemplate`,
+                        s.ID, s.Name, s.Domain, s.ThemeID, s.Title, s.Description, s.Keywords, s.Icbm, s.GeoRegion, s.GeoPlacename, s.Offset, s.IsDefault, s.Status, s.InLinkWheel, pseudoStyle, s.FooterText, s.FooterCopyright, s.FooterIcp, s.FooterStats, s.NavCategoryCount, s.HomeModuleLimit, chapterPaginationMode, s.ChapterPaginationWords, s.ChapterPaginationPages, s.ChapterSeoAuto, s.ChapterSeoTitleTemplate, s.ChapterSeoDescTemplate, s.ChapterSeoKeywordsTemplate, nullIfEmpty(s.CreatedAt), nullIfEmpty(s.UpdatedAt)); err != nil {
                         writeJSONErr(w, fmt.Sprintf("Site %s 导入失败: %s", s.ID, err.Error()), 500)
                         return
                 }

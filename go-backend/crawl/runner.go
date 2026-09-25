@@ -26,6 +26,7 @@ import (
         "errors"
         "fmt"
         "math/rand"
+        "sort"
         "strings"
         "sync"
         "sync/atomic"
@@ -429,6 +430,15 @@ type TaskSnapshot struct {
 
 // Snapshot — 返回任务实时快照 (供 admin UI 实时显示).
 func (rt *TaskRuntime) Snapshot() *TaskSnapshot {
+        // R65-C BUG-40 (P1) 修复: recentLogs 写在 rt.logsMu 下 (Log 函数), 读也必须在
+        //   rt.logsMu 下. 原实现 Snapshot 在 rt.mu 下读 recentLogs, 与 Log 的 rt.logsMu
+        //   写不同锁 → 数据竞争 (Go runtime -race 报 fatal: concurrent map read and
+        //   map write / slice append during read). 修复: 先在 logsMu 下拷贝 recentLogs,
+        //   再在 mu 下读其它字段. 两把锁顺序获取 (logsMu 先, mu 后), 无嵌套, 无死锁.
+        rt.logsMu.Lock()
+        logsCopy := append([]LogEntry(nil), rt.recentLogs...)
+        rt.logsMu.Unlock()
+
         rt.mu.Lock()
         defer rt.mu.Unlock()
         return &TaskSnapshot{
@@ -440,7 +450,7 @@ func (rt *TaskRuntime) Snapshot() *TaskSnapshot {
                 CurrentURL:          rt.currentURL,
                 MaxRequests:         rt.maxRequests,
                 MemResumeSetsSize:   len(rt.discoveredBookUrls) + len(rt.completedBookUrls) + len(rt.ongoingBookUrls) + len(rt.failedBookUrls) + len(rt.bookLastChapters),
-                RecentLogs:          append([]LogEntry(nil), rt.recentLogs...),
+                RecentLogs:          logsCopy,
                 FailedBookUrlsCount: len(rt.failedBookUrls),
                 CaptchaEncountered:  atomic.LoadInt64(&rt.captchaEncountered),
         }
@@ -455,6 +465,214 @@ func (rt *TaskRuntime) Log(level LogLevel, message string) {
         if len(rt.recentLogs) > 100 {
                 rt.recentLogs = rt.recentLogs[len(rt.recentLogs)-100:]
         }
+}
+
+// ---------- hostHealthTracker (R65-C: 接 R64-B AdjustConcurrency / AdjustMinGap) ----------
+//
+//  hostHealthTracker — 进程级 per-host 健康 (成功率 + 延迟) 滑动统计.
+//   caller: runner.go CrawlBookMeta / CrawlChapterContent 在 fetch 后调
+//   recordLatency / recordSuccess / recordFailure; phase 2 主循环每 N=10 章调
+//   adjustAll → hostgate.AdjustConcurrency (60s cooldown 内 hostgate 自抖动跳过).
+//   价值: 健康 host 提并发 (3 → 10 章/批), 不健康 host 降并发 (避免雪崩);
+//         快响应 host 缩 minGap (加速), 慢响应 host 扩 minGap (避免拖垮源站).
+//   注: 与 hostgate 内部 failStreak/successStreak 机制互补 (streak 是被动反应,
+//       AdjustConcurrency 是主动调整; 两者协同, hostgate AdjustConcurrency 60s
+//       cooldown 防抖动, 这里无脑调也无副作用).
+
+type hostHealthTracker struct {
+        mu         sync.Mutex
+        success    map[string]int
+        fail       map[string]int
+        latencySum map[string]int64
+        latencyCnt map[string]int
+}
+
+var (
+        healthTrackerOnce sync.Once
+        healthTrackerInst *hostHealthTracker
+)
+
+// getHealthTracker — 进程级单例 (多任务共享, hostgate 同款全局聚合).
+func getHealthTracker() *hostHealthTracker {
+        healthTrackerOnce.Do(func() {
+                healthTrackerInst = &hostHealthTracker{
+                        success:    map[string]int{},
+                        fail:       map[string]int{},
+                        latencySum: map[string]int64{},
+                        latencyCnt: map[string]int{},
+                }
+        })
+        return healthTrackerInst
+}
+
+// recordSuccess — per-host 成功计数 +1 (caller: fetch 成功路径).
+func (h *hostHealthTracker) recordSuccess(host string) {
+        if host == "" {
+                return
+        }
+        h.mu.Lock()
+        h.success[host]++
+        h.mu.Unlock()
+}
+
+// recordFailure — per-host 失败计数 +1 (caller: fetch 失败/拦截/超时路径).
+func (h *hostHealthTracker) recordFailure(host string) {
+        if host == "" {
+                return
+        }
+        h.mu.Lock()
+        h.fail[host]++
+        h.mu.Unlock()
+}
+
+// recordLatency — per-host 延迟累计 (caller: fetch 后用 time.Since 测得的 HTTP
+//   round-trip 毫秒数, 不含 cleaner/parser 时间). latencyMs < 0 视为无效, 忽略.
+func (h *hostHealthTracker) recordLatency(host string, latencyMs int64) {
+        if host == "" || latencyMs < 0 {
+                return
+        }
+        h.mu.Lock()
+        h.latencySum[host] += latencyMs
+        h.latencyCnt[host]++
+        h.mu.Unlock()
+}
+
+// computeHealth — 计算 host 健康度 (0.0 ~ 1.0).
+//   公式 (与 R64-B B1 注释一致): health = successRate * 0.6 + (1 - avgLatencyMs/5000) * 0.4
+//   无数据时返 0.5 (中性, 不触发 AdjustConcurrency 调整, health ∈ [0.3, 0.8] 不动).
+func (h *hostHealthTracker) computeHealth(host string) float64 {
+        h.mu.Lock()
+        defer h.mu.Unlock()
+        s := h.success[host]
+        f := h.fail[host]
+        total := s + f
+        if total == 0 {
+                return 0.5
+        }
+        successRate := float64(s) / float64(total)
+        var latencyFactor float64
+        if cnt := h.latencyCnt[host]; cnt > 0 {
+                avgMs := float64(h.latencySum[host]) / float64(cnt)
+                latencyFactor = 1.0 - avgMs/5000.0
+                if latencyFactor < 0 {
+                        latencyFactor = 0
+                }
+                if latencyFactor > 1 {
+                        latencyFactor = 1
+                }
+        } else {
+                latencyFactor = 0.5
+        }
+        return successRate*0.6 + latencyFactor*0.4
+}
+
+// adjustAll — 对所有累计 host 调 hostgate.AdjustConcurrency (B1).
+//   60s cooldown 内 hostgate 自跳过, 这里无脑调也无副作用.
+//   caller: runner.go phase 2 主循环每 N=10 章调一次.
+func (h *hostHealthTracker) adjustAll() {
+        h.mu.Lock()
+        seen := map[string]bool{}
+        hosts := make([]string, 0, len(h.success)+len(h.fail))
+        for host := range h.success {
+                if !seen[host] {
+                        seen[host] = true
+                        hosts = append(hosts, host)
+                }
+        }
+        for host := range h.fail {
+                if !seen[host] {
+                        seen[host] = true
+                        hosts = append(hosts, host)
+                }
+        }
+        h.mu.Unlock()
+        hg := GetHostGate()
+        for _, host := range hosts {
+                hg.AdjustConcurrency(host, h.computeHealth(host))
+        }
+}
+
+// ---------- BookProgressReader (R65-C: 接 R64-B SmartResumeSort) ----------
+//
+//  BookProgressReader — 可选接口, 由 cfg.DB (admin.go wiring) 实现.
+//   runner.go ExecuteTask 在 phase 1 之前 type-assertion 检查; 实现时调
+//   ListBookProgress 拿 per-book 进度快照 → 转 SmartResumeItem → 调
+//   SmartResumeSort → 重排 bookQueue (nearDone 优先 → started → fresh).
+//   未实现时 (admin.go 尚未 wiring) type-assertion 失败, 走原顺序 (无影响).
+//   接口而非字段: admin.go 无需改即可编译过 (type-assertion 失败兜底).
+
+// ResumeItem — runner-internal 续采 item (URL-based, 不依赖 BookID 映射).
+//   admin.go wiring 从 DB 查 Book.sourceURL + COUNT(Chapter) 构造, 注入接口.
+type ResumeItem struct {
+        BookURL       string
+        ChaptersDone  int
+        ChaptersTotal int
+        LastFetchAt   int64 // UnixMilli, 0=从未采过
+}
+
+// BookProgressReader — 可选 DB 扩展接口 (runner 用 type-assertion 检测).
+type BookProgressReader interface {
+        // ListBookProgress — 返回 task 内 per-book 进度快照 (URL + done/total/lastAt).
+        //   未实现 / 无数据时返 nil, nil (runner 走原顺序).
+        ListBookProgress(taskID string) ([]ResumeItem, error)
+}
+
+// applyResumeSort — 用 SmartResumeSort 重排 bookQueue (nearDone → started → fresh).
+//   items: per-book 进度快照 (URL-based). bookQueue: 待采 URL 列表.
+//   算法:
+//     1. items → SmartResumeItem (URL 作 BookID, SmartResumeSort 仅按 ChaptersDone/
+//        ChaptersTotal/LastFetchAt 排序, 不读 BookID)
+//     2. SmartResumeSort 返 sorted (nearDone → started → fresh)
+//     3. bookQueue 按 sorted 顺序重排: 命中 sorted 的 URL 按 sorted 优先级排;
+//        未命中 (fresh 新发现) 的 URL 排末尾, 保持原顺序 (稳定)
+//   保守: items 为空 / bookQueue ≤ 1 → 不动 (返原 bookQueue).
+func applyResumeSort(bookQueue []string, items []ResumeItem) []string {
+        if len(items) == 0 || len(bookQueue) <= 1 {
+                return bookQueue
+        }
+        // 1. 转 SmartResumeItem
+        smartItems := make([]SmartResumeItem, len(items))
+        for i, it := range items {
+                smartItems[i] = SmartResumeItem{
+                        BookID:        it.BookURL, // URL 作 ID (SmartResumeSort 不读语义)
+                        ChaptersDone:  it.ChaptersDone,
+                        ChaptersTotal: it.ChaptersTotal,
+                        LastFetchAt:   it.LastFetchAt,
+                }
+        }
+        // 2. SmartResumeSort (smart.go)
+        sorted := SmartResumeSort(smartItems)
+        // 3. URL → priority index
+        prio := make(map[string]int, len(sorted))
+        for i, si := range sorted {
+                prio[si.BookID] = i
+        }
+        // 4. bookQueue 按 priority 排序 (未命中排末尾, 稳定)
+        type qitem struct {
+                url  string
+                prio int
+                ord  int
+        }
+        unknownPrio := len(sorted) // 未命中排所有已知之后
+        qitems := make([]qitem, len(bookQueue))
+        for i, u := range bookQueue {
+                p, ok := prio[u]
+                if !ok {
+                        p = unknownPrio
+                }
+                qitems[i] = qitem{url: u, prio: p, ord: i}
+        }
+        sort.SliceStable(qitems, func(i, j int) bool {
+                if qitems[i].prio != qitems[j].prio {
+                        return qitems[i].prio < qitems[j].prio
+                }
+                return qitems[i].ord < qitems[j].ord
+        })
+        out := make([]string, len(bookQueue))
+        for i, q := range qitems {
+                out[i] = q.url
+        }
+        return out
 }
 
 // ---------- DB 接口 (供 wiring) ----------
@@ -628,7 +846,10 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) error {
         // R41-1A: maxRequests 写入移到 MarkRunning / registration 之前 (happens-before 关系
         // 保证 admin Snapshot 看到非零值). 原代码在 tr.runtimes[cfg.TaskID] = rt 之后写,
         // 无 memory barrier, admin 读到零值.
-        rt.maxRequests = cfg.MaxRequests
+        // R65-C: 改用 SetMaxRequests (mu.Lock 保护) 替代直接字段写, 与 Snapshot 读路径
+        //   (同 mu) 锁口径一致, 消除 maxRequests 写读竞态 + 接通 deadcode (SetMaxRequests
+        //   原 R41-1A 后未调用, deadcode 标记为 unreachable).
+        rt.SetMaxRequests(cfg.MaxRequests)
         myEpoch := rt.MarkRunning()
 
         // 注册 runtime (供 admin UI 查询)
@@ -657,6 +878,23 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) error {
                         return err
                 }
                 bookQueue = urls
+        }
+
+        // R65-C: 接 R64-B SmartResumeSort (B5) — 断点续采优先级排序.
+        //   cfg.DB 若实现 BookProgressReader (admin.go wiring 可选), runner 调
+        //   ListBookProgress 拿 per-book 进度快照 → applyResumeSort 重排 bookQueue
+        //   (nearDone 优先 → started → fresh), 提升任务完成率可视化.
+        //   admin.go 未实现接口时 type-assertion 失败, 走原顺序 (无影响, 编译过).
+        if cfg.DB != nil {
+                if pr, ok := cfg.DB.(BookProgressReader); ok {
+                        if items, err := pr.ListBookProgress(cfg.TaskID); err == nil && len(items) > 0 {
+                                before := bookQueue
+                                bookQueue = applyResumeSort(bookQueue, items)
+                                if len(bookQueue) > 0 && len(before) > 0 && bookQueue[0] != before[0] {
+                                        rt.Log(LogInfo, fmt.Sprintf("续采排序: %d 本重排 (nearDone → started → fresh)", len(items)))
+                                }
+                        }
+                }
         }
 
         progress := TaskProgress{
@@ -745,6 +983,24 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) error {
                         wg.Add(1)
                         go func(idx int, url string) {
                                 defer wg.Done()
+                                // R65-C BUG-41 (P1) 修复: phase 1 goroutine 加 defer recover
+                                //   (与 phase 2 章节采集 goroutine 同款, R45-1A 已加 phase 2
+                                //   recover, phase 1 漏加). CrawlBookMeta 内部 goquery /
+                                //   ParseBook / ParseToc 偶发 panic (nil 指针, parser bug) 时,
+                                //   无 recover 会让 panic 跨 goroutine 边界传播 → Go runtime
+                                //   杀死整个进程 (相邻 goroutine + 主循环 + admin HTTP 服务全挂).
+                                //   修复: defer recover 内置 stats.Errors++ / AddToFailed /
+                                //   logf / results[idx] = error, 与 phase 2 同口径.
+                                defer func() {
+                                        if r := recover(); r != nil {
+                                                bookBatchMu.Lock()
+                                                stats.Errors++
+                                                bookBatchMu.Unlock()
+                                                rt.AddToFailed(url)
+                                                logf(LogError, "🔴 书籍采集 goroutine panic: %v", r)
+                                                results[idx] = BookMetaResult{Status: BookMetaStatusError, BookURL: url}
+                                        }
+                                }()
                                 if err := bookSem.Acquire(ctx); err != nil {
                                         results[idx] = BookMetaResult{Status: BookMetaStatusStopped, BookURL: url}
                                         return
@@ -995,6 +1251,17 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) error {
                                 return &CircuitBreak{Reason: "连续错误熔断", Consecutive: consecutiveErrs, Limit: CircuitErrorLimit}
                         }
 
+                        // R65-C: 接 R64-B AdjustConcurrency (B1) — 每 10 章调一次 adjustAll.
+                        //   done 是 phase 2 累计已采章数 (goroutine 在 batchMu 下 ++,
+                        //   wg.Wait() happens-after 这里, 安全读). 每 10 章对所有累计 host
+                        //   调一次 hostgate.AdjustConcurrency (60s cooldown 内 hostgate
+                        //   自抖动跳过, 无副作用). health 公式 (R64-B B1):
+                        //     successRate * 0.6 + (1 - avgLatencyMs/5000) * 0.4
+                        //   健康 > 0.8 → baseLimit+1, 不健康 < 0.3 → baseLimit-1.
+                        if done > 0 && done%10 == 0 {
+                                getHealthTracker().adjustAll()
+                        }
+
                         // 批次间 sleepGap (节流 + jitterMs 抖动)
                         interval := cfg.IntervalMin
                         if cfg.IntervalMax > cfg.IntervalMin {
@@ -1162,16 +1429,29 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
         rt.SetCurrentURL(bookURL)
 
         // 抓书籍页
+        // R65-C: 接 R64-B AdjustMinGap (B3) + hostHealthTracker — 测 HTTP round-trip
+        //   延迟 → hostgate.AdjustMinGap (30s cooldown 内 hostgate 自抖动跳过) +
+        //   healthTracker.recordLatency / recordSuccess / recordFailure (per-host
+        //   滑动统计, adjustAll 每 10 章调一次 AdjustConcurrency 用)
+        fetchStart := time.Now()
         bookRes, err := FetchPage(ctx, bookURL, mergeFetchConfig(cfg.Override, FetchConfig{
                 RequestPriority: "book",
         }))
+        latencyMs := time.Since(fetchStart).Milliseconds()
+        bookHost := HostGateKeyOf(bookURL)
         if err != nil {
                 // R43-1B: 429 / 503+RetryAfter → ReportRateLimited (与 CrawlChapterContent 同款)
                 if he, ok := err.(*HTTPError); ok && (he.StatusCode == 429 || he.StatusCode == 503) && he.RetryAfterMs > 0 {
-                        GetHostGate().ReportRateLimited(HostGateKeyOf(bookURL), he.RetryAfterMs)
+                        GetHostGate().ReportRateLimited(bookHost, he.RetryAfterMs)
                 }
+                // R65-C: 失败路径记录 per-host 失败计数 (供 AdjustConcurrency 算 health)
+                getHealthTracker().recordFailure(bookHost)
                 return nil, err
         }
+        // R65-C: 成功路径记录延迟 + 成功计数 + 调 AdjustMinGap
+        getHealthTracker().recordLatency(bookHost, latencyMs)
+        getHealthTracker().recordSuccess(bookHost)
+        GetHostGate().AdjustMinGap(bookHost, latencyMs)
         // R43-1B: 命中验证码 → 累计 captchaEncountered
         if bookRes.CaptchaDetected {
                 rt.IncCaptcha()
@@ -1179,11 +1459,13 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
         if bookRes.Blocked {
                 // R43-1B: 拦截时也调 ReportFailure (R42-1B 后该路径漏调, hostgate
                 // failStreak 不增, derate 永远不触发, 同 host 持续被打)
-                GetHostGate().ReportFailure(HostGateKeyOf(bookURL))
+                GetHostGate().ReportFailure(bookHost)
+                // R65-C: 拦截视为失败, 记 per-host 失败计数 (供 AdjustConcurrency 算 health)
+                getHealthTracker().recordFailure(bookHost)
                 return &BookMetaResult{Status: BookMetaStatusBlocked, BookURL: bookURL}, nil
         }
         // 成功: 记 per-host Referer (fetchPageOnce 内部已记, 这里不重复)
-        GetHostGate().ReportSuccess(HostGateKeyOf(bookURL))
+        GetHostGate().ReportSuccess(bookHost)
 
         // 解析书籍页 (parseBook)
         parsed := ParseBook(bookRes.HTML, bookURL, cfg.Rule.Book)
@@ -1303,25 +1585,37 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                 }
         }
         rt.SetCurrentURL(tocURL)
+        // R65-C: 接 R64-B AdjustMinGap + healthTracker (与书籍页同款, 测 toc 页延迟)
+        tocFetchStart := time.Now()
         tocRes, err := FetchPage(ctx, tocURL, mergeFetchConfig(cfg.Override, FetchConfig{RequestPriority: "book"}))
+        tocLatencyMs := time.Since(tocFetchStart).Milliseconds()
+        tocHost := HostGateKeyOf(tocURL)
         if err != nil {
                 // R43-1B: 429 / 503+RetryAfter → ReportRateLimited (与书籍页同款)
                 if he, ok := err.(*HTTPError); ok && (he.StatusCode == 429 || he.StatusCode == 503) && he.RetryAfterMs > 0 {
-                        GetHostGate().ReportRateLimited(HostGateKeyOf(tocURL), he.RetryAfterMs)
+                        GetHostGate().ReportRateLimited(tocHost, he.RetryAfterMs)
                 }
+                // R65-C: 失败路径记录 per-host 失败计数
+                getHealthTracker().recordFailure(tocHost)
                 return nil, err
         }
+        // R65-C: 成功路径记录延迟 + 成功计数 + 调 AdjustMinGap
+        getHealthTracker().recordLatency(tocHost, tocLatencyMs)
+        getHealthTracker().recordSuccess(tocHost)
+        GetHostGate().AdjustMinGap(tocHost, tocLatencyMs)
         // R43-1B: 命中验证码 → 累计 captchaEncountered
         if tocRes.CaptchaDetected {
                 rt.IncCaptcha()
         }
         if tocRes.Blocked {
                 // R43-1B: 拦截时也调 ReportFailure (与书籍页同款)
-                GetHostGate().ReportFailure(HostGateKeyOf(tocURL))
+                GetHostGate().ReportFailure(tocHost)
+                // R65-C: 拦截视为失败
+                getHealthTracker().recordFailure(tocHost)
                 return &BookMetaResult{Status: BookMetaStatusBlocked, BookURL: bookURL}, nil
         }
         // 成功
-        GetHostGate().ReportSuccess(HostGateKeyOf(tocURL))
+        GetHostGate().ReportSuccess(tocHost)
 
         // 解析目录 (含翻页)
         pageFetcher := func(ctx context.Context, u, refererURL string) (string, error) {
@@ -1427,26 +1721,42 @@ func CrawlChapterContent(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRun
         defer hostGate.Release(ticket)
 
         // 抓章节页
+        // R65-C: 接 R64-B AdjustMinGap (B3) + hostHealthTracker (与 CrawlBookMeta 同款,
+        //   测 HTTP round-trip 延迟 → hostgate.AdjustMinGap + healthTracker 记 latency/
+        //   success/failure. 延迟仅含 fetch HTTP 耗时, 不含 cleaner/parser/DB I/O.)
+        chapterHost := HostGateKeyOf(q.URL)
+        chapterFetchStart := time.Now()
         res, err := FetchPage(ctx, q.URL, mergeFetchConfig(q.BookCtx.FetchCfg, FetchConfig{RequestPriority: "chapter"}))
+        chapterLatencyMs := time.Since(chapterFetchStart).Milliseconds()
         if err != nil {
                 if ctx.Err() != nil {
+                        // R65-C: ctx 取消不计失败 (操作员主动停止, 非 host 健康问题)
                         return false, "abort", ""
                 }
                 // R43-1B: HTTPError 429 / 503+RetryAfter → 调 ReportRateLimited (R42-1B 后
                 // 该函数是死代码, 反爬 429 冷却从未触发). 其它网络层错误仍调 ReportFailure.
                 if he, ok := err.(*HTTPError); ok && (he.StatusCode == 429 || he.StatusCode == 503) && he.RetryAfterMs > 0 {
-                        hostGate.ReportRateLimited(HostGateKeyOf(q.URL), he.RetryAfterMs)
+                        hostGate.ReportRateLimited(chapterHost, he.RetryAfterMs)
                 }
                 // 分类错误
                 errStr := err.Error()
                 if strings.Contains(errStr, "timeout") || strings.Contains(errStr, "context deadline exceeded") {
-                        hostGate.ReportFailure(HostGateKeyOf(q.URL))
+                        hostGate.ReportFailure(chapterHost)
+                        // R65-C: 超时计 per-host 失败 (health 降 → AdjustConcurrency 减并发)
+                        getHealthTracker().recordFailure(chapterHost)
                         return false, "timeout", fmt.Sprintf("章节抓取超时: %s", truncate(q.URL, 120))
                 }
-                hostGate.ReportFailure(HostGateKeyOf(q.URL))
+                hostGate.ReportFailure(chapterHost)
+                // R65-C: 其它错误计 per-host 失败
+                getHealthTracker().recordFailure(chapterHost)
                 return false, "other", fmt.Sprintf("章节采集失败 %s: %s", q.Title, truncate(errStr, 120))
         }
-        hostGate.ReportSuccess(HostGateKeyOf(q.URL))
+        // R65-C: 成功路径记录延迟 + 成功 + 调 AdjustMinGap (hostgate 30s cooldown
+        //   自抖动跳过, 多次调无副作用)
+        getHealthTracker().recordLatency(chapterHost, chapterLatencyMs)
+        getHealthTracker().recordSuccess(chapterHost)
+        hostGate.AdjustMinGap(chapterHost, chapterLatencyMs)
+        hostGate.ReportSuccess(chapterHost)
 
         // R43-1B: 命中验证码 → 累计 captchaEncountered (R42-1B 后该字段是死字段,
         // admin 任务监控 captchaEncountered 永远显示 0, 操作员无法察觉反爬触发频率)
@@ -1455,7 +1765,9 @@ func CrawlChapterContent(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRun
         }
 
         if res.Blocked {
-                hostGate.ReportFailure(HostGateKeyOf(q.URL))
+                hostGate.ReportFailure(chapterHost)
+                // R65-C: 拦截视为失败, 计 per-host 失败
+                getHealthTracker().recordFailure(chapterHost)
                 return false, "other", fmt.Sprintf("章节内容疑似被拦截: %s", truncate(q.URL, 120))
         }
 

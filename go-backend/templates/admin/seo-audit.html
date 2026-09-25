@@ -46,7 +46,7 @@
 
     <div class="grid cols-2">
       {{range .Reports}}
-      <div class="card">
+      <div class="card" data-site-id="{{.siteId}}" data-site-name="{{.siteName}}">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
           <div>
             <div style="font-size:15px;font-weight:600;">{{.siteName}}</div>
@@ -88,30 +88,111 @@
 </main>
 </div>
 <div class="toast" id="toast"></div>
+
+<!-- R65-A: TDK 预览 modal (审计页一键智能 TDK 两步流程, 与 sites.html 同步) -->
+<div class="modal-backdrop" id="tdkPreviewModal">
+  <div class="modal" style="max-width:920px;">
+    <div class="modal-head"><h2>智能 TDK 预览</h2><button class="btn btn-sm" onclick="closeModal('tdkPreviewModal')">✕</button></div>
+    <div class="modal-body" style="padding:12px 18px;">
+      <div style="font-size:12px;color:var(--dim);margin-bottom:10px;">以下为生成的 TDK 预览 (title/description/keywords 前 50 字), 确认后将落库覆盖现有 TDK. 默认站点的 title 保留手工值, 仅生成 description+keywords.</div>
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr><th>站点</th><th>Title</th><th>Description</th><th>Keywords</th></tr>
+          </thead>
+          <tbody id="tdkPreviewBody">
+            <tr><td colspan="4" class="empty-state">生成中...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeModal('tdkPreviewModal')">取消</button>
+      <button class="btn btn-primary" id="tdkConfirmBtn" onclick="confirmTDKApply()">确认落库</button>
+    </div>
+  </div>
+</div>
+
 <script>
-// generateAllTDKFromAudit — 从审计页一键触发批量智能 TDK (R63-B).
-//   与 sites.html 的 generateAllTDK 同口径调用 POST /api/admin/sites/generate-tdk body {apply:true}.
-//   成功后 showToast + 刷新页面以查看评分提升.
+// generateAllTDKFromAudit — 从审计页一键触发批量智能 TDK 两步流程 (R65-A).
+//   第一步 POST /api/admin/sites body {action:"generate-tdk",apply:false} 取预览 → tdkPreviewModal 显示;
+//   用户点确认后调 confirmTDKApply 第二步 POST apply=true 落库. 修复 R63-B 原 URL 错误
+//   (原 /api/admin/sites/generate-tdk 不存在, 正确路由 POST /api/admin/sites body {action:"generate-tdk"}).
 function showToast(msg,ok){
   var t=document.getElementById('toast');t.textContent=msg;t.className='toast '+(ok?'ok':'err');
   setTimeout(function(){t.classList.add('show');},10);setTimeout(function(){t.classList.remove('show');},2500);
 }
+function closeModal(id){document.getElementById(id).classList.remove('open');}
 function generateAllTDKFromAudit(e,btn){
   if(e&&e.preventDefault)e.preventDefault();
-  if(!confirm('为所有站点智能生成 TDK? 此操作会覆盖现有 TDK'))return;
+  if(!confirm('为所有站点智能生成 TDK 预览?'))return;
   var orig=btn?btn.textContent:'';
-  if(btn){btn.style.pointerEvents='none';btn.textContent='生成中...';}
-  fetch('/api/admin/sites/generate-tdk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({apply:true})})
+  if(btn){btn.style.pointerEvents='none';btn.textContent='生成预览中...';}
+  fetch('/api/admin/sites',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate-tdk',apply:false})})
     .then(function(r){return r.json();}).then(function(j){
       if(btn){btn.style.pointerEvents='';btn.textContent=orig;}
-      if(j&&j.ok){
-        showToast('已批量生成 '+(j.updated||0)+' 个站点 TDK, 评分将提升',true);
-        setTimeout(function(){location.reload();},1500);
-      }else{showToast('失败: '+(j&&j.error||''),false);}
+      if(j&&j.ok&&j.sites){showTDKPreview(j.sites);}
+      else{showToast('失败: '+(j&&j.error||''),false);}
     }).catch(function(err){
       if(btn){btn.style.pointerEvents='';btn.textContent=orig;}
       showToast('请求失败: '+err.message,false);
     });
+}
+// showTDKPreview — 渲染预览表格 + 打开 tdkPreviewModal.
+//   后端 adminSitesBatchGenerateTDK 返回 siteTDK 结构 JSON 序列化后字段为 ID/Title/Desc/Kw
+//   (Go 结构体无 json tag, 字段名按导出名原样输出). 通过 ID 从审计卡片查 siteName 展示.
+function showTDKPreview(sites){
+  var body=document.getElementById('tdkPreviewBody');
+  if(!sites||sites.length===0){
+    body.innerHTML='<tr><td colspan="4" class="empty-state">无站点可生成</td></tr>';
+  }else{
+    var nameMap=buildSiteIdNameMap();
+    var html='';
+    for(var i=0;i<sites.length;i++){
+      var s=sites[i];
+      var sid=s.ID||s.id||'';
+      var name=nameMap[sid]||sid||'(unknown)';
+      var title=String(s.Title||s.title||'').slice(0,50);
+      var desc=String(s.Desc||s.description||'').slice(0,50);
+      var kw=String(s.Kw||s.keywords||'').slice(0,50);
+      html+='<tr><td style="font-weight:600;white-space:nowrap;">'+escapeHTML(name)+'</td><td>'+escapeHTML(title)+'</td><td>'+escapeHTML(desc)+'</td><td>'+escapeHTML(kw)+'</td></tr>';
+    }
+    body.innerHTML=html;
+  }
+  document.getElementById('tdkPreviewModal').classList.add('open');
+}
+// buildSiteIdNameMap — 从审计卡片 div[data-site-id] 构建 id→name 映射, 用于预览表格展示站点名.
+function buildSiteIdNameMap(){
+  var m={};
+  var cards=document.querySelectorAll('[data-site-id]');
+  for(var i=0;i<cards.length;i++){
+    var sid=cards[i].getAttribute('data-site-id');
+    var name=cards[i].getAttribute('data-site-name')||sid;
+    if(sid)m[sid]=name;
+  }
+  return m;
+}
+// confirmTDKApply — 第二步 POST apply=true 落库 + 关闭 modal + showToast + 刷新.
+function confirmTDKApply(){
+  var btn=document.getElementById('tdkConfirmBtn');
+  var orig=btn?btn.textContent:'';
+  if(btn){btn.disabled=true;btn.textContent='落库中...';}
+  fetch('/api/admin/sites',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate-tdk',apply:true})})
+    .then(function(r){return r.json();}).then(function(j){
+      if(btn){btn.disabled=false;btn.textContent=orig;}
+      if(j&&j.ok){
+        closeModal('tdkPreviewModal');
+        showToast('已批量生成 '+(j.updated||0)+' 个站点 TDK, 评分将提升',true);
+        setTimeout(function(){location.reload();},1500);
+      }else{showToast('失败: '+(j&&j.error||''),false);}
+    }).catch(function(err){
+      if(btn){btn.disabled=false;btn.textContent=orig;}
+      showToast('请求失败: '+err.message,false);
+    });
+}
+// escapeHTML — 防 TDK 预览文本注入 modal 表格 HTML (5 个字符转义).
+function escapeHTML(s){
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 </script>
 </body>

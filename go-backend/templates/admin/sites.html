@@ -149,10 +149,97 @@
           </select>
         </div>
       </div>
+      <!-- R65-A: 高级 SEO 字段折叠区 (13 字段, 后端 R64-C 已接收). details 原生折叠, 默认收起减少视觉噪音. -->
+      <details style="margin-top:14px;border:1px solid var(--border);border-radius:8px;padding:0 14px;background:var(--card-2);">
+        <summary style="padding:12px 0;cursor:pointer;font-size:13px;color:var(--muted);font-weight:600;list-style:none;">
+          ▸ 高级 SEO 设置 (13 字段: 页脚 / 导航模块 / 章节分页 / 章节 SEO 模板)
+        </summary>
+        <div class="form-grid" style="margin-top:6px;padding-bottom:14px;">
+          <div class="field full">
+            <label>页脚文字 (footerText, 多行, 0-500 字)</label>
+            <textarea name="footerText" maxlength="500" placeholder="如: 友情链接 / 联系我们 / 版权声明"></textarea>
+          </div>
+          <div class="field">
+            <label>页脚版权 (footerCopyright, 0-200 字)</label>
+            <input type="text" name="footerCopyright" maxlength="200" placeholder="如: Copyright © 2024 站名">
+          </div>
+          <div class="field">
+            <label>页脚 ICP 备案 (footerIcp, 0-100 字)</label>
+            <input type="text" name="footerIcp" maxlength="100" placeholder="如: 京ICP备12345678号">
+          </div>
+          <div class="field">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" name="footerStats" checked style="width:16px;height:16px;">页脚统计代码 (footerStats)</label>
+          </div>
+          <div class="field">
+            <label>导航分类数量 (navCategoryCount, 5-30)</label>
+            <input type="number" name="navCategoryCount" value="16" min="5" max="30">
+          </div>
+          <div class="field">
+            <label>首页模块数量 (homeModuleLimit, 10-50)</label>
+            <input type="number" name="homeModuleLimit" value="20" min="10" max="50">
+          </div>
+          <div class="field">
+            <label>章节分页模式 (chapterPaginationMode)</label>
+            <select name="chapterPaginationMode" onchange="onPaginationModeChange()">
+              <option value="off">不分页 (off)</option>
+              <option value="byWords">按字数分页 (byWords)</option>
+              <option value="byPages">按页数分页 (byPages)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>分页字数 (chapterPaginationWords, 500-50000, 仅 byWords 启用)</label>
+            <input type="number" name="chapterPaginationWords" value="3000" min="500" max="50000" disabled>
+          </div>
+          <div class="field">
+            <label>分页页数 (chapterPaginationPages, 2-20, 仅 byPages 启用)</label>
+            <input type="number" name="chapterPaginationPages" value="3" min="2" max="20" disabled>
+          </div>
+          <div class="field">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" name="chapterSeoAuto" checked style="width:16px;height:16px;">章节页自动 SEO (chapterSeoAuto)</label>
+          </div>
+          <div class="field full">
+            <label>章节 SEO 标题模板 (chapterSeoTitleTemplate, 0-200 字)</label>
+            <input type="text" name="chapterSeoTitleTemplate" maxlength="200" placeholder="占位符: {bookName} {chapterTitle} {page} {totalPages} {siteName} — 如: {bookName} {chapterTitle} - 第{page}页 - {siteName}">
+            <div class="hint">占位符: {bookName} 书名 / {chapterTitle} 章节名 / {page} 当前页 / {totalPages} 总页 / {siteName} 站名</div>
+          </div>
+          <div class="field full">
+            <label>章节 SEO 描述模板 (chapterSeoDescTemplate, 0-300 字)</label>
+            <textarea name="chapterSeoDescTemplate" maxlength="300" placeholder="如: 阅读《{bookName}》{chapterTitle}第{page}页, {siteName}提供最新章节免费在线阅读"></textarea>
+          </div>
+          <div class="field full">
+            <label>章节 SEO 关键词模板 (chapterSeoKeywordsTemplate, 0-200 字)</label>
+            <input type="text" name="chapterSeoKeywordsTemplate" maxlength="200" placeholder="如: {bookName},{chapterTitle},{siteName}">
+          </div>
+        </div>
+      </details>
     </form>
     <div class="modal-foot">
       <button class="btn" onclick="closeModal('editModal')">取消</button>
       <button class="btn btn-primary" onclick="submitEdit()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- R65-A: TDK 预览 modal (批量智能 TDK 两步流程, 第一步 apply=false 预览 → 显示此 modal → 第二步 apply=true 落库) -->
+<div class="modal-backdrop" id="tdkPreviewModal">
+  <div class="modal" style="max-width:920px;">
+    <div class="modal-head"><h2>智能 TDK 预览</h2><button class="btn btn-sm" onclick="closeModal('tdkPreviewModal')">✕</button></div>
+    <div class="modal-body" style="padding:12px 18px;">
+      <div style="font-size:12px;color:var(--dim);margin-bottom:10px;">以下为生成的 TDK 预览 (title/description/keywords 前 50 字), 确认后将落库覆盖现有 TDK. 默认站点的 title 保留手工值, 仅生成 description+keywords.</div>
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr><th>站点</th><th>Title</th><th>Description</th><th>Keywords</th></tr>
+          </thead>
+          <tbody id="tdkPreviewBody">
+            <tr><td colspan="4" class="empty-state">生成中...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeModal('tdkPreviewModal')">取消</button>
+      <button class="btn btn-primary" id="tdkConfirmBtn" onclick="confirmTDKApply()">确认落库</button>
     </div>
   </div>
 </div>
@@ -184,6 +271,21 @@ function editSiteFromRow(btn){
   f.inLinkWheel.checked=s.inLinkWheel!==false;
   f.isDefault.checked=s.isDefault===true;
   f.pseudoStaticStyle.value=s.pseudoStaticStyle||'query';
+  // R65-A: 高级 SEO 13 字段回填 (来自 data-site JSON, 后端 R64-C 已 SELECT 返回).
+  f.footerText.value=s.footerText||'';
+  f.footerCopyright.value=s.footerCopyright||'';
+  f.footerIcp.value=s.footerIcp||'';
+  f.footerStats.checked=s.footerStats!==false;
+  f.navCategoryCount.value=s.navCategoryCount||16;
+  f.homeModuleLimit.value=s.homeModuleLimit||20;
+  f.chapterPaginationMode.value=s.chapterPaginationMode||'off';
+  f.chapterPaginationWords.value=s.chapterPaginationWords||3000;
+  f.chapterPaginationPages.value=s.chapterPaginationPages||3;
+  f.chapterSeoAuto.checked=s.chapterSeoAuto!==false;
+  f.chapterSeoTitleTemplate.value=s.chapterSeoTitleTemplate||'';
+  f.chapterSeoDescTemplate.value=s.chapterSeoDescTemplate||'';
+  f.chapterSeoKeywordsTemplate.value=s.chapterSeoKeywordsTemplate||'';
+  onPaginationModeChange(); // 同步 words/pages 启用状态
   document.getElementById('editModal').classList.add('open');
 }
 function openCreateModal(){
@@ -204,6 +306,21 @@ function openCreateModal(){
   f.inLinkWheel.checked=true;
   f.isDefault.checked=false;
   f.pseudoStaticStyle.value='query';
+  // R65-A: 高级 SEO 13 字段默认值 (与后端 COALESCE 默认一致).
+  f.footerText.value='';
+  f.footerCopyright.value='';
+  f.footerIcp.value='';
+  f.footerStats.checked=true;
+  f.navCategoryCount.value=16;
+  f.homeModuleLimit.value=20;
+  f.chapterPaginationMode.value='off';
+  f.chapterPaginationWords.value=3000;
+  f.chapterPaginationPages.value=3;
+  f.chapterSeoAuto.checked=true;
+  f.chapterSeoTitleTemplate.value='';
+  f.chapterSeoDescTemplate.value='';
+  f.chapterSeoKeywordsTemplate.value='';
+  onPaginationModeChange(); // 默认 off → words/pages 均 disabled
   document.getElementById('editModal').classList.add('open');
 }
 function closeModal(id){document.getElementById(id).classList.remove('open');}
@@ -227,7 +344,21 @@ function submitEdit(){
     status:f.status.checked,
     inLinkWheel:f.inLinkWheel.checked,
     isDefault:f.isDefault.checked,
-    pseudoStaticStyle:f.pseudoStaticStyle.value
+    pseudoStaticStyle:f.pseudoStaticStyle.value,
+    // R65-A: 高级 SEO 13 字段提交 (后端 R64-C 已接收, 服务端 clamp + 枚举校验).
+    footerText:f.footerText.value.trim(),
+    footerCopyright:f.footerCopyright.value.trim(),
+    footerIcp:f.footerIcp.value.trim(),
+    footerStats:f.footerStats.checked,
+    navCategoryCount:parseInt(f.navCategoryCount.value,10)||16,
+    homeModuleLimit:parseInt(f.homeModuleLimit.value,10)||20,
+    chapterPaginationMode:f.chapterPaginationMode.value,
+    chapterPaginationWords:parseInt(f.chapterPaginationWords.value,10)||3000,
+    chapterPaginationPages:parseInt(f.chapterPaginationPages.value,10)||3,
+    chapterSeoAuto:f.chapterSeoAuto.checked,
+    chapterSeoTitleTemplate:f.chapterSeoTitleTemplate.value.trim(),
+    chapterSeoDescTemplate:f.chapterSeoDescTemplate.value.trim(),
+    chapterSeoKeywordsTemplate:f.chapterSeoKeywordsTemplate.value.trim()
   };
   if(!body.name){showToast('站点名必填',false);return;}
   if(!body.domain){showToast('域名必填',false);return;}
@@ -269,16 +400,66 @@ function generateTDK(btn,id,name){
       showToast('请求失败: '+err.message,false);
     });
 }
-// generateAllTDK — 批量智能生成 TDK (R63-B). 调用 POST /api/admin/sites/generate-tdk body {apply:true}.
-//   成功后 showToast 显示已批量生成 N 个站点, 1.2s 后刷新页面. btn 调用方传 this 以便 loading 态.
+// generateAllTDK — 批量智能 TDK 两步流程 (R65-A). 第一步 POST apply=false 取预览 →
+//   打开 tdkPreviewModal 显示生成的 title/description/keywords 前 50 字; 用户点确认后
+//   调 confirmTDKApply 第二步 POST apply=true 落库. 修复 R63-B 原 URL 错误
+//   (原 /api/admin/sites/generate-tdk 不存在, 正确路由 POST /api/admin/sites body {action:"generate-tdk"}).
 function generateAllTDK(btn){
-  if(!confirm('为所有非默认站点批量智能生成 TDK? 此操作会覆盖现有 TDK'))return;
+  if(!confirm('为所有非默认站点批量智能生成 TDK 预览?'))return;
   var orig=btn?btn.textContent:'';
-  if(btn){btn.disabled=true;btn.textContent='生成中...';}
-  fetch('/api/admin/sites/generate-tdk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({apply:true})})
+  if(btn){btn.disabled=true;btn.textContent='生成预览中...';}
+  fetch('/api/admin/sites',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate-tdk',apply:false})})
+    .then(function(r){return r.json();}).then(function(j){
+      if(btn){btn.disabled=false;btn.textContent=orig;}
+      if(j&&j.ok&&j.sites){showTDKPreview(j.sites);}
+      else{showToast('失败: '+(j&&j.error||''),false);}
+    }).catch(function(err){
+      if(btn){btn.disabled=false;btn.textContent=orig;}
+      showToast('请求失败: '+err.message,false);
+    });
+}
+// showTDKPreview — 渲染预览表格 + 打开 tdkPreviewModal.
+//   后端 adminSitesBatchGenerateTDK 返回的 siteTDK 结构 JSON 序列化后字段为 ID/Title/Desc/Kw
+//   (Go 结构体无 json tag, 字段名按导出名原样输出). 通过 ID 从表格 data-site 查 name 展示更友好.
+function showTDKPreview(sites){
+  var body=document.getElementById('tdkPreviewBody');
+  if(!sites||sites.length===0){
+    body.innerHTML='<tr><td colspan="4" class="empty-state">无站点可生成</td></tr>';
+  }else{
+    var nameMap=buildSiteIdNameMap();
+    var html='';
+    for(var i=0;i<sites.length;i++){
+      var s=sites[i];
+      var sid=s.ID||s.id||'';
+      var name=nameMap[sid]||sid||'(unknown)';
+      var title=String(s.Title||s.title||'').slice(0,50);
+      var desc=String(s.Desc||s.description||'').slice(0,50);
+      var kw=String(s.Kw||s.keywords||'').slice(0,50);
+      html+='<tr><td style="font-weight:600;white-space:nowrap;">'+escapeHTML(name)+'</td><td>'+escapeHTML(title)+'</td><td>'+escapeHTML(desc)+'</td><td>'+escapeHTML(kw)+'</td></tr>';
+    }
+    body.innerHTML=html;
+  }
+  document.getElementById('tdkPreviewModal').classList.add('open');
+}
+// buildSiteIdNameMap — 从当前页面表格行的 data-site JSON 构建 id→name 映射, 用于预览表格展示站点名.
+function buildSiteIdNameMap(){
+  var m={};
+  var rows=document.querySelectorAll('tr[data-site]');
+  for(var i=0;i<rows.length;i++){
+    try{var s=JSON.parse(rows[i].getAttribute('data-site'));if(s&&s.id)m[s.id]=s.name||s.id;}catch(e){}
+  }
+  return m;
+}
+// confirmTDKApply — 第二步 POST apply=true 落库 + 关闭 modal + showToast + 刷新.
+function confirmTDKApply(){
+  var btn=document.getElementById('tdkConfirmBtn');
+  var orig=btn?btn.textContent:'';
+  if(btn){btn.disabled=true;btn.textContent='落库中...';}
+  fetch('/api/admin/sites',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'generate-tdk',apply:true})})
     .then(function(r){return r.json();}).then(function(j){
       if(btn){btn.disabled=false;btn.textContent=orig;}
       if(j&&j.ok){
+        closeModal('tdkPreviewModal');
         showToast('已批量生成 '+(j.updated||0)+' 个站点 TDK',true);
         setTimeout(function(){location.reload();},1200);
       }else{showToast('失败: '+(j&&j.error||''),false);}
@@ -286,6 +467,19 @@ function generateAllTDK(btn){
       if(btn){btn.disabled=false;btn.textContent=orig;}
       showToast('请求失败: '+err.message,false);
     });
+}
+// onPaginationModeChange — 章节分页模式切换联动 words/pages 输入框启用状态.
+//   off: 两框禁用; byWords: 仅 words 启用; byPages: 仅 pages 启用. 与后端 chapterPaginationMode 枚举一致.
+function onPaginationModeChange(){
+  var f=document.getElementById('editForm');
+  if(!f||!f.chapterPaginationMode)return;
+  var mode=f.chapterPaginationMode.value;
+  f.chapterPaginationWords.disabled=(mode!=='byWords');
+  f.chapterPaginationPages.disabled=(mode!=='byPages');
+}
+// escapeHTML — 防 TDK 预览文本注入 modal 表格 HTML (5 个字符转义).
+function escapeHTML(s){
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 </script>
 </body>

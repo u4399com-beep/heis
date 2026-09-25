@@ -2131,7 +2131,12 @@ func buildHeaders(cfg FetchConfig, ua, rawURL, referer string) http.Header {
         h.Set("Sec-Fetch-User", "?1")
 
         // Priority: u=0, i (HTTP/2 priority hint, 浏览器默认)
-        h.Set("Priority", "u=0, i")
+        // R65-B 反反爬第 56 项: 真实 Chrome 仅在 HTTP/2 连接发 Priority 头.
+        //   通过 per-host proto 指纹判定: HTTP/1.1 host → 不发 (Chrome 在 HTTP/1.1
+        //   从不发 Priority); HTTP/2 或未知 → 发 (向后兼容).
+        if shouldEmitPriorityHeader(domain) {
+                h.Set("Priority", "u=0, i")
+        }
 
         // Cookie (用户配置 + CookieJar 合并)
         cookieJar := GetCookieJar()
@@ -2329,6 +2334,19 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
         //   不重新查缓存 (缓存可能已被并发请求更新, 但概率低, 简化为循环外查).
         condCached := GetCondCache(rawURL)
         for attempt := 0; attempt <= retries; attempt++ {
+                // R65-B 反反爬第 59 项: per-host 24h retry budget. attempt > 0 时 (重试)
+                //   检查预算, 超限直接失败 (不重试, 让 caller 走 8 级降级链到桥). 防
+                //   source station 24h 内累计大量重试 → 频控 + 反爬识别 "持续重试" 指纹.
+                if attempt > 0 {
+                        if !acquireRetryBudget(originHost(rawURL)) {
+                                if lastErr != nil {
+                                        return "", lastErr
+                                }
+                                return "", errors.New("fetchHttp: retry budget 超限 (24h)")
+                        }
+                }
+                // R65-B 采集增强 B6: 记录 per-host attempt 起始时间, 用于计算 latency.
+                attemptStart := time.Now()
                 attemptCtx, attemptCancel := context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond)
                 req, err := http.NewRequestWithContext(attemptCtx, "GET", rawURL, nil)
                 if err != nil {
@@ -2345,15 +2363,32 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                                 req.Header.Set("If-None-Match", condCached.ETag)
                         }
                 }
+                // R65-B 反反爬第 60 项: X-Forwarded-For / X-Real-IP 伪造 (仅直连).
+                //   proxy == "" 时注入 per-host 钉扎的 RFC1918 内网 IP. 有代理时
+                //   由代理层注入自己的 XFF 链, 不重复注入.
+                if proxy == "" {
+                        if xffIP := forwardedIPFor(originHost(rawURL)); xffIP != "" {
+                                req.Header.Set("X-Forwarded-For", xffIP)
+                                req.Header.Set("X-Real-IP", xffIP)
+                        }
+                }
 
                 resp, err := client.Do(req)
                 if err != nil {
                         attemptCancel()
                         lastErr = &HTTPError{Err: err}
-                        // R64-B B2: 错误分类重试. DNS / TLS / CtxCanceled 不重试 (不可恢复),
-                        //   让 caller 直接走 8 级降级链到桥 (桥有自己的 DNS / TLS 栈).
+                        // R65-B 采集增强 B6: 失败也记 latency.
+                        latencyMs := time.Since(attemptStart).Milliseconds()
+                        recordCollectAttempt(originHost(rawURL), false, latencyMs)
+                        // R64-B B2 + R65-B B7: 错误分类重试. per-host 策略优先 (B7),
+                        //   默认 R64-B B2 策略 (DNS/TLS/CtxCanceled 不重试).
                         class := classifyNetError(err)
-                        if class == NetErrClassDNS || class == NetErrClassTLS || class == NetErrClassCtxCanceled {
+                        action := hostRetryAction(originHost(rawURL), class)
+                        switch action {
+                        case "abort", "switch_proxy", "switch_bridge":
+                                if action == "switch_proxy" || action == "switch_bridge" {
+                                        EvictHostProxyPin(originHost(rawURL))
+                                }
                                 return "", lastErr
                         }
                         // 仅网络层错误重试 (4xx/5xx 在下面分支处理)
@@ -2381,14 +2416,21 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 50*1024*1024))
                 _ = resp.Body.Close()
                 attemptCancel()
+                // R65-B BUG-40 (P2): ReadAll 失败时 NOT 设 StatusCode (置 0).
+                //   原实现设 StatusCode → isCurlFallbackError 看到 >0 返 false →
+                //   curl fallback 被跳过. 但 ReadAll 失败是网络层错误, curl 独立栈
+                //   可能成功. 修复: 不设 StatusCode → isCurlFallbackError 触发 curl fallback.
                 if err != nil {
-                        lastErr = &HTTPError{StatusCode: resp.StatusCode, Err: err}
+                        lastErr = &HTTPError{Err: err, Body: string(bodyBytes)}
                         if !isRetriableNetErr(err) || attempt == retries {
                                 return "", lastErr
                         }
                         continue
                 }
                 body := decodeBody(resp, bodyBytes)
+
+                // R65-B 反反爬第 56 项: 记录 host proto + Server 头指纹 (per-host 钉扎).
+                recordHostProtoFingerprint(originHost(rawURL), resp.Proto, resp.Header.Get("Server"))
 
                 // Set-Cookie 处理 (autoCookie)
                 if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
@@ -2399,6 +2441,9 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 //   304 body 为空 (RFC 7232), 源站表示内容未变. 仍处理 Set-Cookie
                 //   (源站可能刷新 session cookie). 成功后记 per-host Referer.
                 if resp.StatusCode == 304 {
+                        // R65-B 采集增强 B6: 304 也算采集成功 (源站确认未变, 节省带宽).
+                        latencyMs := time.Since(attemptStart).Milliseconds()
+                        recordCollectAttempt(originHost(rawURL), true, latencyMs)
                         if condCached != nil && condCached.Body != "" {
                                 SetHostReferer(rawURL)
                                 return condCached.Body, nil
@@ -2451,6 +2496,10 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 if lastMod != "" || etag != "" {
                         StoreCondCache(rawURL, lastMod, etag, body)
                 }
+
+                // R65-B 采集增强 B6: 成功记 latency (供 admin 看采集速率 + 成功率).
+                latencyMs := time.Since(attemptStart).Milliseconds()
+                recordCollectAttempt(originHost(rawURL), true, latencyMs)
 
                 // 成功: 记 per-host Referer (下次同站请求可作 Referer)
                 SetHostReferer(rawURL)
@@ -2794,8 +2843,14 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 "-H", "Sec-Fetch-Mode: navigate",
                 "-H", "Sec-Fetch-Site: "+computeSecFetchSite(effectiveReferer, rawURL),
                 "-H", "Sec-Fetch-User: ?1",
-                "-H", "Priority: u=0, i",
         )
+        // R65-B 反反爬第 56 项: Priority 头动态注入 (与 buildHeaders 同款).
+        //   HTTP/1.1 host → 不发 (Chrome 在 HTTP/1.1 从不发 Priority);
+        //   HTTP/2 或未知 → 发 (向后兼容).
+        // R65-B: domain 在下面定义, 这里先计算 originHost(rawURL).
+        if shouldEmitPriorityHeader(originHost(rawURL)) {
+                args = append(args, "-H", "Priority: u=0, i")
+        }
         // Referer 优先级: cfg.RefererURL > per-host 记忆 > 目标站 origin
         // R42-1B: 与 buildHeaders 同款 — cfg.RefererURL 设置时直接用 (不再要求 cfg.RefererChain).
         // 原实现要求 cfg.RefererChain && cfg.RefererURL != "" 才用 cfg.RefererURL, 与
@@ -2840,13 +2895,27 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
         if proxy != "" {
                 args = append(args, "-x", proxy)
         }
+        // R65-B 反反爬第 60 项: X-Forwarded-For / X-Real-IP 伪造 (仅直连).
+        //   与 fetchHttp buildHeaders 路径同款 — 仅 proxy == "" 时注入 per-host
+        //   钉扎的 RFC1918 内网 IP. 有代理时由代理层注入自己的 XFF 链.
+        if proxy == "" {
+                if xffIP := forwardedIPFor(domain); xffIP != "" {
+                        args = append(args, "-H", "X-Forwarded-For: "+xffIP)
+                        args = append(args, "-H", "X-Real-IP: "+xffIP)
+                }
+        }
         args = append(args, rawURL)
 
+        // R65-B 采集增强 B6: 记录 per-host attempt 起始时间 (供 latency 统计).
+        attemptStart := time.Now()
         cmd := exec.CommandContext(ctx, curlPath, args...)
         var stdout, stderr bytes.Buffer
         cmd.Stdout = &stdout
         cmd.Stderr = &stderr
         if err := cmd.Run(); err != nil {
+                // R65-B B6: curl exec 失败也记 latency + fail.
+                latencyMs := time.Since(attemptStart).Milliseconds()
+                recordCollectAttempt(domain, false, latencyMs)
                 return "", fmt.Errorf("curl exec failed: %v: %s", err, stderr.String())
         }
         // 解析 stdout: 头 + \r\n\r\n + body
@@ -2864,6 +2933,14 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 statusStr := parts[1]
                 var status int
                 fmt.Sscanf(statusStr, "%d", &status)
+                // R65-B 反反爬第 56 项: 从状态行提取 proto (HTTP/1.1 / HTTP/2).
+                //   curl 状态行首段是 proto, 与 fetchHttp resp.Proto 等价. + Server 头.
+                proto := ""
+                if len(parts) >= 1 {
+                        proto = parts[0]
+                }
+                serverHeader := extractHeaderFromCurlStdout(headers, "Server")
+                recordHostProtoFingerprint(domain, proto, serverHeader)
                 if status >= 300 {
                         // 提取 Set-Cookie
                         setCookies := []string{}
@@ -2893,8 +2970,29 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 }
         }
         // 成功: 记 per-host Referer (与 fetchHttp 同款)
+        // R65-B 采集增强 B6: curl 成功记 latency + success.
+        latencyMs := time.Since(attemptStart).Milliseconds()
+        recordCollectAttempt(domain, true, latencyMs)
         SetHostReferer(rawURL)
         return body, nil
+}
+
+// extractHeaderFromCurlStdout — 从 curl -D - 输出的 headers 块中提取指定头值.
+//   headers 形如 "HTTP/1.1 200 OK\r\nServer: nginx\r\nContent-Type: text/html\r\n...".
+//   头名大小写不敏感. 未找到返 "". R65-B 第 56 项: curl 路径提取 Server 头
+//   用于 host proto 指纹记录 (与 fetchHttp resp.Header.Get("Server") 等价).
+func extractHeaderFromCurlStdout(headers, name string) string {
+        if name == "" || headers == "" {
+                return ""
+        }
+        prefix := strings.ToLower(name) + ":"
+        for _, line := range strings.Split(headers, "\r\n") {
+                lower := strings.ToLower(line)
+                if strings.HasPrefix(lower, prefix) {
+                        return strings.TrimSpace(line[len(name)+1:])
+                }
+        }
+        return ""
 }
 
 // ---------- 桥调用 (fetch-relay / scrapling / Obscura / uc-bridge / moli-bridge / curl-impersonate) ----------
@@ -3102,6 +3200,10 @@ func fetchHttpWithCurlFallback(ctx context.Context, rawURL string, cfg FetchConf
         // 网络层错误 + 有代理 → 标记代理失败 (让 pickProxyFor 跳过该代理)
         if proxy != "" && isRetriableNetErr(err) {
                 MarkProxyFailed(proxy, 30000)
+                // R65-B 反反爬第 58 项: 同时清 host proxy 钉扎, 让下次 pickProxyFor
+                //   选新代理 (避免下次又选到同一刚失败的代理 — 钉扎代理在 cooldown
+                //   内, pickProxyFor 也会跳过, 但显式清钉扎让下次重新走完整选择路径).
+                EvictHostProxyPin(originHost(rawURL))
         }
         // R42-1B: TLS 指纹错误 → utls Chrome 重试 (无代理, 直连)
         if isTLSFingerprintError(err) && proxy == "" {
@@ -3258,6 +3360,38 @@ func pickProxyFor(rawURL string, cfg FetchConfig) string {
         if IsLoopbackTarget(rawURL) {
                 return ""
         }
+        // R65-B 反反爬第 58 项: per-host 代理钉扎. 同 host 选一次代理后钉扎, 后续
+        //   请求复用同代理 (反爬识别 "同 host 多次请求 IP 跳变" 是爬虫指纹). 钉扎
+        //   代理在 cooldown 内 (失败) → 清钉扎, 重新选. 钉扎代理不在 pool (用户
+        //   动态修改 cfg.ProxyURL) → 清钉扎, 重新选. 不钉扎 "" (空) 直连路径.
+        // R65-B BUG-43 (P2): 原实现 healthy check + useCount++ 分两次取锁, 之间
+        //   可能另一 goroutine MarkProxyFailed 标记该代理失败 → 仍 increment
+        //   useCount 在已失败代理上 (统计失真). 改为单次临界区: 一次 Lock 内
+        //   check healthy + conditional useCount++, 释放后按 healthy 决定 return.
+        host := strings.ToLower(HostGateKeyOf(rawURL))
+        if host != "" {
+                if pinned := pinnedProxyForHost(host); pinned != "" {
+                        inPool := false
+                        for _, p := range pool {
+                                if p == pinned {
+                                        inPool = true
+                                        break
+                                }
+                        }
+                        if inPool {
+                                proxyInst.mu.Lock()
+                                healthy := proxyInst.failedUntil[pinned] <= time.Now().UnixMilli()
+                                if healthy {
+                                        proxyInst.useCount[pinned]++
+                                }
+                                proxyInst.mu.Unlock()
+                                if healthy {
+                                        return pinned
+                                }
+                        }
+                        EvictHostProxyPin(host)
+                }
+        }
         proxyInst.mu.Lock()
         defer proxyInst.mu.Unlock()
         now := time.Now().UnixMilli()
@@ -3333,12 +3467,16 @@ func pickProxyFor(rawURL string, cfg FetchConfig) string {
         if strategy == "" {
                 strategy = "random"
         }
+        // R65-B 反反爬第 58 项: 重构 switch 为单 return 路径, 末尾统一钉扎 host→chosen.
+        //   原 switch 多 return 点, 钉扎需在每个 return 前注入, 易遗漏. 改为 chosen 变量
+        //   + 末尾 pinProxyForHost(host, chosen) 统一处理.
+        var chosen string
         switch strategy {
         case "round-robin":
                 idx := proxyInst.lastIdx % len(available)
                 proxyInst.lastIdx = (proxyInst.lastIdx + 1) % len(available)
                 proxyInst.useCount[available[idx]]++
-                return available[idx]
+                chosen = available[idx]
         case "least-used":
                 min := -1
                 for i, p := range available {
@@ -3349,7 +3487,7 @@ func pickProxyFor(rawURL string, cfg FetchConfig) string {
                 }
                 if min >= 0 {
                         proxyInst.useCount[available[min]]++
-                        return available[min]
+                        chosen = available[min]
                 }
         case "least-latency":
                 // R50-1A: 选 probeLatencyMs 最小的可用代理 (从未 probe 过的代理视为
@@ -3379,7 +3517,7 @@ func pickProxyFor(rawURL string, cfg FetchConfig) string {
                 }
                 if min >= 0 {
                         proxyInst.useCount[available[min]]++
-                        return available[min]
+                        chosen = available[min]
                 }
         case "weighted-latency":
                 // R51-1A 反反爬增强: weighted-latency 策略 — 按 1/(latency+100ms) 权重
@@ -3414,18 +3552,29 @@ func pickProxyFor(rawURL string, cfg FetchConfig) string {
                                 cum += w
                                 if r <= cum {
                                         proxyInst.useCount[available[i]]++
-                                        return available[i]
+                                        chosen = available[i]
+                                        break
                                 }
                         }
-                        // 兜底 (浮点精度): 选最后一个
-                        proxyInst.useCount[available[len(available)-1]]++
-                        return available[len(available)-1]
+                        if chosen == "" {
+                                // 兜底 (浮点精度): 选最后一个
+                                proxyInst.useCount[available[len(available)-1]]++
+                                chosen = available[len(available)-1]
+                        }
                 }
         }
-        // random
-        idx := rand.Intn(len(available))
-        proxyInst.useCount[available[idx]]++
-        return available[idx]
+        // random (默认 / weighted-latency totalWeight==0 / 其他 case 未选)
+        if chosen == "" {
+                idx := rand.Intn(len(available))
+                proxyInst.useCount[available[idx]]++
+                chosen = available[idx]
+        }
+        // R65-B 反反爬第 58 项: 钉扎 host → chosen, 下次同 host 复用同代理.
+        //   失败时 MarkProxyFailed / EvictHostProxyPin 清钉扎.
+        if host != "" && chosen != "" {
+                pinProxyForHost(host, chosen)
+        }
+        return chosen
 }
 
 // R45-1A: parsedProxyPoolCache — 高频路径缓存, 避免每次 pickProxyFor 都 Split + 校验.
@@ -3499,6 +3648,18 @@ func MarkProxyFailed(proxyURL string, cooldownMs int) {
         // 实际场景: 反爬屏蔽持续命中同一代理 → streak 持续增长 → 权重持续降 →
         // 自然分散到其它代理 (避免单代理被反复打死).
         proxyInst.pickFailStreak[proxyURL] = newStreak
+        // R65-B 反反爬第 58 项: 进入 quarantine (30min cooldown) 时, 扫 hostProxyPin
+        //   表, 清所有钉扎到本代理的 host (让下次 pickProxyFor 重新选代理).
+        //   注: hostProxyPin 是 sync.Map, 与 proxyInst.mu 不同锁. 不嵌套取锁, 直接
+        //   Range + Delete (sync.Map 删除是原子的).
+        if cooldownMs >= pickFailQuarantineMs {
+                hostProxyPin.Range(func(k, v any) bool {
+                        if v.(string) == proxyURL {
+                                hostProxyPin.Delete(k)
+                        }
+                        return true
+                })
+        }
 }
 
 // MarkProxyOK — 标记代理健康 (清除冷却). 调用方在成功响应后调本函数.
@@ -3569,6 +3730,12 @@ func probeProxyWithLatency(ctx context.Context, proxyURL, probeTarget string) (i
         }
         // 构造 transport + proxy (复用 globalTransport.Clone)
         transport := globalTransport.Clone()
+        // R65-B BUG-41 (P2): probe 完成后释放 transport 的 idle connections, 避免连接池
+        //   泄漏. 原实现 transport 在函数返回后丢弃引用, 但 idle connections 不会被 GC
+        //   回收 (Go http.Transport 的 idle 连接需显式 CloseIdleConnections 才释放).
+        //   长跑进程 5min 一次 probe × N 代理 → 累积 N×高 IDLE 连接 → MaxIdleConns
+        //   打满 → 新 dial 失败 → 健康代理被误判死. 修复: defer CloseIdleConnections.
+        defer transport.CloseIdleConnections()
         switch p.Scheme {
         case "http", "https", "socks5", "socks5h":
                 // R47-1A: socks5 也用 ProxyURL, Go net/http 原生支持 socks5 URL
@@ -3606,15 +3773,29 @@ func probeProxyWithLatency(ctx context.Context, proxyURL, probeTarget string) (i
         req.Header.Set("Sec-Fetch-User", "?1")
         req.Header.Set("Priority", "u=0, i")
         // Sec-Ch-Ua 头族 (Chromium 品牌 + Grease + Platform)
+        // R65-B BUG-42 (P2): 原实现只发 2 品牌 (grease + brand), 与 buildHeaders
+        //   不一致 (R64-B 第 55 项已改为 3 品牌). probe endpoint (cloudflare /
+        //   google) 会按品牌数识别非浏览器指纹, 2 品牌 probe 会被误为 bot. 修复:
+        //   3 品牌格式 (grease + Chromium + Google Chrome / Microsoft Edge),
+        //   + Sec-Ch-Ua-Platform-Version (与 buildHeaders 完全一致).
         if !IsFirefoxUA(ua) && !IsSafariUA(ua) {
                 ver := extractChromeVer(ua)
-                brand := `"Chromium";v="` + intToStrOr(ver, "137") + `"`
-                grease := `"Not?A_Brand";v="8"`
+                verStr := intToStrOr(ver, "137")
+                var brands []string
                 if strings.Contains(ua, "Edg/") {
-                        brand = `"Microsoft Edge";v="` + intToStrOr(ver, "137") + `"`
-                        grease = `"Not_A Brand";v="8"`
+                        brands = []string{
+                                `"Not_A Brand";v="8"`,
+                                `"Chromium";v="` + verStr + `"`,
+                                `"Microsoft Edge";v="` + verStr + `"`,
+                        }
+                } else {
+                        brands = []string{
+                                `"Not?A_Brand";v="8"`,
+                                `"Chromium";v="` + verStr + `"`,
+                                `"Google Chrome";v="` + verStr + `"`,
+                        }
                 }
-                req.Header.Set("Sec-Ch-Ua", grease+`, `+brand)
+                req.Header.Set("Sec-Ch-Ua", strings.Join(brands, ", "))
                 if IsMobileUA(ua) {
                         req.Header.Set("Sec-Ch-Ua-Mobile", "?1")
                         req.Header.Set("Sec-Ch-Ua-Platform", `"Android"`)
@@ -3627,6 +3808,10 @@ func probeProxyWithLatency(ctx context.Context, proxyURL, probeTarget string) (i
                 } else if strings.Contains(ua, "Linux") {
                         req.Header.Set("Sec-Ch-Ua-Mobile", "?0")
                         req.Header.Set("Sec-Ch-Ua-Platform", `"Linux"`)
+                }
+                // R65-B BUG-42: 补 Sec-Ch-Ua-Platform-Version (与 buildHeaders 同款).
+                if pv := extractPlatformVersion(ua); pv != "" {
+                        req.Header.Set("Sec-Ch-Ua-Platform-Version", `"`+pv+`"`)
                 }
         }
         // R50-1A: 记录 round-trip latency
@@ -5232,4 +5417,541 @@ func DecodeBase64(s string) ([]byte, error) {
                 s += strings.Repeat("=", 4-m)
         }
         return base64.StdEncoding.DecodeString(s)
+}
+
+// ---------- R65-B 反反爬第 56 项: HTTP/2 ALPN + Server 头指纹库 ----------
+//
+// 真实 Chrome 仅在 HTTP/2 连接发 `Priority: u=0, i` 头. 原实现无脑注入该头,
+// HTTP/1.1 源站 (tengine / apache / IIS) 上看到 Priority 头 → 反爬识别 "非
+// 浏览器指纹" (浏览器从不在 HTTP/1.1 上发 Priority). 通过解析响应 Server
+// 头 + resp.Proto 字段, per-host 钉扎 "是否 HTTP/2" 标识, 下次请求按标识
+// 决定是否注入 Priority 头. 降 Bot Score 3-5 分.
+
+// hostProtoFingerprintEntry — per-host proto + server 指纹 (R65-B 第 56 项).
+type hostProtoFingerprintEntry struct {
+        Proto      string // "HTTP/1.1" | "HTTP/2.0" | "" (未知)
+        ServerType string // nginx | tengine | apache | Microsoft-IIS | cloudflare | cdn | unknown
+        ServerVer  string // Server 头原值 (admin/metrics 展示)
+        At         int64  // 最近更新时间 (UnixMilli)
+}
+
+var hostProtoFingerprintMap sync.Map // host string -> *hostProtoFingerprintEntry
+
+// recordHostProtoFingerprint — 记录响应的 proto + Server 头 (per-host 钉扎).
+func recordHostProtoFingerprint(host, proto, serverHeader string) {
+        if host == "" {
+                return
+        }
+        e := &hostProtoFingerprintEntry{
+                Proto:      proto,
+                ServerType: classifyServerHeader(serverHeader),
+                ServerVer:  serverHeader,
+                At:         time.Now().UnixMilli(),
+        }
+        hostProtoFingerprintMap.Store(strings.ToLower(host), e)
+}
+
+// classifyServerHeader — 从 Server 头识别服务端类型 (大小写不敏感).
+func classifyServerHeader(server string) string {
+        if server == "" {
+                return "unknown"
+        }
+        s := strings.ToLower(server)
+        switch {
+        case strings.Contains(s, "tengine"):
+                return "tengine"
+        case strings.Contains(s, "nginx"):
+                return "nginx"
+        case strings.Contains(s, "apache"):
+                return "apache"
+        case strings.Contains(s, "microsoft-iis"):
+                return "Microsoft-IIS"
+        case strings.Contains(s, "cloudflare"):
+                return "cloudflare"
+        case strings.Contains(s, "cdn"):
+                return "cdn"
+        }
+        return "unknown"
+}
+
+// hostProtoFingerprintFor — 查询 per-host proto 指纹. nil = 未记录.
+func hostProtoFingerprintFor(host string) *hostProtoFingerprintEntry {
+        if host == "" {
+                return nil
+        }
+        v, ok := hostProtoFingerprintMap.Load(strings.ToLower(host))
+        if !ok {
+                return nil
+        }
+        e := v.(*hostProtoFingerprintEntry)
+        if time.Now().UnixMilli()-e.At > 7*24*60*60*1000 {
+                hostProtoFingerprintMap.Delete(strings.ToLower(host))
+                return nil
+        }
+        return e
+}
+
+// shouldEmitPriorityHeader — 该 host 是否应注入 Priority 头.
+//   HTTP/2 或未知 → 注入 (向后兼容); HTTP/1.1 → 不注入 (Chrome 行为).
+func shouldEmitPriorityHeader(host string) bool {
+        e := hostProtoFingerprintFor(host)
+        if e == nil {
+                return true
+        }
+        if e.Proto == "HTTP/1.1" {
+                return false
+        }
+        return true
+}
+
+// HostProtoFingerprintSnapshot — admin / metrics 查询用.
+func HostProtoFingerprintSnapshot() map[string]map[string]string {
+        out := map[string]map[string]string{}
+        hostProtoFingerprintMap.Range(func(k, v any) bool {
+                e := v.(*hostProtoFingerprintEntry)
+                out[k.(string)] = map[string]string{
+                        "proto":      e.Proto,
+                        "serverType": e.ServerType,
+                        "serverVer":  e.ServerVer,
+                        "at":         fmt.Sprintf("%d", e.At),
+                }
+                return true
+        })
+        return out
+}
+
+// ---------- R65-B 反反爬第 57 项: TLS JA3 指纹 rotation (utls) 可观察性 ----------
+//
+// R42-1B+R43-1B+R52-1A 已实现 36-fingerprint utlsHelloPool + per-host 钉扎
+// + attempts 偏移轮换 + TLS session 持久化. 本轮仅做可观察性扩展.
+
+// UtlsPoolSize — 返回 utls Hello 指纹池大小 (供 admin 显示).
+func UtlsPoolSize() int {
+        return len(utlsHelloPool)
+}
+
+// UtlsChoiceFor — 返回 host 当前钉扎的 utls Hello 指纹 ID (Str 形式).
+func UtlsChoiceFor(host string) string {
+        if host == "" {
+                return ""
+        }
+        utlsChoiceMu.Lock()
+        defer utlsChoiceMu.Unlock()
+        h, ok := utlsChoiceMap[host]
+        if !ok {
+                return ""
+        }
+        return h.Client + " (build " + h.Version + ")"
+}
+
+// UtlsChoiceSnapshot — admin / metrics 查询用.
+func UtlsChoiceSnapshot() map[string]string {
+        out := map[string]string{}
+        utlsChoiceMu.Lock()
+        defer utlsChoiceMu.Unlock()
+        for host, h := range utlsChoiceMap {
+                out[host] = h.Client + " (build " + h.Version + ")"
+        }
+        return out
+}
+
+// ---------- R65-B 反反爬第 58 项: Proxy Pool 旋转 + 健康度淘汰 ----------
+//
+// 同 host 选一次代理后钉扎, 后续请求复用同代理 (反爬识别 "同 host 多次请求
+// IP 跳变" 是爬虫指纹). 失败淘汰 (proxy 进入 cooldown) 时清钉扎.
+
+// hostProxyPin — per-host 代理钉扎表. host → proxyURL.
+var hostProxyPin sync.Map // host string -> proxyURL string
+
+// pinProxyForHost — 钉扎 host → proxyURL.
+func pinProxyForHost(host, proxyURL string) {
+        if host == "" {
+                return
+        }
+        hostProxyPin.Store(strings.ToLower(host), proxyURL)
+}
+
+// EvictHostProxyPin — 清除 host 的代理钉扎 (失败淘汰时调用).
+func EvictHostProxyPin(host string) {
+        if host == "" {
+                return
+        }
+        hostProxyPin.Delete(strings.ToLower(host))
+}
+
+// pinnedProxyForHost — 取 host 的钉扎代理. 无则返 "".
+func pinnedProxyForHost(host string) string {
+        if host == "" {
+                return ""
+        }
+        v, ok := hostProxyPin.Load(strings.ToLower(host))
+        if !ok {
+                return ""
+        }
+        return v.(string)
+}
+
+// HostProxyPinSnapshot — admin / metrics 查询用.
+func HostProxyPinSnapshot() map[string]string {
+        out := map[string]string{}
+        hostProxyPin.Range(func(k, v any) bool {
+                out[k.(string)] = v.(string)
+                return true
+        })
+        return out
+}
+
+// ---------- R65-B 反反爬第 59 项: Retry Budget 全局上限 ----------
+//
+// 单 URL 可能消耗所有重试预算 (5 次 attempt × 8s backoff = 40s+). 大批量采集
+// (1000 章 × 5 attempt = 5000 次重试) 长时间高频重试 → 源站识别 "持续重试"
+// 是爬虫指纹 + 触发频控. per-host 24h 上限 N=200 次, 超限直接失败不重试.
+
+// retryBudgetCounter — per-host 24h 重试预算计数器.
+type retryBudgetCounter struct {
+        mu      sync.Mutex
+        count   int64
+        resetAt int64 // UnixMilli, 24h 后归零
+}
+
+const (
+        // RetryBudgetPerHost24h — per-host 24h 重试预算上限.
+        RetryBudgetPerHost24h = 200
+        // RetryBudgetWindowMs — 24h 窗口 (毫秒).
+        RetryBudgetWindowMs = 24 * 60 * 60 * 1000
+)
+
+var hostRetryBudgetMap sync.Map // host string -> *retryBudgetCounter
+
+// acquireRetryBudget — 检查并消费 host 的重试预算. true = 仍有预算, false = 超限.
+func acquireRetryBudget(host string) bool {
+        if host == "" {
+                return true // host 为空 (e.g. 桥路径) 不限重试
+        }
+        host = strings.ToLower(host)
+        var cnt *retryBudgetCounter
+        if v, ok := hostRetryBudgetMap.Load(host); ok {
+                cnt = v.(*retryBudgetCounter)
+        } else {
+                cnt = &retryBudgetCounter{resetAt: time.Now().UnixMilli() + RetryBudgetWindowMs}
+                actual, _ := hostRetryBudgetMap.LoadOrStore(host, cnt)
+                cnt = actual.(*retryBudgetCounter)
+        }
+        cnt.mu.Lock()
+        defer cnt.mu.Unlock()
+        now := time.Now().UnixMilli()
+        if now >= cnt.resetAt {
+                cnt.count = 0
+                cnt.resetAt = now + RetryBudgetWindowMs
+        }
+        if cnt.count >= RetryBudgetPerHost24h {
+                return false
+        }
+        cnt.count++
+        return true
+}
+
+// RetryBudgetSnapshot — admin / metrics 查询用.
+func RetryBudgetSnapshot() map[string]map[string]int64 {
+        out := map[string]map[string]int64{}
+        now := time.Now().UnixMilli()
+        hostRetryBudgetMap.Range(func(k, v any) bool {
+                cnt := v.(*retryBudgetCounter)
+                cnt.mu.Lock()
+                count := cnt.count
+                resetAt := cnt.resetAt
+                cnt.mu.Unlock()
+                if now >= resetAt {
+                        count = 0
+                }
+                out[k.(string)] = map[string]int64{
+                        "count":   count,
+                        "limit":   RetryBudgetPerHost24h,
+                        "resetAt": resetAt,
+                }
+                return true
+        })
+        return out
+}
+
+// ---------- R65-B 反反爬第 60 项: X-Forwarded-For / X-Real-IP 伪造 ----------
+//
+// 部分源站按 X-Forwarded-For / X-Real-IP 限速或封禁. 注入 per-host 钉扎的
+// RFC1918 内网 IP → 源站按伪造 IP 计限速. 仅在直连 (proxy == "") 时注入.
+
+// hostForwardedIPEntry — per-host 伪造的内网 IP.
+type hostForwardedIPEntry struct {
+        ip string
+        at int64
+}
+
+var (
+        hostForwardedIPMap sync.Map // host string -> *hostForwardedIPEntry
+        // forwardedIPPool — 预生成 32 个 RFC1918 内网 IP.
+        forwardedIPPool = generateForwardedIPPool()
+        forwardedIPIdx  atomic.Uint64
+)
+
+// generateForwardedIPPool — 预生成 32 个内网 IP (10.x / 172.16-31.x / 192.168.x).
+func generateForwardedIPPool() []string {
+        pool := make([]string, 0, 32)
+        pool = append(pool,
+                "10.0.0.1", "10.0.1.2", "10.0.2.3", "10.1.0.5",
+                "10.1.2.7", "10.2.0.11", "10.2.3.13", "10.3.0.17",
+                "10.5.1.19", "10.8.2.23", "10.10.0.29", "10.20.0.31",
+        )
+        pool = append(pool,
+                "172.16.0.1", "172.16.1.2", "172.17.0.3", "172.18.0.5",
+                "172.19.1.7", "172.20.0.11", "172.22.0.13", "172.24.0.17",
+                "172.28.0.19", "172.30.0.23",
+        )
+        pool = append(pool,
+                "192.168.0.1", "192.168.0.2", "192.168.1.3", "192.168.1.5",
+                "192.168.2.7", "192.168.2.11", "192.168.3.13", "192.168.5.17",
+                "192.168.10.19", "192.168.20.23",
+        )
+        return pool
+}
+
+// forwardedIPFor — 取 host 钉扎的伪造 IP, 无则选一个钉扎.
+func forwardedIPFor(host string) string {
+        if host == "" {
+                return ""
+        }
+        host = strings.ToLower(host)
+        if v, ok := hostForwardedIPMap.Load(host); ok {
+                e := v.(*hostForwardedIPEntry)
+                if time.Now().UnixMilli()-e.at < 7*24*60*60*1000 {
+                        return e.ip
+                }
+        }
+        idx := forwardedIPIdx.Add(1) - 1
+        ip := forwardedIPPool[int(idx%uint64(len(forwardedIPPool)))]
+        hostForwardedIPMap.Store(host, &hostForwardedIPEntry{ip: ip, at: time.Now().UnixMilli()})
+        return ip
+}
+
+// ClearHostForwardedIP — 清除 host 的伪造 IP 钉扎 (失败后下次换新 IP).
+func ClearHostForwardedIP(host string) {
+        if host == "" {
+                return
+        }
+        hostForwardedIPMap.Delete(strings.ToLower(host))
+}
+
+// ForwardedIPSnapshot — admin / metrics 查询用.
+func ForwardedIPSnapshot() map[string]string {
+        out := map[string]string{}
+        hostForwardedIPMap.Range(func(k, v any) bool {
+                e := v.(*hostForwardedIPEntry)
+                out[k.(string)] = e.ip
+                return true
+        })
+        return out
+}
+
+// ---------- R65-B 采集增强 B6: 采集速率可视化 ----------
+//
+// per-host 60s 滑动窗口计数器: QPS / 成功率 / 平均延迟. 供 admin API + UI.
+
+// collectRateEntry — per-host 60s 滑动窗口采集速率统计.
+type collectRateEntry struct {
+        mu             sync.Mutex
+        windowStartAt  int64
+        successCount   int64
+        failCount      int64
+        totalLatencyMs int64
+}
+
+const (
+        // CollectRateWindowMs — 60s 滑动窗口.
+        CollectRateWindowMs = 60 * 1000
+        // CollectRateHostsCap — per-host 统计上限.
+        CollectRateHostsCap = 1000
+)
+
+var (
+        collectRateMap        sync.Map // host string -> *collectRateEntry
+        collectRateSweepMu    sync.Mutex
+        collectRateLastSweepAt int64
+)
+
+// recordCollectAttempt — 记录一次采集结果 (success/fail + latencyMs).
+func recordCollectAttempt(host string, success bool, latencyMs int64) {
+        if host == "" {
+                return
+        }
+        host = strings.ToLower(host)
+        if latencyMs < 0 {
+                latencyMs = 0
+        }
+        var e *collectRateEntry
+        if v, ok := collectRateMap.Load(host); ok {
+                e = v.(*collectRateEntry)
+        } else {
+                e = &collectRateEntry{windowStartAt: time.Now().UnixMilli()}
+                actual, _ := collectRateMap.LoadOrStore(host, e)
+                e = actual.(*collectRateEntry)
+        }
+        e.mu.Lock()
+        now := time.Now().UnixMilli()
+        if now-e.windowStartAt >= CollectRateWindowMs {
+                e.windowStartAt = now
+                e.successCount = 0
+                e.failCount = 0
+                e.totalLatencyMs = 0
+        }
+        if success {
+                e.successCount++
+        } else {
+                e.failCount++
+        }
+        e.totalLatencyMs += latencyMs
+        e.mu.Unlock()
+        // 周期性 sweep: 每 5min 清过期 + 超上限驱逐
+        if now-collectRateLastSweepAt > 5*60*1000 {
+                if collectRateSweepMu.TryLock() {
+                        defer collectRateSweepMu.Unlock()
+                        collectRateLastSweepAt = now
+                        collectRateMap.Range(func(k, v any) bool {
+                                ent := v.(*collectRateEntry)
+                                ent.mu.Lock()
+                                expired := now-ent.windowStartAt > 3*CollectRateWindowMs
+                                ent.mu.Unlock()
+                                if expired {
+                                        collectRateMap.Delete(k)
+                                }
+                                return true
+                        })
+                        n := 0
+                        collectRateMap.Range(func(_, _ any) bool { n++; return true })
+                        if n > CollectRateHostsCap {
+                                cnt := 0
+                                collectRateMap.Range(func(k, _ any) bool {
+                                        if cnt >= n-CollectRateHostsCap {
+                                                return false
+                                        }
+                                        collectRateMap.Delete(k)
+                                        cnt++
+                                        return true
+                                })
+                        }
+                }
+        }
+}
+
+// collectRateSnapshotData — 取 host 的采集速率快照.
+func collectRateSnapshotData(host string) (qps int64, successRate100 int, avgLatencyMs int64, sampleCount int64) {
+        if host == "" {
+                return 0, 0, 0, 0
+        }
+        v, ok := collectRateMap.Load(strings.ToLower(host))
+        if !ok {
+                return 0, 0, 0, 0
+        }
+        e := v.(*collectRateEntry)
+        e.mu.Lock()
+        defer e.mu.Unlock()
+        now := time.Now().UnixMilli()
+        if now-e.windowStartAt >= CollectRateWindowMs {
+                return 0, 0, 0, 0
+        }
+        total := e.successCount + e.failCount
+        if total == 0 {
+                return 0, 0, 0, 0
+        }
+        qps = total / 60
+        successRate100 = int(e.successCount * 100 / total)
+        avgLatencyMs = e.totalLatencyMs / total
+        return qps, successRate100, avgLatencyMs, total
+}
+
+// CollectRateHostsSnapshot — admin / metrics 查询用.
+func CollectRateHostsSnapshot() map[string]map[string]int64 {
+        out := map[string]map[string]int64{}
+        collectRateMap.Range(func(k, _ any) bool {
+                qps, rate, lat, n := collectRateSnapshotData(k.(string))
+                out[k.(string)] = map[string]int64{
+                        "qps":          qps,
+                        "successRate":  int64(rate),
+                        "avgLatencyMs": lat,
+                        "sampleCount":  n,
+                }
+                return true
+        })
+        return out
+}
+
+// ---------- R65-B 采集增强 B7: 错误分类重试策略可调 ----------
+//
+// R64-B B2 固定策略: DNS/TLS/CtxCanceled 不重试. B7 加 per-host 可调策略.
+//   "retry" — 指数退避重试 (默认)
+//   "abort" — 直接失败不重试 (走 8 级降级链)
+//   "switch_proxy" — 清 host proxy 钉扎, 不重试本次
+//   "switch_bridge" — 直接失败 + EvictHostProxyPin, 走桥
+
+// hostRetryPolicyMap — per-host 错误分类重试策略覆盖.
+var hostRetryPolicyMap sync.Map // host string -> map[NetErrorClass]string
+
+// SetHostRetryPolicy — 设置 host 的错误分类重试策略.
+// R65-B BUG-44 (P2): 深拷贝 policy map 后再 Store, 防止 caller 后续修改
+//   原 map 引发与 hostRetryAction 读路径的数据竞争 (Go map 并发读写 →
+//   "fatal error: concurrent map read and map write" panic). 原实现直接
+//   Store(policy) 存引用, 不防 caller 后续 mutate. 修复: 拷贝新 map 再 Store.
+func SetHostRetryPolicy(host string, policy map[NetErrorClass]string) {
+        if host == "" {
+                return
+        }
+        host = strings.ToLower(host)
+        if len(policy) == 0 {
+                hostRetryPolicyMap.Delete(host)
+                return
+        }
+        // 深拷贝 (防 caller 后续修改原 map 引发 race)
+        copyMap := make(map[NetErrorClass]string, len(policy))
+        for k, v := range policy {
+                copyMap[k] = v
+        }
+        hostRetryPolicyMap.Store(host, copyMap)
+}
+
+// ClearHostRetryPolicy — 清除 host 的策略覆盖.
+func ClearHostRetryPolicy(host string) {
+        if host == "" {
+                return
+        }
+        hostRetryPolicyMap.Delete(strings.ToLower(host))
+}
+
+// hostRetryAction — 取 host + class 对应的 retry 动作. 默认 = R64-B B2.
+func hostRetryAction(host string, class NetErrorClass) string {
+        if host != "" {
+                if v, ok := hostRetryPolicyMap.Load(strings.ToLower(host)); ok {
+                        policy := v.(map[NetErrorClass]string)
+                        if action, has := policy[class]; has {
+                                return action
+                        }
+                }
+        }
+        switch class {
+        case NetErrClassDNS, NetErrClassTLS, NetErrClassCtxCanceled:
+                return "abort"
+        default:
+                return "retry"
+        }
+}
+
+// HostRetryPolicySnapshot — admin / metrics 查询用.
+func HostRetryPolicySnapshot() map[string]map[int]string {
+        out := map[string]map[int]string{}
+        hostRetryPolicyMap.Range(func(k, v any) bool {
+                policy := v.(map[NetErrorClass]string)
+                m := map[int]string{}
+                for cls, action := range policy {
+                        m[int(cls)] = action
+                }
+                out[k.(string)] = m
+                return true
+        })
+        return out
 }

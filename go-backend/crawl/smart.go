@@ -440,3 +440,104 @@ func resumeRatio(it SmartResumeItem) float64 {
         }
         return float64(it.ChaptersDone) / float64(it.ChaptersTotal)
 }
+
+// ---------- R65-B 采集增强 B6: 采集速率可视化 (smart.go 包装层) ----------
+//
+// 原 fetcher 无 per-host QPS / 成功率 / 平均延迟统计. R65-B fetcher.go 加
+//   collectRateTracker (per-host 60s 滑动窗口计数器, B6 内部数据层).
+//   本 smart.go 提供 CollectRateSnapshot 公共 accessor 供 admin API + UI
+//   调用 (smart.go 是 admin/runner 的 API 入口, fetcher.go 是数据层).
+//
+// 返回字段:
+//   qps           — 60s 内总请求数 / 60 (整 QPS)
+//   successRate   — 0-100 整数百分比
+//   avgLatencyMs  — 平均延迟 (整数毫秒)
+//   sampleCount   — 60s 内总请求数 (sample 太少时数据可信度低)
+//
+// 数据源: fetcher.go collectRateSnapshotData (per-host 60s 滑动窗口).
+//   host 为空或未采集过 → 全 0.
+
+// CollectRateSnapshot — 取 host 的采集速率快照 (admin API + UI 调用).
+//   R65-B 采集增强 B6. host 为空 → 全 0. 转发到 fetcher.go 数据层
+//   collectRateSnapshotData (同 crawl 包, 无需 import).
+func CollectRateSnapshot(host string) (qps int64, successRate int, avgLatencyMs int64, sampleCount int64) {
+        if host == "" {
+                return 0, 0, 0, 0
+        }
+        return collectRateSnapshotData(host)
+}
+
+// ---------- R65-B 采集增强 B8: 断点续采 DB 协同 ----------
+//
+// R64-B B5 SmartResumeSort 按内存状态排序 (ChaptersDone/Total 来自 caller).
+//   实际断点续采场景: caller (runner.go) 持有 DBClient 接口, 可查询 DB.
+//   B8 加 SmartResumeSortWithDB 变体, 接受 BookProgressLookup 接口, 对
+//   ChaptersDone=0 或 ChaptersTotal=0 的 item 自动查 DB 填充, 再走原排序逻辑.
+//
+// BookProgressLookup 接口 (smart.go 定义):
+//   BookChapterProgress(bookID string) (done int, total int, err error)
+//   实现方 (runner.go DBClient) 需包装现有 FindChapterByURL 或加新方法.
+//   错误容忍: lookup 返 err → 保留原 item (ChaptersDone=0 → 进 fresh 组).
+//
+// 设计权衡:
+//   - 不修改 runner.go 的 DBClient 接口 (避免破坏 R65-C 范围)
+//   - smart.go 定义独立接口, R65-C 可让 DBClient 实现该方法
+//   - SmartResumeSortWithDB 仅在 lookup != nil 时查 DB, 否则走原逻辑 (兼容)
+//   - DB 查询失败 (err != nil) → 保留原 item (不抛错, 不阻塞采集)
+
+// BookProgressLookup — 查询 DB 单本书的章节进度 (R65-B B8).
+//   实现方: runner.go 的 DBClient 可加 BookChapterProgress 方法满足该接口.
+//   返 (done, total, err). done = 已采章节数; total = 目录总章节数.
+//   err != nil 时调用方保留原 item (容错).
+type BookProgressLookup interface {
+        BookChapterProgress(bookID string) (done int, total int, err error)
+}
+
+// SmartResumeSortWithDB — DB 协同的断点续采优先级排序 (B8).
+//   1. 对每个 ChaptersDone=0 或 ChaptersTotal=0 的 item, 调 lookup 查 DB 填充.
+//      lookup=nil 或 err → 保留原 item.
+//   2. 走原 SmartResumeSort 三组分类排序 (nearDone → started → fresh).
+//   稳定排序, 返回新 slice 不修改入参 (先 copy items 再 DB 填充 + 排序).
+//   R65-B 采集增强 B8.
+func SmartResumeSortWithDB(items []SmartResumeItem, lookup BookProgressLookup) []SmartResumeItem {
+        if len(items) <= 1 {
+                out := make([]SmartResumeItem, len(items))
+                copy(out, items)
+                return out
+        }
+        // 先 copy items, 后续 DB 填充 + SmartResumeSort 都在 copy 上做, 不修改入参
+        work := make([]SmartResumeItem, len(items))
+        copy(work, items)
+        // 第 1 步: DB 协同填充 ChaptersDone=0 或 ChaptersTotal=0 的 item
+        if lookup != nil {
+                for i, it := range work {
+                        needLookup := false
+                        if it.ChaptersDone == 0 {
+                                needLookup = true
+                        }
+                        if it.ChaptersTotal == 0 {
+                                needLookup = true
+                        }
+                        if !needLookup {
+                                continue
+                        }
+                        if it.BookID == "" {
+                                continue // 无 bookID 无法查 DB
+                        }
+                        done, total, err := lookup.BookChapterProgress(it.BookID)
+                        if err != nil {
+                                continue // 容错: 保留原 item
+                        }
+                        // 仅当 DB 返的值 > 内存值时更新 (避免 DB 落后于内存覆盖新值).
+                        if done > it.ChaptersDone {
+                                work[i].ChaptersDone = done
+                        }
+                        if total > it.ChaptersTotal {
+                                work[i].ChaptersTotal = total
+                        }
+                }
+        }
+        // 第 2 步: 走原 SmartResumeSort 排序 (SmartResumeSort 内部会再 copy 一份,
+        //   但接受 work slice 作为输入是安全的)
+        return SmartResumeSort(work)
+}

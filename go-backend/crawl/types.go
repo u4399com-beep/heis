@@ -667,9 +667,15 @@ func sanitizeFieldRule(m map[string]any) *FieldRule {
 func safeStr(s string, max int) string {
         s = strings.TrimSpace(s)
         // 剥控制字符 (含 \r \n \t, 与 sanitize 同口径, 防头注入)
+        // R65-C BUG-47 (P3) 修复: 原仅剥 C0 (r<0x20) + DEL (0x7f), 漏 C1 控制字符
+        //   (U+0080-U+009F: NEL/APC/SS3 等 Windows 风格源站偶发杂符), 与 cleaner.go
+        //   CcStripOnlyRe (R49-1B 扩展含 C1) 不一致. 用户配置字段 (site name / rule
+        //   expression / cookie value 等) 经 safeStr 后写入 DB, 漏剥 C1 会让 DB 字段
+        //   含 NEL 等 → 下游渲染乱码 / JSON 编码 \\u0085 等不可见字符. 修复: 与
+        //   CcStripOnlyRe 同口径, 剥 C0 + DEL + C1.
         b := make([]rune, 0, len(s))
         for _, r := range s {
-                if r < 0x20 || r == 0x7f {
+                if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
                         continue
                 }
                 b = append(b, r)

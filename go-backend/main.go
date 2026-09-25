@@ -787,11 +787,18 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
 
 // R64-D: render404 渲染 templates/404.html (R64-A 创建模板), 失败时 fallback 到 http.NotFound.
 //
-//      data 字段: Site / Categories / HomeURL / Title — 与 homeHandler 主流程注入字段一致, 供 404 模板
-//      渲染站点 nav + 首页链接. site==nil 时无法渲染 (无 Site 数据), fallback http.NotFound 保留 R63 行为.
-//      模板未加载时 (R64-A 未完成 / ParseFiles 失败) 同样 fallback http.NotFound, 等 R64-A 完成后切换.
-//      /api/* 路径不进 homeHandler (由 admin/API handlers 处理), 不调此函数.
-//      渲染走 strings.Builder 缓冲: Execute 成功才写 w, 失败可安全 fallback http.NotFound (未写出任何 byte).
+//      data 字段: Site / Categories / HomeURL / PseudoStyle — 与 homeHandler 主流程注入字段一致,
+//      供 404 模板渲染站点 nav + 首页链接 + 调试 meta (伪静态风格). site==nil 时无法渲染
+//      (无 Site 数据), fallback http.NotFound 保留 R63 行为. 模板未加载时 (R64-A 未完成 /
+//      ParseFiles 失败) 同样 fallback http.NotFound, 等 R64-A 完成后切换. /api/* 路径不进
+//      homeHandler (由 admin/API handlers 处理), 不调此函数. 渲染走 strings.Builder 缓冲:
+//      Execute 成功才写 w, 失败可安全 fallback http.NotFound (未写出任何 byte).
+// R65-D BUG-48 (P3): 注入 "PseudoStyle" 字段. 原 R64-D 实现遗漏此 key, 404.html 模板
+//      meta 行 {{if .PseudoStyle}} · 伪静态风格: {{.PseudoStyle}}{{end}} 因 key 缺失 →
+//      nil 返 false → meta 行被静默跳过, 失去调试信息 (虽不破渲染). 修复: 与 homeHandler
+//      主流程 data["PseudoStyle"] 对齐, 注入 pseudoStyle (default "query" 兜底).
+//      同时移除 data["Title"] — 404.html 模板 <title> 用 {{.Site.Title}} 而非 {{.Title}},
+//      原 R64-D 注入的 "Title" 是死字段从未被模板消费.
 func render404(w http.ResponseWriter, r *http.Request, site map[string]interface{}) {
         if site == nil {
                 http.NotFound(w, r)
@@ -803,10 +810,10 @@ func render404(w http.ResponseWriter, r *http.Request, site map[string]interface
                 pseudoStyle = "query"
         }
         data := map[string]interface{}{
-                "Site":       site,
-                "Categories": cats,
-                "HomeURL":    buildHomeURL(pseudoStyle),
-                "Title":      "404 - 页面不存在",
+                "Site":        site,
+                "Categories":  cats,
+                "HomeURL":     buildHomeURL(pseudoStyle),
+                "PseudoStyle": pseudoStyle,
         }
         // R64 主控修复: 404.html 用 {{define "404"}} 块名, Lookup("404") 不是 "404.html"
         // (与 homeHandler 用 theme+"/"+view 块名约定一致, 如 "shipsay/home").
@@ -1031,7 +1038,16 @@ func chapterHandler(w http.ResponseWriter, r *http.Request) {
                 writeJSON(w, map[string]interface{}{"ok": false, "error": "缺少 id 参数"})
                 return
         }
-        var chID, title, content string
+        // R65-D BUG-50 (P1): content 是 nullable 列 (Chapter schema: `content String?`),
+        //   txt-mode 章节正常态 content=NULL (storage='txt', filePath 指向磁盘文件).
+        //   原实现 Scan 进 plain string — NULL 时 Scan 返
+        //   "sql: Scan error on column index 2: converting NULL to string is unsupported"
+        //   → chapterHandler 把"txt-mode 章节"误判为 500 错误返 "查询失败",
+        //   /api/public/chapter?id=txt-mode-chapter 永远 500, 前台 read view 切到 txt
+        //   章节时无法拿 JSON 走章节内容. 修复: content 用 sql.NullString, title/id/idx
+        //   仍 plain (schema 均非 null). 与 getReadViewData 同款 NullString 处理.
+        var chID, title string
+        var content sql.NullString
         var idx int
         err := db.QueryRow(`SELECT id, title, content, idx FROM Chapter WHERE id=?`, id).Scan(&chID, &title, &content, &idx)
         if err != nil {
@@ -1044,7 +1060,7 @@ func chapterHandler(w http.ResponseWriter, r *http.Request) {
                 writeJSON(w, map[string]interface{}{"ok": false, "error": "查询失败"})
                 return
         }
-        writeJSON(w, map[string]interface{}{"ok": true, "data": map[string]interface{}{"id": chID, "title": title, "content": content, "idx": idx}})
+        writeJSON(w, map[string]interface{}{"ok": true, "data": map[string]interface{}{"id": chID, "title": title, "content": content.String, "idx": idx}})
 }
 
 // ===== 数据查询 =====

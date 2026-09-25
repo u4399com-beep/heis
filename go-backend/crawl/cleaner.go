@@ -348,12 +348,77 @@ var (
 
         promoTrailRe = regexp.MustCompile(`本书首发于|请记住本书|最新章节请到|一秒记住|为您提供.*?精彩小说|本站(?:首发|更新最快)|下载(?:APP|客户端|手机版)`)
         metaLeadingRe = regexp.MustCompile(`(?m)^\s*(?:字数|状态|分类|类型|作者|更新时间|最后更新)[:：].{0,80}$`)
+
+        // R65-C BUG-42 (P2) 修复: RemoveAdLines 原每调用对 27 个 EXTRA_AD_PATTERNS +
+        //   N 个用户 patterns 逐个 regexp.Compile, hot path (每章节 2 次 RemoveAdLines:
+        //   plainText 分支 + HTML 分支). 1000 章任务 = 54000 次 compile → CPU 浪费
+        //   ~1-2s + GC 压力. 修复:
+        //   1. extraAdPatternsCompiled — EXTRA_AD_PATTERNS 包级 init 预编译一次
+        //   2. removeAdLinesUserCache — 用户 patterns 用 sync.Map 缓存 (key=pattern string,
+        //      value=compiledPattern{re, ok}; 首次 compile 后复用, 任务级复用率高)
+        extraAdPatternsCompiled = compileAdPatterns(EXTRA_AD_PATTERNS)
 )
+
+// compiledAdPattern — RemoveAdLines 用户 pattern 编译结果 (cache value).
+//   ok=false 表示 pattern 无效 (compile 失败 / 超长 / ReDoS), 调用方跳过.
+type compiledAdPattern struct {
+        re *regexp.Regexp
+        ok bool
+}
+
+// removeAdLinesUserCache — 用户 pattern → 编译结果缓存 (sync.Map, 任务级复用).
+var removeAdLinesUserCache sync.Map
+
+// compileAdPatterns — 批量编译 pattern 列表, 跳过空 / 超长 / ReDoS / compile 失败.
+//   caller: init() 时编译 EXTRA_AD_PATTERNS; RemoveAdLines 时按需查缓存编译用户 patterns.
+func compileAdPatterns(patterns []string) []*regexp.Regexp {
+        out := make([]*regexp.Regexp, 0, len(patterns))
+        for _, p := range patterns {
+                if re := compileSingleAdPattern(p); re != nil {
+                        out = append(out, re)
+                }
+        }
+        return out
+}
+
+// compileSingleAdPattern — 单 pattern 编译 + ReDoS 闸门 + 长度闸门.
+//   返 nil 表示跳过 (空 / 超长 / ReDoS / compile 失败).
+func compileSingleAdPattern(p string) *regexp.Regexp {
+        if p == "" || len(p) > 300 {
+                return nil
+        }
+        if reDoSNestedQuantifierAd.MatchString(p) {
+                return nil
+        }
+        re, err := regexp.Compile("(?i)" + p)
+        if err != nil {
+                return nil
+        }
+        return re
+}
+
+// compileUserAdPattern — 用户 pattern 编译 + 缓存 (sync.Map).
+//   首次 compile 后复用; ok=false 也缓存 (避免重复 compile 失败 pattern).
+func compileUserAdPattern(p string) (*regexp.Regexp, bool) {
+        if v, ok := removeAdLinesUserCache.Load(p); ok {
+                cp := v.(compiledAdPattern)
+                return cp.re, cp.ok
+        }
+        re := compileSingleAdPattern(p)
+        cp := compiledAdPattern{re: re, ok: re != nil}
+        removeAdLinesUserCache.Store(p, cp)
+        return cp.re, cp.ok
+}
 
 // RemoveAdLines — 广告正则清洗 + URL 保护.
 //  1. 先把 https?://... 完整 URL 掩码成 \x00N\x00 占位符
 //  2. 跑广告正则 (用户配置优先, 内置 EXTRA_AD_PATTERNS 后跑在剩余文本上)
 //  3. 还原 URL 占位符, 清残留 \x00
+// R65-C BUG-42 (P2) 修复: 原实现对每 pattern 调 regexp.Compile (?i + p), hot path
+//   每章节 2 次 RemoveAdLines × 27+ patterns = 54+ compile / 章. 1000 章任务 =
+//   54000+ compile, ~1-2s CPU 浪费 + GC 压力. 修复: ① EXTRA_AD_PATTERNS 包级 init
+//   预编译 (extraAdPatternsCompiled); ② 用户 patterns 用 sync.Map 缓存
+//   (removeAdLinesUserCache, 任务级复用率高, 首次 compile 后零开销).
 func RemoveAdLines(text string, patterns []string) string {
         if text == "" {
                 return ""
@@ -363,24 +428,14 @@ func RemoveAdLines(text string, patterns []string) string {
                 urls = append(urls, m)
                 return fmt.Sprintf("\x00%d\x00", len(urls)-1)
         })
-        // 合并内置 EXTRA_AD_PATTERNS (后跑在剩余文本上)
-        merged := append([]string(nil), patterns...)
-        merged = append(merged, EXTRA_AD_PATTERNS...)
-        for _, p := range merged {
-                if p == "" {
-                        continue
+        // 用户 patterns (缓存复用)
+        for _, p := range patterns {
+                if re, ok := compileUserAdPattern(p); ok && re != nil {
+                        out = re.ReplaceAllString(out, "")
                 }
-                // ReDoS 闸门
-                if len(p) > 300 {
-                        continue
-                }
-                if reDoSNestedQuantifierAd.MatchString(p) {
-                        continue
-                }
-                re, err := regexp.Compile("(?i)" + p)
-                if err != nil {
-                        continue
-                }
+        }
+        // 内置 EXTRA_AD_PATTERNS (包级 init 预编译, 零 compile 开销)
+        for _, re := range extraAdPatternsCompiled {
                 out = re.ReplaceAllString(out, "")
         }
         // 还原 URL
@@ -863,6 +918,11 @@ func stripTrailingPromo(s string) string {
 }
 
 // stripLeadingMetadata — 简介开头元数据剥离 (字数：xxx万字 / 状态：连载中 / 分类：玄幻 等).
+// R65-C BUG-45 (P3) 修复: 原实现 for-loop 跑完所有非空行都命中 meta 模式时 fallthrough
+//   到 `return s` (输入整段全是元数据 → 原样返回, 未剥离). 应返回 "" (全部 leading meta
+//   已剥). 修复: fallthrough 改 `return ""` (与函数语义一致: 剥完所有 leading meta 后无
+//   正文, 返空串让 caller 视为简介为空). 原 `return s` 让 DB Book.intro 列存入纯元数据
+//   字串 (e.g. "字数：100\n状态：连载\n分类：玄幻"), 前台渲染简介区显示元数据而非简介.
 func stripLeadingMetadata(s string) string {
         // R47-1A: metaRe 提为包级 metaLeadingRe (原每简介都重编译)
         lines := strings.Split(s, "\n")
@@ -878,7 +938,8 @@ func stripLeadingMetadata(s string) string {
                         return strings.Join(lines[i:], "\n")
                 }
         }
-        return s
+        // R65-C BUG-45: 所有非空行均命中 meta (整段为元数据) → 剥完返空串 (原返 s 未剥)
+        return ""
 }
 
 // collapseDupPunct — 压扁相邻相同标点 (! ? 。 全角 ！？) 为单个出现.
