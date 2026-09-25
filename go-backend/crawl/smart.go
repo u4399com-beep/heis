@@ -541,3 +541,53 @@ func SmartResumeSortWithDB(items []SmartResumeItem, lookup BookProgressLookup) [
         //   但接受 work slice 作为输入是安全的)
         return SmartResumeSort(work)
 }
+
+// ---------- R67-B 采集增强 B10: 采集任务优先级队列 ----------
+//
+// admin API 调度采集任务时, 按 bookCount DESC + lastCollectedAt ASC 排序:
+//   - bookCount 高 (源站书多) → 优先采 (高 ROI, 单次任务采更多书, 减少 task 数)
+//   - lastCollectedAt 低 (最久未采) → 优先采 (避免长期挂起, 数据新鲜度)
+//   - TaskID ASC 作 tie-breaker (稳定排序, 同 bookCount + 同 lastCollectedAt 时
+//     按 ID 字典序, 防 sync.Map 迭代顺序差异导致跨进程排序不一致).
+// 价值: admin / runner 调度时按 ROI + 数据新鲜度优先, 而非 FIFO (创建顺序).
+//   高 bookCount 站点优先采 → 单任务采更多书 → 降 task 数 + 降源站连接数 +
+//   提速整体采集. lastCollectedAt 旧者优先 → 数据新鲜度 (避免某站长期挂起,
+//   用户访问到过时数据).
+// caller: admin API 在调度前调 SortTaskPriorityQueue(items) 得排序后列表, 按
+//   排序后顺序创建/调度采集任务.
+
+// TaskPriorityItem — 单个任务的优先级排序输入.
+type TaskPriorityItem struct {
+        TaskID          string
+        BookCount       int    // 源站书数 (DESC: 多的优先)
+        LastCollectedAt int64  // 上次采集时间 (ASC: 旧的优先, 0 = 从未采过 — 视为最旧)
+}
+
+// SortTaskPriorityQueue — 任务优先级排序 (稳定).
+//   返回新 slice, 不修改入参. 空 / 单元素直接返副本.
+//   排序: bookCount DESC → lastCollectedAt ASC → TaskID ASC.
+//   实现: sort.SliceStable + 显式 tie-breaker (TaskID 字典序), 同 bookCount +
+//   同 lastCollectedAt 时按 TaskID 排序 (跨进程稳定, 防 sync.Map 迭代顺序差异
+//   导致跨进程排序不一致).
+func SortTaskPriorityQueue(items []TaskPriorityItem) []TaskPriorityItem {
+        if len(items) <= 1 {
+                out := make([]TaskPriorityItem, len(items))
+                copy(out, items)
+                return out
+        }
+        out := make([]TaskPriorityItem, len(items))
+        copy(out, items)
+        sort.SliceStable(out, func(i, j int) bool {
+                // 1. bookCount DESC (高的优先)
+                if out[i].BookCount != out[j].BookCount {
+                        return out[i].BookCount > out[j].BookCount
+                }
+                // 2. lastCollectedAt ASC (旧的优先; 0 视为最旧)
+                if out[i].LastCollectedAt != out[j].LastCollectedAt {
+                        return out[i].LastCollectedAt < out[j].LastCollectedAt
+                }
+                // 3. TaskID ASC (tie-breaker)
+                return out[i].TaskID < out[j].TaskID
+        })
+        return out
+}

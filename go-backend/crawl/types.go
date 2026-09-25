@@ -18,7 +18,6 @@ package crawl
 
 import (
         "encoding/json"
-        "fmt"
         "net/url"
         "strings"
 )
@@ -678,6 +677,18 @@ func safeStr(s string, max int) string {
                 if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
                         continue
                 }
+                // R67-C BUG-59 (P3) 修复: 原仅剥 C0+DEL+C1, 漏 Unicode 行/段分隔符
+                //   (U+2028 LSP / U+2029 PSP) + BOM (U+FEFF) + 替换符 (U+FFFD).
+                //   与 cleaner.go ZWStripOnlyRe (R49-1B + R66-C 加 U+FFFD) 不一致.
+                //   U+2028/2029 在 JSON 字符串中合法但 JS parser 把它们当行分隔符
+                //   (legacy ES2018 前的 literal newline 行为) → admin UI / 前台渲染
+                //   时 JSON.parse 抛 SyntaxError 或字符串被截断. U+FEFF BOM 头部
+                //   注入会让 DB 字段渲染时显示"零宽不显字"占位. U+FFFD 是 decoder
+                //   把无效 UTF-8 字节替换后的"豆腐块", 残留 = 编码 bug 痕迹.
+                //   修复: 显式剥 U+2028/U+2029/U+FEFF/U+FFFD (4 个高频污染符).
+                if r == 0x2028 || r == 0x2029 || r == 0xFEFF || r == 0xFFFD {
+                        continue
+                }
                 b = append(b, r)
         }
         out := string(b)
@@ -733,17 +744,15 @@ func cloneCleanConfig(c CleanConfig) CleanConfig {
         return out
 }
 
-// SafeStr exposed for external callers (e.g. main API routes).
-func SafeStr(s string, max int) string { return safeStr(s, max) }
-
-// ClampInt exposed for external callers.
-func ClampInt(v, lo, hi int) int { return clampInt(v, lo, hi) }
-
-// String — Stringer impl for FieldRuleType used in logs.
-func (t FieldRuleType) String() string { return string(t) }
-
-// stringer for FetchConfig.Engine validation (used by fetcher.go).
-func (c FetchConfig) String() string {
-        return fmt.Sprintf("FetchConfig{engine=%s, ua=%s, timeout=%d, retries=%d, concurrency=%d}",
-                c.Engine, c.UAMode, c.Timeout, c.Retries, c.Concurrency)
-}
+// R67-C deadcode 决策: 删除 SafeStr / ClampInt / FieldRuleType.String() / FetchConfig.String()
+//   四个未用 export (rg 全仓 0 命中外部调用, 跨 main.go/admin.go/fetcher.go/hostgate.go/
+//   smart.go/cleaner.go/storage.go/runner.go/parser.go 全 0). 4 export 均为"为外部 caller
+//   预留"的 wrapper / Stringer 实现, 但外部 caller 从未 materialize. 重新引入仅需
+//   wrapper 1 行 (SafeStr/ClampInt) 或 Stringer 1 行, 不值得保留死代码占 API surface.
+//   注: SafeStr/ClampInt 的小写版本 (safeStr/clampInt) 仍是包内 hot path 不动.
+//
+// 历史决策留痕:
+//   - SafeStr/ClampInt: R54-1B 加 (供 main API routes 字段消毒预留), R67-C 删 (0 调用).
+//   - FieldRuleType.String(): R38-1C 加 (供 fmt.Sprintf("%v", rule.Type) 用), R67-C 删.
+//   - FetchConfig.String(): R38-1C 加 (供 fetcher.go 日志用), R67-C 删 (fetcher 改用
+//     字段直接 Sprintf, 不调 .String() 方法).

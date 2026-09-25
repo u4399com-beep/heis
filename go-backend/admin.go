@@ -828,8 +828,15 @@ func adminTasksQuickFill(w http.ResponseWriter, r *http.Request) {
 
         // 为每规则创建 Task + 异步启动
         dateStr := time.Now().Format("20060102")
+        // R67-D BUG-57 (P3): 加 json tag 让 JSON 字段名 lowercase (id/name/ruleId),
+        //   与 adminTasksCreate 的响应字段 (line 728: id/name/ruleId/ruleName) 对齐.
+        //   原实现 createdTask{ID,Name,RuleID} 无 tag, json.Marshal 输出大写字段名
+        //   "ID"/"Name"/"RuleID", API 合约不一致 (前端 tasks.html 当前只读 created 数
+        //   不迭代 tasks 数组, 故功能不受影响, 但合约不一致, 第三方脚本消费 API 时易踩坑).
         type createdTask struct {
-                ID, Name, RuleID string
+                ID     string `json:"id"`
+                Name   string `json:"name"`
+                RuleID string `json:"ruleId"`
         }
         created := []createdTask{}
         skipped := []map[string]interface{}{}
@@ -1366,6 +1373,13 @@ func adminBooksAPIHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // adminBooksList — 原 adminBooksAPIHandler 的 GET 逻辑 (q/categoryId/status 过滤 + 分页 + JOIN 分类).
+//   R67-D BUG-55 (P1): SELECT 改 COALESCE(b.categoryId,'') — Book.categoryId 在 schema 是
+//     String? (nullable), adminBooksCreate/adminBookByIDHandler PUT/adminDB.UpsertBook 均
+//     用 nullIfEmpty("") 写入 NULL. 原实现 Scan 进 plain string 在 NULL 行触发
+//     "sql: Scan error ... converting NULL to string is unsupported" — Scan 在 categoryId
+//     列停下, 其后 sourceUrl/storageMode/chapterCount/updatedAt 列均不读, 行被 append
+//     含半空字段. DB 实测 170/668 (~25%) books 有 NULL categoryId → admin/books 列表
+//     显示这 25% 书的 storageMode 空 / chapterCount=0 / updatedAt 空. COALESCE 兜底空串.
 func adminBooksList(w http.ResponseWriter, r *http.Request) {
         q := likeSafe(r.URL.Query().Get("q"))
         categoryID := strings.TrimSpace(r.URL.Query().Get("categoryId"))
@@ -1401,7 +1415,7 @@ func adminBooksList(w http.ResponseWriter, r *http.Request) {
         queryArgs := append(args, size, offset)
         rows, err := db.Query(
                 `SELECT b.id,b.name,b.author,b.intro,b.cover,b.status,b.wordCount,b.latestChapter,
-                        COALESCE(c.name,'未分类'),b.categoryId,b.sourceUrl,b.storageMode,
+                        COALESCE(c.name,'未分类'),COALESCE(b.categoryId,''),b.sourceUrl,b.storageMode,
                         (SELECT COUNT(*) FROM Chapter ch WHERE ch.bookId=b.id) AS chapterCount,
                         b.updatedAt
                    FROM Book b LEFT JOIN Category c ON b.categoryId=c.id
@@ -1973,6 +1987,8 @@ func fillTasksPageData(data map[string]interface{}, r *http.Request) {
 }
 
 // fillBooksPageData — 装配书籍页数据 (带搜索 + 过滤 + 分页).
+//   R67-D BUG-55 (P1): 同 adminBooksList — SELECT 改 COALESCE(b.categoryId,'')
+//     防 NULL categoryId 行 Scan 半截停. 见 adminBooksList 注释.
 func fillBooksPageData(data map[string]interface{}, r *http.Request) {
         q := likeSafe(r.URL.Query().Get("q"))
         categoryID := strings.TrimSpace(r.URL.Query().Get("categoryId"))
@@ -2023,7 +2039,7 @@ func fillBooksPageData(data map[string]interface{}, r *http.Request) {
         queryArgs := append(args, size, offset)
         rows, err := db.Query(
                 `SELECT b.id,b.name,b.author,b.intro,b.cover,b.status,b.wordCount,b.latestChapter,
-                        COALESCE(c.name,'未分类'),b.categoryId,b.sourceUrl,b.storageMode,b.keywords,
+                        COALESCE(c.name,'未分类'),COALESCE(b.categoryId,''),b.sourceUrl,b.storageMode,b.keywords,
                         (SELECT COUNT(*) FROM Chapter ch WHERE ch.bookId=b.id) AS chapterCount,
                         b.updatedAt
                    FROM Book b LEFT JOIN Category c ON b.categoryId=c.id

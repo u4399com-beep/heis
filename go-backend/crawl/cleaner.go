@@ -484,7 +484,15 @@ func RemoveAdLines(text string, patterns []string) string {
                         return ""
                 }
                 var idx int
-                fmt.Sscanf(sub[1], "%d", &idx)
+                // R67-C BUG-58 (P3) 修复: 原 fmt.Sscanf 忽略 err, 解析失败时 idx 留 0
+                //   → 误用 urls[0] 还原 (URL 占位符 \x000\x00 指向 idx 0, 解析失败
+                //   的占位符也返回 urls[0]). Sscanf 失败场景: 数字溢出 int 范围
+                //   (e.g. \x0099999999999\x00 占位符, 占位符 idx 不可能这么 大, 但
+                //   源文本本身含形如 \x00\d+\x00 的字面字节会被误识别为占位符).
+                //   修复: Sscanf 返 err 时返 "" (与 len(sub)<2 同口径), 不误用 urls[0].
+                if _, err := fmt.Sscanf(sub[1], "%d", &idx); err != nil {
+                        return ""
+                }
                 if idx >= 0 && idx < len(urls) {
                         return urls[idx]
                 }

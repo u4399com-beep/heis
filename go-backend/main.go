@@ -1026,7 +1026,7 @@ func bookDetailHandler(w http.ResponseWriter, r *http.Request) {
                 return
         }
         writeJSON(w, map[string]interface{}{"ok": true, "data": map[string]interface{}{
-                "id": bid.String, "name": name.String, "author": author.String, "intro": intro.String, "cover": "/" + cover.String,
+                "id": bid.String, "name": name.String, "author": author.String, "intro": intro.String, "cover": coverURL(cover.String),
                 "status": status.String, "wordCount": wordCount, "latestChapter": latestChapter.String,
                 "category": category.String, "categoryId": categoryID.String, "updatedAt": formatUpdatedAt(updatedAt.String),
         }})
@@ -1084,7 +1084,10 @@ func getSite(siteID string) (map[string]interface{}, error) {
                 return nil, err
         }
         defer rows.Close()
-        for rows.Next() {
+        // R67-D: 改 for→if (rows.Scan + return 在首轮迭代执行后必返, staticcheck SA4004
+        //   标识 "loop unconditionally terminated". SQL 上 AND id=? 主键过滤 / AND
+        //   isDefault=1 至多 1 行 (isDefault 应唯一, DB 不强约束但实际唯一); 取首行即返.)
+        if rows.Next() {
                 var id, name, domain, themeID, title, desc, kw, seoTmplT, seoTmplD, seoTmplK, pseudoStaticStyle string
                 var isDefault bool
                 var offset int
@@ -1102,7 +1105,8 @@ func getSite(siteID string) (map[string]interface{}, error) {
                 return nil, qErr
         }
         defer rows2.Close()
-        for rows2.Next() {
+        // R67-D: 改 for→if (同上; LIMIT 1 保证至多 1 行, staticcheck SA4004 标识.)
+        if rows2.Next() {
                 var id, name, domain, themeID, title, desc, kw, seoTmplT, seoTmplD, seoTmplK, pseudoStaticStyle string
                 var isDefault bool
                 var offset int
@@ -1203,7 +1207,7 @@ func getBooks(limit int) ([]map[string]interface{}, error) {
                 rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryID, &updatedAt)
                 books = append(books, map[string]interface{}{
                         "id": id.String, "name": name.String, "author": author.String,
-                        "intro": truncate(intro.String, 120), "cover": "/" + cover.String,
+                        "intro": truncate(intro.String, 120), "cover": coverURL(cover.String),
                         "status": status.String, "wordCount": wordCount, "latestChapter": latestChapter.String,
                         "category": category.String, "categoryId": categoryID.String, "updatedAt": formatUpdatedAt(updatedAt),
                 })
@@ -1293,6 +1297,30 @@ func sanitizeChapterHTML(s string) string {
 }
 
 // ===== 工具 =====
+
+// coverURL constructs the public-facing cover URL from the stored cover field.
+//   - empty cover → "" (front-end shows SVG placeholder via /covers/ handler)
+//   - external http(s) URL → returned as-is (browser loads directly from origin)
+//   - relative path (e.g. "covers/abc.webp") → "/" + path (handled by /covers/ handler)
+//
+// R67-D BUG-56 (P2): adminBooksCreate (admin.go line ~1467) + adminBookByIDHandler PUT
+//   explicitly allow external cover URLs (http:// | https:// | /covers/ | /). crawl
+//   package UpsertBook stores whatever b.Cover yields — which for source sites with
+//   CDN-hosted covers is an external URL (e.g. https://cdn.cdnshu.com/...). DB
+//   实测 207/668 (~31%) books 有 external cover URL. 原实现各处 unconditionally
+//   `"/" + cover.String` → 把 "https://..." 拼成 "/https://..." → 浏览器视作当前
+//   host 的相对路径请求 → /covers/ handler 不认 → 404 + 封面破图. 修复: 加 helper
+//   分辨 http(s):// 前缀, 原样返回; 否则前缀 "/". 应用到 4 处 cover 输出
+//   (bookDetailHandler / getBooks / bookRowFromScan / getBookViewData).
+func coverURL(cover string) string {
+        if cover == "" {
+                return ""
+        }
+        if strings.HasPrefix(cover, "http://") || strings.HasPrefix(cover, "https://") {
+                return cover
+        }
+        return "/" + cover
+}
 
 func writeJSON(w http.ResponseWriter, v interface{}) {
         w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -1498,7 +1526,7 @@ func tabName(tab string) string {
 func bookRowFromScan(id, name, author, intro, cover, status, latestChapter, category, categoryID sql.NullString, wordCount int64, updatedAt string) map[string]interface{} {
         return map[string]interface{}{
                 "id": id.String, "name": name.String, "author": author.String,
-                "intro": truncate(intro.String, 120), "cover": "/" + cover.String,
+                "intro": truncate(intro.String, 120), "cover": coverURL(cover.String),
                 "status": status.String, "wordCount": wordCount, "latestChapter": latestChapter.String,
                 "category": category.String, "categoryId": categoryID.String, "updatedAt": formatUpdatedAt(updatedAt),
         }
@@ -1516,7 +1544,7 @@ func getBookViewData(id string) (map[string]interface{}, []map[string]interface{
         }
         book := map[string]interface{}{
                 "id": bid.String, "name": name.String, "author": author.String,
-                "intro": intro.String, "cover": "/" + cover.String, "status": status.String,
+                "intro": intro.String, "cover": coverURL(cover.String), "status": status.String,
                 "wordCount": wordCount, "latestChapter": latestChapter.String,
                 "category": category.String, "categoryId": categoryID.String,
                 "keywords": keywords.String, "updatedAt": formatUpdatedAt(updatedAt.String),

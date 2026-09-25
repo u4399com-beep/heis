@@ -358,6 +358,16 @@ func (w *downloadTxtWriter) Write(ctx context.Context, chunk string) error {
 }
 
 func (w *downloadTxtWriter) Finish(ctx context.Context) (string, int64, error) {
+        // R67-C BUG-57 (P3) 修复: 原实现直接 Close (无 fsync), crash 在 Close 后
+        //   但 OS page cache 未刷盘前, 文件可能 partial (万章书拼接中途 crash
+        //   → 用户下载到半截 .txt). 修复: Close 前 Sync (fsync) 保证数据物理落盘.
+        //   与 R65-C BUG-43 (SaveChapterTxt atomicWriteFileSync) + BUG-44 (SaveCoverWebp
+        //   同款) 同口径, 仅 fsync 不需 .tmp+rename (download 路径无需原子替换,
+        //   最终路径即写入路径, 中途 crash 留 partial 可被 Abort 删).
+        if err := w.file.Sync(); err != nil {
+                _ = w.file.Close()
+                return "", 0, err
+        }
         if err := w.file.Close(); err != nil {
                 return "", 0, err
         }

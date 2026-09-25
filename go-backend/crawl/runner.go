@@ -252,16 +252,23 @@ func (rt *TaskRuntime) IsStale(myEpoch int64) bool {
 }
 
 // MarkRunning — 标记任务开始运行 (epoch++, 复位 stopped/paused).
+//  R67-C BUG-61 (P3) 修复: 原实现 rt.epoch++ 是普通 int64 写 (在 rt.mu 锁内),
+//    与 CurrentEpoch()/IsStale() 的 atomic.LoadInt64 读 (无锁) 无 happens-before
+//    关系 → Go memory model 视为 data race (32-bit ARM 平台 int64 写是两条 32-bit
+//    指令, 中间被 atomic.Load 读到撕裂值; x86 因 8 字节对齐硬件保证无撕裂, 仍
+//    是 latent race). 修复: 改用 atomic.AddInt64(&rt.epoch, 1) (原子写), 与读路径
+//    同口径. mu.Lock 仍保留 (保护 running/paused/stopped/runStartedAt 多字段
+//    一致性), epoch 字段单独用 atomic.
 func (rt *TaskRuntime) MarkRunning() int64 {
         rt.mu.Lock()
         defer rt.mu.Unlock()
-        rt.epoch++
+        newEpoch := atomic.AddInt64(&rt.epoch, 1)
         rt.running = true
         rt.paused = false
         rt.stopped = false
         rt.runStartedAt = time.Now().UnixMilli()
         rt.lastActiveAt = rt.runStartedAt
-        return rt.epoch
+        return newEpoch
 }
 
 // MarkStopped — 标记任务停止.
@@ -806,10 +813,15 @@ const (
 )
 
 // BookMetaResult — 阶段 1 结果.
+//  R67-C BUG-60 (P3) 修复: 新增 IsNewBook + CoverSaved 字段供 ExecuteTask 主循环
+//    累计 stats.BooksCreated/BooksUpdated/CoversSaved (原实现 stats 三字段始终为 0,
+//    任务完成日志 "新书0 更新0 | 封面0" 失真, 操作员无法判断本轮是否真有新书入库).
 type BookMetaResult struct {
-        Status   BookMetaStatus
-        BookURL  string
-        BookCtx  *BookMetaContext
+        Status     BookMetaStatus
+        BookURL    string
+        BookCtx    *BookMetaContext
+        IsNewBook  bool // R67-C BUG-60: true=新建书, false=已存在书 (供 stats.BooksCreated/Updated 累计)
+        CoverSaved bool // R67-C BUG-60: 封面是否成功落盘 (供 stats.CoversSaved 累计)
 }
 
 // BookMetaContext — 阶段 2 章节采集所需的书本上下文.
@@ -1044,9 +1056,22 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) error {
                 wg.Wait()
 
                 // 处理本批次结果
+                // R67-C BUG-60 (P3) 修复: 累计 stats.BooksCreated/BooksUpdated/CoversSaved
+                //   (原实现三字段始终 0, 任务完成日志 "新书0 更新0 | 封面0" 失真).
+                //   数据来自 BookMetaResult.IsNewBook + CoverSaved (CrawlBookMeta 设置).
                 for _, r := range results {
                         if r.Status == BookMetaStatusBlocked || r.Status == BookMetaStatusEmptyToc || r.Status == BookMetaStatusError {
                                 progress.BooksDone++
+                        }
+                        if r.Status == BookMetaStatusOKMeta {
+                                if r.IsNewBook {
+                                        stats.BooksCreated++
+                                } else {
+                                        stats.BooksUpdated++
+                                }
+                                if r.CoverSaved {
+                                        stats.CoversSaved++
+                                }
                         }
                         bookMetaResults = append(bookMetaResults, r)
                         if r.Status == BookMetaStatusOKMeta && r.BookCtx != nil {
@@ -1076,12 +1101,19 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) error {
         for _, r := range bookMetaResults {
                 if r.Status == BookMetaStatusOKMeta && r.BookCtx != nil {
                         // 为每个 toc item 创建 ChapterTask
-                        for _, toc := range r.BookCtx.TocItems {
+                        // R67-C BUG-55 (P2) 修复: 原实现未设置 Idx, 所有 ChapterTask.Idx=0
+                        //   → CrawlChapterContent 把 ch.Idx=q.Idx=0 写入 DB → SQL
+                        //   "ORDER BY idx ASC" (main.go:1526/1551/1654/1662 + admin.go:2906/3542)
+                        //   退化为插入顺序/rowid, 章节顺序错乱 (用户翻书跳章). 修复: 用
+                        //   toc 循环索引 i+1 (1-based, 与 admin.go 章节列表显示口径一致) 作
+                        //   Idx, 同本书内 Idx 单调递增保序.
+                        for i, toc := range r.BookCtx.TocItems {
                                 globalQueue = append(globalQueue, &ChapterTask{
                                         BookCtx: r.BookCtx,
                                         Title:   toc.Title,
                                         URL:     toc.URL,
                                         Volume:  toc.Volume,
+                                        Idx:     i + 1,
                                 })
                         }
                         okMetaBooks = append(okMetaBooks, r.BookCtx)
@@ -1448,9 +1480,15 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                 getHealthTracker().recordFailure(bookHost)
                 return nil, err
         }
-        // R65-C: 成功路径记录延迟 + 成功计数 + 调 AdjustMinGap
+        // R67-C BUG-56 (P2) 修复: 原实现 recordSuccess + (后续) ReportSuccess 在
+        //   Blocked 检查前调, Blocked 时 recordFailure + ReportFailure 也调,
+        //   success+fail 双计数 → successRate 失真 (Blocked 视为 0.5 而非 0),
+        //   AdjustConcurrency 不降并发, 同 host 持续被打. 修复: recordSuccess 移到
+        //   Blocked 检查后 (与 ReportSuccess 同款, 仅 HTTP 200 + 非 Blocked 才算
+        //   成功). recordLatency + AdjustMinGap 保留在 Blocked 检查前 (HTTP 响应
+        //   延迟有效, 无论是否 Blocked).
+        // R65-C: 延迟 + 调 AdjustMinGap (无论是否 Blocked, 都有 HTTP 响应, 延迟有效)
         getHealthTracker().recordLatency(bookHost, latencyMs)
-        getHealthTracker().recordSuccess(bookHost)
         GetHostGate().AdjustMinGap(bookHost, latencyMs)
         // R43-1B: 命中验证码 → 累计 captchaEncountered
         if bookRes.CaptchaDetected {
@@ -1464,6 +1502,8 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                 getHealthTracker().recordFailure(bookHost)
                 return &BookMetaResult{Status: BookMetaStatusBlocked, BookURL: bookURL}, nil
         }
+        // 成功 (HTTP 200 + 非 Blocked): 记 success + ReportSuccess
+        getHealthTracker().recordSuccess(bookHost)
         // 成功: 记 per-host Referer (fetchPageOnce 内部已记, 这里不重复)
         GetHostGate().ReportSuccess(bookHost)
 
@@ -1517,11 +1557,14 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
 
         // 简化: 直接 upsert 书籍 (假设无 DB 时跳过)
         var bookID string
+        // R67-C BUG-60: 跟踪本次是新建还是更新 (供 stats 累计)
+        isNewBook := false
         if cfg.DB != nil {
                 // 检查是否已存在 (跨源去重 + 增量更新)
                 existing, ferr := cfg.DB.FindBookBySourceURL(bookURL)
                 if ferr == nil && existing.ID != "" {
                         bookID = existing.ID
+                        isNewBook = false
                         // R54-1B 增量更新: 原代码此处仅 set bookID, 不刷新 meta 字段 (name/author/
                         //   intro/cover 不更新), 也不写 status/categoryId. 修复: 调 UpsertBook 刷新
                         //   meta 字段 + 仅当新算出 status != "unknown" 时覆盖 + 仅当新算出
@@ -1549,6 +1592,7 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                         }
                 } else {
                         // 新建书
+                        isNewBook = true
                         newBook := Book{
                                 Name:          CleanTextField(parsed.Name, 200),
                                 Author:        CleanTextField(parsed.Author, 100),
@@ -1599,9 +1643,9 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                 getHealthTracker().recordFailure(tocHost)
                 return nil, err
         }
-        // R65-C: 成功路径记录延迟 + 成功计数 + 调 AdjustMinGap
+        // R67-C BUG-56 (P2) 修复: 同 books 页路径, recordSuccess 移到 Blocked 检查后
+        //   避免与 recordFailure 双计数. recordLatency + AdjustMinGap 保留在前.
         getHealthTracker().recordLatency(tocHost, tocLatencyMs)
-        getHealthTracker().recordSuccess(tocHost)
         GetHostGate().AdjustMinGap(tocHost, tocLatencyMs)
         // R43-1B: 命中验证码 → 累计 captchaEncountered
         if tocRes.CaptchaDetected {
@@ -1614,7 +1658,8 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                 getHealthTracker().recordFailure(tocHost)
                 return &BookMetaResult{Status: BookMetaStatusBlocked, BookURL: bookURL}, nil
         }
-        // 成功
+        // 成功 (HTTP 200 + 非 Blocked): 记 success + ReportSuccess
+        getHealthTracker().recordSuccess(tocHost)
         GetHostGate().ReportSuccess(tocHost)
 
         // 解析目录 (含翻页)
@@ -1668,6 +1713,8 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
         }
 
         // 封面下载 (若有 cover 且 DB 提供 SaveCoverWebp)
+        // R67-C BUG-60: coverSaved 跟踪封面是否落盘成功 (供 stats.CoversSaved 累计)
+        coverSaved := false
         if parsed.Cover != "" && cfg.DB != nil {
                 // ab-b 注: 封面 fetchBinary 直连外部 CDN, 不经 gateFetch
                 coverRes, err := FetchPage(ctx, parsed.Cover, FetchConfig{
@@ -1682,11 +1729,18 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                         // 简化: HTML 当字节流 (实际应使用 fetchBinary)
                         if rel, err := SaveCoverWebp([]byte(coverRes.HTML), bookID); err == nil && rel != "" {
                                 _ = cfg.DB.UpdateBookCover(bookID, rel)
+                                coverSaved = true
                         }
                 }
         }
 
-        return &BookMetaResult{Status: BookMetaStatusOKMeta, BookURL: bookURL, BookCtx: bookCtx}, nil
+        return &BookMetaResult{
+                Status:     BookMetaStatusOKMeta,
+                BookURL:    bookURL,
+                BookCtx:    bookCtx,
+                IsNewBook:  isNewBook,
+                CoverSaved: coverSaved,
+        }, nil
 }
 
 // ---------- CrawlChapterContent (阶段 2) ----------
@@ -1751,12 +1805,11 @@ func CrawlChapterContent(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRun
                 getHealthTracker().recordFailure(chapterHost)
                 return false, "other", fmt.Sprintf("章节采集失败 %s: %s", q.Title, truncate(errStr, 120))
         }
-        // R65-C: 成功路径记录延迟 + 成功 + 调 AdjustMinGap (hostgate 30s cooldown
-        //   自抖动跳过, 多次调无副作用)
+        // R67-C BUG-56 (P2) 修复: 同 CrawlBookMeta 路径, recordSuccess +
+        //   ReportSuccess 移到 Blocked 检查后避免双计数. recordLatency + AdjustMinGap
+        //   保留在前 (HTTP 响应延迟有效, 无论是否 Blocked).
         getHealthTracker().recordLatency(chapterHost, chapterLatencyMs)
-        getHealthTracker().recordSuccess(chapterHost)
         hostGate.AdjustMinGap(chapterHost, chapterLatencyMs)
-        hostGate.ReportSuccess(chapterHost)
 
         // R43-1B: 命中验证码 → 累计 captchaEncountered (R42-1B 后该字段是死字段,
         // admin 任务监控 captchaEncountered 永远显示 0, 操作员无法察觉反爬触发频率)
@@ -1770,6 +1823,9 @@ func CrawlChapterContent(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRun
                 getHealthTracker().recordFailure(chapterHost)
                 return false, "other", fmt.Sprintf("章节内容疑似被拦截: %s", truncate(q.URL, 120))
         }
+        // 成功 (HTTP 200 + 非 Blocked): 记 success + ReportSuccess
+        getHealthTracker().recordSuccess(chapterHost)
+        hostGate.ReportSuccess(chapterHost)
 
         // 解析正文 (parseContent 含翻页合并)
         pageFetcher := func(ctx context.Context, u, refererURL string) (string, error) {
