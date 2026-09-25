@@ -189,7 +189,11 @@ model Site {
   // SEO 关键词模板
   chapterSeoKeywordsTemplate   String @default("")
   // 伪静态 URL 风格: query(查询串,默认) | numeric(纯数字) | alphanumeric(字母+数字) |
-  // slug(尾斜杠) | short(短路径) | classic(连字符.html) | dir(目录分层)
+  // slug(尾斜杠) | short(短路径) | classic(连字符.html) | dir(目录分层) |
+  // hashid(短哈希,不可逆,本站自解析) | base62(base62编码,可逆) | segmented(ID分段目录)
+  // R63-A: 扩展为 10 套枚举 (原 7 套 + 新增 hashid/base62/segmented 三套).
+  //   main.go buildBookURL/buildChapterURL/buildCategoryURL + parsePseudoStaticPath 全链路消费.
+  //   admin.go adminSitesCreate/PUT/List/fillSitesPageData 接收 + 枚举校验.
   pseudoStaticStyle            String @default("query")
   // R16: 主题可编辑设置 — 每个站点可独立配置导航栏展示分类数与首页模块数据量
   navCategoryCount             Int     @default(16)  // 导航栏展示几个分类 (5-30)

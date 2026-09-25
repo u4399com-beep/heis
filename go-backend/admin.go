@@ -1836,10 +1836,11 @@ func fillRulesPageData(data map[string]interface{}) {
 //
 //   R55-1A: SELECT 扩展含 icbm/geoRegion/geoPlacename/inLinkWheel, 供 edit 表单回填.
 //   附带 Themes 列表 (来自 adminThemes 静态注册表), 供 site edit modal 下拉主题选择.
+//   R63-A: SELECT 加 pseudoStaticStyle, 供 admin/sites.html edit modal 下拉选择 (R63-B 接入模板).
 func fillSitesPageData(data map[string]interface{}) {
         rows, err := db.Query(
                 `SELECT id,name,domain,themeId,isDefault,title,description,keywords,
-                        COALESCE(icbm,''),COALESCE(geoRegion,''),COALESCE(geoPlacename,''),offset,status,inLinkWheel
+                        COALESCE(icbm,''),COALESCE(geoRegion,''),COALESCE(geoPlacename,''),offset,status,inLinkWheel,pseudoStaticStyle
                    FROM Site ORDER BY isDefault DESC, name ASC LIMIT 200`)
         sites := []map[string]interface{}{}
         total := 0
@@ -1847,26 +1848,30 @@ func fillSitesPageData(data map[string]interface{}) {
         if err == nil {
                 defer rows.Close()
                 for rows.Next() {
-                        var id, name, domain, themeID, title, desc, kw, icbm, geoR, geoP string
+                        var id, name, domain, themeID, title, desc, kw, icbm, geoR, geoP, pseudoStaticStyle string
                         var isDefault, status, inLinkWheel bool
                         var offset int
                         _ = rows.Scan(&id, &name, &domain, &themeID, &isDefault, &title, &desc, &kw,
-                                &icbm, &geoR, &geoP, &offset, &status, &inLinkWheel)
+                                &icbm, &geoR, &geoP, &offset, &status, &inLinkWheel, &pseudoStaticStyle)
+                        if pseudoStaticStyle == "" {
+                                pseudoStaticStyle = "query"
+                        }
                         sites = append(sites, map[string]interface{}{
-                                "id":           id,
-                                "name":         name,
-                                "domain":       domain,
-                                "themeId":      themeID,
-                                "isDefault":    isDefault,
-                                "title":        title,
-                                "description":  desc,
-                                "keywords":     kw,
-                                "icbm":         icbm,
-                                "geoRegion":    geoR,
-                                "geoPlacename": geoP,
-                                "status":       status,
-                                "offset":       offset,
-                                "inLinkWheel":  inLinkWheel,
+                                "id":                id,
+                                "name":              name,
+                                "domain":            domain,
+                                "themeId":           themeID,
+                                "isDefault":         isDefault,
+                                "title":             title,
+                                "description":       desc,
+                                "keywords":          kw,
+                                "icbm":              icbm,
+                                "geoRegion":         geoR,
+                                "geoPlacename":      geoP,
+                                "status":            status,
+                                "offset":            offset,
+                                "inLinkWheel":       inLinkWheel,
+                                "pseudoStaticStyle": pseudoStaticStyle,
                         })
                         total++
                         if isDefault {
@@ -3729,12 +3734,19 @@ func sortAuditReports(reports []map[string]interface{}) {
 // adminSitesHandler — GET 列站点 / POST 新建站点.
 //   GET  /api/admin/sites         → 列站点 (含 isDefault + status + themeId)
 //   POST /api/admin/sites         → 新建站点 (name/domain/themeId/...)
+//   POST /api/admin/sites  body={action:"generate-tdk"}  → R63-A 批量智能 TDK 生成.
 func adminSitesHandler(w http.ResponseWriter, r *http.Request) {
         switch r.Method {
         case http.MethodGet:
                 adminSitesList(w, r)
         case http.MethodPost:
-                adminSitesCreate(w, r)
+                body := readJSONBody(r)
+                // R63-A: POST body {action:"generate-tdk"} → 批量智能 TDK 生成 (不创建站点).
+                if action, _ := body["action"].(string); action == "generate-tdk" {
+                        adminSitesBatchGenerateTDK(w, r, body)
+                        return
+                }
+                adminSitesCreate(w, r, body)
         default:
                 writeJSONErr(w, "method not allowed", 405)
         }
@@ -3742,7 +3754,8 @@ func adminSitesHandler(w http.ResponseWriter, r *http.Request) {
 
 // adminSiteByIDHandler — PUT/DELETE /api/admin/sites/:id (R55-1A 新增).
 //
-//   PUT    /api/admin/sites/:id  → 按字段增量更新 (name/domain/themeId/title/description/keywords/icbm/geoRegion/geoPlacename/offset/status/inLinkWheel/isDefault)
+//   PUT    /api/admin/sites/:id  → 按字段增量更新 (name/domain/themeId/title/description/keywords/icbm/geoRegion/geoPlacename/offset/status/inLinkWheel/isDefault/pseudoStaticStyle)
+//   POST   /api/admin/sites/:id/generate-tdk  → R63-A 单站智能 TDK 生成 + 写回 DB.
 //   DELETE /api/admin/sites/:id  → 删除站点 (禁止删除 isDefault 站点)
 func adminSiteByIDHandler(w http.ResponseWriter, r *http.Request) {
         parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/admin/sites/"), "/")
@@ -3751,6 +3764,11 @@ func adminSiteByIDHandler(w http.ResponseWriter, r *http.Request) {
                 return
         }
         id := parts[0]
+        // R63-A: /:id/generate-tdk 子路径 → 单站智能 TDK 生成.
+        if len(parts) >= 2 && parts[1] == "generate-tdk" {
+                adminSiteGenerateTDK(w, r, id)
+                return
+        }
         switch r.Method {
         case http.MethodPut:
                 body := readJSONBody(r)
@@ -3855,6 +3873,19 @@ func adminSiteByIDHandler(w http.ResponseWriter, r *http.Request) {
                         sets = append(sets, "isDefault=?")
                         args = append(args, boolField(body, "isDefault", false))
                 }
+                // R63-A: pseudoStaticStyle 枚举校验 (query/numeric/alphanumeric/slug/short/classic/dir/hashid/base62/segmented).
+                if v, ok := body["pseudoStaticStyle"]; ok && v != nil {
+                        s := strField(body, "pseudoStaticStyle", 20)
+                        if s == "" {
+                                s = "query"
+                        }
+                        if !validPseudoStaticStyle(s) {
+                                writeJSONErr(w, "pseudoStaticStyle 不在枚举内 (query/numeric/alphanumeric/slug/short/classic/dir/hashid/base62/segmented)", 400)
+                                return
+                        }
+                        sets = append(sets, "pseudoStaticStyle=?")
+                        args = append(args, s)
+                }
                 if len(sets) == 0 {
                         writeJSONErr(w, "无可更新字段", 400)
                         return
@@ -3890,8 +3921,9 @@ func adminSiteByIDHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // adminSitesList — GET /api/admin/sites 列站点 (含 isDefault/themeId/offset/status 等, 与 backup 同字段集).
+//   R63-A: SELECT 加 pseudoStaticStyle 字段返回 (供前端编辑表单显示当前值).
 func adminSitesList(w http.ResponseWriter, r *http.Request) {
-        rows, err := db.Query(`SELECT id,name,domain,themeId,isDefault,title,description,keywords,icbm,geoRegion,geoPlacename,offset,status,inLinkWheel,createdAt,updatedAt FROM Site ORDER BY isDefault DESC, name ASC LIMIT 500`)
+        rows, err := db.Query(`SELECT id,name,domain,themeId,isDefault,title,description,keywords,icbm,geoRegion,geoPlacename,offset,status,inLinkWheel,pseudoStaticStyle,createdAt,updatedAt FROM Site ORDER BY isDefault DESC, name ASC LIMIT 500`)
         if err != nil {
                 writeJSONErr(w, "查询失败: "+err.Error(), 500)
                 return
@@ -3899,15 +3931,18 @@ func adminSitesList(w http.ResponseWriter, r *http.Request) {
         defer rows.Close()
         out := []map[string]interface{}{}
         for rows.Next() {
-                var id, name, domain, themeID, title, desc, kw, icbm, geoR, geoP, createdAt, updatedAt string
+                var id, name, domain, themeID, title, desc, kw, icbm, geoR, geoP, pseudoStaticStyle, createdAt, updatedAt string
                 var offset int
                 var isDefault, status, inLinkWheel bool
-                _ = rows.Scan(&id, &name, &domain, &themeID, &isDefault, &title, &desc, &kw, &icbm, &geoR, &geoP, &offset, &status, &inLinkWheel, &createdAt, &updatedAt)
+                _ = rows.Scan(&id, &name, &domain, &themeID, &isDefault, &title, &desc, &kw, &icbm, &geoR, &geoP, &offset, &status, &inLinkWheel, &pseudoStaticStyle, &createdAt, &updatedAt)
+                if pseudoStaticStyle == "" {
+                        pseudoStaticStyle = "query"
+                }
                 out = append(out, map[string]interface{}{
                         "id": id, "name": name, "domain": domain, "themeId": themeID,
                         "isDefault": isDefault, "title": title, "description": desc, "keywords": kw,
                         "icbm": icbm, "geoRegion": geoR, "geoPlacename": geoP, "offset": offset,
-                        "status": status, "inLinkWheel": inLinkWheel,
+                        "status": status, "inLinkWheel": inLinkWheel, "pseudoStaticStyle": pseudoStaticStyle,
                         "createdAt": createdAt, "updatedAt": updatedAt,
                 })
         }
@@ -3918,9 +3953,13 @@ func adminSitesList(w http.ResponseWriter, r *http.Request) {
 //
 //   入参: name (必填 1-100) / domain (必填唯一) / themeId (校验在 adminThemes 内) /
 //         title/description/keywords/icbm/geoRegion/geoPlacename/offset/status/inLinkWheel/isDefault
+//         pseudoStaticStyle (R63-A: 枚举 query/numeric/alphanumeric/slug/short/classic/dir/hashid/base62/segmented, 默认 query)
 //   isDefault=true 时先清掉其他站点 isDefault 再插入.
-func adminSitesCreate(w http.ResponseWriter, r *http.Request) {
-        body := readJSONBody(r)
+//   R63-A: adminSitesHandler 已读 body 并转发; 本函数接收 body 参数避免重复 read.
+func adminSitesCreate(w http.ResponseWriter, r *http.Request, body map[string]interface{}) {
+        if body == nil {
+                body = readJSONBody(r)
+        }
         name := strField(body, "name", 100)
         if name == "" {
                 writeJSONErr(w, "站点名必填(1~100字)", 400)
@@ -3978,6 +4017,15 @@ func adminSitesCreate(w http.ResponseWriter, r *http.Request) {
         status := boolField(body, "status", true)
         inLinkWheel := boolField(body, "inLinkWheel", true)
         isDefault := boolField(body, "isDefault", false)
+        // R63-A: pseudoStaticStyle 枚举校验 (query/numeric/alphanumeric/slug/short/classic/dir/hashid/base62/segmented).
+        pseudoStaticStyle := strField(body, "pseudoStaticStyle", 20)
+        if pseudoStaticStyle == "" {
+                pseudoStaticStyle = "query"
+        }
+        if !validPseudoStaticStyle(pseudoStaticStyle) {
+                writeJSONErr(w, "pseudoStaticStyle 不在枚举内 (query/numeric/alphanumeric/slug/short/classic/dir/hashid/base62/segmented)", 400)
+                return
+        }
         if isDefault {
                 _, _ = db.Exec(`UPDATE Site SET isDefault=0`)
         }
@@ -3987,9 +4035,10 @@ func adminSitesCreate(w http.ResponseWriter, r *http.Request) {
         //   全部 Site 新建失败). args = 14 个 (id/name/domain/themeId/title/desc/kw/icbm/
         //   geoR/geoP/offset/isDefault/status/inLinkWheel), VALUES 应有 14 个 `?` + 2 个
         //   datetime('now') 字面量 (createdAt/updatedAt) = 16 values for 16 columns.
+        // R63-A: 加 pseudoStaticStyle 列 → 15 个 `?` + 2 个 datetime 字面量 = 17 values for 17 columns.
         _, err := db.Exec(
-                `INSERT INTO Site (id,name,domain,themeId,title,description,keywords,icbm,geoRegion,geoPlacename,offset,isDefault,status,inLinkWheel,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),datetime('now'))`,
-                id, name, domain, themeID, title, desc, kw, icbm, geoR, geoP, offset, isDefault, status, inLinkWheel,
+                `INSERT INTO Site (id,name,domain,themeId,title,description,keywords,icbm,geoRegion,geoPlacename,offset,isDefault,status,inLinkWheel,pseudoStaticStyle,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),datetime('now'))`,
+                id, name, domain, themeID, title, desc, kw, icbm, geoR, geoP, offset, isDefault, status, inLinkWheel, pseudoStaticStyle,
         )
         if err != nil {
                 writeJSONErr(w, "创建失败: "+err.Error(), 500)
@@ -3998,7 +4047,270 @@ func adminSitesCreate(w http.ResponseWriter, r *http.Request) {
         writeJSONOK(w, map[string]interface{}{
                 "id": id, "name": name, "domain": domain, "themeId": themeID,
                 "isDefault": isDefault, "status": status, "inLinkWheel": inLinkWheel,
-                "offset": offset,
+                "offset": offset, "pseudoStaticStyle": pseudoStaticStyle,
+        })
+}
+
+// ---------- 站群智能 TDK 生成 API (R63-A 新增) ----------
+
+// generateSiteTDK — 智能生成站点 TDK (title/description/keywords) (R63-A).
+//
+// 数据源 (按优先级查 DB):
+//   1. site.Name (站点名, 主标识)
+//   2. site.Domain (备用, site.Name 为空时用)
+//   3. 站点分类前 3 个 (按 sortOrder ASC)
+//   4. 站点书库 top 热门书 3 本 (按 wordCount DESC)
+//   5. N = COUNT(*) FROM Book (站点书库总数, 全局; 站群共享书库时同 N)
+//   6. M = COUNT(*) FROM Category (站点分类总数)
+//
+// 模板池 (每站按 simpleHash(siteID) % len(pool) 选模板, 同站稳定):
+//   title 池 6 个 / description 池 4 个 / keywords 池 3 个.
+//
+// 字段截断: title ≤80 / description ≤200 / keywords ≤200 rune (按 rune 截防中文斩半).
+//
+// 空数据兜底: N=0 (站点无书) → 用通用模板, 不取 cat/book 占位符.
+func generateSiteTDK(siteID string) (title, description, keywords string, err error) {
+        // 1. site.Name + domain
+        var siteName, domain string
+        err = db.QueryRow(`SELECT COALESCE(name,''), COALESCE(domain,'') FROM Site WHERE id=?`, siteID).Scan(&siteName, &domain)
+        if err != nil {
+                return "", "", "", err
+        }
+        if siteName == "" {
+                siteName = domain
+        }
+        if siteName == "" {
+                siteName = "小说站"
+        }
+
+        // 2. top 3 categories (按 sortOrder ASC, 与 fillCategoriesPageData 同款排序)
+        catRows, qerr1 := db.Query(`SELECT name FROM Category ORDER BY sortOrder ASC LIMIT 3`)
+        cats := []string{}
+        if qerr1 == nil {
+                for catRows.Next() {
+                        var n string
+                        _ = catRows.Scan(&n)
+                        if n != "" {
+                                cats = append(cats, n)
+                        }
+                }
+                catRows.Close()
+        }
+
+        // 3. top 3 books (按 wordCount DESC, 取最热门的 3 本)
+        bookRows, qerr2 := db.Query(`SELECT name FROM Book ORDER BY wordCount DESC LIMIT 3`)
+        books := []string{}
+        if qerr2 == nil {
+                for bookRows.Next() {
+                        var n string
+                        _ = bookRows.Scan(&n)
+                        if n != "" {
+                                books = append(books, n)
+                        }
+                }
+                bookRows.Close()
+        }
+
+        // 4. N + M (全局; 站群共享书库时同值, 各站因 siteID hash 不同选不同模板, 仍差异化)
+        var N, M int
+        _ = db.QueryRow(`SELECT COUNT(*) FROM Book`).Scan(&N)
+        _ = db.QueryRow(`SELECT COUNT(*) FROM Category`).Scan(&M)
+
+        // 5. 占位符兜底值 (cat/book 缺失时用通用词, 不空字段)
+        cat1, cat2, cat3 := "小说", "小说", "小说"
+        if len(cats) > 0 {
+                cat1 = cats[0]
+        }
+        if len(cats) > 1 {
+                cat2 = cats[1]
+        }
+        if len(cats) > 2 {
+                cat3 = cats[2]
+        }
+        book1, book2, book3 := "精品小说", "热门小说", "完结小说"
+        if len(books) > 0 {
+                book1 = books[0]
+        }
+        if len(books) > 1 {
+                book2 = books[1]
+        }
+        if len(books) > 2 {
+                book3 = books[2]
+        }
+
+        // 6. 空数据兜底 (N=0): 用通用模板, 不取 cat/book 占位符.
+        if N == 0 {
+                title = siteName + " - 免费小说在线阅读"
+                description = siteName + "小说大全, 免费/无弹窗/更新快, 每日更新, 全文阅读"
+                keywords = siteName + ",小说,免费阅读,在线阅读,无弹窗,全文阅读"
+                return truncateRune(title, 80), truncateRune(description, 200), truncateRune(keywords, 200), nil
+        }
+
+        // 7. 模板池 (占位符: {siteName} {cat1} {cat2} {cat3} {book1} {book2} {book3} {N} {M} {X})
+        //   {X} = 每日更新 N 章 (用 M 兜底, M=0 时用 "多")
+        X := strconv.Itoa(M)
+        if X == "0" {
+                X = "多"
+        }
+        nStr := strconv.Itoa(N)
+        mStr := strconv.Itoa(M)
+        titlePool := []string{
+                siteName + " - 免费小说在线阅读",
+                siteName + " | " + cat1 + cat2 + "小说大全",
+                siteName + " — " + book1 + "全文阅读 - 最新章节免费看",
+                siteName + ": " + book2 + "+" + nStr + "本" + cat3 + "小说在线阅读",
+                siteName + "小说阅读网 - " + book3 + "/" + book2 + "/" + book1 + "无弹窗全文",
+                siteName + " | " + nStr + "本精品小说随你看 - 免费/无弹窗/更新快",
+        }
+        descPool := []string{
+                siteName + "提供" + cat1 + "、" + cat2 + "、" + cat3 + "等" + mStr + "个分类的" + nStr + "本小说免费在线阅读, 包含" + book1 + "、" + book2 + "、" + book3 + "等热门作品, 每日更新, 无弹窗, 支持手机端。",
+                siteName + "是" + cat1 + "小说阅读网, 提供" + book1 + "全文阅读, 收录" + nStr + "本" + cat2 + "小说, 完结/连载齐全, 一键追更, 手机端体验优秀。",
+                siteName + "小说大全收录" + nStr + "本" + cat1 + "/" + cat2 + "/" + cat3 + "类型小说, " + book1 + "、" + book2 + "连载追更, " + book3 + "已完结, 全文免费阅读, 无弹窗广告。",
+                "欢迎来到" + siteName + "! 我们精选" + nStr + "本" + cat1 + "、" + cat2 + "精品小说, " + book1 + "、" + book2 + "、" + book3 + "等你来看, 每日更新" + X + "章, 极速追更体验。",
+        }
+        kwPool := []string{
+                siteName + "," + siteName + "小说," + cat1 + "小说," + cat2 + "小说," + book1 + "," + book2 + "," + book3 + ",免费阅读,在线阅读,无弹窗,全文阅读",
+                siteName + "小说阅读," + cat1 + "小说大全," + cat2 + "在线阅读," + book1 + "全文," + book2 + "最新章节," + book3 + "免费看,完结小说,连载小说",
+                siteName + "," + cat1 + "," + cat2 + "," + cat3 + ",小说,免费,在线,无弹窗," + book1 + "," + book2 + "," + book3 + ",全文,最新章节",
+        }
+
+        // 8. 模板选择: simpleHash(siteID) % len(pool), 每站稳定取一个组合 (同站再生成不抖动).
+        h := uint64(simpleHash(siteID))
+        title = titlePool[h%uint64(len(titlePool))]
+        description = descPool[h%uint64(len(descPool))]
+        keywords = kwPool[h%uint64(len(kwPool))]
+
+        return truncateRune(title, 80), truncateRune(description, 200), truncateRune(keywords, 200), nil
+}
+
+// truncateRune 按 rune 截断字符串到 max 字符 (防中文多字节斩半) (R63-A).
+func truncateRune(s string, max int) string {
+        if max <= 0 {
+                return ""
+        }
+        r := []rune(s)
+        if len(r) <= max {
+                return s
+        }
+        return string(r[:max])
+}
+
+// adminSiteGenerateTDK — POST /api/admin/sites/:id/generate-tdk 单站智能 TDK 生成 + 写回 Site 表 (R63-A).
+//
+//   1. 校验 siteID 存在 + status=1 (不存在或下线返 404).
+//   2. 调 generateSiteTDK 算 title/description/keywords.
+//   3. 写回 Site 表 UPDATE title/description/keywords WHERE id=?.
+//      保守策略: 不覆盖 isDefault 站点的 title (默认站保留手工 title, 只生成 description+keywords).
+//   4. 返 {ok:true, site:{id, title, description, keywords}} (读回 DB 最终值).
+func adminSiteGenerateTDK(w http.ResponseWriter, r *http.Request, siteID string) {
+        if r.Method != http.MethodPost {
+                writeJSONErr(w, "method not allowed", 405)
+                return
+        }
+        var exist string
+        var isDefault bool
+        _ = db.QueryRow(`SELECT id, isDefault FROM Site WHERE id=? AND status=1`, siteID).Scan(&exist, &isDefault)
+        if exist == "" {
+                writeJSONErr(w, "站点不存在或已下线", 404)
+                return
+        }
+        title, desc, kw, err := generateSiteTDK(siteID)
+        if err != nil {
+                writeJSONErr(w, "生成失败: "+err.Error(), 500)
+                return
+        }
+        // 写回 DB: 默认站只更新 description+keywords (保留手工 title); 非默认站更新全部.
+        var sets []string
+        var args []interface{}
+        if !isDefault {
+                sets = append(sets, "title=?")
+                args = append(args, title)
+        }
+        sets = append(sets, "description=?", "keywords=?", "updatedAt=datetime('now')")
+        args = append(args, desc, kw, siteID)
+        if _, err := db.Exec(`UPDATE Site SET `+strings.Join(sets, ",")+` WHERE id=?`, args...); err != nil {
+                writeJSONErr(w, "写回失败: "+err.Error(), 500)
+                return
+        }
+        // 读回 DB 最终值返响应 (确保默认站 title 字段反映实际 DB 状态, 非生成的 title).
+        var finalTitle, finalDesc, finalKw string
+        _ = db.QueryRow(`SELECT COALESCE(title,''), COALESCE(description,''), COALESCE(keywords,'') FROM Site WHERE id=?`, siteID).Scan(&finalTitle, &finalDesc, &finalKw)
+        writeJSONOK(w, map[string]interface{}{
+                "site": map[string]interface{}{
+                        "id":          siteID,
+                        "title":       finalTitle,
+                        "description": finalDesc,
+                        "keywords":    finalKw,
+                },
+        })
+}
+
+// adminSitesBatchGenerateTDK — POST /api/admin/sites body={action:"generate-tdk"} 批量智能 TDK 生成 (R63-A).
+//
+//   body 可选 {apply: false}; apply=true (默认) 写回 DB; apply=false 只返预览不写库.
+//   迭代所有 status=1 站点: 调 generateSiteTDK, 默认站只更新 description+keywords (保守策略).
+//   返 {ok:true, updated:N, sites:[{id, title, description, keywords}, ...]}.
+func adminSitesBatchGenerateTDK(w http.ResponseWriter, r *http.Request, body map[string]interface{}) {
+        if r.Method != http.MethodPost {
+                writeJSONErr(w, "method not allowed", 405)
+                return
+        }
+        apply := true
+        if v, ok := body["apply"]; ok {
+                if b, ok := v.(bool); ok {
+                        apply = b
+                }
+        }
+        // R63 主控修复: 先收齐 siteID+isDefault, 显式 Close rows, 再循环调 generateSiteTDK.
+        //   原实现 rows 持锁期间 generateSiteTDK 内部 db.Query/QueryRow + apply=true 时 db.Exec
+        //   → modernc.org/sqlite 连接池等待 rows 释放 → 30s 超时死锁 (单站 API 不持外层 rows 故正常).
+        rows, err := db.Query(`SELECT id, isDefault FROM Site WHERE status=1 ORDER BY isDefault DESC, name ASC`)
+        if err != nil {
+                writeJSONErr(w, "查询失败: "+err.Error(), 500)
+                return
+        }
+        type siteMeta struct {
+                ID        string
+                IsDefault bool
+        }
+        metas := []siteMeta{}
+        for rows.Next() {
+                var id string
+                var isDefault bool
+                _ = rows.Scan(&id, &isDefault)
+                if id != "" {
+                        metas = append(metas, siteMeta{ID: id, IsDefault: isDefault})
+                }
+        }
+        rows.Close() // 显式释放连接, 后续 generateSiteTDK 的 Query/Exec 不再阻塞
+        type siteTDK struct {
+                ID, Title, Desc, Kw string
+        }
+        out := []siteTDK{}
+        updated := 0
+        for _, m := range metas {
+                t, d, k, gerr := generateSiteTDK(m.ID)
+                if gerr != nil {
+                        continue
+                }
+                if apply {
+                        var sets []string
+                        var args []interface{}
+                        if !m.IsDefault {
+                                sets = append(sets, "title=?")
+                                args = append(args, t)
+                        }
+                        sets = append(sets, "description=?", "keywords=?", "updatedAt=datetime('now')")
+                        args = append(args, d, k, m.ID)
+                        if _, err := db.Exec(`UPDATE Site SET `+strings.Join(sets, ",")+` WHERE id=?`, args...); err == nil {
+                                updated++
+                        }
+                }
+                out = append(out, siteTDK{ID: m.ID, Title: t, Desc: d, Kw: k})
+        }
+        writeJSONOK(w, map[string]interface{}{
+                "updated": updated,
+                "sites":   out,
         })
 }
 

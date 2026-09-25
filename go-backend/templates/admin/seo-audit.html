@@ -38,6 +38,7 @@
       <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
         <span style="font-size:12px;color:var(--muted);">🔧 修复入口:</span>
         <a class="btn btn-sm btn-primary" href="/admin/sites">前往站点管理修复</a>
+        <a class="btn btn-sm btn-primary" href="#" id="btnAuditGenAllTDK" onclick="generateAllTDKFromAudit(event,this)">一键智能生成 TDK</a>
         <a class="btn btn-sm" href="/admin/links">前往友链管理</a>
         <a class="btn btn-sm" href="/admin/books">前往书籍管理</a>
       </div>
@@ -86,6 +87,33 @@
   </div>
 </main>
 </div>
+<div class="toast" id="toast"></div>
+<script>
+// generateAllTDKFromAudit — 从审计页一键触发批量智能 TDK (R63-B).
+//   与 sites.html 的 generateAllTDK 同口径调用 POST /api/admin/sites/generate-tdk body {apply:true}.
+//   成功后 showToast + 刷新页面以查看评分提升.
+function showToast(msg,ok){
+  var t=document.getElementById('toast');t.textContent=msg;t.className='toast '+(ok?'ok':'err');
+  setTimeout(function(){t.classList.add('show');},10);setTimeout(function(){t.classList.remove('show');},2500);
+}
+function generateAllTDKFromAudit(e,btn){
+  if(e&&e.preventDefault)e.preventDefault();
+  if(!confirm('为所有站点智能生成 TDK? 此操作会覆盖现有 TDK'))return;
+  var orig=btn?btn.textContent:'';
+  if(btn){btn.style.pointerEvents='none';btn.textContent='生成中...';}
+  fetch('/api/admin/sites/generate-tdk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({apply:true})})
+    .then(function(r){return r.json();}).then(function(j){
+      if(btn){btn.style.pointerEvents='';btn.textContent=orig;}
+      if(j&&j.ok){
+        showToast('已批量生成 '+(j.updated||0)+' 个站点 TDK, 评分将提升',true);
+        setTimeout(function(){location.reload();},1500);
+      }else{showToast('失败: '+(j&&j.error||''),false);}
+    }).catch(function(err){
+      if(btn){btn.style.pointerEvents='';btn.textContent=orig;}
+      showToast('请求失败: '+err.message,false);
+    });
+}
+</script>
 </body>
 </html>
 {{end}}

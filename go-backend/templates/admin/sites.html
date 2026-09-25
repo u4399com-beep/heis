@@ -10,6 +10,7 @@
   <div class="topbar">
     <h1>{{.Title}}</h1>
     <div class="actions">
+      <button class="btn btn-primary" id="btnGenAllTDK" onclick="generateAllTDK(this)">批量智能生成 TDK</button>
       <button class="btn btn-primary" onclick="openCreateModal()">+ 新建站点</button>
       <a href="/api/admin/sites" class="btn" target="_blank">API</a>
     </div>
@@ -54,6 +55,7 @@
               <a class="btn btn-sm" href="https://{{.domain}}" target="_blank">访问</a>
               <a class="btn btn-sm" href="/?site={{.id}}" target="_blank">前台</a>
               <button class="btn btn-sm btn-primary" onclick='editSiteFromRow(this)'>编辑</button>
+              <button class="btn btn-sm" onclick='generateTDK(this,"{{.id}}","{{.name}}")'>智能 TDK</button>
               {{if .isDefault}}
               <button class="btn btn-sm" disabled title="默认站点不可删除">删除</button>
               {{else}}
@@ -131,6 +133,21 @@
         <div class="field">
           <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" name="isDefault" style="width:16px;height:16px;">设为默认站点</label>
         </div>
+        <div class="field">
+          <label>伪静态风格 (pseudoStaticStyle)</label>
+          <select name="pseudoStaticStyle">
+            <option value="query">查询串 (默认 /?view=book&amp;id=)</option>
+            <option value="numeric">纯数字 (.html)</option>
+            <option value="alphanumeric">字母+数字</option>
+            <option value="slug">尾斜杠</option>
+            <option value="short">短路径 /b/</option>
+            <option value="classic">连字符.html</option>
+            <option value="dir">目录分层</option>
+            <option value="hashid">短哈希</option>
+            <option value="base62">base62 编码</option>
+            <option value="segmented">ID 分段目录</option>
+          </select>
+        </div>
       </div>
     </form>
     <div class="modal-foot">
@@ -166,6 +183,7 @@ function editSiteFromRow(btn){
   f.status.checked=s.status!==false;
   f.inLinkWheel.checked=s.inLinkWheel!==false;
   f.isDefault.checked=s.isDefault===true;
+  f.pseudoStaticStyle.value=s.pseudoStaticStyle||'query';
   document.getElementById('editModal').classList.add('open');
 }
 function openCreateModal(){
@@ -185,6 +203,7 @@ function openCreateModal(){
   f.status.checked=true;
   f.inLinkWheel.checked=true;
   f.isDefault.checked=false;
+  f.pseudoStaticStyle.value='query';
   document.getElementById('editModal').classList.add('open');
 }
 function closeModal(id){document.getElementById(id).classList.remove('open');}
@@ -207,7 +226,8 @@ function submitEdit(){
     offset:parseInt(f.offset.value,10)||0,
     status:f.status.checked,
     inLinkWheel:f.inLinkWheel.checked,
-    isDefault:f.isDefault.checked
+    isDefault:f.isDefault.checked,
+    pseudoStaticStyle:f.pseudoStaticStyle.value
   };
   if(!body.name){showToast('站点名必填',false);return;}
   if(!body.domain){showToast('域名必填',false);return;}
@@ -227,6 +247,45 @@ function deleteSite(id,name){
       if(j&&j.ok){showToast('已删除',true);setTimeout(function(){location.reload();},800);}
       else{showToast('失败: '+(j&&j.error||''),false);}
     }).catch(function(e){showToast('请求失败: '+e.message,false);});
+}
+// generateTDK — 单站智能生成 TDK (R63-B). 调用 POST /api/admin/sites/:id/generate-tdk,
+//   成功后 showToast 显示生成的 title 前 30 字预览, 1.2s 后刷新页面反映新 TDK.
+//   btn 调用方传 this 以便 disable + 文案改「生成中...」, 完成后恢复.
+function generateTDK(btn,id,name){
+  if(!confirm('为站点「'+name+'」智能生成 TDK?'))return;
+  var orig=btn?btn.textContent:'';
+  if(btn){btn.disabled=true;btn.textContent='生成中...';}
+  fetch('/api/admin/sites/'+encodeURIComponent(id)+'/generate-tdk',{method:'POST',headers:{'Content-Type':'application/json'}})
+    .then(function(r){return r.json();}).then(function(j){
+      if(btn){btn.disabled=false;btn.textContent=orig;}
+      if(j&&j.ok){
+        var t=(j.site&&j.site.title)||'';
+        var preview=t.length>30?t.slice(0,30)+'...':t;
+        showToast('已生成: T='+preview,true);
+        setTimeout(function(){location.reload();},1200);
+      }else{showToast('失败: '+(j&&j.error||''),false);}
+    }).catch(function(err){
+      if(btn){btn.disabled=false;btn.textContent=orig;}
+      showToast('请求失败: '+err.message,false);
+    });
+}
+// generateAllTDK — 批量智能生成 TDK (R63-B). 调用 POST /api/admin/sites/generate-tdk body {apply:true}.
+//   成功后 showToast 显示已批量生成 N 个站点, 1.2s 后刷新页面. btn 调用方传 this 以便 loading 态.
+function generateAllTDK(btn){
+  if(!confirm('为所有非默认站点批量智能生成 TDK? 此操作会覆盖现有 TDK'))return;
+  var orig=btn?btn.textContent:'';
+  if(btn){btn.disabled=true;btn.textContent='生成中...';}
+  fetch('/api/admin/sites/generate-tdk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({apply:true})})
+    .then(function(r){return r.json();}).then(function(j){
+      if(btn){btn.disabled=false;btn.textContent=orig;}
+      if(j&&j.ok){
+        showToast('已批量生成 '+(j.updated||0)+' 个站点 TDK',true);
+        setTimeout(function(){location.reload();},1200);
+      }else{showToast('失败: '+(j&&j.error||''),false);}
+    }).catch(function(err){
+      if(btn){btn.disabled=false;btn.textContent=orig;}
+      showToast('请求失败: '+err.message,false);
+    });
 }
 </script>
 </body>

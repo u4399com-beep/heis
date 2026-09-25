@@ -9,6 +9,7 @@ import (
         "fmt"
         "html/template"
         "log"
+        "math/big"
         "net/http"
         "os"
         "path/filepath"
@@ -430,12 +431,18 @@ func main() {
 
 // homeHandler 首页 + 视图路由 (/?view=home|book|read|category|ranking|fulltext|search|keyword)
 // R38-1B: 扩展为按 view 参数渲染对应主题模板
+// R63-A: 非 "/" 路径伪静态解析 (site.PseudoStaticStyle != "query" 时, 尝试解析 path 为
+//   book/read/category URL; 匹配则转等价 query 串; 不匹配 404). 保留 R42-1A SEO 垃圾保护.
 func homeHandler(w http.ResponseWriter, r *http.Request) {
         // R42-1A: 仅根路径 "/" 接受; 其它未匹配路径 (如 /random-spam-url) 应返回 404 而非 200 home
         //         (防 SEO 垃圾 - 否则攻击者可声明无限 URL 空间都被搜索引擎索引为同款首页)
+        // R63-A: 非 "/" 路径, 若看起来像伪静态 URL (前缀 /book/ /read/ /category/ /b/ /r/ /c/
+        //         /book- /read- /category-), 先加载 site 试解析; 否则 404 快路径 (无 DB 命中).
         if r.URL.Path != "/" {
-                http.NotFound(w, r)
-                return
+                if !looksLikePseudoStaticPath(r.URL.Path) {
+                        http.NotFound(w, r)
+                        return
+                }
         }
         view := r.URL.Query().Get("view")
         if view == "" {
@@ -448,6 +455,45 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
         if err != nil || site == nil {
                 http.Error(w, "站点未找到", 404)
                 return
+        }
+
+        // R63-A: 伪静态路径解析 (非 query 风格).
+        //   site.PseudoStaticStyle != "query" 时, 试 parsePseudoStaticPath(path, style).
+        //   匹配则 decode token → cuid, 注入等价 query 串 (view/id/page) 并继续走 view 分发.
+        //   不匹配或 decode 失败 → 404 (保留 R42-1A SEO 垃圾保护).
+        pseudoStyle, _ := site["PseudoStaticStyle"].(string)
+        if pseudoStyle == "" {
+                pseudoStyle = "query"
+        }
+        if r.URL.Path != "/" {
+                parsed := false
+                if pseudoStyle != "query" {
+                        if pView, pToken, pPage, ok := parsePseudoStaticPath(r.URL.Path, pseudoStyle); ok {
+                                cuid := decodePseudoStaticToken(pToken, pseudoStyle, pView)
+                                if cuid != "" {
+                                        q := r.URL.Query()
+                                        q.Set("view", pView)
+                                        switch pView {
+                                        case "book":
+                                                q.Set("id", cuid)
+                                        case "read":
+                                                q.Set("chapter", cuid)
+                                        case "category":
+                                                q.Set("cat", cuid)
+                                        }
+                                        if pPage > 1 {
+                                                q.Set("page", strconv.Itoa(pPage))
+                                        }
+                                        r.URL.RawQuery = q.Encode()
+                                        view = pView
+                                        parsed = true
+                                }
+                        }
+                }
+                if !parsed {
+                        http.NotFound(w, r)
+                        return
+                }
         }
 
         // 获取分类 (所有页型共用 nav)
@@ -463,10 +509,14 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
         }
 
         // 基础 data (所有页型都用到)
+        //   R63-A: data["PseudoStyle"] 供模板层使用 (R63-B 将接入模板); data["HomeURL"] 提供
+        //   首页 URL builder 输出 (各风格一致为 "/").
         data := map[string]interface{}{
-                "Site":    site,
-                "Categories": cats,
-                "NavCats": navCats,
+                "Site":         site,
+                "Categories":   cats,
+                "NavCats":       navCats,
+                "PseudoStyle":   pseudoStyle,
+                "HomeURL":       buildHomeURL(pseudoStyle),
         }
 
         // 按 view 装配数据
@@ -487,6 +537,11 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 data["RecentChapters"] = recent
                 data["Related"] = related
                 data["FirstChapterId"] = firstChID
+                // R63-A: 注入 URL builder 输出供模板消费 (本轮 Go 端就绪, 模板层 R63-B 接入).
+                data["BookURL"] = buildBookURL(pseudoStyle, id)
+                if firstChID != "" {
+                        data["FirstChapterURL"] = buildChapterURL(pseudoStyle, firstChID, id)
+                }
         case "read":
                 chID := r.URL.Query().Get("chapter")
                 if chID == "" {
@@ -502,6 +557,21 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 data["Book"] = book
                 data["Prev"] = prev
                 data["Next"] = next
+                // R63-A: 注入 URL builder 输出.
+                data["ChapterURL"] = buildChapterURL(pseudoStyle, chID, bookIDFromMap(book))
+                if bid := bookIDFromMap(book); bid != "" {
+                        data["BookURL"] = buildBookURL(pseudoStyle, bid)
+                }
+                if prev != nil {
+                        if pid, ok := prev["id"].(string); ok && pid != "" {
+                                prev["URL"] = buildChapterURL(pseudoStyle, pid, bookIDFromMap(book))
+                        }
+                }
+                if next != nil {
+                        if nid, ok := next["id"].(string); ok && nid != "" {
+                                next["URL"] = buildChapterURL(pseudoStyle, nid, bookIDFromMap(book))
+                        }
+                }
         case "category":
                 catID := r.URL.Query().Get("cat")
                 page := clampPage(r.URL.Query().Get("page"))
@@ -524,6 +594,14 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 data["Total"] = total
                 data["TotalPages"] = totalPages
                 data["PageList"] = buildPageList(page, totalPages)
+                // R63-A: 注入分页 URL builder 输出.
+                data["CategoryURL"] = buildCategoryURL(pseudoStyle, catID, page)
+                if page > 1 {
+                        data["PrevPageURL"] = buildCategoryURL(pseudoStyle, catID, page-1)
+                }
+                if page < totalPages {
+                        data["NextPageURL"] = buildCategoryURL(pseudoStyle, catID, page+1)
+                }
         case "ranking":
                 tab := r.URL.Query().Get("sort")
                 if tab == "" {
@@ -550,6 +628,15 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 data["Total"] = total
                 data["TotalPages"] = totalPages
                 data["PageList"] = buildPageList(page, totalPages)
+                // R63-A: ranking/fulltext/search/keyword 等无实体 ID 的视图, 伪静态 URL 用
+                //   buildPagerURL 退化返回 query 串 (避免过度设计; 主 SEO 价值在 book/chapter/category).
+                data["PagerURL"] = buildPagerURL(pseudoStyle, "ranking", tab, page)
+                if page > 1 {
+                        data["PrevPageURL"] = buildPagerURL(pseudoStyle, "ranking", tab, page-1)
+                }
+                if page < totalPages {
+                        data["NextPageURL"] = buildPagerURL(pseudoStyle, "ranking", tab, page+1)
+                }
         case "fulltext":
                 page := clampPage(r.URL.Query().Get("page"))
                 size := 24
@@ -570,6 +657,13 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 data["Total"] = total
                 data["TotalPages"] = totalPages
                 data["PageList"] = buildPageList(page, totalPages)
+                data["PagerURL"] = buildPagerURL(pseudoStyle, "fulltext", "", page)
+                if page > 1 {
+                        data["PrevPageURL"] = buildPagerURL(pseudoStyle, "fulltext", "", page-1)
+                }
+                if page < totalPages {
+                        data["NextPageURL"] = buildPagerURL(pseudoStyle, "fulltext", "", page+1)
+                }
         case "search":
                 q := r.URL.Query().Get("q")
                 books := getSearchViewData(q, 20)
@@ -783,12 +877,12 @@ func chapterHandler(w http.ResponseWriter, r *http.Request) {
 
 // getSite — 取 Site 行 (status=1). 默认 (siteID=="") 取 isDefault=1, 否则按 ID.
 //  R57-1B 接入智能 TDK: SELECT 加 chapterSeoAuto + chapterSeoTitleTemplate +
-//    chapterSeoDescTemplate + chapterSeoKeywordsTemplate + chapterPaginationMode +
-//    chapterPaginationWords + chapterPaginationPages + footerText + footerCopyright +
-//    footerIcp + footerStats + navCategoryCount + homeModuleLimit + pseudoStaticStyle +
-//    icbm + geoRegion + geoPlacename + inLinkWheel 字段 (供 getReadViewData 消费 + 后续 SSR).
+//    chapterSeoDescTemplate + chapterSeoKeywordsTemplate 字段 (供 getReadViewData 消费).
+//  R63-A 接入伪静态: SELECT 加 pseudoStaticStyle 字段 (供 homeHandler 伪静态 URL 解析 +
+//    模板层 URL builder 消费). 其它 R16/R22 字段 (chapterPaginationMode/navCategoryCount/等)
+//    留给后续轮次按需扩展 SELECT (本轮只加 pseudoStaticStyle 一列, 不动其它).
 func getSite(siteID string) (map[string]interface{}, error) {
-        q := `SELECT id,name,domain,themeId,isDefault,title,description,keywords,offset,chapterSeoAuto,chapterSeoTitleTemplate,chapterSeoDescTemplate,chapterSeoKeywordsTemplate FROM Site WHERE status=1`
+        q := `SELECT id,name,domain,themeId,isDefault,title,description,keywords,offset,chapterSeoAuto,chapterSeoTitleTemplate,chapterSeoDescTemplate,chapterSeoKeywordsTemplate,pseudoStaticStyle FROM Site WHERE status=1`
         var rows *sql.Rows
         var err error
         if siteID != "" {
@@ -801,12 +895,15 @@ func getSite(siteID string) (map[string]interface{}, error) {
         }
         defer rows.Close()
         for rows.Next() {
-                var id, name, domain, themeId, title, desc, kw, seoTmplT, seoTmplD, seoTmplK string
+                var id, name, domain, themeId, title, desc, kw, seoTmplT, seoTmplD, seoTmplK, pseudoStaticStyle string
                 var isDefault bool
                 var offset int
                 var seoAuto bool
-                rows.Scan(&id, &name, &domain, &themeId, &isDefault, &title, &desc, &kw, &offset, &seoAuto, &seoTmplT, &seoTmplD, &seoTmplK)
-                return map[string]interface{}{"ID": id, "Name": name, "Domain": domain, "ThemeID": themeId, "IsDefault": isDefault, "Title": title, "Description": desc, "Keywords": kw, "Offset": offset, "ChapterSeoAuto": seoAuto, "ChapterSeoTitleTemplate": seoTmplT, "ChapterSeoDescTemplate": seoTmplD, "ChapterSeoKeywordsTemplate": seoTmplK}, nil
+                rows.Scan(&id, &name, &domain, &themeId, &isDefault, &title, &desc, &kw, &offset, &seoAuto, &seoTmplT, &seoTmplD, &seoTmplK, &pseudoStaticStyle)
+                if pseudoStaticStyle == "" {
+                        pseudoStaticStyle = "query"
+                }
+                return map[string]interface{}{"ID": id, "Name": name, "Domain": domain, "ThemeID": themeId, "IsDefault": isDefault, "Title": title, "Description": desc, "Keywords": kw, "Offset": offset, "ChapterSeoAuto": seoAuto, "ChapterSeoTitleTemplate": seoTmplT, "ChapterSeoDescTemplate": seoTmplD, "ChapterSeoKeywordsTemplate": seoTmplK, "PseudoStaticStyle": pseudoStaticStyle}, nil
         }
         // fallback 第一个 (R42-1A: 显式 err 检查防 nil rows2.Close() panic; 之前 _ 忽略 err →
         //                  若 db.Query 失败 rows2 为 nil, defer rows2.Close() 在 nil 上调用 panic)
@@ -816,12 +913,15 @@ func getSite(siteID string) (map[string]interface{}, error) {
         }
         defer rows2.Close()
         for rows2.Next() {
-                var id, name, domain, themeId, title, desc, kw, seoTmplT, seoTmplD, seoTmplK string
+                var id, name, domain, themeId, title, desc, kw, seoTmplT, seoTmplD, seoTmplK, pseudoStaticStyle string
                 var isDefault bool
                 var offset int
                 var seoAuto bool
-                rows2.Scan(&id, &name, &domain, &themeId, &isDefault, &title, &desc, &kw, &offset, &seoAuto, &seoTmplT, &seoTmplD, &seoTmplK)
-                return map[string]interface{}{"ID": id, "Name": name, "Domain": domain, "ThemeID": themeId, "IsDefault": isDefault, "Title": title, "Description": desc, "Keywords": kw, "Offset": offset, "ChapterSeoAuto": seoAuto, "ChapterSeoTitleTemplate": seoTmplT, "ChapterSeoDescTemplate": seoTmplD, "ChapterSeoKeywordsTemplate": seoTmplK}, nil
+                rows2.Scan(&id, &name, &domain, &themeId, &isDefault, &title, &desc, &kw, &offset, &seoAuto, &seoTmplT, &seoTmplD, &seoTmplK, &pseudoStaticStyle)
+                if pseudoStaticStyle == "" {
+                        pseudoStaticStyle = "query"
+                }
+                return map[string]interface{}{"ID": id, "Name": name, "Domain": domain, "ThemeID": themeId, "IsDefault": isDefault, "Title": title, "Description": desc, "Keywords": kw, "Offset": offset, "ChapterSeoAuto": seoAuto, "ChapterSeoTitleTemplate": seoTmplT, "ChapterSeoDescTemplate": seoTmplD, "ChapterSeoKeywordsTemplate": seoTmplK, "PseudoStaticStyle": pseudoStaticStyle}, nil
         }
         return nil, nil
 }
@@ -1547,4 +1647,677 @@ func getKeywordViewData(tag string, limit int) ([]map[string]interface{}, []stri
                 }
         }
         return books, relatedTags
+}
+
+// ============================================================================
+// R63-A: 伪静态 URL builder + parser (10 套风格)
+//
+// 风格清单 (向后兼容, query 为默认):
+//   1. query       — 查询串 (默认): /?view=book&id={cuid} /?view=read&chapter={cuid} /?view=category&cat={cuid}&page=2
+//   2. numeric     — 纯数字 .html: /book/{numericHash(cuid)}.html /read/{numericHash(cuid)}.html /category/{numericHash(cuid)}/{page}.html
+//   3. alphanumeric — 字母+数字 (前缀+6位数字): /book/b{first6Digits(cuid)}.html /read/c{first6Digits(cuid)}.html
+//   4. slug        — 尾斜杠: /book/{cuid}/ /read/{cuid}/ /category/{cuid}/page-{page}/
+//   5. short       — 短路径单字符前缀: /b/{cuid} /r/{cuid} /c/{cuid}/{page}
+//   6. classic     — 连字符.html: /book-{cuid}.html /read-{cuid}.html /category-{cuid}-{page}.html
+//   7. dir         — 目录分层: /book/{cuid}/ /book/{cuid}/chapter/{chCuid}.html /category/{cuid}/{page}/
+//   8. hashid      — 短哈希 (base62 + salt, 不可逆, 本站自解析 DB 扫描): /b/{hashidEncode(cuid)}.html /r/{hashidEncode(cuid)}.html
+//   9. base62      — base62 编码 ID (可逆, cuid 字节 → big.Int → base62): /b/{base62Encode(cuid)} /r/{base62Encode(cuid)}
+//  10. segmented   — ID 分段目录 (前2字符做目录): /book/{cuid[:2]}/{cuid[2:]}.html /read/{cuid[:2]}/{cuid[2:]}.html
+//
+// 设计要点:
+//   - URL builder: pure function, 不依赖 DB; 输入 (style, id) 输出 URL string.
+//   - parser: 按 site.PseudoStaticStyle 选 patterns; 匹配则返 (view, token, page).
+//   - decode: 多数风格 token IS cuid (slug/short/classic/dir/segmented); hashid/numeric/alphanumeric
+//     需 DB 扫描 (findEntityByEncodedToken); base62 用 math/big 反解 (无需 DB).
+//   - 风格选择: per-site (Site.pseudoStaticStyle DB 字段); query 风格不走 parser (URL 全 query).
+//   - homeHandler 调用顺序: 1) 快前缀检查 (looksLikePseudoStaticPath) → 2) getSite DB 命中 →
+//     3) parsePseudoStaticPath(path, style) → 4) decodePseudoStaticToken → 5) 注入 query 串.
+// ============================================================================
+
+// pseudoStaticStyles 列出全部 10 套受支持的伪静态风格 (R63-A).
+var pseudoStaticStyles = []string{
+        "query", "numeric", "alphanumeric", "slug", "short",
+        "classic", "dir", "hashid", "base62", "segmented",
+}
+
+// validPseudoStaticStyle 校验 s 是否为已知伪静态风格 (R63-A).
+//   adminSitesCreate/PUT 在写入 DB 前调用此函数, 非法值返 400.
+func validPseudoStaticStyle(s string) bool {
+        for _, v := range pseudoStaticStyles {
+                if v == s {
+                        return true
+                }
+        }
+        return false
+}
+
+// pseudoStaticPrefixes 列出全部伪静态路径前缀 (R63-A).
+//   homeHandler 用作快路径过滤: 非前缀的 path 直接 404, 不命中 DB.
+//   query 风格 URL 走 query 串 (path="/"), 不在此列表.
+var pseudoStaticPrefixes = []string{
+        "/book/", "/read/", "/category/",
+        "/book-", "/read-", "/category-",
+        "/b/", "/r/", "/c/",
+}
+
+// looksLikePseudoStaticPath 快前缀检查: path 是否可能是伪静态 URL (R63-A).
+//   用于 homeHandler 在 DB 命中前过滤 SEO 垃圾 URL, 保留 R42-1A 快路径 404 保护.
+func looksLikePseudoStaticPath(path string) bool {
+        for _, p := range pseudoStaticPrefixes {
+                if strings.HasPrefix(path, p) {
+                        return true
+                }
+        }
+        return false
+}
+
+// --- 编码助手 (cuid → URL token) ---
+
+// simpleHash — FNV-1a 32-bit (R63-A).
+//   用于 numericHash / hashidEncode / 智能选 TDK 模板 (admin.generateSiteTDK).
+//   非 crypto 强哈希, 但分布均匀, 适合站点级差异化.
+func simpleHash(s string) uint32 {
+        h := uint32(2166136261)
+        for i := 0; i < len(s); i++ {
+                h ^= uint32(s[i])
+                h *= 16777619
+        }
+        return h
+}
+
+// extractDigits — 从字符串提取所有数字字符 (R63-A).
+//   e.g. "cm1234567ab" → "1234567". 用于 numericHash 备用 + alphanumericEncode.
+func extractDigits(s string) string {
+        out := make([]byte, 0, len(s))
+        for i := 0; i < len(s); i++ {
+                c := s[i]
+                if c >= '0' && c <= '9' {
+                        out = append(out, c)
+                }
+        }
+        return string(out)
+}
+
+// first6Digits — 取 cuid 的前 6 位数字 (不足 6 位右侧补 0 到 6 位) (R63-A).
+//   alphanumeric 风格 URL token = 字母前缀 + first6Digits(cuid).
+func first6Digits(s string) string {
+        d := extractDigits(s)
+        if len(d) > 6 {
+                d = d[:6]
+        }
+        for len(d) < 6 {
+                d += "0"
+        }
+        return d
+}
+
+// numericHash — 10 位纯数字哈希 (R63-A).
+//   numeric 风格 URL token = numericHash(cuid), 10 位定长便于人类阅读 + 减少碰撞.
+//   实现: FNV-1a 64-bit (两段 32-bit 拼接) mod 1e10, 左补 0 到 10 位.
+//   不可逆 (DB 扫描反查).
+func numericHash(s string) string {
+        h1 := simpleHash(s)
+        h2 := simpleHash(s + "::numeric::salt::heis-backend::v1")
+        combined := uint64(h1)<<32 | uint64(h2)
+        n := combined % 10000000000 // 1e10, 10 digits
+        return fmt.Sprintf("%010d", n)
+}
+
+// hashidSalt — hashid 风格的固定盐 (R63-A). 同盐 = 同 encode/decode 配对.
+const hashidSalt = "heis-backend::pseudo-static::v1"
+
+// hashidEncode — hashid 风格编码: cuid → 短哈希 (R63-A).
+//   实现: hash(cuid + salt) → 64-bit → base62. 不可逆, decode 走 DB 扫描.
+//   spec 要求 "不可逆但本站自解析" — 即解码端必须能从 token 反查 cuid (本站自扫描).
+func hashidEncode(id string) string {
+        h1 := simpleHash(id + "::" + hashidSalt)
+        h2 := simpleHash(hashidSalt + "::" + id)
+        n := uint64(h1)<<32 | uint64(h2)
+        return base62EncodeUint(n)
+}
+
+// base62Alphabet — base62 编码字母表 (R63-A). 0-9 + A-Z + a-z (字典序 + 大写小写).
+const base62Alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+// base62EncodeUint — uint64 → base62 字符串 (R63-A).
+//   仅用于 hashidEncode (内部 64-bit 哈希 → base62). 解码端走 DB 扫描, 不需 uint64 反解.
+func base62EncodeUint(n uint64) string {
+        if n == 0 {
+                return "0"
+        }
+        out := make([]byte, 0, 11)
+        for n > 0 {
+                out = append([]byte{base62Alphabet[n%62]}, out...)
+                n /= 62
+        }
+        return string(out)
+}
+
+// base62Encode — 字符串 (cuid) → base62 (可逆) (R63-A).
+//   实现: cuid 字节序列视作大整数 (big.Int, big-endian), base62 编码.
+//   反解: base62Decode → big.Int → bytes → string.
+func base62Encode(s string) string {
+        if s == "" {
+                return ""
+        }
+        n := new(big.Int).SetBytes([]byte(s))
+        return base62EncodeBigInt(n)
+}
+
+// base62Decode — base62 → 字符串 (可逆) (R63-A).
+func base62Decode(s string) (string, bool) {
+        if s == "" {
+                return "", false
+        }
+        n, ok := base62DecodeBigInt(s)
+        if !ok {
+                return "", false
+        }
+        // 字节序列视作 big-endian, 还原为 string.
+        // 注意: SetBytes/Bytes 不保留前导零字节, 因此 cuid 若以 \x00 开头会丢失.
+        // 实际 cuid 由可见 ASCII 字符构成 ("cm" + base36), 不以 \x00 开头, 安全.
+        return string(n.Bytes()), true
+}
+
+// base62EncodeBigInt — big.Int → base62 字符串 (R63-A).
+func base62EncodeBigInt(n *big.Int) string {
+        if n.Sign() == 0 {
+                return "0"
+        }
+        base := big.NewInt(62)
+        mod := new(big.Int)
+        out := make([]byte, 0, 16)
+        tmp := new(big.Int).Set(n)
+        for tmp.Sign() > 0 {
+                tmp.DivMod(tmp, base, mod)
+                out = append([]byte{base62Alphabet[mod.Int64()]}, out...)
+        }
+        return string(out)
+}
+
+// base62DecodeBigInt — base62 字符串 → big.Int (R63-A). 失败返 (nil, false).
+func base62DecodeBigInt(s string) (*big.Int, bool) {
+        n := new(big.Int)
+        base := big.NewInt(62)
+        for i := 0; i < len(s); i++ {
+                c := s[i]
+                var v int64
+                switch {
+                case c >= '0' && c <= '9':
+                        v = int64(c - '0')
+                case c >= 'A' && c <= 'Z':
+                        v = 10 + int64(c-'A')
+                case c >= 'a' && c <= 'z':
+                        v = 36 + int64(c-'a')
+                default:
+                        return nil, false
+                }
+                n.Mul(n, base)
+                n.Add(n, big.NewInt(v))
+        }
+        return n, true
+}
+
+// --- URL builders (pure functions, no DB) ---
+
+// buildHomeURL — 首页 URL (R63-A). 各风格一致为 "/".
+//   (首页是站点入口, 不需伪静态差异化; 风格差异在 book/chapter/category.)
+func buildHomeURL(style string) string {
+        _ = style
+        return "/"
+}
+
+// buildBookURL — 书籍详情页 URL (R63-A).
+//   query:        /?view=book&id={cuid}
+//   numeric:      /book/{numericHash(cuid)}.html
+//   alphanumeric: /book/b{first6Digits(cuid)}.html
+//   slug:         /book/{cuid}/
+//   short:        /b/{cuid}
+//   classic:      /book-{cuid}.html
+//   dir:          /book/{cuid}/
+//   hashid:       /b/{hashidEncode(cuid)}.html
+//   base62:       /b/{base62Encode(cuid)}
+//   segmented:    /book/{cuid[:2]}/{cuid[2:]}.html
+func buildBookURL(style, bookID string) string {
+        if bookID == "" {
+                return "/"
+        }
+        switch style {
+        case "", "query":
+                return "/?view=book&id=" + bookID
+        case "numeric":
+                return "/book/" + numericHash(bookID) + ".html"
+        case "alphanumeric":
+                return "/book/b" + first6Digits(bookID) + ".html"
+        case "slug":
+                return "/book/" + bookID + "/"
+        case "short":
+                return "/b/" + bookID
+        case "classic":
+                return "/book-" + bookID + ".html"
+        case "dir":
+                return "/book/" + bookID + "/"
+        case "hashid":
+                return "/b/" + hashidEncode(bookID) + ".html"
+        case "base62":
+                return "/b/" + base62Encode(bookID)
+        case "segmented":
+                if len(bookID) < 2 {
+                        // cuid 过短 (异常), fallback slug 风格.
+                        return "/book/" + bookID + "/"
+                }
+                return "/book/" + bookID[:2] + "/" + bookID[2:] + ".html"
+        }
+        return "/?view=book&id=" + bookID
+}
+
+// buildChapterURL — 章节阅读页 URL (R63-A).
+//   query:        /?view=read&chapter={chID}
+//   numeric:      /read/{numericHash(chID)}.html
+//   alphanumeric: /read/c{first6Digits(chID)}.html
+//   slug:         /read/{chID}/
+//   short:        /r/{chID}
+//   classic:      /read-{chID}.html
+//   dir:          /book/{bookID}/chapter/{chID}.html (bookID 必填, 否则 fallback slug)
+//   hashid:       /r/{hashidEncode(chID)}.html
+//   base62:       /r/{base62Encode(chID)}
+//   segmented:    /read/{chID[:2]}/{chID[2:]}.html
+func buildChapterURL(style, chID, bookID string) string {
+        if chID == "" {
+                return "/"
+        }
+        switch style {
+        case "", "query":
+                return "/?view=read&chapter=" + chID
+        case "numeric":
+                return "/read/" + numericHash(chID) + ".html"
+        case "alphanumeric":
+                return "/read/c" + first6Digits(chID) + ".html"
+        case "slug":
+                return "/read/" + chID + "/"
+        case "short":
+                return "/r/" + chID
+        case "classic":
+                return "/read-" + chID + ".html"
+        case "dir":
+                if bookID != "" {
+                        return "/book/" + bookID + "/chapter/" + chID + ".html"
+                }
+                // fallback: bookID 未知时用 slug-style read URL (向后兼容).
+                return "/read/" + chID + "/"
+        case "hashid":
+                return "/r/" + hashidEncode(chID) + ".html"
+        case "base62":
+                return "/r/" + base62Encode(chID)
+        case "segmented":
+                if len(chID) < 2 {
+                        return "/read/" + chID + "/"
+                }
+                return "/read/" + chID[:2] + "/" + chID[2:] + ".html"
+        }
+        return "/?view=read&chapter=" + chID
+}
+
+// buildCategoryURL — 分类列表页 URL (R63-A).
+//   query:        /?view=category&cat={catID}&page={page}  (page=1 省略 page 参数)
+//   numeric:      /category/{numericHash(catID)}/{page}.html (page=1 省略 page 段)
+//   alphanumeric: /category/d{first6Digits(catID)}.html  (page>1 加 /{page}.html 后缀? 简化: page=1 省略, page>1 同 numeric)
+//   slug:         /category/{catID}/page-{page}/  (page=1 省略 page-1/)
+//   short:        /c/{catID}  (page>1 加 /{page})
+//   classic:      /category-{catID}.html  (page>1 加 -{page}.html)
+//   dir:          /category/{catID}/{page}/  (page=1 用 /category/{catID}/)
+//   hashid:       /c/{hashidEncode(catID)}.html  (page>1 加 /page-{page}? 暂简化省略)
+//   base62:       /c/{base62Encode(catID)}  (page>1 加 /{page}? 暂简化省略)
+//   segmented:    /category/{catID[:2]}/{catID[2:]}/{page}.html
+func buildCategoryURL(style, catID string, page int) string {
+        if catID == "" {
+                return "/?view=category"
+        }
+        if page < 1 {
+                page = 1
+        }
+        switch style {
+        case "", "query":
+                if page > 1 {
+                        return "/?view=category&cat=" + catID + "&page=" + strconv.Itoa(page)
+                }
+                return "/?view=category&cat=" + catID
+        case "numeric":
+                base := "/category/" + numericHash(catID)
+                if page > 1 {
+                        return base + "/" + strconv.Itoa(page) + ".html"
+                }
+                return base + ".html"
+        case "alphanumeric":
+                base := "/category/d" + first6Digits(catID)
+                if page > 1 {
+                        return base + "/" + strconv.Itoa(page) + ".html"
+                }
+                return base + ".html"
+        case "slug":
+                base := "/category/" + catID + "/"
+                if page > 1 {
+                        return base + "page-" + strconv.Itoa(page) + "/"
+                }
+                return base
+        case "short":
+                base := "/c/" + catID
+                if page > 1 {
+                        return base + "/" + strconv.Itoa(page)
+                }
+                return base
+        case "classic":
+                base := "/category-" + catID
+                if page > 1 {
+                        return base + "-" + strconv.Itoa(page) + ".html"
+                }
+                return base + ".html"
+        case "dir":
+                base := "/category/" + catID + "/"
+                if page > 1 {
+                        return base + strconv.Itoa(page) + "/"
+                }
+                return base
+        case "hashid":
+                base := "/c/" + hashidEncode(catID) + ".html"
+                if page > 1 {
+                        // hashid 风格无标准 page 段约定, 用 query 串附加 page.
+                        return base + "?page=" + strconv.Itoa(page)
+                }
+                return base
+        case "base62":
+                base := "/c/" + base62Encode(catID)
+                if page > 1 {
+                        return base + "/" + strconv.Itoa(page)
+                }
+                return base
+        case "segmented":
+                if len(catID) < 2 {
+                        // cuid 过短 fallback slug.
+                        base := "/category/" + catID + "/"
+                        if page > 1 {
+                                return base + "page-" + strconv.Itoa(page) + "/"
+                        }
+                        return base
+                }
+                a := catID[:2]
+                b := catID[2:]
+                base := "/category/" + a + "/" + b
+                if page > 1 {
+                        return base + "/" + strconv.Itoa(page) + ".html"
+                }
+                return base + ".html"
+        }
+        if page > 1 {
+                return "/?view=category&cat=" + catID + "&page=" + strconv.Itoa(page)
+        }
+        return "/?view=category&cat=" + catID
+}
+
+// buildPagerURL — 无实体 ID 的列表视图分页 URL (ranking/fulltext/search/keyword) (R63-A).
+//   这些视图的 URL 不含实体 cuid (只有 page), 伪静态风格不区分; 统一用 query 串.
+//   id 参数: ranking=sort, fulltext="", search=q, keyword=tag.
+func buildPagerURL(style, view, id string, page int) string {
+        _ = style // 不分风格, 统一 query 串
+        if page < 1 {
+                page = 1
+        }
+        q := "?view=" + view
+        if id != "" {
+                switch view {
+                case "ranking":
+                        q += "&sort=" + id
+                case "search":
+                        q += "&q=" + id
+                case "keyword":
+                        q += "&tag=" + id
+                }
+        }
+        if page > 1 {
+                q += "&page=" + strconv.Itoa(page)
+        }
+        return "/" + q
+}
+
+// --- URL parser (path → view + token + page) ---
+
+// pseudoPattern — 单条伪静态 URL 模式 (R63-A).
+//   re: 已编译的 regex, 含捕获组.
+//   view: 解析出的 view 名 (book/read/category).
+//   idGroups: 拼接成 cuid 的捕获组索引列表 (segmented=2 组, 其它=1 组).
+//   pageGroup: page 的捕获组索引 (0 表示无 page).
+type pseudoPattern struct {
+        re        *regexp.Regexp
+        view      string
+        idGroups  []int
+        pageGroup int
+}
+
+// 伪静态 URL regex 模式 (R63-A). 按 view 分组, 每风格独立.
+//   注: numeric 与 alphanumeric 共用同一 regex (token 格式都为 [A-Za-z0-9]+.html),
+//   decode 时按 style 区分 (numeric 用 numericHash, alphanumeric 用 first6Digits).
+var (
+        // numeric / alphanumeric: /book/{token}.html, /read/{token}.html, /category/{token}/{page}.html
+        reNumericBook       = regexp.MustCompile(`^/book/([A-Za-z0-9]+)\.html$`)
+        reNumericRead       = regexp.MustCompile(`^/read/([A-Za-z0-9]+)\.html$`)
+        reNumericCategory   = regexp.MustCompile(`^/category/([A-Za-z0-9]+)/(\d+)\.html$`)
+
+        // slug: /book/{cuid}/, /read/{cuid}/, /category/{cuid}/page-{page}/
+        reSlugBook          = regexp.MustCompile(`^/book/([A-Za-z0-9]+)/$`)
+        reSlugRead          = regexp.MustCompile(`^/read/([A-Za-z0-9]+)/$`)
+        reSlugCategory      = regexp.MustCompile(`^/category/([A-Za-z0-9]+)/page-(\d+)/$`)
+
+        // short: /b/{cuid}, /r/{cuid}, /c/{cuid}/{page}
+        reShortBook         = regexp.MustCompile(`^/b/([A-Za-z0-9]+)$`)
+        reShortRead         = regexp.MustCompile(`^/r/([A-Za-z0-9]+)$`)
+        reShortCategory     = regexp.MustCompile(`^/c/([A-Za-z0-9]+)/(\d+)$`)
+
+        // classic: /book-{cuid}.html, /read-{cuid}.html, /category-{cuid}-{page}.html
+        reClassicBook       = regexp.MustCompile(`^/book-([A-Za-z0-9]+)\.html$`)
+        reClassicRead       = regexp.MustCompile(`^/read-([A-Za-z0-9]+)\.html$`)
+        reClassicCategory   = regexp.MustCompile(`^/category-([A-Za-z0-9]+)-(\d+)\.html$`)
+
+        // dir: /book/{cuid}/ (book), /book/{cuid}/chapter/{chCuid}.html (read), /category/{cuid}/{page}/ (category)
+        reDirBook           = regexp.MustCompile(`^/book/([A-Za-z0-9]+)/$`)
+        reDirRead           = regexp.MustCompile(`^/book/([A-Za-z0-9]+)/chapter/([A-Za-z0-9]+)\.html$`)
+        reDirCategory       = regexp.MustCompile(`^/category/([A-Za-z0-9]+)/(\d+)/$`)
+
+        // hashid: /b/{hash}.html, /r/{hash}.html  (注意 .html 后缀区别于 short/base62)
+        reHashidBook        = regexp.MustCompile(`^/b/([A-Za-z0-9]+)\.html$`)
+        reHashidRead        = regexp.MustCompile(`^/r/([A-Za-z0-9]+)\.html$`)
+        reHashidCategory    = regexp.MustCompile(`^/c/([A-Za-z0-9]+)\.html$`)
+
+        // base62: /b/{token}, /r/{token}  (无 .html; 与 short 同 regex, 但 decode 用 base62Decode)
+        // 复用 reShortBook / reShortRead / reShortCategory.
+
+        // segmented: /book/{2chars}/{rest}.html, /read/{2chars}/{rest}.html, /category/{2chars}/{rest}/{page}.html
+        reSegmentedBook     = regexp.MustCompile(`^/book/([A-Za-z0-9]{2})/([A-Za-z0-9]+)\.html$`)
+        reSegmentedRead     = regexp.MustCompile(`^/read/([A-Za-z0-9]{2})/([A-Za-z0-9]+)\.html$`)
+        reSegmentedCategory = regexp.MustCompile(`^/category/([A-Za-z0-9]{2})/([A-Za-z0-9]+)/(\d+)\.html$`)
+)
+
+// pseudoPatternsByStyle — 按 style 索引的 patterns 表 (R63-A).
+//   顺序: 同 style 内 book → read → category (按 view 优先级; book 最常访问).
+var pseudoPatternsByStyle = map[string][]pseudoPattern{
+        "numeric": {
+                {reNumericBook, "book", []int{1}, 0},
+                {reNumericRead, "read", []int{1}, 0},
+                {reNumericCategory, "category", []int{1}, 2},
+        },
+        "alphanumeric": {
+                {reNumericBook, "book", []int{1}, 0},
+                {reNumericRead, "read", []int{1}, 0},
+                {reNumericCategory, "category", []int{1}, 2},
+        },
+        "slug": {
+                {reSlugBook, "book", []int{1}, 0},
+                {reSlugRead, "read", []int{1}, 0},
+                {reSlugCategory, "category", []int{1}, 2},
+        },
+        "short": {
+                {reShortBook, "book", []int{1}, 0},
+                {reShortRead, "read", []int{1}, 0},
+                {reShortCategory, "category", []int{1}, 2},
+        },
+        "classic": {
+                {reClassicBook, "book", []int{1}, 0},
+                {reClassicRead, "read", []int{1}, 0},
+                {reClassicCategory, "category", []int{1}, 2},
+        },
+        "dir": {
+                {reDirBook, "book", []int{1}, 0},
+                {reDirRead, "read", []int{2}, 0}, // dir-style read: chCuid is group 2
+                {reDirCategory, "category", []int{1}, 2},
+        },
+        "hashid": {
+                {reHashidBook, "book", []int{1}, 0},
+                {reHashidRead, "read", []int{1}, 0},
+                // hashid category 用 query 串 page, parser 不解析 (buildCategoryURL 已加 ?page=N)
+                {reHashidCategory, "category", []int{1}, 0},
+        },
+        "base62": {
+                {reShortBook, "book", []int{1}, 0},
+                {reShortRead, "read", []int{1}, 0},
+                {reShortCategory, "category", []int{1}, 2},
+        },
+        "segmented": {
+                {reSegmentedBook, "book", []int{1, 2}, 0},
+                {reSegmentedRead, "read", []int{1, 2}, 0},
+                {reSegmentedCategory, "category", []int{1, 2}, 3},
+        },
+}
+
+// parsePseudoStaticPath — 按 style 解析 path 为伪静态 URL (R63-A).
+//   返回 (view, token, page, ok); token 为 URL 中的 ID 段 (cuid 或编码形式).
+//   后续 decodePseudoStaticToken(token, style, view) 反查 cuid.
+//   style="query" 或未知 style → ok=false (不解析, 由 homeHandler 走 query 串模式).
+func parsePseudoStaticPath(path, style string) (view, token string, page int, ok bool) {
+        patterns, exists := pseudoPatternsByStyle[style]
+        if !exists {
+                return "", "", 0, false
+        }
+        for _, p := range patterns {
+                m := p.re.FindStringSubmatch(path)
+                if m == nil {
+                        continue
+                }
+                var sb strings.Builder
+                for _, g := range p.idGroups {
+                        if g < len(m) {
+                                sb.WriteString(m[g])
+                        }
+                }
+                pg := 1
+                if p.pageGroup > 0 && p.pageGroup < len(m) {
+                        if v, err := strconv.Atoi(m[p.pageGroup]); err == nil && v > 0 {
+                                pg = v
+                        }
+                }
+                return p.view, sb.String(), pg, true
+        }
+        return "", "", 0, false
+}
+
+// decodePseudoStaticToken — 反查 URL token → entity cuid (R63-A).
+//   可逆风格 (slug/short/classic/dir/segmented): token IS cuid (segmented 已在 parser concat).
+//   base62: 用 math/big 反解 (无需 DB 命中).
+//   不可逆风格 (numeric/alphanumeric/hashid): DB 扫描 entity 表, 按 encode 函数比对.
+//   失败返 "" (homeHandler 404).
+func decodePseudoStaticToken(token, style, viewType string) string {
+        switch style {
+        case "numeric":
+                return findEntityByEncodedToken(token, viewType, numericHash)
+        case "alphanumeric":
+                return decodeAlphanumericToken(token, viewType)
+        case "hashid":
+                return findEntityByEncodedToken(token, viewType, hashidEncode)
+        case "base62":
+                if cuid, ok := base62Decode(token); ok {
+                        return cuid
+                }
+                return ""
+        case "segmented":
+                // parser 已 concat (idGroups={1,2}), token = 完整 cuid.
+                return token
+        case "slug", "short", "classic", "dir":
+                // token IS cuid
+                return token
+        }
+        return ""
+}
+
+// decodeAlphanumericToken — alphanumeric 风格 token 反查 cuid (R63-A).
+//   token 格式 = 字母前缀 (b/c/d) + 6 位数字.
+//   按 viewType 校验前缀 (book=b, read=c, category=d), 剥前缀后用 6 位数字 DB 扫描.
+//   返回 cuid 或 "".
+func decodeAlphanumericToken(token, viewType string) string {
+        if len(token) < 2 {
+                return ""
+        }
+        prefix := token[:1]
+        digits := token[1:]
+        var expectedPrefix string
+        switch viewType {
+        case "book":
+                expectedPrefix = "b"
+        case "read":
+                expectedPrefix = "c"
+        case "category":
+                expectedPrefix = "d"
+        default:
+                return ""
+        }
+        if prefix != expectedPrefix {
+                return ""
+        }
+        // DB 扫描: 对每个 entity id, first6Digits(id) == digits 则命中.
+        return findEntityByEncodedToken(digits, viewType, first6Digits)
+}
+
+// findEntityByEncodedToken — DB 扫描 entity 表, 找 encodeFunc(id) == token 的 id (R63-A).
+//   用于 numericHash/hashidEncode/first6Digits 等不可逆编码的反查.
+//   viewType: book → Book 表, read → Chapter 表, category → Category 表.
+//   性能: O(N) 全表扫描; N=1000 时 ~10ms, 可接受. R64 可加缓存或冗余列优化.
+func findEntityByEncodedToken(token, viewType string, encodeFunc func(string) string) string {
+        if token == "" || encodeFunc == nil {
+                return ""
+        }
+        var table string
+        switch viewType {
+        case "book":
+                table = "Book"
+        case "read":
+                table = "Chapter"
+        case "category":
+                table = "Category"
+        default:
+                return ""
+        }
+        rows, err := db.Query(`SELECT id FROM ` + table)
+        if err != nil {
+                return ""
+        }
+        defer rows.Close()
+        for rows.Next() {
+                var id string
+                if err := rows.Scan(&id); err != nil {
+                        continue
+                }
+                if encodeFunc(id) == token {
+                        return id
+                }
+        }
+        return ""
+}
+
+// bookIDFromMap — 从 book map 安全提取 id (R63-A).
+//   用于 homeHandler read view 中 buildChapterURL 的 bookID 参数.
+func bookIDFromMap(book map[string]interface{}) string {
+        if book == nil {
+                return ""
+        }
+        if id, ok := book["id"].(string); ok {
+                return id
+        }
+        return ""
 }
