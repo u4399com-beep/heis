@@ -12,8 +12,8 @@
 <div class="top-float">
 <div class="top-float-inner">
 <nav class="top-float-nav">
-<a href="/">首页</a>
-{{range .NavCats}}<a href="/?view=category&cat={{.id}}">{{.name}}</a>{{end}}
+<a href="{{.HomeURL}}">首页</a>
+{{range .NavCats}}<a href="{{.URL}}">{{.name}}</a>{{end}}
 </nav>
 <div class="top-float-auth"></div>
 </div>
@@ -62,7 +62,7 @@
 <article class="panel" style="margin-top:14px;">
 <h3>下载与说明</h3>
 <div class="body">
-<a class="download-btn" href="/?view=read&chapter={{.FirstChapterId}}">在线阅读全文</a>
+<a class="download-btn" href="{{.FirstChapterURL}}">在线阅读全文</a>
 <a class="download-btn" href="#chapter_list">查看目录</a>
 <div class="tips">本站所有小说电子书均系网友上传，仅供书友之间免费下载预览！</div>
 </div>
@@ -73,7 +73,7 @@
 <h3>最新章节</h3>
 <div class="body">
 <ul class="lines">
-{{range .RecentChapters}}<li><a href="/?view=read&chapter={{.id}}" title="{{.title}}">{{.title}}</a></li>{{end}}
+{{range .RecentChapters}}<li><a href="{{.URL}}" title="{{.title}}">{{.title}}</a></li>{{end}}
 </ul>
 </div>
 </article>
@@ -84,7 +84,7 @@
 <h3>完整章节目录</h3>
 <div class="body">
 <ul class="lines">
-{{range .Chapters}}<li><a href="/?view=read&chapter={{.id}}" title="{{.title}}">{{.title}}</a></li>{{end}}
+{{range .Chapters}}<li><a href="{{.URL}}" title="{{.title}}">{{.title}}</a></li>{{end}}
 </ul>
 </div>
 </article>
@@ -96,7 +96,7 @@
 <div class="body grid2">
 {{range .Related}}<div class="book">
 {{if .cover}}<img src="{{.cover}}" alt="{{.name}}封面">{{end}}
-<h4><span class="badge">新</span><a href="/?view=book&id={{.id}}">{{.name}}</a></h4>
+<h4><span class="badge">新</span><a href="{{.URL}}">{{.name}}</a></h4>
 <div class="meta">{{.author}} · {{.category}} · {{wordCount .wordCount}} · {{fmtDate .updatedAt}}</div>
 <div class="desc">{{if .intro}}{{.intro}}{{else}}暂无简介{{end}}</div>
 </div>{{end}}
@@ -111,14 +111,14 @@
 <div class="body">
 {{if .Related}}
 <div class="book_r">
-{{if (index .Related 0).cover}}<a href="/?view=book&id={{(index .Related 0).id}}"><img src="{{(index .Related 0).cover}}" alt="{{(index .Related 0).name}}"></a>{{end}}
-<h4><a href="/?view=book&id={{(index .Related 0).id}}">{{(index .Related 0).name}}</a></h4>
+{{if (index .Related 0).cover}}<a href="{{(index .Related 0).URL}}"><img src="{{(index .Related 0).cover}}" alt="{{(index .Related 0).name}}"></a>{{end}}
+<h4><a href="{{(index .Related 0).URL}}">{{(index .Related 0).name}}</a></h4>
 <div class="meta">{{(index .Related 0).author}} · {{(index .Related 0).category}} · {{wordCount (index .Related 0).wordCount}}</div>
 <div class="desc">{{if (index .Related 0).intro}}{{(index .Related 0).intro}}{{else}}暂无简介{{end}}</div>
 </div>
 {{end}}
 <ul class="lines">
-{{range $i, $b := .Related}}{{if gt $i 0}}<li><span class="no">{{$i}}</span><a href="/?view=book&id={{$b.id}}" title="{{$b.name}}">{{$b.name}}</a><span class="date">{{$b.author}}</span></li>{{end}}{{end}}
+{{range $i, $b := .Related}}{{if gt $i 0}}<li><span class="no">{{$i}}</span><a href="{{$b.URL}}" title="{{$b.name}}">{{$b.name}}</a><span class="date">{{$b.author}}</span></li>{{end}}{{end}}
 </ul>
 </div>
 </article>

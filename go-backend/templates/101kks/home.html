@@ -23,8 +23,8 @@
 </div>
 <div class="menu2">
 <ul>
-<li><a href="/"><i class="iconfont icon-home"></i>首頁</a></li>
-{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}"><i class="iconfont icon-list1"></i>{{.name}}</a></li>{{end}}
+<li><a href="{{.HomeURL}}"><i class="iconfont icon-home"></i>首頁</a></li>
+{{range .NavCats}}<li><a href="{{.URL}}"><i class="iconfont icon-list1"></i>{{.name}}</a></li>{{end}}
 <li><a href="/?view=history"><i class="iconfont icon-yuedujilu"></i>閱讀記錄</a></li>
 </ul>
 </div>
@@ -35,7 +35,7 @@
 <div class="menubtn pull-left"><i class="iconfont icon-menu"></i></div>
 <div class="logo pull-left">
 <div class="logoimg"></div>
-<a href="/">{{.Site.Name}}</a>
+<a href="{{.HomeURL}}">{{.Site.Name}}</a>
 </div>
 <form action="/?view=search" method="get">
 <div class="search pull-left">
@@ -48,7 +48,7 @@
 </form>
 <div class="menu1 pull-right">
 <ul>
-<li><a href="/"> 首頁</a></li>
+<li><a href="{{.HomeURL}}"> 首頁</a></li>
 <li><a href="/?view=fulltext"><i class="iconfont icon-ai-book"></i> 完本</a></li>
 <li><a href="/?view=history"><i class="iconfont icon-yuedujilu"></i> 閱讀記錄</a></li>
 </ul>
@@ -87,7 +87,7 @@
 <div class="booklist-grid">
 {{range .TopBooks}}
 <div class="booklist-card">
-<a target="_blank" href="/?view=book&id={{.id}}" class="booklist-card-link">
+<a target="_blank" href="{{.URL}}" class="booklist-card-link">
 <div class="booklist-card-content">
 <div class="booklist-cover-section">
 <div class="booklist-cover-stack">
@@ -118,7 +118,7 @@
 <div class="tag">
 <h3 class="mytitle">小說分類</h3>
 <ul>
-{{range .NavCats}}<a href="/?view=category&cat={{.id}}" target="_blank">{{.name}}</a>{{end}}
+{{range .NavCats}}<a href="{{.URL}}" target="_blank">{{.name}}</a>{{end}}
 </ul>
 </div>
 </div>
@@ -134,7 +134,7 @@
 <div class="booklist-grid">
 {{range .Books}}
 <div class="booklist-card">
-<a target="_blank" href="/?view=book&id={{.id}}" class="booklist-card-link">
+<a target="_blank" href="{{.URL}}" class="booklist-card-link">
 <div class="booklist-card-content">
 <div class="booklist-cover-section">
 <div class="booklist-cover-stack">

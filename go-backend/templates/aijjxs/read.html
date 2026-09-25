@@ -12,8 +12,8 @@
 <div class="top-float">
 <div class="top-float-inner">
 <nav class="top-float-nav">
-<a href="/">首页</a>
-{{range .NavCats}}<a href="/?view=category&cat={{.id}}">{{.name}}</a>{{end}}
+<a href="{{.HomeURL}}">首页</a>
+{{range .NavCats}}<a href="{{.URL}}">{{.name}}</a>{{end}}
 </nav>
 <div class="top-float-auth"><a href="/?view=history">足迹</a><a href="/?view=fulltext">完本</a></div>
 </div>
@@ -47,10 +47,10 @@
 <article class="panel" style="margin-top:14px;">
 <div class="body">
 <ul class="lines">
-{{if .Prev}}<li><a href="/?view=read&chapter={{.Prev.id}}" title="上一章">上一章：{{.Prev.title}}</a></li>{{end}}
-{{if .Next}}<li><a href="/?view=read&chapter={{.Next.id}}" title="下一章">下一章：{{.Next.title}}</a></li>{{end}}
-<li><a href="/?view=book&id={{.Book.id}}#chapter_list">返回目录</a></li>
-<li><a href="/">返回首页</a></li>
+{{if .Prev}}<li><a href="{{.Prev.URL}}" title="上一章">上一章：{{.Prev.title}}</a></li>{{end}}
+{{if .Next}}<li><a href="{{.Next.URL}}" title="下一章">下一章：{{.Next.title}}</a></li>{{end}}
+<li><a href="{{.BookURL}}#chapter_list">返回目录</a></li>
+<li><a href="{{.HomeURL}}">返回首页</a></li>
 </ul>
 </div>
 </article>
@@ -71,7 +71,7 @@
 <h3>分类导航</h3>
 <div class="body">
 <ul class="lines">
-{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}">{{.name}}</a></li>{{end}}
+{{range .NavCats}}<li><a href="{{.URL}}">{{.name}}</a></li>{{end}}
 </ul>
 </div>
 </article>

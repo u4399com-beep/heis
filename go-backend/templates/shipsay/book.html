@@ -33,9 +33,9 @@
 
 <div class="navigation">
 <nav class="container">
-<a href="/">首页</a>
+<a href="{{.HomeURL}}">首页</a>
 {{range .NavCats}}
-<a href="/?view=category&cat={{.id}}">{{.name}}</a>
+<a href="{{.URL}}">{{.name}}</a>
 {{end}}
 <div id="user_panel"></div>
 </nav>
@@ -44,7 +44,7 @@
 <div class="container">
 <div class="section">
 <div class="novel_info_main">
-{{if .Book.cover}}<a href="/?view=book&id={{.Book.id}}"><img src="{{.Book.cover}}" title="{{.Book.name}}" style="width:120px;height:160px;margin-right:20px;margin-top:8px;box-shadow:3px 4px 10px #999;float:left;"></a>{{end}}
+{{if .Book.cover}}<a href="{{.BookURL}}"><img src="{{.Book.cover}}" title="{{.Book.name}}" style="width:120px;height:160px;margin-right:20px;margin-top:8px;box-shadow:3px 4px 10px #999;float:left;"></a>{{end}}
 <div class="novel_info_title">
 <h1>{{.Book.name}}</h1>
 <p>
@@ -54,9 +54,9 @@
 <span>字数：{{wordCount .Book.wordCount}}</span>
 <span>更新：{{fmtDate .Book.updatedAt}}</span>
 </p>
-<i>最新章节：{{if .Book.latestChapter}}<a href="/?view=read&chapter={{.FirstChapterId}}">{{.Book.latestChapter}}</a>{{else}}<a href="/?view=read&chapter={{.FirstChapterId}}">第1章</a>{{end}}</i>
+<i>最新章节：{{if .Book.latestChapter}}<a href="{{.FirstChapterURL}}">{{.Book.latestChapter}}</a>{{else}}<a href="{{.FirstChapterURL}}">第1章</a>{{end}}</i>
 <div>
-<a class="l_btn" href="/?view=read&chapter={{.FirstChapterId}}" title="开始阅读{{.Book.name}}">开始阅读</a>
+<a class="l_btn" href="{{.FirstChapterURL}}" title="开始阅读{{.Book.name}}">开始阅读</a>
 <a class="l_btn_0" href="#chapter_list" title="{{.Book.name}}目录">查看目录</a>
 </div>
 </div>
@@ -73,7 +73,7 @@
 <p class="title"><i class="fa fa-list fa-lg">&nbsp;</i>最新章节</p>
 <ul>
 {{range .RecentChapters}}
-<li><a href="/?view=read&chapter={{.id}}" title="{{.title}}">{{.title}}</a></li>
+<li><a href="{{.URL}}" title="{{.title}}">{{.title}}</a></li>
 {{end}}
 <li><a href="#chapter_list" title="{{.Book.name}}目录">查看完整章节目录 &gt;&gt;</a></li>
 </ul>
@@ -88,7 +88,7 @@
 <p class="title"><i class="fa fa-list fa-lg">&nbsp;</i>完整章节目录</p>
 <ul class="chapter_full_list">
 {{range .Chapters}}
-<li><a href="/?view=read&chapter={{.id}}" title="{{.title}}">{{.title}}</a></li>
+<li><a href="{{.URL}}" title="{{.title}}">{{.title}}</a></li>
 {{end}}
 </ul>
 </div>
@@ -104,7 +104,7 @@
 <ul>
 {{range .Related}}
 <li>
-<a href="/?view=book&id={{.id}}">{{.name}}</a>
+<a href="{{.URL}}">{{.name}}</a>
 <i>&nbsp;/ {{.author}}</i>
 </li>
 {{end}}
@@ -124,7 +124,7 @@
 
 <div id="footer">
 <footer class="container">
-<p><i class="fa fa-flag"></i>&nbsp;<a href="/">{{.Site.Name}}</a>&nbsp;书友最值得收藏的网络小说阅读网</p>
+<p><i class="fa fa-flag"></i>&nbsp;<a href="{{.HomeURL}}">{{.Site.Name}}</a>&nbsp;书友最值得收藏的网络小说阅读网</p>
 <p>本站所有小说为完本转载作品，所有内容版权归版权方或原作者所有。</p>
 </footer>
 </div>

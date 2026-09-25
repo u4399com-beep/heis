@@ -16,8 +16,8 @@
 <button type="button" class="mobile-nav-menu">菜单</button>
 </div>
 <nav class="top-float-nav">
-<a href="/" class="active">首页</a>
-{{range .NavCats}}<a href="/?view=category&cat={{.id}}">{{.name}}</a>{{end}}
+<a href="{{.HomeURL}}" class="active">首页</a>
+{{range .NavCats}}<a href="{{.URL}}">{{.name}}</a>{{end}}
 </nav>
 <div class="top-float-auth"><a href="/?view=history">足迹</a><a href="/?view=fulltext">完本</a></div>
 </div>
@@ -45,7 +45,7 @@
 <li>
 <span class="line-main">
 <span class="cat">{{.category}}</span>
-<a href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a>
+<a href="{{.URL}}" target="_blank">{{.name}}</a>
 <span class="author">{{.author}}</span>
 </span>
 <span class="date new"><span class="new">{{fmtDateMD .updatedAt}}</span></span>
@@ -64,7 +64,7 @@
 {{range .TopBooks}}
 <div class="book">
 {{if .cover}}<img src="{{.cover}}" alt="{{.name}}封面">{{end}}
-<h4><span class="badge">荐</span><a href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a></h4>
+<h4><span class="badge">荐</span><a href="{{.URL}}" target="_blank">{{.name}}</a></h4>
 <div class="meta">{{.author}} · {{.category}} · {{wordCount .wordCount}} · {{fmtDateMD .updatedAt}}</div>
 <div class="desc">{{.intro}}</div>
 </div>
@@ -82,7 +82,7 @@
 <li>
 <span class="line-main">
 <span class="cat">{{.category}}</span>
-<a href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a>
+<a href="{{.URL}}" target="_blank">{{.name}}</a>
 <span class="author">{{.author}}</span>
 </span>
 <span class="date new"><span class="new">{{fmtDateMD .updatedAt}}</span></span>
@@ -97,7 +97,7 @@
 <li>
 <span class="line-main">
 <span class="cat">热</span>
-<a href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a>
+<a href="{{.URL}}" target="_blank">{{.name}}</a>
 <span class="author">{{.author}}</span>
 </span>
 <span class="date new"><span class="new">{{fmtDateMD .updatedAt}}</span></span>
@@ -124,14 +124,14 @@
 <div class="body">
 {{if .Popular}}
 <div class="book_r">
-{{if (index .Popular 0).cover}}<a href="/?view=book&id={{(index .Popular 0).id}}" target="_blank"><img src="{{(index .Popular 0).cover}}" alt="{{(index .Popular 0).name}}封面"></a>{{end}}
-<h4><a href="/?view=book&id={{(index .Popular 0).id}}" target="_blank">{{(index .Popular 0).name}}</a></h4>
+{{if (index .Popular 0).cover}}<a href="{{(index .Popular 0).URL}}" target="_blank"><img src="{{(index .Popular 0).cover}}" alt="{{(index .Popular 0).name}}封面"></a>{{end}}
+<h4><a href="{{(index .Popular 0).URL}}" target="_blank">{{(index .Popular 0).name}}</a></h4>
 <div class="meta">{{(index .Popular 0).author}} · {{(index .Popular 0).category}} · {{wordCount (index .Popular 0).wordCount}}</div>
 <div class="desc">{{if (index .Popular 0).intro}}{{(index .Popular 0).intro}}{{else}}暂无简介{{end}}</div>
 </div>
 {{end}}
 <ul class="lines">
-{{range $i, $b := .Popular}}{{if gt $i 0}}{{if lt $i 11}}<li><span class="no">{{$i}}</span><a href="/?view=book&id={{$b.id}}" title="{{$b.name}}" target="_blank">{{$b.name}}</a><span class="date">{{$b.author}}</span></li>{{end}}{{end}}{{end}}
+{{range $i, $b := .Popular}}{{if gt $i 0}}{{if lt $i 11}}<li><span class="no">{{$i}}</span><a href="{{$b.URL}}" title="{{$b.name}}" target="_blank">{{$b.name}}</a><span class="date">{{$b.author}}</span></li>{{end}}{{end}}{{end}}
 </ul>
 </div>
 </article>
@@ -141,14 +141,14 @@
 <div class="body">
 {{if .TopBooks}}
 <div class="book_r">
-{{if (index .TopBooks 0).cover}}<a href="/?view=book&id={{(index .TopBooks 0).id}}" target="_blank"><img src="{{(index .TopBooks 0).cover}}" alt="{{(index .TopBooks 0).name}}封面"></a>{{end}}
-<h4><a href="/?view=book&id={{(index .TopBooks 0).id}}" target="_blank">{{(index .TopBooks 0).name}}</a></h4>
+{{if (index .TopBooks 0).cover}}<a href="{{(index .TopBooks 0).URL}}" target="_blank"><img src="{{(index .TopBooks 0).cover}}" alt="{{(index .TopBooks 0).name}}封面"></a>{{end}}
+<h4><a href="{{(index .TopBooks 0).URL}}" target="_blank">{{(index .TopBooks 0).name}}</a></h4>
 <div class="meta">{{(index .TopBooks 0).author}} · {{(index .TopBooks 0).category}} · {{wordCount (index .TopBooks 0).wordCount}}</div>
 <div class="desc">{{if (index .TopBooks 0).intro}}{{(index .TopBooks 0).intro}}{{else}}暂无简介{{end}}</div>
 </div>
 {{end}}
 <ul class="lines">
-{{range $i, $b := .TopBooks}}{{if gt $i 0}}{{if lt $i 11}}<li><span class="no">{{$i}}</span><a href="/?view=book&id={{$b.id}}" title="{{$b.name}}" target="_blank">{{$b.name}}</a><span class="date">{{$b.author}}</span></li>{{end}}{{end}}{{end}}
+{{range $i, $b := .TopBooks}}{{if gt $i 0}}{{if lt $i 11}}<li><span class="no">{{$i}}</span><a href="{{$b.URL}}" title="{{$b.name}}" target="_blank">{{$b.name}}</a><span class="date">{{$b.author}}</span></li>{{end}}{{end}}{{end}}
 </ul>
 </div>
 </article>

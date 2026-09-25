@@ -15,7 +15,7 @@
 <div class="header-logo">
 <h1 class="slogan">{{.Site.Name}}</h1>
 <div class="fixed-logo">
-<a href="/" class="logo" title="{{.Site.Name}}">{{.Site.Name}}</a>
+<a href="{{.HomeURL}}" class="logo" title="{{.Site.Name}}">{{.Site.Name}}</a>
 </div>
 </div>
 </div>
@@ -24,7 +24,7 @@
 </div>
 <div class="header-module">
 <ul class="nav-menu-items">
-<li class="nav-menu-item"><a href="/" title="首页"><span>首页</span></a></li>
+<li class="nav-menu-item"><a href="{{.HomeURL}}" title="首页"><span>首页</span></a></li>
 <li class="nav-menu-item"><a href="/?view=category" title="书库"><span>书库</span></a></li>
 </ul>
 </div>
@@ -47,9 +47,9 @@
 <div class="article">
 <main>
 <div class="chepnav">
-{{if .Prev}}<a href="/?view=read&chapter={{.Prev.id}}"><i>«</i> 上一章</a>{{else}}<a href="javascript:;"><i>«</i> 上一章</a>{{end}}
+{{if .Prev}}<a href="{{.Prev.URL}}"><i>«</i> 上一章</a>{{else}}<a href="javascript:;"><i>«</i> 上一章</a>{{end}}
 <i>·</i>
-{{if .Next}}<a href="/?view=read&chapter={{.Next.id}}">下一章 <i>»</i></a>{{else}}<a href="javascript:;">下一章 <i>»</i></a>{{end}}
+{{if .Next}}<a href="{{.Next.URL}}">下一章 <i>»</i></a>{{else}}<a href="javascript:;">下一章 <i>»</i></a>{{end}}
 </div>
 
 <h1 class="article-title">{{.Chapter.title}}</h1>
@@ -59,11 +59,11 @@
 </div>
 
 <div class="chepnav" style="margin-top:40px;text-align:center;">
-{{if .Prev}}<a href="/?view=read&chapter={{.Prev.id}}"><i>«</i> 上一章</a>{{else}}<a href="javascript:;"><i>«</i> 上一章</a>{{end}}
+{{if .Prev}}<a href="{{.Prev.URL}}"><i>«</i> 上一章</a>{{else}}<a href="javascript:;"><i>«</i> 上一章</a>{{end}}
 <i>·</i>
-<a href="/?view=book&id={{.Book.id}}">返回书页</a>
+<a href="{{.BookURL}}">返回书页</a>
 <i>·</i>
-{{if .Next}}<a href="/?view=read&chapter={{.Next.id}}">下一章 <i>»</i></a>{{else}}<a href="javascript:;">下一章 <i>»</i></a>{{end}}
+{{if .Next}}<a href="{{.Next.URL}}">下一章 <i>»</i></a>{{else}}<a href="javascript:;">下一章 <i>»</i></a>{{end}}
 </div>
 </main>
 </div>

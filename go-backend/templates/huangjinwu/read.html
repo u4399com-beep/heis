@@ -22,11 +22,11 @@
 <li><a href="/?view=category">分类浏览</a></li>
 </ul>
 </div>
-<a href="/" class="logo" title="{{.Site.Name}}"><span class="iconfont icon-book"></span>{{.Site.Name}}</a>
+<a href="{{.HomeURL}}" class="logo" title="{{.Site.Name}}"><span class="iconfont icon-book"></span>{{.Site.Name}}</a>
 <div class="sidebar-wrapper">
-<div class="sidebar-header"><a href="/" class="sidebar-logo" title="{{.Site.Name}}"><span class="iconfont icon-book"></span><span class="sidebar-logo-text">{{.Site.Name}}</span></a></div>
+<div class="sidebar-header"><a href="{{.HomeURL}}" class="sidebar-logo" title="{{.Site.Name}}"><span class="iconfont icon-book"></span><span class="sidebar-logo-text">{{.Site.Name}}</span></a></div>
 <ul class="navbar-menu" id="navbarMenu">
-<li><a href="/"><span class="menu-icon iconfont icon-book"></span><span class="menu-text">首页</span></a></li>
+<li><a href="{{.HomeURL}}"><span class="menu-icon iconfont icon-book"></span><span class="menu-text">首页</span></a></li>
 <li><a href="/?view=ranking"><span class="menu-icon iconfont icon-hot"></span><span class="menu-text">排行榜</span></a></li>
 <li><a href="/?view=category"><span class="menu-icon iconfont icon-sort"></span><span class="menu-text">书库</span></a></li>
 <li><a href="/?view=keyword&tag=小说"><span class="menu-icon iconfont icon-mark"></span><span class="menu-text">标签</span></a></li>
@@ -51,9 +51,9 @@
 <div class="container container-default">
 <nav class="breadcrumb" aria-label="面包屑">
 <ol class="breadcrumb-list">
-<li class="breadcrumb-item"><a href="/">首页</a></li>
+<li class="breadcrumb-item"><a href="{{.HomeURL}}">首页</a></li>
 <li class="breadcrumb-separator">/</li>
-<li class="breadcrumb-item"><a href="/?view=book&id={{.Book.id}}">{{.Book.name}}</a></li>
+<li class="breadcrumb-item"><a href="{{.BookURL}}">{{.Book.name}}</a></li>
 <li class="breadcrumb-separator">/</li>
 <li class="breadcrumb-item active">{{.Chapter.title}}</li>
 </ol>
@@ -64,8 +64,8 @@
 <div class="reader-header">
 <h1 class="reader-title">{{.Chapter.title}}</h1>
 <div class="reader-controls">
-{{if .Prev}}<a class="btn btn-secondary" href="/?view=read&chapter={{.Prev.id}}"><span class="iconfont icon-back"></span> 上一章</a>{{end}}
-{{if .Next}}<a class="btn btn-primary" href="/?view=read&chapter={{.Next.id}}">下一章 <span class="iconfont icon-read"></span></a>{{end}}
+{{if .Prev}}<a class="btn btn-secondary" href="{{.Prev.URL}}"><span class="iconfont icon-back"></span> 上一章</a>{{end}}
+{{if .Next}}<a class="btn btn-primary" href="{{.Next.URL}}">下一章 <span class="iconfont icon-read"></span></a>{{end}}
 </div>
 </div>
 
@@ -77,9 +77,9 @@
 </article>
 
 <nav class="reader-nav">
-{{if .Prev}}<a class="btn btn-secondary" href="/?view=read&chapter={{.Prev.id}}"><span class="iconfont icon-back"></span> 上一章</a>{{end}}
-<a class="btn btn-secondary" href="/?view=book&id={{.Book.id}}"><span class="iconfont icon-book"></span> 返回目录</a>
-{{if .Next}}<a class="btn btn-primary" href="/?view=read&chapter={{.Next.id}}">下一章 <span class="iconfont icon-read"></span></a>{{end}}
+{{if .Prev}}<a class="btn btn-secondary" href="{{.Prev.URL}}"><span class="iconfont icon-back"></span> 上一章</a>{{end}}
+<a class="btn btn-secondary" href="{{.BookURL}}"><span class="iconfont icon-book"></span> 返回目录</a>
+{{if .Next}}<a class="btn btn-primary" href="{{.Next.URL}}">下一章 <span class="iconfont icon-read"></span></a>{{end}}
 </nav>
 </div>
 </div>
@@ -92,7 +92,7 @@
 <a href="/?view=category" title="小说大全" target="_blank">小说</a>|
 <a href="/?view=fulltext" title="完本小说" target="_blank">完本</a>|
 <a href="/?view=history" title="阅读历史" target="_blank">历史</a>|
-<a href="/" title="回到首页" target="_blank">首页</a>
+<a href="{{.HomeURL}}" title="回到首页" target="_blank">首页</a>
 </p>
 <p class="copyright">本站小说由根据搜索引擎转码，只为让更多读者欣赏，不保存小说内及数据，仅作宣传展示。</p>
 <p class="copyright">Copyright © {{.Site.Name}} ({{.Site.Domain}})</p>

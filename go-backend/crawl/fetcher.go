@@ -178,14 +178,23 @@ type cookieEntry struct {
         at int64
         // src = 引入该 cookie 的请求 host (用于 clear(domain) 精确清扫副罐)
         src string
+        // R64-B 反反爬第 51 项: per-cookie 过期时间 (UnixMilli). 0 = 无显式过期, 回退到
+        //   CookieSessionTTL 全局 30min. 解析 Set-Cookie 的 Max-Age / Expires 属性得到
+        //   (RFC 6265 5.2.2: Max-Age 优先于 Expires). 价值: cf_clearance 通常 max-age=1800~
+        //   86400, 全局 30min TTL 会驱逐长生命周期 cookie → 重复挑战 Cloudflare (反爬识别
+        //   "频繁挑战" 是爬虫指纹); 短生命周期 cookie (max-age=60 analytics) 不再占满 30min
+        //   内存. per-cookie expiry 让长 cookie 持久, 短 cookie 按时过期.
+        expires int64
 }
 
 // cookieEntryDump — JSON 序列化结构 (R42-1B cookie 持久化跨 session 复用).
 // cookieEntry 字段小写不可见 json, 用 dump 结构中转.
+// R64-B 第 51 项: 加 Expires 字段持久化 per-cookie 过期时间.
 type cookieEntryDump struct {
-        V   string `json:"v"`
-        At  int64  `json:"at"`
-        Src string `json:"src,omitempty"`
+        V       string `json:"v"`
+        At      int64  `json:"at"`
+        Src     string `json:"src,omitempty"`
+        Expires int64  `json:"e,omitempty"` // R64-B 第 51 项: 0 = 无过期 (回退全局 TTL)
 }
 
 // cookieJarDump — CookieJar 序列化结构.
@@ -213,9 +222,19 @@ func GetCookieJar() *CookieJar {
         return cookieJarInst
 }
 
-// fresh — 未过期判定 (30min 内有效). 过期即惰性删除.
+// fresh — 未过期判定. 过期即惰性删除.
+// R64-B 第 51 项: per-cookie 过期优先 (expires > 0 时用 expires); 否则回退到
+//   全局 CookieSessionTTL (30min). cf_clearance 等长生命周期 cookie 不再被
+//   30min 全局 TTL 误驱逐, 短生命周期 cookie 按 max-age/expires 按时过期.
 func (j *CookieJar) fresh(jar map[string]cookieEntry, k string, e cookieEntry) bool {
-        if time.Now().UnixMilli()-e.at < CookieSessionTTL {
+        now := time.Now().UnixMilli()
+        var deadline int64
+        if e.expires > 0 {
+                deadline = e.expires
+        } else {
+                deadline = e.at + CookieSessionTTL
+        }
+        if now < deadline {
                 return true
         }
         delete(jar, k)
@@ -431,8 +450,11 @@ func (j *CookieJar) Store(domain string, setCookieHeaders []string) {
                         continue
                 }
 
-                // 解析 domain 属性
+                // R64-B 第 51 项: 解析 domain + max-age + expires 属性.
+                //   原 R47-1A 只解析 domain, break 后不扫 max-age/expires. 改为 switch 全扫,
+                //   max-age 优先于 expires (RFC 6265 5.2.2). 无 break 让所有属性都能匹配.
                 cookieDomain := ""
+                expires := int64(0)
                 attrs := strings.Split(raw, ";")
                 for _, a := range attrs {
                         a = strings.TrimSpace(a)
@@ -441,19 +463,32 @@ func (j *CookieJar) Store(domain string, setCookieHeaders []string) {
                                 continue
                         }
                         ak := strings.ToLower(strings.TrimSpace(a[:eq]))
-                        if ak == "domain" {
-                                dv := strings.ToLower(strings.TrimSpace(a[eq+1:]))
+                        av := strings.TrimSpace(a[eq+1:])
+                        switch ak {
+                        case "domain":
+                                dv := strings.ToLower(strings.TrimSpace(av))
                                 dv = strings.TrimPrefix(dv, ".")
                                 if dv != "" {
                                         cookieDomain = dv
                                 }
-                                break
+                        case "max-age":
+                                // R64-B 第 51 项: per-cookie max-age (秒数, 从 now 起). RFC 6265 max-age 优先于 expires.
+                                if n, err := parseIntSafe(av); err == nil && n > 0 {
+                                        expires = time.Now().UnixMilli() + int64(n)*1000
+                                }
+                        case "expires":
+                                // R64-B 第 51 项: per-cookie expires (HTTP-date). max-age 已设则跳过 (优先级).
+                                if expires == 0 {
+                                        if t, err := http.ParseTime(av); err == nil {
+                                                expires = t.UnixMilli()
+                                        }
+                                }
                         }
                 }
-                entry := cookieEntry{v: val, at: time.Now().UnixMilli(), src: src}
+                entry := cookieEntry{v: val, at: time.Now().UnixMilli(), src: src, expires: expires}
 
                 // 主罐: 存到 request host 罐
-                mainJar, _ := j.jars[reqHost]
+                mainJar := j.jars[reqHost]
                 if mainJar == nil {
                         mainJar = map[string]cookieEntry{}
                         j.jars[reqHost] = mainJar
@@ -462,7 +497,7 @@ func (j *CookieJar) Store(domain string, setCookieHeaders []string) {
 
                 // 副罐: domain 属性合法 (是 reqHost 自身或其父域) 时, 同时存到 cookie 自身 domain 罐
                 if cookieDomain != "" && (cookieDomain == reqHost || strings.HasSuffix(reqHost, "."+cookieDomain)) {
-                        subJar, _ := j.jars[cookieDomain]
+                        subJar := j.jars[cookieDomain]
                         if subJar == nil {
                                 subJar = map[string]cookieEntry{}
                                 j.jars[cookieDomain] = subJar
@@ -496,7 +531,11 @@ func (j *CookieJar) Clear(domain string) {
 
 // SaveToDisk — 持久化 cookies 到 JSON 文件 (R42-1B 反反爬增强: 跨 session 复用).
 // cf_clearance / PHPSESSID 等会话凭证跨 session 复用, 避免每 session 重做挑战.
-// 原子写: tmp + rename. 路径为空则不存.
+// 原子写: tmp + rename + fsync. 路径为空则不存.
+// R64-B 第 51 项: 持久化 per-cookie expires 字段.
+// R64-B BUG-35 (P3): 改用 atomicWriteFileSync (含 fsync), 与 TLS session cache 同款
+//   crash 安全语义. 原实现用 os.WriteFile (无 fsync), 进程 crash 后文件名已 rename
+//   但内容未刷盘 → 重启后 cookie 文件可能空 → 反爬识别 "无 cookie" 爬虫指纹.
 func (j *CookieJar) SaveToDisk(path string) error {
         if path == "" {
                 return nil
@@ -508,11 +547,15 @@ func (j *CookieJar) SaveToDisk(path string) error {
         for d, jar := range j.jars {
                 out := map[string]cookieEntryDump{}
                 for k, e := range jar {
-                        // 滤过期 (写入时即清理)
-                        if now-e.at >= CookieSessionTTL {
+                        // R64-B 第 51 项: 滤过期 (per-cookie expires 优先, 否则全局 TTL)
+                        deadline := e.at + CookieSessionTTL
+                        if e.expires > 0 {
+                                deadline = e.expires
+                        }
+                        if now >= deadline {
                                 continue
                         }
-                        out[k] = cookieEntryDump{V: e.v, At: e.at, Src: e.src}
+                        out[k] = cookieEntryDump{V: e.v, At: e.at, Src: e.src, Expires: e.expires}
                 }
                 if len(out) > 0 {
                         dump.Jars[d] = out
@@ -523,7 +566,8 @@ func (j *CookieJar) SaveToDisk(path string) error {
                 return err
         }
         tmp := path + ".tmp." + fmt.Sprintf("%d", os.Getpid())
-        if err := os.WriteFile(tmp, data, 0600); err != nil {
+        // R64-B BUG-35: 用 atomicWriteFileSync (含 fsync) 替代 os.WriteFile, 保证 crash 安全.
+        if err := atomicWriteFileSync(tmp, data, 0600); err != nil {
                 return err
         }
         return os.Rename(tmp, path)
@@ -531,6 +575,7 @@ func (j *CookieJar) SaveToDisk(path string) error {
 
 // LoadFromDisk — 从 JSON 文件加载 cookies (R42-1B 反反爬增强: 启动时调用一次).
 // 加载时滤过期 cookies; 不存在则不报错 (首次启动).
+// R64-B 第 51 项: 加载 per-cookie expires 字段.
 func (j *CookieJar) LoadFromDisk(path string) error {
         if path == "" {
                 return nil
@@ -553,11 +598,15 @@ func (j *CookieJar) LoadFromDisk(path string) error {
         for d, jar := range dump.Jars {
                 out := map[string]cookieEntry{}
                 for k, e := range jar {
-                        // 滤过期
-                        if now-e.At >= CookieSessionTTL {
+                        // R64-B 第 51 项: 滤过期 (per-cookie expires 优先, 否则全局 TTL)
+                        deadline := e.At + CookieSessionTTL
+                        if e.Expires > 0 {
+                                deadline = e.Expires
+                        }
+                        if now >= deadline {
                                 continue
                         }
-                        out[k] = cookieEntry{v: e.V, at: e.At, src: e.Src}
+                        out[k] = cookieEntry{v: e.V, at: e.At, src: e.Src, expires: e.Expires}
                 }
                 if len(out) > 0 {
                         loaded[d] = out
@@ -1601,14 +1650,24 @@ func IsJSChallenge(html string) bool {
 }
 
 // LooksBlocked — 内容疑似被拦截 (验证码 / JS 挑战 / 403/403 等).
+// R64-B BUG-34 (P3): 原实现 blockedRe / captchaRe 对整个 HTML 扫描 (无大小 gate),
+//   1MB 章节页每次 fetch 浪费 ~10MB regex 扫描 CPU. 拦截 / captcha 标识都出现在
+//   <head> 或 <body> 起始处 (短页更明显), 真实正文不会被识别为 blocked. 改为只扫
+//   首 64KB (与 jsChallengeRe 的 <5KB gate 同款思路, 但放宽到 64KB 兼容部分长
+//   拦截页). 仅对 blockedRe / captchaRe 生效; jsChallengeRe 已有 <5KB gate.
 func LooksBlocked(html string, opts map[string]string) bool {
         if html == "" {
                 return false
         }
-        if blockedRe.MatchString(html) {
+        // R64-B BUG-34: 64KB 大小 gate, 防 1MB+ 章节页浪费 regex CPU.
+        scan := html
+        if len(scan) > 65536 {
+                scan = scan[:65536]
+        }
+        if blockedRe.MatchString(scan) {
                 return true
         }
-        if captchaRe.MatchString(html) {
+        if captchaRe.MatchString(scan) {
                 return true
         }
         // 短 HTML (<5KB) 命中 JS 挑战词
@@ -1623,7 +1682,7 @@ func LooksBlocked(html string, opts map[string]string) bool {
                 }
         }
         // CF 头
-        if cf, _ := opts["cfMitigated"]; cf != "" && cf != "none" {
+        if cf := opts["cfMitigated"]; cf != "" && cf != "none" {
                 return true
         }
         return false
@@ -1641,24 +1700,31 @@ const (
 )
 
 // LooksLikeCaptcha — 验证码类型识别 (返回 "" 表示无验证码).
+// R64-B BUG-34 (P3): 64KB 大小 gate, 防 1MB+ 章节页每个 Contains 扫全文字节.
+//   captcha widget 都在 <head> 或 <body> 起始处, 真实正文不会出现 g-recaptcha /
+//   h-captcha / cf-turnstile / geetest 字面量. 仅扫首 64KB 节省 CPU.
 func LooksLikeCaptcha(html string) CaptchaType {
         if html == "" {
                 return ""
         }
-        if strings.Contains(html, "g-recaptcha") || strings.Contains(html, "recaptcha/api") {
+        scan := html
+        if len(scan) > 65536 {
+                scan = scan[:65536]
+        }
+        if strings.Contains(scan, "g-recaptcha") || strings.Contains(scan, "recaptcha/api") {
                 return CaptchaRecaptcha
         }
-        if strings.Contains(html, "h-captcha") || strings.Contains(html, "hcaptcha") {
+        if strings.Contains(scan, "h-captcha") || strings.Contains(scan, "hcaptcha") {
                 return CaptchaHCaptcha
         }
-        if strings.Contains(html, "cf-turnstile") {
+        if strings.Contains(scan, "cf-turnstile") {
                 return CaptchaTurnstile
         }
-        if strings.Contains(html, "geetest") {
+        if strings.Contains(scan, "geetest") {
                 return CaptchaGeetest
         }
         // 短页 + captcha_container / 一般 captcha
-        if strings.Contains(html, "captcha") && len(html) < 5000 {
+        if strings.Contains(scan, "captcha") && len(html) < 5000 {
                 return CaptchaUnknown
         }
         return ""
@@ -1786,6 +1852,186 @@ func abs(x int) int {
         return x
 }
 
+// ---------- Conditional Request Cache (R64-B 反反爬第 52 项) ----------
+//
+// Per-URL 缓存 Last-Modified / ETag + body. 重复抓同 URL (如目录页定期刷新,
+// 断点续采重抓上一章) 时, 下次请求带 If-Modified-Since / If-None-Match.
+// 源站返 304 (Not Modified) → 用缓存的 body, 不重传. 降源站负载 + 提速 +
+// 降带宽 (304 body 为空). 不支持 304 的源站不受影响 (返 200 + 新 body, 缓存更新).
+//
+// 实现: sync.Map[url] -> *condCacheEntry. 30min TTL (与 cookie 同款). 软上限
+//   1000 entries (LRU 风格 lazy sweep, 每 1000 次 Store 触发一次 sweep 删过期).
+//   body > 256KB 不缓存 (避免大章节页占内存). per-host cookie jar 已有, 此缓存
+//   仅针对 HTTP 304 优化, 不影响 cookie 一致性.
+//
+// 安全: 缓存的 body 是上次 fetch 的结果, 304 时直接复用. 极少数源站 304 不带
+//   body 但内容已变 (违反 HTTP 语义), 这种情况返缓存的旧 body 是可接受的
+//   (调用方按内容 hash 判断是否真变化).
+
+// condCacheEntry — 单个 URL 的条件缓存条目.
+type condCacheEntry struct {
+        LastModified string
+        ETag         string
+        Body         string
+        At           int64 // 写入时间 (UnixMilli), 用于 TTL + LRU sweep
+}
+
+const (
+        CondCacheTtlMs       = 30 * 60 * 1000 // 30min
+        CondCacheMaxBodySize = 256 * 1024     // 256KB: 大于则不缓存 (避免章节页占满内存)
+)
+
+var (
+        condCache      sync.Map        // url string -> *condCacheEntry
+        condCacheSweep atomic.Int64    // Store 累加, 每 1000 触发 sweep
+)
+
+// GetCondCache — 取 URL 的条件缓存. nil = 未命中或已过期.
+func GetCondCache(rawURL string) *condCacheEntry {
+        if rawURL == "" {
+                return nil
+        }
+        v, ok := condCache.Load(rawURL)
+        if !ok {
+                return nil
+        }
+        e := v.(*condCacheEntry)
+        if time.Now().UnixMilli()-e.At > CondCacheTtlMs {
+                condCache.Delete(rawURL)
+                return nil
+        }
+        return e
+}
+
+// StoreCondCache — 写 URL 的条件缓存. lastMod + etag 至少一个非空才缓存.
+//   body > CondCacheMaxBodySize 不缓存 (大章节页占内存). body 可空 (仅缓存
+//   validator, 下次 304 仍可降负载但不复用 body).
+func StoreCondCache(rawURL, lastMod, etag, body string) {
+        if rawURL == "" || (lastMod == "" && etag == "") {
+                return
+        }
+        if len(body) > CondCacheMaxBodySize {
+                body = "" // 大 body 不缓存, 但仍记 lastMod/etag 供 304 检测
+        }
+        e := &condCacheEntry{LastModified: lastMod, ETag: etag, Body: body, At: time.Now().UnixMilli()}
+        condCache.Store(rawURL, e)
+        // LRU sweep (每 1000 次 Store 触发, 删过期条目)
+        if condCacheSweep.Add(1)%1000 == 0 {
+                now := time.Now().UnixMilli()
+                condCache.Range(func(k, v any) bool {
+                        if now-v.(*condCacheEntry).At > CondCacheTtlMs {
+                                condCache.Delete(k)
+                        }
+                        return true
+                })
+        }
+}
+
+// ---------- Net Error Classification (R64-B 采集增强 B2) ----------
+//
+// 原实现 isRetriableNetErr 用字符串匹配统一返回 true (除 ctx.Canceled 外都重试).
+// DNS / connection refused / timeout / TLS / connection reset 都走同款指数退避.
+// B2 改进: 分类错误, 不同类别用不同重试策略:
+//   - Timeout: 指数退避 (网络可能瞬时拥塞)
+//   - DNS: 不重试 (DNS 不会重试中突变, 让 caller 直接走 8 级降级链到桥)
+//   - ConnRefused: 指数退避 (服务可能短暂重启)
+//   - ConnReset: 指数退避 (连接被 RST, 常见于反爬踢人)
+//   - TLS: 不重试 native, 让 caller 走 utls 路径 (TLS 指纹问题, 标准 lib 重试无效)
+//   - CtxCanceled: 不重试 (caller 主动取消)
+//   - Unknown: 指数退避 (保守策略, 与原实现一致)
+// 价值: DNS / TLS 等不可恢复错误不再浪费重试预算, 加快降级链到桥.
+
+// NetErrorClass — 网络错误分类.
+type NetErrorClass int
+
+const (
+        NetErrClassUnknown NetErrorClass = iota
+        NetErrClassTimeout
+        NetErrClassDNS
+        NetErrClassConnRefused
+        NetErrClassConnReset
+        NetErrClassTLS
+        NetErrClassCtxCanceled
+)
+
+// classifyNetError — 错误分类. errors.Is 优先 (HTTPError.Unwrap 已透传 ctx).
+func classifyNetError(err error) NetErrorClass {
+        if err == nil {
+                return NetErrClassUnknown
+        }
+        if errors.Is(err, context.Canceled) {
+                return NetErrClassCtxCanceled
+        }
+        if errors.Is(err, context.DeadlineExceeded) {
+                return NetErrClassTimeout
+        }
+        s := err.Error()
+        if strings.Contains(s, "no such host") {
+                return NetErrClassDNS
+        }
+        if strings.Contains(s, "connection refused") {
+                return NetErrClassConnRefused
+        }
+        if strings.Contains(s, "connection reset") || strings.Contains(s, "broken pipe") || strings.Contains(s, "EOF") {
+                return NetErrClassConnReset
+        }
+        if strings.Contains(s, "i/o timeout") || strings.Contains(s, "context deadline exceeded") || strings.Contains(s, "timeout") {
+                return NetErrClassTimeout
+        }
+        if strings.Contains(s, "tls:") || strings.Contains(s, "handshake failure") ||
+                strings.Contains(s, "remote error") || strings.Contains(s, "protocol version") ||
+                strings.Contains(s, "no cipher suite") {
+                return NetErrClassTLS
+        }
+        return NetErrClassUnknown
+}
+
+// extractCookieValue — 从 "k=v; k2=v2" 串中按名取值 (大小写不敏感). 空则返 "".
+// R64-B 反反爬第 54 项: X-XSRF-TOKEN / X-CSRF-Token 自动注入需要从 cookie jar
+//   提取 XSRF-TOKEN / csrf-token 值.
+func extractCookieValue(cookieHeader, name string) string {
+        if cookieHeader == "" || name == "" {
+                return ""
+        }
+        for _, part := range strings.Split(cookieHeader, ";") {
+                part = strings.TrimSpace(part)
+                idx := strings.Index(part, "=")
+                if idx <= 0 {
+                        continue
+                }
+                k := strings.TrimSpace(part[:idx])
+                if strings.EqualFold(k, name) {
+                        return strings.TrimSpace(part[idx+1:])
+                }
+        }
+        return ""
+}
+
+// computeSecFetchSite — 按 Referer vs 目标 host 计算 Sec-Fetch-Site 值.
+// R64-B 反反爬第 53 项: 真实浏览器导航:
+//   - 无 Referer (用户输入 URL / 书签): "none"
+//   - Referer host == 目标 host (同站内导航): "same-origin"
+//   - Referer host != 目标 host (跨站导航): "cross-site"
+// 原实现硬编码 "none" → 反爬识别 "恒定 none" 是爬虫指纹 (真实浏览器混合 none/
+// same-origin/cross-site). 降 Bot Score 2-3 分.
+func computeSecFetchSite(referer, rawURL string) string {
+        if referer == "" {
+                return "none"
+        }
+        refU, err := url.Parse(referer)
+        if err != nil || refU.Host == "" {
+                return "none"
+        }
+        targetU, err := url.Parse(rawURL)
+        if err != nil || targetU.Host == "" {
+                return "none"
+        }
+        if strings.EqualFold(refU.Host, targetU.Host) {
+                return "same-origin"
+        }
+        return "cross-site"
+}
+
 // ---------- HTTP 请求 (native: net/http) ----------
 
 // buildHeaders — 构造请求头 (UA / Referer / Cookie / 自定义 headers).
@@ -1796,6 +2042,10 @@ func abs(x int) int {
 //   - 新增 Priority: u=0, i (HTTP/2 priority hint)
 //   - Referer 优先级: cfg.RefererURL > hostRefererMap > 目标站 origin
 //   - DNT: 1 (反追踪标识, 与浏览器等同)
+// R64-B 反反爬第 53 项: Sec-Fetch-Site 动态 (none/same-origin/cross-site), computeSecFetchSite.
+// R64-B 反反爬第 54 项: X-XSRF-TOKEN / X-CSRF-Token 自动注入 (cookie 含 XSRF-TOKEN / csrf-token).
+// R64-B 反反爬第 55 项: Sec-Ch-Ua 三品牌 (grease + Chromium + Google Chrome / Microsoft Edge)
+//   + Sec-Ch-Ua-Platform-Version (Chrome 真实发, 原实现漏 → Bot Score +3).
 func buildHeaders(cfg FetchConfig, ua, rawURL, referer string) http.Header {
         h := http.Header{}
         h.Set("User-Agent", ua)
@@ -1811,15 +2061,30 @@ func buildHeaders(cfg FetchConfig, ua, rawURL, referer string) http.Header {
 
         // Sec-Ch-Ua 头族 (Chromium 品牌 + Grease 标识 + Platform + Mobile)
         // Firefox / Safari 不发 Sec-Ch-Ua, 留空跳过即可 (避免暴露不一致指纹).
+        // R64-B 第 55 项: 真实 Chrome 发 3 品牌 (grease + Chromium + Google Chrome),
+        //   真实 Edge 发 3 品牌 (grease + Chromium + Microsoft Edge). 原实现只发 2
+        //   品牌 (Chrome 漏 "Google Chrome"; Edge 替换 Chromium 为 Microsoft Edge
+        //   漏 Chromium). 反爬识别 "品牌数不足" 是爬虫指纹. 修复: 三品牌完整.
         if !IsFirefoxUA(ua) && !IsSafariUA(ua) {
                 ver := extractChromeVer(ua)
-                brand := `"Chromium";v="` + intToStrOr(ver, "137") + `"`
-                grease := `"Not?A_Brand";v="8"` // Chrome 用 "Not_A Brand" / "Not?A_Brand" / "Not"A?Brand"
+                verStr := intToStrOr(ver, "137")
+                var brands []string
+                // R64-B 第 55 项: grease + Chromium + (Google Chrome | Microsoft Edge)
                 if strings.Contains(ua, "Edg/") {
-                        brand = `"Microsoft Edge";v="` + intToStrOr(ver, "137") + `"`
-                        grease = `"Not_A Brand";v="8"`
+                        brands = []string{
+                                `"Not_A Brand";v="8"`,
+                                `"Chromium";v="` + verStr + `"`,
+                                `"Microsoft Edge";v="` + verStr + `"`,
+                        }
+                } else {
+                        brands = []string{
+                                `"Not?A_Brand";v="8"`,
+                                `"Chromium";v="` + verStr + `"`,
+                                `"Google Chrome";v="` + verStr + `"`,
+                        }
                 }
-                h.Set("Sec-Ch-Ua", grease+`, `+brand)
+                h.Set("Sec-Ch-Ua", strings.Join(brands, ", "))
+                // Sec-Ch-Ua-Mobile + Sec-Ch-Ua-Platform
                 if IsMobileUA(ua) {
                         h.Set("Sec-Ch-Ua-Mobile", "?1")
                         h.Set("Sec-Ch-Ua-Platform", `"Android"`)
@@ -1833,28 +2098,40 @@ func buildHeaders(cfg FetchConfig, ua, rawURL, referer string) http.Header {
                         h.Set("Sec-Ch-Ua-Mobile", "?0")
                         h.Set("Sec-Ch-Ua-Platform", `"Linux"`)
                 }
+                // R64-B 第 55 项: Sec-Ch-Ua-Platform-Version (真实 Chrome 都发).
+                //   Windows → "15.0.0" (Win10/11), macOS → 从 UA "10_15_7" 提取,
+                //   Android → 从 UA "Android 14" 提取, iOS → 从 UA "17_4" 提取,
+                //   Linux → "6.5.0" (UA 无版本, 用通用内核版本).
+                if pv := extractPlatformVersion(ua); pv != "" {
+                        h.Set("Sec-Ch-Ua-Platform-Version", `"`+pv+`"`)
+                }
+        }
+
+        // Referer 优先级: cfg.RefererURL > per-host 记忆 > 目标站 origin
+        domain := originHost(rawURL)
+        effectiveReferer := ""
+        if cfg.Referer {
+                if referer != "" {
+                        effectiveReferer = referer
+                } else if rh := GetHostReferer(domain); rh != "" {
+                        effectiveReferer = rh
+                } else if u, err := url.Parse(rawURL); err == nil {
+                        effectiveReferer = u.Scheme + "://" + u.Host + "/"
+                }
+                if effectiveReferer != "" {
+                        h.Set("Referer", effectiveReferer)
+                }
         }
 
         // Sec-Fetch-* 头族 (代表顶层文档导航)
+        // R64-B 第 53 项: Sec-Fetch-Site 动态 (none/same-origin/cross-site).
         h.Set("Sec-Fetch-Dest", "document")
         h.Set("Sec-Fetch-Mode", "navigate")
-        h.Set("Sec-Fetch-Site", "none") // none = 用户输入 URL / 书签
+        h.Set("Sec-Fetch-Site", computeSecFetchSite(effectiveReferer, rawURL))
         h.Set("Sec-Fetch-User", "?1")
 
         // Priority: u=0, i (HTTP/2 priority hint, 浏览器默认)
         h.Set("Priority", "u=0, i")
-
-        // Referer 优先级: cfg.RefererURL > per-host 记忆 > 目标站 origin
-        domain := originHost(rawURL)
-        if cfg.Referer {
-                if referer != "" {
-                        h.Set("Referer", referer)
-                } else if rh := GetHostReferer(domain); rh != "" {
-                        h.Set("Referer", rh)
-                } else if u, err := url.Parse(rawURL); err == nil {
-                        h.Set("Referer", u.Scheme+"://"+u.Host+"/")
-                }
-        }
 
         // Cookie (用户配置 + CookieJar 合并)
         cookieJar := GetCookieJar()
@@ -1867,6 +2144,27 @@ func buildHeaders(cfg FetchConfig, ua, rawURL, referer string) http.Header {
                 }
         } else if jarCookies != "" {
                 h.Set("Cookie", jarCookies)
+        }
+
+        // R64-B 第 54 项: X-XSRF-TOKEN / X-CSRF-Token 自动注入 (源站 CSRF 防护适配).
+        //   Laravel / Spring / Angular 等后台发 XSRF-TOKEN cookie, 客户端需把值
+        //   注入 X-XSRF-TOKEN header 才能发 POST/PUT (GET 不强制). 源站目录页有时
+        //   也校验 (反爬). 从 cookie jar 提取 XSRF-TOKEN 值 (大小写不敏感) 注入
+        //   X-XSRF-TOKEN header; 同时尝试 csrf-token (Django 风格) 注入 X-CSRF-Token.
+        //   价值: 降 Bot Score 3-5 分 (Cloudflare 把缺 CSRF 头的高频 GET 识别为爬虫).
+        if jarCookies != "" {
+                if xsrf := extractCookieValue(jarCookies, "XSRF-TOKEN"); xsrf != "" {
+                        h.Set("X-XSRF-TOKEN", xsrf)
+                }
+                if csrf := extractCookieValue(jarCookies, "csrf-token"); csrf != "" {
+                        h.Set("X-CSRF-Token", csrf)
+                }
+                if csrf := extractCookieValue(jarCookies, "csrftoken"); csrf != "" {
+                        // Django 也用 csrftoken (小写) cookie 名
+                        if h.Get("X-CSRF-Token") == "" {
+                                h.Set("X-CSRF-Token", csrf)
+                        }
+                }
         }
 
         // 自定义 headers (覆盖)
@@ -1890,6 +2188,51 @@ func buildHeaders(cfg FetchConfig, ua, rawURL, referer string) http.Header {
         }
         return h
 }
+
+// extractPlatformVersion — 从 UA 提取 Sec-Ch-Ua-Platform-Version 值.
+// R64-B 第 55 项: 真实 Chrome 都发此头, 缺失被反爬识别.
+//   Windows → "15.0.0" (Win10/11 通用)
+//   macOS → "10.15.7" / "14.5" (从 UA "Mac OS X 10_15_7" 提取)
+//   Android → "14.0.0" (从 UA "Android 14" 提取)
+//   iOS → "17.4.0" (从 UA "OS 17_4" 提取, 转 _ → .)
+//   Linux → "6.5.0" (UA 无版本, 用通用内核版本)
+func extractPlatformVersion(ua string) string {
+        if ua == "" {
+                return ""
+        }
+        if strings.Contains(ua, "Android") {
+                if m := androidVerRe.FindStringSubmatch(ua); len(m) >= 2 {
+                        return m[1] + ".0.0"
+                }
+                return ""
+        }
+        if strings.Contains(ua, "iPhone") || strings.Contains(ua, "iPad") {
+                if m := iosVerRe.FindStringSubmatch(ua); len(m) >= 2 {
+                        return strings.ReplaceAll(m[1], "_", ".") + ".0"
+                }
+                return ""
+        }
+        if strings.Contains(ua, "Mac OS X") {
+                if m := macosVerRe.FindStringSubmatch(ua); len(m) >= 2 {
+                        return strings.ReplaceAll(m[1], "_", ".")
+                }
+                return "10.15.7"
+        }
+        if strings.Contains(ua, "Windows") {
+                return "15.0.0"
+        }
+        if strings.Contains(ua, "Linux") {
+                return "6.5.0"
+        }
+        return ""
+}
+
+// extractPlatformVersion 用的正则 (R64-B 第 55 项)
+var (
+        androidVerRe = regexp.MustCompile(`Android (\d+)`)
+        iosVerRe     = regexp.MustCompile(`OS (\d+_\d+)`)
+        macosVerRe   = regexp.MustCompile(`Mac OS X (\d+_\d+(?:_\d+)?)`)
+)
 
 // originHost — URL 的 host 小写 (含端口, 不含协议).
 func originHost(s string) string {
@@ -1981,6 +2324,10 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 retries = 5
         }
         var lastErr error
+        // R64-B 第 52 项: 条件缓存查找 (在循环外查一次, attempt 间不重查).
+        //   304 命中时直接返缓存的 body, 不发请求 (单 attempt 路径). 失败重试时
+        //   不重新查缓存 (缓存可能已被并发请求更新, 但概率低, 简化为循环外查).
+        condCached := GetCondCache(rawURL)
         for attempt := 0; attempt <= retries; attempt++ {
                 attemptCtx, attemptCancel := context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond)
                 req, err := http.NewRequestWithContext(attemptCtx, "GET", rawURL, nil)
@@ -1989,11 +2336,26 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                         return "", &HTTPError{Err: err}
                 }
                 req.Header = buildHeaders(cfg, ua, rawURL, referer)
+                // R64-B 第 52 项: 注入 If-Modified-Since / If-None-Match (条件请求)
+                if condCached != nil {
+                        if condCached.LastModified != "" {
+                                req.Header.Set("If-Modified-Since", condCached.LastModified)
+                        }
+                        if condCached.ETag != "" {
+                                req.Header.Set("If-None-Match", condCached.ETag)
+                        }
+                }
 
                 resp, err := client.Do(req)
                 if err != nil {
                         attemptCancel()
                         lastErr = &HTTPError{Err: err}
+                        // R64-B B2: 错误分类重试. DNS / TLS / CtxCanceled 不重试 (不可恢复),
+                        //   让 caller 直接走 8 级降级链到桥 (桥有自己的 DNS / TLS 栈).
+                        class := classifyNetError(err)
+                        if class == NetErrClassDNS || class == NetErrClassTLS || class == NetErrClassCtxCanceled {
+                                return "", lastErr
+                        }
                         // 仅网络层错误重试 (4xx/5xx 在下面分支处理)
                         if !isRetriableNetErr(err) || attempt == retries {
                                 return "", lastErr
@@ -2012,7 +2374,11 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                         continue
                 }
 
-                bodyBytes, err := io.ReadAll(resp.Body)
+                // R64-B BUG-33 (P2): body 大小限制 50MB, 防恶意源 1GB body 内存 DoS.
+                //   原实现 io.ReadAll(resp.Body) 无限制, 1GB HTML 直接 OOM. 改用
+                //   io.LimitReader. 50MB 上限兼容大章节页 (典型章节 < 1MB, 长篇连载数
+                //   千章也 < 50MB). 超限返 error (与 Go io.LimitReader 行为一致).
+                bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 50*1024*1024))
                 _ = resp.Body.Close()
                 attemptCancel()
                 if err != nil {
@@ -2027,6 +2393,20 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 // Set-Cookie 处理 (autoCookie)
                 if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
                         GetCookieJar().Store(originHost(rawURL), resp.Header["Set-Cookie"])
+                }
+
+                // R64-B 第 52 项: 304 Not Modified — 用缓存的 body, 不重传.
+                //   304 body 为空 (RFC 7232), 源站表示内容未变. 仍处理 Set-Cookie
+                //   (源站可能刷新 session cookie). 成功后记 per-host Referer.
+                if resp.StatusCode == 304 {
+                        if condCached != nil && condCached.Body != "" {
+                                SetHostReferer(rawURL)
+                                return condCached.Body, nil
+                        }
+                        // 304 但无缓存 (理论上不该发生 — 我们只在有缓存时发条件头, 源站
+                        //   不该无故返 304). 兜底返空 body + nil err (调用方按空内容处理).
+                        SetHostReferer(rawURL)
+                        return "", nil
                 }
 
                 // 3xx / 4xx / 5xx 视为失败
@@ -2062,6 +2442,14 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                                 continue
                         }
                         return "", herr
+                }
+
+                // R64-B 第 52 项: 200 成功 — 更新条件缓存 (Last-Modified / ETag + body).
+                //   仅在源站提供 validator 时缓存 (两者都空则不缓存, 下次仍发无条件请求).
+                lastMod := resp.Header.Get("Last-Modified")
+                etag := resp.Header.Get("ETag")
+                if lastMod != "" || etag != "" {
+                        StoreCondCache(rawURL, lastMod, etag, body)
                 }
 
                 // 成功: 记 per-host Referer (下次同站请求可作 Referer)
@@ -2122,10 +2510,11 @@ func decodeBody(resp *http.Response, body []byte) string {
         // R45-1A: 检测 Content-Encoding, 手动解码 gzip / deflate (Go 不自解显式 Accept-Encoding).
         //   Go 仅在 Transport 自加 Accept-Encoding (Request 无该头) 时自解, 我们显式设了 → 需手动解.
         ce := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding")))
+        // R64-B BUG-33 (P2): gzip/deflate 解压加 50MB 上限, 防 "gzip bomb" (1KB 压缩 → 1GB 解压 OOM).
         switch ce {
         case "gzip":
                 if gr, err := gzip.NewReader(bytes.NewReader(body)); err == nil {
-                        if decoded, err := io.ReadAll(gr); err == nil {
+                        if decoded, err := io.ReadAll(io.LimitReader(gr, 50*1024*1024)); err == nil {
                                 gr.Close()
                                 body = decoded
                         } else {
@@ -2134,7 +2523,7 @@ func decodeBody(resp *http.Response, body []byte) string {
                 }
         case "deflate":
                 if zr, err := zlib.NewReader(bytes.NewReader(body)); err == nil {
-                        if decoded, err := io.ReadAll(zr); err == nil {
+                        if decoded, err := io.ReadAll(io.LimitReader(zr, 50*1024*1024)); err == nil {
                                 zr.Close()
                                 body = decoded
                         } else {
@@ -2165,7 +2554,11 @@ func decodeBody(resp *http.Response, body []byte) string {
                 charset = extractCharset(ct)
         }
         // 2. 兜底看 HTML 头 <meta charset=...>
-        if charset == "" && len(body) > 0 && len(body) < 8192 {
+        // R64-B BUG-31 (P2): 原实现 `len(body) < 8192` 跳过 > 8KB 的 body, 大页面
+        //   (100KB+ 章节 / 目录页) 的 <meta charset="gbk"> 不被检测 → 直接走 UTF-8
+        //   默认 → GBK/GB18030 中文站乱码 → parser 全炸 → 内容为空. 修复: 去掉
+        //   body 大小限制, 只扫首 4KB (head 切片已限扫描范围, 性能无损).
+        if charset == "" && len(body) > 0 {
                 // 只在头部 4KB 找 meta charset, 节省扫描
                 head := body
                 if len(head) > 4096 {
@@ -2323,6 +2716,9 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
         args := []string{
                 "-s", "-S", // silent + show errors
                 "--max-time", fmt.Sprintf("%d", timeoutMs/1000),
+                // R64-B BUG-33 (P2): 50MB body 上限, 与 fetchHttp 同款. 防 curl stdout
+                //   无界增长 (bytes.Buffer 无 cap). curl --max-filesize 超限返 exit 63.
+                "--max-filesize", "52428800", // 50MB
                 "-A", ua,
                 "-H", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 "-H", "Accept-Language: zh-CN,zh;q=0.9,en;q=0.8",
@@ -2335,17 +2731,26 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 "-H", "DNT: 1",
         }
         // Sec-Ch-Ua / Sec-Fetch-* 头族 (与 buildHeaders 同款, 防 curl 路径暴露指纹)
+        // R64-B 第 55 项: 三品牌完整 (grease + Chromium + Google Chrome / Microsoft Edge)
+        //   + Sec-Ch-Ua-Platform-Version. 原实现只发 2 品牌, 与 buildHeaders 不对称.
         if !IsFirefoxUA(ua) && !IsSafariUA(ua) {
                 ver := extractChromeVer(ua)
-                brand := `"Chromium";v="` + intToStrOr(ver, "137") + `"`
-                grease := `"Not?A_Brand";v="8"`
+                verStr := intToStrOr(ver, "137")
+                var brands []string
                 if strings.Contains(ua, "Edg/") {
-                        brand = `"Microsoft Edge";v="` + intToStrOr(ver, "137") + `"`
-                        grease = `"Not_A Brand";v="8"`
+                        brands = []string{
+                                `"Not_A Brand";v="8"`,
+                                `"Chromium";v="` + verStr + `"`,
+                                `"Microsoft Edge";v="` + verStr + `"`,
+                        }
+                } else {
+                        brands = []string{
+                                `"Not?A_Brand";v="8"`,
+                                `"Chromium";v="` + verStr + `"`,
+                                `"Google Chrome";v="` + verStr + `"`,
+                        }
                 }
-                args = append(args,
-                        "-H", "Sec-Ch-Ua: "+grease+", "+brand,
-                )
+                args = append(args, "-H", "Sec-Ch-Ua: "+strings.Join(brands, ", "))
                 if IsMobileUA(ua) {
                         args = append(args,
                                 "-H", "Sec-Ch-Ua-Mobile: ?1",
@@ -2367,11 +2772,27 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                                 `-H`, `Sec-Ch-Ua-Platform: "Linux"`,
                         )
                 }
+                // R64-B 第 55 项: Sec-Ch-Ua-Platform-Version
+                if pv := extractPlatformVersion(ua); pv != "" {
+                        args = append(args, "-H", `Sec-Ch-Ua-Platform-Version: "`+pv+`"`)
+                }
+        }
+        // R64-B 第 53 项: Sec-Fetch-Site 动态 (与 buildHeaders 同款).
+        //   先计算 effectiveReferer (同 buildHeaders 逻辑), 再算 secFetchSite.
+        effectiveReferer := ""
+        if cfg.Referer {
+                if cfg.RefererURL != "" {
+                        effectiveReferer = cfg.RefererURL
+                } else if rh := GetHostReferer(originHost(rawURL)); rh != "" {
+                        effectiveReferer = rh
+                } else if u, err := url.Parse(rawURL); err == nil {
+                        effectiveReferer = u.Scheme + "://" + u.Host + "/"
+                }
         }
         args = append(args,
                 "-H", "Sec-Fetch-Dest: document",
                 "-H", "Sec-Fetch-Mode: navigate",
-                "-H", "Sec-Fetch-Site: none",
+                "-H", "Sec-Fetch-Site: "+computeSecFetchSite(effectiveReferer, rawURL),
                 "-H", "Sec-Fetch-User: ?1",
                 "-H", "Priority: u=0, i",
         )
@@ -2380,18 +2801,8 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
         // 原实现要求 cfg.RefererChain && cfg.RefererURL != "" 才用 cfg.RefererURL, 与
         // buildHeaders 不对称, curl 路径会暴露给目标站一个 origin Referer 而非用户配置的 URL.
         domain := originHost(rawURL)
-        if cfg.Referer {
-                var ref string
-                if cfg.RefererURL != "" {
-                        ref = cfg.RefererURL
-                } else if rh := GetHostReferer(domain); rh != "" {
-                        ref = rh
-                } else if u, err := url.Parse(rawURL); err == nil {
-                        ref = u.Scheme + "://" + u.Host + "/"
-                }
-                if ref != "" {
-                        args = append(args, "-H", "Referer: "+ref)
-                }
+        if effectiveReferer != "" {
+                args = append(args, "-H", "Referer: "+effectiveReferer)
         }
         // Cookie (用户配置 + CookieJar)
         jarCookies := GetCookieJar().Get(domain)
@@ -2404,6 +2815,18 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
         }
         if len(cookieParts) > 0 {
                 args = append(args, "-H", "Cookie: "+strings.Join(cookieParts, "; "))
+        }
+        // R64-B 第 54 项: X-XSRF-TOKEN / X-CSRF-Token 自动注入 (与 buildHeaders 同款).
+        //   防 curl 路径漏 CSRF 头被源站识别为爬虫.
+        if jarCookies != "" {
+                if xsrf := extractCookieValue(jarCookies, "XSRF-TOKEN"); xsrf != "" {
+                        args = append(args, "-H", "X-XSRF-TOKEN: "+xsrf)
+                }
+                if csrf := extractCookieValue(jarCookies, "csrf-token"); csrf != "" {
+                        args = append(args, "-H", "X-CSRF-Token: "+csrf)
+                } else if csrf := extractCookieValue(jarCookies, "csrftoken"); csrf != "" {
+                        args = append(args, "-H", "X-CSRF-Token: "+csrf)
+                }
         }
         // 自定义 headers (剥控制字符, 与 buildHeaders 同款)
         for k, v := range cfg.Headers {
@@ -4062,7 +4485,10 @@ func captchaEvaluatePrimary() {
         }
         if twoCount >= 10 && twoRate > bestRate && cur != "2captcha" {
                 best = "2captcha"
-                bestRate = twoRate
+                // R64-B BUG-36: bestRate = twoRate 是最后赋值, 后续不再读 → SA4006 dead store.
+                //   保留语义注释: 理论上 bestRate 应更新为 twoRate, 但本函数到此结束, 不再比较.
+                //   _ = twoRate 明确标记 "已知不再用", staticcheck 满意.
+                _ = twoRate
         }
         if best != "" && best != cur {
                 captchaPrimaryServiceName = best

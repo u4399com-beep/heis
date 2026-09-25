@@ -11,7 +11,7 @@
 <body>
 <div id="wrapper">
 <div class="header">
-<div class="header_logo"><a href="/">{{.Site.Name}}</a></div>
+<div class="header_logo"><a href="{{.HomeURL}}">{{.Site.Name}}</a></div>
 <div class="header_search">
 <form name="articlesearch" method="get" action="/?view=search">
 <input name="q" type="text" class="text" placeholder="搜索从这里开始...">
@@ -22,8 +22,8 @@
 
 <div class="nav">
 <ul>
-<li><a href="/">首页</a></li>
-{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}">{{.name}}</a></li>{{end}}
+<li><a href="{{.HomeURL}}">首页</a></li>
+{{range .NavCats}}<li><a href="{{.URL}}">{{.name}}</a></li>{{end}}
 <li><a href="/?view=fulltext">全本</a></li>
 <li><a href="/?view=history">足迹</a></li>
 </ul>
@@ -36,7 +36,7 @@
 <div class="con_top">
 <a href="/">{{.Book.category}}</a>
 &nbsp;&gt;&nbsp;
-<a href="/?view=book&id={{.Book.id}}">{{.Book.name}}</a>
+<a href="{{.BookURL}}">{{.Book.name}}</a>
 &nbsp;&gt;&nbsp;
 <span>{{.Chapter.title}}</span>
 </div>
@@ -50,15 +50,15 @@
 </div>
 
 <div class="bottem1">
-{{if .Prev}}<a href="/?view=read&chapter={{.Prev.id}}">上一章</a>{{else}}<a href="javascript:;">已是首章</a>{{end}}
-<a href="/?view=book&id={{.Book.id}}">返回书页</a>
-{{if .Next}}<a href="/?view=read&chapter={{.Next.id}}">下一章</a>{{else}}<a href="javascript:;">已是末章</a>{{end}}
+{{if .Prev}}<a href="{{.Prev.URL}}">上一章</a>{{else}}<a href="javascript:;">已是首章</a>{{end}}
+<a href="{{.BookURL}}">返回书页</a>
+{{if .Next}}<a href="{{.Next.URL}}">下一章</a>{{else}}<a href="javascript:;">已是末章</a>{{end}}
 </div>
 
 <div class="bottem2">
-{{if .Prev}}<a href="/?view=read&chapter={{.Prev.id}}">上一章</a>{{else}}<a href="javascript:;">已是首章</a>{{end}}
-<a href="/">返回首页</a>
-{{if .Next}}<a href="/?view=read&chapter={{.Next.id}}">下一章</a>{{else}}<a href="javascript:;">已是末章</a>{{end}}
+{{if .Prev}}<a href="{{.Prev.URL}}">上一章</a>{{else}}<a href="javascript:;">已是首章</a>{{end}}
+<a href="{{.HomeURL}}">返回首页</a>
+{{if .Next}}<a href="{{.Next.URL}}">下一章</a>{{else}}<a href="javascript:;">已是末章</a>{{end}}
 </div>
 </div>
 </div>

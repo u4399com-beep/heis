@@ -11,6 +11,7 @@ import (
         "log"
         "math/big"
         "net/http"
+        "net/url"
         "os"
         "path/filepath"
         "regexp"
@@ -273,8 +274,8 @@ func main() {
         // 静态文件 (clone-css + public) — R51 修复: StripPrefix 剥离了 clone-css/ 但文件在 public/clone-css/ 下
         // 改为 FileServer 指向 public/clone-css/ + StripPrefix, 这样 /clone-css/shipsay.css → shipsay.css → 在 clone-css/ 找到
         publicDir := filepath.Join(basePath, "public")
-        cloneCssDir := filepath.Join(publicDir, "clone-css")
-        cssFs := http.FileServer(http.Dir(cloneCssDir))
+        cloneCSSDir := filepath.Join(publicDir, "clone-css")
+        cssFs := http.FileServer(http.Dir(cloneCSSDir))
         http.Handle("/clone-css/", http.StripPrefix("/clone-css/", cssFs))
         // 其他 public/ 静态文件 (icon.svg 等) — 不剥前缀, 直接服务
         http.Handle("/icon.svg", http.FileServer(http.Dir(publicDir)))
@@ -436,36 +437,48 @@ func main() {
 func homeHandler(w http.ResponseWriter, r *http.Request) {
         // R42-1A: 仅根路径 "/" 接受; 其它未匹配路径 (如 /random-spam-url) 应返回 404 而非 200 home
         //         (防 SEO 垃圾 - 否则攻击者可声明无限 URL 空间都被搜索引擎索引为同款首页)
-        // R63-A: 非 "/" 路径, 若看起来像伪静态 URL (前缀 /book/ /read/ /category/ /b/ /r/ /c/
-        //         /book- /read- /category-), 先加载 site 试解析; 否则 404 快路径 (无 DB 命中).
-        if r.URL.Path != "/" {
-                if !looksLikePseudoStaticPath(r.URL.Path) {
-                        http.NotFound(w, r)
-                        return
-                }
-        }
+        // R64-D: 非 "/" 路径 + 非保留前缀 (/api/ 由 admin handlers 处理) + 非伪静态前缀 → 渲染 404.html
+        //         替代 http.NotFound (site 已加载, 可渲染站点风格 404 页). /api/* 仍走 http.NotFound
+        //         (保留 JSON API 错误响应约定, 不渲染 404.html).
         view := r.URL.Query().Get("view")
         if view == "" {
                 view = "home"
         }
         siteID := r.URL.Query().Get("site")
 
-        // 获取站点
+        // R64-D: 提前加载 site, 用于 404.html 渲染 (即使路径不匹配伪静态前缀, 也需要 site data)
         site, err := getSite(siteID)
         if err != nil || site == nil {
-                http.Error(w, "站点未找到", 404)
+                // 兜底: 无 site → http.Error (避免 404.html 渲染依赖 nil site)
+                if r.URL.Path == "/" {
+                        http.Error(w, "站点未找到", 404)
+                        return
+                }
+                // 非根路径 + 无 site → http.NotFound (保留 R63 行为, 不渲染 404.html)
+                http.NotFound(w, r)
                 return
         }
 
         // R63-A: 伪静态路径解析 (非 query 风格).
         //   site.PseudoStaticStyle != "query" 时, 试 parsePseudoStaticPath(path, style).
         //   匹配则 decode token → cuid, 注入等价 query 串 (view/id/page) 并继续走 view 分发.
-        //   不匹配或 decode 失败 → 404 (保留 R42-1A SEO 垃圾保护).
+        //   不匹配或 decode 失败 → 渲染 404.html (site 已加载; R64-D 替换原 http.NotFound).
         pseudoStyle, _ := site["PseudoStaticStyle"].(string)
         if pseudoStyle == "" {
                 pseudoStyle = "query"
         }
         if r.URL.Path != "/" {
+                // /api/* 路径不渲染 404.html (保留 JSON 错误约定, 由 admin/API handlers 处理)
+                if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/api" {
+                        http.NotFound(w, r)
+                        return
+                }
+                // 非伪静态前缀 + 非保留 → 渲染 404.html (site 已加载)
+                if !looksLikePseudoStaticPath(r.URL.Path) {
+                        render404(w, r, site)
+                        return
+                }
+                // 伪静态前缀: 试 parse + decode
                 parsed := false
                 if pseudoStyle != "query" {
                         if pView, pToken, pPage, ok := parsePseudoStaticPath(r.URL.Path, pseudoStyle); ok {
@@ -491,7 +504,7 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                         }
                 }
                 if !parsed {
-                        http.NotFound(w, r)
+                        render404(w, r, site)
                         return
                 }
         }
@@ -499,6 +512,8 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
         // 获取分类 (所有页型共用 nav)
         cats, _ := getCategories()
         navCats := takeN(cats, 8)
+        // R64-D: 注入分类 URL 到 cats + navCats (共享底层数组, 单次遍历覆盖两者)
+        injectCategoryURLs(cats, pseudoStyle)
 
         // 主题解析 (clone-shipsay → shipsay)
         theme, _ := site["ThemeID"].(string)
@@ -529,9 +544,14 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 }
                 book, chapters, recent, related, firstChID, ok := getBookViewData(id)
                 if !ok {
-                        http.NotFound(w, r)
+                        render404(w, r, site)
                         return
                 }
+                // R64-D: 注入 per-book/chapter URLs (R63-A 已注入单页级 BookURL/FirstChapterURL)
+                injectBookURL(book, pseudoStyle)
+                injectChapterURLs(chapters, pseudoStyle, id)
+                injectChapterURLs(recent, pseudoStyle, id)
+                injectBookURLs(related, pseudoStyle)
                 data["Book"] = book
                 data["Chapters"] = chapters
                 data["RecentChapters"] = recent
@@ -550,9 +570,11 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 }
                 ch, book, prev, next, ok := getReadViewData(chID, site)
                 if !ok {
-                        http.NotFound(w, r)
+                        render404(w, r, site)
                         return
                 }
+                // R64-D: 注入 per-book URL (R63-A 已注入 prev/next chapter URL + 单页级 ChapterURL/BookURL)
+                injectBookURL(book, pseudoStyle)
                 data["Chapter"] = ch
                 data["Book"] = book
                 data["Prev"] = prev
@@ -576,14 +598,26 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 catID := r.URL.Query().Get("cat")
                 page := clampPage(r.URL.Query().Get("page"))
                 size := 24
+                // R64-D BUG-31: clamp page to maxPages BEFORE getCategoryViewData (防 OFFSET cap 错位).
+                //   getCategoryViewData 内部 cap OFFSET to 10000; 若 page > maxPages, OFFSET 被截到 10000
+                //   但 page 变量保持用户输入 → 显示页号与数据不一致. 先 clamp page 再查询, 数据与页号一致.
+                maxPages := maxPaginationOffset/size + 1
+                if page > maxPages {
+                        page = maxPages
+                }
                 label, books, total := getCategoryViewData(catID, page, size)
                 totalPages := (total + size - 1) / size
                 if totalPages < 1 {
                         totalPages = 1
                 }
+                if totalPages > maxPages {
+                        totalPages = maxPages
+                }
                 if page > totalPages {
                         page = totalPages
                 }
+                // R64-D: 注入 per-book URLs
+                injectBookURLs(books, pseudoStyle)
                 data["CatID"] = catID
                 data["Label"] = label
                 data["Books"] = books
@@ -593,7 +627,9 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 data["Size"] = size
                 data["Total"] = total
                 data["TotalPages"] = totalPages
-                data["PageList"] = buildPageList(page, totalPages)
+                data["PageList"] = pageListWithURLs(buildPageList(page, totalPages), func(p int) string {
+                        return buildCategoryURL(pseudoStyle, catID, p)
+                })
                 // R63-A: 注入分页 URL builder 输出.
                 data["CategoryURL"] = buildCategoryURL(pseudoStyle, catID, page)
                 if page > 1 {
@@ -609,15 +645,24 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 }
                 page := clampPage(r.URL.Query().Get("page"))
                 size := 30
+                maxPages := maxPaginationOffset/size + 1
+                if page > maxPages {
+                        page = maxPages
+                }
                 books, total := getRankingViewData(tab, page, size)
                 totalPages := (total + size - 1) / size
                 if totalPages < 1 {
                         totalPages = 1
                 }
+                if totalPages > maxPages {
+                        totalPages = maxPages
+                }
                 if page > totalPages {
                         page = totalPages
                 }
                 tabName := tabName(tab)
+                // R64-D: 注入 per-book URLs (withRank 会 mutate books 加 rank 字段, 与 URL 字段互不冲突)
+                injectBookURLs(books, pseudoStyle)
                 data["Tabs"] = rankingTabs()
                 data["Tab"] = tab
                 data["TabName"] = tabName
@@ -627,7 +672,9 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 data["Size"] = size
                 data["Total"] = total
                 data["TotalPages"] = totalPages
-                data["PageList"] = buildPageList(page, totalPages)
+                data["PageList"] = pageListWithURLs(buildPageList(page, totalPages), func(p int) string {
+                        return buildPagerURL(pseudoStyle, "ranking", tab, p)
+                })
                 // R63-A: ranking/fulltext/search/keyword 等无实体 ID 的视图, 伪静态 URL 用
                 //   buildPagerURL 退化返回 query 串 (避免过度设计; 主 SEO 价值在 book/chapter/category).
                 data["PagerURL"] = buildPagerURL(pseudoStyle, "ranking", tab, page)
@@ -640,14 +687,22 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
         case "fulltext":
                 page := clampPage(r.URL.Query().Get("page"))
                 size := 24
+                maxPages := maxPaginationOffset/size + 1
+                if page > maxPages {
+                        page = maxPages
+                }
                 books, total := getFulltextViewData(page, size)
                 totalPages := (total + size - 1) / size
                 if totalPages < 1 {
                         totalPages = 1
                 }
+                if totalPages > maxPages {
+                        totalPages = maxPages
+                }
                 if page > totalPages {
                         page = totalPages
                 }
+                injectBookURLs(books, pseudoStyle)
                 data["Label"] = "全本完本小说"
                 data["Books"] = books
                 data["HotBooks"] = takeBooks(books, 12)
@@ -656,7 +711,9 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 data["Size"] = size
                 data["Total"] = total
                 data["TotalPages"] = totalPages
-                data["PageList"] = buildPageList(page, totalPages)
+                data["PageList"] = pageListWithURLs(buildPageList(page, totalPages), func(p int) string {
+                        return buildPagerURL(pseudoStyle, "fulltext", "", p)
+                })
                 data["PagerURL"] = buildPagerURL(pseudoStyle, "fulltext", "", page)
                 if page > 1 {
                         data["PrevPageURL"] = buildPagerURL(pseudoStyle, "fulltext", "", page-1)
@@ -667,12 +724,14 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
         case "search":
                 q := r.URL.Query().Get("q")
                 books := getSearchViewData(q, 20)
+                injectBookURLs(books, pseudoStyle)
                 data["Q"] = q
                 data["Books"] = books
                 data["HotBooks"] = takeBooks(books, 12)
         case "keyword":
                 tag := r.URL.Query().Get("tag")
                 books, relatedTags := getKeywordViewData(tag, 20)
+                injectBookURLs(books, pseudoStyle)
                 data["Tag"] = tag
                 data["Books"] = books
                 data["RelatedTags"] = relatedTags
@@ -680,11 +739,13 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
         case "history":
                 // 简单占位: 复用 home 数据 (足迹页未独立渲染模板)
                 books, _ := getBooks(48)
+                injectBookURLs(books, pseudoStyle)
                 data["Books"] = books
                 data["TopBooks"] = topBooks(books, 6)
                 data["Popular"] = takeBooks(books, 12)
         default: // home
                 books, _ := getBooks(48)
+                injectBookURLs(books, pseudoStyle)
                 data["Books"] = books
                 data["TopBooks"] = topBooks(books, 6)
                 data["Popular"] = takeBooks(books, 12)
@@ -723,6 +784,119 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
         w.Header().Set("Content-Type", "text/html; charset=utf-8")
         w.Write([]byte(buf.String()))
 }
+
+// R64-D: render404 渲染 templates/404.html (R64-A 创建模板), 失败时 fallback 到 http.NotFound.
+//
+//      data 字段: Site / Categories / HomeURL / Title — 与 homeHandler 主流程注入字段一致, 供 404 模板
+//      渲染站点 nav + 首页链接. site==nil 时无法渲染 (无 Site 数据), fallback http.NotFound 保留 R63 行为.
+//      模板未加载时 (R64-A 未完成 / ParseFiles 失败) 同样 fallback http.NotFound, 等 R64-A 完成后切换.
+//      /api/* 路径不进 homeHandler (由 admin/API handlers 处理), 不调此函数.
+//      渲染走 strings.Builder 缓冲: Execute 成功才写 w, 失败可安全 fallback http.NotFound (未写出任何 byte).
+func render404(w http.ResponseWriter, r *http.Request, site map[string]interface{}) {
+        if site == nil {
+                http.NotFound(w, r)
+                return
+        }
+        cats, _ := getCategories()
+        pseudoStyle, _ := site["PseudoStaticStyle"].(string)
+        if pseudoStyle == "" {
+                pseudoStyle = "query"
+        }
+        data := map[string]interface{}{
+                "Site":       site,
+                "Categories": cats,
+                "HomeURL":    buildHomeURL(pseudoStyle),
+                "Title":      "404 - 页面不存在",
+        }
+        // R64 主控修复: 404.html 用 {{define "404"}} 块名, Lookup("404") 不是 "404.html"
+        // (与 homeHandler 用 theme+"/"+view 块名约定一致, 如 "shipsay/home").
+        if t := tmpls.Lookup("404"); t != nil {
+                var buf strings.Builder
+                if err := t.Execute(&buf, data); err == nil {
+                        w.Header().Set("Content-Type", "text/html; charset=utf-8")
+                        w.WriteHeader(http.StatusNotFound)
+                        w.Write([]byte(buf.String()))
+                        return
+                } else {
+                        // Execute 失败 → log + fallback http.NotFound (未写出任何 byte, 可安全 fallback)
+                        log.Printf("[homeHandler] 404 template render failed: %v", err)
+                }
+        }
+        http.NotFound(w, r)
+}
+
+// R64-D: per-book/chapter/category URL 注入 helpers.
+//
+//      设计: 在 homeHandler 各 view 装配 data 时, 给 books/chapters slice 每项 map 加 ["URL"] 字段,
+//      供模板用 {{.URL}} 占位符替代硬编码 /?view=book&id={{.id}}. pseudoStyle 来自 getSite (R63-A),
+//      保留 query 串模式兼容 (buildBookURL 等 builder 在 style="query" 时返回 /?view=book&id=... 形态).
+//      injectBookURL 注入单本书 map; injectBookURLs 注入 slice; injectChapterURLs 注入章节 slice;
+//      injectCategoryURLs 注入分类 slice (cats + navCats 共享底层数组, 单次遍历覆盖两者).
+
+// injectBookURL 给单本书 map 注入 ["URL"] = buildBookURL(style, bookID).
+func injectBookURL(book map[string]interface{}, style string) {
+        if book == nil {
+                return
+        }
+        if id, ok := book["id"].(string); ok && id != "" {
+                book["URL"] = buildBookURL(style, id)
+        }
+}
+
+// injectBookURLs 给 books slice 每项注入 ["URL"] = buildBookURL(style, bookID).
+func injectBookURLs(books []map[string]interface{}, style string) {
+        for _, b := range books {
+                injectBookURL(b, style)
+        }
+}
+
+// injectChapterURLs 给 chapters slice 每项注入 ["URL"] = buildChapterURL(style, chID, bookID).
+//
+//      bookID 是宿主书的 ID (用于 dir 风格 /book/{bookID}/chapter/{chID}.html); 章节列表中每项都属同一本书.
+func injectChapterURLs(chapters []map[string]interface{}, style, bookID string) {
+        for _, c := range chapters {
+                if c == nil {
+                        continue
+                }
+                if id, ok := c["id"].(string); ok && id != "" {
+                        c["URL"] = buildChapterURL(style, id, bookID)
+                }
+        }
+}
+
+// injectCategoryURLs 给分类 slice 每项注入 ["URL"] = buildCategoryURL(style, catID, 1) (首页).
+func injectCategoryURLs(cats []map[string]interface{}, style string) {
+        for _, c := range cats {
+                if c == nil {
+                        continue
+                }
+                if id, ok := c["id"].(string); ok && id != "" {
+                        c["URL"] = buildCategoryURL(style, id, 1)
+                }
+        }
+}
+
+// pageListWithURLs 把 buildPageList 返回的 []int 转 []map[string]interface{}{page, URL}.
+//
+//      urlBuilder 是 per-view 闭包 (category 用 buildCategoryURL, ranking/fulltext 用 buildPagerURL).
+//      让分页列表每项既有页号又有 URL, 供模板用 {{range .PageList}}<a href="{{.URL}}">{{.page}}</a>{{end}}.
+func pageListWithURLs(pages []int, urlBuilder func(int) string) []map[string]interface{} {
+        out := make([]map[string]interface{}, 0, len(pages))
+        for _, p := range pages {
+                out = append(out, map[string]interface{}{
+                        "page": p,
+                        "URL":  urlBuilder(p),
+                })
+        }
+        return out
+}
+
+// R64-D BUG-31: maxPaginationOffset 是 getCategoryViewData/getRankingViewData/getFulltextViewData 内部
+//
+//      OFFSET 的硬上限 (10000). 超出后 SQL 返回 offset=10000 处的数据, 与用户请求的页号不匹配 → 显示
+//      "page 500 of 500" 但数据是 page 417 的. homeHandler 用此常量算 maxPages = maxOffset/size + 1,
+//      cap totalPages 防止用户跳过 cap 页 (page > maxPages 时 totalPages=maxPages, page clamp 到 maxPages).
+const maxPaginationOffset = 10000
 
 // R54-1A: feedbackWidgetHTML — 前台浮窗反馈按钮 (右下角固定定位, inline 样式避免依赖主题 CSS 变量).
 //
@@ -816,10 +990,10 @@ func sitesHandler(w http.ResponseWriter, r *http.Request) {
         defer rows.Close()
         sites := []map[string]interface{}{}
         for rows.Next() {
-                var id, name, domain, themeId, title, desc, kw string
+                var id, name, domain, themeID, title, desc, kw string
                 var isDefault bool
-                rows.Scan(&id, &name, &domain, &themeId, &isDefault, &title, &desc, &kw)
-                sites = append(sites, map[string]interface{}{"id": id, "name": name, "domain": domain, "themeId": themeId, "isDefault": isDefault, "title": title, "description": desc, "keywords": kw})
+                rows.Scan(&id, &name, &domain, &themeID, &isDefault, &title, &desc, &kw)
+                sites = append(sites, map[string]interface{}{"id": id, "name": name, "domain": domain, "themeId": themeID, "isDefault": isDefault, "title": title, "description": desc, "keywords": kw})
         }
         writeJSON(w, map[string]interface{}{"ok": true, "data": sites})
 }
@@ -830,10 +1004,10 @@ func bookDetailHandler(w http.ResponseWriter, r *http.Request) {
                 writeJSON(w, map[string]interface{}{"ok": false, "error": "缺少 id 参数"})
                 return
         }
-        var bid, name, author, intro, cover, status, latestChapter, category, categoryId, updatedAt sql.NullString
+        var bid, name, author, intro, cover, status, latestChapter, category, categoryID, updatedAt sql.NullString
         var wordCount int64
         err := db.QueryRow(`SELECT b.id,b.name,b.author,b.intro,b.cover,b.status,b.wordCount,b.latestChapter,COALESCE(c.name,'未分类'),b.categoryId,b.updatedAt FROM Book b LEFT JOIN Category c ON b.categoryId=c.id WHERE b.id=?`, id).Scan(
-                &bid, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryId, &updatedAt)
+                &bid, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryID, &updatedAt)
         if err != nil {
                 // R41-1B: 区分 not found vs DB 错误, 不暴露内部细节
                 if err == sql.ErrNoRows {
@@ -847,7 +1021,7 @@ func bookDetailHandler(w http.ResponseWriter, r *http.Request) {
         writeJSON(w, map[string]interface{}{"ok": true, "data": map[string]interface{}{
                 "id": bid.String, "name": name.String, "author": author.String, "intro": intro.String, "cover": "/" + cover.String,
                 "status": status.String, "wordCount": wordCount, "latestChapter": latestChapter.String,
-                "category": category.String, "categoryId": categoryId.String, "updatedAt": formatUpdatedAt(updatedAt.String),
+                "category": category.String, "categoryId": categoryID.String, "updatedAt": formatUpdatedAt(updatedAt.String),
         }})
 }
 
@@ -895,15 +1069,15 @@ func getSite(siteID string) (map[string]interface{}, error) {
         }
         defer rows.Close()
         for rows.Next() {
-                var id, name, domain, themeId, title, desc, kw, seoTmplT, seoTmplD, seoTmplK, pseudoStaticStyle string
+                var id, name, domain, themeID, title, desc, kw, seoTmplT, seoTmplD, seoTmplK, pseudoStaticStyle string
                 var isDefault bool
                 var offset int
                 var seoAuto bool
-                rows.Scan(&id, &name, &domain, &themeId, &isDefault, &title, &desc, &kw, &offset, &seoAuto, &seoTmplT, &seoTmplD, &seoTmplK, &pseudoStaticStyle)
+                rows.Scan(&id, &name, &domain, &themeID, &isDefault, &title, &desc, &kw, &offset, &seoAuto, &seoTmplT, &seoTmplD, &seoTmplK, &pseudoStaticStyle)
                 if pseudoStaticStyle == "" {
                         pseudoStaticStyle = "query"
                 }
-                return map[string]interface{}{"ID": id, "Name": name, "Domain": domain, "ThemeID": themeId, "IsDefault": isDefault, "Title": title, "Description": desc, "Keywords": kw, "Offset": offset, "ChapterSeoAuto": seoAuto, "ChapterSeoTitleTemplate": seoTmplT, "ChapterSeoDescTemplate": seoTmplD, "ChapterSeoKeywordsTemplate": seoTmplK, "PseudoStaticStyle": pseudoStaticStyle}, nil
+                return map[string]interface{}{"ID": id, "Name": name, "Domain": domain, "ThemeID": themeID, "IsDefault": isDefault, "Title": title, "Description": desc, "Keywords": kw, "Offset": offset, "ChapterSeoAuto": seoAuto, "ChapterSeoTitleTemplate": seoTmplT, "ChapterSeoDescTemplate": seoTmplD, "ChapterSeoKeywordsTemplate": seoTmplK, "PseudoStaticStyle": pseudoStaticStyle}, nil
         }
         // fallback 第一个 (R42-1A: 显式 err 检查防 nil rows2.Close() panic; 之前 _ 忽略 err →
         //                  若 db.Query 失败 rows2 为 nil, defer rows2.Close() 在 nil 上调用 panic)
@@ -913,15 +1087,15 @@ func getSite(siteID string) (map[string]interface{}, error) {
         }
         defer rows2.Close()
         for rows2.Next() {
-                var id, name, domain, themeId, title, desc, kw, seoTmplT, seoTmplD, seoTmplK, pseudoStaticStyle string
+                var id, name, domain, themeID, title, desc, kw, seoTmplT, seoTmplD, seoTmplK, pseudoStaticStyle string
                 var isDefault bool
                 var offset int
                 var seoAuto bool
-                rows2.Scan(&id, &name, &domain, &themeId, &isDefault, &title, &desc, &kw, &offset, &seoAuto, &seoTmplT, &seoTmplD, &seoTmplK, &pseudoStaticStyle)
+                rows2.Scan(&id, &name, &domain, &themeID, &isDefault, &title, &desc, &kw, &offset, &seoAuto, &seoTmplT, &seoTmplD, &seoTmplK, &pseudoStaticStyle)
                 if pseudoStaticStyle == "" {
                         pseudoStaticStyle = "query"
                 }
-                return map[string]interface{}{"ID": id, "Name": name, "Domain": domain, "ThemeID": themeId, "IsDefault": isDefault, "Title": title, "Description": desc, "Keywords": kw, "Offset": offset, "ChapterSeoAuto": seoAuto, "ChapterSeoTitleTemplate": seoTmplT, "ChapterSeoDescTemplate": seoTmplD, "ChapterSeoKeywordsTemplate": seoTmplK, "PseudoStaticStyle": pseudoStaticStyle}, nil
+                return map[string]interface{}{"ID": id, "Name": name, "Domain": domain, "ThemeID": themeID, "IsDefault": isDefault, "Title": title, "Description": desc, "Keywords": kw, "Offset": offset, "ChapterSeoAuto": seoAuto, "ChapterSeoTitleTemplate": seoTmplT, "ChapterSeoDescTemplate": seoTmplD, "ChapterSeoKeywordsTemplate": seoTmplK, "PseudoStaticStyle": pseudoStaticStyle}, nil
         }
         return nil, nil
 }
@@ -1007,15 +1181,15 @@ func getBooks(limit int) ([]map[string]interface{}, error) {
         defer rows.Close()
         books := []map[string]interface{}{}
         for rows.Next() {
-                var id, name, author, intro, cover, status, latestChapter, category, categoryId sql.NullString
+                var id, name, author, intro, cover, status, latestChapter, category, categoryID sql.NullString
                 var wordCount int64
                 var updatedAt string
-                rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryId, &updatedAt)
+                rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryID, &updatedAt)
                 books = append(books, map[string]interface{}{
                         "id": id.String, "name": name.String, "author": author.String,
                         "intro": truncate(intro.String, 120), "cover": "/" + cover.String,
                         "status": status.String, "wordCount": wordCount, "latestChapter": latestChapter.String,
-                        "category": category.String, "categoryId": categoryId.String, "updatedAt": formatUpdatedAt(updatedAt),
+                        "category": category.String, "categoryId": categoryID.String, "updatedAt": formatUpdatedAt(updatedAt),
                 })
         }
         return books, nil
@@ -1275,7 +1449,8 @@ func withRank(books []map[string]interface{}, page, size int) []map[string]inter
         base := (page - 1) * size
         for i, b := range books {
                 b["rank"] = base + i + 1
-                books[i] = b
+                // R64-D BUG-35: removed redundant `books[i] = b` (b is a map reference;
+                //   mutating b["rank"] already affects the underlying map shared with books[i]).
         }
         return books
 }
@@ -1304,22 +1479,22 @@ func tabName(tab string) string {
 }
 
 // bookRowFromScan 把 SQL scan 出来的字段拼成 books slice 元素 (与 getBooks 同款字段名)
-func bookRowFromScan(id, name, author, intro, cover, status, latestChapter, category, categoryId sql.NullString, wordCount int64, updatedAt string) map[string]interface{} {
+func bookRowFromScan(id, name, author, intro, cover, status, latestChapter, category, categoryID sql.NullString, wordCount int64, updatedAt string) map[string]interface{} {
         return map[string]interface{}{
                 "id": id.String, "name": name.String, "author": author.String,
                 "intro": truncate(intro.String, 120), "cover": "/" + cover.String,
                 "status": status.String, "wordCount": wordCount, "latestChapter": latestChapter.String,
-                "category": category.String, "categoryId": categoryId.String, "updatedAt": formatUpdatedAt(updatedAt),
+                "category": category.String, "categoryId": categoryID.String, "updatedAt": formatUpdatedAt(updatedAt),
         }
 }
 
 // getBookViewData 装配 book 视图所需: 单本书 + 完整章节列表 + 最近章节 + 同类推荐 + 第一章 id
 func getBookViewData(id string) (map[string]interface{}, []map[string]interface{}, []map[string]interface{}, []map[string]interface{}, string, bool) {
         // 1. 单本书详情 (字段比 getBooks 多 keywords)
-        var bid, name, author, intro, cover, status, latestChapter, category, categoryId, keywords, updatedAt sql.NullString
+        var bid, name, author, intro, cover, status, latestChapter, category, categoryID, keywords, updatedAt sql.NullString
         var wordCount int64
         err := db.QueryRow(`SELECT b.id,b.name,b.author,b.intro,b.cover,b.status,b.wordCount,b.latestChapter,COALESCE(c.name,'未分类'),b.categoryId,b.keywords,b.updatedAt FROM Book b LEFT JOIN Category c ON b.categoryId=c.id WHERE b.id=?`, id).Scan(
-                &bid, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryId, &keywords, &updatedAt)
+                &bid, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryID, &keywords, &updatedAt)
         if err != nil {
                 return nil, nil, nil, nil, "", false
         }
@@ -1327,7 +1502,7 @@ func getBookViewData(id string) (map[string]interface{}, []map[string]interface{
                 "id": bid.String, "name": name.String, "author": author.String,
                 "intro": intro.String, "cover": "/" + cover.String, "status": status.String,
                 "wordCount": wordCount, "latestChapter": latestChapter.String,
-                "category": category.String, "categoryId": categoryId.String,
+                "category": category.String, "categoryId": categoryID.String,
                 "keywords": keywords.String, "updatedAt": formatUpdatedAt(updatedAt.String),
         }
 
@@ -1373,15 +1548,15 @@ func getBookViewData(id string) (map[string]interface{}, []map[string]interface{
 
         // 4. 同类推荐 (同 categoryId, 排除当前书, 取 12 本)
         related := []map[string]interface{}{}
-        if categoryId.String != "" {
-                if rows3, err := db.Query(`SELECT b.id,b.name,b.author,b.intro,b.cover,b.status,b.wordCount,b.latestChapter,COALESCE(c.name,'未分类'),b.categoryId,b.updatedAt FROM Book b LEFT JOIN Category c ON b.categoryId=c.id WHERE b.categoryId=? AND b.id!=? ORDER BY b.updatedAt DESC LIMIT 12`, categoryId.String, id); err == nil {
+        if categoryID.String != "" {
+                if rows3, err := db.Query(`SELECT b.id,b.name,b.author,b.intro,b.cover,b.status,b.wordCount,b.latestChapter,COALESCE(c.name,'未分类'),b.categoryId,b.updatedAt FROM Book b LEFT JOIN Category c ON b.categoryId=c.id WHERE b.categoryId=? AND b.id!=? ORDER BY b.updatedAt DESC LIMIT 12`, categoryID.String, id); err == nil {
                         defer rows3.Close()
                         for rows3.Next() {
-                                var bid2, name2, author2, intro2, cover2, status2, latestChapter2, category2, categoryId2 sql.NullString
+                                var bid2, name2, author2, intro2, cover2, status2, latestChapter2, category2, categoryID2 sql.NullString
                                 var wordCount2 int64
                                 var updatedAt2 string
-                                rows3.Scan(&bid2, &name2, &author2, &intro2, &cover2, &status2, &wordCount2, &latestChapter2, &category2, &categoryId2, &updatedAt2)
-                                related = append(related, bookRowFromScan(bid2, name2, author2, intro2, cover2, status2, latestChapter2, category2, categoryId2, wordCount2, updatedAt2))
+                                rows3.Scan(&bid2, &name2, &author2, &intro2, &cover2, &status2, &wordCount2, &latestChapter2, &category2, &categoryID2, &updatedAt2)
+                                related = append(related, bookRowFromScan(bid2, name2, author2, intro2, cover2, status2, latestChapter2, category2, categoryID2, wordCount2, updatedAt2))
                         }
                 }
         }
@@ -1517,11 +1692,11 @@ func getCategoryViewData(catID string, page, size int) (string, []map[string]int
         defer rows.Close()
         books := []map[string]interface{}{}
         for rows.Next() {
-                var id, name, author, intro, cover, status, latestChapter, category, categoryId sql.NullString
+                var id, name, author, intro, cover, status, latestChapter, category, categoryID sql.NullString
                 var wordCount int64
                 var updatedAt string
-                rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryId, &updatedAt)
-                books = append(books, bookRowFromScan(id, name, author, intro, cover, status, latestChapter, category, categoryId, wordCount, updatedAt))
+                rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryID, &updatedAt)
+                books = append(books, bookRowFromScan(id, name, author, intro, cover, status, latestChapter, category, categoryID, wordCount, updatedAt))
         }
         return label, books, total
 }
@@ -1549,11 +1724,11 @@ func getRankingViewData(tab string, page, size int) ([]map[string]interface{}, i
         defer rows.Close()
         books := []map[string]interface{}{}
         for rows.Next() {
-                var id, name, author, intro, cover, status, latestChapter, category, categoryId sql.NullString
+                var id, name, author, intro, cover, status, latestChapter, category, categoryID sql.NullString
                 var wordCount int64
                 var updatedAt string
-                rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryId, &updatedAt)
-                books = append(books, bookRowFromScan(id, name, author, intro, cover, status, latestChapter, category, categoryId, wordCount, updatedAt))
+                rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryID, &updatedAt)
+                books = append(books, bookRowFromScan(id, name, author, intro, cover, status, latestChapter, category, categoryID, wordCount, updatedAt))
         }
         return books, total
 }
@@ -1573,11 +1748,11 @@ func getFulltextViewData(page, size int) ([]map[string]interface{}, int) {
         defer rows.Close()
         books := []map[string]interface{}{}
         for rows.Next() {
-                var id, name, author, intro, cover, status, latestChapter, category, categoryId sql.NullString
+                var id, name, author, intro, cover, status, latestChapter, category, categoryID sql.NullString
                 var wordCount int64
                 var updatedAt string
-                rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryId, &updatedAt)
-                books = append(books, bookRowFromScan(id, name, author, intro, cover, status, latestChapter, category, categoryId, wordCount, updatedAt))
+                rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryID, &updatedAt)
+                books = append(books, bookRowFromScan(id, name, author, intro, cover, status, latestChapter, category, categoryID, wordCount, updatedAt))
         }
         return books, total
 }
@@ -1596,12 +1771,12 @@ func getSearchViewData(q string, limit int) []map[string]interface{} {
         defer rows.Close()
         books := []map[string]interface{}{}
         for rows.Next() {
-                var id, name, author, intro, cover, status, latestChapter, category, categoryId sql.NullString
+                var id, name, author, intro, cover, status, latestChapter, category, categoryID sql.NullString
                 var wordCount int64
                 var updatedAt string
-                rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryId, &updatedAt)
+                rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryID, &updatedAt)
                 // 搜索结果简介取 150 字
-                m := bookRowFromScan(id, name, author, intro, cover, status, latestChapter, category, categoryId, wordCount, updatedAt)
+                m := bookRowFromScan(id, name, author, intro, cover, status, latestChapter, category, categoryID, wordCount, updatedAt)
                 m["intro"] = truncate(intro.String, 150)
                 books = append(books, m)
         }
@@ -1621,11 +1796,11 @@ func getKeywordViewData(tag string, limit int) ([]map[string]interface{}, []stri
         defer rows.Close()
         books := []map[string]interface{}{}
         for rows.Next() {
-                var id, name, author, intro, cover, status, latestChapter, category, categoryId sql.NullString
+                var id, name, author, intro, cover, status, latestChapter, category, categoryID sql.NullString
                 var wordCount int64
                 var updatedAt string
-                rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryId, &updatedAt)
-                m := bookRowFromScan(id, name, author, intro, cover, status, latestChapter, category, categoryId, wordCount, updatedAt)
+                rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryID, &updatedAt)
+                m := bookRowFromScan(id, name, author, intro, cover, status, latestChapter, category, categoryID, wordCount, updatedAt)
                 m["intro"] = truncate(intro.String, 200)
                 books = append(books, m)
         }
@@ -2064,13 +2239,18 @@ func buildPagerURL(style, view, id string, page int) string {
         }
         q := "?view=" + view
         if id != "" {
+                // R64-D BUG-32: URL-encode id (sort/q/tag) 防 & ? = + 等特殊字符分裂 query 串.
+                //   原代码直接拼接 `&sort=` + id, 若 id 含 & (e.g. 搜索词 "abc&def") →
+                //   URL `?view=search&q=abc&def&page=2` 被 server 解析为 q="abc" + 多余 def 参数,
+                //   翻页时丢失 &def 部分 → 搜索结果不一致.
+                encoded := url.QueryEscape(id)
                 switch view {
                 case "ranking":
-                        q += "&sort=" + id
+                        q += "&sort=" + encoded
                 case "search":
-                        q += "&q=" + id
+                        q += "&q=" + encoded
                 case "keyword":
-                        q += "&tag=" + id
+                        q += "&tag=" + encoded
                 }
         }
         if page > 1 {

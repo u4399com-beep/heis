@@ -23,8 +23,8 @@
 </div>
 <div class="menu2">
 <ul>
-<li><a href="/"><i class="iconfont icon-home"></i>首頁</a></li>
-{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}"><i class="iconfont icon-list1"></i>{{.name}}</a></li>{{end}}
+<li><a href="{{.HomeURL}}"><i class="iconfont icon-home"></i>首頁</a></li>
+{{range .NavCats}}<li><a href="{{.URL}}"><i class="iconfont icon-list1"></i>{{.name}}</a></li>{{end}}
 <li><a href="/?view=history"><i class="iconfont icon-yuedujilu"></i>閱讀記錄</a></li>
 </ul>
 </div>
@@ -35,7 +35,7 @@
 <div class="menubtn pull-left"><i class="iconfont icon-menu"></i></div>
 <div class="logo pull-left">
 <div class="logoimg"></div>
-<a href="/">{{.Site.Name}}</a>
+<a href="{{.HomeURL}}">{{.Site.Name}}</a>
 </div>
 <form action="/?view=search" method="get">
 <div class="search pull-left">
@@ -57,7 +57,7 @@
 </div>
 <div class="menu1 pull-right">
 <ul>
-<li><a href="/"> 首頁</a></li>
+<li><a href="{{.HomeURL}}"> 首頁</a></li>
 <li><a href="/?view=ranking"><i class="iconfont icon-chart"></i> 排行</a></li>
 <li><a href="/?view=fulltext"><i class="iconfont icon-ai-book"></i> 完本</a></li>
 <li><a href="/?view=category"><i class="iconfont icon-list1"></i> 分類</a></li>
@@ -75,22 +75,22 @@
 <div class="mybox">
 <h3 class="mytitle shuye">
 <div class="bread">
-<a href="/">首頁</a> &gt;
+<a href="{{.HomeURL}}">首頁</a> &gt;
 {{if .Book.categoryId}}<a href="/?view=category&cat={{.Book.categoryId}}">{{.Book.category}}</a>{{else}}<a href="/?view=category">{{.Book.category}}</a>{{end}} &gt;
-<a href="/?view=book&id={{.Book.id}}">{{.Book.name}}</a>
+<a href="{{.BookURL}}">{{.Book.name}}</a>
 </div>
 </h3>
 
 <div class="bookbox">
 <div class="bookimg2">
 <span class="{{if eq .Book.status "completed"}}status1{{else}}status0{{end}}"></span>
-<a href="/?view=book&id={{.Book.id}}">
+<a href="{{.BookURL}}">
 {{if .Book.cover}}<img src="{{.Book.cover}}" alt="{{.Book.name}}" width="120" height="160">{{end}}
 </a>
 </div>
 
 <div class="booknav2">
-<h1><a href="/?view=book&id={{.Book.id}}">{{.Book.name}}</a></h1>
+<h1><a href="{{.BookURL}}">{{.Book.name}}</a></h1>
 <p>作者：<a href="/?view=search&q={{.Book.author}}" title="{{.Book.author}}">{{.Book.author}}</a></p>
 {{if .Book.categoryId}}<p>分類：<a href="/?view=category&cat={{.Book.categoryId}}" title="{{.Book.category}}">{{.Book.category}}</a></p>{{else}}<p>分類：{{.Book.category}}</p>{{end}}
 <p>{{wordCount .Book.wordCount}} | {{statusLabel .Book.status}}</p>
@@ -99,7 +99,7 @@
 </div>
 
 <div class="addbtn">
-<a class="btn" href="/?view=read&chapter={{.FirstChapterId}}">開始閱讀</a>
+<a class="btn" href="{{.FirstChapterURL}}">開始閱讀</a>
 <a class="btn" href="/?view=history">加入書架</a>
 <a class="btn" href="javascript:;">投推薦票</a>
 </div>
@@ -150,7 +150,7 @@
 <ul id="article_list_content">
 {{range .RecentChapters}}
 <li style="padding:8px 0;border-bottom:1px dashed #eee;">
-<a href="/?view=read&chapter={{.id}}" style="margin-left:10px;">{{.title}}</a>
+<a href="{{.URL}}" style="margin-left:10px;">{{.title}}</a>
 </li>
 {{end}}
 </ul>
@@ -165,7 +165,7 @@
 <ul id="article_list_content">
 {{range .Chapters}}
 <li style="width:33%;float:left;display:inline-block;padding:8px 0;border-bottom:1px dashed #eee;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
-<a href="/?view=read&chapter={{.id}}" style="margin-left:10px;" title="{{.title}}">{{.title}}</a>
+<a href="{{.URL}}" style="margin-left:10px;" title="{{.title}}">{{.title}}</a>
 </li>
 {{end}}
 <div style="clear:both;"></div>
@@ -188,7 +188,7 @@
 {{if .Related}}
 {{range $i, $b := .Related}}{{if eq $i 0}}
 <li class="active">
-<a href="/?view=book&id={{$b.id}}">
+<a href="{{$b.URL}}">
 <div class="rank_left">
 <h3 class="ranktit ellipsis_1"><span></span>{{$b.name}}</h3>
 <h4>本周最強</h4>
@@ -204,7 +204,7 @@
 </li>
 {{else if lt $i 12}}
 <li>
-<a href="/?view=book&id={{$b.id}}">
+<a href="{{$b.URL}}">
 <div class="rank_left">
 <h3 class="ranktit ellipsis_1"><span></span>{{$b.name}}</h3>
 </div>

@@ -14,7 +14,7 @@
 <div class="mod-top-tool-wr ui-wm">
 <div class="mod-top-logo-wr ui-left">
 <h1 class="mod-top-logo ui-left ui-text-hide">
-<a title="{{.Site.Name}}" href="/">{{.Site.Name}}</a>
+<a title="{{.Site.Name}}" href="{{.HomeURL}}">{{.Site.Name}}</a>
 </h1>
 <div class="mod-top-event ui-left ui-dn"></div>
 </div>
@@ -27,7 +27,7 @@
 </form>
 </div>
 <ul class="mod-top-tag" id="hotWord">
-{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}">{{.name}}</a></li>{{end}}
+{{range .NavCats}}<li><a href="{{.URL}}">{{.name}}</a></li>{{end}}
 </ul>
 </div>
 </div>
@@ -39,8 +39,8 @@
 <div class="mod-top-nav-wr">
 <div class="mod-top-nav ui-wm">
 <ul class="mod-top-nav-list ui-left">
-<li><a class="mod-top-nav-home" href="/" title="首页">首页</a></li>
-{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}" title="{{.name}}">{{.name}}</a></li>{{end}}
+<li><a class="mod-top-nav-home" href="{{.HomeURL}}" title="首页">首页</a></li>
+{{range .NavCats}}<li><a href="{{.URL}}" title="{{.name}}">{{.name}}</a></li>{{end}}
 </ul>
 </div>
 </div>
@@ -53,14 +53,14 @@
 <li class="first"><span class="ui-ico-animate">独家推荐</span></li>
 {{range .TopBooks}}
 <li>
-<a href="/?view=book&id={{.id}}" title="{{.name}}" target="_blank" class="mod-top-ani-a">{{.name}}</a>
+<a href="{{.URL}}" title="{{.name}}" target="_blank" class="mod-top-ani-a">{{.name}}</a>
 <div class="mod-ani-info">
 <span class="mod-ico-top">&nbsp;</span>
-<a class="mod-ani-img" href="/?view=book&id={{.id}}" target="_blank">
+<a class="mod-ani-img" href="{{.URL}}" target="_blank">
 {{if .cover}}<img src="{{.cover}}" width="210" height="280" alt="{{.name}}">{{end}}
 </a>
 <div class="mod-ani-text1 clearfix">
-<a href="/?view=book&id={{.id}}" class="ui-left ui-fs-18" title="{{.name}}">{{.name}}</a>
+<a href="{{.URL}}" class="ui-left ui-fs-18" title="{{.name}}">{{.name}}</a>
 <a class="ui-right ui-txt-fb" title="{{.author}}">{{.author}}</a>
 </div>
 <div class="mod-ani-text2">
@@ -84,7 +84,7 @@
 {{range .Popular}}
 <li>
 <sub class="in-rank-no-orange">★</sub>
-<a class="in-rank-name" href="/?view=book&id={{.id}}" title="{{.name}}">{{.name}}</a>
+<a class="in-rank-name" href="{{.URL}}" title="{{.name}}">{{.name}}</a>
 <i class="ui-rank-trend-keep"></i>
 </li>
 {{end}}
@@ -102,16 +102,16 @@
 <ul id="in-slider-list" class="in-slider-list mod-cover-list clearfix">
 {{range .Books}}
 <li>
-<a class="mod-cover-list-thumb mod-cover-effect ui-db" title="{{.name}}" href="/?view=book&id={{.id}}" target="_blank">
+<a class="mod-cover-list-thumb mod-cover-effect ui-db" title="{{.name}}" href="{{.URL}}" target="_blank">
 {{if .cover}}<img src="{{.cover}}" alt="{{.name}}">{{end}}
 <span class="mod-layer-mask">&nbsp;&nbsp;</span>
 </a>
 <p class="mod-cover-list-updata">
-<a class="mod-cover-list-mask" href="/?view=book&id={{.id}}" target="_blank">
+<a class="mod-cover-list-mask" href="{{.URL}}" target="_blank">
 <span class="mod-cover-list-text">{{if .latestChapter}}{{.latestChapter}}{{else}}{{.category}}{{end}}</span>
 </a>
 </p>
-<h5><a class="mod-cover-list-name" href="/?view=book&id={{.id}}" title="{{.name}}" target="_blank">{{.name}}</a></h5>
+<h5><a class="mod-cover-list-name" href="{{.URL}}" title="{{.name}}" target="_blank">{{.name}}</a></h5>
 <p class="mod-cover-list-intro">{{.intro}}</p>
 <p class="mod-cover-list-intro">{{.author}}</p>
 <p class="mod-cover-list-tag">
@@ -132,16 +132,16 @@
 <ul id="in-teen-list" class="in-teen-list mod-cover-list clearfix">
 {{range .Books}}
 <li>
-<a class="mod-cover-list-thumb mod-cover-effect ui-db" title="{{.name}}" href="/?view=book&id={{.id}}">
+<a class="mod-cover-list-thumb mod-cover-effect ui-db" title="{{.name}}" href="{{.URL}}">
 {{if .cover}}<img src="{{.cover}}" alt="{{.name}}">{{end}}
 <span class="mod-layer-mask">&nbsp;&nbsp;</span>
 </a>
 <p class="mod-cover-list-updata">
-<a class="mod-cover-list-mask" href="/?view=book&id={{.id}}" target="_blank">
+<a class="mod-cover-list-mask" href="{{.URL}}" target="_blank">
 <span class="mod-cover-list-text">{{if .latestChapter}}{{.latestChapter}}{{else}}第1章{{end}}</span>
 </a>
 </p>
-<h5><a class="mod-cover-list-name" href="/?view=book&id={{.id}}" title="{{.name}}" target="_blank">{{.name}}</a></h5>
+<h5><a class="mod-cover-list-name" href="{{.URL}}" title="{{.name}}" target="_blank">{{.name}}</a></h5>
 <p class="mod-cover-list-intro">{{.author}}</p>
 <p class="mod-cover-list-tag">
 <a class="mod-tag-item" href="/?view=category&cat={{.categoryId}}" target="_blank" title="{{.category}}">{{.category}}</a>

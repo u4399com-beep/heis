@@ -71,6 +71,9 @@ type hostState struct {
         minGapMsBeforeCooldown int
         lastAdmitAt           int64
         rateLimitedUntil      int64
+        // R64-B B1/B3: 自适应调整时间戳 (UnixMilli), cooldown 防抖动
+        lastConcurrencyAdjustAt int64 // B1: 上次 AdjustConcurrency 时间
+        lastMinGapAdjustAt      int64 // B3: 上次 AdjustMinGap 时间
 }
 
 // HostGate — 同 host 并发闸门 (进程级单例, 多任务共享).
@@ -165,7 +168,16 @@ func (g *HostGate) sweepIdleHosts() {
         }
 }
 
+// maybeSweepAndEvict — 周期性 sweep + 软上限驱逐.
+// R64-B BUG-32 (P1): 原实现无 g.mu 锁, 与 stateOf (持锁写 g.gate[host]=st) 并发
+//   访问 g.gate → Go runtime "fatal error: concurrent map read and map write"
+//   panic. Acquire 在 g.mu.Lock() 之前调用本函数 (line 262), 多 goroutine 并发
+//   Acquire 时 sweepIdleHosts / evictOneIdleHost 迭代+删除 g.gate, 与另一
+//   goroutine 的 stateOf 写入竞态. 修复: 本函数内部自取 g.mu 锁, 与 Acquire
+//   的 g.mu.Lock() 顺序执行 (非嵌套, 无死锁风险).
 func (g *HostGate) maybeSweepAndEvict() {
+        g.mu.Lock()
+        defer g.mu.Unlock()
         g.sweepN++
         if g.sweepN%SweepEvery == 0 {
                 g.sweepIdleHosts()
@@ -420,4 +432,121 @@ func (g *HostGate) ReportRateLimited(host string, retryAfterMs int) {
         if st.minGapMsBeforeCooldown == 0 && st.minGapMs > 0 {
                 st.minGapMsBeforeCooldown = st.minGapMs
         }
+}
+
+// ---------- R64-B 采集增强 B1 + B3: 并发 + 速率自适应 API ----------
+//
+// B1 AdjustConcurrency: 按 host 健康度 (caller 传入的成功率 / latency 综合分)
+//   动态调 baseLimit. 健康 (health > 0.8) → baseLimit+1 (上限 HostGateMaxLimit);
+//   不健康 (health < 0.3) → baseLimit-1 (下限 HostGateMinLimit). 60s cooldown
+//   防抖动. limit (当前并发) 不直接动, 让现有 inFlight 自然回落 + 下次 Acquire
+//   走 fast path 用新 baseLimit.
+//   价值: 健康 host 提并发 (5 章/批 → 8 章/批), 不健康 host 降并发 (避免雪崩).
+//   caller (runner.go) 在周期性评估时调用, 不直接改 runner.go (R62-B 范围).
+//
+// B3 AdjustMinGap: 按源站响应延迟动态调 minGapMs. 快响应 (< 500ms) → 缩小
+//   minGapMs -50ms (加速采集, 下限 0); 慢响应 (> 3000ms) → 扩大 minGapMs
+//   +100ms (避免拖垮源站, 上限 10000ms). 30s cooldown 防抖动.
+//   价值: 响应快时加速 (1 章/2s → 1 章/1s), 慢时减速 (1 章/5s → 1 章/8s).
+//
+// 健康度计算 (caller 侧, 仅供参考):
+//   health = successRate * 0.6 + (1 - latencyMs/5000) * 0.4
+//   例: 成功率 0.9 + 延迟 800ms → 0.54 + 0.336 = 0.876 (健康)
+//       成功率 0.5 + 延迟 4000ms → 0.3 + 0.08 = 0.38 (一般)
+//       成功率 0.2 + 延迟 6000ms → 0.12 + 0 = 0.12 (不健康)
+
+// AdjustConcurrency — 按 host 健康度动态调 baseLimit (B1).
+//   health ∈ [0.0, 1.0]. health > 0.8 → baseLimit+1 (cap HostGateMaxLimit);
+//   health < 0.3 → baseLimit-1 (floor HostGateMinLimit). 60s cooldown 防抖动.
+//   health ∈ [0.3, 0.8] 不动 (中性区间, 避免边缘抖动).
+//   caller: runner.go 周期性评估 (每 N 章采完后调一次, 不在每章路径调).
+func (g *HostGate) AdjustConcurrency(host string, health float64) {
+        if host == "" {
+                return
+        }
+        if health < 0 || health > 1 {
+                return
+        }
+        g.mu.Lock()
+        defer g.mu.Unlock()
+        st, ok := g.gate[host]
+        if !ok {
+                // host 未在 gate (无 acquire 历史) → 不调 (无数据基线)
+                return
+        }
+        now := time.Now().UnixMilli()
+        // R64-B B1: 60s cooldown 防抖动 (上次调整 < 60s 内不调)
+        if now-st.lastConcurrencyAdjustAt < 60*1000 {
+                return
+        }
+        oldBase := st.baseLimit
+        if health > 0.8 && st.baseLimit < HostGateMaxLimit {
+                st.baseLimit++
+        } else if health < 0.3 && st.baseLimit > HostGateMinLimit {
+                st.baseLimit--
+        } else {
+                // 中性区间或已到边界, 不调
+                return
+        }
+        st.lastConcurrencyAdjustAt = now
+        // 当前 limit 不超过新 baseLimit (clamp down)
+        if st.limit > st.baseLimit {
+                st.limit = st.baseLimit
+        }
+        // R64-B B1: 记录调整事件供调试 (不返 event, 调用方按 host 查 baseLimit)
+        _ = oldBase
+}
+
+// AdjustMinGap — 按源站响应延迟动态调 minGapMs (B3).
+//   latencyMs < 500 → minGapMs -= 50 (下限 0, 加速).
+//   latencyMs > 3000 → minGapMs += 100 (上限 10000ms, 减速).
+//   500 ≤ latencyMs ≤ 3000 不动 (中性区间).
+//   30s cooldown 防抖动.
+//   caller: runner.go 在 fetchHttp 成功后调 (用 resp round-trip 延迟).
+func (g *HostGate) AdjustMinGap(host string, latencyMs int64) {
+        if host == "" || latencyMs < 0 {
+                return
+        }
+        g.mu.Lock()
+        defer g.mu.Unlock()
+        st, ok := g.gate[host]
+        if !ok {
+                return
+        }
+        now := time.Now().UnixMilli()
+        // R64-B B3: 30s cooldown 防抖动
+        if now-st.lastMinGapAdjustAt < 30*1000 {
+                return
+        }
+        oldGap := st.minGapMs
+        if latencyMs < 500 {
+                st.minGapMs -= 50
+                if st.minGapMs < 0 {
+                        st.minGapMs = 0
+                }
+        } else if latencyMs > 3000 {
+                st.minGapMs += 100
+                if st.minGapMs > 10000 {
+                        st.minGapMs = 10000
+                }
+        } else {
+                return
+        }
+        // R64-B B3: minGapMsLastValue 同步更新 (与 Acquire 同款, 防 caller 接管误判)
+        st.minGapMsLastValue = st.minGapMs
+        st.lastMinGapAdjustAt = now
+        _ = oldGap
+}
+
+// HostHealthForAdjust — 计算 host 当前健康度 (供 admin / runner 查询).
+//   返 (baseLimit, limit, inFlight, minGapMs, lastConcurrencyAdjustAt, lastMinGapAdjustAt).
+//   不返 failStreak/successStreak (内部状态, 不暴露).
+func (g *HostGate) HostHealthForAdjust(host string) (baseLimit, limit, inFlight, minGapMs int, lastConcurrencyAdjustAt, lastMinGapAdjustAt int64) {
+        g.mu.Lock()
+        defer g.mu.Unlock()
+        st, ok := g.gate[host]
+        if !ok {
+                return 0, 0, 0, 0, 0, 0
+        }
+        return st.baseLimit, st.limit, st.inFlight, st.minGapMs, st.lastConcurrencyAdjustAt, st.lastMinGapAdjustAt
 }

@@ -15,7 +15,7 @@
 <div class="header-logo">
 <h1 class="slogan">{{.Site.Name}}</h1>
 <div class="fixed-logo">
-<a href="/" class="logo" title="{{.Site.Name}}">{{.Site.Name}}</a>
+<a href="{{.HomeURL}}" class="logo" title="{{.Site.Name}}">{{.Site.Name}}</a>
 </div>
 </div>
 </div>
@@ -24,7 +24,7 @@
 </div>
 <div class="header-module">
 <ul class="nav-menu-items">
-<li class="nav-menu-item"><a href="/" title="首页"><span>首页</span></a></li>
+<li class="nav-menu-item"><a href="{{.HomeURL}}" title="首页"><span>首页</span></a></li>
 <li class="nav-menu-item"><a href="/?view=category" title="书库"><span>书库</span></a></li>
 </ul>
 </div>
@@ -51,7 +51,7 @@
 <div class="novel-cover">
 <div class="module-item-cover">
 <div class="module-item-pic">
-<a href="/?view=book&id={{.Book.id}}" title="{{.Book.name}}"></a>
+<a href="{{.BookURL}}" title="{{.Book.name}}"></a>
 {{if .Book.cover}}<img class="lazy lazyloaded" src="{{.Book.cover}}" alt="{{.Book.name}}">{{end}}
 <div class="loading"></div>
 </div>
@@ -89,7 +89,7 @@
 <div class="novel-info-items">
 <div class="novel-info-itemtitle">最新章节</div>
 <div class="novel-info-actor">
-<a href="/?view=read&chapter={{.FirstChapterId}}">{{.Book.latestChapter}}</a>
+<a href="{{.FirstChapterURL}}">{{.Book.latestChapter}}</a>
 </div>
 </div>
 {{end}}
@@ -105,7 +105,7 @@
 </div>
 
 <div class="novel-info-footer">
-<a href="/?view=read&chapter={{.FirstChapterId}}" class="btn-important"><i class="icon-play"></i>开始阅读</a>
+<a href="{{.FirstChapterURL}}" class="btn-important"><i class="icon-play"></i>开始阅读</a>
 <a href="#chapter_list" class="btn-base"><i class="icon-list"></i>查看目录</a>
 </div>
 </div>
@@ -127,7 +127,7 @@
 {{range .RecentChapters}}
 <div class="module-item module-item-text-list" style="width:auto;display:block;padding:10px 0;border-bottom:1px solid #f0f0f0;margin:0;">
 <div class="module-item-titlebox">
-<a href="/?view=read&chapter={{.id}}" class="module-item-title" title="{{.title}}" style="font-size:14px;font-weight:600;color:#333;text-decoration:none;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{.title}}</a>
+<a href="{{.URL}}" class="module-item-title" title="{{.title}}" style="font-size:14px;font-weight:600;color:#333;text-decoration:none;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{.title}}</a>
 </div>
 </div>
 {{end}}
@@ -152,7 +152,7 @@
 {{range .Chapters}}
 <div class="module-item module-item-text-list" style="width:auto;display:block;padding:10px 0;border-bottom:1px solid #f0f0f0;margin:0;">
 <div class="module-item-titlebox">
-<a href="/?view=read&chapter={{.id}}" class="module-item-title" title="{{.title}}" style="font-size:14px;font-weight:600;color:#333;text-decoration:none;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{.title}}</a>
+<a href="{{.URL}}" class="module-item-title" title="{{.title}}" style="font-size:14px;font-weight:600;color:#333;text-decoration:none;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{.title}}</a>
 </div>
 </div>
 {{end}}
@@ -178,7 +178,7 @@
 <div class="module-item">
 <div class="module-item-cover">
 <div class="module-item-pic">
-<a href="/?view=book&id={{.id}}" title="{{.name}}"></a>
+<a href="{{.URL}}" title="{{.name}}"></a>
 {{if .cover}}<img class="lazy lazyloaded" src="{{.cover}}" alt="{{.name}}">{{end}}
 <div class="loading"></div>
 </div>
@@ -187,7 +187,7 @@
 </div>
 </div>
 <div class="module-item-titlebox">
-<a href="/?view=book&id={{.id}}" class="module-item-title" title="{{.name}}">{{.name}}</a>
+<a href="{{.URL}}" class="module-item-title" title="{{.name}}">{{.name}}</a>
 </div>
 <div class="module-item-text">{{.author}}</div>
 </div>

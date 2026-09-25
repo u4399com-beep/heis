@@ -22,11 +22,11 @@
 <li><a href="/?view=category">分类浏览</a></li>
 </ul>
 </div>
-<a href="/" class="logo" title="{{.Site.Name}}"><span class="iconfont icon-book"></span>{{.Site.Name}}</a>
+<a href="{{.HomeURL}}" class="logo" title="{{.Site.Name}}"><span class="iconfont icon-book"></span>{{.Site.Name}}</a>
 <div class="sidebar-wrapper">
-<div class="sidebar-header"><a href="/" class="sidebar-logo" title="{{.Site.Name}}"><span class="iconfont icon-book"></span><span class="sidebar-logo-text">{{.Site.Name}}</span></a></div>
+<div class="sidebar-header"><a href="{{.HomeURL}}" class="sidebar-logo" title="{{.Site.Name}}"><span class="iconfont icon-book"></span><span class="sidebar-logo-text">{{.Site.Name}}</span></a></div>
 <ul class="navbar-menu" id="navbarMenu">
-<li><a href="/"><span class="menu-icon iconfont icon-book"></span><span class="menu-text">首页</span></a></li>
+<li><a href="{{.HomeURL}}"><span class="menu-icon iconfont icon-book"></span><span class="menu-text">首页</span></a></li>
 <li><a href="/?view=category"><span class="menu-icon iconfont icon-sort"></span><span class="menu-text">书库</span></a></li>
 <li><a href="/?view=fulltext"><span class="menu-icon iconfont icon-book"></span><span class="menu-text">完本</span></a></li>
 <li><a href="/?view=history"><span class="menu-icon iconfont icon-read"></span><span class="menu-text">历史</span></a></li>
@@ -51,7 +51,7 @@
 <h2 class="page-title title-default"><span class="iconfont icon-hot"></span> 热门推荐</h2>
 <div class="book-grid cardlist-default">
 {{range .TopBooks}}
-<a href="/?view=book&id={{.id}}" title="{{.name}}" class="book-card card-default">
+<a href="{{.URL}}" title="{{.name}}" class="book-card card-default">
 <div class="book-info info-default">
 <div class="book-title">{{.name}}</div>
 <div class="book-author">作者：{{.author}}</div>
@@ -78,7 +78,7 @@
 {{range $i, $b := $.Books}}
 {{if lt $i 6}}
 <div class="ranking-item item-default">
-<a href="/?view=book&id={{$b.id}}" title="{{$b.name}}" class="ranking-title">{{$b.name}}</a>
+<a href="{{$b.URL}}" title="{{$b.name}}" class="ranking-title">{{$b.name}}</a>
 <span class="ranking-author">{{$b.author}}</span>
 </div>
 {{end}}
@@ -93,7 +93,7 @@
 <h2 class="page-title title-default"><span class="iconfont icon-book"></span> 最近更新</h2>
 <div class="book-grid cardlist-default">
 {{range .Books}}
-<a href="/?view=book&id={{.id}}" title="{{.name}}" class="book-card card-default">
+<a href="{{.URL}}" title="{{.name}}" class="book-card card-default">
 <div class="book-info info-default">
 <div class="book-title">{{.name}}</div>
 <div class="book-author">作者：{{.author}}</div>
@@ -117,7 +117,7 @@
 <a href="/?view=category" title="小说大全" target="_blank">小说</a>|
 <a href="/?view=fulltext" title="完本小说" target="_blank">完本</a>|
 <a href="/?view=history" title="阅读历史" target="_blank">历史</a>|
-<a href="/" title="回到首页" target="_blank">首页</a>
+<a href="{{.HomeURL}}" title="回到首页" target="_blank">首页</a>
 </p>
 <p class="copyright">本站小说由根据搜索引擎转码，只为让更多读者欣赏，不保存小说内及数据，仅作宣传展示。</p>
 <p class="copyright">Copyright © {{.Site.Name}} ({{.Site.Domain}})</p>

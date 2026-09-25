@@ -23,8 +23,8 @@
 </div>
 <div class="menu2">
 <ul>
-<li><a href="/"><i class="iconfont icon-home"></i>首頁</a></li>
-{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}"><i class="iconfont icon-list1"></i>{{.name}}</a></li>{{end}}
+<li><a href="{{.HomeURL}}"><i class="iconfont icon-home"></i>首頁</a></li>
+{{range .NavCats}}<li><a href="{{.URL}}"><i class="iconfont icon-list1"></i>{{.name}}</a></li>{{end}}
 <li><a href="/?view=history"><i class="iconfont icon-yuedujilu"></i>閱讀記錄</a></li>
 </ul>
 </div>
@@ -35,7 +35,7 @@
 <div class="menubtn pull-left"><i class="iconfont icon-menu"></i></div>
 <div class="logo pull-left">
 <div class="logoimg"></div>
-<a href="/">{{.Site.Name}}</a>
+<a href="{{.HomeURL}}">{{.Site.Name}}</a>
 </div>
 <form action="/?view=search" method="get">
 <div class="search pull-left">
@@ -57,7 +57,7 @@
 </div>
 <div class="menu1 pull-right">
 <ul>
-<li><a href="/"> 首頁</a></li>
+<li><a href="{{.HomeURL}}"> 首頁</a></li>
 <li><a href="/?view=ranking"><i class="iconfont icon-chart"></i> 排行</a></li>
 <li><a href="/?view=fulltext"><i class="iconfont icon-ai-book"></i> 完本</a></li>
 <li><a href="/?view=category"><i class="iconfont icon-list1"></i> 分類</a></li>
@@ -88,9 +88,9 @@
 </div>
 
 <div class="page1">
-{{if .Prev}}<a href="/?view=read&chapter={{.Prev.id}}">上一章</a>{{else}}<a href="javascript:;">已是首章</a>{{end}}
-<a href="/?view=book&id={{.Book.id}}">返回書頁</a>
-{{if .Next}}<a href="/?view=read&chapter={{.Next.id}}">下一章</a>{{else}}<a href="javascript:;">已是末章</a>{{end}}
+{{if .Prev}}<a href="{{.Prev.URL}}">上一章</a>{{else}}<a href="javascript:;">已是首章</a>{{end}}
+<a href="{{.BookURL}}">返回書頁</a>
+{{if .Next}}<a href="{{.Next.URL}}">下一章</a>{{else}}<a href="javascript:;">已是末章</a>{{end}}
 </div>
 </div>
 </div>

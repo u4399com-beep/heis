@@ -12,14 +12,14 @@
 <div class="wrap">
 <header class="header">
 <div class="header-inner">
-<a href="/" class="logo"><strong>{{.Site.Name}}</strong><span>{{.Site.Domain}}</span></a>
+<a href="{{.HomeURL}}" class="logo"><strong>{{.Site.Name}}</strong><span>{{.Site.Domain}}</span></a>
 <form class="search" action="/?view=search" method="get">
 <input type="hidden" name="view" value="search">
 <input type="text" name="q" placeholder="可搜索小说名/作者名" autocomplete="off">
 <button type="submit" >搜索</button>
 </form>
 <div class="header-right">
-<a href="/">首页</a>
+<a href="{{.HomeURL}}">首页</a>
 <a href="/?view=category">书库</a>
 <a href="/?view=fulltext">完本</a>
 <a href="/?view=history">足迹</a>
@@ -29,14 +29,14 @@
 
 <nav class="nav">
 <div class="nav-inner">
-{{range .NavCats}}<a href="/?view=category&cat={{.id}}" class="nav-link">{{.name}}</a>{{end}}
+{{range .NavCats}}<a href="{{.URL}}" class="nav-link">{{.name}}</a>{{end}}
 <div class="nav-right"><a href="/?view=ranking" class="nav-link">排行榜</a><a href="/?view=fulltext" class="nav-link active">全本阅读</a></div>
 </div>
 </nav>
 
 <div class="wrap">
 <div class="breadcrumb">
-<a href="/">首页</a>
+<a href="{{.HomeURL}}">首页</a>
 <span class="breadcrumb-sep">»</span>
 {{if .Book.categoryId}}<a href="/?view=category&cat={{.Book.categoryId}}">{{.Book.category}}</a>{{else}}<span>{{.Book.category}}</span>{{end}}
 <span class="breadcrumb-sep">»</span>
@@ -61,7 +61,7 @@
 <span class="meta-item"><span class="meta-label">更新：</span><span class="meta-value">{{fmtDate .Book.updatedAt}}</span></span>
 </div>
 <div class="detail-actions">
-<a class="btn btn-primary" href="/?view=read&chapter={{.FirstChapterId}}" title="开始阅读 {{.Book.name}}">开始阅读</a>
+<a class="btn btn-primary" href="{{.FirstChapterURL}}" title="开始阅读 {{.Book.name}}">开始阅读</a>
 <a class="btn btn-outline" href="#chapter_list" title="查看目录">章节目录</a>
 </div>
 </div>
@@ -84,7 +84,7 @@
 {{range .RecentChapters}}
 <li class="now">
 <span class="chapter-no">·</span>
-<a href="/?view=read&chapter={{.id}}" title="{{.title}}">{{.title}}</a>
+<a href="{{.URL}}" title="{{.title}}">{{.title}}</a>
 </li>
 {{end}}
 </ul>
@@ -100,7 +100,7 @@
 {{range .Chapters}}
 <li>
 <span class="chapter-no">·</span>
-<a href="/?view=read&chapter={{.id}}" title="{{.title}}">{{.title}}</a>
+<a href="{{.URL}}" title="{{.title}}">{{.title}}</a>
 </li>
 {{end}}
 </ul>
@@ -118,7 +118,7 @@
 {{range $i, $b := .Related}}{{if lt $i 10}}
 <li>
 <span class="hot-no">{{add $i 1}}</span>
-<a class="hot-title" href="/?view=book&id={{$b.id}}" title="{{$b.name}}">{{$b.name}}</a>
+<a class="hot-title" href="{{$b.URL}}" title="{{$b.name}}">{{$b.name}}</a>
 <span class="hot-author">{{$b.author}}</span>
 </li>
 {{end}}{{end}}
@@ -131,14 +131,14 @@
 <h2>全部分类</h2>
 </div>
 <div class="tags">
-{{range .NavCats}}<a class="tag" href="/?view=category&cat={{.id}}" title="{{.name}}">{{.name}}</a>{{end}}
+{{range .NavCats}}<a class="tag" href="{{.URL}}" title="{{.name}}">{{.name}}</a>{{end}}
 </div>
 </section>
 
 <div class="link-box">
 <span class="link-title">友情链接</span>
 <span class="link-list">
-<a href="/">{{.Site.Name}}</a>
+<a href="{{.HomeURL}}">{{.Site.Name}}</a>
 <a href="/?view=fulltext">全本小说</a>
 <a href="/?view=category">小说分类</a>
 </span>
@@ -150,7 +150,7 @@
 <footer class="footer">
 <div class="footer-inner">
 <div class="footer-links">
-<a href="/">首页</a>
+<a href="{{.HomeURL}}">首页</a>
 <a href="/?view=category">书库</a>
 <a href="/?view=ranking">排行榜</a>
 <a href="/?view=fulltext">完本</a>

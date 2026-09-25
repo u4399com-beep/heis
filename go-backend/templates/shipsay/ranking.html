@@ -33,9 +33,9 @@
 
 <div class="navigation">
 <nav class="container">
-<a href="/">首页</a>
+<a href="{{.HomeURL}}">首页</a>
 {{range .NavCats}}
-<a href="/?view=category&cat={{.id}}">{{.name}}</a>
+<a href="{{.URL}}">{{.name}}</a>
 {{end}}
 <div id="user_panel"></div>
 </nav>
@@ -58,8 +58,8 @@
 {{range .Books}}
 <li>
 <span><i class="fa fa-bookmark">&nbsp;{{.rank}}</i></span>
-<a href="/?view=book&id={{.id}}">{{.name}}</a>
-<a class="gray" href="/?view=book&id={{.id}}">{{if .latestChapter}}{{.latestChapter}}{{else}}—{{end}}</a>
+<a href="{{.URL}}">{{.name}}</a>
+<a class="gray" href="{{.URL}}">{{if .latestChapter}}{{.latestChapter}}{{else}}—{{end}}</a>
 <span><a class="gray" href="/?view=search&q={{.author}}">{{.author}}</a>&nbsp;&nbsp;{{fmtDateShort .updatedAt}}</span>
 </li>
 {{end}}
@@ -72,9 +72,9 @@
 {{if gt .TotalPages 1}}
 <div class="pages">
 <em id="pagestats">共 {{.Total}} 条</em>
-{{if gt .Page 1}}<a href="/?view=ranking&sort={{.Tab}}&page={{sub .Page 1}}">上一页</a>{{end}}
+{{if gt .Page 1}}<a href="{{.PrevPageURL}}">上一页</a>{{end}}
 {{range .PageList}}{{if eq . $.Page}}<strong>{{.}}</strong>{{else}}<a href="/?view=ranking&sort={{$.Tab}}&page={{.}}">{{.}}</a>{{end}}{{end}}
-{{if lt .Page .TotalPages}}<a href="/?view=ranking&sort={{.Tab}}&page={{add .Page 1}}">下一页</a>{{end}}
+{{if lt .Page .TotalPages}}<a href="{{.NextPageURL}}">下一页</a>{{end}}
 {{if lt .Page .TotalPages}}<a href="/?view=ranking&sort={{.Tab}}&page={{.TotalPages}}">尾页</a>{{end}}
 </div>
 {{end}}
@@ -87,7 +87,7 @@
 <ul class="popular odd">
 {{range .HotBooks}}
 <li>
-<a href="/?view=book&id={{.id}}">{{.name}}</a>
+<a href="{{.URL}}">{{.name}}</a>
 <a class="gray" href="/?view=search&q={{.author}}">{{.author}}</a>
 </li>
 {{end}}
@@ -105,7 +105,7 @@
 
 <div id="footer">
 <footer class="container">
-<p><i class="fa fa-flag"></i>&nbsp;<a href="/">{{.Site.Name}}</a>&nbsp;书友最值得收藏的网络小说阅读网</p>
+<p><i class="fa fa-flag"></i>&nbsp;<a href="{{.HomeURL}}">{{.Site.Name}}</a>&nbsp;书友最值得收藏的网络小说阅读网</p>
 <p>本站所有小说为完本转载作品，所有内容版权归版权方或原作者所有。</p>
 </footer>
 </div>

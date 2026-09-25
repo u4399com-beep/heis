@@ -23,8 +23,8 @@
 </div>
 <div class="menu2">
 <ul>
-<li><a href="/"><i class="iconfont icon-home"></i>首頁</a></li>
-{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}"><i class="iconfont icon-list1"></i>{{.name}}</a></li>{{end}}
+<li><a href="{{.HomeURL}}"><i class="iconfont icon-home"></i>首頁</a></li>
+{{range .NavCats}}<li><a href="{{.URL}}"><i class="iconfont icon-list1"></i>{{.name}}</a></li>{{end}}
 <li><a href="/?view=history"><i class="iconfont icon-yuedujilu"></i>閱讀記錄</a></li>
 </ul>
 </div>
@@ -35,7 +35,7 @@
 <div class="menubtn pull-left"><i class="iconfont icon-menu"></i></div>
 <div class="logo pull-left">
 <div class="logoimg"></div>
-<a href="/">{{.Site.Name}}</a>
+<a href="{{.HomeURL}}">{{.Site.Name}}</a>
 </div>
 <form action="/?view=search" method="get">
 <div class="search pull-left">
@@ -57,7 +57,7 @@
 </div>
 <div class="menu1 pull-right">
 <ul>
-<li><a href="/"> 首頁</a></li>
+<li><a href="{{.HomeURL}}"> 首頁</a></li>
 <li><a href="/?view=ranking"><i class="iconfont icon-chart"></i> 排行</a></li>
 <li><a href="/?view=fulltext"><i class="iconfont icon-ai-book"></i> 完本</a></li>
 <li><a href="/?view=category"><i class="iconfont icon-list1"></i> 分類</a></li>
@@ -87,11 +87,11 @@
 <ul id="article_list_content">
 {{range .Books}}
 <li>
-<a class="imgbox" href="/?view=book&id={{.id}}">
+<a class="imgbox" href="{{.URL}}">
 {{if .cover}}<img src="{{.cover}}" alt="{{.name}}" width="100" height="130">{{end}}
 </a>
 <div class="newnav">
-<h3><a href="/?view=book&id={{.id}}">{{.name}}</a></h3>
+<h3><a href="{{.URL}}">{{.name}}</a></h3>
 <div class="labelbox">
 <label>{{.author}}</label>
 <label>{{.category}}</label>
@@ -99,12 +99,12 @@
 </div>
 <ol class="ellipsis_2">{{if .intro}}{{.intro}}{{else}}暫無簡介{{end}}</ol>
 <div class="zxzj">
-<p><span>最近章節</span><a href="/?view=book&id={{.id}}">{{if .latestChapter}}{{.latestChapter}}{{else}}最新章節{{end}}</a></p>
+<p><span>最近章節</span><a href="{{.URL}}">{{if .latestChapter}}{{.latestChapter}}{{else}}最新章節{{end}}</a></p>
 </div>
 </div>
 <div class="newright">
 <div class="piaos"><span></span><label>{{.rank}}</label></div>
-<a class="btn btn-tp" href="/?view=book&id={{.id}}">點擊閱讀</a>
+<a class="btn btn-tp" href="{{.URL}}">點擊閱讀</a>
 <a class="btn btn-jrsj" href="/?view=history">加入書架</a>
 </div>
 </li>
@@ -122,11 +122,11 @@
 <div class="pagelink" id="pagelink">
 {{if gt .Page 1}}
 <a class="pgroup" href="/?view=ranking&sort={{.Tab}}&page=1">&lt;&lt;</a>
-<a class="prev" href="/?view=ranking&sort={{.Tab}}&page={{sub .Page 1}}">&lt;</a>
+<a class="prev" href="{{.PrevPageURL}}">&lt;</a>
 {{end}}
 {{range .PageList}}{{if eq . $.Page}}<strong>{{.}}</strong>{{else}}<a href="/?view=ranking&sort={{$.Tab}}&page={{.}}">{{.}}</a>{{end}}{{end}}
 {{if lt .Page .TotalPages}}
-<a class="next" href="/?view=ranking&sort={{.Tab}}&page={{add .Page 1}}">&gt;</a>
+<a class="next" href="{{.NextPageURL}}">&gt;</a>
 <a class="ngroup" href="/?view=ranking&sort={{.Tab}}&page={{.TotalPages}}">&gt;&gt;</a>
 {{end}}
 </div>

@@ -12,8 +12,8 @@
 <div class="top-float">
 <div class="top-float-inner">
 <nav class="top-float-nav">
-<a href="/">首页</a>
-{{range .NavCats}}<a href="/?view=category&cat={{.id}}">{{.name}}</a>{{end}}
+<a href="{{.HomeURL}}">首页</a>
+{{range .NavCats}}<a href="{{.URL}}">{{.name}}</a>{{end}}
 </nav>
 <div class="top-float-auth"><a href="/?view=history">足迹</a><a href="/?view=fulltext">完本</a></div>
 </div>
@@ -63,8 +63,8 @@
 {{if .Books}}
 {{range .Books}}
 <div class="listbg">
-<a href="/?view=book&id={{.id}}" title="{{.name}}" class="img" target="_blank">{{if .cover}}<img src="{{.cover}}" width="112" height="154" alt="《{{.name}}》封面">{{end}}</a>
-<span class="badge">荐</span><span class="title"><a href="/?view=book&id={{.id}}" title="{{.name}}" target="_blank">{{.name}}</a></span>
+<a href="{{.URL}}" title="{{.name}}" class="img" target="_blank">{{if .cover}}<img src="{{.cover}}" width="112" height="154" alt="《{{.name}}》封面">{{end}}</a>
+<span class="badge">荐</span><span class="title"><a href="{{.URL}}" title="{{.name}}" target="_blank">{{.name}}</a></span>
 <span class="new"><span class="oldDate">{{fmtDate .updatedAt}}</span>上传</span>
 <div style="padding:0 19px">{{if .intro}}{{.intro}}{{else}}暂无简介{{end}}</div>
 <div style="padding:0 19px">
@@ -86,9 +86,9 @@
 {{if gt .TotalPages 1}}
 <div class="pager">
 <a title="总数"><b>{{.Total}}</b></a>&nbsp;&nbsp;&nbsp;
-{{if gt .Page 1}}<a href="/?view=category{{if .CatID}}&cat={{.CatID}}{{end}}&page={{sub .Page 1}}">上一页</a>{{end}}
+{{if gt .Page 1}}<a href="{{.PrevPageURL}}">上一页</a>{{end}}
 {{range .PageList}}{{if eq . $.Page}}<b>{{.}}</b>{{else}}<a href="/?view=category{{if $.CatID}}&cat={{$.CatID}}{{end}}&page={{.}}">{{.}}</a>{{end}}{{end}}
-{{if lt .Page .TotalPages}}<a href="/?view=category{{if .CatID}}&cat={{.CatID}}{{end}}&page={{add .Page 1}}">下一页</a>{{end}}
+{{if lt .Page .TotalPages}}<a href="{{.NextPageURL}}">下一页</a>{{end}}
 {{if lt .Page .TotalPages}}<a href="/?view=category{{if .CatID}}&cat={{.CatID}}{{end}}&page={{.TotalPages}}">尾页</a>{{end}}
 </div>
 {{end}}
@@ -101,13 +101,13 @@
 <div class="body">
 {{if .HotBooks}}
 <div class="book_r">
-{{if (index .HotBooks 0).cover}}<a href="/?view=book&id={{(index .HotBooks 0).id}}"><img src="{{(index .HotBooks 0).cover}}" alt="{{(index .HotBooks 0).name}}"></a>{{end}}
-<h4><a href="/?view=book&id={{(index .HotBooks 0).id}}">{{(index .HotBooks 0).name}}</a></h4>
+{{if (index .HotBooks 0).cover}}<a href="{{(index .HotBooks 0).URL}}"><img src="{{(index .HotBooks 0).cover}}" alt="{{(index .HotBooks 0).name}}"></a>{{end}}
+<h4><a href="{{(index .HotBooks 0).URL}}">{{(index .HotBooks 0).name}}</a></h4>
 <div class="meta">{{(index .HotBooks 0).author}} · {{(index .HotBooks 0).category}} · {{wordCount (index .HotBooks 0).wordCount}}</div>
 <div class="desc">{{if (index .HotBooks 0).intro}}{{(index .HotBooks 0).intro}}{{else}}暂无简介{{end}}</div>
 </div>
 <ul class="lines">
-{{range $i, $b := .HotBooks}}{{if gt $i 0}}{{if lt $i 12}}<li><span class="no">{{$i}}</span><a href="/?view=book&id={{$b.id}}" title="{{$b.name}}">{{$b.name}}</a><span class="date">{{$b.author}}</span></li>{{end}}{{end}}{{end}}
+{{range $i, $b := .HotBooks}}{{if gt $i 0}}{{if lt $i 12}}<li><span class="no">{{$i}}</span><a href="{{$b.URL}}" title="{{$b.name}}">{{$b.name}}</a><span class="date">{{$b.author}}</span></li>{{end}}{{end}}{{end}}
 </ul>
 {{end}}
 </div>
@@ -129,7 +129,7 @@
 <li><a href="/">最新上传的电子书</a></li>
 <li><a href="/?view=ranking">小说下载排行</a></li>
 <li><a href="/?view=fulltext">全本小说下载</a></li>
-{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}">{{.name}}下载</a></li>{{end}}
+{{range .NavCats}}<li><a href="{{.URL}}">{{.name}}下载</a></li>{{end}}
 </ul>
 </div>
 </article>

@@ -14,7 +14,7 @@
 <div class="mod-top-tool-wr ui-wm">
 <div class="mod-top-logo-wr ui-left">
 <h1 class="mod-top-logo ui-left ui-text-hide">
-<a title="{{.Site.Name}}" href="/">{{.Site.Name}}</a>
+<a title="{{.Site.Name}}" href="{{.HomeURL}}">{{.Site.Name}}</a>
 </h1>
 <div class="mod-top-event ui-left ui-dn"></div>
 </div>
@@ -28,7 +28,7 @@
 </div>
 </form>
 <ul class="mod-top-tag" id="hotWord">
-{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}">{{.name}}</a></li>{{end}}
+{{range .NavCats}}<li><a href="{{.URL}}">{{.name}}</a></li>{{end}}
 </ul>
 </div>
 <div class="mod-top-nav-tool ui-right" id="loginbox">
@@ -39,10 +39,10 @@
 <div class="mod-top-nav-wr">
 <div class="mod-top-nav ui-wm">
 <ul class="mod-top-nav-list ui-left">
-<li><a class="mod-top-nav-home" href="/" title="首页">首页</a></li>
+<li><a class="mod-top-nav-home" href="{{.HomeURL}}" title="首页">首页</a></li>
 <li {{if eq .Label "全部小说"}}class="active"{{end}}><a href="/?view=category" title="全部小说">全部小说</a></li>
 <li><a href="/?view=ranking" title="排行榜">排行榜</a></li>
-{{range .NavCats}}<li {{if eq .name $.Label}}class="active"{{end}}><a href="/?view=category&cat={{.id}}" title="{{.name}}">{{.name}}</a></li>{{end}}
+{{range .NavCats}}<li {{if eq .name $.Label}}class="active"{{end}}><a href="{{.URL}}" title="{{.name}}">{{.name}}</a></li>{{end}}
 </ul>
 </div>
 </div>
@@ -58,13 +58,13 @@
 <li class="rank-item">
 <span class="rank-num"></span>
 {{if eq $i 0}}
-<a target="_blank" class="rank-img" title="{{$b.name}}" href="/?view=book&id={{$b.id}}">
+<a target="_blank" class="rank-img" title="{{$b.name}}" href="{{$b.URL}}">
 {{if $b.cover}}<img src="{{$b.cover}}" alt="{{$b.name}}" width="85" height="113">{{end}}
 </a>
 {{end}}
 <div class="rank-info">
 <p class="rank-t">
-<a href="/?view=book&id={{$b.id}}" target="_blank" title="{{$b.name}}">{{$b.name}}</a>
+<a href="{{$b.URL}}" target="_blank" title="{{$b.name}}">{{$b.name}}</a>
 </p>
 <p class="rank-a">作者：{{$b.author}}</p>
 {{if eq $i 0}}<p class="rank-s">{{if $b.intro}}{{$b.intro}}{{else}}暂无简介{{end}}</p>{{end}}
@@ -92,19 +92,19 @@
 {{range .Books}}
 <li class="ret-search-item clearfix">
 <div class="ret-works-cover">
-<a class="mod-cover-list-thumb mod-cover-effect ui-db" title="{{.name}}" href="/?view=book&id={{.id}}" target="_blank">
+<a class="mod-cover-list-thumb mod-cover-effect ui-db" title="{{.name}}" href="{{.URL}}" target="_blank">
 {{if .cover}}<img src="{{.cover}}" alt="{{.name}}" width="100" height="133">{{end}}
 <span class="mod-layer-mask">&nbsp;&nbsp;</span>
 </a>
 <p class="mod-cover-list-updata">
-<a class="mod-cover-list-mask" href="/?view=book&id={{.id}}" target="_blank">
+<a class="mod-cover-list-mask" href="{{.URL}}" target="_blank">
 <span class="mod-cover-list-text">{{if .latestChapter}}{{.latestChapter}}{{else}}第1章{{end}}</span>
 </a>
 </p>
 </div>
 <div class="ret-works-info">
 <h3 class="ret-works-title clearfix">
-<a href="/?view=book&id={{.id}}" target="_blank" title="{{.name}}">{{.name}}</a>
+<a href="{{.URL}}" target="_blank" title="{{.name}}">{{.name}}</a>
 </h3>
 <p class="ret-works-author" title="{{.author}}">作者：{{.author}}</p>
 <p class="ret-works-tags">
@@ -113,7 +113,7 @@
 <span>状态：<em>{{statusLabel .status}}</em></span>
 </p>
 <p class="ret-works-decs">{{if .intro}}{{.intro}}{{else}}暂无简介{{end}}</p>
-<a class="ret-works-view ui-btn-pink" href="/?view=book&id={{.id}}" target="_blank">开始阅读</a>
+<a class="ret-works-view ui-btn-pink" href="{{.URL}}" target="_blank">开始阅读</a>
 </div>
 </li>
 {{end}}
@@ -125,9 +125,9 @@
 
 {{if gt .TotalPages 1}}
 <div class="ret-page-wr mod-page" id="pagination2" style="text-align:center;">
-{{if gt .Page 1}}<a href="/?view=category{{if .CatID}}&cat={{.CatID}}{{end}}&page={{sub .Page 1}}" class="mod_page_next">上一页</a>{{else}}<a href="javascript:alert('已经是第一页了');" class="mod_page_next">第一页</a>{{end}}
+{{if gt .Page 1}}<a href="{{.PrevPageURL}}" class="mod_page_next">上一页</a>{{else}}<a href="javascript:alert('已经是第一页了');" class="mod_page_next">第一页</a>{{end}}
 {{range .PageList}}{{if eq . $.Page}}<a href="javascript:void(0)" class="current">{{.}}</a>{{else}}<a href="/?view=category{{if $.CatID}}&cat={{$.CatID}}{{end}}&page={{.}}">{{.}}</a>{{end}}{{end}}
-{{if lt .Page .TotalPages}}<a href="/?view=category{{if .CatID}}&cat={{.CatID}}{{end}}&page={{add .Page 1}}" class="mod_page_next">下一页</a>{{else}}<a href="javascript:alert('已经是最后一页了');" class="mod_page_next">最后页</a>{{end}}
+{{if lt .Page .TotalPages}}<a href="{{.NextPageURL}}" class="mod_page_next">下一页</a>{{else}}<a href="javascript:alert('已经是最后一页了');" class="mod_page_next">最后页</a>{{end}}
 </div>
 {{end}}
 </div>
@@ -139,7 +139,7 @@
 <p class="linkList">
 <a href="/">永久地址</a>
 <a href="/">{{.Site.Name}}二站</a>
-<a href="/">{{.Site.Name}}</a>
+<a href="{{.HomeURL}}">{{.Site.Name}}</a>
 </p>
 </div>
 

@@ -22,6 +22,7 @@ package crawl
 
 import (
         "regexp"
+        "sort"
         "strings"
         "sync"
 )
@@ -352,4 +353,90 @@ func SmartCompleteDetect(in SmartCompleteDetectInput) SmartCompleteDetectResult 
                 }
         }
         return SmartCompleteDetectResult{Status: "unknown", Reason: "无法判断"}
+}
+
+// ---------- R64-B 采集增强 B5: 智能续采优先级排序 ----------
+//
+// 断点恢复 (任务重启 / 进程 crash 后 resumeTasks) 时, 优先采未完成的书/章,
+// 而非从头. 本函数对 pending 列表按优先级排序:
+//   优先级 1: 已开始且接近完成的书 (ChaptersDone > 0 且 完成率 > 0.5).
+//             按完成率降序 (越接近完成的越优先采, 早点入库让用户可读).
+//   优先级 2: 已开始但完成率低的书 (ChaptersDone > 0 且 完成率 ≤ 0.5).
+//             按 LastFetchAt 升序 (最久未采的先采, 避免长期挂起).
+//   优先级 3: 未开始的书 (ChaptersDone == 0).
+//             按 LastFetchAt 升序 (最久未采的先采, 但都为 0 时按原顺序).
+// 价值: 断点恢复时优先完成接近完成的书 (避免半本就停), 提升采集完成率 +
+//   用户感知 (能读到完整书). 现有 runner.go 的 resumeTasks 是按 Task 创建
+//   顺序恢复, 不考虑书级进度. 本函数让 caller (runner) 在 resume 前先排序
+//   pending 列表, 再按排序后顺序采集.
+
+// SmartResumeItem — 续采优先级排序输入 (单本书的进度快照).
+type SmartResumeItem struct {
+        BookID        string
+        ChaptersDone  int    // 已采集章节数 (来自 DB COUNT)
+        ChaptersTotal int    // 目录总章节数 (来自 DB Toc 表 / ParsedBook)
+        LastFetchAt   int64  // 上次采集时间 (UnixMilli, 0 = 从未采过)
+}
+
+// SmartResumeSort — 续采优先级排序. 稳定排序 (不改变同优先级内原顺序).
+//   返回新 slice, 不修改入参. 空 / 单元素直接返副本.
+func SmartResumeSort(items []SmartResumeItem) []SmartResumeItem {
+        if len(items) <= 1 {
+                out := make([]SmartResumeItem, len(items))
+                copy(out, items)
+                return out
+        }
+        // 分三组
+        var nearDone, started, fresh []SmartResumeItem
+        for _, it := range items {
+                if it.ChaptersDone == 0 {
+                        fresh = append(fresh, it)
+                        continue
+                }
+                r := resumeRatio(it)
+                if r > 0.5 {
+                        nearDone = append(nearDone, it)
+                } else {
+                        started = append(started, it)
+                }
+        }
+        // nearDone: 完成率降序 (越接近完成越优先)
+        //   使用稳定 sort (sort.SliceStable) 保持同 ratio 的原顺序
+        sort.SliceStable(nearDone, func(i, j int) bool {
+                ri := resumeRatio(nearDone[i])
+                rj := resumeRatio(nearDone[j])
+                if ri != rj {
+                        return ri > rj // 降序
+                }
+                // 同 ratio: LastFetchAt 升序 (最久未采先)
+                return nearDone[i].LastFetchAt < nearDone[j].LastFetchAt
+        })
+        // started: LastFetchAt 升序 (最久未采先)
+        sort.SliceStable(started, func(i, j int) bool {
+                if started[i].LastFetchAt != started[j].LastFetchAt {
+                        return started[i].LastFetchAt < started[j].LastFetchAt
+                }
+                return false // 同时间保持原顺序
+        })
+        // fresh: LastFetchAt 升序 (最久未采先, 0 视为最久)
+        sort.SliceStable(fresh, func(i, j int) bool {
+                if fresh[i].LastFetchAt != fresh[j].LastFetchAt {
+                        return fresh[i].LastFetchAt < fresh[j].LastFetchAt
+                }
+                return false
+        })
+        // 拼接: nearDone (优先) → started (次) → fresh (最后)
+        out := make([]SmartResumeItem, 0, len(items))
+        out = append(out, nearDone...)
+        out = append(out, started...)
+        out = append(out, fresh...)
+        return out
+}
+
+// resumeRatio — 计算单本书的完成率 (0.0 ~ 1.0). ChaptersTotal=0 时返 0.
+func resumeRatio(it SmartResumeItem) float64 {
+        if it.ChaptersTotal <= 0 {
+                return 0.0
+        }
+        return float64(it.ChaptersDone) / float64(it.ChaptersTotal)
 }

@@ -11,7 +11,7 @@
 <body>
 <div id="wrapper">
 <div class="header">
-<div class="header_logo"><a href="/">{{.Site.Name}}</a></div>
+<div class="header_logo"><a href="{{.HomeURL}}">{{.Site.Name}}</a></div>
 <div class="header_search">
 <form name="articlesearch" method="get" action="/?view=search">
 <input name="q" type="text" class="text" value="{{.Q}}" placeholder="搜索从这里开始...">
@@ -22,8 +22,8 @@
 
 <div class="nav">
 <ul>
-<li><a href="/">首页</a></li>
-{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}">{{.name}}</a></li>{{end}}
+<li><a href="{{.HomeURL}}">首页</a></li>
+{{range .NavCats}}<li><a href="{{.URL}}">{{.name}}</a></li>{{end}}
 <li><a href="/?view=fulltext">全本</a></li>
 <li><a href="/?view=history">足迹</a></li>
 </ul>
@@ -47,8 +47,8 @@
 {{range .Books}}
 <li>
 <span class="s1" style="width:75px;float:left;display:inline-block;">[{{.category}}]</span>
-<span class="s2" style="width:165px;float:left;display:inline-block;"><a href="/?view=book&id={{.id}}">{{.name}}</a></span>
-<span class="s3" style="width:300px;float:left;display:inline-block;"><a href="/?view=book&id={{.id}}">{{if .latestChapter}}{{.latestChapter}}{{else}}最新章节{{end}}</a></span>
+<span class="s2" style="width:165px;float:left;display:inline-block;"><a href="{{.URL}}">{{.name}}</a></span>
+<span class="s3" style="width:300px;float:left;display:inline-block;"><a href="{{.URL}}">{{if .latestChapter}}{{.latestChapter}}{{else}}最新章节{{end}}</a></span>
 <span class="s4" style="color:#B3B3B3;width:90px;float:left;display:inline-block;text-align:right;">{{.author}}</span>
 <span class="s5" style="color:#B3B3B3;float:right;text-align:right;">{{fmtDateMD .updatedAt}}</span>
 <div class="clear"></div>
@@ -67,8 +67,8 @@
 {{range .HotBooks}}
 <li>
 <span class="s1" style="width:40px;float:left;display:inline-block;">[{{.category}}]</span>
-<span class="s2" style="color:#B3B3B3;float:left;display:inline-block;"><a href="/?view=book&id={{.id}}">{{.name}}</a></span>
-<span class="s3" style="width:30px;float:left;display:inline-block;"><a href="/?view=book&id={{.id}}">{{if .latestChapter}}{{.latestChapter}}{{else}}最新{{end}}</a></span>
+<span class="s2" style="color:#B3B3B3;float:left;display:inline-block;"><a href="{{.URL}}">{{.name}}</a></span>
+<span class="s3" style="width:30px;float:left;display:inline-block;"><a href="{{.URL}}">{{if .latestChapter}}{{.latestChapter}}{{else}}最新{{end}}</a></span>
 <span class="s4" style="color:#B3B3B3;width:50px;float:left;display:inline-block;">{{.author}}</span>
 <span class="s5" style="float:right;text-align:right;">{{fmtDateMD .updatedAt}}</span>
 <div class="clear"></div>

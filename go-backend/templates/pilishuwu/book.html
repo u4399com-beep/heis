@@ -14,7 +14,7 @@
 <div class="mod-top-tool-wr ui-wm">
 <div class="mod-top-logo-wr ui-left">
 <h1 class="mod-top-logo ui-left ui-text-hide">
-<a title="{{.Site.Name}}" href="/">{{.Site.Name}}</a>
+<a title="{{.Site.Name}}" href="{{.HomeURL}}">{{.Site.Name}}</a>
 </h1>
 <div class="mod-top-event ui-left ui-dn"></div>
 </div>
@@ -28,7 +28,7 @@
 </div>
 </form>
 <ul class="mod-top-tag" id="hotWord">
-{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}">{{.name}}</a></li>{{end}}
+{{range .NavCats}}<li><a href="{{.URL}}">{{.name}}</a></li>{{end}}
 </ul>
 </div>
 <div class="mod-top-nav-tool ui-right" id="loginbox">
@@ -39,10 +39,10 @@
 <div class="mod-top-nav-wr">
 <div class="mod-top-nav ui-wm">
 <ul class="mod-top-nav-list ui-left">
-<li><a class="mod-top-nav-home" href="/" title="首页">首页</a></li>
+<li><a class="mod-top-nav-home" href="{{.HomeURL}}" title="首页">首页</a></li>
 <li><a href="/?view=category" title="全部小说">全部小说</a></li>
 <li><a href="/?view=ranking" title="排行榜">排行榜</a></li>
-{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}" title="{{.name}}">{{.name}}</a></li>{{end}}
+{{range .NavCats}}<li><a href="{{.URL}}" title="{{.name}}">{{.name}}</a></li>{{end}}
 </ul>
 </div>
 </div>
@@ -68,7 +68,7 @@
 <div class="works-intro-opera">
 <div class="ui-left">
 <div class="works-intro-active clearfix">
-<a class="works-intro-view ui-btn-orange ui-radius3" title="开始阅读{{.Book.name}}" href="/?view=read&chapter={{.FirstChapterId}}">开始阅读</a>
+<a class="works-intro-view ui-btn-orange ui-radius3" title="开始阅读{{.Book.name}}" href="{{.FirstChapterURL}}">开始阅读</a>
 <a class="works-intro-view ui-btn-orange ui-radius3" title="{{.Book.name}}目录" href="#chapter_list" style="margin-left:10px;">章节目录</a>
 </div>
 </div>
@@ -122,7 +122,7 @@
 <ul class="works-chapter-log ui-left">
 <li>
 <span class="ui-font-fb">最新章：</span>
-<a class="works-ft-new" href="/?view=read&chapter={{.FirstChapterId}}">{{if .Book.latestChapter}}{{.Book.latestChapter}}{{else}}第1章{{end}}</a>
+<a class="works-ft-new" href="{{.FirstChapterURL}}">{{if .Book.latestChapter}}{{.Book.latestChapter}}{{else}}第1章{{end}}</a>
 <span class="ui-pl10 ui-text-gray6">{{fmtDate .Book.updatedAt}}</span>
 </li>
 </ul>
@@ -131,7 +131,7 @@
 <ol class="chapter-page-new works-chapter-list">
 {{range .RecentChapters}}
 <li>
-<p><span class="works-chapter-item"><a href="/?view=read&chapter={{.id}}" title="{{.title}}">{{.title}}</a></span></p>
+<p><span class="works-chapter-item"><a href="{{.URL}}" title="{{.title}}">{{.title}}</a></span></p>
 </li>
 {{end}}
 {{if .Chapters}}
@@ -147,7 +147,7 @@
 <ol class="chapter-page-new works-chapter-list">
 {{range .Chapters}}
 <li style="width:33%;float:left;display:inline-block;line-height:25px;overflow:hidden;">
-<p><span class="works-chapter-item"><a href="/?view=read&chapter={{.id}}" title="{{.title}}">{{.title}}</a></span></p>
+<p><span class="works-chapter-item"><a href="{{.URL}}" title="{{.title}}">{{.title}}</a></span></p>
 </li>
 {{end}}
 </ol>
@@ -165,17 +165,17 @@
 <ul id="mod-cover-list" class="mod-cover-list clearfix">
 {{range .Related}}
 <li>
-<a class="mod-cover-list-thumb mod-cover-effect ui-db" title="{{.name}}" href="/?view=book&id={{.id}}" target="_blank">
+<a class="mod-cover-list-thumb mod-cover-effect ui-db" title="{{.name}}" href="{{.URL}}" target="_blank">
 {{if .cover}}<img src="{{.cover}}" alt="{{.name}}">{{end}}
 <span class="mod-layer-mask">&nbsp;&nbsp;</span>
 </a>
 <p class="mod-cover-list-updata">
-<a class="mod-cover-list-mask" href="/?view=book&id={{.id}}" target="_blank" title="{{.name}}">
+<a class="mod-cover-list-mask" href="{{.URL}}" target="_blank" title="{{.name}}">
 <span class="mod-cover-list-text">{{if .latestChapter}}{{.latestChapter}}{{else}}第1章{{end}}</span>
 </a>
 </p>
 <h5 style="padding-bottom:15px;">
-<a class="mod-cover-list-name" href="/?view=book&id={{.id}}" target="_blank" title="{{.name}}">{{.name}}</a>
+<a class="mod-cover-list-name" href="{{.URL}}" target="_blank" title="{{.name}}">{{.name}}</a>
 </h5>
 </li>
 {{end}}
@@ -188,7 +188,7 @@
 <p class="linkList">
 <a href="/">永久地址</a>
 <a href="/">{{.Site.Name}}二站</a>
-<a href="/">{{.Site.Name}}</a>
+<a href="{{.HomeURL}}">{{.Site.Name}}</a>
 </p>
 </div>
 

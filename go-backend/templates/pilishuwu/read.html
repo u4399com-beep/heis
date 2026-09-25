@@ -14,7 +14,7 @@
 <div class="mod-top-tool-wr ui-wm">
 <div class="mod-top-logo-wr ui-left">
 <h1 class="mod-top-logo ui-left ui-text-hide">
-<a title="{{.Site.Name}}" href="/">{{.Site.Name}}</a>
+<a title="{{.Site.Name}}" href="{{.HomeURL}}">{{.Site.Name}}</a>
 </h1>
 <div class="mod-top-event ui-left ui-dn"></div>
 </div>
@@ -28,7 +28,7 @@
 </div>
 </form>
 <ul class="mod-top-tag" id="hotWord">
-{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}">{{.name}}</a></li>{{end}}
+{{range .NavCats}}<li><a href="{{.URL}}">{{.name}}</a></li>{{end}}
 </ul>
 </div>
 <div class="mod-top-nav-tool ui-right" id="loginbox">
@@ -39,10 +39,10 @@
 <div class="mod-top-nav-wr">
 <div class="mod-top-nav ui-wm">
 <ul class="mod-top-nav-list ui-left">
-<li><a class="mod-top-nav-home" href="/" title="首页">首页</a></li>
+<li><a class="mod-top-nav-home" href="{{.HomeURL}}" title="首页">首页</a></li>
 <li><a href="/?view=category" title="全部小说">全部小说</a></li>
 <li><a href="/?view=ranking" title="排行榜">排行榜</a></li>
-{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}" title="{{.name}}">{{.name}}</a></li>{{end}}
+{{range .NavCats}}<li><a href="{{.URL}}" title="{{.name}}">{{.name}}</a></li>{{end}}
 </ul>
 </div>
 </div>
@@ -58,9 +58,9 @@
 </div>
 
 <div class="bottem1" style="display:flex;justify-content:center;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid #eee;border-top:1px solid #eee;margin-bottom:16px;flex-wrap:wrap;">
-{{if .Prev}}<a href="/?view=read&chapter={{.Prev.id}}" title="上一章" style="display:inline-block;padding:4px 14px;background:#fd8929;color:#fff;text-decoration:none;">上一章</a>{{end}}
-<a href="/?view=book&id={{.Book.id}}" title="返回书页" style="display:inline-block;padding:4px 14px;background:#fff;border:1px solid #ddd;color:#666;text-decoration:none;">返回书页</a>
-{{if .Next}}<a href="/?view=read&chapter={{.Next.id}}" title="下一章" style="display:inline-block;padding:4px 14px;background:#fd8929;color:#fff;text-decoration:none;">下一章</a>{{end}}
+{{if .Prev}}<a href="{{.Prev.URL}}" title="上一章" style="display:inline-block;padding:4px 14px;background:#fd8929;color:#fff;text-decoration:none;">上一章</a>{{end}}
+<a href="{{.BookURL}}" title="返回书页" style="display:inline-block;padding:4px 14px;background:#fff;border:1px solid #ddd;color:#666;text-decoration:none;">返回书页</a>
+{{if .Next}}<a href="{{.Next.URL}}" title="下一章" style="display:inline-block;padding:4px 14px;background:#fd8929;color:#fff;text-decoration:none;">下一章</a>{{end}}
 </div>
 
 <div id="booktxt" class="read-content-wr" style="background:#fff;padding:24px 32px;margin:0 auto;max-width:900px;">
@@ -70,9 +70,9 @@
 </div>
 
 <div class="bottem2" style="display:flex;justify-content:center;align-items:center;gap:12px;padding:20px 0;border-top:1px solid #eee;margin-top:16px;flex-wrap:wrap;">
-{{if .Prev}}<a href="/?view=read&chapter={{.Prev.id}}" title="上一章" style="display:inline-block;padding:6px 24px;background:#fd8929;color:#fff;text-decoration:none;">« 上一章</a>{{end}}
-<a href="/?view=book&id={{.Book.id}}" title="返回书页" style="display:inline-block;padding:6px 24px;background:#fff;border:1px solid #ddd;color:#666;text-decoration:none;">返回书页</a>
-{{if .Next}}<a href="/?view=read&chapter={{.Next.id}}" title="下一章" style="display:inline-block;padding:6px 24px;background:#fd8929;color:#fff;text-decoration:none;">下一章 »</a>{{end}}
+{{if .Prev}}<a href="{{.Prev.URL}}" title="上一章" style="display:inline-block;padding:6px 24px;background:#fd8929;color:#fff;text-decoration:none;">« 上一章</a>{{end}}
+<a href="{{.BookURL}}" title="返回书页" style="display:inline-block;padding:6px 24px;background:#fff;border:1px solid #ddd;color:#666;text-decoration:none;">返回书页</a>
+{{if .Next}}<a href="{{.Next.URL}}" title="下一章" style="display:inline-block;padding:6px 24px;background:#fd8929;color:#fff;text-decoration:none;">下一章 »</a>{{end}}
 </div>
 </div>
 </div>
@@ -82,7 +82,7 @@
 <p class="linkList">
 <a href="/">永久地址</a>
 <a href="/">{{.Site.Name}}二站</a>
-<a href="/">{{.Site.Name}}</a>
+<a href="{{.HomeURL}}">{{.Site.Name}}</a>
 </p>
 </div>
 

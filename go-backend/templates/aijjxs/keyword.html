@@ -12,8 +12,8 @@
 <div class="top-float">
 <div class="top-float-inner">
 <nav class="top-float-nav">
-<a href="/">首页</a>
-{{range .NavCats}}<a href="/?view=category&cat={{.id}}">{{.name}}</a>{{end}}
+<a href="{{.HomeURL}}">首页</a>
+{{range .NavCats}}<a href="{{.URL}}">{{.name}}</a>{{end}}
 </nav>
 <div class="top-float-auth"><a href="/?view=history">足迹</a><a href="/?view=fulltext">完本</a></div>
 </div>
@@ -49,8 +49,8 @@
 {{if .Books}}
 {{range .Books}}
 <div class="listbg">
-<a href="/?view=book&id={{.id}}" title="{{.name}}" class="img" target="_blank">{{if .cover}}<img src="{{.cover}}" width="112" height="154" alt="《{{.name}}》封面">{{end}}</a>
-<span class="title"><a href="/?view=book&id={{.id}}" title="{{.name}}" target="_blank">{{.name}}</a></span>
+<a href="{{.URL}}" title="{{.name}}" class="img" target="_blank">{{if .cover}}<img src="{{.cover}}" width="112" height="154" alt="《{{.name}}》封面">{{end}}</a>
+<span class="title"><a href="{{.URL}}" title="{{.name}}" target="_blank">{{.name}}</a></span>
 <span class="old"><span class="oldDate">{{fmtDate .updatedAt}}</span>上传</span>
 <div style="padding:0 19px">{{if .intro}}{{.intro}}{{else}}暂无简介{{end}}</div>
 <div style="padding:0 19px">
@@ -86,13 +86,13 @@
 <h3>热门{{.Tag}}小说下载</h3>
 <div class="body">
 <div class="book_r">
-{{if (index .HotBooks 0).cover}}<a href="/?view=book&id={{(index .HotBooks 0).id}}"><img src="{{(index .HotBooks 0).cover}}" alt="{{(index .HotBooks 0).name}}"></a>{{end}}
-<h4><a href="/?view=book&id={{(index .HotBooks 0).id}}">{{(index .HotBooks 0).name}}</a></h4>
+{{if (index .HotBooks 0).cover}}<a href="{{(index .HotBooks 0).URL}}"><img src="{{(index .HotBooks 0).cover}}" alt="{{(index .HotBooks 0).name}}"></a>{{end}}
+<h4><a href="{{(index .HotBooks 0).URL}}">{{(index .HotBooks 0).name}}</a></h4>
 <div class="meta">{{(index .HotBooks 0).author}} · {{(index .HotBooks 0).category}} · {{wordCount (index .HotBooks 0).wordCount}}</div>
 <div class="desc">{{if (index .HotBooks 0).intro}}{{(index .HotBooks 0).intro}}{{else}}暂无简介{{end}}</div>
 </div>
 <ul class="lines">
-{{range $i, $b := .HotBooks}}{{if gt $i 0}}{{if lt $i 10}}<li><span class="no">{{$i}}</span><a href="/?view=book&id={{$b.id}}" title="{{$b.name}}">{{$b.name}}</a><span class="date">{{$b.author}}</span></li>{{end}}{{end}}{{end}}
+{{range $i, $b := .HotBooks}}{{if gt $i 0}}{{if lt $i 10}}<li><span class="no">{{$i}}</span><a href="{{$b.URL}}" title="{{$b.name}}">{{$b.name}}</a><span class="date">{{$b.author}}</span></li>{{end}}{{end}}{{end}}
 </ul>
 </div>
 </article>
@@ -104,7 +104,7 @@
 <ul class="lines">
 <li><a href="/">最新上传的电子书</a></li>
 <li><a href="/?view=fulltext">全本小说下载</a></li>
-{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}">{{.name}}下载</a></li>{{end}}
+{{range .NavCats}}<li><a href="{{.URL}}">{{.name}}下载</a></li>{{end}}
 </ul>
 </div>
 </article>

@@ -177,8 +177,14 @@ func (a *adminDB) UpsertChapter(c crawl.Chapter) (crawl.Chapter, error) {
         }
         // 新建
         c.ID = generateID()
+        // R64-C BUG-37 (P0): 原 INSERT VALUES 子句多 1 个 `?` 占位符 (8 个 `?` before 'db'
+        //   + 1 个 `?` after 0 = 9 个 `?` for 8 args → SQLite 报 "13 values for 12
+        //   columns", 自 R39-1C 起新章插入路径始终失败). 字段映射: id/bookId/idx/
+        //   title/volume/url/content → 7 个 `?` (前), storage='db' 字面量, wordCount=0
+        //   字面量, fetched → 1 个 `?` (后), createdAt/updatedAt=datetime 字面量.
+        //   修复: 删去多余的 1 个 `?` before 'db' (8→7), 总 `?` 8 个 for 8 args.
         _, err := a.db.Exec(
-                `INSERT INTO Chapter (id,bookId,idx,title,volume,url,content,storage,wordCount,fetched,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,?,'db',0,?,datetime('now'),datetime('now'))`,
+                `INSERT INTO Chapter (id,bookId,idx,title,volume,url,content,storage,wordCount,fetched,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,'db',0,?,datetime('now'),datetime('now'))`,
                 c.ID, c.BookID, c.Idx, c.Title, c.Volume, c.SourceURL, c.Content, c.Fetched,
         )
         return c, err
@@ -899,26 +905,36 @@ func adminRulesList(w http.ResponseWriter, r *http.Request) {
                 writeJSONErr(w, "查询失败: "+err.Error(), 500)
                 return
         }
-        defer rows.Close()
-        out := []map[string]interface{}{}
+        // R64-C BUG-38 (P0): 先收齐 rule 行再循环 (逐 rule 调 db.QueryRow 算 taskCount).
+        //   原实现 db.QueryRow 在 for rows.Next() 内部 → modernc.org/sqlite 连接池
+        //   (SetMaxOpenConns(1)) 等待 rows 释放 → 30s+ 超时死锁 (Rule 表非空时必现).
+        //   修复: rows 扫完转 []struct, 显式 Close rows, 再循环调 db.QueryRow.
+        type ruleRow struct {
+                ID, Name, Config, CreatedAt, UpdatedAt string
+                Description                            sql.NullString
+                Enabled                                bool
+        }
+        ruleRows := []ruleRow{}
         for rows.Next() {
-                var id, name, config, updatedAt string
-                var description sql.NullString
-                var enabled bool
-                var createdAt string
-                _ = rows.Scan(&id, &name, &description, &config, &enabled, &createdAt, &updatedAt)
-                // 统计每个规则的任务数
+                var rr ruleRow
+                _ = rows.Scan(&rr.ID, &rr.Name, &rr.Description, &rr.Config, &rr.Enabled, &rr.CreatedAt, &rr.UpdatedAt)
+                ruleRows = append(ruleRows, rr)
+        }
+        rows.Close()
+        out := []map[string]interface{}{}
+        for _, rr := range ruleRows {
+                // 统计每个规则的任务数 (rows 已 Close, 不再持锁)
                 var taskCount int
-                _ = db.QueryRow(`SELECT COUNT(*) FROM Task WHERE ruleId=?`, id).Scan(&taskCount)
+                _ = db.QueryRow(`SELECT COUNT(*) FROM Task WHERE ruleId=?`, rr.ID).Scan(&taskCount)
                 out = append(out, map[string]interface{}{
-                        "id":          id,
-                        "name":        name,
-                        "description": description.String,
-                        "config":      config,
-                        "enabled":     enabled,
+                        "id":          rr.ID,
+                        "name":        rr.Name,
+                        "description": rr.Description.String,
+                        "config":      rr.Config,
+                        "enabled":     rr.Enabled,
                         "taskCount":   taskCount,
-                        "createdAt":   createdAt,
-                        "updatedAt":   updatedAt,
+                        "createdAt":   rr.CreatedAt,
+                        "updatedAt":   rr.UpdatedAt,
                 })
         }
         writeJSONOK(w, out)
@@ -1801,25 +1817,36 @@ func fillRulesPageData(data map[string]interface{}) {
         rules := []map[string]interface{}{}
         total, enabledCount, disabledCount := 0, 0, 0
         if err == nil {
-                defer rows.Close()
+                // R64-C BUG-39 (P0): 先收齐 rule 行再循环 (逐 rule 调 db.QueryRow 算 taskCount).
+                //   原实现 db.QueryRow 在 for rows.Next() 内部 → modernc.org/sqlite 连接池
+                //   (SetMaxOpenConns(1)) 等待 rows 释放 → 30s+ 超时死锁 (Rule 表非空时必现).
+                //   修复: rows 扫完转 []struct, 显式 Close rows, 再循环调 db.QueryRow.
+                type ruleRow struct {
+                        ID, Name, Config, UpdatedAt string
+                        Description                sql.NullString
+                        Enabled                    bool
+                }
+                ruleRows := []ruleRow{}
                 for rows.Next() {
-                        var id, name, config, updatedAt string
-                        var description sql.NullString
-                        var enabled bool
-                        _ = rows.Scan(&id, &name, &description, &config, &enabled, &updatedAt)
+                        var rr ruleRow
+                        _ = rows.Scan(&rr.ID, &rr.Name, &rr.Description, &rr.Config, &rr.Enabled, &rr.UpdatedAt)
+                        ruleRows = append(ruleRows, rr)
+                }
+                rows.Close()
+                for _, rr := range ruleRows {
                         var taskCount int
-                        _ = db.QueryRow(`SELECT COUNT(*) FROM Task WHERE ruleId=?`, id).Scan(&taskCount)
+                        _ = db.QueryRow(`SELECT COUNT(*) FROM Task WHERE ruleId=?`, rr.ID).Scan(&taskCount)
                         rules = append(rules, map[string]interface{}{
-                                "id":          id,
-                                "name":        name,
-                                "description": description.String,
-                                "config":      config,
-                                "enabled":     enabled,
+                                "id":          rr.ID,
+                                "name":        rr.Name,
+                                "description": rr.Description.String,
+                                "config":      rr.Config,
+                                "enabled":     rr.Enabled,
                                 "taskCount":   taskCount,
-                                "updatedAt":   updatedAt,
+                                "updatedAt":   rr.UpdatedAt,
                         })
                         total++
-                        if enabled {
+                        if rr.Enabled {
                                 enabledCount++
                         } else {
                                 disabledCount++
@@ -1837,10 +1864,18 @@ func fillRulesPageData(data map[string]interface{}) {
 //   R55-1A: SELECT 扩展含 icbm/geoRegion/geoPlacename/inLinkWheel, 供 edit 表单回填.
 //   附带 Themes 列表 (来自 adminThemes 静态注册表), 供 site edit modal 下拉主题选择.
 //   R63-A: SELECT 加 pseudoStaticStyle, 供 admin/sites.html edit modal 下拉选择 (R63-B 接入模板).
+//   R64-C: SELECT 加 13 高级 SEO 字段 (footerText/footerCopyright/footerIcp/footerStats/
+//     navCategoryCount/homeModuleLimit/chapterPaginationMode/chapterPaginationWords/
+//     chapterPaginationPages/chapterSeoAuto/chapterSeoTitleTemplate/chapterSeoDescTemplate/
+//     chapterSeoKeywordsTemplate), 供 admin/sites.html edit modal 高级 SEO 字段回填.
 func fillSitesPageData(data map[string]interface{}) {
         rows, err := db.Query(
                 `SELECT id,name,domain,themeId,isDefault,title,description,keywords,
-                        COALESCE(icbm,''),COALESCE(geoRegion,''),COALESCE(geoPlacename,''),offset,status,inLinkWheel,pseudoStaticStyle
+                        COALESCE(icbm,''),COALESCE(geoRegion,''),COALESCE(geoPlacename,''),offset,status,inLinkWheel,pseudoStaticStyle,
+                        COALESCE(footerText,''),COALESCE(footerCopyright,''),COALESCE(footerIcp,''),COALESCE(footerStats,1),
+                        COALESCE(navCategoryCount,16),COALESCE(homeModuleLimit,20),
+                        COALESCE(chapterPaginationMode,'off'),COALESCE(chapterPaginationWords,3000),COALESCE(chapterPaginationPages,3),
+                        COALESCE(chapterSeoAuto,1),COALESCE(chapterSeoTitleTemplate,''),COALESCE(chapterSeoDescTemplate,''),COALESCE(chapterSeoKeywordsTemplate,'')
                    FROM Site ORDER BY isDefault DESC, name ASC LIMIT 200`)
         sites := []map[string]interface{}{}
         total := 0
@@ -1849,29 +1884,49 @@ func fillSitesPageData(data map[string]interface{}) {
                 defer rows.Close()
                 for rows.Next() {
                         var id, name, domain, themeID, title, desc, kw, icbm, geoR, geoP, pseudoStaticStyle string
-                        var isDefault, status, inLinkWheel bool
-                        var offset int
+                        var footerText, footerCopyright, footerIcp, chapterPaginationMode, chapterSeoTitleTemplate, chapterSeoDescTemplate, chapterSeoKeywordsTemplate string
+                        var offset, navCategoryCount, homeModuleLimit, chapterPaginationWords, chapterPaginationPages int
+                        var isDefault, status, inLinkWheel, footerStats, chapterSeoAuto bool
                         _ = rows.Scan(&id, &name, &domain, &themeID, &isDefault, &title, &desc, &kw,
-                                &icbm, &geoR, &geoP, &offset, &status, &inLinkWheel, &pseudoStaticStyle)
+                                &icbm, &geoR, &geoP, &offset, &status, &inLinkWheel, &pseudoStaticStyle,
+                                &footerText, &footerCopyright, &footerIcp, &footerStats, &navCategoryCount, &homeModuleLimit,
+                                &chapterPaginationMode, &chapterPaginationWords, &chapterPaginationPages,
+                                &chapterSeoAuto, &chapterSeoTitleTemplate, &chapterSeoDescTemplate, &chapterSeoKeywordsTemplate)
                         if pseudoStaticStyle == "" {
                                 pseudoStaticStyle = "query"
                         }
+                        if chapterPaginationMode == "" {
+                                chapterPaginationMode = "off"
+                        }
                         sites = append(sites, map[string]interface{}{
-                                "id":                id,
-                                "name":              name,
-                                "domain":            domain,
-                                "themeId":           themeID,
-                                "isDefault":         isDefault,
-                                "title":             title,
-                                "description":       desc,
-                                "keywords":          kw,
-                                "icbm":              icbm,
-                                "geoRegion":         geoR,
-                                "geoPlacename":      geoP,
-                                "status":            status,
-                                "offset":            offset,
-                                "inLinkWheel":       inLinkWheel,
-                                "pseudoStaticStyle": pseudoStaticStyle,
+                                "id":                          id,
+                                "name":                        name,
+                                "domain":                      domain,
+                                "themeId":                     themeID,
+                                "isDefault":                   isDefault,
+                                "title":                       title,
+                                "description":                 desc,
+                                "keywords":                    kw,
+                                "icbm":                        icbm,
+                                "geoRegion":                   geoR,
+                                "geoPlacename":                geoP,
+                                "status":                      status,
+                                "offset":                      offset,
+                                "inLinkWheel":                 inLinkWheel,
+                                "pseudoStaticStyle":           pseudoStaticStyle,
+                                "footerText":                  footerText,
+                                "footerCopyright":             footerCopyright,
+                                "footerIcp":                   footerIcp,
+                                "footerStats":                 footerStats,
+                                "navCategoryCount":            navCategoryCount,
+                                "homeModuleLimit":             homeModuleLimit,
+                                "chapterPaginationMode":       chapterPaginationMode,
+                                "chapterPaginationWords":      chapterPaginationWords,
+                                "chapterPaginationPages":      chapterPaginationPages,
+                                "chapterSeoAuto":              chapterSeoAuto,
+                                "chapterSeoTitleTemplate":     chapterSeoTitleTemplate,
+                                "chapterSeoDescTemplate":      chapterSeoDescTemplate,
+                                "chapterSeoKeywordsTemplate":  chapterSeoKeywordsTemplate,
                         })
                         total++
                         if isDefault {
@@ -2087,17 +2142,28 @@ func adminCategoriesList(w http.ResponseWriter, r *http.Request) {
                 writeJSONErr(w, "查询失败: "+err.Error(), 500)
                 return
         }
-        defer rows.Close()
-        out := []map[string]interface{}{}
+        // R64-C BUG-40 (P0): 先收齐 category 行再循环 (逐 category 调 db.QueryRow 算 bookCount).
+        //   原实现 db.QueryRow 在 for rows.Next() 内部 → modernc.org/sqlite 连接池
+        //   (SetMaxOpenConns(1)) 等待 rows 释放 → 30s+ 超时死锁 (Category 表非空时必现).
+        //   修复: rows 扫完转 []struct, 显式 Close rows, 再循环调 db.QueryRow.
+        type catRow struct {
+                ID, Name, CreatedAt string
+                SortOrder            int
+        }
+        catRows := []catRow{}
         for rows.Next() {
-                var id, name, createdAt string
-                var sortOrder int
-                _ = rows.Scan(&id, &name, &sortOrder, &createdAt)
+                var cr catRow
+                _ = rows.Scan(&cr.ID, &cr.Name, &cr.SortOrder, &cr.CreatedAt)
+                catRows = append(catRows, cr)
+        }
+        rows.Close()
+        out := []map[string]interface{}{}
+        for _, cr := range catRows {
                 var bookCount int
-                _ = db.QueryRow(`SELECT COUNT(*) FROM Book WHERE categoryId=?`, id).Scan(&bookCount)
+                _ = db.QueryRow(`SELECT COUNT(*) FROM Book WHERE categoryId=?`, cr.ID).Scan(&bookCount)
                 out = append(out, map[string]interface{}{
-                        "id": id, "name": name, "sortOrder": sortOrder,
-                        "bookCount": bookCount, "createdAt": createdAt,
+                        "id": cr.ID, "name": cr.Name, "sortOrder": cr.SortOrder,
+                        "bookCount": bookCount, "createdAt": cr.CreatedAt,
                 })
         }
         writeJSONOK(w, out)
@@ -2561,6 +2627,15 @@ func adminDownloadsCreate(w http.ResponseWriter, r *http.Request) {
         // 异步生成 TXT (Go 端简化版: 章节序号+标题+正文 拼接, 不混淆)
         go func(jid, bid, bname string) {
                 defer func() {
+                        // R64-C BUG-45 (P2): goroutine panic 兜底 (如 OOM 拼 TXT, 或
+                        //   db.Query 返意外类型断言失败), 原 defer 仅 --inFlight,
+                        //   DownloadJob 残留 status='running' 永不终态 → 用户卡住等不到
+                        //   done/error. 修复: recover() 把 panic 转 DB UPDATE error,
+                        //   与正常路径一样落 status='error' + error 信息.
+                        if r := recover(); r != nil {
+                                _, _ = db.Exec(`UPDATE DownloadJob SET status='error', error=? WHERE id=?`,
+                                        fmt.Sprintf("panic: %v", r), jid)
+                        }
                         downloadInFlightMu.Lock()
                         downloadInFlight--
                         downloadInFlightMu.Unlock()
@@ -3159,14 +3234,26 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
         // books (+chapters if !bigBooks)
         books := []map[string]interface{}{}
         bookQuery := `SELECT id, name, author, COALESCE(categoryId,''), intro, cover, status, keywords, latestChapter, wordCount, sourceUrl, COALESCE(sourceRuleId,''), storageMode, COALESCE(collectedAt,''), createdAt, updatedAt FROM Book`
+        // R64-C BUG-42 (P0): 原实现外层 rows 持锁期间 for rows.Next() 内部逐 book 调
+        //   db.Query(crows) + db.Query(trows) → modernc.org/sqlite 连接池
+        //   (SetMaxOpenConns(1)) 等待外层 rows 释放 → 30s+ 超时死锁 (Book 表非空
+        //   且 !bigBooks 时必现, 用户备份全量数据 export 路径). 修复: 先收齐
+        //   book 行转 []struct + 显式 Close rows, 再循环逐 book 调 db.Query(crows)/
+        //   db.Query(trows) — 与 R63 主控修 adminSitesBatchGenerateTDK 同款方法论.
         if rows, err := db.Query(bookQuery); err == nil {
+                type bookRow struct {
+                        id, name, author, catID, intro, cover, status, kw, latest string
+                        wc                                                       int
+                        srcURL, srcRule, storageMode, collectedAt, createdAt, updatedAt string
+                }
+                bookRows := []bookRow{}
                 for rows.Next() {
-                        var b struct {
-                                id, name, author, catID, intro, cover, status, kw, latest string
-                                wc int
-                                srcURL, srcRule, storageMode, collectedAt, createdAt, updatedAt string
-                        }
+                        var b bookRow
                         _ = rows.Scan(&b.id, &b.name, &b.author, &b.catID, &b.intro, &b.cover, &b.status, &b.kw, &b.latest, &b.wc, &b.srcURL, &b.srcRule, &b.storageMode, &b.collectedAt, &b.createdAt, &b.updatedAt)
+                        bookRows = append(bookRows, b)
+                }
+                rows.Close()
+                for _, b := range bookRows {
                         bookItem := map[string]interface{}{
                                 "id": b.id, "name": b.name, "author": b.author, "categoryId": b.catID,
                                 "intro": b.intro, "cover": b.cover, "status": b.status, "keywords": b.kw,
@@ -3215,7 +3302,6 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
                         }
                         books = append(books, bookItem)
                 }
-                rows.Close()
         }
         // settings export (raw key-value)
         settingsExport := make([]map[string]interface{}, 0, len(settings))
@@ -3778,6 +3864,21 @@ func adminSiteByIDHandler(w http.ResponseWriter, r *http.Request) {
                         writeJSONErr(w, "站点不存在", 404)
                         return
                 }
+                // R64-C BUG-44 (P1): 原实现 isDefault clear (UPDATE Site SET isDefault=0)
+                //   在字段校验中途执行, 若后续校验失败 (如 pseudoStaticStyle 非法) 或主
+                //   UPDATE 失败, 已 clear 的 isDefault 不回滚 → 无默认站点. 修复: 整个
+                //   PUT 包裹事务, 任一步失败 Rollback 还原 isDefault.
+                tx, txErr := db.BeginTx(r.Context(), nil)
+                if txErr != nil {
+                        writeJSONErr(w, "开启事务失败: "+txErr.Error(), 500)
+                        return
+                }
+                committed := false
+                defer func() {
+                        if !committed {
+                                _ = tx.Rollback()
+                        }
+                }()
                 sets := []string{}
                 args := []interface{}{}
                 if v, ok := body["name"]; ok && v != nil {
@@ -3865,13 +3966,11 @@ func adminSiteByIDHandler(w http.ResponseWriter, r *http.Request) {
                         sets = append(sets, "inLinkWheel=?")
                         args = append(args, boolField(body, "inLinkWheel", true))
                 }
+                isDefaultRequested := false
                 if v, ok := body["isDefault"]; ok && v != nil {
-                        // 设为默认: 先清掉其他站点 isDefault, 再设自身
-                        if boolField(body, "isDefault", false) {
-                                _, _ = db.Exec(`UPDATE Site SET isDefault=0`)
-                        }
+                        isDefaultRequested = boolField(body, "isDefault", false)
                         sets = append(sets, "isDefault=?")
-                        args = append(args, boolField(body, "isDefault", false))
+                        args = append(args, isDefaultRequested)
                 }
                 // R63-A: pseudoStaticStyle 枚举校验 (query/numeric/alphanumeric/slug/short/classic/dir/hashid/base62/segmented).
                 if v, ok := body["pseudoStaticStyle"]; ok && v != nil {
@@ -3886,17 +3985,94 @@ func adminSiteByIDHandler(w http.ResponseWriter, r *http.Request) {
                         sets = append(sets, "pseudoStaticStyle=?")
                         args = append(args, s)
                 }
+                // R64-C 高级 SEO 字段 (R16/R22): 增量更新 11 概念字段 = 13 DB 列.
+                //   与 adminSitesCreate 同款校验: 枚举 + clampIntAdm 范围 + strField/boolField 取值.
+                if v, ok := body["footerText"]; ok && v != nil {
+                        sets = append(sets, "footerText=?")
+                        args = append(args, strField(body, "footerText", 2000))
+                }
+                if v, ok := body["footerCopyright"]; ok && v != nil {
+                        sets = append(sets, "footerCopyright=?")
+                        args = append(args, strField(body, "footerCopyright", 500))
+                }
+                if v, ok := body["footerIcp"]; ok && v != nil {
+                        sets = append(sets, "footerIcp=?")
+                        args = append(args, strField(body, "footerIcp", 200))
+                }
+                if v, ok := body["footerStats"]; ok && v != nil {
+                        sets = append(sets, "footerStats=?")
+                        args = append(args, boolField(body, "footerStats", true))
+                }
+                if v, ok := body["navCategoryCount"]; ok && v != nil {
+                        sets = append(sets, "navCategoryCount=?")
+                        args = append(args, clampIntAdm(intField(body, "navCategoryCount", 16, 5, 30), 5, 30))
+                }
+                if v, ok := body["homeModuleLimit"]; ok && v != nil {
+                        sets = append(sets, "homeModuleLimit=?")
+                        args = append(args, clampIntAdm(intField(body, "homeModuleLimit", 20, 10, 50), 10, 50))
+                }
+                if v, ok := body["chapterPaginationMode"]; ok && v != nil {
+                        m := strField(body, "chapterPaginationMode", 20)
+                        if m == "" {
+                                m = "off"
+                        }
+                        if m != "off" && m != "byWords" && m != "byPages" {
+                                writeJSONErr(w, "chapterPaginationMode 必须是 off/byWords/byPages 之一", 400)
+                                return
+                        }
+                        sets = append(sets, "chapterPaginationMode=?")
+                        args = append(args, m)
+                }
+                if v, ok := body["chapterPaginationWords"]; ok && v != nil {
+                        sets = append(sets, "chapterPaginationWords=?")
+                        args = append(args, clampIntAdm(intField(body, "chapterPaginationWords", 3000, 500, 50000), 500, 50000))
+                }
+                if v, ok := body["chapterPaginationPages"]; ok && v != nil {
+                        sets = append(sets, "chapterPaginationPages=?")
+                        args = append(args, clampIntAdm(intField(body, "chapterPaginationPages", 3, 2, 20), 2, 20))
+                }
+                if v, ok := body["chapterSeoAuto"]; ok && v != nil {
+                        sets = append(sets, "chapterSeoAuto=?")
+                        args = append(args, boolField(body, "chapterSeoAuto", true))
+                }
+                if v, ok := body["chapterSeoTitleTemplate"]; ok && v != nil {
+                        sets = append(sets, "chapterSeoTitleTemplate=?")
+                        args = append(args, strField(body, "chapterSeoTitleTemplate", 500))
+                }
+                if v, ok := body["chapterSeoDescTemplate"]; ok && v != nil {
+                        sets = append(sets, "chapterSeoDescTemplate=?")
+                        args = append(args, strField(body, "chapterSeoDescTemplate", 1000))
+                }
+                if v, ok := body["chapterSeoKeywordsTemplate"]; ok && v != nil {
+                        sets = append(sets, "chapterSeoKeywordsTemplate=?")
+                        args = append(args, strField(body, "chapterSeoKeywordsTemplate", 500))
+                }
                 if len(sets) == 0 {
                         writeJSONErr(w, "无可更新字段", 400)
                         return
                 }
                 sets = append(sets, "updatedAt=datetime('now')")
                 args = append(args, id)
-                _, err := db.Exec(`UPDATE Site SET `+strings.Join(sets, ",")+` WHERE id=?`, args...)
-                if err != nil {
+                if _, err := tx.Exec(`UPDATE Site SET `+strings.Join(sets, ",")+` WHERE id=?`, args...); err != nil {
                         writeJSONErr(w, "更新失败: "+err.Error(), 500)
                         return
                 }
+                // 设为默认: 主 UPDATE 已成功把当前 site 的 isDefault=true (在事务内),
+                //   此 clear 把其他 site 的 isDefault 置 0 (WHERE id!=? 不动当前 site,
+                //   比原 `UPDATE Site SET isDefault=0` 全清更精准). 若此步失败, Rollback
+                //   还原所有变更 (含主 UPDATE 设置的 isDefault=true), 保证不出现"无默认
+                //   站点"的脏状态.
+                if isDefaultRequested {
+                        if _, err := tx.Exec(`UPDATE Site SET isDefault=0 WHERE id!=?`, id); err != nil {
+                                writeJSONErr(w, "清退旧默认站点失败: "+err.Error(), 500)
+                                return
+                        }
+                }
+                if err := tx.Commit(); err != nil {
+                        writeJSONErr(w, "提交事务失败: "+err.Error(), 500)
+                        return
+                }
+                committed = true
                 writeJSONOK(w, map[string]interface{}{"id": id, "updated": true})
         case http.MethodDelete:
                 var exist, isDefault string
@@ -3922,8 +4098,12 @@ func adminSiteByIDHandler(w http.ResponseWriter, r *http.Request) {
 
 // adminSitesList — GET /api/admin/sites 列站点 (含 isDefault/themeId/offset/status 等, 与 backup 同字段集).
 //   R63-A: SELECT 加 pseudoStaticStyle 字段返回 (供前端编辑表单显示当前值).
+//   R64-C: SELECT 加 13 高级 SEO 字段 (footerText/footerCopyright/footerIcp/footerStats/
+//     navCategoryCount/homeModuleLimit/chapterPaginationMode/chapterPaginationWords/
+//     chapterPaginationPages/chapterSeoAuto/chapterSeoTitleTemplate/chapterSeoDescTemplate/
+//     chapterSeoKeywordsTemplate).
 func adminSitesList(w http.ResponseWriter, r *http.Request) {
-        rows, err := db.Query(`SELECT id,name,domain,themeId,isDefault,title,description,keywords,icbm,geoRegion,geoPlacename,offset,status,inLinkWheel,pseudoStaticStyle,createdAt,updatedAt FROM Site ORDER BY isDefault DESC, name ASC LIMIT 500`)
+        rows, err := db.Query(`SELECT id,name,domain,themeId,isDefault,title,description,keywords,icbm,geoRegion,geoPlacename,offset,status,inLinkWheel,pseudoStaticStyle,footerText,footerCopyright,footerIcp,footerStats,navCategoryCount,homeModuleLimit,chapterPaginationMode,chapterPaginationWords,chapterPaginationPages,chapterSeoAuto,chapterSeoTitleTemplate,chapterSeoDescTemplate,chapterSeoKeywordsTemplate,createdAt,updatedAt FROM Site ORDER BY isDefault DESC, name ASC LIMIT 500`)
         if err != nil {
                 writeJSONErr(w, "查询失败: "+err.Error(), 500)
                 return
@@ -3931,18 +4111,33 @@ func adminSitesList(w http.ResponseWriter, r *http.Request) {
         defer rows.Close()
         out := []map[string]interface{}{}
         for rows.Next() {
-                var id, name, domain, themeID, title, desc, kw, icbm, geoR, geoP, pseudoStaticStyle, createdAt, updatedAt string
-                var offset int
-                var isDefault, status, inLinkWheel bool
-                _ = rows.Scan(&id, &name, &domain, &themeID, &isDefault, &title, &desc, &kw, &icbm, &geoR, &geoP, &offset, &status, &inLinkWheel, &pseudoStaticStyle, &createdAt, &updatedAt)
+                var id, name, domain, themeID, title, desc, kw, icbm, geoR, geoP, pseudoStaticStyle string
+                var footerText, footerCopyright, footerIcp, chapterPaginationMode, chapterSeoTitleTemplate, chapterSeoDescTemplate, chapterSeoKeywordsTemplate string
+                var createdAt, updatedAt string
+                var offset, navCategoryCount, homeModuleLimit, chapterPaginationWords, chapterPaginationPages int
+                var isDefault, status, inLinkWheel, footerStats, chapterSeoAuto bool
+                _ = rows.Scan(&id, &name, &domain, &themeID, &isDefault, &title, &desc, &kw, &icbm, &geoR, &geoP, &offset, &status, &inLinkWheel, &pseudoStaticStyle,
+                        &footerText, &footerCopyright, &footerIcp, &footerStats, &navCategoryCount, &homeModuleLimit,
+                        &chapterPaginationMode, &chapterPaginationWords, &chapterPaginationPages,
+                        &chapterSeoAuto, &chapterSeoTitleTemplate, &chapterSeoDescTemplate, &chapterSeoKeywordsTemplate,
+                        &createdAt, &updatedAt)
                 if pseudoStaticStyle == "" {
                         pseudoStaticStyle = "query"
+                }
+                if chapterPaginationMode == "" {
+                        chapterPaginationMode = "off"
                 }
                 out = append(out, map[string]interface{}{
                         "id": id, "name": name, "domain": domain, "themeId": themeID,
                         "isDefault": isDefault, "title": title, "description": desc, "keywords": kw,
                         "icbm": icbm, "geoRegion": geoR, "geoPlacename": geoP, "offset": offset,
                         "status": status, "inLinkWheel": inLinkWheel, "pseudoStaticStyle": pseudoStaticStyle,
+                        "footerText": footerText, "footerCopyright": footerCopyright, "footerIcp": footerIcp,
+                        "footerStats": footerStats, "navCategoryCount": navCategoryCount,
+                        "homeModuleLimit": homeModuleLimit, "chapterPaginationMode": chapterPaginationMode,
+                        "chapterPaginationWords": chapterPaginationWords, "chapterPaginationPages": chapterPaginationPages,
+                        "chapterSeoAuto": chapterSeoAuto, "chapterSeoTitleTemplate": chapterSeoTitleTemplate,
+                        "chapterSeoDescTemplate": chapterSeoDescTemplate, "chapterSeoKeywordsTemplate": chapterSeoKeywordsTemplate,
                         "createdAt": createdAt, "updatedAt": updatedAt,
                 })
         }
@@ -4026,28 +4221,88 @@ func adminSitesCreate(w http.ResponseWriter, r *http.Request, body map[string]in
                 writeJSONErr(w, "pseudoStaticStyle 不在枚举内 (query/numeric/alphanumeric/slug/short/classic/dir/hashid/base62/segmented)", 400)
                 return
         }
-        if isDefault {
-                _, _ = db.Exec(`UPDATE Site SET isDefault=0`)
+        // R64-C 高级 SEO 字段 (R16/R22): footerText / footerCopyright / footerIcp /
+        //   footerStats / navCategoryCount / homeModuleLimit / chapterPaginationMode /
+        //   chapterPaginationWords / chapterPaginationPages / chapterSeoAuto /
+        //   chapterSeoTitleTemplate / chapterSeoDescTemplate / chapterSeoKeywordsTemplate.
+        //   11 概念字段 = 13 DB 列 (3 个 chapter SEO 模板分开). 与 R63-A pseudoStaticStyle
+        //   同款 strField/intField/boolField 取值 + clampIntAdm 钳制范围 + 枚举校验.
+        footerText := strField(body, "footerText", 2000)
+        footerCopyright := strField(body, "footerCopyright", 500)
+        footerIcp := strField(body, "footerIcp", 200)
+        footerStats := boolField(body, "footerStats", true)
+        navCategoryCount := clampIntAdm(intField(body, "navCategoryCount", 16, 5, 30), 5, 30)
+        homeModuleLimit := clampIntAdm(intField(body, "homeModuleLimit", 20, 10, 50), 10, 50)
+        chapterPaginationMode := strField(body, "chapterPaginationMode", 20)
+        if chapterPaginationMode == "" {
+                chapterPaginationMode = "off"
         }
+        if chapterPaginationMode != "off" && chapterPaginationMode != "byWords" && chapterPaginationMode != "byPages" {
+                writeJSONErr(w, "chapterPaginationMode 必须是 off/byWords/byPages 之一", 400)
+                return
+        }
+        chapterPaginationWords := clampIntAdm(intField(body, "chapterPaginationWords", 3000, 500, 50000), 500, 50000)
+        chapterPaginationPages := clampIntAdm(intField(body, "chapterPaginationPages", 3, 2, 20), 2, 20)
+        chapterSeoAuto := boolField(body, "chapterSeoAuto", true)
+        chapterSeoTitleTemplate := strField(body, "chapterSeoTitleTemplate", 500)
+        chapterSeoDescTemplate := strField(body, "chapterSeoDescTemplate", 1000)
+        chapterSeoKeywordsTemplate := strField(body, "chapterSeoKeywordsTemplate", 500)
         id := generateID()
+        // R64-C BUG-43 (P1): 原实现 isDefault clear (UPDATE Site SET isDefault=0)
+        //   在 INSERT 前执行, 若 INSERT 失败 (如 SQL 错误 / domain 冲突等), 已 clear
+        //   的 isDefault 不回滚 → 无默认站点. 修复: 整个 INSERT + isDefault clear
+        //   包裹事务, 任一步失败 Rollback 还原. 顺序: INSERT 新站 → 若 isDefault,
+        //   clear 其他 (WHERE id!=? 不动新站). 与 adminSiteByIDHandler PUT BUG-38
+        //   同款事务方法论.
+        tx, txErr := db.BeginTx(r.Context(), nil)
+        if txErr != nil {
+                writeJSONErr(w, "开启事务失败: "+txErr.Error(), 500)
+                return
+        }
+        committed := false
+        defer func() {
+                if !committed {
+                        _ = tx.Rollback()
+                }
+        }()
         // R55-1B 修复 BUG-4 (P0): 原实现 VALUES 子句多 1 个 `?` 占位符 (15 个 `?` + 2 个
         //   datetime 字面量 = 17 values vs 16 columns → SQLite 报 "17 values for 16 columns"
         //   全部 Site 新建失败). args = 14 个 (id/name/domain/themeId/title/desc/kw/icbm/
         //   geoR/geoP/offset/isDefault/status/inLinkWheel), VALUES 应有 14 个 `?` + 2 个
         //   datetime('now') 字面量 (createdAt/updatedAt) = 16 values for 16 columns.
         // R63-A: 加 pseudoStaticStyle 列 → 15 个 `?` + 2 个 datetime 字面量 = 17 values for 17 columns.
-        _, err := db.Exec(
-                `INSERT INTO Site (id,name,domain,themeId,title,description,keywords,icbm,geoRegion,geoPlacename,offset,isDefault,status,inLinkWheel,pseudoStaticStyle,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),datetime('now'))`,
+        // R64-C: 加 13 个高级 SEO 字段 → 28 个 `?` + 2 个 datetime 字面量 = 30 values for 30 columns.
+        if _, err := tx.Exec(
+                `INSERT INTO Site (id,name,domain,themeId,title,description,keywords,icbm,geoRegion,geoPlacename,offset,isDefault,status,inLinkWheel,pseudoStaticStyle,footerText,footerCopyright,footerIcp,footerStats,navCategoryCount,homeModuleLimit,chapterPaginationMode,chapterPaginationWords,chapterPaginationPages,chapterSeoAuto,chapterSeoTitleTemplate,chapterSeoDescTemplate,chapterSeoKeywordsTemplate,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),datetime('now'))`,
                 id, name, domain, themeID, title, desc, kw, icbm, geoR, geoP, offset, isDefault, status, inLinkWheel, pseudoStaticStyle,
-        )
-        if err != nil {
+                footerText, footerCopyright, footerIcp, footerStats, navCategoryCount, homeModuleLimit,
+                chapterPaginationMode, chapterPaginationWords, chapterPaginationPages,
+                chapterSeoAuto, chapterSeoTitleTemplate, chapterSeoDescTemplate, chapterSeoKeywordsTemplate,
+        ); err != nil {
                 writeJSONErr(w, "创建失败: "+err.Error(), 500)
                 return
         }
+        if isDefault {
+                if _, err := tx.Exec(`UPDATE Site SET isDefault=0 WHERE id!=?`, id); err != nil {
+                        writeJSONErr(w, "清退旧默认站点失败: "+err.Error(), 500)
+                        return
+                }
+        }
+        if err := tx.Commit(); err != nil {
+                writeJSONErr(w, "提交事务失败: "+err.Error(), 500)
+                return
+        }
+        committed = true
         writeJSONOK(w, map[string]interface{}{
                 "id": id, "name": name, "domain": domain, "themeId": themeID,
                 "isDefault": isDefault, "status": status, "inLinkWheel": inLinkWheel,
                 "offset": offset, "pseudoStaticStyle": pseudoStaticStyle,
+                "footerText": footerText, "footerCopyright": footerCopyright, "footerIcp": footerIcp,
+                "footerStats": footerStats, "navCategoryCount": navCategoryCount,
+                "homeModuleLimit": homeModuleLimit, "chapterPaginationMode": chapterPaginationMode,
+                "chapterPaginationWords": chapterPaginationWords, "chapterPaginationPages": chapterPaginationPages,
+                "chapterSeoAuto": chapterSeoAuto, "chapterSeoTitleTemplate": chapterSeoTitleTemplate,
+                "chapterSeoDescTemplate": chapterSeoDescTemplate, "chapterSeoKeywordsTemplate": chapterSeoKeywordsTemplate,
         })
 }
 
@@ -4514,16 +4769,27 @@ func fillCategoriesPageData(data map[string]interface{}) {
         rows, err := db.Query(`SELECT id, name, sortOrder, createdAt FROM Category ORDER BY sortOrder ASC LIMIT 500`)
         cats := []map[string]interface{}{}
         if err == nil {
-                defer rows.Close()
+                // R64-C BUG-41 (P0): 先收齐 category 行再循环 (逐 category 调 db.QueryRow 算 bookCount).
+                //   原实现 db.QueryRow 在 for rows.Next() 内部 → modernc.org/sqlite 连接池
+                //   (SetMaxOpenConns(1)) 等待 rows 释放 → 30s+ 超时死锁 (Category 表非空时必现).
+                //   修复: rows 扫完转 []struct, 显式 Close rows, 再循环调 db.QueryRow.
+                type catRow struct {
+                        ID, Name, CreatedAt string
+                        SortOrder            int
+                }
+                catRows := []catRow{}
                 for rows.Next() {
-                        var id, name, createdAt string
-                        var sortOrder int
-                        _ = rows.Scan(&id, &name, &sortOrder, &createdAt)
+                        var cr catRow
+                        _ = rows.Scan(&cr.ID, &cr.Name, &cr.SortOrder, &cr.CreatedAt)
+                        catRows = append(catRows, cr)
+                }
+                rows.Close()
+                for _, cr := range catRows {
                         var bookCount int
-                        _ = db.QueryRow(`SELECT COUNT(*) FROM Book WHERE categoryId=?`, id).Scan(&bookCount)
+                        _ = db.QueryRow(`SELECT COUNT(*) FROM Book WHERE categoryId=?`, cr.ID).Scan(&bookCount)
                         cats = append(cats, map[string]interface{}{
-                                "id": id, "name": name, "sortOrder": sortOrder,
-                                "bookCount": bookCount, "createdAt": createdAt,
+                                "id": cr.ID, "name": cr.Name, "sortOrder": cr.SortOrder,
+                                "bookCount": bookCount, "createdAt": cr.CreatedAt,
                         })
                 }
         }

@@ -15,7 +15,7 @@
 <div class="header-logo">
 <h1 class="slogan">{{.Site.Name}}</h1>
 <div class="fixed-logo">
-<a href="/" class="logo" title="{{.Site.Name}}">{{.Site.Name}}</a>
+<a href="{{.HomeURL}}" class="logo" title="{{.Site.Name}}">{{.Site.Name}}</a>
 </div>
 </div>
 </div>
@@ -24,8 +24,8 @@
 </div>
 <div class="nav">
 <ul class="nav-menu-items">
-<li class="nav-menu-item selected"><a href="/" title="首页"><span>首页</span></a></li>
-{{range .NavCats}}<li class="nav-menu-item"><a href="/?view=category&cat={{.id}}" title="{{.name}}"><span>{{.name}}</span></a></li>{{end}}
+<li class="nav-menu-item selected"><a href="{{.HomeURL}}" title="首页"><span>首页</span></a></li>
+{{range .NavCats}}<li class="nav-menu-item"><a href="{{.URL}}" title="{{.name}}"><span>{{.name}}</span></a></li>{{end}}
 </ul>
 </div>
 <div class="header-module">
@@ -61,13 +61,13 @@
 <div class="module-item">
 <div class="module-item-cover">
 <div class="module-item-pic">
-<a href="/?view=book&id={{.id}}" title="{{.name}}"></a>
+<a href="{{.URL}}" title="{{.name}}"></a>
 {{if .cover}}<img src="{{.cover}}" alt="{{.name}}">{{end}}
 </div>
 <div class="module-item-caption"><span>{{.author}}.{{.name}}.{{.category}}</span></div>
 </div>
 <div class="module-item-titlebox">
-<a href="/?view=book&id={{.id}}" class="module-item-title" title="{{.name}}">{{.name}}</a>
+<a href="{{.URL}}" class="module-item-title" title="{{.name}}">{{.name}}</a>
 </div>
 <div class="module-item-text">{{.author}}</div>
 </div>
@@ -84,7 +84,7 @@
 {{range .Books}}
 <div class="module-item module-item-text-list" style="width:auto;display:block;padding:12px 0;border-bottom:1px solid #f0f0f0;margin:0;">
 <div class="module-item-titlebox" style="margin-bottom:6px;">
-<a href="/?view=book&id={{.id}}" class="module-item-title" title="{{.name}}" style="font-size:14px;font-weight:600;color:#333;text-decoration:none;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{.name}}</a>
+<a href="{{.URL}}" class="module-item-title" title="{{.name}}" style="font-size:14px;font-weight:600;color:#333;text-decoration:none;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{.name}}</a>
 </div>
 <div class="module-item-text">{{.author}}</div>
 <div class="module-item-intro" style="font-size:12px;color:#888;line-height:1.6;margin-top:6px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;">{{.intro}}</div>
@@ -102,7 +102,7 @@
 {{range $i, $b := .Popular}}
 <li style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px dashed #eee;">
 <span style="display:inline-block;width:22px;height:22px;line-height:22px;text-align:center;background:{{if lt $i 3}}#ff6600{{else}}#ccc{{end}};color:#fff;border-radius:3px;font-size:12px;margin-right:10px;">{{add $i 1}}</span>
-<a href="/?view=book&id={{$b.id}}" title="{{$b.name}}" style="flex:1;font-size:14px;color:#333;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{$b.name}}</a>
+<a href="{{$b.URL}}" title="{{$b.name}}" style="flex:1;font-size:14px;color:#333;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{$b.name}}</a>
 <span style="font-size:12px;color:#999;margin-left:8px;">{{$b.author}}</span>
 </li>
 {{end}}
@@ -121,7 +121,7 @@
 <span>{{.name}}</span>
 </h5>
 {{range $.Popular}}
-<a class="item" href="/?view=book&id={{.id}}" title="{{.name}}" target="_blank">
+<a class="item" href="{{.URL}}" title="{{.name}}" target="_blank">
 <span class="order">{{printf "%02d" 1}}</span>
 <span class="keyword">{{.name}}</span>
 </a>

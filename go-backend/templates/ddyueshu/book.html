@@ -11,7 +11,7 @@
 <body>
 <div id="wrapper">
 <div class="header">
-<div class="header_logo"><a href="/">{{.Site.Name}}</a></div>
+<div class="header_logo"><a href="{{.HomeURL}}">{{.Site.Name}}</a></div>
 <div class="header_search">
 <form name="articlesearch" method="get" action="/?view=search">
 <input name="q" type="text" class="text" placeholder="搜索从这里开始...">
@@ -22,8 +22,8 @@
 
 <div class="nav">
 <ul>
-<li><a href="/">首页</a></li>
-{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}">{{.name}}</a></li>{{end}}
+<li><a href="{{.HomeURL}}">首页</a></li>
+{{range .NavCats}}<li><a href="{{.URL}}">{{.name}}</a></li>{{end}}
 <li><a href="/?view=fulltext">全本</a></li>
 <li><a href="/?view=history">足迹</a></li>
 </ul>
@@ -38,12 +38,12 @@
 &nbsp;&gt;&nbsp;
 {{if .Book.categoryId}}<a href="/?view=category&cat={{.Book.categoryId}}">{{.Book.category}}</a>{{else}}<a href="/">{{.Book.category}}</a>{{end}}
 &nbsp;&gt;&nbsp;
-<a href="/?view=book&id={{.Book.id}}">{{.Book.name}}</a>
+<a href="{{.BookURL}}">{{.Book.name}}</a>
 </div>
 
 <div id="maininfo">
 <div id="fmimg">
-<a href="/?view=book&id={{.Book.id}}">{{if .Book.cover}}<img src="{{.Book.cover}}" alt="{{.Book.name}}" width="120" height="150">{{end}}</a>
+<a href="{{.BookURL}}">{{if .Book.cover}}<img src="{{.Book.cover}}" alt="{{.Book.name}}" width="120" height="150">{{end}}</a>
 <span class="{{if eq .Book.status "completed"}}a{{else}}b{{end}}" title="{{statusLabel .Book.status}}"></span>
 </div>
 
@@ -65,12 +65,12 @@
 <div id="list">
 <dl>
 <dt>最新章节</dt>
-<dd><a href="/?view=read&chapter={{.FirstChapterId}}">{{if .Book.latestChapter}}{{.Book.latestChapter}}{{else}}点击查看完整目录{{end}}</a></dd>
+<dd><a href="{{.FirstChapterURL}}">{{if .Book.latestChapter}}{{.Book.latestChapter}}{{else}}点击查看完整目录{{end}}</a></dd>
 <div class="clear"></div>
 </dl>
 <dl>
 <dt>开始阅读</dt>
-<dd><a href="/?view=read&chapter={{.FirstChapterId}}">点击开始阅读 →</a></dd>
+<dd><a href="{{.FirstChapterURL}}">点击开始阅读 →</a></dd>
 <div class="clear"></div>
 </dl>
 <div class="clear"></div>
@@ -80,14 +80,14 @@
 <div id="sidebar">
 <dl style="padding:5px;">
 <dt style="font-size:14px;font-weight:700;padding:5px 0;">同分类推荐</dt>
-{{if .Related}}{{range .Related}}<dd style="padding:5px 0;font-size:12px;"><a href="/?view=book&id={{.id}}">{{.name}}</a></dd>{{end}}{{else}}<dd style="padding:5px 0;font-size:12px;">暂无推荐</dd>{{end}}
+{{if .Related}}{{range .Related}}<dd style="padding:5px 0;font-size:12px;"><a href="{{.URL}}">{{.name}}</a></dd>{{end}}{{else}}<dd style="padding:5px 0;font-size:12px;">暂无推荐</dd>{{end}}
 </dl>
 </div>
 
 <div class="clear"></div>
 
 <div class="bottem1">
-<a href="/">返回首页</a>
+<a href="{{.HomeURL}}">返回首页</a>
 <a href="#chapter_list">点击查看完整目录</a>
 </div>
 </div>
@@ -100,12 +100,12 @@
 <div id="content">
 <div class="content_read">
 <div class="box_con" id="chapter_list">
-<div class="con_top"><a href="/">章节目录</a> &nbsp;&gt;&nbsp; <a href="/?view=book&id={{.Book.id}}">{{.Book.name}}</a></div>
+<div class="con_top"><a href="/">章节目录</a> &nbsp;&gt;&nbsp; <a href="{{.BookURL}}">{{.Book.name}}</a></div>
 <div id="list">
 <dl>
 <dt>{{.Book.name}} 章节目录</dt>
 <dd style="padding:10px;">
-{{range .Chapters}}<a href="/?view=read&chapter={{.id}}" title="{{.title}}" style="display:inline-block;width:33%;line-height:25px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{.title}}</a>{{end}}
+{{range .Chapters}}<a href="{{.URL}}" title="{{.title}}" style="display:inline-block;width:33%;line-height:25px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{.title}}</a>{{end}}
 <div class="clear"></div>
 </dd>
 </dl>

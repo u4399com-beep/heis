@@ -13,7 +13,7 @@
 <div class="header">
 <div class="container">
 <div class="header-left">
-<a href="/" title="{{.Site.Name}}" class="logo">{{.Site.Name}}</a>
+<a href="{{.HomeURL}}" title="{{.Site.Name}}" class="logo">{{.Site.Name}}</a>
 </div>
 <div class="header-right">
 <a href="/?view=history">阅读历史</a> |
@@ -21,10 +21,10 @@
 <a href="/?view=category">分类浏览</a>
 </div>
 <div class="header-nav">
-<a href="/" title="首页">首 页</a>
+<a href="{{.HomeURL}}" title="首页">首 页</a>
 <a href="/?view=category" title="书库">书 库</a>
 <a href="/?view=fulltext" title="全本">全本</a>
-{{range .NavCats}}<a href="/?view=category&cat={{.id}}" title="{{.name}}">{{.name}}</a>{{end}}
+{{range .NavCats}}<a href="{{.URL}}" title="{{.name}}">{{.name}}</a>{{end}}
 </div>
 </div>
 <div class="clear"></div>
@@ -32,7 +32,7 @@
 
 <div class="container">
 <ul class="breadcrumb">
-<li><a href="/">首页</a></li>
+<li><a href="{{.HomeURL}}">首页</a></li>
 <li><a href="/?view=category">书库</a></li>
 <li class="active">{{.Label}}</li>
 </ul>
@@ -44,7 +44,7 @@
 <div class="class">
 <ul>
 {{range .NavCats}}
-<li><a href="/?view=category&cat={{.id}}">{{.name}}</a></li>
+<li><a href="{{.URL}}">{{.name}}</a></li>
 {{end}}
 </ul>
 </div>
@@ -55,16 +55,16 @@
 <div class="bookbox">
 <div class="p10">
 <span class="num">{{add $i 1}}</span>
-<a href="/?view=book&id={{$b.id}}" style="float:left;display:inline-block;margin-right:10px;">
+<a href="{{$b.URL}}" style="float:left;display:inline-block;margin-right:10px;">
 {{if $b.cover}}<img src="{{$b.cover}}" alt="{{$b.name}}" width="80" height="110">{{end}}
 </a>
 <div class="bookinfo">
-<h4 class="bookname"><a href="/?view=book&id={{$b.id}}">{{$b.name}}</a></h4>
+<h4 class="bookname"><a href="{{$b.URL}}">{{$b.name}}</a></h4>
 <div class="author">作者：{{$b.author}}</div>
-<div class="cat"><span>更新到：</span><a href="/?view=book&id={{$b.id}}">{{$b.category}}</a></div>
+<div class="cat"><span>更新到：</span><a href="{{$b.URL}}">{{$b.category}}</a></div>
 <div class="update"><span>简介：</span> {{$b.intro}}</div>
 </div>
-<div class="delbutton"><a class="del_but" href="/?view=book&id={{$b.id}}">阅读</a></div>
+<div class="delbutton"><a class="del_but" href="{{$b.URL}}">阅读</a></div>
 </div>
 </div>
 {{end}}
@@ -75,9 +75,9 @@
 
 {{if gt .TotalPages 1}}
 <div class="pages">
-{{if gt .Page 1}}<a href="/?view=category&cat={{.CatID}}&page={{sub .Page 1}}">上一页</a>{{end}}
+{{if gt .Page 1}}<a href="{{.PrevPageURL}}">上一页</a>{{end}}
 {{range .PageList}}{{if eq . $.Page}}<strong>{{.}}</strong>{{else}}<a href="/?view=category&cat={{$.CatID}}&page={{.}}">{{.}}</a>{{end}}{{end}}
-{{if lt .Page .TotalPages}}<a href="/?view=category&cat={{.CatID}}&page={{add .Page 1}}">下一页</a>{{end}}
+{{if lt .Page .TotalPages}}<a href="{{.NextPageURL}}">下一页</a>{{end}}
 <kbd><input type="text" value="{{.Page}}" readonly> / {{.TotalPages}}<i id="pagestats"> 共 {{.Total}} 条</i></kbd>
 </div>
 {{end}}
@@ -94,7 +94,7 @@
 <h2 class="visible-xs">阅读排行榜</h2>
 <ul>
 {{range .HotBooks}}
-<li>[{{.category}}] <a href="/?view=book&id={{.id}}">{{.name}}</a><span>{{.author}}</span></li>
+<li>[{{.category}}] <a href="{{.URL}}">{{.name}}</a><span>{{.author}}</span></li>
 {{end}}
 </ul>
 </div>
@@ -107,7 +107,7 @@
 <ul>
 <li><a href="/?view=category">书库</a></li>
 <li><a href="/?view=fulltext">全本</a></li>
-{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}">{{.name}}</a></li>{{end}}
+{{range .NavCats}}<li><a href="{{.URL}}">{{.name}}</a></li>{{end}}
 </ul>
 </div>
 <div class="clear"></div>

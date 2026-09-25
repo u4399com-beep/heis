@@ -33,9 +33,9 @@
 
 <div class="navigation">
 <nav class="container">
-<a href="/">首页</a>
+<a href="{{.HomeURL}}">首页</a>
 {{range .NavCats}}
-<a href="/?view=category&cat={{.id}}">{{.name}}</a>
+<a href="{{.URL}}">{{.name}}</a>
 {{end}}
 <div id="user_panel"></div>
 </nav>
@@ -48,13 +48,13 @@
 {{range .TopBooks}}
 <li>
 <div class="img_span">
-<a href="/?view=book&id={{.id}}">
+<a href="{{.URL}}">
 {{if .cover}}<img src="{{.cover}}" title="{{.name}}" width="120" height="160">{{end}}
 </a>
 <span>{{.category}} / {{if eq .status "completed"}}完结{{else}}连载{{end}}</span>
 </div>
 <div class="w100">
-<a href="/?view=book&id={{.id}}"><h2>{{.name}}</h2></a>
+<a href="{{.URL}}"><h2>{{.name}}</h2></a>
 <p class="indent">{{.intro}}</p>
 <div class="li_bottom">
 <a><i class="fa fa-user-circle-o">&nbsp;{{.author}}</i></a>
@@ -72,7 +72,7 @@
 <ul class="popular odd">
 {{range .Popular}}
 <li>
-<a href="/?view=book&id={{.id}}">{{.name}}</a>
+<a href="{{.URL}}">{{.name}}</a>
 <a class="gray">{{.author}}</a>
 </li>
 {{end}}
@@ -84,15 +84,15 @@
 <div class="section flex">
 {{range .NavCats}}
 <div class="sortvisit">
-<a href="/?view=category&cat={{.id}}">{{.name}}</a>
+<a href="{{.URL}}">{{.name}}</a>
 <ul>
 {{range $.Books}}
 <div>
-<a href="/?view=book&id={{.id}}">
+<a href="{{.URL}}">
 {{if .cover}}<img src="{{.cover}}" title="{{.name}}" width="120" height="160">{{end}}
 </a>
 <p>
-<a href="/?view=book&id={{.id}}">{{.name}}</a>
+<a href="{{.URL}}">{{.name}}</a>
 <i>&nbsp;/&nbsp;{{.author}}</i>
 <br>&nbsp;&nbsp;&nbsp;&nbsp;{{.intro}}
 </p>

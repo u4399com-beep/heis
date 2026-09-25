@@ -22,11 +22,11 @@
 <li><a href="/?view=category">分类浏览</a></li>
 </ul>
 </div>
-<a href="/" class="logo" title="{{.Site.Name}}"><span class="iconfont icon-book"></span>{{.Site.Name}}</a>
+<a href="{{.HomeURL}}" class="logo" title="{{.Site.Name}}"><span class="iconfont icon-book"></span>{{.Site.Name}}</a>
 <div class="sidebar-wrapper">
-<div class="sidebar-header"><a href="/" class="sidebar-logo" title="{{.Site.Name}}"><span class="iconfont icon-book"></span><span class="sidebar-logo-text">{{.Site.Name}}</span></a></div>
+<div class="sidebar-header"><a href="{{.HomeURL}}" class="sidebar-logo" title="{{.Site.Name}}"><span class="iconfont icon-book"></span><span class="sidebar-logo-text">{{.Site.Name}}</span></a></div>
 <ul class="navbar-menu" id="navbarMenu">
-<li><a href="/"><span class="menu-icon iconfont icon-book"></span><span class="menu-text">首页</span></a></li>
+<li><a href="{{.HomeURL}}"><span class="menu-icon iconfont icon-book"></span><span class="menu-text">首页</span></a></li>
 <li><a href="/?view=ranking"><span class="menu-icon iconfont icon-hot"></span><span class="menu-text">排行榜</span></a></li>
 <li><a href="/?view=category"><span class="menu-icon iconfont icon-sort"></span><span class="menu-text">书库</span></a></li>
 <li><a href="/?view=keyword&tag=小说"><span class="menu-icon iconfont icon-mark"></span><span class="menu-text">标签</span></a></li>
@@ -51,7 +51,7 @@
 <div class="container container-default">
 <nav class="breadcrumb" aria-label="面包屑">
 <ol class="breadcrumb-list">
-<li class="breadcrumb-item"><a href="/">首页</a></li>
+<li class="breadcrumb-item"><a href="{{.HomeURL}}">首页</a></li>
 <li class="breadcrumb-separator">/</li>
 <li class="breadcrumb-item">{{if .Book.categoryId}}<a href="/?view=category&cat={{.Book.categoryId}}">{{.Book.category}}</a>{{else}}<span>{{.Book.category}}</span>{{end}}</li>
 <li class="breadcrumb-separator">/</li>
@@ -61,7 +61,7 @@
 
 <div class="detail-header">
 <div class="detail-cover-wrapper">
-{{if .Book.cover}}<a href="/?view=book&id={{.Book.id}}"><img class="detail-cover" src="{{.Book.cover}}" alt="{{.Book.name}}" title="{{.Book.name}}"></a>{{end}}
+{{if .Book.cover}}<a href="{{.BookURL}}"><img class="detail-cover" src="{{.Book.cover}}" alt="{{.Book.name}}" title="{{.Book.name}}"></a>{{end}}
 </div>
 <div class="detail-info">
 <h1 class="detail-title">{{.Book.name}}</h1>
@@ -74,7 +74,7 @@
 <span>更新：{{fmtDate .Book.updatedAt}}</span>
 </div>
 <div class="detail-actions">
-<a class="btn btn-primary" href="/?view=read&chapter={{.FirstChapterId}}"><span class="iconfont icon-read"></span> 开始阅读</a>
+<a class="btn btn-primary" href="{{.FirstChapterURL}}"><span class="iconfont icon-read"></span> 开始阅读</a>
 <a class="btn btn-secondary" href="#chapter_list"><span class="iconfont icon-sort"></span> 查看目录</a>
 </div>
 </div>
@@ -98,7 +98,7 @@
 </div>
 <ul class="chapter-list">
 {{range .RecentChapters}}
-<li class="chapter-item"><a href="/?view=read&chapter={{.id}}" title="{{.title}}">{{.title}}</a></li>
+<li class="chapter-item"><a href="{{.URL}}" title="{{.title}}">{{.title}}</a></li>
 {{end}}
 </ul>
 </div>
@@ -111,7 +111,7 @@
 </div>
 <ul class="chapter-list">
 {{range .Chapters}}
-<li class="chapter-item"><a href="/?view=read&chapter={{.id}}" title="{{.title}}">{{.title}}</a></li>
+<li class="chapter-item"><a href="{{.URL}}" title="{{.title}}">{{.title}}</a></li>
 {{end}}
 </ul>
 </div>
@@ -124,7 +124,7 @@
 </div>
 <div class="book-grid cardlist-default">
 {{range .Related}}
-<a href="/?view=book&id={{.id}}" title="{{.name}}" class="book-card card-default">
+<a href="{{.URL}}" title="{{.name}}" class="book-card card-default">
 <div class="book-info info-default">
 <div class="book-title">{{.name}}</div>
 <div class="book-author">作者：{{.author}}</div>
@@ -147,7 +147,7 @@
 <a href="/?view=category" title="小说大全" target="_blank">小说</a>|
 <a href="/?view=fulltext" title="完本小说" target="_blank">完本</a>|
 <a href="/?view=history" title="阅读历史" target="_blank">历史</a>|
-<a href="/" title="回到首页" target="_blank">首页</a>
+<a href="{{.HomeURL}}" title="回到首页" target="_blank">首页</a>
 </p>
 <p class="copyright">本站小说由根据搜索引擎转码，只为让更多读者欣赏，不保存小说内及数据，仅作宣传展示。</p>
 <p class="copyright">Copyright © {{.Site.Name}} ({{.Site.Domain}})</p>

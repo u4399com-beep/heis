@@ -13,7 +13,7 @@
 <div class="header">
 <div class="container">
 <div class="header-left">
-<a href="/" title="{{.Site.Name}}" class="logo">{{.Site.Name}}</a>
+<a href="{{.HomeURL}}" title="{{.Site.Name}}" class="logo">{{.Site.Name}}</a>
 </div>
 <div class="header-right">
 <a href="/?view=history">阅读历史</a> |
@@ -21,10 +21,10 @@
 <a href="/?view=category">分类浏览</a>
 </div>
 <div class="header-nav">
-<a href="/" title="首页">首 页</a>
+<a href="{{.HomeURL}}" title="首页">首 页</a>
 <a href="/?view=category" title="书库">书 库</a>
 <a href="/?view=fulltext" title="全本">全本</a>
-{{range .NavCats}}<a href="/?view=category&cat={{.id}}" title="{{.name}}">{{.name}}</a>{{end}}
+{{range .NavCats}}<a href="{{.URL}}" title="{{.name}}">{{.name}}</a>{{end}}
 </div>
 </div>
 <div class="clear"></div>
@@ -32,7 +32,7 @@
 
 <div class="container">
 <ul class="breadcrumb">
-<li><a href="/">首页</a></li>
+<li><a href="{{.HomeURL}}">首页</a></li>
 <li><a href="/?view=category">书库</a></li>
 {{if .Book.categoryId}}<li><a href="/?view=category&cat={{.Book.categoryId}}">{{.Book.category}}</a></li>{{end}}
 <li class="active">{{.Book.name}}</li>
@@ -42,7 +42,7 @@
 <div class="content-left" id="book-info">
 <div class="book">
 <div class="bookcover">
-<a href="/?view=book&id={{.Book.id}}">{{if .Book.cover}}<img src="{{.Book.cover}}" alt="{{.Book.name}}" width="160" height="220">{{end}}</a>
+<a href="{{.BookURL}}">{{if .Book.cover}}<img src="{{.Book.cover}}" alt="{{.Book.name}}" width="160" height="220">{{end}}</a>
 </div>
 <div class="bookinfo">
 <h1 class="booktitle">{{.Book.name}}</h1>
@@ -60,7 +60,7 @@
 <div class="book">
 <div class="chapterlist">
 <dl>
-{{range .Chapters}}<dd><a href="/?view=read&chapter={{.id}}" title="{{.title}}">{{.title}}</a></dd>
+{{range .Chapters}}<dd><a href="{{.URL}}" title="{{.title}}">{{.title}}</a></dd>
 {{end}}
 </dl>
 <div class="clear"></div>
@@ -70,7 +70,7 @@
 
 <div class="book">
 <div style="padding: 10px 0; text-align: center;">
-<a href="/?view=read&chapter={{.FirstChapterId}}" class="btn btn-info" style="display:inline-block;padding:6px 24px;margin-right:10px;text-decoration:none;">开始阅读</a>
+<a href="{{.FirstChapterURL}}" class="btn btn-info" style="display:inline-block;padding:6px 24px;margin-right:10px;text-decoration:none;">开始阅读</a>
 <a href="#book-info" class="btn btn-default" style="display:inline-block;padding:6px 24px;text-decoration:none;">查看目录</a>
 </div>
 <div class="clear"></div>
@@ -88,7 +88,7 @@
 <h2 class="visible-xs">阅读排行榜</h2>
 <ul>
 {{range .HotBooks}}
-<li>[{{.category}}] <a href="/?view=book&id={{.id}}">{{.name}}</a><span>{{.author}}</span></li>
+<li>[{{.category}}] <a href="{{.URL}}">{{.name}}</a><span>{{.author}}</span></li>
 {{end}}
 </ul>
 </div>
@@ -101,7 +101,7 @@
 <ul>
 <li><a href="/?view=category">书库</a></li>
 <li><a href="/?view=fulltext">全本</a></li>
-{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}">{{.name}}</a></li>{{end}}
+{{range .NavCats}}<li><a href="{{.URL}}">{{.name}}</a></li>{{end}}
 </ul>
 </div>
 <div class="clear"></div>

@@ -13,7 +13,7 @@
 <div class="header">
 <div class="container">
 <div class="header-left">
-<a href="/" title="{{.Site.Name}}" class="logo">{{.Site.Name}}</a>
+<a href="{{.HomeURL}}" title="{{.Site.Name}}" class="logo">{{.Site.Name}}</a>
 </div>
 <div class="header-right">
 <a href="/?view=history">阅读历史</a> |
@@ -21,10 +21,10 @@
 <a href="/?view=category">分类浏览</a>
 </div>
 <div class="header-nav">
-<a href="/" title="首页">首 页</a>
+<a href="{{.HomeURL}}" title="首页">首 页</a>
 <a href="/?view=category" title="书库">书 库</a>
 <a href="/?view=fulltext" title="全本">全本</a>
-{{range .NavCats}}<a href="/?view=category&cat={{.id}}" title="{{.name}}">{{.name}}</a>{{end}}
+{{range .NavCats}}<a href="{{.URL}}" title="{{.name}}">{{.name}}</a>{{end}}
 </div>
 </div>
 <div class="clear"></div>
@@ -32,19 +32,19 @@
 
 <div class="container">
 <ul class="breadcrumb">
-<li><a href="/">首页</a></li>
+<li><a href="{{.HomeURL}}">首页</a></li>
 <li><a href="/?view=category">书库</a></li>
 <li><a href="/?view=ranking">排行</a></li>
-{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}">{{.name}}</a></li>{{end}}
+{{range .NavCats}}<li><a href="{{.URL}}">{{.name}}</a></li>{{end}}
 <li class="active">{{.Chapter.title}}</li>
 </ul>
 
 <div class="read">
 <h1>{{.Chapter.title}}</h1>
 <div class="booktag">
-{{if .Prev}}<a id="linkPrev" href="/?view=read&chapter={{.Prev.id}}">上一章</a>{{end}}
-<a id="linkIndex" href="/?view=book&id={{.Book.id}}">返回目录</a>
-{{if .Next}}<a id="linkNext" href="/?view=read&chapter={{.Next.id}}">下一章</a>{{end}}
+{{if .Prev}}<a id="linkPrev" href="{{.Prev.URL}}">上一章</a>{{end}}
+<a id="linkIndex" href="{{.BookURL}}">返回目录</a>
+{{if .Next}}<a id="linkNext" href="{{.Next.URL}}">下一章</a>{{end}}
 </div>
 <div class="readmiddle">
 <div class="readcontent">
@@ -53,9 +53,9 @@
 </div>
 <span class="kongwen"></span>
 <div class="booktag">
-{{if .Prev}}<a id="linkPrev" href="/?view=read&chapter={{.Prev.id}}">上一章</a>{{end}}
-<a id="linkIndex" href="/?view=book&id={{.Book.id}}">返回目录</a>
-{{if .Next}}<a id="linkNext" href="/?view=read&chapter={{.Next.id}}">下一章</a>{{end}}
+{{if .Prev}}<a id="linkPrev" href="{{.Prev.URL}}">上一章</a>{{end}}
+<a id="linkIndex" href="{{.BookURL}}">返回目录</a>
+{{if .Next}}<a id="linkNext" href="{{.Next.URL}}">下一章</a>{{end}}
 </div>
 <div class="clear"></div>
 </div>
@@ -82,7 +82,7 @@
 <ul>
 <li><a href="/?view=category">书库</a></li>
 <li><a href="/?view=fulltext">全本</a></li>
-{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}">{{.name}}</a></li>{{end}}
+{{range .NavCats}}<li><a href="{{.URL}}">{{.name}}</a></li>{{end}}
 </ul>
 </div>
 <div class="clear"></div>

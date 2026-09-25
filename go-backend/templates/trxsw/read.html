@@ -12,14 +12,14 @@
 <div class="wrap">
 <header class="header">
 <div class="header-inner">
-<a href="/" class="logo"><strong>{{.Site.Name}}</strong><span>{{.Site.Domain}}</span></a>
+<a href="{{.HomeURL}}" class="logo"><strong>{{.Site.Name}}</strong><span>{{.Site.Domain}}</span></a>
 <form class="search" action="/?view=search" method="get">
 <input type="hidden" name="view" value="search">
 <input type="text" name="q" placeholder="可搜索小说名/作者名" autocomplete="off">
 <button type="submit" >搜索</button>
 </form>
 <div class="header-right">
-<a href="/">首页</a>
+<a href="{{.HomeURL}}">首页</a>
 <a href="/?view=ranking">排行</a>
 <a href="/?view=fulltext">完本</a>
 <a href="/?view=history">足迹</a>
@@ -38,9 +38,9 @@
 
 <div class="wrap">
 <div class="breadcrumb">
-<a href="/">首页</a>
+<a href="{{.HomeURL}}">首页</a>
 <span class="breadcrumb-sep">»</span>
-<a href="/?view=book&id={{.Book.id}}">{{.Book.name}}</a>
+<a href="{{.BookURL}}">{{.Book.name}}</a>
 <span class="breadcrumb-sep">»</span>
 <span>{{.Chapter.title}}</span>
 </div>
@@ -56,9 +56,9 @@
 <span class="tool-info">字号: 16px</span>
 <a class="tool-btn" href="javascript:void(0);" title="增大字号" onclick="var c=document.getElementById('article');var s=window.getComputedStyle(c).fontSize.replace('px','')||16;c.style.fontSize=(Math.min(28,parseInt(s)+1))+'px';">A+</a>
 <span class="tool-sep">|</span>
-{{if .Prev}}<a class="tool-btn" href="/?view=read&chapter={{.Prev.id}}" title="上一章">« 上一章</a>{{end}}
+{{if .Prev}}<a class="tool-btn" href="{{.Prev.URL}}" title="上一章">« 上一章</a>{{end}}
 <a class="tool-btn" href="javascript:void(0);" title="回顶部" onclick="window.scrollTo({top:0,behavior:'smooth'});">回顶部</a>
-{{if .Next}}<a class="tool-btn" href="/?view=read&chapter={{.Next.id}}" title="下一章">下一章 »</a>{{end}}
+{{if .Next}}<a class="tool-btn" href="{{.Next.URL}}" title="下一章">下一章 »</a>{{end}}
 </div>
 
 <div id="article" style="font-size:16px;line-height:1.95;">
@@ -68,17 +68,17 @@
 
 <div class="pager">
 <span class="pager-total">章节导航</span>
-{{if .Prev}}<a href="/?view=read&chapter={{.Prev.id}}" class="pager-prev">« 上一章</a>{{else}}<span class="pager-prev disabled">« 上一章</span>{{end}}
+{{if .Prev}}<a href="{{.Prev.URL}}" class="pager-prev">« 上一章</a>{{else}}<span class="pager-prev disabled">« 上一章</span>{{end}}
 <a href="javascript:void(0);" onclick="window.scrollTo({top:0,behavior:'smooth'});">回顶部</a>
-<a href="/">返回首页</a>
-{{if .Next}}<a href="/?view=read&chapter={{.Next.id}}" class="pager-next">下一章 »</a>{{else}}<span class="pager-next disabled">下一章 »</span>{{end}}
+<a href="{{.HomeURL}}">返回首页</a>
+{{if .Next}}<a href="{{.Next.URL}}" class="pager-next">下一章 »</a>{{else}}<span class="pager-next disabled">下一章 »</span>{{end}}
 </div>
 </div>
 
 <footer class="footer">
 <div class="footer-inner">
 <div class="footer-links">
-<a href="/">首页</a>
+<a href="{{.HomeURL}}">首页</a>
 <a href="/?view=ranking">排行榜</a>
 <a href="/?view=fulltext">完本</a>
 <a href="/?view=history">足迹</a>

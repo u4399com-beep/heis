@@ -33,9 +33,9 @@
 
 <div class="navigation">
 <nav class="container">
-<a href="/">首页</a>
+<a href="{{.HomeURL}}">首页</a>
 {{range .NavCats}}
-<a href="/?view=category&cat={{.id}}">{{.name}}</a>
+<a href="{{.URL}}">{{.name}}</a>
 {{end}}
 <div id="user_panel"></div>
 </nav>
@@ -63,9 +63,9 @@
 </div>
 
 <div class="read_nav">
-{{if .Prev}}<a href="/?view=read&chapter={{.Prev.id}}" title="上一章">上一章</a>{{else}}<a href="javascript:;" title="已是第一章">上一章</a>{{end}}
-<a href="/?view=book&id={{.Book.id}}#chapter_list" title="返回目录">目录</a>
-{{if .Next}}<a href="/?view=read&chapter={{.Next.id}}" title="下一章">下一章</a>{{else}}<a href="javascript:;" title="已是最后一章">下一章</a>{{end}}
+{{if .Prev}}<a href="{{.Prev.URL}}" title="上一章">上一章</a>{{else}}<a href="javascript:;" title="已是第一章">上一章</a>{{end}}
+<a href="{{.BookURL}}#chapter_list" title="返回目录">目录</a>
+{{if .Next}}<a href="{{.Next.URL}}" title="下一章">下一章</a>{{else}}<a href="javascript:;" title="已是最后一章">下一章</a>{{end}}
 </div>
 </main>
 
@@ -79,7 +79,7 @@
 
 <div id="footer">
 <footer class="container">
-<p><i class="fa fa-flag"></i>&nbsp;<a href="/">{{.Site.Name}}</a>&nbsp;书友最值得收藏的网络小说阅读网</p>
+<p><i class="fa fa-flag"></i>&nbsp;<a href="{{.HomeURL}}">{{.Site.Name}}</a>&nbsp;书友最值得收藏的网络小说阅读网</p>
 <p>本站所有小说为完本转载作品，所有内容版权归版权方或原作者所有。</p>
 </footer>
 </div>
