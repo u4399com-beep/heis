@@ -11,6 +11,10 @@
 <body>
 <div class="top-float">
 <div class="top-float-inner">
+<div class="mobile-nav-tools">
+<button type="button" class="mobile-nav-back">返回</button>
+<button type="button" class="mobile-nav-menu">菜单</button>
+</div>
 <nav class="top-float-nav">
 <a href="{{.HomeURL}}">首页</a>
 {{range .NavCats}}<a href="{{.URL}}">{{.name}}</a>{{end}}

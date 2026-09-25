@@ -20,7 +20,7 @@
 </form>
 <div class="header-right">
 <a href="{{.HomeURL}}">首页</a>
-<a href="/?view=ranking">排行</a>
+<a href="/?view=category">书库</a>
 <a href="/?view=fulltext">完本</a>
 <a href="/?view=history">足迹</a>
 </div>
@@ -29,10 +29,8 @@
 
 <nav class="nav">
 <div class="nav-inner">
-<a href="/" class="nav-link">首页</a>
-<a href="/?view=ranking" class="nav-link">排行榜</a>
-<a href="/?view=fulltext" class="nav-link">完本</a>
-<a href="/?view=history" class="nav-link">阅读足迹</a>
+{{range .NavCats}}<a href="{{.URL}}" class="nav-link">{{.name}}</a>{{end}}
+<div class="nav-right"><a href="/?view=ranking" class="nav-link">排行榜</a><a href="/?view=fulltext" class="nav-link">全本阅读</a></div>
 </div>
 </nav>
 

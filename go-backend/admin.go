@@ -196,6 +196,39 @@ func (a *adminDB) MarkChapterFetched(chapterID string, fetched bool) error {
         return err
 }
 
+// BookChapterProgress — 实现 crawl.BookProgressLookup 接口 (R65-B B8 / R66-A 启用).
+//
+// 返回 bookID 的章节进度:
+//
+//      done  = COUNT(Chapter) WHERE bookId=? AND fetched=1
+//      total = COUNT(Chapter) WHERE bookId=?
+//
+// 错误容忍: caller (smart.SmartResumeSortWithDB) 在 err != nil 时保留原 item.
+// 启用: adminDB 现在同时满足 crawl.DBClient + crawl.BookProgressLookup 两个接口.
+// 调用方 type-assertion `cfg.DB.(crawl.BookProgressLookup)` 成功, 可直接传给
+// SmartResumeSortWithDB, 不需 caller 手动查 DB 填充 ChaptersDone/Total.
+//
+// 设计权衡:
+//   - 两次 COUNT 查询而非 SUM(CASE WHEN fetched=1 ...) 单查询: SQLite 现代版本
+//     对 COUNT(*) 走索引 (idx_book_url 覆盖 bookId+url), 单查询 SUM(CASE) 全表扫.
+//     两次 COUNT 各走索引, 总成本 < 单查询全表扫 (大书 1000+ 章时差异显著).
+//   - done 查询失败 → 直接返 err (caller 容错); total 查询失败 → 返 (done, 0, err)
+//     (done 已有, total=0 让 caller 知道 "未取到 total").
+//   - bookID="" → 返 (0,0,nil) (无 bookID 不查 DB, 避免无谓 IO).
+func (a *adminDB) BookChapterProgress(bookID string) (int, int, error) {
+        if bookID == "" {
+                return 0, 0, nil
+        }
+        var done, total int
+        if err := a.db.QueryRow(`SELECT COUNT(*) FROM Chapter WHERE bookId=? AND fetched=1`, bookID).Scan(&done); err != nil {
+                return 0, 0, err
+        }
+        if err := a.db.QueryRow(`SELECT COUNT(*) FROM Chapter WHERE bookId=?`, bookID).Scan(&total); err != nil {
+                return done, 0, err
+        }
+        return done, total, nil
+}
+
 // ListCategoryNames — R54-1B 智能分类辅助: 返回 DB 所有分类名 (供 SmartCategory existingCategories 入参).
 //   与 NormalizeCategory 配合: SmartCategory 第 1 步 source 路径会 normalize(parsed.Category)
 //   后与 existingCategories 比较 — DB 15 个标准 4 字分类名 + 部分历史 2 字/变体名均会进入.
@@ -377,9 +410,19 @@ func likeSafe(s string) string {
 //      path 结尾为 /control → adminTaskControlHandler
 //      path 结尾为 /snapshot → adminTaskSnapshotHandler
 //      path 为 {id} 且 method=DELETE → adminTaskDeleteHandler (R55-1A 新增: 删除任务)
+//      path == "quick-fill" 且 method=POST → adminTasksQuickFill (R66-A 新增: 快速填充采集任务)
 //      否则返回 404.
 func adminTaskSubHandler(w http.ResponseWriter, r *http.Request) {
         path := strings.TrimPrefix(r.URL.Path, "/api/admin/tasks/")
+        // R66-A: POST /api/admin/tasks/quick-fill — 用现有 enabled 规则批量建采集任务
+        if path == "quick-fill" {
+                if r.Method == http.MethodPost {
+                        adminTasksQuickFill(w, r)
+                        return
+                }
+                writeJSONErr(w, "method not allowed", 405)
+                return
+        }
         // path 形如: {id}/control 或 {id}/snapshot
         if strings.HasSuffix(path, "/control") {
                 adminTaskControlHandler(w, r)
@@ -438,6 +481,49 @@ func adminHealthHandler(w http.ResponseWriter, r *http.Request) {
                 "memMB": getMemMB(),
                 "time":  time.Now().Format(time.RFC3339),
         })
+}
+
+// adminMetricsHandler — GET /api/admin/metrics 反反爬 7 类运行时快照.
+//
+// R66-A: 暴露 R65-B 就位的 7 个 Snapshot 函数给 admin UI + 运维监控.
+//   R65-B 在 crawl/fetcher.go + crawl/smart.go 实现 7 类 per-host 运行时统计:
+//     1. protoFingerprint — HTTP/2 ALPN + Server 头指纹 (R65-B 第 56 项)
+//     2. utlsChoice      — TLS JA3 指纹 (R65-B 第 57 项, 36-fingerprint pool)
+//     3. hostProxyPin    — 代理钉扎表 host→proxyURL (R65-B 第 58 项)
+//     4. retryBudget     — 24h 重试预算计数器 (R65-B 第 59 项)
+//     5. forwardedIP     — X-Forwarded-For 伪造 IP (R65-B 第 60 项)
+//     6. collectRate     — 60s 滑动窗口 QPS/成功率/平均延迟 (R65-B B6)
+//     7. hostRetryPolicy — 错误分类重试策略覆盖 (R65-B B7)
+//   每个快照为 sync.Map 范围拷贝 (不阻塞采集路径). utlsPoolSize 暴露 36-fingerprint
+//   pool 大小供运维识别 "全站统一指纹" 风险.
+//
+// 路由注册 (R66-A init() 自注册, 不改 main.go):
+//   func init() { http.HandleFunc("/api/admin/metrics", adminMetricsHandler) }
+func adminMetricsHandler(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodGet {
+                writeJSONErr(w, "method not allowed", 405)
+                return
+        }
+        writeJSONOK(w, map[string]interface{}{
+                "protoFingerprint": crawl.HostProtoFingerprintSnapshot(),
+                "utlsChoice":       crawl.UtlsChoiceSnapshot(),
+                "utlsPoolSize":     crawl.UtlsPoolSize(),
+                "hostProxyPin":     crawl.HostProxyPinSnapshot(),
+                "retryBudget":      crawl.RetryBudgetSnapshot(),
+                "forwardedIP":      crawl.ForwardedIPSnapshot(),
+                "collectRate":      crawl.CollectRateHostsSnapshot(),
+                "hostRetryPolicy":  crawl.HostRetryPolicySnapshot(),
+        })
+}
+
+// R66-A: 自注册 admin 路由 (admin.go 范围内, 不改 main.go).
+//   init() 在 main() 之前运行; net/http DefaultServeMux 的 HandleFunc 是
+//   idempotent + additive, 与 main.go 的注册共存. handler 函数引用 package-level
+//   db var, 请求到达时 db 已初始化 (main() 内 sql.Open 后再 ListenAndServe).
+//   R66-D 主控只改 DEPLOY.md+README.md 不改 main.go, 本轮所有新 endpoint
+//   (quick-fill 走 adminTaskSubHandler 子路径 + metrics 走 init) 都在 admin.go 范围内.
+func init() {
+        http.HandleFunc("/api/admin/metrics", adminMetricsHandler)
 }
 
 // adminTasksHandler — GET 列任务 / POST 创建任务并启动.
@@ -642,6 +728,175 @@ func adminTasksCreate(w http.ResponseWriter, r *http.Request) {
         writeJSONOK(w, map[string]interface{}{
                 "id": taskID, "name": name, "ruleId": ruleID, "ruleName": ruleName,
                 "status": "running",
+        })
+}
+
+// adminTasksQuickFill — POST /api/admin/tasks/quick-fill 用现有规则批量建采集任务.
+//
+// 用户需求 #4: 用现有采集规则, 建立采集任务快速填充站点内容 (不同类型的书籍).
+//   入参 (全可选, 默认 = 所有 enabled=true 规则 + 每规则 50 本):
+//     {
+//       "siteId": "...",                       // 站点 ID (R67 用于按站过滤规则, 本轮忽略)
+//       "ruleIds": ["...","..."],              // 指定规则 ID 列表 (默认空 = 全 enabled 规则)
+//       "maxBooksPerRule": 50                  // 每规则采书上限 (1-1000, 默认 50)
+//     }
+//   流程:
+//     1. 查 Rule 表 (body.ruleIds 指定则按 ID IN(...) 查; 否则 enabled=1 全查, LIMIT 100)
+//     2. 对每条规则:
+//        a. 解析 Rule.config 取 List.URLTemplate 作 listUrl
+//        b. URLTemplate 为空 → 跳过 (返 skippedDetails)
+//        c. INSERT Task 行 (mode=range, listStart=1, listEnd=3, bookStart=0,
+//           bookEnd=maxBooksPerRule, recrawlMode=incremental, status=pending)
+//        d. 异步调 startCrawlTask 启动采集
+//     3. 返回 {ok:true, data:{created:N, skipped:M, tasks:[...], skippedDetails:[...]}}
+//
+// 设计权衡:
+//   - 默认 50 本/规则 + listEnd=3 (列表前 3 页) 平衡 "快速填充" 与 "源站频控".
+//     8 enabled 规则 × 50 本 = ~400 本入库. 用户可在 admin/tasks UI 暂停 / 删除.
+//   - task 名格式 "[quick-fill] {ruleName} {YYYYMMDD}" 便于事后筛选.
+//   - 不在 API 内联动 siteId (R67 可扩展): ruleIds 为空 → 全 enabled, 不分站.
+//   - 异步启动: 创建后立即返回, 避免 HTTP 长连接; 采集进度由 admin/tasks 列表实时查.
+func adminTasksQuickFill(w http.ResponseWriter, r *http.Request) {
+        body := readJSONBody(r)
+        maxBooks := clampIntAdm(intField(body, "maxBooksPerRule", 50, 1, 1000), 1, 1000)
+
+        // 取 ruleIds (默认空 = 全 enabled)
+        ruleIDs := []string{}
+        if v, ok := body["ruleIds"]; ok && v != nil {
+                switch x := v.(type) {
+                case []interface{}:
+                        for _, e := range x {
+                                if s, isStr := e.(string); isStr && s != "" {
+                                        ruleIDs = append(ruleIDs, s)
+                                }
+                        }
+                case []string:
+                        for _, s := range x {
+                                if s != "" {
+                                        ruleIDs = append(ruleIDs, s)
+                                }
+                        }
+                }
+        }
+
+        // 查 Rule 表
+        type ruleInfo struct {
+                id, name, config string
+        }
+        rules := []ruleInfo{}
+        if len(ruleIDs) > 0 {
+                // 用 IN (...) 查指定规则 (含 disabled, 让 caller 可手动启用单条规则采)
+                placeholders := make([]string, len(ruleIDs))
+                args := make([]interface{}, len(ruleIDs))
+                for i, id := range ruleIDs {
+                        placeholders[i] = "?"
+                        args[i] = id
+                }
+                q := `SELECT id,name,config FROM Rule WHERE id IN (` + strings.Join(placeholders, ",") + `)`
+                rows, err := db.Query(q, args...)
+                if err != nil {
+                        writeJSONErr(w, "查询规则失败: "+err.Error(), 500)
+                        return
+                }
+                for rows.Next() {
+                        var ri ruleInfo
+                        if err := rows.Scan(&ri.id, &ri.name, &ri.config); err == nil {
+                                rules = append(rules, ri)
+                        }
+                }
+                rows.Close()
+        } else {
+                // 默认查所有 enabled=1 规则
+                rows, err := db.Query(`SELECT id,name,config FROM Rule WHERE enabled=1 ORDER BY updatedAt DESC LIMIT 100`)
+                if err != nil {
+                        writeJSONErr(w, "查询规则失败: "+err.Error(), 500)
+                        return
+                }
+                for rows.Next() {
+                        var ri ruleInfo
+                        if err := rows.Scan(&ri.id, &ri.name, &ri.config); err == nil {
+                                rules = append(rules, ri)
+                        }
+                }
+                rows.Close()
+        }
+
+        if len(rules) == 0 {
+                writeJSONErr(w, "未找到可用规则 (请先在 admin/rules 启用规则, 或 body.ruleIds 指定)", 400)
+                return
+        }
+
+        // 为每规则创建 Task + 异步启动
+        dateStr := time.Now().Format("20060102")
+        type createdTask struct {
+                ID, Name, RuleID string
+        }
+        created := []createdTask{}
+        skipped := []map[string]interface{}{}
+
+        // 默认值 (与 adminTasksCreate 默认一致)
+        fetchConfigStr := "{}"
+        threadMin := 1
+        threadMax := 3
+        intervalMin := 500
+        intervalMax := 2000
+        recrawlMode := "incremental"
+        smartCategory := true
+        smartComplete := true
+        autoSuggest := true
+        autoRefresh := false
+        refreshIntervalMin := 30
+
+        for _, rule := range rules {
+                // 解析 Rule.config 取 List.URLTemplate
+                ruleParsed := crawl.ParseRuleConfig(rule.config)
+                listURL := ruleParsed.List.URLTemplate
+                if listURL == "" {
+                        skipped = append(skipped, map[string]interface{}{
+                                "ruleId": rule.id,
+                                "name":   rule.name,
+                                "reason": "Rule.config List.URLTemplate 为空 (规则未配置列表页模板)",
+                        })
+                        continue
+                }
+
+                taskID := generateID()
+                taskName := fmt.Sprintf("[quick-fill] %s %s", rule.name, dateStr)
+
+                _, err := db.Exec(
+                        `INSERT INTO Task
+                           (id,name,ruleId,mode,bookUrl,listUrl,listStart,listEnd,bookStart,bookEnd,
+                            recrawlMode,storageMode,fetchConfig,threadMin,threadMax,intervalMin,intervalMax,
+                            smartCategory,smartComplete,autoSuggest,autoRefresh,refreshIntervalMin,
+                            status,progress,stats,createdAt,updatedAt)
+                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pending','{}','{}',datetime('now'),datetime('now'))`,
+                        taskID, taskName, rule.id, "range", "", listURL, 1, 3, 0, maxBooks,
+                        recrawlMode, "db", fetchConfigStr, threadMin, threadMax, intervalMin, intervalMax,
+                        smartCategory, smartComplete, autoSuggest, autoRefresh, refreshIntervalMin,
+                )
+                if err != nil {
+                        skipped = append(skipped, map[string]interface{}{
+                                "ruleId": rule.id,
+                                "name":   rule.name,
+                                "reason": "INSERT Task 失败: " + err.Error(),
+                        })
+                        continue
+                }
+
+                // 异步启动采集 (复用 adminTasksCreate 同款 startCrawlTask)
+                go startCrawlTask(taskID, rule.id, rule.config, "range", "", listURL, fetchConfigStr,
+                        threadMin, threadMax, intervalMin, intervalMax, recrawlMode,
+                        smartCategory, smartComplete, autoSuggest)
+
+                created = append(created, createdTask{ID: taskID, Name: taskName, RuleID: rule.id})
+        }
+
+        writeJSONOK(w, map[string]interface{}{
+                "created":        len(created),
+                "skipped":         len(skipped),
+                "maxBooksPerRule": maxBooks,
+                "tasks":           created,
+                "skippedDetails":  skipped,
         })
 }
 

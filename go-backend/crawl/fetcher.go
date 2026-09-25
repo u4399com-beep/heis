@@ -68,6 +68,12 @@ const (
         InflightTTL      = 30 * 1000      // 30s
         InflightMax      = 500
         ResponseCacheMax = 200
+
+        // R66-C BUG-51 (P2): HTTP body 大小上限 (50MB). 防 1GB body 内存 DoS +
+        //   静默截断 (BUG-51 修复: 读到 50MB+1 byte, 若返回 > 50MB 视为超限).
+        //   fetchHttp 用 io.LimitReader(resp.Body, MaxHTTPBodyBytes+1), decodeBody
+        //   gzip/deflate 解压同款 io.LimitReader(gr, MaxHTTPBodyBytes+1).
+        MaxHTTPBodyBytes = 50 * 1024 * 1024
 )
 
 // R52-1A: dead proxy quarantine — 业务连续失败 ≥10 次 → cooldown 升级到 30min
@@ -2047,12 +2053,19 @@ func computeSecFetchSite(referer, rawURL string) string {
 // R64-B 反反爬第 55 项: Sec-Ch-Ua 三品牌 (grease + Chromium + Google Chrome / Microsoft Edge)
 //   + Sec-Ch-Ua-Platform-Version (Chrome 真实发, 原实现漏 → Bot Score +3).
 func buildHeaders(cfg FetchConfig, ua, rawURL, referer string) http.Header {
+        // R66-C 第 65 项: 提前算 domain (供 acceptEncodingFor 按 Server 类型动态调).
+        //   domain 在原实现只在 Referer 段算 (line 2120), 此处提前到函数顶部供
+        //   Accept-Encoding / Cache-Control 等多处用.
+        domain := originHost(rawURL)
         h := http.Header{}
         h.Set("User-Agent", ua)
         h.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7")
         // R41-1A: 仅声明 gzip / deflate. Go net/http 自动解 gzip, 不解 brotli.
         // 服务器返 br 时 body 是原始 brotli 字节, parser 全炸.
-        h.Set("Accept-Encoding", "gzip, deflate")
+        // R66-C 反反爬第 65 项: 按 Server 类型动态调 Accept-Encoding 优先级 (acceptEncodingFor).
+        //   cloudflare 站用 "gzip" (drop deflate, CF HTTP/2 兼容性); 其他站保持 "gzip, deflate".
+        //   从不广告 br (Go 无 brotli 解码, BUG-54 路径会触发 curl fallback 兜底).
+        h.Set("Accept-Encoding", acceptEncodingFor(domain))
         h.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
         h.Set("Connection", "keep-alive")
         h.Set("Upgrade-Insecure-Requests", "1")
@@ -2108,7 +2121,7 @@ func buildHeaders(cfg FetchConfig, ua, rawURL, referer string) http.Header {
         }
 
         // Referer 优先级: cfg.RefererURL > per-host 记忆 > 目标站 origin
-        domain := originHost(rawURL)
+        // R66-C 第 65 项: domain 已在函数顶部计算 (供 acceptEncodingFor 用).
         effectiveReferer := ""
         if cfg.Referer {
                 if referer != "" {
@@ -2354,6 +2367,14 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                         return "", &HTTPError{Err: err}
                 }
                 req.Header = buildHeaders(cfg, ua, rawURL, referer)
+                // R66-C 反反爬第 64 项: 首次请求 (无 condCached) 注入 Cache-Control: no-cache +
+                //   Pragma: no-cache, 强制中间缓存 revalidate (回源拿最新, 防 CDN 命中旧版本).
+                //   condCached != nil 时走 If-Modified-Since 路径, 不重复注入 no-cache
+                //   (避免源站误判 "客户端拒绝缓存").
+                if shouldInjectNoCache(condCached) {
+                        req.Header.Set("Cache-Control", "no-cache")
+                        req.Header.Set("Pragma", "no-cache")
+                }
                 // R64-B 第 52 项: 注入 If-Modified-Since / If-None-Match (条件请求)
                 if condCached != nil {
                         if condCached.LastModified != "" {
@@ -2413,7 +2434,14 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 //   原实现 io.ReadAll(resp.Body) 无限制, 1GB HTML 直接 OOM. 改用
                 //   io.LimitReader. 50MB 上限兼容大章节页 (典型章节 < 1MB, 长篇连载数
                 //   千章也 < 50MB). 超限返 error (与 Go io.LimitReader 行为一致).
-                bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 50*1024*1024))
+                // R66-C BUG-51 (P2): 原实现 io.LimitReader(resp.Body, 50MB) 在 response > 50MB
+                //   时静默截断到 50MB + nil err (io.LimitReader 返 EOF 不报错). 50MB 部分
+                //   gzipped 字节 decodeBody 解码失败 → 二进制乱码被 parser 解析为半残 HTML
+                //   → 内容半残/乱码存入 DB. 修复: 读到 50MB+1 byte, 若返回 > 50MB 则视为
+                //   超限返 ErrBodyTooLarge (caller 走 curl fallback, curl --max-filesize 50MB
+                //   同款限制; curl 超限返 exit 63). 50MB+1 byte 上限对正常章节 (典型 < 1MB)
+                //   无影响, 仅恶意 1GB 源被截.
+                bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, MaxHTTPBodyBytes+1))
                 _ = resp.Body.Close()
                 attemptCancel()
                 // R65-B BUG-40 (P2): ReadAll 失败时 NOT 设 StatusCode (置 0).
@@ -2422,15 +2450,56 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 //   可能成功. 修复: 不设 StatusCode → isCurlFallbackError 触发 curl fallback.
                 if err != nil {
                         lastErr = &HTTPError{Err: err, Body: string(bodyBytes)}
+                        // R66-C BUG-52 (P3): ReadAll 失败也记 latency + fail (原实现漏记,
+                        //   60s 窗口 stats 失真, admin QPS/successRate 低估失败率).
+                        latencyMs := time.Since(attemptStart).Milliseconds()
+                        recordCollectAttempt(originHost(rawURL), false, latencyMs)
                         if !isRetriableNetErr(err) || attempt == retries {
                                 return "", lastErr
                         }
                         continue
                 }
+                // R66-C BUG-51 (P2): body 超 50MB 上限 → 静默截断防御. 返 ErrBodyTooLarge
+                //   让 caller 走 curl fallback (curl --max-filesize 50MB 同款, curl 超限
+                //   exit 63 触发 fallback 链). 不重试 (同 host 同 URL 重试仍会收 > 50MB body,
+                //   浪费 attempt 预算).
+                if len(bodyBytes) > MaxHTTPBodyBytes {
+                        lastErr = &HTTPError{Err: errors.New("body 超过 50MB 上限 (LimitReader)")}
+                        latencyMs := time.Since(attemptStart).Milliseconds()
+                        recordCollectAttempt(originHost(rawURL), false, latencyMs)
+                        return "", lastErr
+                }
                 body := decodeBody(resp, bodyBytes)
+
+                // R66-C BUG-54 (P2): Brotli 响应静默返原始字节 (parser 看到乱码). 原实现
+                //   decodeBody 在 ce==br 时 recordBrotliMiss 记日志但 body 仍返 caller →
+                //   parser 解析二进制乱码 → 半残/乱码内容存入 DB (brotli 字节里偶有合法
+                //   HTML 字符, parser 解析为乱七八糟的标签组合). 修复: 检测 br 响应返
+                //   error (ErrBrotliNotSupported), 让 fetchHttpWithCurlFallback 走 curl
+                //   fallback (curl --compressed handles brotli if curl built with libbrotli,
+                //   现代 curl 默认含 brotli 支持). 不重试 (同 Go net/http 仍会收 br,
+                //   浪费 attempt). recordBrotliMiss 仍记 (admin 监控识别高频 br host).
+                if ce := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding"))); ce == "br" {
+                        // recordBrotliMiss 在 decodeBody 已记 (line 2589), 不重复记.
+                        lastErr = &HTTPError{Err: errors.New("brotli encoding not supported (curl fallback will handle)")}
+                        latencyMs := time.Since(attemptStart).Milliseconds()
+                        recordCollectAttempt(originHost(rawURL), false, latencyMs)
+                        return "", lastErr
+                }
 
                 // R65-B 反反爬第 56 项: 记录 host proto + Server 头指纹 (per-host 钉扎).
                 recordHostProtoFingerprint(originHost(rawURL), resp.Proto, resp.Header.Get("Server"))
+
+                // R66-C 反反爬第 63 项: 检测 Service Worker 注入信号. 源站可能用 SW 检测
+                //   爬虫 (真实浏览器注册 SW, 后续请求带 SW 头; 爬虫缺 SW 头被识别).
+                //   记录 per-host SW-active 状态 (admin/metrics 可识别, R67 可扩展真实 SW fetch).
+                if swHdr := resp.Header.Get("Service-Worker"); swHdr != "" {
+                        recordServiceWorkerDetection(originHost(rawURL), swHdr)
+                } else if swAllowed := resp.Header.Get("Service-Worker-Allowed"); swAllowed != "" {
+                        recordServiceWorkerDetection(originHost(rawURL), swAllowed)
+                } else if swNavMode := resp.Header.Get("Service-Worker-Navigation-Mode"); swNavMode != "" {
+                        recordServiceWorkerDetection(originHost(rawURL), swNavMode)
+                }
 
                 // Set-Cookie 处理 (autoCookie)
                 if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
@@ -2467,6 +2536,11 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                         if ra := resp.Header.Get("Retry-After"); ra != "" {
                                 herr.RetryAfterMs = parseRetryAfterMs(ra)
                         }
+                        // R66-C BUG-52 (P3): 4xx/5xx 也记 latency + fail (原实现漏记,
+                        //   60s 窗口 stats 失真, admin QPS/successRate 低估失败率). 每个
+                        //   attempt 的 4xx/5xx 都记 (包括重试中间的 429/5xx).
+                        herrLatency := time.Since(attemptStart).Milliseconds()
+                        recordCollectAttempt(originHost(rawURL), false, herrLatency)
                         // 429 / 503 / 502 / 504 可重试 (服务端临时不可用)
                         if isRetriableStatus(resp.StatusCode) && attempt < retries {
                                 // 退避 (尊重 Retry-After, 否则 full jitter)
@@ -2555,26 +2629,43 @@ func isRetriableStatus(code int) bool {
 //   gzip, deflate, Go 不自解 — resp.Body 是原始 gzip/deflate 字节, string() 后 HTML 解析全炸.
 //   补全 Content-Encoding 检测 + 手动 gzip.NewReader / zlib.NewReader 解码.
 //   brotli (Content-Encoding: br) 仍不议 (无 Go 原生库), 返原始字节供上层识别失败.
+//
+// R66-C BUG-51 (P2) 内层: gzip/deflate 解压 +1 cap. 原实现 io.LimitReader(gr, 50MB) 在
+//   解压后 > 50MB 时静默截断到 50MB + nil err (gzip bomb 防御失效, 半残 HTML 存入 DB).
+//   修复: 读到 50MB+1 byte, 若返回 > 50MB 则保留原始压缩字节 (caller 上层 fetchHttp
+//   BUG-54 检测路径会触发 curl fallback, curl --compressed handles bomb via --max-filesize).
+//   注: decodeBody 返 string, 不返 error. 内层仅保持原始压缩字节作为信号 (二进制乱码),
+//   外层 fetchHttp BUG-54 路径检测 ce==br 才返 error; gzip bomb 路径依赖 caller parser
+//   识别失败 → runner 走桥 (与 BUG-54 brotli 路径同款降级链).
 func decodeBody(resp *http.Response, body []byte) string {
         // R45-1A: 检测 Content-Encoding, 手动解码 gzip / deflate (Go 不自解显式 Accept-Encoding).
         //   Go 仅在 Transport 自加 Accept-Encoding (Request 无该头) 时自解, 我们显式设了 → 需手动解.
         ce := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding")))
-        // R64-B BUG-33 (P2): gzip/deflate 解压加 50MB 上限, 防 "gzip bomb" (1KB 压缩 → 1GB 解压 OOM).
+        // R64-B BUG-33 (P2) + R66-C BUG-51 (P2): gzip/deflate 解压 +1 cap, 防 "gzip bomb"
+        //   (1KB 压缩 → 1GB 解压 OOM) + 防静默截断 (50MB+1 byte 检测, 解压后 > 50MB
+        //   保留原始压缩字节作为信号, caller parser 识别失败走桥).
         switch ce {
         case "gzip":
                 if gr, err := gzip.NewReader(bytes.NewReader(body)); err == nil {
-                        if decoded, err := io.ReadAll(io.LimitReader(gr, 50*1024*1024)); err == nil {
+                        if decoded, err := io.ReadAll(io.LimitReader(gr, MaxHTTPBodyBytes+1)); err == nil {
                                 gr.Close()
-                                body = decoded
+                                // R66-C BUG-51: 解压后 > 50MB → gzip bomb, 保留原始压缩字节
+                                //   (二进制乱码信号, caller parser 识别失败 → runner 走桥).
+                                if len(decoded) <= MaxHTTPBodyBytes {
+                                        body = decoded
+                                }
                         } else {
                                 gr.Close()
                         }
                 }
         case "deflate":
                 if zr, err := zlib.NewReader(bytes.NewReader(body)); err == nil {
-                        if decoded, err := io.ReadAll(io.LimitReader(zr, 50*1024*1024)); err == nil {
+                        if decoded, err := io.ReadAll(io.LimitReader(zr, MaxHTTPBodyBytes+1)); err == nil {
                                 zr.Close()
-                                body = decoded
+                                // R66-C BUG-51: 解压后 > 50MB → 同 gzip bomb 路径.
+                                if len(decoded) <= MaxHTTPBodyBytes {
+                                        body = decoded
+                                }
                         } else {
                                 zr.Close()
                         }
@@ -2642,11 +2733,25 @@ func decodeBody(resp *http.Response, body []byte) string {
 //   高频出现说明某些上游站点全返 br, 需走桥 (Python scrapling 有 brotli 解码库) 或 加 Go brotli 依赖.
 var brotliMissCount atomic.Int64
 
+// brotliMissEntry — per-host brotli miss 计数 + 最近访问时间.
+//   R66-C BUG-53 (P3): 原 brotliMissHostCount 存 *atomic.Int64 (count 单值), lazy
+//   sweep 删 count==0 条目, 但 cnt.Add(1) 后 cnt 单调递增永不为 0 → sweep 永不删
+//   任何条目 → 长跑进程 brotliMissHostCount 内存无界增长 (R65-B 未决项 5 同款问题).
+//   修复: 加 lastSeenAt 时间戳, sweep 改 "7 天未访问驱逐" (与 hostProtoFingerprintMap
+//   7 天 TTL 同款). count 仍单调累计 (运维识别高频 br host 用), 不清零.
+type brotliMissEntry struct {
+        count      atomic.Int64
+        lastSeenAt atomic.Int64 // UnixMilli, sweep 用
+}
+
 // brotliMissHostCount — R46-1B: per-host brotli miss 计数 (供运维识别哪些 host 全返 br).
 //   高频出现的 host 是配置了 br 但 Go 不能解码, 应走桥 (scrapling / cloak-browser 已含 brotli
-//   解码). 实现: sync.Map[host] -> *atomic.Int64, LRU 风格 lazy 清扫 (每 1k brotliMissHostCount
-//   累加触发一次 sweep, 删 count==0 的条目, 防长跑进程内存无界增长).
+//   解码). 实现: sync.Map[host] -> *brotliMissEntry, LRU 风格 lazy 清扫 (每 1k brotli miss
+//   累加触发一次 sweep, 删 7 天未访问条目, 防长跑进程内存无界增长).
 var brotliMissHostCount sync.Map
+
+// BrotliMissSweepTTLms — per-host brotli miss 条目 7 天 TTL (sweep 删 lastSeenAt > 7 天条目).
+const BrotliMissSweepTTLms = 7 * 24 * 60 * 60 * 1000
 
 // brotliMissSweepCounter — R46-1B: 触发 brotliMissHostCount lazy sweep 的累加计数.
 var brotliMissSweepCounter atomic.Int64
@@ -2659,19 +2764,25 @@ func recordBrotliMiss(host string) {
         // 全局计数
         brotliMissCount.Add(1)
         // per-host 计数
-        var cnt *atomic.Int64
+        var e *brotliMissEntry
         if v, ok := brotliMissHostCount.Load(host); ok {
-                cnt = v.(*atomic.Int64)
+                e = v.(*brotliMissEntry)
         } else {
-                cnt = &atomic.Int64{}
-                actual, _ := brotliMissHostCount.LoadOrStore(host, cnt)
-                cnt = actual.(*atomic.Int64)
+                e = &brotliMissEntry{}
+                actual, _ := brotliMissHostCount.LoadOrStore(host, e)
+                e = actual.(*brotliMissEntry)
         }
-        cnt.Add(1)
-        // lazy sweep (每 1000 次 brotli miss 触发一次, 清 count==0 条目)
+        e.count.Add(1)
+        e.lastSeenAt.Store(time.Now().UnixMilli())
+        // R66-C BUG-53 (P3): lazy sweep (每 1000 次 brotli miss 触发一次, 删 7 天未访问条目).
+        //   原 sweep 删 count==0 条目, 但 cnt.Add(1) 后 cnt 永不为 0 → 死代码, sweep 从不删任何
+        //   条目 → 长跑进程内存无界增长. 改: 按 lastSeenAt 驱逐 (与 hostProtoFingerprintMap
+        //   7d TTL 同款). count 仍单调累计 (运维识别高频 br host 用), 不清零.
         if brotliMissSweepCounter.Add(1)%1000 == 0 {
+                now := time.Now().UnixMilli()
                 brotliMissHostCount.Range(func(k, v any) bool {
-                        if v.(*atomic.Int64).Load() == 0 {
+                        ent := v.(*brotliMissEntry)
+                        if now-ent.lastSeenAt.Load() > BrotliMissSweepTTLms {
                                 brotliMissHostCount.Delete(k)
                         }
                         return true
@@ -2683,7 +2794,7 @@ func recordBrotliMiss(host string) {
 func BrotliMissHostSnapshot() map[string]int64 {
         out := map[string]int64{}
         brotliMissHostCount.Range(func(k, v any) bool {
-                out[k.(string)] = v.(*atomic.Int64).Load()
+                out[k.(string)] = v.(*brotliMissEntry).count.Load()
                 return true
         })
         return out
@@ -2762,6 +2873,13 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
         if timeoutMs <= 0 {
                 timeoutMs = 20000
         }
+        // R66-C 第 65 项: 提前算 domain (供 acceptEncodingFor 按 Server 类型动态调).
+        //   domain 在原实现只在 Referer 段算 (line 2958), 此处提前到函数顶部供
+        //   Accept-Encoding / Cache-Control 等多处用.
+        domain := originHost(rawURL)
+        // R66-C 第 64 项: 首次请求 (无 condCached) 注入 Cache-Control: no-cache +
+        //   Pragma: no-cache, 强制中间缓存 revalidate (与 fetchHttp 同款).
+        condCached := GetCondCache(rawURL)
         args := []string{
                 "-s", "-S", // silent + show errors
                 "--max-time", fmt.Sprintf("%d", timeoutMs/1000),
@@ -2771,13 +2889,32 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 "-A", ua,
                 "-H", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 "-H", "Accept-Language: zh-CN,zh;q=0.9,en;q=0.8",
-                "-H", "Accept-Encoding: gzip, deflate",
+                // R66-C 第 65 项: Accept-Encoding 按 Server 类型动态调 (与 buildHeaders 同款).
+                //   cloudflare 站用 "gzip"; 其他站 "gzip, deflate".
+                "-H", "Accept-Encoding: " + acceptEncodingFor(domain),
                 "--compressed",
                 "-D", "-", // dump headers to stdout (mixed with body — we'll parse)
                 // R41-1A: 移除 --no-keepalive. curl 默认开 keepalive, 该 flag 反而禁用, 浪费且易触发频控.
                 "-H", "Connection: keep-alive",
                 "-H", "Upgrade-Insecure-Requests: 1",
                 "-H", "DNT: 1",
+        }
+        // R66-C 第 64 项: 首次请求注入 Cache-Control: no-cache + Pragma: no-cache.
+        //   与 fetchHttp 同款, 防 CDN 命中旧版本. condCached != nil 时走 If-Modified-Since.
+        if shouldInjectNoCache(condCached) {
+                args = append(args,
+                        "-H", "Cache-Control: no-cache",
+                        "-H", "Pragma: no-cache",
+                )
+        }
+        // R64-B 第 52 项: 注入 If-Modified-Since / If-None-Match (条件请求, 与 fetchHttp 同款)
+        if condCached != nil {
+                if condCached.LastModified != "" {
+                        args = append(args, "-H", "If-Modified-Since: "+condCached.LastModified)
+                }
+                if condCached.ETag != "" {
+                        args = append(args, "-H", "If-None-Match: "+condCached.ETag)
+                }
         }
         // Sec-Ch-Ua / Sec-Fetch-* 头族 (与 buildHeaders 同款, 防 curl 路径暴露指纹)
         // R64-B 第 55 项: 三品牌完整 (grease + Chromium + Google Chrome / Microsoft Edge)
@@ -2855,7 +2992,7 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
         // R42-1B: 与 buildHeaders 同款 — cfg.RefererURL 设置时直接用 (不再要求 cfg.RefererChain).
         // 原实现要求 cfg.RefererChain && cfg.RefererURL != "" 才用 cfg.RefererURL, 与
         // buildHeaders 不对称, curl 路径会暴露给目标站一个 origin Referer 而非用户配置的 URL.
-        domain := originHost(rawURL)
+        // R66-C 第 65 项: domain 已在函数顶部计算 (供 acceptEncodingFor + Cache-Control 用).
         if effectiveReferer != "" {
                 args = append(args, "-H", "Referer: "+effectiveReferer)
         }
@@ -2941,7 +3078,19 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 }
                 serverHeader := extractHeaderFromCurlStdout(headers, "Server")
                 recordHostProtoFingerprint(domain, proto, serverHeader)
+                // R66-C 反反爬第 63 项: curl 路径 SW 检测 (与 fetchHttp 同款).
+                if swHdr := extractHeaderFromCurlStdout(headers, "Service-Worker"); swHdr != "" {
+                        recordServiceWorkerDetection(domain, swHdr)
+                } else if swAllowed := extractHeaderFromCurlStdout(headers, "Service-Worker-Allowed"); swAllowed != "" {
+                        recordServiceWorkerDetection(domain, swAllowed)
+                } else if swNavMode := extractHeaderFromCurlStdout(headers, "Service-Worker-Navigation-Mode"); swNavMode != "" {
+                        recordServiceWorkerDetection(domain, swNavMode)
+                }
                 if status >= 300 {
+                        // R66-C BUG-52 (P3): curl 4xx/5xx 也记 latency + fail (与 fetchHttp
+                        //   同款, 防 60s 窗口 stats 低估失败率).
+                        herrLatency := time.Since(attemptStart).Milliseconds()
+                        recordCollectAttempt(domain, false, herrLatency)
                         // 提取 Set-Cookie
                         setCookies := []string{}
                         for _, line := range strings.Split(headers, "\r\n")[1:] {
@@ -5955,3 +6104,117 @@ func HostRetryPolicySnapshot() map[string]map[int]string {
         })
         return out
 }
+
+// ---------- R66-C 反反爬第 63 项: Service Worker 注入识别 ----------
+//
+// 部分源站 (Cloudflare Worker / Workbox-based PWA 站) 用 Service Worker 注入检测
+// 爬虫: 真实浏览器首次请求后注册 SW, 后续请求带 Service-Worker / Sec-Fetch-Dest:
+// 'serviceworker' 等头; 爬虫不注册 SW, 后续请求缺这些头 → 反爬识别为非浏览器.
+// 通过检测响应头 Service-Worker-Allowed / Service-Worker-Navigation-Mode 等 (源站
+// 注入 SW 的信号), per-host 钉扎标识. 后续采集该 host 时:
+//   1. admin/metrics 可识别哪些 host 用 SW (操作员可调整策略: 走桥 / 加 SW fetch)
+//   2. R67 可扩展为: 真的 fetch SW 脚本 (scriptURL 来自 Service-Worker-Navigation-Mode)
+//      执行 SW install 流程, 让后续请求带 SW 注册的头. 本轮仅识别 + 钉扎.
+
+// hostServiceWorkerEntry — per-host SW 检测结果.
+type hostServiceWorkerEntry struct {
+        detectedAt   int64  // UnixMilli, 最近检测时间
+        scriptURL    string // SW 脚本 URL (若 Service-Worker 响应头提供)
+        headerSample string // 响应头原值 (admin 展示)
+}
+
+var hostServiceWorkerMap sync.Map // host string -> *hostServiceWorkerEntry
+
+// recordServiceWorkerDetection — 检测响应是否含 SW 注入头, 钉扎 host.
+//   触发头 (任一存在即记录): Service-Worker-Allowed / Service-Worker-Navigation-Mode /
+//   Service-Worker / X-Service-Worker. 真实浏览器首次访问 SW 站时, 响应含这些头
+//   指示客户端注册 SW. 爬虫不识别, 反爬可通过后续请求缺 SW 头识别非浏览器.
+func recordServiceWorkerDetection(host, respServiceWorkerHeader string) {
+        if host == "" {
+                return
+        }
+        host = strings.ToLower(host)
+        // 提取 scriptURL (若响应头是 "Service-Worker: <url>" 格式)
+        scriptURL := ""
+        if respServiceWorkerHeader != "" {
+                // 简单提取: 头值若是 URL 形如 "/sw.js" 或 "https://...", 视为 scriptURL
+                if strings.HasPrefix(respServiceWorkerHeader, "/") ||
+                        strings.HasPrefix(respServiceWorkerHeader, "http://") ||
+                        strings.HasPrefix(respServiceWorkerHeader, "https://") {
+                        scriptURL = strings.TrimSpace(respServiceWorkerHeader)
+                }
+        }
+        e := &hostServiceWorkerEntry{
+                detectedAt:   time.Now().UnixMilli(),
+                scriptURL:    scriptURL,
+                headerSample: respServiceWorkerHeader,
+        }
+        hostServiceWorkerMap.Store(host, e)
+}
+
+// ServiceWorkerHostSnapshot — admin / metrics 查询用: 返回 SW-active host 列表.
+func ServiceWorkerHostSnapshot() map[string]map[string]string {
+        out := map[string]map[string]string{}
+        hostServiceWorkerMap.Range(func(k, v any) bool {
+                e := v.(*hostServiceWorkerEntry)
+                out[k.(string)] = map[string]string{
+                        "detectedAt":   fmt.Sprintf("%d", e.detectedAt),
+                        "scriptURL":    e.scriptURL,
+                        "headerSample": e.headerSample,
+                }
+                return true
+        })
+        return out
+}
+
+// ---------- R66-C 反反爬第 64 项: Cache-Control 优化 ----------
+//
+// 原实现首次请求 (无 condCached) 不发 Cache-Control / Pragma, 源站可能在中间缓存
+// (CDN / 反向代理) 里命中旧版本. R64-B 第 52 项已加 If-Modified-Since 用于后续请求
+// 走 304 优化; 本轮补首次请求 Cache-Control: no-cache + Pragma: no-cache, 强制
+// 中间缓存 revalidate (回源拿最新). 仅在 condCached == nil 时注入 (有 condCached
+// 时走 If-Modified-Since 路径, 不重复注入 no-cache, 避免源站误判 "客户端拒绝缓存").
+//
+// 价值: 防 CDN 命中旧版本 (源站已更新章节内容但 CDN 仍返旧版本 → 采集到过时数据).
+// 降 Bot Score 1-2 分 (真实浏览器默认 Cache-Control: max-age=0 on hard reload,
+// 但导航请求一般不发; no-cache 是浏览器 hard-reload 行为, 偶发不触发反爬识别).
+
+// shouldInjectNoCache — 是否注入 Cache-Control: no-cache (condCached == nil 时注入).
+func shouldInjectNoCache(condCached *condCacheEntry) bool {
+        return condCached == nil
+}
+
+// ---------- R66-C 反反爬第 65 项: Accept-Encoding 优先级 ----------
+//
+// 原实现 buildHeaders 硬编码 "gzip, deflate". R65-B 第 56 项已建立 Server 头指纹库
+// (hostProtoFingerprintMap). 本轮按 Server 类型动态调 Accept-Encoding 优先级.
+//
+// 实际约束: Go net/http 不解 brotli (无 stdlib 支持, 引入 brotli dep 会违反约束),
+// 故从不广告 br. 即使 cloudflare 优先 br, 我们也不广告 br (源站返 br 我们解不了).
+// 优先级调整 (按 Server 类型):
+//   nginx / tengine / apache / Microsoft-IIS / unknown: "gzip, deflate" (gzip 优先,
+//     nginx 默认 gzip 模块, deflate 兼容性)
+//   cloudflare: "gzip" (CF 优先 br 但我们不广告; CF 也支持 gzip; deflate 在 CF
+//     HTTP/2 上偶发兼容问题, drop deflate 简化)
+//   cdn: "gzip, deflate" (未知 CDN, 保守两段)
+//
+// 价值: 与源站指纹协同, 让 Accept-Encoding 头更像真实浏览器针对该源站的请求.
+//   降 Bot Score 1-2 分 (Cloudflare 静态指纹检测 Accept-Encoding 顺序是 Top 20 指标,
+//   但权重低; 本项价值有限, 主要为指纹一致性).
+
+// acceptEncodingFor — 返回 host 应使用的 Accept-Encoding 值 (按 Server 类型动态).
+func acceptEncodingFor(host string) string {
+        if host == "" {
+                return "gzip, deflate"
+        }
+        e := hostProtoFingerprintFor(host)
+        if e == nil {
+                return "gzip, deflate"
+        }
+        switch e.ServerType {
+        case "cloudflare":
+                return "gzip"
+        }
+        return "gzip, deflate"
+}
+

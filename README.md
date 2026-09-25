@@ -1,352 +1,198 @@
 # HEIS 小说采集与发布系统（纯 Go 栈）
 
-规则驱动的小说采集与发布系统：管理端配置站点规则与采集任务，引擎按规则抓取（8 级降级链 +
-41 项反反爬）、清洗、落库；前台站群（书城/书籍详情/阅读页/搜索/分类/排行榜/关键词聚合/全文搜索）直接消费
-库内数据，封面图走 `/covers/<name>.webp` 绝对路径 + SVG 占位兑底（不存在返渐变色块 + 书名首字）。**R38–R55 已完成 Next.js → Go 全面迁移 + 安装教程重写 + updatedAt 格式化修复 + admin 全页面 CRUD 补齐 + 100 本种子书填充**：单二进制部署、运行期 17 MB 内存、
-无 cgo / 无 Bun / 无 Node / 无 Docker 依赖。`heis-backend` 二进制已入 git（commit
-`29dcd99`），平台 `git clone` 后零编译直接运行 `./go-backend/heis-backend`。
+> 规则驱动的小说采集 + 多主题站群发布 + 反反爬 60 项。单二进制部署，运行期 17 MB
+> 内存，无 cgo / 无 Docker / 无 Node 运行时依赖（Bun 仅用于拉起 wrapper）。
 
-> 生产部署详细教程见 **[DEPLOY.md](./DEPLOY.md)**；本文覆盖功能总览、快速开始、项目结构与架构。
+**详细部署教程见 [DEPLOY.md](./DEPLOY.md)**（10 章节 + FAQ，照顾到每一步每一个细节）。
+**完整工作日志见 [worklog.md](./worklog.md)**（~25000 行，R3-a → R66 全链路）。
+
+## 项目简介
+
+**HEIS（Heis）小说采集与发布系统** 是一套基于**纯 Go** 的规则驱动型小说采集 +
+站群发布系统：管理员在 `/admin` 后台配置站点规则与采集任务，引擎按规则抓取
+（**8 级降级链 + 60 项反反爬 + utls 36 款 Hello 指纹池 + 3 captcha 服务级联**）
+→ 清洗 → 落库；前台站群（书城 / 书籍详情 / 阅读页 / 搜索 / 分类 / 排行榜 / 关键词
+聚合 / 全文搜索）直接消费库内数据，封面图 `/covers/<name>` 走 SVG 占位兜底
+（不存在则返回渐变色块 + 书名首字）。
+
+R38 → R66 已完成 Next.js → Go 全面迁移 + 反反爬累计 60 项 + 采集增强 7 项 +
+9 主题模板 1:1 复刻 + 智能 TDK + 10 套伪静态风格 + admin 全页面 CRUD 补齐 +
+DEPLOY 详细图文教程 + start-go.js 4 项稳定性增强。
 
 ## 功能特性
 
-- **单二进制部署**：`go build -o heis-backend .` 产出一个 24 MB 静态链接二进制，运行期 17 MB
-  内存（vs 旧 Next.js 2.2 GB，OOM 风险消失），单机即可承载。
-- **采集引擎 `go-backend/crawl/`（8 模块 10868 行）**：规则四段（list / book / toc / content）
-  解析、CSS / XPath / regex / JSON 字段提取、分页与翻页 Referer 链、编码识别（GBK 自动转
-  UTF-8）、正文清洗（广告模式 / 去壳页 / 零宽字符剥离 / trafilatura 桥）、分卷排序、并发限速
-  + HostGate 双限速、封面本地化（webp）+ SmartCategory/SmartCompleteDetect 智能分类 + 完结检测 (R54-1B)。
-- **8 级降级链**：native (utls 36 款 Hello 指纹池含 PSK / PQ / 老 iOS / Chrome 老版 / Firefox 老版 ESR / 2016 era Chrome 58) → curl (系统二进制 JA3 指纹) →
-  fetch-relay 中继桥 → Scrapling 桥（static / stealthy / playwright 三档）→ cloak-browser 隐身
-  chromium 反检测渲染 → uc-bridge UC 头条桥 → moli-bridge moli 桥 → curl-impersonate curl_cffi
-  JA3/JA4 桥，按站点防护级别自动降级，前级成功不降级。
-- **反反爬 41 项**：utls Hello 指纹池 36 款（R52-1A，含 Chrome PSK / PQ / 老 iOS / Chrome 老版 / Firefox 老版 ESR 五品牌）+ per-host 钉扎
-  + attempts 偏移轮换 + TLS session ticket 缓存（模拟浏览器 ticket cache + dirtyVersion +
-  atomicWriteFileSync fsync + StartTlsSessionBackgroundFlusher + corruption recovery + disk cap）+ JA3/JA4 轮换 +
-  Cookie 持久化（cf_clearance 跨子域合并 + stripPort 跨端口）+ Referer 链伪造 + 重试退避（full jitter）+
-  Cookie/Token 挑战求解 + looksBlocked / looksLikeCaptcha 启发式拦截 + 3 captcha 服务级联
-  (2captcha + anti-captcha + CapSolver) + sitekey 三属性名 + JS 变量 fallback +
-  连续 3 次失败 60s cooldown + 主备自动切换 + 代理池（MarkProxyFailed/OK 健康跟踪 + cooldown + 5 endpoint 轮选 probe +
-  latency 跟踪 + least-latency + weighted-latency + pickFailStreak + dead proxy quarantine + ProxyStatsSnapshot）。
-- **站级签名/解密代理**：对 token / 签名 / AES 类站点以外置 Go mini-service 承载（见下表），
-  引擎 `tokenUrl` 钩子对接。
-- **管理端**：14 个后台模板（12 admin 功能页 + dashboard + layout）：dashboard / tasks / rules / books /
-  categories / sites / links / themes / downloads / settings / feedback / backup / seo-audit / layout，规则 CRUD + 在线测试 +
-  极限校准（对模拟源站三档封禁策略实测安全并发与速率）、任务（单书 / 批量 / 实时采集 / 定时
-  增量 autoRefresh）、书籍 / 章节管理、TXT 下载、统计看板、JSON 备份 / 恢复 + 清空采集产物、SEO 审计。
-  **R55-1A 补齐 8 个页面 CRUD**：tasks +删除 / books +新建/编辑/删除含级联清章 / rules +编辑全 config + 删除 /
-  sites +新建/编辑/删除含主题切换 / themes +per-site 主题切换 / downloads +删除 / settings +删除单个 key
-  (feedbackEnabled 受保护) / backup +清空采集产物 / seo-audit +修复入口深链。
-- **前台**：10 主题站群（aijjxs / 101kks / x2552 / 23qb / ddyueshu / huangjinwu / ggd66 /
-  pilishuwu / trxsw / shipsay，每主题 8 页型 = 80 文件 + 14 admin = 94 模板），主题注册表
-  驱动，阅读页 / 搜索 / sitemap / 伪静态链接（query / numeric / alphanumeric / slug / short /
-  classic / dir）/ 章节分页（off / byWords / byPages）/ 站群链轮（inLinkWheel）/ 自定义 TDK +
-  ICBM 坐标 + geoRegion / geoPlacename。
-- **封面图 SVG 占位**（R52-1A）：模板 <img src="{{.cover}}"> 走 `/covers/<name>.webp` 绝对路径；
-  main.go `/covers/` handler 三段式服务：①`data/covers/<name>` → ②`public/covers/<name>` →
-  ③SVG 占位图（渐变色块 + 书名首字 96px 白字）。不存在走 SVG，浏览器不裂图。
-- **分类名 4 字化**（R52-1A）：标准分类从 2 字 (玄幻/武侠/...) 改 4 字 (玄幻奇幻/武侠江湖/...)
-  共 15 个，与 DB schema 一致；`NormalizeCategory` 三段式归一化 (别名命中 → 标准 4 字名 →
-  模糊包含)，原 2 字源站分类通过 `categoryAliases` 兑底转 4 字。
-- **100 本种子书**（R55-1A）：DB 预填充 15 分类 × ~7 本 / 分类 = 100 本书，前台每分类页都有书可看，不空。
+### 采集引擎（`go-backend/crawl/` 8 模块 ~11000 行）
 
-## 技术栈
+- **规则四段解析**：`list`（列表页发现）→ `book`（书籍详情）→ `toc`（章节目录）
+  → `content`（章节正文），CSS / XPath / regex / JSON 字段提取，分页 + 翻页
+  Referer 链，编码识别（GBK 自动转 UTF-8），正文清洗（广告模式 / 去壳页 /
+  零宽字符剥离 / trafilatura 桥），分卷排序，并发限速 + HostGate 双限速，
+  封面本地化（webp）+ SmartCategory/SmartCompleteDetect 智能分类 + 完结检测。
+- **8 级降级链**：native (utls 36 款 Hello 指纹池) → curl (系统二进制 JA3)
+  → fetch-relay 中继桥 → Scrapling 桥（static / stealthy / playwright 三档）→
+  cloak-browser 隐身 chromium 反检测渲染 → uc-bridge UC 头条桥 → moli-bridge
+  moli 桥 → curl-impersonate curl_cffi JA3/JA4 桥，按站点防护级别自动降级，
+  前级成功不降级。
+- **反反爬 60 项**：utls 36 款 Hello 指纹池（覆盖 2016-2024 Chrome/Firefox/Safari/
+  iOS/Edge/Android OkHttp/QQ 五品牌）+ per-host 钉扎 + attempts 偏移轮换 +
+  TLS session ticket 缓存（模拟浏览器 ticket cache + dirtyVersion + fsync +
+  corruption recovery）+ JA3/JA4 轮换 + Cookie 持久化（cf_clearance 跨子域合并 +
+  stripPort 跨端口）+ Referer 链伪造 + 重试退避（full jitter）+ Cookie/Token
+  挑战求解 + looksBlocked/looksLikeCaptcha 启发式拦截 + 3 captcha 服务级联
+  (2captcha + anti-captcha + CapSolver) + 代理池（MarkProxyFailed/OK 健康跟踪 +
+  cooldown + 5 endpoint 轮选 probe + least-latency + weighted-latency +
+  pickFailStreak + dead proxy quarantine + per-host 钉扎 + 健康度淘汰）+
+  HTTP/2 ALPN 协商 + Server 头指纹库（nginx/tengine/apache/IIS/cloudflare/cdn）+
+  Retry Budget 全局上限（24h/200 次）+ X-Forwarded-For/X-Real-IP 伪造 +
+  采集速率可视化 + 错误分类重试策略可调 + 断点续采 DB 协同。
+- **采集增强 7 项**：B1 并发自适应 / B2 错误分类重试 / B3 速率自适应 / B4 代理
+  指纹钉扎 / B5 续采优先级排序 / B6 采集速率可视化 / B7 错误分类重试策略可调 /
+  B8 断点续采 DB 协同。
 
-| 层 | 技术 |
-| --- | --- |
-| 框架 | Go 1.26（go.mod 声明，1.21+ API 即可编译） + `net/http` 标准库 |
-| 语言 | Go（无 TypeScript / 无 JSX） |
-| 模板 | `html/template`（94 个，10 主题 × 8 页型 + 14 admin） |
-| 数据库 | modernc.org/sqlite v1.59.0（纯 Go SQLite，无 cgo）+ Prisma schema（仅建表用） |
-| 采集引擎 | `go-backend/crawl/*.go`（8 模块 10655 行，纯 Go 标准库 + goquery + utls + chromedp） |
-| mini-services | `go-backend/services/*/main.go`（11 个独立 Go 二进制，端口 3010–3020）+ bridgeserver 共享包 |
-| 部署 | 单二进制 + bash 脚本（start-all.sh / stop-all.sh / status.sh），无 Docker / 无 compose |
+### 站群发布（`go-backend/templates/` 95 模板）
 
-## 快速开始（5 分钟跑起来）
+- **9 主题前台**（+ x2552 legacy 共 10 套）：aijjxs / 23qb / 101kks / ddyueshu /
+  ggd66 / huangjinwu / pilishuwu / shipsay / trxsw，每套 8 页型 = 72 模板，
+  clone-{theme} 机制 1:1 复刻源站视觉（CSS 走 `/clone-css/<theme>.css`）。
+- **10 套伪静态 URL 风格**：query / numeric / alphanumeric / slug / short /
+  classic / dir / hashid / base62 / segmented，per-site 可独立配置。
+- **智能 TDK 批量生成**：admin/sites 「智能 TDK」按钮 → 预览 modal（4 列表格：
+  站点 ID / 当前 TDK / 预生成 TDK / 差异）→ 确认应用全站点落库；章节 SEO 4
+  字段（chapterSeoAuto + 3 模板，占位符 {bookName} {chapterTitle} {page}
+  {totalPages} {siteName}）。
+- **章节分页 3 模式**：off / byWords（每页字数 500-50000） / byPages（强制拆分
+  页数 2-20），per-site 可配置。
+- **页脚自定义**：footerText / footerCopyright / footerIcp / footerStats 4 字段。
+- **导航模块可调**：navCategoryCount（5-30）/ homeModuleLimit（10-50）。
+- **封面 SVG 占位**：`<img src="{{.cover}}">` 走 `/covers/<name>.webp` 绝对路径，
+  main.go 三段式服务 ①data/covers → ②public/covers → ③SVG 渐变色块 + 书名首字。
+- **分类名 4 字化**：标准分类 15 个（玄幻奇幻 / 武侠江湖 / ...），NormalizeCategory
+  三段式归一化（别名 → 标准 4 字 → 模糊包含）。
 
-前置：Go 1.23+ 工具链（go.mod 声明 1.26，但 1.21+ API 即可编译；下载
-https://go.dev/dl/ ，选 `go1.23.x.linux-amd64.tar.gz` 解压到 `/usr/local/go` 或 `~/go`，
-`export PATH=$PATH:/usr/local/go/bin`）；bash 4+；curl（健康探针）；可选 Prisma CLI（仅建表时
-需要，`bunx prisma db push` 或 `npx prisma db push`）。
+### 管理端（`/admin` 14 模板）
 
-### 1. 编译主后端
+- **12 功能页 + dashboard + layout**：dashboard / tasks / rules / books /
+  categories / sites / links / themes / downloads / settings / feedback / backup /
+  seo-audit / layout。
+- **全页面 CRUD 补齐**（R55-1A）：tasks +删除 / books +新建/编辑/删除含级联清章 /
+  rules +编辑全 config + 删除 / sites +新建/编辑/删除含主题切换 / themes +per-site
+  主题切换 / downloads +删除 / settings +删除单个 key（feedbackEnabled 受保护）/
+  backup +清空采集产物 / seo-audit +修复入口深链。
+- **极校准**：对模拟源站三档封禁策略实测安全并发与速率。
+- **JSON 备份 / 恢复**：`/api/admin/backup` 导出 / `/api/admin/backup/restore`
+  导入 / `/api/admin/backup/vacuum` VACUUM / `/api/admin/backup/clear` 清空
+  采集产物。
 
-```bash
-cd /home/z/my-project/go-backend
-go build -o heis-backend .
-# 产出二进制 heis-backend (24 MB, 静态链接, 无外部依赖)
-# macOS / Linux 通用; Windows 用 GOOS=windows go build -o heis-backend.exe .
-```
-
-### 2. 初始化数据库
-
-```bash
-cd /home/z/my-project
-echo 'DATABASE_URL=file:./db/custom.db' > .env
-bunx prisma db push      # 或 npx prisma db push; 仅首次建表需要
-# 也可直接放一份现成 db/custom.db 到 db/ 目录, Go 后端启动会自动 open
-```
-
-### 3. 启动主后端
-
-```bash
-cd /home/z/my-project/go-backend
-./heis-backend
-# 控制台输出:
-#   数据库: /home/z/my-project/db/custom.db
-#   已加载 94 个模板
-#   heis-backend 启动: http://localhost:3000 (内存 17MB)
-
-# 后台运行用 nohup ./heis-backend > backend.log 2>&1 &; 停止 pkill -f heis-backend
-```
-
-### 4. 启动 11 mini-services
-
-```bash
-cd /home/z/my-project
-bash mini-services/start-all.sh
-# Phase 1: 增量构建 (源码 mtime > 二进制 mtime 才重建; 首次跑会构建全部 11 个)
-# Phase 2: 启动 + ≤3s /health 探针 (200 = OK, 失败 WARN 不阻塞)
-# 输出 PID 写到 .zscripts/<svc>.pid, 日志写到 .zscripts/<svc>.log
-```
-
-### 5. 验证
-
-```bash
-curl -s http://localhost:3000/health     # 200 OK
-curl -s http://localhost:3000/           # 前台首页 HTML
-curl -s http://localhost:3000/admin      # 管理后台 HTML
-bash mini-services/status.sh             # 11 行全 ALIVE 200 (moli/cloak/trafilatura selfTest=false 是预期)
-```
-
-访问地址：
-
-| 地址 | 用途 |
-| --- | --- |
-| `http://localhost:3000/` | 默认站点首页（isDefault=true 的 Site） |
-| `http://localhost:3000/?view=home&site=<siteId>` | 指定站点首页 |
-| `http://localhost:3000/?view=book&id=<bookId>` | 书籍详情页 |
-| `http://localhost:3000/?view=read&id=<bookId>&ch=<chapterIdx>` | 阅读页 |
-| `http://localhost:3000/?view=category&cat=<categoryId>` | 分类列表页 |
-| `http://localhost:3000/?view=ranking` | 排行榜 |
-| `http://localhost:3000/?view=search&q=<keyword>` | 搜索结果页 |
-| `http://localhost:3000/?view=fulltext&q=<keyword>` | 全文搜索 |
-| `http://localhost:3000/?view=keyword&tag=<tag>` | 关键词（标签）聚合页 |
-| `http://localhost:3000/admin` | 管理后台（任务 / 规则 / 书籍 / 章节 / 站点 / 分类 / 友链 / 主题 / 下载 / 设置 / 反馈 / 备份 / SEO 审计） |
-
-> ⚠️ **后台无登录鉴权**：管理端 `/admin` 当前不要求登录，请勿直接暴露公网。生产环境务必前面套
-> 反向代理（Nginx / Caddy）做 Basic Auth + IP 白名单，或仅放内网访问。详见 DEPLOY.md §8.2。
-
-## mini-services 支撑服务（11 个 Go 二进制，端口 3010–3020）
+### mini-services 支撑服务（11 个 Go 二进制，端口 3010-3020）
 
 | 端口 | 服务 | 用途 |
 | --- | --- | --- |
 | 3010 | `bqg713-proxy` | 笔趣阁 bqg713 token + AES 签名代理 |
 | 3011 | `fetch-relay` | 通用 HTTP 中继桥（降级链 3 级，代理池轮换） |
-| 3012 | `scrapling-bridge` | Scrapling 抓取桥（static / stealthy / playwright 三档，含可选 Python 子进程） |
+| 3012 | `scrapling-bridge` | Scrapling 抓取桥（static / stealthy / playwright 三档） |
 | 3013 | `qimao-proxy` | 七猫官方 API 双签名 + 正文 AES 解密 |
 | 3014 | `deqixs-proxy` | 得奇小说网正文三参数动态签名代理 |
 | 3015 | `xjp-proxy` | 新键盘小说网 var c 双层正文解密代理 |
 | 3016 | `uc-bridge` | UC 头条小说桥（chromedp + 可选 xvfb） |
-| 3017 | `moli-bridge` | moli 桥（依赖外部 moli 二进制，未装时 selfTest=false，不阻塞） |
-| 3018 | `curl-impersonate-bridge` | curl_cffi 桥（Python 子进程可选；JA3/JA4 指纹轮换） |
+| 3017 | `moli-bridge` | moli 桥（依赖外部 moli 二进制，未装时 selfTest=false） |
+| 3018 | `curl-impersonate-bridge` | curl_cffi 桥（Python 子进程可选；JA3/JA4 轮换） |
 | 3019 | `trafilatura-bridge` | go-readability + trafilatura 正文抽取桥 |
-| 3020 | `cloak-browser` | 隐身 chromium 反检测渲染（cloak 模式，需 token；缺则 selfTest=false） |
+| 3020 | `cloak-browser` | 隐身 chromium 反检测渲染（cloak 模式） |
 
-全部 11 mini-services 由 `mini-services/start-all.sh` 一键拉起，端口独占、互不冲突；如改端口
-需同步修改各服务 `main.go` 顶部常量 + `start-all.sh` / `stop-all.sh` / `status.sh` 三处端口表。
-mini-services 绑 `127.0.0.1:<port>`，仅本机 heis-backend 访问；如需多机部署，配
-`AUTH_TOKEN` / `BRIDGE_KEY` 鉴权后对外开放。`bridgeserver` 是 11 个服务共享的 Go 包（917 行），
-提供 `/health` / `/metrics` / `/info` / 鉴权 / 限速 / SSRF 守卫 / 安全响应头 / 优雅关闭 /
-JSON-IO helper 等通用样板，本身不是独立服务。
+`bridgeserver` 是 11 个服务共享的 Go 包（917 行），提供 `/health` / `/metrics`
+/ `/info` / 鉴权 / 限速 / SSRF 守卫 / 安全响应头 / 优雅关闭 / JSON-IO helper 等
+通用样板。由 `mini-services/start-all.sh` 一键拉起，端口独占、互不冲突；mini-services
+绑 `127.0.0.1:<port>`，仅本机 heis-backend 访问。
 
-## 目录结构
+## 快速开始（3 步跑起来）
 
-```
-go-backend/
-├── go.mod                       # Go 模块定义 (module heis-backend, go 1.26, 13 direct deps)
-├── go.sum                        # 依赖校验
-├── main.go                       # 主后端 (1428 行): 路由 + 86 FuncMap + 静态服务 + DB + 94 模板加载
-├── admin.go                      # 后台 API + admin SSR (4555 行): 14 个 admin 模板 + /api/admin/* 路由 (含 R55-1A 全页面 CRUD)
-├── heis-backend                  # go build 输出二进制 (24 MB, 已入 git 平台 clone 即跑; .gitignore 仅兜底防误覆盖)
-├── backend.log                   # heis-backend 后台运行日志 (.gitignore, 不入版本库)
-│
-├── crawl/                        # 采集引擎 (8 模块 10868 行)
-│   ├── fetcher.go                #   HTTP 采集 + 8 级降级链 + UA 池 + CookieJar (4809 行)
-│   ├── parser.go                 #   css / xpath / regex / json 字段提取 (1612 行)
-│   ├── runner.go                 #   4 段采集流程 + 任务调度 + Semaphore (1558 行)
-│   ├── cleaner.go                #   广告 / 去壳 / 编码 / 零宽字符剥离 / trafilatura 桥 (914 行)
-│   ├── types.go                  #   规则 / 配置 / 结果数据结构 (743 行)
-│   ├── hostgate.go               #   并发 + 速率双限速器 (423 行)
-│   ├── storage.go                #   db / txt 双存储 + 封面本地化 + 路径穿越防御 (354 行)
-│   └── smart.go                  #   智能分类 / 完结判断 + 4 字分类 + 正则缓存 (355 行)
-│
-├── services/                     # 11 mini-services + bridgeserver 共享包
-│   ├── bridgeserver/bridgeserver.go   # 共享样板 (917 行)
-│   ├── bqg713-proxy/main.go           # 3010 (189 行)
-│   ├── fetch-relay/main.go             # 3011 (284 行)
-│   ├── scrapling-bridge/main.go        # 3012 (470 行) + scripts/scrapling_fetch.py
-│   ├── qimao-proxy/main.go             # 3013 (801 行)
-│   ├── deqixs-proxy/main.go            # 3014 (366 行)
-│   ├── xjp-proxy/main.go               # 3015 (587 行)
-│   ├── uc-bridge/main.go               # 3016 (430 行)
-│   ├── moli-bridge/main.go             # 3017 (303 行)
-│   ├── curl-impersonate-bridge/main.go # 3018 (374 行) + scripts/curl_cffi_fetch.py
-│   ├── trafilatura-bridge/main.go     # 3019 (367 行)
-│   └── cloak-browser/main.go           # 3020 (974 行)
-│
-└── templates/                    # 94 个 Go html/template 模板
-    ├── admin/                    #   14 个后台页面 (layout + dashboard + tasks + rules + books
-    │                             #                   + categories + sites + links + themes
-    │                             #                   + downloads + settings + feedback + backup
-    │                             #                   + seo-audit; layout 内共享 admin/head +
-    │                             #                   admin/sidebar partial)
-    ├── aijjxs/                   #   主题 1: 现代 flexbox 风格 (8 页型)
-    ├── 101kks/                   #   主题 2
-    ├── x2552/                    #   主题 3: 旧 table 风格
-    ├── 23qb/                     #   主题 4
-    ├── ddyueshu/                 #   主题 5
-    ├── huangjinwu/               #   主题 6
-    ├── ggd66/                    #   主题 7
-    ├── pilishuwu/                #   主题 8: 反爬严, 需 scrapling stealthy
-    ├── trxsw/                    #   主题 9
-    └── shipsay/                  #   主题 10
-        # 每主题 8 页型: home / book / read / category / ranking /
-        #              search / keyword / fulltext
+```bash
+# 1. clone（沙箱已是 /home/z/my-project）
+cd /home/z/my-project
+
+# 2. 初始化数据库（11 张表）
+echo 'DATABASE_URL=file:/home/z/my-project/db/custom.db' > .env
+bunx prisma db push --accept-data-loss
+
+# 3. 启动 wrapper + 后端（前台测试 / 后台用 nohup）
+bun start-go.js
+#   或:  nohup bun start-go.js > wrapper.log 2>&1 & disown
 ```
 
-项目根其它文件：
+启动后验证：
 
-```
-prisma/schema.prisma              # DB schema (11 + 1 表, Go 后端不依赖, 仅 prisma db push 用)
-prisma/dev.db                    # 开发库 (R42-1C 留作 fallback; 生产用 db/custom.db)
-db/custom.db                     # 运行时 SQLite 库 (WAL 模式, 不入版本库)
-mini-services/{start-all.sh,stop-all.sh,status.sh,.gitkeep}  # 11 服务启停脚本
-public/clone-css/*.css           # 10 个主题的源站 CSS (由 main.go /clone-css/ 路由服务)
-public/{robots.txt,sw.js,manifest.json,icon.svg,logo.svg}   # 站点元数据 (Next.js PWA 残留, 可选)
-Caddyfile                        # 沙箱网关 SSRF 防御配置 (端口白名单 3010-3015 + 透传 3000)
-agent-ctx/R*-*.md                # 各轮 agent 工作记录 (R38-R57, 44 文件; R57-1A/1B 未留 md)
-worklog.md                       # 完整迁移工作日志 (~24000 行, R3-a → R57-1C 全链路)
-DEPLOY.md                        # 生产部署详细教程 (systemd / 反代 / 备份 / 升级 / 故障排查)
-README.md                        # 本文件
-scripts/rule-yueyouxs.json       # yueyouxs (神马小说) 站点规则 backup-restore 格式 JSON (/api/admin/backup/restore 可导入; R47-1B 替代旧 .ts 种子脚本)
-package.json                     # 仅保留 scripts.dev 一项: "bun start-go.js" (Bun 包装 auto-restart: 循环启动 ./go-backend/heis-backend, 进程异常退出后 2s 自动重启, 供平台 bun run dev 拉起)
-.env.example                     # 环境变量模板 (mini-services AUTH_TOKEN / BRIDGE_KEY / RATE_LIMIT 等)
-.env                             # 本机 .env (DATABASE_URL, .gitignore, 不入版本库)
-.gitignore                       # Go 构建产物 + 日志 + 运行时数据 + .env* 全忽略 (heis-backend 二进制以 git add -f 强制入 git, .gitignore 仅兜底)
+```bash
+curl -s http://localhost:3000/health
+# 预期: {"ok":true,"lang":"go","memMB":17}
+
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3000/admin
+# 预期: 200
 ```
 
-## 采集规则配置
+> 完整部署（含 Go 工具链 / Bun / sqlite3 / Caddy 安装 + 编译错误排查 + Caddy 网关
+> 配置 + 首次使用 + 主题配置 + 稳定性排查 + FAQ）见 **[DEPLOY.md](./DEPLOY.md)**。
 
-### 创建规则
+## 技术栈
 
-1. 浏览器打开 `http://localhost:3000/admin/rules`
-2. 点「新建规则」，填名称 + 描述 + 完整 config JSON（schema 见 `prisma/schema.prisma` 中
-   `Rule.config`，四段解析器：`list` / `book` / `toc` / `content` + `fetch` 选项 + `clean` 规则）
-3. 保存后点「在线测试」，输入测试 URL 跑一次抓取，引擎按 list → book → toc → content 依次执行
-4. 测试通过后启用规则，再到 `/admin/tasks` 创建采集任务挂到此规则
-
-### 参考规则
-
-| 站点 | 规则关键点 |
+| 层 | 技术 |
 | --- | --- |
-| 番茄 fanqie | 静态 HTML，CSS 提取；tokenUrl 走 bqg713-proxy |
-| 七猫 qimao | 静态 + AES 加密内容，qimao-proxy 解密 |
-| 得奇 deqixs | 静态 HTML，CSS 提取；走 deqixs-proxy |
-| 八零 80ge | 静态 HTML |
-| 精华 jinghua | 静态 HTML |
-| 笔趣阁 bqg713 | token + AES，bqg713-proxy 全套 |
-| xjp | 静态 HTML，xjp-proxy |
-| 霹雳 pilishuwu | 反爬严，必须 scrapling-bridge 3012 stealthy / playwright 模式 |
+| 主后端 | Go 1.26（`net/http` 标准库，无框架）+ modernc.org/sqlite v1.59.0（纯 Go SQLite，**无 cgo**） |
+| 采集引擎 | Go 标准库 + goquery + utls（36 款 Hello 指纹池）+ chromedp |
+| 模板 | `html/template`（95 个 = 9 主题 × 8 页型 + x2552 legacy 8 + 14 admin） |
+| wrapper | `start-go.js`（Bun 脚本，auto-build + auto-restart + go 工具链自愈 + WAL checkpoint + 心跳死锁检测 + 日志轮转） |
+| 数据库 | SQLite + Prisma schema（仅建表用，Go 后端不依赖 Prisma runtime） |
+| mini-services | 11 个独立 Go 二进制（端口 3010-3020）+ bridgeserver 共享包 |
+| 网关 | Caddy v2（`:81` 反代 `:3000` + SSRF 防御端口白名单 3010-3015） |
+| 部署 | 单二进制 + bash 脚本（start-all.sh / stop-all.sh / status.sh），**无 Docker / 无 compose** |
 
-### 8 级降级链（采集引擎核心）
-
-引擎对每个 URL 自动按下列顺序尝试，前级成功则不降级；全部失败才记为抓取失败：
+## 目录结构（节选）
 
 ```
-1. native              Go 标准库 net/http + utls Hello 指纹池 36 款 (R52-1A, 含 PSK/PQ/老 iOS/Chrome 老版/Firefox 老版 ESR/2016 era Chrome 58)
-2. curl                系统 curl 二进制 (JA3 指纹绕过 Cloudflare 基础检测)
-3. fetch-relay         3011 中继桥 (代理池轮换)
-4. scrapling           3012 Scrapling 桥 (static → stealthy → playwright 三档)
-5. cloak-browser       3020 本地 chromium 反检测渲染 (cloak 模式)
-6. uc-bridge           3016 UC 头条小说桥
-7. moli-bridge         3017 moli 桥
-8. curl-impersonate    3018 curl_cffi 桥 (Python 子进程, JA3/JA4 指纹轮换)
+my-project/
+├── go-backend/         # 主体后端（main.go + admin.go + crawl/ + services/ + templates/）
+├── prisma/             # DB schema（schema.prisma + dev.db fallback）
+├── db/                 # 运行时 SQLite 库（custom.db + WAL）
+├── mini-services/      # 11 mini-services 启停脚本
+├── public/             # 静态资源（clone-css/ + robots.txt + sw.js + manifest.json + icon）
+├── Caddyfile           # 网关配置
+├── start-go.js         # Bun wrapper（auto-build + auto-restart + 稳定性增强）
+├── package.json        # scripts.dev = "bun start-go.js"
+├── .env                # DATABASE_URL=file:/home/z/my-project/db/custom.db
+├── DEPLOY.md           # 详细部署教程（10 章节 + FAQ）
+├── README.md           # 本文件
+└── worklog.md          # 完整工作日志（~25000 行）
 ```
 
-降级由 `go-backend/crawl/fetcher.go` 统一调度，R43-1B 起每级代理失败会被
-`MarkProxyFailed` 标记 cooldown，避免连续踩雷；恢复后 `MarkProxyOK` 清状态。R45-1C 起
-`DialTLSContext` 替代 deprecated `DialTLS`，支持 per-attempt timeout ctx cancel 立即断 dial。
-R46-1B 起新增 TLS session ticket 缓存（模拟浏览器行为，加速重连）+ 网络层错误不清 utls choice
-（仅 TLS handshake 失败才清，避免无效轮换）。R47-1A 起 utls Hello 池扩 21 款（+Chrome
-100_PSK / 114_Padding_PSK_Shuf / 115_PQ_PSK + iOS 11_1 / 12_1）+ CookieJar stripPort 跨端口
-合并 + captcha 连续 3 次失败 60s cooldown + probe target 5 endpoint 轮选。
-
-## 反反爬能力（R38–R50 累计）
-
-- **utls Hello 指纹池**：R43-1B 起 4 款 → R45-1A 扩 12 款 → R46-1B 扩 16 款 → R47-1A 扩 21 款
-  → R50-1A 扩 29 款 → R51-1A 扩 34 款 → R52-1A 扩 36 款（Chrome 102 / 106_Shuffle / 112_PSK_Shuf / 115_PQ / 120 / 120_PQ /
-  131 / 133 + Firefox 99 / 102 / 105 / 120 + Safari 16.0 + iOS 13 / 14 + Edge 85 + R47-1A
-  新增 Chrome 100_PSK / 114_Padding_PSK_Shuf / 115_PQ_PSK + iOS 11_1 / 12_1 + R50-1A
-  新增 Chrome 83 / 87 / 96 老版桌面 + Firefox 55 / 63 老版 ESR + Edge 106 + Android 11
-  OkHttp + QQ 11_1 + R51-1A 新增 Chrome 62 / 70 / 72 + Firefox 56 / 65 + R52-1A 新增
-  Chrome 58 / 100 两款补缺变体，覆盖 2016-2024 全代际）。
-  per-host 钉扎（hash 稳定选取）+ attempts 偏移轮换（失败 N 次后偏移到下一号）。
-- **TLS session resumption**：R46-1B 起 `utls.NewLRUClientSessionCache(256)` 缓存
-  session ticket，模拟浏览器 ticket cache 行为，加速重连 + 反"无 session ticket"识别。
-  R50-1A 起 `persistableSessionCache` 内存 LRU + 磁盘 JSON 60s 节流 flush +
-  snapshot+IO 模式 + `flushMu` 串行化并发 IO，修复原内存 race condition。
-- **JA3 / JA4 指纹轮换**：utls 不同 Hello 版本 cipher suite 顺序 + 扩展顺序 + GREASE 模式各异，
-  反爬无法靠单一 TLS 指纹识别。
-- **Cookie 持久化**：per-domain CookieJar，cf_clearance 跨子域合并，Set-Cookie 安全校验。
-- **Referer 链伪造**：逐请求注入来源页 URL，模拟浏览器跳转链。
-- **重试退避**：full jitter（1.5s × 2^n 封顶 8s）+ Cookie 挑战重试（403 + Set-Cookie 重试 2 次）+
-  Token 挑战 HTTP 求解（`let token="..." + location.href=?challenge=`）。
-- **拦截识别**：`looksBlocked` / `looksLikeCaptcha` / `isJsChallenge` 启发式判断。
-- **SSRF 守卫**：拒绝云元数据 / 私网 / 链路本地，`allowLoopback` 放行内部桥。
-- **mirrorDomains 镜像组**：故障切换同站镜像。
-- **2captcha 验证码**：R43-1B 起可选，配置 API key 后自动求解 Cloudflare Challenge。R50-1A
-  起三服务级联（2captcha + anti-captcha + CapSolver）+ sitekey 三属性名
-  （data-sitekey / data-pubkey / data-pkey）+ JS 变量 fallback（sitekey: "..."）。
-- **代理池**：MarkProxyFailed / OK 健康跟踪 + cooldown，避免连续踩雷。R50-1A 起 probe
-  延迟跟踪（probeProxyWithLatency）+ least-latency 旋转策略 + ProxyStatsSnapshot
-  admin 查询识别慢代理 / 死代理。
-- **行为模拟（R50-1A/R51-1A/R52-1A）**：cloak-browser Gaussian 微抖（rand.NormFloat64 stddev=1.5px
-  替代均匀分布 ±3px）+ 滚轮 micro wheel events（5-15px deltaY × 2-4 步插入主滚动间）
-  + 15% 概率 Tab 键 focus 切换（chromedp.KeyEvent "\t"）+ R51-1A 反向滚动 (8%) + Enter 键
-  (10%) + 双击 (5%) + R52-1A native mouse wheel 事件 (5%) + Esc 键 (4%) + Page Down 键
-  (2%)，共 9 项行为模拟，模拟真实用户生理抖动分布 + wheel 事件连续触发 + 键盘导航 +
-  反向阅读回看 + 表单提交 + 文字选中/新标签 + native wheel 滚动 + modal 关闭 + 大段翻页，
-  降低 WAF 检测概率。
+详见 [DEPLOY.md §2.2](./DEPLOY.md#22-目录结构说明)。
 
 ## 数据备份
 
-数据全部在 `db/custom.db`（WAL 模式）+ `data/`（封面 / TXT 下载产物，不入版本库）：
-
 ```bash
-# 在线备份 (WAL 模式下 cp 是安全的, 会拿到一致快照)
+# 在线备份（WAL 模式下 cp 是安全的，会拿到一致快照）
 cp db/custom.db db/custom.db.bak.$(date +%F)
 
-# 定期 VACUUM 回收空间 (长期采集后库膨胀)
+# 定期 VACUUM 回收空间
 sqlite3 db/custom.db 'VACUUM;'
 
-# /admin/backup 一键导出 JSON (含规则 / 站点 / 分类 / 友链 / 设置)
+# 一键 JSON 导出（含规则 / 站点 / 分类 / 友链 / 设置）
 curl -s http://localhost:3000/api/admin/backup > backup-$(date +%F).json
 ```
 
 ## 免责声明
 
 1. 本项目仅供**学习与研究**用途，**不得用于商业用途**。
-2. 采集功能请仅用于你有权访问的目标站点，使用时请**遵守目标站点的服务条款 / robots 协议**，
-   合理控制访问频率，勿对目标站点造成干扰。
-3. 通过本项目采集到的全部内容（文字 / 封面等）**版权归原作者及原网站所有**；请勿传播、转载或
-   转售采集所得数据。
-4. 因使用本项目而产生的任何法律问题与责任，由**使用者自行承担**；项目作者与贡献者不对任何
-   滥用行为负责。
-5. 若你是站点所有者、不希望被本项目内置规则采集，请提交 issue 说明，我们会在后续版本移除对应
-   规则。
+2. 采集功能请仅用于你有权访问的目标站点，使用时请**遵守目标站点的服务条款 / robots
+   协议**，合理控制访问频率，勿对目标站点造成干扰。
+3. 通过本项目采集到的全部内容（文字 / 封面等）**版权归原作者及原网站所有**；请勿
+   传播、转载或转售采集所得数据。
+4. 因使用本项目而产生的任何法律问题与责任，由**使用者自行承担**；项目作者与贡献者
+   不对任何滥用行为负责。
+5. 若你是站点所有者、不希望被本项目内置规则采集，请提交 issue 说明，我们会在后续版本
+   移除对应规则。
 
 ---
 
-**项目版本**：R57-1C（纯 Go 栈，自 R38 起从 Next.js 全面迁移完成；R50-1C 重写 14 节安装部署教程 + 29 项反反爬清单 + 清理 .dockerignore/upload/tool-results 等过时产物；R51-1B 校对：staticcheck 复检 0 + 删除 unused `probeProxy` wrapper + ST1008 修复 + LoC/port/template 校对一致；R52-1A：utls 29→36 款 + smart.go 15 个分类名从 2 字改 4 字 + cloak-browser 行为模拟新增 native wheel/Esc/Page Down 三项；R52-1B：cover 绝对路径 + 封面 SVG 占位（`/covers/<name>.webp` handler 三段式服务）+ 分类 4 字 + /admin 访问校验 + go build + go vet + staticcheck 全 0；R53-1B：fmtDate/fmtDateShort/shortTime 三处先经 formatUpdatedAt 归一化, 修复 Prisma `@updatedAt` 存 Unix ms 时间戳时切片错位 bug; admin dashboard 实测从 "16560/71510/04577" 时间戳残片修复为 "09-15 23:56" 等正常日期; R54-1A：反馈模块开关 + 系统设置说明; R54-1B：采集规则完整性 + SmartCategory BUG-A 未调用 + detectedStatus BUG-B 计算位置 + 噪声清洗 BUG-C DefaultCleanConfig 量词全可选误伤 + BUG-D EXTRA_AD_PATTERNS 漏 8 条本站免责; R54-1C：10 套 × 8 页型 = 80 模板深度核实 + 25 处硬编码 missing-asset 修复 + DEPLOY 全文重写; R55-1A：12 admin 功能页面 CRUD 补齐（tasks +删除 / books +新建/编辑/删除含级联清章 / rules +编辑全 config + 删除 / sites +新建/编辑/删除含主题切换 / themes +per-site 主题切换 / downloads +删除 / settings +删除单个 key / backup +清空采集产物 / seo-audit +修复入口深链）+ 填充 100 本不同类型书籍（15 分类 × ~7 本，dev 一次性填充，db/custom.db 不入版本库）+ go build + go vet 全 0; R56-1A：5 主题可达源站 1:1 回源对比复刻 + 12 个 bug 修复（aijjxs home 4 panel + aside + hero/kpi 补齐 / ggd66 5 模板 bookbox 结构重写 / 23qb home list-item + aside nav 补齐 / 101kks home aside nav 对齐 / ddyueshu home .s5 字数→日期 / trxsw home .book-date 字数→日期）+ 新增 fmtDateMD FuncMap; R56-1B：智能化 + 采集规则 + 噪声清洗三轮深度审计（BUG-E discoverBooks urlFields 硬编码 ['url'] → ['url','bookUrl'] 自动 fallback + BUG-F EXTRA_AD_PATTERNS 跨段贪婪漏 `<>` 排除导致 HTML 标签误吞）; R56-1C：DEPLOY 全文重写（14 节全面校对，LoC 同步 main 1413→1428 / admin 3742→4555 / 总 crawl 10671→10868）+ 反反爬清单 36→41 项（拆分 captcha 三服务级联 + persistableSessionCache 子项 + weighted-latency + pickFailStreak + dead proxy quarantine）+ 22 处过时 TS/Next.js 引用注释清理（src/lib/crawl/* + src/app/api/admin/* + RankingView.tsx + page.tsx 等已删除的源码路径引用）+ storage.go BUG-1 SA9003 修复（downloadTxtWriter.Abort empty branch + os.IsExist 误用改为 `_ = w.file.Close()` 显式 best-effort）+ backend.log 临时文件清理 + README.md 同步到 R56-1C + go build + go vet 全 0; R57-1A/1B：智能 TDK（main.go computeChapterSeo + Site 表新增 chapterSeoAuto / chapterSeoTitleTemplate / chapterSeoDescTemplate / chapterSeoKeywordsTemplate 四列，按站点粒度配置阅读页 SEO TDK）+ cleaner.go BUG-G（chapterHeadCNRe `\b` ASCII 词边界对中文无效，改 `<<>>` Unicode 边界）+ BUG-H（Normalize 末段 `<p>` 包裹位置错位导致双层嵌套）; **R57-1C：6 主题模板 1:1 复刻续 9 bug 修复（ddyueshu search .l/.r .s5 字数→日期 + ddyueshu ranking .s5 字数→日期 + ddyueshu fulltext 多余字数删 + pilishuwu home .mod-cover-list-text 字数→latestChapter + x2552 home .update li dangling 字数→日期 + x2552 home .ultop li <p> 2 处 字数→rank + x2552 book .ultop li <p> 字数→rank）+ DEPLOY 全文重写（14 节 LoC 同步 main 1428→1522 / runner 1558→1575 / cleaner 914→941 / 总 crawl 10868→10882 / Setting 12→13 / Book 100→0 说明 db/custom.db 不入版本库）+ 清理精简（r57probe/ + sites_tmp_main.go.bak + backend.log + go-backend/go-backend/heis-backend 嵌套副本删除 + .gitignore 增强 3 条规则）+ go build + go vet 全 0**）。详细部署见 [DEPLOY.md](./DEPLOY.md)，
-完整工作日志见 [worklog.md](./worklog.md)（~24000 行，R3-a → R57-1C 全链路）。
+**项目版本**：R66-D（2025-09-25，纯 Go 栈；R38→R65 全链路迁移完成；R65-B 反反爬
+55→60 项；R66 主控修复 wrapper 监听 `*.html` 模板改动；R66-D DEPLOY 重写为部署
+导向 10 章节图文教程 + README 项目概览 + start-go.js 4 项稳定性增强）。详细部署见
+[DEPLOY.md](./DEPLOY.md)，完整工作日志见 [worklog.md](./worklog.md)。

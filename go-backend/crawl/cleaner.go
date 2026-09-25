@@ -217,17 +217,39 @@ func T2SHtml(html string) string {
 // ---------- removeAdLines (URL 保护 + 内置 EXTRA_AD_PATTERNS) ----------
 
 // EXTRA_AD_SELECTORS — 内置额外广告/导航/弹窗容器选择器 (与 cfg.RemoveSelectors 合并去重).
+//  R66-C 通用清洗增强 (用户需求 #11): 审计 71 Rule clean 段后发现 object/embed/svg/meta/link/
+//    base/form 0/71 覆盖, .recommend/.tuijian/.popup/.qrcode/.chapter-nav 等通用类名 0/71 覆盖.
+//    本轮统一兜底覆盖所有源站共性广告/导航/弹窗容器 + 危险冗余标签.
 var EXTRA_AD_SELECTORS = []string{
+        // 危险冗余标签 (R66-C: 0/71 覆盖, 兜底剥壳). script/style/iframe/noscript 已在
+        //   cleanContentHtmlSync HTML 分支 line 578 硬剥, 此处追加 object/embed/svg/meta/link/base/form.
+        //   HTML 分支会 Find 这些 tag 删 (与 plainText 分支 plainTextScriptStyleRe 同款兜底).
+        "object", "embed", "svg", "meta", "link", "base", "form",
+        // 通用广告 class 黑名单
         ".ad-container", ".ad-wrap", ".ad-wrapper", ".adbox", ".ad-banner", ".advertisement",
         ".adsbygoogle", ".google-ad", ".ad-slot", ".ad-zone", ".ad-area",
+        ".ad", ".ads",
         "#ad", "#ads", "#advertisement", "#banner_ad", "#popup", "#popup-ad",
-        ".popup", ".modal-ad", ".modal-advertisement",
+        ".popup", ".modal-ad", ".modal-advertisement", ".interstitial", ".interstitial-ad", ".splash-ad",
+        // 下载/扫码/关注类
         ".download-app", ".app-promo", ".qrcode", ".qr-code", ".scan-download",
+        // 推荐/热门/相关 (R66-C: 0/71 覆盖, 兜底)
+        ".recommend", ".tuijian", ".tj", ".hot", ".related", ".recommands",
+        // 公告 (常含广告)
+        ".notice",
+        // 横幅/边栏/页脚/页头 (常含广告/友链)
+        ".banner", ".top-banner", ".bottom-banner", ".sidebar",
         ".friend-link", ".friendlink", ".link-list", ".footer-link", ".nav-bottom",
-        ".float-btn", ".float-banner", ".float-toolbar",
+        // 浮动元素 (常含广告/CTA)
+        ".float-btn", ".float-banner", ".float-toolbar", ".back-to-top",
+        // 章节导航/分页 (短链接容器, R49-1B 已用 navLinkRe 段级剥)
         ".chapter-navigate", ".chapter-nav", ".page-navigate",
+        // 评论/社交分享 (常含广告)
+        ".comment", ".social-share", ".share-btn",
+        // 面包屑/工具栏 (非正文)
+        ".breadcrumb", ".toolbar",
+        // 百度推广
         ".baidu-ad", ".baidu-promo", "[class*=\"baidu_promote\"]",
-        ".interstitial", ".interstitial-ad", ".splash-ad",
 }
 
 // EXTRA_AD_PATTERNS — 内置额外广告正则文案 (与 cfg.AdPatterns 合并, 后于用户配置跑).
@@ -271,6 +293,23 @@ var EXTRA_AD_PATTERNS = []string{
         `本站只为[^。\n<>]*提供[^。\n<>]*阅读平台[^。\n<>]*`,
         `请收藏本站[^。\n<>]*手机版`,
         `本站最新网址[^。\n<>]*`,
+        // R66-C 通用清洗增强 (用户需求 #11): 审计 71 Rule clean 段后发现版权声明/搜索站点推广/
+        //   笔趣阁系/69书吧 等共性水印 0/71 覆盖 (本书首发仅 2/71, 版权所有 0/71, 搜小说 0/71).
+        //   本轮兜底覆盖所有源站共性法律声明 + 站名水印 + 回帖看章节等论坛广告.
+        //   保守锚点: `[^。\n<>]*` 限定到句末/换行/< 不跨段 (与 R56-1B BUG-F 同款防御).
+        `版权所有[^。\n<>]*`,
+        `本书来源于[^。\n<>]*`,
+        `本书由[^。<>\n]{0,20}(?:首发|出品|整理)[^。\n<>]*`,
+        `本[书站]首发[^。\n<>]*`,
+        `请到[^。\n<>]{0,30}(?:最新|新)域名[^。\n<>]*`,
+        `本站地址[^。\n<>]{0,30}[：:][^。\n<>]*`,
+        `笔趣阁[^。\n<>]*(?:首[发页]|更新最快|最新章节|手机版)[^。\n<>]*`,
+        `69(?:书吧|shuba)[^。\n<>]*(?:首[发页]|更新|手机版)[^。\n<>]*`,
+        `搜(?:小说|书)?网[^。\n<>]*(?:首[发页]|更新|手机版)[^。\n<>]*`,
+        `回复[^。\n<>]{0,10}看[^。\n<>]*章节`,
+        `请记住本站[^。\n<>]*网址`,
+        `本[书站]永久地址[^。\n<>]*`,
+        `感谢书友[^。\n<>]*支持`,
 }
 
 var (
@@ -458,7 +497,7 @@ func RemoveAdLines(text string, patterns []string) string {
 
 // ---------- 控制字符 + 零宽字符剥离 ----------
 
-// CcAndZwStripRe — 控制字符 (除 \t \n \r) + 零宽字符 + 不可见排版字符剥离正则.
+// CcAndZwStripRe — 控制字符 (除 \t \n \r) + 零宽字符 + 不可见排版字符 + 乱码替换符剥离正则.
 //  R49-1B: 扩展覆盖范围 (原仅 C0 + U+200B-C/U+2060/U+FEFF). 新增:
 //   - U+007F (DEL), U+0080-U+009F (C1 控制: NEL 等 Windows 风格源站杂符)
 //   - U+00AD (Soft Hyphen — 段内连字符, 中文站罕见但偶发)
@@ -468,12 +507,17 @@ func RemoveAdLines(text string, patterns []string) string {
 //   - U+2066-U+2069 (Bidi Isolate Marks: LRI/RLI/FSI/PDI)
 //   (U+00A0 NBSP / U+3000 全角空格等 Unicode 空格不在此剥, 由 NormalizeParagraphs
 //    的 unicodeWsRe 归一化到 ASCII 空格.)
+//  R66-C 通用清洗增强 (用户需求 #11): 加 U+FFFD (REPLACEMENT CHARACTER) 乱码替换符.
+//    源站 GBK/UTF-8 编码混淆时, decoder 把无效字节替换为 U+FFFD, 表现为 "□" 豆腐块.
+//    正文里残留 U+FFFD = 编码 bug 痕迹, 应剥离. (极少源站正文用 U+FFFD 作装饰符,
+//    误伤概率极低; 与任务 #11 通用乱码清洗要求一致.)
 //  R39-1C: Go RE2 不支持 \u 转义, 改用 \x{XXXX} 语法 (与 init 不再 panic).
-var CcAndZwStripRe = regexp.MustCompile(`[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\x{0080}-\x{009F}\x{00AD}\x{200B}-\x{200F}\x{2028}\x{2029}\x{2060}-\x{2069}\x{FEFF}]`)
+var CcAndZwStripRe = regexp.MustCompile(`[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\x{0080}-\x{009F}\x{00AD}\x{200B}-\x{200F}\x{2028}\x{2029}\x{2060}-\x{2069}\x{FEFF}\x{FFFD}]`)
 
 // ZWStripOnlyRe — 仅零宽字符 + 不可见排版字符 (用于纯文本字段, 不剥控制字符).
 //  R49-1B: 同 CcAndZwStripRe 的零宽部分扩展 (新增 LRM/RLM/SHY/LSP/PSP/invisible operators/Bidi isolate).
-var ZWStripOnlyRe = regexp.MustCompile(`[\x{00AD}\x{200B}-\x{200F}\x{2028}\x{2029}\x{2060}-\x{2069}\x{FEFF}]`)
+//  R66-C 通用清洗增强 (用户需求 #11): 加 U+FFFD 乱码替换符 (与 CcAndZwStripRe 同款).
+var ZWStripOnlyRe = regexp.MustCompile(`[\x{00AD}\x{200B}-\x{200F}\x{2028}\x{2029}\x{2060}-\x{2069}\x{FEFF}\x{FFFD}]`)
 
 // CcStripOnlyRe — 仅控制字符 (C0 + DEL + C1; \t\n\r 不在剥离类内).
 //  R49-1B: 扩展 C1 (U+0080-U+009F) + DEL (U+007F) 覆盖 (Windows 风格源站偶发 NEL 等).

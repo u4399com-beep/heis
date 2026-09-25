@@ -11,11 +11,15 @@
 <body class="page-info">
 <div class="top-float">
 <div class="top-float-inner">
+<div class="mobile-nav-tools">
+<button type="button" class="mobile-nav-back">返回</button>
+<button type="button" class="mobile-nav-menu">菜单</button>
+</div>
 <nav class="top-float-nav">
 <a href="{{.HomeURL}}">首页</a>
 {{range .NavCats}}<a href="{{.URL}}">{{.name}}</a>{{end}}
 </nav>
-<div class="top-float-auth"></div>
+<div class="top-float-auth"><a href="/?view=history">足迹</a><a href="/?view=fulltext">完本</a></div>
 </div>
 </div>
 

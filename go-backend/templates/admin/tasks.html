@@ -11,6 +11,8 @@
     <h1>{{.Title}}</h1>
     <div class="actions">
       <button class="btn btn-primary" onclick="openCreateModal()">+ 新建任务</button>
+      <button class="btn" onclick="openQuickFillModal()">快速填充</button>
+      <button class="btn" onclick="openMetricsModal()">反反爬 Metrics</button>
       <a href="/api/admin/tasks" class="btn" target="_blank">API</a>
     </div>
   </div>
@@ -201,6 +203,47 @@
   </div>
 </div>
 
+<!-- R66-A 快速填充 Modal -->
+<div class="modal-backdrop" id="quickFillModal">
+  <div class="modal">
+    <div class="modal-head"><h2>快速填充采集任务</h2><button class="btn btn-sm" onclick="closeModal('quickFillModal')">✕</button></div>
+    <form id="quickFillForm" class="modal-body">
+      <div class="form-grid">
+        <div class="field full">
+          <label>采集规则 <span style="color:var(--dim);font-weight:normal;">(留空 = 所有 enabled 规则)</span></label>
+          <select name="ruleIds" multiple size="8" style="width:100%;min-height:160px;">
+            {{range .Rules}}
+            <option value="{{.id}}">{{.name}}{{if not .enabled}} (已禁用){{end}}</option>
+            {{end}}
+          </select>
+          <div class="hint">不选 = 所有 enabled 规则; 多选 (Ctrl/Cmd+Click) = 仅指定规则. 当前 DB 共 {{len .Rules}} 条规则.</div>
+        </div>
+        <div class="field">
+          <label>每规则采书上限</label>
+          <input type="number" name="maxBooksPerRule" value="50" min="1" max="1000">
+          <div class="hint">默认 50 本/规则. listStart=1, listEnd=3 (前 3 页列表), 增量模式.</div>
+        </div>
+      </div>
+    </form>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeModal('quickFillModal')">取消</button>
+      <button class="btn btn-primary" onclick="submitQuickFill()">建任务并启动</button>
+    </div>
+  </div>
+</div>
+
+<!-- R66-A 反反爬 Metrics Modal -->
+<div class="modal-backdrop" id="metricsModal">
+  <div class="modal" style="max-width:1100px;">
+    <div class="modal-head"><h2>反反爬 Metrics (R65-B 7 类 per-host 快照)</h2><button class="btn btn-sm" onclick="closeModal('metricsModal')">✕</button></div>
+    <div class="modal-body" id="metricsBody"><div class="empty-state">点击下方按钮加载…</div></div>
+    <div class="modal-foot">
+      <button class="btn" onclick="loadMetrics()">刷新</button>
+      <button class="btn" onclick="closeModal('metricsModal')">关闭</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -270,6 +313,93 @@ function submitCreate(){
         setTimeout(function(){location.reload();},800);
       }else{showToast('创建失败: '+(j&&j.error||'未知错误'),false);}
     }).catch(function(e){showToast('请求失败: '+e.message,false);});
+}
+// R66-A: 快速填充采集任务 — POST /api/admin/tasks/quick-fill
+function openQuickFillModal(){document.getElementById('quickFillModal').classList.add('open');}
+function submitQuickFill(){
+  var form=document.getElementById('quickFillForm');
+  var fd=new FormData(form);
+  var ruleIds=[];
+  fd.getAll('ruleIds').forEach(function(v){if(v)ruleIds.push(v);});
+  var maxBooks=parseInt(fd.get('maxBooksPerRule')||'50',10);
+  if(!maxBooks||maxBooks<1)maxBooks=50;
+  if(maxBooks>1000)maxBooks=1000;
+  var body={maxBooksPerRule:maxBooks};
+  if(ruleIds.length>0)body.ruleIds=ruleIds;
+  fetch('/api/admin/tasks/quick-fill',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body)
+  }).then(function(r){return r.json();}).then(function(j){
+    if(j&&j.ok){
+      var d=j.data||{};
+      var created=d.created||0,skipped=d.skipped||0;
+      var msg='已建 '+created+' 个任务并启动';
+      if(skipped>0)msg+=' · 跳过 '+skipped+' (见控制台)';
+      if(skipped>0&&console)console.log('[quick-fill] skippedDetails:',d.skippedDetails);
+      showToast(msg,true);
+      closeModal('quickFillModal');
+      setTimeout(function(){location.reload();},1500);
+    }else{showToast('失败: '+(j&&j.error||'未知错误'),false);}
+  }).catch(function(e){showToast('请求失败: '+e.message,false);});
+}
+// R66-A: 反反爬 Metrics — GET /api/admin/metrics (R65-B 7 类快照)
+function openMetricsModal(){
+  document.getElementById('metricsModal').classList.add('open');
+  loadMetrics();
+}
+function loadMetrics(){
+  var body=document.getElementById('metricsBody');
+  body.innerHTML='<div class="empty-state">加载中…</div>';
+  fetch('/api/admin/metrics').then(function(r){return r.json();}).then(function(j){
+    if(!j||!j.ok){body.innerHTML='<div class="empty-state">加载失败: '+(j&&j.error||'未知')+'</div>';return;}
+    var d=j.data||{};
+    var html='';
+    // 1. utlsPoolSize (single int)
+    html+='<div style="margin-bottom:14px;padding:10px;background:var(--card-2);border-radius:6px;">';
+    html+='<b>utls 指纹池大小</b>: <code>'+(d.utlsPoolSize||0)+'</code> (36 = 覆盖 2016-2024 Chrome/Firefox/Safari/iOS/Edge/Android OkHttp/QQ)';
+    html+='</div>';
+    // Helper: render map[string]X as table
+    function renderMap(title, m, colName){
+      var keys=Object.keys(m||{});
+      html+='<h3 style="margin:14px 0 6px;font-size:13px;color:var(--muted);">'+title+' ('+keys.length+')</h3>';
+      if(keys.length===0){html+='<div class="empty" style="padding:8px;color:var(--dim);font-size:12px;">暂无数据</div>';return;}
+      html+='<table style="width:100%;font-size:12px;border-collapse:collapse;">';
+      html+='<thead><tr style="background:var(--card-2);"><th style="padding:4px 8px;text-align:left;">host</th>';
+      // 取第一项的 sub-keys 作表头
+      var first=m[keys[0]];
+      var subKeys=typeof first==='object'&&first!==null?Object.keys(first):['_'];
+      subKeys.forEach(function(sk){html+='<th style="padding:4px 8px;text-align:left;">'+(colName||sk)+'</th>';});
+      html+='</tr></thead><tbody>';
+      keys.sort().forEach(function(k){
+        var v=m[k];
+        html+='<tr><td style="padding:4px 8px;word-break:break-all;">'+k+'</td>';
+        if(typeof v==='object'&&v!==null){
+          subKeys.forEach(function(sk){
+            var cell=v[sk];
+            if(typeof cell==='object')cell=JSON.stringify(cell);
+            html+='<td style="padding:4px 8px;word-break:break-all;">'+cell+'</td>';
+          });
+        }else{html+='<td style="padding:4px 8px;">'+v+'</td>';}
+        html+='</tr>';
+      });
+      html+='</tbody></table>';
+    }
+    // 2. protoFingerprint (map[string]map[string]string)
+    renderMap('1. HTTP/2 ALPN + Server 头指纹 (第 56 项)', d.protoFingerprint);
+    // 3. utlsChoice (map[string]string)
+    renderMap('2. TLS JA3 指纹钉扎 (第 57 项, 36-pool)', d.utlsChoice);
+    // 4. hostProxyPin (map[string]string)
+    renderMap('3. 代理钉扎表 host→proxyURL (第 58 项)', d.hostProxyPin);
+    // 5. retryBudget (map[string]map[string]int64)
+    renderMap('4. 24h 重试预算 (第 59 项, 上限 200/host)', d.retryBudget);
+    // 6. forwardedIP (map[string]string)
+    renderMap('5. X-Forwarded-For 伪造 IP (第 60 项, 32 RFC1918)', d.forwardedIP);
+    // 7. collectRate (map[string]map[string]int64)
+    renderMap('6. 60s 滑动窗口 QPS/成功率/平均延迟 (B6)', d.collectRate);
+    // 8. hostRetryPolicy (map[string]map[int]string)
+    renderMap('7. 错误分类重试策略覆盖 (B7, retry/abort/switch_proxy/switch_bridge)', d.hostRetryPolicy);
+    body.innerHTML=html;
+  }).catch(function(e){body.innerHTML='<div class="empty-state">请求失败: '+e.message+'</div>';});
 }
 // URL 模式联动校验
 document.querySelector('[name=mode]').addEventListener('change',function(){

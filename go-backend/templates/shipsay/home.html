@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{.Site.Title}}</title>
+<title>{{if .Site.Title}}{{.Site.Title}}{{else}}{{.Site.Name}}{{end}}</title>
 <meta name="keywords" content="{{.Site.Keywords}}">
 <meta name="description" content="{{.Site.Description}}">
 <link rel="stylesheet" href="https://cdn.staticfile.org/font-awesome/4.7.0/css/font-awesome.min.css">
@@ -87,7 +87,7 @@
 <a href="{{.URL}}">{{.name}}</a>
 <ul>
 {{range $.Books}}
-<div>
+<li>
 <a href="{{.URL}}">
 {{if .cover}}<img src="{{.cover}}" title="{{.name}}" width="120" height="160">{{end}}
 </a>
@@ -96,13 +96,18 @@
 <i>&nbsp;/&nbsp;{{.author}}</i>
 <br>&nbsp;&nbsp;&nbsp;&nbsp;{{.intro}}
 </p>
-</div>
+</li>
 {{end}}
 </ul>
 </div>
 {{end}}
 </div>
 </div>
+
+<footer class="container">
+<p><i class="fa fa-flag"></i>&nbsp;<a href="{{.HomeURL}}">{{.Site.Name}}</a>&nbsp;书友最值得收藏的网络小说阅读网</p>
+<p>本站所有小说为完本转载作品，所有内容版权归版权方或原作者所有。</p>
+</footer>
 
 </body>
 </html>{{end}}

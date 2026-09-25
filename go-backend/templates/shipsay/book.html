@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{.Site.Title}} - {{.Book.name}} - {{.Book.author}}</title>
+<title>{{if .Site.Title}}{{.Site.Title}}{{else}}{{.Site.Name}}{{end}} - {{.Book.name}} - {{.Book.author}}</title>
 <meta name="keywords" content="{{.Site.Keywords}},{{.Book.name}},{{.Book.author}},{{.Book.category}}">
 <meta name="description" content="{{.Book.intro}}">
 <link rel="stylesheet" href="https://cdn.staticfile.org/font-awesome/4.7.0/css/font-awesome.min.css">

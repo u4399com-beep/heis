@@ -46,6 +46,14 @@
 </div>
 </div>
 </form>
+<div class="user1 pull-right"><img class="user_touxiang" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzNiIgaGVpZ2h0PSIzNiIgdmlld0JveD0iMCAwIDM2IDM2Ij48Y2lyY2xlIGN4PSIxOCIgY3k9IjE4IiByPSIxOCIgZmlsbD0iI2M4YzhkMCIvPjxjaXJjbGUgY3g9IjE4IiBjeT0iMTQiIHI9IjUuNSIgZmlsbD0iI2ZmZiIvPjxwYXRoIGQ9Ik03LDMwIFExOCwyMSAyOSwzMCBMMjksMzYgTDcsMzYgWiIgZmlsbD0iI2ZmZiIvPjwvc3ZnPg==" alt=""></div>
+<div class="lang pull-right">
+<a href="javascript:;" class="textsel">繁體</a>
+<ul>
+<li><a href="javascript:;" class="zh_click">簡體</a></li>
+<li><a href="javascript:;" class="zh_click">繁體</a></li>
+</ul>
+</div>
 <div class="menu1 pull-right">
 <ul>
 <li><a href="{{.HomeURL}}"> 首頁</a></li>
@@ -118,7 +126,7 @@
 <div class="tag">
 <h3 class="mytitle">小說分類</h3>
 <ul>
-{{range .NavCats}}<a href="{{.URL}}" target="_blank">{{.name}}</a>{{end}}
+{{range .NavCats}}<li><a href="{{.URL}}" target="_blank">{{.name}}</a></li>{{end}}
 </ul>
 </div>
 </div>
