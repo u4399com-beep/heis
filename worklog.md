@@ -26588,3 +26588,43 @@ Stage Summary:
    现有 8-space 风格不引入新 gofmt issue (captchaBackupChain 原 4-space 改 8-space
    修一处内嵌不一致). 项目级 gofmt -w 会重写 8 文件, 跨范围协调, 留 R69+ 项目级规整.
 
+
+---
+Task ID: R68
+Agent: Super Z (主控 R68)
+Task: 用户 4 项需求 — 放弃 Next.js 深化 + 持续开发审查修复 + 清理精简 + 推送 git
+
+Work Log:
+- 侦察: 系统重启后环境回滚 (package.json name 退回 nextjs_tailwind_shadcn_ts + node_modules 1GB + git HEAD 退回 2c4d154 + worklog 退回 R64 交接). 远端 origin/main 有 R67 commit d7f270d. git fetch + git reset --hard origin/main 恢复 R67 全部改动 (package.json name=heis + node_modules 待重装 + worklog R67 段).
+- 环境恢复: 重新下载 go1.26.8 (66MB) + rm -rf node_modules && bun install (272MB) + go build -o heis-backend . (0 errors) + 启动 wrapper PID 4508+30821. :3000=200 4.4ms.
+- 并行派发 4 agent: R68-A (package.json+.gitignore+DEPLOY+README) / R68-B (crawl/fetcher+hostgate+smart 反反爬 72-76) / R68-C (crawl/runner+cleaner+storage+types 深抓+精简) / R68-D (main+admin 深抓+coverURL+BookProgressReader).
+- R68-A 完成: package.json 删 bun-types (devDeps 1→0) + bun.lock workspace name nextjs_tailwind_shadcn_ts→heis (Next.js 起源残留清理) + .gitignore 删 12 行 Next.js 残留 (*.tsbuildinfo/.vercel/.pnp/.next/out/build/npm-debug/next-env.d.ts) + 加 go-backend/go-backend/ (R67 路径 bug 防御) + DEPLOY.md Go-only 更新 (删 npm 提及) + README.md 快速开始 3→5 步 (加 bun install + go build). node_modules 272→243MB (-29MB).
+- R68-B 完成: 反反爬第 74-76 项 (74 HTTP/2 PING 帧适配 ReadIdleTimeout 30s+PingTimeout 15s 模拟 Chrome 保活 / 75 Connection keep-alive 显式注入 callBridge+applyBrowserLikeHeaders / 76 Accept 头按请求类型细化 acceptHeaderForURL 5 常量 HTML/JSON/Image/CSS/JS) + 跳过 72 HTTP/3 QUIC (quic-go 不在 go.mod) + 73 TLS 1.3 0-RTT (utls SessionState.EarlyData 标注 for QUIC, TCP 路径无法发) + 采集增强 B12-B14 (B12 AdaptiveTaskConcurrency 按活跃任务数调并发 / B13 EstimateTaskETA taskProgressMap+RecordTaskProgress / B14 RecoveryStrategy 按 hostErrorClass 返恢复策略) + 5 bug (BUG-73 P2 collectRateLastSweepAt race → atomic.Int64 / BUG-74 P3 captcha reqCancel 过早致 body 读失败 3 处移到 Body.Close 后 / BUG-75 P3 globalUtlsTransport 漏升级 R67-B #68/#69 改 dnsCachedDialContext+MaxIdleConns / BUG-76 P2 TrySolveTokenChallenge fragment 后置致 query 失效用 url.Parse / BUG-77 P3 taskProgress 字段无锁 race 加 mu). fetcher.go +230 / smart.go +188. 反反爬累计 68→71 项.
+- R68-C 完成: 3 bug (BUG-73 P2 CrawlBookMeta existing.Name/Author/Intro 无条件覆盖 → 条件覆盖 / BUG-74 P2 UpsertBook err 静默吞 → orphan 章节 / BUG-75 P3 ReadCover 目录错误) + FinalizeBook 签名 8→4 参 (删 ctx/myEpoch/bookDone/stats 4 未用参数 + bookDoneMap 全删) + ParsedWordCount 设置 (CrawlChapterContent 内 atomic.AddInt64 + utf8.RuneCountInString + FinalizeBook atomic.LoadInt64 读) + types.go safeStr 效率精简 (省一次 []rune 分配). runner.go +43 / storage.go +10 / types.go +3. 编号与 R68-B 冲突主控去重.
+- R68-D 超时前落盘 (无报告但 git diff 验证): coverURL 边界扩展 (data:/http(s):////绝对路径/相对路径 全覆盖 5 分支, R67 交接 #8 完成) + ListBookProgress 实现 (admin.go:257 func (a *adminDB) ListBookProgress(taskID) ([]crawl.ResumeItem, error), R67 交接 #4 完成, runner.go:902 type-assertion 成功 applyResumeSort 启用). adminDownloadsDelete race 未修 (当前 mutex 保护足够, 深抓 BUG 未完成留 R69). 编号 BUG-73+ 未用 (R68-D 超时).
+- 主控统一编译: go build -o heis-backend . = 0 errors + go vet ./... = 0 warnings, 二进制 25,352,418 bytes (R67 25,341,777 → +10,641: R68-B +418 crawl + R68-C +56 crawl + R68-D coverURL+ListBookProgress).
+- 主控重启 wrapper: kill heis-backend → wrapper 自愈重启 PID 30821, :3000=200 4.4ms.
+- 验证: /covers/ 全本地路径 (coverURL 修复生效 无 /https:// 畸形) / /api/admin/metrics 200 返回 7 类 metrics / DB 668 books/9 chapters/53 tasks (R67 quick-fill 数据保留).
+- 用户需求 #4 推送 git: git add -A (13 文件) + git commit (1308 insertions/102 deletions) + git push origin main (d7f270d..ceec91a normal fast-forward). ✅ 推送成功.
+
+Stage Summary:
+- 用户 4 项需求全部完成:
+  · 需求 1 (放弃 Next.js 深化): R67 基础 (49→3 deps, 1GB→272MB) + R68-A 深化 (删 bun-types devDeps 1→0 + bun.lock workspace name 清理 + .gitignore 删 12 行 + DEPLOY/README Go-only), node_modules 272→243MB
+  · 需求 2 (持续开发+采集+反反爬+深抓): 4 agent 并行 (3 完成 + 1 超时落盘) + 反反爬第 74-76 项 (累计 71 项, 跳过 72/73 技术限制) + 采集增强 B12-B14 + 10 新 bug (BUG-73~77 R68-B + BUG-73~75 R68-C 编号冲突主控去重, 实际 8 unique: P2×4 collectRate race/CrawlBookMeta 覆盖/UpsertBook 吞 err/TrySolveTokenChallenge fragment + P3×4 captcha/globalUtls/ReadCover/taskProgress)
+  · 需求 3 (清理整合精简): R68-A .gitignore 12 行 + R68-C FinalizeBook 8→4 参 + bookDoneMap 全删 + safeStr 效率精简 + R68-D coverURL 边界 + ListBookProgress 实现
+  · 需求 4 (推送 git): git push origin main 成功 (d7f270d..ceec91a fast-forward)
+- 编译: go build ./... 0 errors + go vet ./... 0 warnings, 二进制 25,352,418 bytes.
+- 反反爬累计: 68 → 71 项 (R68-B 新增 74-76, 跳过 72/73).
+- Bug 修复累计: 74 → 82 项 (R68 新增 8 unique bug, BUG-73~77 R68-B + BUG-73~75 R68-C 编号冲突去重).
+- 采集增强: 10 → 13 项 (R68-B B12-B14).
+- package.json: devDeps 1→0, node_modules 272→243MB.
+- git: push origin main 成功 (commit ceec91a).
+
+未解决 (交接 R69):
+1. **R68-D adminDownloadsDelete race**: 当前 mutex 保护足够, 但后台下载 goroutine 与删除的 cancel race 未修. R69 加 context cancel.
+2. **R68-D main+admin 深抓 BUG-73+**: 超时未完成, R69 继续深抓.
+3. **R68-B 第 72 项 HTTP/3 QUIC + 第 73 项 TLS 1.3 0-RTT**: 技术限制跳过, R69 若 quic-go 加 go.mod 可做.
+4. **R68-C ParsedWordCount incremental 限制**: 仅含本轮字数非 DB 全章节总和, R69 扩 DBClient 接口加 sum 聚合.
+5. **R68-C deadcode 21 项全 KEEP**: storage 16 + runner 5, R69 切流式/TXT 路径时启用或 cascade 删.
+6. **gofmt 全项目 space-vs-tab**: 7 文件用 8 spaces, R69 一次性 gofmt -w 规整.
+7. **R38-R54 冗余注释**: 109 处含 why rationale 保守保留, R69 可精简 ~21 处纯描述.
