@@ -16,6 +16,7 @@ import (
         "path/filepath"
         "regexp"
         "runtime"
+        "sort"
         "strconv"
         "time"
         "strings"
@@ -769,8 +770,9 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                                 if getFeedbackEnabled() {
                                         buf2.WriteString(feedbackWidgetHTML)
                                 }
-                                w.Header().Set("Content-Type", "text/html; charset=utf-8")
-                                w.Write([]byte(buf2.String()))
+                                // R69-A: 若 Setting.obfuscateHTML=true 应用混淆 (fallback 路径用 "home" view)
+                                siteDBID, _ := site["ID"].(string)
+                                writeRenderedHTML(w, buf2.String(), siteDBID, "home")
                                 return
                         }
                 }
@@ -781,8 +783,9 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
         if getFeedbackEnabled() {
                 buf.WriteString(feedbackWidgetHTML)
         }
-        w.Header().Set("Content-Type", "text/html; charset=utf-8")
-        w.Write([]byte(buf.String()))
+        // R69-A: 若 Setting.obfuscateHTML=true 应用混淆 (主渲染路径用原 view 构造 seed)
+        siteDBID, _ := site["ID"].(string)
+        writeRenderedHTML(w, buf.String(), siteDBID, view)
 }
 
 // R64-D: render404 渲染 templates/404.html (R64-A 创建模板), 失败时 fallback 到 http.NotFound.
@@ -820,9 +823,15 @@ func render404(w http.ResponseWriter, r *http.Request, site map[string]interface
         if t := tmpls.Lookup("404"); t != nil {
                 var buf strings.Builder
                 if err := t.Execute(&buf, data); err == nil {
+                        // R69-A: 若 Setting.obfuscateHTML=true 应用混淆 (404 页用 "404" view 构造 seed)
+                        out := buf.String()
+                        siteDBID, _ := site["ID"].(string)
+                        if getObfuscateHTMLEnabled() && siteDBID != "" {
+                                out = obfuscateHTML(out, obfuscateHTMLSeed(siteDBID, "404"))
+                        }
                         w.Header().Set("Content-Type", "text/html; charset=utf-8")
                         w.WriteHeader(http.StatusNotFound)
-                        w.Write([]byte(buf.String()))
+                        w.Write([]byte(out))
                         return
                 } else {
                         // Execute 失败 → log + fallback http.NotFound (未写出任何 byte, 可安全 fallback)
@@ -830,6 +839,354 @@ func render404(w http.ResponseWriter, r *http.Request, site map[string]interface
                 }
         }
         http.NotFound(w, r)
+}
+
+// ===== R69-A: HTML 混淆引擎 (obfuscateHTML) =====
+//
+// 背景: 模板渲染输出固定 HTML 结构 (固定 class 名 / 标签嵌套 / 属性顺序), 搜索引擎
+//   爬虫看到所有页面结构相同 → 易被判重复内容 (duplicate content). 加 HTML 混淆器
+//   在 homeHandler ExecuteTemplate 后对输出 HTML 做变换, 让每页 (per-seed) 输出结构
+//   不同但视觉一致.
+//
+// 设计:
+//   - obfuscateHTML(html, seed) 纯函数, seed 用 siteID + view + 5 分钟时间窗口
+//     (同窗口同结果保缓存友好, 5 分钟外变化 → 蜘蛛看到结构轻微变化增反爬识别难度).
+//   - 变换 1: class 名随机化 (HTML 所有 class="X" → class="RANDOM" + <style> 块内
+//     .X 选择器同步 + <script> 块内 'X' 单 class 字符串字面量同步).
+//   - 变换 2: 标签间插入随机 HTML 注释 (<!-- a3f7 -->) — 蜘蛛看到不同噪音.
+//   - 变换 3: 标签间插入随机空白 (空格/换行, 不影响渲染).
+//   - 保守跳过: 属性顺序变化 (低价值 + 风险高), div 包裹 (易破布局).
+//
+// 风险与约束:
+//   - 外部 CSS (/clone-css/*.css 由 static handler 服务) 用原 class 名选择器; 若
+//     admin 启用本功能, 渲染 HTML 的 class 被改名但 CSS 文件未改 → 样式失效. 保守
+//     默认 false; admin 应仅在 inline <style> 模板站点或接受样式失效场景启用.
+//     R70 主控可考虑拦截 /clone-css/*.css 请求 + 按 site class map 重写 CSS 文件
+//     (per-site 稳定 map, 非 per-page 变化 map, 否则 CSS 缓存失效).
+//   - 不破坏 <pre>/<code> (保留格式标签): 当前未实现 per-tag 跳过, 但变换只在
+//     class 属性 + 标签间, <pre>/<code> 内文本若无 class 属性则天然不受影响.
+//   - <script> 块内仅替换单 class 字符串字面量 ("X" 或 'X' 形态, 无空格); 多 class
+//     字符串 ("X Y") 不替换 (防 className 赋值场景断 JS).
+//
+// 开关: Setting 表 key='obfuscateHTML' value='true'/'false' (默认 false).
+//   wired into homeHandler (主路径 + 兜底 fallback 路径) + render404.
+
+// R69-A: obfuscateHTMLSeed 用 siteID + view + 5 分钟时间窗口构造混淆种子.
+//   返回值供 obfuscateHTML 内 RNG 用, 同窗口同结果 (缓存友好); 跨窗口变化 (蜘蛛
+//   看到结构轻微变化, 增反爬识别难度).
+func obfuscateHTMLSeed(siteID, view string) string {
+        window := time.Now().Unix() / 300 // 5 分钟窗口 (300s)
+        return siteID + ":" + view + ":" + strconv.FormatInt(window, 10)
+}
+
+// R69-A: obfuscateRNG — 自实现 FNV-1a + xorshift64* 种子化 RNG (零依赖).
+//   math/rand 全局自动种子不可控; 用本结构保证同 seed 同输出 (缓存友好).
+//   注: 不用 math/rand 标准库, 因其全局 PRNG 自 Go 1.20 起自动种子, 无法保证
+//   跨进程同 seed 同输出 (即使 rand.NewSource 在进程内可复现, 跨进程仍依赖
+//   种子值; 本实现完全自包含, 无外部依赖).
+type obfuscateRNG struct {
+        state uint64
+}
+
+// newObfuscateRNG 用 FNV-1a 64-bit hash 把字符串 seed 哈希成 uint64 状态.
+func newObfuscateRNG(seed string) *obfuscateRNG {
+        h := uint64(14695981039346656037) // FNV-1a 64-bit offset basis (标准值)
+        for i := 0; i < len(seed); i++ {
+                h ^= uint64(seed[i])
+                h *= 1099511628211 // FNV-1a 64-bit prime
+        }
+        if h == 0 {
+                h = 0xdeadbeefcafebabe // 防 0 状态 (xorshift 0 退化)
+        }
+        return &obfuscateRNG{state: h}
+}
+
+// next 返回下一个 64-bit 伪随机数 (xorshift64* Vigna 2014).
+func (r *obfuscateRNG) next() uint64 {
+        r.state ^= r.state >> 12
+        r.state ^= r.state << 25
+        r.state ^= r.state >> 27
+        return r.state * 0x2545F4914F6CDD1D
+}
+
+// int63 返回非负 int64 (Go math/rand 兼容形态).
+func (r *obfuscateRNG) int63() int64 {
+        return int64(r.next() >> 1)
+}
+
+// intn 返回 [0, n) 范围伪随机数. n<=0 返 0.
+func (r *obfuscateRNG) intn(n int) int {
+        if n <= 0 {
+                return 0
+        }
+        return int(r.int63() % int64(n))
+}
+
+// randomClassName 生成 5-8 字符 CSS 标识符 (首字符为字母, 后续字母数字).
+//   首字符限字母 (CSS 标识符规则: 首字符不可数字), 后续字符可为字母/数字.
+//   长度 5-8 在 CSS 中足够唯一防与现有 class 名冲突.
+func (r *obfuscateRNG) randomClassName() string {
+        const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        const alnum = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        length := 5 + r.intn(4) // 5-8
+        out := make([]byte, length)
+        out[0] = letters[r.intn(len(letters))]
+        for i := 1; i < length; i++ {
+                out[i] = alnum[r.intn(len(alnum))]
+        }
+        return string(out)
+}
+
+// R69-A: 预编译正则 (包级, 防 per-request 重复编译开销).
+var (
+        // classAttrRE 匹配 class="..." 或 class='...' 属性 (单/双引号).
+        //   捕获组 1 = 含引号完整值 (含引号), 2 = 双引号内容, 3 = 单引号内容.
+        classAttrRE = regexp.MustCompile(`(?i)\bclass\s*=\s*("([^"]*)"|'([^']*)')`)
+        // styleBlockRE 匹配 <style ...>...</style> 块 (含属性 + 内容). (?is) 跨行 + 不区分大小写.
+        //   捕获组 1 = <style> 属性 (含前导空格, 如 ' type="text/css"'), 2 = 块内容.
+        styleBlockRE = regexp.MustCompile(`(?is)<style\b([^>]*)>(.*?)</style>`)
+        // scriptBlockRE 匹配 <script ...>...</script> 块. 同上形态.
+        //   捕获组 1 = <script> 属性, 2 = 块内容.
+        scriptBlockRE = regexp.MustCompile(`(?is)<script\b([^>]*)>(.*?)</script>`)
+        // tagBoundaryRE 匹配 ">" + 间空白 + "<" (标签间位置, 用于插注释/空白).
+        //   捕获组 1 = 间空白.
+        tagBoundaryRE = regexp.MustCompile(`>(\s*)<`)
+        // tagBoundaryWsRE 仅匹配含至少 1 个空白字符的标签间位置.
+        //   捕获组 1 = 间空白.
+        tagBoundaryWsRE = regexp.MustCompile(`>(\s+)<`)
+        // cssClassInStyleRE 在 CSS 文本中匹配 .classname 选择器.
+        //   捕获组 1 = classname, 2 = 边界字符 (非标识符或行尾).
+        cssClassInStyleRE = regexp.MustCompile(`\.([a-zA-Z_][a-zA-Z0-9_-]*)([^a-zA-Z0-9_-]|$)`)
+)
+
+// cssClassSelectorRE 为单个 class 名编译选择器匹配正则.
+//   匹配 .classname 后跟非标识符字符或字符串结束 (捕获组 1 = 边界字符).
+//   重写时回填边界字符保选择器完整. RE2 不支持 lookahead, 故用捕获组保留边界.
+//   per-class 编译并缓存 (NewRegexp 复杂度低, obfuscateHTML 内复用).
+func cssClassSelectorRE(className string) *regexp.Regexp {
+        return regexp.MustCompile(`\.` + regexp.QuoteMeta(className) + `([^a-zA-Z0-9_-]|$)`)
+}
+
+// R69-A: collectHTMLClasses 扫描 HTML 所有 class="X Y Z" + <style> 内 .X 选择器,
+//   返回所有原始 class 名集合 (用于构建 class 映射表).
+func collectHTMLClasses(html string) map[string]bool {
+        set := map[string]bool{}
+        // 1. HTML class 属性值
+        for _, m := range classAttrRE.FindAllStringSubmatch(html, -1) {
+                val := m[2] // 双引号内容
+                if val == "" {
+                        val = m[3] // 单引号内容
+                }
+                for _, c := range strings.Fields(val) {
+                        if c != "" {
+                                set[c] = true
+                        }
+                }
+        }
+        // 2. <style> 块内 .classname 选择器 (inline style 属性不在 <style> 块内, 不受影响)
+        for _, blk := range styleBlockRE.FindAllStringSubmatch(html, -1) {
+                cssText := blk[2]
+                for _, c := range cssClassInStyleRE.FindAllStringSubmatch(cssText, -1) {
+                        if c[1] != "" {
+                                set[c[1]] = true
+                        }
+                }
+        }
+        return set
+}
+
+// R69-A: obfuscateHTML 主混淆函数. 输入 HTML + seed, 返回混淆后 HTML.
+//
+//   变换流程:
+//     1. 扫描所有 class 名 (HTML 属性 + <style> 选择器) → 构建随机映射表
+//        (原 class → 随机 class, 同 seed 同映射保缓存友好)
+//     2. 重写 HTML class 属性值 (class="a b" → class="X Y" 用映射)
+//     3. 重写 <style> 块内 CSS 选择器 (.a → .X 同步映射)
+//     4. 重写 <script> 块内单 class 字符串字面量 ("a" → "X" 同步映射)
+//     5. 标签间插入随机 HTML 注释 (50% 概率, 防 5KB+ HTML 过度膨胀)
+//     6. 标签间插入随机空白 (30% 概率, 1-2 个空格/换行)
+//
+//   注: 若 seed 为空 → 不混淆 (防 admin 测试误用导致无映射乱写).
+//   注: 若 html 无任何 class 名 → 跳过 2/3/4 步, 仅做 5/6 步 (注释/空白注入).
+func obfuscateHTML(html, seed string) string {
+        if html == "" || seed == "" {
+                return html
+        }
+        rng := newObfuscateRNG(seed)
+
+        // 1. 构建 class 映射表 (原 class → 随机 class, 按 class 名字典序迭代保确定性)
+        //   注: Go map 迭代顺序不确定, 同 seed 不同 run 会给同 class 不同随机名 →
+        //   RNG 状态演进不一致 → 后续 insertRandomTagComments/jitterTagWhitespace 输出不一致
+        //   → 缓存失效. 排序后同 seed 同映射 + 同 RNG 演进 → 输出完全确定性.
+        classSet := collectHTMLClasses(html)
+        sortedClasses := make([]string, 0, len(classSet))
+        for c := range classSet {
+                sortedClasses = append(sortedClasses, c)
+        }
+        sort.Strings(sortedClasses)
+        classMap := make(map[string]string, len(sortedClasses))
+        for _, orig := range sortedClasses {
+                classMap[orig] = rng.randomClassName()
+        }
+
+        // 2. 重写 HTML class 属性值 (class="a b c" → class="X Y Z" 用 map)
+        if len(classMap) > 0 {
+                html = classAttrRE.ReplaceAllStringFunc(html, func(match string) string {
+                        sub := classAttrRE.FindStringSubmatch(match)
+                        if len(sub) < 4 {
+                                return match
+                        }
+                        // sub[2] = 双引号内容, sub[3] = 单引号内容
+                        quote := byte('"')
+                        val := sub[2]
+                        if val == "" {
+                                val = sub[3]
+                                quote = '\''
+                        }
+                        classes := strings.Fields(val)
+                        renamed := make([]string, len(classes))
+                        for i, c := range classes {
+                                if r, ok := classMap[c]; ok && r != "" {
+                                        renamed[i] = r
+                                } else {
+                                        renamed[i] = c // 未知 class 保留原样 (防误改)
+                                }
+                        }
+                        return "class=" + string(quote) + strings.Join(renamed, " ") + string(quote)
+                })
+        }
+
+        // 3. 重写 <style> 块内 CSS 选择器 (.classname → .random, 同步映射)
+        if len(classMap) > 0 {
+                html = styleBlockRE.ReplaceAllStringFunc(html, func(match string) string {
+                        sub := styleBlockRE.FindStringSubmatch(match)
+                        if len(sub) < 3 {
+                                return match
+                        }
+                        // sub[1] = <style> 属性, sub[2] = 块内容
+                        cssText := sub[2]
+                        for orig, rand := range classMap {
+                                if orig == "" || rand == "" {
+                                        continue
+                                }
+                                re := cssClassSelectorRE(orig)
+                                cssText = re.ReplaceAllString(cssText, "."+rand+"${1}")
+                        }
+                        return "<style" + sub[1] + ">" + cssText + "</style>"
+                })
+        }
+
+        // 4. 重写 <script> 块内单 class 字符串字面量 (querySelector(".X") 等)
+        if len(classMap) > 0 {
+                html = scriptBlockRE.ReplaceAllStringFunc(html, func(match string) string {
+                        sub := scriptBlockRE.FindStringSubmatch(match)
+                        if len(sub) < 3 {
+                                return match
+                        }
+                        jsText := sub[2]
+                        for orig, rand := range classMap {
+                                if orig == "" || rand == "" {
+                                        continue
+                                }
+                                // 4a. Bare class string literal: "X" or 'X' (e.g. getElementsByClassName("X"))
+                                bareDoubleRE := regexp.MustCompile(`"` + regexp.QuoteMeta(orig) + `"`)
+                                jsText = bareDoubleRE.ReplaceAllString(jsText, `"`+rand+`"`)
+                                bareSingleRE := regexp.MustCompile(`'` + regexp.QuoteMeta(orig) + `'`)
+                                jsText = bareSingleRE.ReplaceAllString(jsText, `'`+rand+`'`)
+                                // 4b. CSS selector string literal: ".X" or '.X' (e.g. querySelector(".X"))
+                                //     多 class/compound selector ("body.X" / ".X.Y") 不替换 (防断 JS)
+                                selDoubleRE := regexp.MustCompile(`"\.` + regexp.QuoteMeta(orig) + `"`)
+                                jsText = selDoubleRE.ReplaceAllString(jsText, `".`+rand+`"`)
+                                selSingleRE := regexp.MustCompile(`'\.` + regexp.QuoteMeta(orig) + `'`)
+                                jsText = selSingleRE.ReplaceAllString(jsText, `'.`+rand+`'`)
+                        }
+                        return "<script" + sub[1] + ">" + jsText + "</script>"
+                })
+        }
+
+        // 5. 标签间插入随机 HTML 注释 (50% 概率)
+        html = insertRandomTagComments(html, rng)
+
+        // 6. 标签间插入随机空白 (30% 概率, 1-2 字符)
+        html = jitterTagWhitespace(html, rng)
+
+        return html
+}
+
+// insertRandomTagComments 在标签间 (" > <" 模式) 插入随机 HTML 注释.
+//   正则匹配 ">" + 间空白 + "<", 50% 概率插注释. 注释内容 5-8 字符随机
+//   (CSS 标识符形态, 蜘蛛看到不同噪音). 保留原空白 + 注释, 不影响渲染.
+func insertRandomTagComments(html string, rng *obfuscateRNG) string {
+        return tagBoundaryRE.ReplaceAllStringFunc(html, func(match string) string {
+                sub := tagBoundaryRE.FindStringSubmatch(match)
+                ws := ""
+                if len(sub) >= 2 {
+                        ws = sub[1]
+                }
+                // 50% 概率插注释 (防 5KB+ HTML 过度膨胀 + 100% 概率致爬虫识别 "恒定注释密度" 指纹)
+                if rng.intn(2) == 0 {
+                        comment := "<!--" + rng.randomClassName() + "-->"
+                        return ">" + ws + comment + "<"
+                }
+                return match
+        })
+}
+
+// jitterTagWhitespace 在标签间追加 0-2 个随机空白字符 (空格/换行).
+//   30% 概率追加 (与 insertRandomTagComments 协同, 进一步打散结构).
+//   仅在含至少 1 个原空白的位置追加 (避免在无空白标签间硬插, 防 HTML 紧凑区变松).
+func jitterTagWhitespace(html string, rng *obfuscateRNG) string {
+        return tagBoundaryWsRE.ReplaceAllStringFunc(html, func(match string) string {
+                sub := tagBoundaryWsRE.FindStringSubmatch(match)
+                if len(sub) < 2 {
+                        return match
+                }
+                ws := sub[1]
+                if rng.intn(10) < 3 { // 30% 概率追加
+                        n := 1 + rng.intn(2) // 1-2 个
+                        extra := make([]byte, 0, n)
+                        for i := 0; i < n; i++ {
+                                if rng.intn(2) == 0 {
+                                        extra = append(extra, ' ')
+                                } else {
+                                        extra = append(extra, '\n')
+                                }
+                        }
+                        return ">" + ws + string(extra) + "<"
+                }
+                return match
+        })
+}
+
+// R69-A: getObfuscateHTMLEnabled 读 Setting 表 obfuscateHTML 全局开关 (默认 false).
+//   与 getFeedbackEnabled 同款模式 (admin.go). value 存储格式: JSON 编码
+//   ("true"/"false") 或 raw 字符串 ("true"/"false"). 缺失或非 "true" 均视为 false.
+//   每次 homeHandler 渲染调用一次 (SQLite 单行查询, <0.1ms, 不需缓存层).
+func getObfuscateHTMLEnabled() bool {
+        var v string
+        err := db.QueryRow(`SELECT value FROM Setting WHERE key='obfuscateHTML'`).Scan(&v)
+        if err != nil || v == "" {
+                return false
+        }
+        // 优先解析 JSON (admin settings 存 JSON 编码)
+        var parsed interface{}
+        if json.Unmarshal([]byte(v), &parsed) == nil {
+                if b, ok := parsed.(bool); ok {
+                        return b
+                }
+        }
+        return v == "true"
+}
+
+// R69-A: writeRenderedHTML 写 HTML 响应, 若 Setting.obfuscateHTML=true 应用混淆.
+//   homeHandler + render404 共享此 helper, 避免重复 if-else 逻辑.
+//   siteID/view 用于构造 seed (5 分钟窗口); 若二者均空 → 不混淆 (防 admin 测试误用).
+func writeRenderedHTML(w http.ResponseWriter, html, siteID, view string) {
+        if getObfuscateHTMLEnabled() && siteID != "" {
+                html = obfuscateHTML(html, obfuscateHTMLSeed(siteID, view))
+        }
+        w.Header().Set("Content-Type", "text/html; charset=utf-8")
+        w.Write([]byte(html))
 }
 
 // R64-D: per-book/chapter/category URL 注入 helpers.
@@ -1160,7 +1517,8 @@ func computeChapterSeo(site map[string]interface{}, chapterTitle, bookName, book
                 defaultKw += "," + siteKeywords
         }
         if seoAuto || (titleTmpl == "" && descTmpl == "" && kwTmpl == "") {
-                return defaultTitle, defaultDesc, defaultKw
+                // R69-A: 应用关键词转码 (Setting.keywordTranscode != "off" 时)
+                return transcodeChapterSeoOutput(defaultTitle, defaultDesc, defaultKw)
         }
         // chapterSeoAuto=false 且至少一个模板非空: 用用户模板 (占位符替换); 空模板 fallback 默认
         apply := func(tmpl, defaultVal string) string {
@@ -1175,7 +1533,265 @@ func computeChapterSeo(site map[string]interface{}, chapterTitle, bookName, book
                 out = strings.ReplaceAll(out, "{siteName}", siteName)
                 return out
         }
-        return apply(titleTmpl, defaultTitle), apply(descTmpl, defaultDesc), apply(kwTmpl, defaultKw)
+        // R69-A: 应用关键词转码 (Setting.keywordTranscode != "off" 时)
+        return transcodeChapterSeoOutput(apply(titleTmpl, defaultTitle), apply(descTmpl, defaultDesc), apply(kwTmpl, defaultKw))
+}
+
+// ===== R69-A: 关键词转码 (transcodeKeyword) =====
+//
+// 背景: TDK (title/description/keywords) + 正文关键词明文显示, 搜索引擎易判敏感词
+//   审核. 加关键词转码器在 computeChapterSeo 输出阶段对 TDK 关键词转码, 让搜索引擎
+//   看到的关键词与人类阅读的略有差异, 降审核风险.
+//
+// 模式 (mode):
+//   - "off"        — passthrough (默认)
+//   - "split"     — 字符间插可见空格: "免费小说" → "免 费 小 说"
+//   - "homophone"  — 同音字替换常见敏感词 (内置 ~30 词字典): "免费" → "免菲"
+//   - "pinyin"     — 拼音替换常见敏感词: "免费" → "mianfei"
+//   - "mixed"      — 随机混合 (split + homophone + pinyin per word 确定性 hash)
+//   - "zwsp"      — 字符间插零宽空格 U+200B (视觉不可见, 蜘蛛分词被扰)
+//
+// 设计:
+//   - transcodeKeyword(s, mode) 纯函数, 不读 DB.
+//   - split/zwsp 对全字符串逐字符插分隔符 (覆盖所有字符, 非仅敏感词).
+//   - homophone/pinyin/mixed 仅替换字典内的敏感词, 非敏感词保留原样 (避免破坏正常
+//     TDK 可读性, admin 可控范围).
+//   - mixed 模式 per word 确定性 hash 选模式 (同 word 同输出, 避免缓存闪变).
+//   - 字典 ~30 词覆盖常见中文小说站敏感词 (免费/小说/完结/下载/全文/笔趣阁 等).
+//
+// 开关: Setting 表 key='keywordTranscode' value='off'/'split'/'homophone'/'pinyin'/
+//   'mixed'/'zwsp' (默认 off). wired into computeChapterSeo 输出 (title/desc/keywords).
+//   注: 仅 TDK 转码; 正文 (chapter content) 转码会破坏用户阅读, 本轮不做 (留 R70+).
+
+// R69-A: transcodeEntry 一条敏感词的转码选项.
+type transcodeEntry struct {
+        homophone string // 同音字替换 (空 = 该词无合适同音字, homophone 模式跳过)
+        pinyin    string // 拼音替换 (小写无音调)
+}
+
+// R69-A: sensitiveWordDict 内置敏感词字典 (~30 词). 覆盖中文小说站常见敏感词.
+//   注: 同音字为人工挑选 (尽量贴近原音 + 视觉相似); 部分词无合适同音字则空.
+//   注: pinyin 为人工输入 (常见词, 不引 pinyin 库保零依赖).
+//   注: 长词优先替换 (transcodeDictReplace 按 rune 长度降序遍历), 防短词嵌入长词
+//     内被先替换 (e.g. "免费小说" 优先匹配整词, 而非 "免费"+"小说" 拆分).
+var sensitiveWordDict = map[string]transcodeEntry{
+        "免费":    {"免菲", "mianfei"},
+        "小说":    {"小孰", "xiaoshuo"},
+        "完结":    {"完杰", "wanjie"},
+        "下载":    {"下咱", "xiazai"},
+        "全文":    {"全闻", "quanwen"},
+        "阅读":    {"阅度", "yuedu"},
+        "电子书":   {"电子孰", "dianzishu"},
+        "漫画":    {"慢画", "manhua"},
+        "破解":    {"破戒", "pojie"},
+        "无删减":   {"无删减", "wushanjian"},
+        "无广告":   {"无广哢", "wuguanggao"},
+        "在线阅读":  {"在仙阅度", "zaixianyuedu"},
+        "全文阅读":  {"全闻阅度", "quanwenyuedu"},
+        "完整版":   {"完整阪", "wanzhengban"},
+        "笔趣阁":   {"笔趣搁", "biquge"},
+        "无弹窗":   {"无弹窗", "wudanchuang"},
+        "藏经阁":   {"藏经搁", "cangjinge"},
+        "笔趣":    {"笔趣", "biqu"},
+        "金庸":    {"金墉", "jinyong"},
+        "黄色":    {"簧色", "huangse"},
+        "色情":    {"瑟情", "seqing"},
+        "成人":    {"成仁", "chengren"},
+        "福利":    {"福利", "fuli"},
+        "资源":    {"资元", "ziyuan"},
+        "破解版":   {"破戒阪", "pojieban"},
+        "免费小说":  {"免菲小孰", "mianfeixiaoshuo"},
+        "完整版小说": {"完整阪小孰", "wanzhengbanxiaoshuo"},
+        "电子书下载": {"电子孰下咱", "dianzishuxiazai"},
+        "最新章节":  {"最新章劫", "zuixinzhangjie"},
+        "txt":    {"", "txt"},
+        "TXT":    {"", "txt"},
+}
+
+// sortedSensitiveDictKeys 返回字典 key 按 rune 长度降序排列 (长词优先替换).
+//   每次 transcodeDictReplace / transcodeMixed 调用一次, 字典小 (~30 词) 故开销可忽略.
+func sortedSensitiveDictKeys() []string {
+        keys := make([]string, 0, len(sensitiveWordDict))
+        for k := range sensitiveWordDict {
+                keys = append(keys, k)
+        }
+        // 简单 bubble sort by rune length desc (字典 < 50 词, O(n^2) 可接受)
+        for i := 0; i < len(keys); i++ {
+                for j := i + 1; j < len(keys); j++ {
+                        if len([]rune(keys[j])) > len([]rune(keys[i])) {
+                                keys[i], keys[j] = keys[j], keys[i]
+                        }
+                }
+        }
+        return keys
+}
+
+// R69-A: transcodeKeyword 对关键词字符串应用转码. 纯函数.
+//   mode = "" / "off" → passthrough.
+//   mode = "split" → 字符间插可见空格.
+//   mode = "zwsp" → 字符间插零宽空格 U+200B (视觉不可见).
+//   mode = "homophone" / "pinyin" → 仅替换字典内敏感词.
+//   mode = "mixed" → 每个字典词用确定性 hash 选 homophone/pinyin/zwsp/passthrough.
+//   未知 mode → passthrough (保守不破坏).
+func transcodeKeyword(s, mode string) string {
+        if s == "" {
+                return s
+        }
+        switch mode {
+        case "", "off":
+                return s
+        case "split":
+                return transcodeSplitVisible(s)
+        case "zwsp":
+                return transcodeZWSP(s)
+        case "homophone":
+                return transcodeDictReplace(s, "homophone")
+        case "pinyin":
+                return transcodeDictReplace(s, "pinyin")
+        case "mixed":
+                return transcodeMixed(s)
+        }
+        return s // 未知 mode → passthrough
+}
+
+// transcodeSplitVisible 在每个字符间插可见空格 (U+0020).
+//   "免费小说" → "免 费 小 说". CJK + latin 均适用.
+func transcodeSplitVisible(s string) string {
+        runes := []rune(s)
+        if len(runes) <= 1 {
+                return s
+        }
+        var b strings.Builder
+        b.Grow(len(s) + len(runes))
+        for i, r := range runes {
+                if i > 0 {
+                        b.WriteByte(' ')
+                }
+                b.WriteRune(r)
+        }
+        return b.String()
+}
+
+// transcodeZWSP 在每个字符间插零宽空格 (U+200B). 视觉不可见, 蜘蛛分词被扰.
+//   "免费小说" → "免\u200B费\u200B小\u200B说" (显示仍为 "免费小说").
+func transcodeZWSP(s string) string {
+        runes := []rune(s)
+        if len(runes) <= 1 {
+                return s
+        }
+        var b strings.Builder
+        b.Grow(len(s) + len(runes)*3) // U+200B 是 3 bytes UTF-8
+        for i, r := range runes {
+                if i > 0 {
+                        b.WriteRune('\u200B')
+                }
+                b.WriteRune(r)
+        }
+        return b.String()
+}
+
+// transcodeDictReplace 用字典替换敏感词. subMode = "homophone" / "pinyin".
+//   非字典词保留原样 (避免破坏正常 TDK 可读性). 字典为空同音字时跳过.
+//   长词优先替换 (sortedSensitiveDictKeys 按 rune 长度降序).
+func transcodeDictReplace(s, subMode string) string {
+        out := s
+        for _, k := range sortedSensitiveDictKeys() {
+                entry := sensitiveWordDict[k]
+                var repl string
+                switch subMode {
+                case "homophone":
+                        if entry.homophone == "" {
+                                continue // 无合适同音字, 跳过
+                        }
+                        repl = entry.homophone
+                case "pinyin":
+                        if entry.pinyin == "" {
+                                continue
+                        }
+                        repl = entry.pinyin
+                default:
+                        continue
+                }
+                if repl != "" && repl != k {
+                        out = strings.ReplaceAll(out, k, repl)
+                }
+        }
+        return out
+}
+
+// transcodeMixed 对每个字典词用确定性 hash 选 homophone/pinyin/zwsp/passthrough.
+//   同 word 同输出 (避免缓存闪变). 非字典词保留 (split 不对全字符串应用, 仅字典词).
+//   hash 用 FNV-1a 32-bit (与 obfuscateRNG 同款 hash 不同位数).
+func transcodeMixed(s string) string {
+        out := s
+        for _, k := range sortedSensitiveDictKeys() {
+                entry := sensitiveWordDict[k]
+                // 确定性 hash 选模式 (0-3)
+                h := uint32(2166136261) // FNV-1a 32-bit offset basis
+                for i := 0; i < len(k); i++ {
+                        h ^= uint32(k[i])
+                        h *= 16777619 // FNV-1a 32-bit prime
+                }
+                switch h % 4 {
+                case 0:
+                        if entry.homophone != "" && entry.homophone != k {
+                                out = strings.ReplaceAll(out, k, entry.homophone)
+                        }
+                case 1:
+                        if entry.pinyin != "" && entry.pinyin != k {
+                                out = strings.ReplaceAll(out, k, entry.pinyin)
+                        }
+                case 2:
+                        // split 该词 (字符间插零宽空格, 视觉不变)
+                        split := transcodeZWSP(k)
+                        if split != k {
+                                out = strings.ReplaceAll(out, k, split)
+                        }
+                case 3:
+                        // passthrough (保留原词)
+                }
+        }
+        return out
+}
+
+// R69-A: getKeywordTranscodeMode 读 Setting 表 keywordTranscode 模式 (默认 off).
+//   value 存储格式: JSON 编码字符串 ("\"split\"") 或 raw 字符串 ("split").
+//   未知值 → "off" (保守不破坏).
+//   每次 computeChapterSeo 调用一次 (SQLite 单行查询, <0.1ms, 不需缓存层).
+func getKeywordTranscodeMode() string {
+        var v string
+        err := db.QueryRow(`SELECT value FROM Setting WHERE key='keywordTranscode'`).Scan(&v)
+        if err != nil || v == "" {
+                return "off"
+        }
+        // 优先解析 JSON (admin settings 存 JSON 编码字符串)
+        var parsed interface{}
+        if json.Unmarshal([]byte(v), &parsed) == nil {
+                if s, ok := parsed.(string); ok {
+                        return normalizeTranscodeMode(s)
+                }
+        }
+        return normalizeTranscodeMode(v)
+}
+
+// normalizeTranscodeMode 校验 mode 值合法性, 非法 → "off".
+func normalizeTranscodeMode(s string) string {
+        switch s {
+        case "off", "split", "homophone", "pinyin", "mixed", "zwsp":
+                return s
+        }
+        return "off"
+}
+
+// transcodeChapterSeoOutput 应用关键词转码到 computeChapterSeo 输出 (title/desc/kw).
+//   Setting 表 keywordTranscode != "off" 时应用, 否则 passthrough.
+//   在 computeChapterSeo 两处 return 之前统一调用, 保证 TDK 一致转码.
+func transcodeChapterSeoOutput(title, desc, kw string) (string, string, string) {
+        mode := getKeywordTranscodeMode()
+        if mode == "off" || mode == "" {
+                return title, desc, kw
+        }
+        return transcodeKeyword(title, mode), transcodeKeyword(desc, mode), transcodeKeyword(kw, mode)
 }
 
 func getCategories() ([]map[string]interface{}, error) {

@@ -1408,6 +1408,17 @@ func adminRuleByIDHandler(w http.ResponseWriter, r *http.Request) {
 
         case http.MethodPut:
                 body := readJSONBody(r)
+                // R69-D BUG-85 (P3): 原 PUT 无存在性检查, UPDATE 不存在的 ruleID 影响行 0
+                //   但 API 仍返 200 {updated:true} → 操作员以为更新成功, 实际未改. 修复:
+                //   UPDATE 前先 SELECT id FROM Rule WHERE id=? 校验, 不存在返 404.
+                //   与 adminBookByIDHandler PUT (line 1685) / adminSiteByIDHandler PUT (line 4332)
+                //   同款存在性检查. DELETE 路径已用 COUNT(*) FROM Task 间接验存在, 故只在 PUT 加.
+                var existRule string
+                _ = db.QueryRow(`SELECT id FROM Rule WHERE id=?`, ruleID).Scan(&existRule)
+                if existRule == "" {
+                        writeJSONErr(w, "规则不存在", 404)
+                        return
+                }
                 // 按字段增量更新 (enabled / name / description / config)
                 sets := []string{}
                 args := []interface{}{}
@@ -1779,7 +1790,17 @@ func adminBookByIDHandler(w http.ResponseWriter, r *http.Request) {
                 //   DownloadJob.bookId 做内存缓存清理 — 但行已被删, Scan 返 ErrNoRows,
                 //   jbookID 恒空, 比对失败 → 内存缓存泄漏 (downloadFiles 残留已删 DownloadJob
                 //   的内容缓存, 永不释放). 修复: 在 DELETE 前先收集要清的 jobID 集, 用集
-                //   做内存清理, 顺序 = 先 SELECT jobID → 清内存 → DELETE DB 行.
+                //   做内存清理, 顺序 = 先 SELECT jobID → DELETE DB 行 → 清内存.
+                //
+                // R69-D BUG-84 (P1): adminBookByIDHandler DELETE + 后台下载 goroutine race.
+                //   R55-1B 原修复顺序 = 先 SELECT jobID → 清内存 → DELETE DB 行. 但 BUG-83
+                //   修复 (goroutine SELECT status 移进 Lock) 后, 仍存在 race window:
+                //   清内存 (Lock; delete map; Unlock) 与 DELETE FROM DownloadJob 之间,
+                //   goroutine 可 Lock → SELECT status (running, 因 T2 尚未 DELETE row) →
+                //   write map → Unlock. T2 后续 DELETE row + (无 map-clean) → orphan entry
+                //   留 2h TTL. 修复: 把 "清内存" 移到所有 DELETE 之后 — DELETE row 先, 让
+                //   goroutine 的 SELECT 返 ErrNoRows skip write; 或 goroutine write map 后
+                //   T2 的 map-clean 清掉 entry. 全场景无 orphan (与 BUG-83 同款方法论).
                 jobIDsToClean := []string{}
                 jrows, _ := db.Query(`SELECT id FROM DownloadJob WHERE bookId=?`, bookID)
                 for jrows != nil && jrows.Next() {
@@ -1792,15 +1813,8 @@ func adminBookByIDHandler(w http.ResponseWriter, r *http.Request) {
                 if jrows != nil {
                         jrows.Close()
                 }
-                // 先清扫内存下载缓存 (用预收集的 jobID 集, 不再依赖 DB 行存在)
-                if len(jobIDsToClean) > 0 {
-                        downloadFilesMu.Lock()
-                        for _, jid := range jobIDsToClean {
-                                delete(downloadFiles, jid)
-                        }
-                        downloadFilesMu.Unlock()
-                }
-                // 级联清理: Chapter + BookTag + DownloadJob (无外键约束, 手动清)
+                // 级联清理: Chapter + BookTag + DownloadJob + Book (无外键约束, 手动清).
+                // 顺序: DB DELETE 在前 → map-clean 在后. (R69-D BUG-84)
                 _, _ = db.Exec(`DELETE FROM Chapter WHERE bookId=?`, bookID)
                 _, _ = db.Exec(`DELETE FROM BookTag WHERE bookId=?`, bookID)
                 _, _ = db.Exec(`DELETE FROM DownloadJob WHERE bookId=?`, bookID)
@@ -1808,6 +1822,16 @@ func adminBookByIDHandler(w http.ResponseWriter, r *http.Request) {
                 if err != nil {
                         writeJSONErr(w, "删除失败: "+err.Error(), 500)
                         return
+                }
+                // 后清扫内存下载缓存 (用预收集的 jobID 集, 在 DB DELETE 后做 map-clean).
+                // goroutine 此时 SELECT status 返 ErrNoRows (row gone) → skip write;
+                // 或 goroutine 已 write map (在 DELETE 前抢到 Lock) → 这里 delete map 清掉.
+                if len(jobIDsToClean) > 0 {
+                        downloadFilesMu.Lock()
+                        for _, jid := range jobIDsToClean {
+                                delete(downloadFiles, jid)
+                        }
+                        downloadFilesMu.Unlock()
                 }
                 writeJSONOK(w, map[string]interface{}{"id": bookID, "deleted": true})
         default:
@@ -2499,6 +2523,17 @@ func adminCategoryByIDHandler(w http.ResponseWriter, r *http.Request) {
         switch r.Method {
         case http.MethodPut:
                 body := readJSONBody(r)
+                // R69-D BUG-86 (P3): 原 PUT 无存在性检查, UPDATE 不存在的 categoryID 影响
+                //   行 0 但 API 仍返 200 {updated:true} → 操作员以为更新成功, 实际未改.
+                //   修复: UPDATE 前先 SELECT id FROM Category WHERE id=? 校验, 不存在返
+                //   404. 与 adminRuleByIDHandler PUT (BUG-85) / adminBookByIDHandler PUT /
+                //   adminSiteByIDHandler PUT 同款存在性检查.
+                var existCat string
+                _ = db.QueryRow(`SELECT id FROM Category WHERE id=?`, id).Scan(&existCat)
+                if existCat == "" {
+                        writeJSONErr(w, "分类不存在", 404)
+                        return
+                }
                 sets := []string{}
                 args := []interface{}{}
                 if v, ok := body["name"]; ok && v != nil {
@@ -3080,48 +3115,63 @@ func adminDownloadsCreate(w http.ResponseWriter, r *http.Request) {
                         sb.WriteString(c.content + "\n\n")
                 }
                 txt := sb.String()
-                // R68-D BUG-74 (P2): adminDownloadsDelete + goroutine race.
-                //   原实现: goroutine 拼 TXT → downloadFilesMu.Lock → 写 downloadFiles[jid] →
-                //   UPDATE DownloadJob SET status='done'. 若 adminDownloadsDelete 在 goroutine
-                //   写缓存前被调 (DELETE FROM DownloadJob), 行被删, 但 goroutine 仍会写缓存
-                //   (orphan entry 留 2h TTL). 后续 UPDATE 找不到行 (no-op). adminDownloadsDelete
-                //   的内存清理 (delete(downloadFiles, jobID)) 在 goroutine 写之前 — 写之后无人清.
-                //   有 downloadFilesMaxEntries=50 + TTL 防无界增长, 但 2h 内 ~50 orphan entry
-                //   内存占用 (~50 × 数 MB = 数百 MB, 万章书 TXT 可达 50MB). 修复: goroutine 写
-                //   缓存前 SELECT 检查行存在性 + status='running' (即 adminDownloadsDelete 是否
-                //   已先抢到 DELETE). 若行已删 / status 已变 (e.g. clear handler 改 'error'),
-                //   跳过缓存写, 避免 orphan. 与 R55-1B adminBookByIDHandler DELETE 同款 "先
-                //   SELECT 行存在再操作" 模式 (BUG-1 修复).
-                var jidStatus string
-                _ = db.QueryRow(`SELECT status FROM DownloadJob WHERE id=?`, jid).Scan(&jidStatus)
-                if jidStatus != "running" {
-                        // 行已删 (adminDownloadsDelete DELETE 抢先) 或 status 已被其他 handler 改
-                        // (e.g. clear 全清标 'error') → 不写缓存, 避免 orphan entry.
-                        return
-                }
-                downloadFilesMu.Lock()
-                // R41-1B: 容量上限 + TTL 过期检查 (防内存泄漏)
-                now := time.Now()
-                // 先清扫过期条目
-                for k, v := range downloadFiles {
-                        if now.Sub(v.createdAt) > downloadFilesTTLSeconds*time.Second {
-                                delete(downloadFiles, k)
+                // R69-D BUG-83 (P1): adminDownloadsDelete + 后台下载 goroutine race.
+                //   R68-D BUG-74 试过把 SELECT status 移出 lock 在 lock 前做 "写缓存前查
+                //   status='running' 否则跳过", 但 SELECT 与 Lock 之间仍有 race window:
+                //     1) goroutine SELECT status='running' (lock 外)
+                //     2) adminDownloadsDelete: Lock; delete(downloadFiles, jobID); Unlock
+                //     3) adminDownloadsDelete: DELETE FROM DownloadJob (row gone)
+                //     4) goroutine: Lock; sweep; downloadFiles[jid] = entry; Unlock  ← orphan!
+                //     5) goroutine: UPDATE status='done' (no-op, row gone)
+                //   orphan entry 留 2h TTL (downloadFilesTTLSeconds) 才被清扫, 50 entries
+                //   上限前 ~50 数 MB TXT 占用内存 (万章书 TXT 可达 50MB).
+                //   修复: (a) goroutine SELECT status 移进 Lock 内 — 与 write map 原子;
+                //   (b) adminDownloadsDelete 的 DELETE row 移进 Lock 内 — 与 delete map 原子.
+                //   双向原子后所有竞态场景收敛:
+                //     · Goroutine 先持锁 → SELECT running → write map → Unlock; Delete 后持锁
+                //       → delete map (清掉 goroutine 写的 entry) → DELETE row → Unlock. ✓
+                //     · Delete 先持锁 → delete map → DELETE row → Unlock; Goroutine 后持锁
+                //       → SELECT 返 ErrNoRows (row gone) → skip write → Unlock. ✓
+                //   panic 安全: 用内嵌 closure + defer Unlock, panic 时内层 defer 先 Unlock,
+                //   外层 defer (recover + inFlight--) 后接住 panic 转 status='error'.
+                //   不引入 context cancel / WaitGroup: 锁内 SELECT+write+Unlock 已足够串行化,
+                //   context cancel 会让 chapters query 中途失败 (用户已等几秒拼 TXT), 体验更差.
+                writeOK := false
+                func() {
+                        downloadFilesMu.Lock()
+                        defer downloadFilesMu.Unlock() // panic 安全: 内层 defer 先于外层 recover
+                        var jidStatus string
+                        if err := db.QueryRow(`SELECT status FROM DownloadJob WHERE id=?`, jid).Scan(&jidStatus); err != nil || jidStatus != "running" {
+                                // 行已删 (adminDownloadsDelete DELETE 抢先) 或 status 已被其他 handler
+                                // 改 (e.g. clear 全清标 'error') → 不写缓存, 避免 orphan entry.
+                                return
                         }
-                }
-                // 若仍超容, 删最早的
-                for len(downloadFiles) >= downloadFilesMaxEntries {
-                        var oldestKey string
-                        var oldestT time.Time
+                        // R41-1B: 容量上限 + TTL 过期检查 (防内存泄漏)
+                        now := time.Now()
+                        // 先清扫过期条目
                         for k, v := range downloadFiles {
-                                if oldestKey == "" || v.createdAt.Before(oldestT) {
-                                        oldestKey = k
-                                        oldestT = v.createdAt
+                                if now.Sub(v.createdAt) > downloadFilesTTLSeconds*time.Second {
+                                        delete(downloadFiles, k)
                                 }
                         }
-                        delete(downloadFiles, oldestKey)
+                        // 若仍超容, 删最早的
+                        for len(downloadFiles) >= downloadFilesMaxEntries {
+                                var oldestKey string
+                                var oldestT time.Time
+                                for k, v := range downloadFiles {
+                                        if oldestKey == "" || v.createdAt.Before(oldestT) {
+                                                oldestKey = k
+                                                oldestT = v.createdAt
+                                        }
+                                }
+                                delete(downloadFiles, oldestKey)
+                        }
+                        downloadFiles[jid] = downloadFileEntry{content: txt, createdAt: now}
+                        writeOK = true
+                }()
+                if !writeOK {
+                        return
                 }
-                downloadFiles[jid] = downloadFileEntry{content: txt, createdAt: now}
-                downloadFilesMu.Unlock()
                 _, _ = db.Exec(`UPDATE DownloadJob SET status='done', filePath=?, size=? WHERE id=?`, "memory:"+jid, len(txt), jid)
         }(jobID, bookID, bookName)
 
@@ -5074,6 +5124,17 @@ func adminDownloadsSubHandler(w http.ResponseWriter, r *http.Request) {
 // adminDownloadsDelete — 删除下载任务 (DELETE /api/admin/downloads/:id).
 //
 //   先从内存缓存删除 (如有), 再删 DownloadJob 行.
+//
+//   R69-D BUG-83 (P1): 与 adminDownloadsCreate 后台 goroutine 的 race 修复.
+//   原实现: SELECT id (存在性) → Lock; delete downloadFiles[jobID]; Unlock →
+//   DELETE FROM DownloadJob. DELETE 在 Lock 外, goroutine 的 "Lock; SELECT
+//   status; write map" 与 Delete 的 "Lock; delete map; Unlock; DELETE row"
+//   仍有 race window: Delete 的 map-clear 在 goroutine write 前, goroutine 写
+//   出 orphan entry. 修复: DELETE row 移进 Lock 内 — 与 delete map 原子
+//   (同一锁). goroutine 侧 SELECT status 也移进 Lock 内 (BUG-83 同 fix).
+//   双向原子后: Delete 先持锁 → DELETE row 后 goroutine SELECT 返 ErrNoRows
+//   skip write; Goroutine 先持锁 → write map 后 Delete 持锁 delete map 清掉
+//   entry. 全场景无 orphan.
 func adminDownloadsDelete(w http.ResponseWriter, r *http.Request, jobID string) {
         var exist string
         _ = db.QueryRow(`SELECT id FROM DownloadJob WHERE id=?`, jobID).Scan(&exist)
@@ -5081,11 +5142,11 @@ func adminDownloadsDelete(w http.ResponseWriter, r *http.Request, jobID string) 
                 writeJSONErr(w, "下载任务不存在", 404)
                 return
         }
-        // 内存缓存清理
+        // R69-D BUG-83: Lock 覆盖 DELETE row + delete map (原子, 与 goroutine 串行)
         downloadFilesMu.Lock()
         delete(downloadFiles, jobID)
-        downloadFilesMu.Unlock()
         _, err := db.Exec(`DELETE FROM DownloadJob WHERE id=?`, jobID)
+        downloadFilesMu.Unlock()
         if err != nil {
                 writeJSONErr(w, "删除失败: "+err.Error(), 500)
                 return

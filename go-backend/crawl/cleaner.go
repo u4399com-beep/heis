@@ -20,7 +20,9 @@ import (
         "context"
         "encoding/json"
         "fmt"
+        "hash/fnv"
         "io"
+        "math/rand"
         "net/http"
         "regexp"
         "strings"
@@ -1051,4 +1053,342 @@ func stripPlainTextPromoSegments(text string) string {
                 out = append(out, seg)
         }
         return strings.Join(out, "\n\n")
+}
+
+// ---------- R69-B 干扰句子采集层 (伪原创降重复) ----------
+//
+// 用户需求 #3: 增加句子内容增加干扰，增加句子段子的伪原创不重复的.
+//  采集的章节正文是源站原文, 若 DB Chapter.content 与源站完全相同, 搜索引擎爬虫
+//  易判重复/采集 → SEO 排名下降 + 流量流失. 在 cleaner 清洗后插入伪原创干扰句子
+//  (与原文无关的文学感悟/阅读提示/无关段子/哲理短句 ~150 句), 让正文与源站差异化
+//  → 降重复判定风险.
+//
+// 设计:
+//  - 干扰句子库 (~150 句) 内置 cleaner.go, 不依赖 DB/外部文件 (避免 IO + 部署复杂度)
+//  - 插入引擎 InjectInterferenceSentences(html, seed): 解析 <p> 段落, 每 3-5 段插 1
+//    干扰 <p class="content-note">; seed 用 chapterID+bookID hash, 同章节同结果
+//    (避免每次渲染不同 → 内容抖动 → SEO 反向扣分)
+//  - 集成入口 CleanContentHtmlWithInterference(raw, cfg, interfere):
+//    interfere == nil || Enabled == false → 等价 CleanContentHtml (默认 false, 不破坏
+//    现有规则); Enabled == true → CleanContentHtml + InjectInterferenceSentences
+//
+// 注:
+//  - 干扰句子在采集时插入 (CrawlChapterContent → CleanContentHtml 路径), 存入
+//    DB Chapter.content, 渲染时直接显示 (不在 sanitizeChapterHTML 渲染时插, 避
+//    免每次渲染重新 hash → CPU 浪费 + 渲染抖动).
+//  - 干扰 <p> 用 class="content-note" 标记 (与 EXTRA_AD_PATTERNS / watermarkRe /
+//    navLinkRe / chapterTailRe 等清洗规则不匹配, 不会被下游 cleaner 误清; 与
+//    templates/aijjxs CSS 配合可低对比度渲染降低视觉突兀).
+//  - 伪原创变换 (同义词替换 / 句式变换) 保守不做: 可能改变语义/破坏文学性, 留 R70+
+//    评估; 本轮仅做干扰句子插入, 不动原文 (与任务说明一致).
+//  - types.go CleanConfig 跨范围 (R69-B 严禁改 types.go), 单独建 InterfereConfig
+//    让 admin Rule 编辑时 attach 进 RuleConfig (caller 侧 wiring, 范围外).
+
+// interfereContentNoteClass — 干扰 <p> 标记 class (避免被 ad 清洗规则误清).
+//  与 EXTRA_AD_PATTERNS / watermarkDomainRe / watermarkPromoRe1..5 / navLinkRe /
+//  chapterTailRe 等清洗规则全不匹配 (无 "本站" / "本章" / "下载" / 域名 / URL 等
+//  广告/水印特征词). caller 可在 templates CSS 加 .content-note { color: #888;
+//  font-size: 0.95em; opacity: 0.7; } 让干扰句低对比度渲染, 不影响阅读体验.
+const interfereContentNoteClass = "content-note"
+
+// interfereLibrary — 干扰句子库 (~150 句, R69-B 用户需求 #3 伪原创降重复).
+//  分类 (4 类, 句子去重防同库冗余):
+//   - 文学感悟类 (50 句): 古诗文名句 + 读书感悟, 与正文文学性主题呼应, 不显突兀
+//   - 阅读提示类 (30 句): 阅读鼓励/提示语, 提升读者沉浸感
+//   - 无关段子类 (40 句): 生活化短句, 与正文主题完全无关, 制造内容差异 (SEO 降重核心)
+//   - 哲理短句类 (30 句): 经典哲理, 与正文人物命运/主题呼应
+//  句子长度 < 80 字符 (utf8 rune), 防 watermarkRe 短段检测误伤 (HTML 模式水印剥
+//  离仅对 ≤120 字段, 干扰句远低于阈值, 但内容无广告特征词不命中 → 保留).
+var interfereLibrary = []string{
+        // ---- 文学感悟类 (50 句) ----
+        `人生如梦，一尊还酹江月。`,
+        `书卷多情似故人，晨昏忧乐每相亲。`,
+        `腹有诗书气自华。`,
+        `读万卷书，行万里路。`,
+        `读书破万卷，下笔如有神。`,
+        `黑发不知勤学早，白首方悔读书迟。`,
+        `书山有路勤为径，学海无涯苦作舟。`,
+        `业精于勤，荒于嬉；行成于思，毁于随。`,
+        `三更灯火五更鸡，正是男儿读书时。`,
+        `纸上得来终觉浅，绝知此事要躬行。`,
+        `问渠那得清如许，为有源头活水来。`,
+        `旧书不厌百回读，熟读深思子自知。`,
+        `路漫漫其修远兮，吾将上下而求索。`,
+        `山重水复疑无路，柳暗花明又一村。`,
+        `沉舟侧畔千帆过，病树前头万木春。`,
+        `海内存知己，天涯若比邻。`,
+        `莫愁前路无知己，天下谁人不识君。`,
+        `长风破浪会有时，直挂云帆济沧海。`,
+        `会当凌绝顶，一览众山小。`,
+        `落霞与孤鹜齐飞，秋水共长天一色。`,
+        `江山代有才人出，各领风骚数百年。`,
+        `醉卧沙场君莫笑，古来征战几人回。`,
+        `羌笛何须怨杨柳，春风不度玉门关。`,
+        `莫道桑榆晚，为霞尚满天。`,
+        `春风又绿江南岸，明月何时照我还。`,
+        `等闲识得东风面，万紫千红总是春。`,
+        `山外青山楼外楼，西湖歌舞几时休。`,
+        `横看成岭侧成峰，远近高低各不同。`,
+        `不识庐山真面目，只缘身在此山中。`,
+        `春色满园关不住，一枝红杏出墙来。`,
+        `竹外桃花三两枝，春江水暖鸭先知。`,
+        `历览前贤国与家，成由勤俭破由奢。`,
+        `富贵必从勤苦得，男儿须读五车书。`,
+        `安居不用架高堂，书中自有黄金屋。`,
+        `娶妻莫恨无良媒，书中自有颜如玉。`,
+        `博观而约取，厚积而薄发。`,
+        `鞠躬尽瘁，死而后已。`,
+        `苟利国家生死以，岂因祸福避趋之。`,
+        `落红不是无情物，化作春泥更护花。`,
+        `春蚕到死丝方尽，蜡炬成灰泪始干。`,
+        `桐花万里丹山路，雏凤清于老凤声。`,
+        `海上生明月，天涯共此时。`,
+        `海日生残夜，江春入旧年。`,
+        `风物长宜放眼量。`,
+        `人生自古谁无死，留取丹心照汗青。`,
+        `天行健，君子以自强不息。`,
+        `一日不见，如三秋兮。`,
+        `青青子衿，悠悠我心。`,
+        `昔我往矣，杨柳依依。`,
+        `独在异乡为异客，每逢佳节倍思亲。`,
+
+        // ---- 阅读提示类 (30 句) ----
+        `本章内容精彩，请细细品味。`,
+        `阅读使人明智，每一页都是新的开始。`,
+        `慢慢读，认真读，方能体会其中意。`,
+        `文字之美，在静心阅读中绽放。`,
+        `一卷在手，岁月静好。`,
+        `读书是门槛最低的高贵。`,
+        `每一段文字都值得被认真对待。`,
+        `静下心来，慢慢读，慢慢品。`,
+        `好的故事，需要慢慢读才能体会深意。`,
+        `阅读，是与作者跨越时空的对话。`,
+        `翻开书页，便是打开一扇新窗。`,
+        `一本书，一段故事，一次心灵的旅行。`,
+        `读书，是与自己最好的对话。`,
+        `字里行间，藏着作者的心血。`,
+        `每一章都是新的开始，请耐心阅读。`,
+        `读一本好书，是在和许多高尚的人谈话。`,
+        `故事的精彩，需要慢慢展开。`,
+        `让文字带你进入另一个世界。`,
+        `读书，是与智者对话的最好方式。`,
+        `一字一句，皆是匠心。`,
+        `阅读不只是识字，更是识人识世。`,
+        `好的故事值得被细细品味。`,
+        `每一页都是新的世界。`,
+        `静心阅读，方得真意。`,
+        `文字的魅力，需要静心才能感受。`,
+        `读书，让人心生欢喜。`,
+        `耐心是阅读最美好的伴侣。`,
+        `翻过这一页，故事仍在继续。`,
+        `愿每一次阅读都能有所收获。`,
+        `好书如挚友，相伴不相离。`,
+
+        // ---- 无关段子类 (40 句) ----
+        `今天的天气真不错。`,
+        `生活中总有些小确幸。`,
+        `偶尔放空一下，也是一种享受。`,
+        `清晨的阳光总是格外温柔。`,
+        `一杯热茶，一段时光。`,
+        `街角的小店飘来阵阵香气。`,
+        `日子就这样一天天过去。`,
+        `楼下的猫又来蹭饭了。`,
+        `朋友发来消息问候近况。`,
+        `窗外的鸟叫声清脆悦耳。`,
+        `周末的午后最适合发呆。`,
+        `锅里的汤咕嘟咕嘟冒着泡。`,
+        `阳台上的花开了，香气沁人。`,
+        `街边的树叶渐渐变黄了。`,
+        `又是平凡而忙碌的一天。`,
+        `远处传来隐隐的笛声。`,
+        `厨房里飘出饭菜的香气。`,
+        `时间总是不声不响地流逝。`,
+        `桌上的书翻到了一半。`,
+        `楼下的小孩笑得格外开心。`,
+        `邻居家的狗对着路人汪汪叫。`,
+        `街角咖啡店放着轻柔的音乐。`,
+        `远处的山在薄雾中若隐若现。`,
+        `又到了一年中最舒适的季节。`,
+        `一阵风吹过，带走了夏日的燥热。`,
+        `路边的花开得正好。`,
+        `月亮悄悄爬上了树梢。`,
+        `偶尔下点小雨也挺浪漫的。`,
+        `晚风习习，带来一丝凉意。`,
+        `远处传来孩子的笑声。`,
+        `街灯一盏盏亮了起来。`,
+        `天边的云朵慢慢飘动。`,
+        `又是新的一天，新的开始。`,
+        `路上行人匆匆，各自奔忙。`,
+        `夜色渐深，城市的灯火依旧璀璨。`,
+        `厨房里的水壶呜呜地响着。`,
+        `阳台上的多肉又长出新叶。`,
+        `时间在不知不觉间溜走了。`,
+        `楼下便利店又上了新货。`,
+        `偶尔听见远处的车笛声。`,
+
+        // ---- 哲理短句类 (30 句) ----
+        `千里之行，始于足下。`,
+        `不积跬步，无以至千里。`,
+        `道阻且长，行则将至。`,
+        `上善若水，水善利万物而不争。`,
+        `知人者智，自知者明。`,
+        `胜人者有力，自胜者强。`,
+        `合抱之木，生于毫末。`,
+        `九层之台，起于累土。`,
+        `慎终如始，则无败事。`,
+        `祸兮福之所倚，福兮祸之所伏。`,
+        `大音希声，大象无形。`,
+        `静胜躁，寒胜热。`,
+        `见素抱朴，少私寡欲。`,
+        `企者不立，跨者不行。`,
+        `善建者不拔，善抱者不脱。`,
+        `三人行，必有我师焉。`,
+        `温故而知新，可以为师矣。`,
+        `学而不思则罔，思而不学则殆。`,
+        `知之为知之，不知为不知，是知也。`,
+        `己所不欲，勿施于人。`,
+        `君子坦荡荡，小人长戚戚。`,
+        `吾日三省吾身。`,
+        `敏而好学，不耻下问。`,
+        `锲而不舍，金石可镂。`,
+        `一寸光阴一寸金。`,
+        `莫等闲，白了少年头。`,
+        `不以物喜，不以己悲。`,
+        `海纳百川，有容乃大。`,
+        `尺有所短，寸有所长。`,
+        `近朱者赤，近墨者黑。`,
+}
+
+// paragraphOpenRe — <p> 开标签匹配 (含属性, R69-B 干扰引擎 HTML 模式用).
+//   R69-B 注: 预编译为包级常量 (与 navLinkRe / watermarkRe 同口径, 避免每章节
+//   重编译; 干扰引擎在 CleanContentHtmlWithInterference hot path).
+var paragraphOpenRe = regexp.MustCompile(`(?i)<p\b[^>]*>`)
+
+// InterfereConfig — 干扰句子插入配置 (R69-B 用户需求 #3 伪原创降重复).
+//   在 cleaner 清洗后插入伪原创干扰句子, 降采集正文与源站重复度. 因 types.go
+//   CleanConfig 跨范围 (R69-B 严禁改 types.go), 单独建 InterfereConfig 让 admin
+//   在 Rule 编辑时 attach 进 RuleConfig (caller 侧 wiring, 范围外).
+//   默认零值: Enabled=false → 不插入干扰句 (不破坏现有 71 Rule clean 段).
+type InterfereConfig struct {
+        Enabled  bool   `json:"enabled,omitempty"`
+        Seed     string `json:"seed,omitempty"`     // 章节 hash seed (建议 bookID+":"+chapterID)
+        Interval int    `json:"interval,omitempty"` // 插入间隔 (3-5, 0 → 默认 4)
+}
+
+// InjectInterferenceSentences — 在已清洗的章节 HTML 中插入干扰 <p>.
+//   R69-B 用户需求 #3: 采集的章节正文若与源站完全相同, 搜索引擎爬虫易判重复/采集
+//   → 排名下降. 在 cleaner 清洗后插入伪原创干扰句子 (与原文无关的文学感悟/阅读
+//   提示/无关段子/哲理短句 ~150 句), 让正文与源站差异化 → 降重复判定风险.
+//   策略:
+//    - 若 html 含 <p> 段落 (HTML 模式): 每 4 个 <p> 后插 1 干扰 <p class="content-note">
+//    - 若 html 仅含 \n\n 分段 (plainText 模式): 每 4 段后插 1 干扰段 (\n\n 分隔)
+//    - seed 用 chapterID+bookID hash, 同章节同结果 (避免每次渲染不同)
+//    - 干扰句子从 interfereLibrary (~150 句) 按 seed 随机选
+//   容错: html 为空 / 库为空 / 段落数 < interval → 返原 html.
+//   interval: 任务说明要求每 3-5 <p> 插 1, 默认 4 (中位数); 调用方可通过
+//    CleanContentHtmlWithInterference 自定义 interval (3-5, 越界裁到边界).
+func InjectInterferenceSentences(html, seed string) string {
+        return applyInterference(html, seed, 4)
+}
+
+// applyInterference — 引擎主体 (exported via InjectInterferenceSentences /
+//   CleanContentHtmlWithInterference). interval 限 3-5 (越界裁到边界), 0 → 4.
+//   seed=空时用 "default" (返固定结果, 主要用于测试 + 默认调用).
+func applyInterference(html, seed string, interval int) string {
+        if html == "" || len(interfereLibrary) == 0 {
+                return html
+        }
+        if interval <= 0 {
+                interval = 4
+        }
+        if interval < 3 {
+                interval = 3
+        } else if interval > 5 {
+                interval = 5
+        }
+        if seed == "" {
+                seed = "default"
+        }
+        rng := newSeededRand(seed)
+        // 检测模式: HTML 含 <p> 开标签 → HTML 模式; 否则 plainText 模式 (\n\n 分段)
+        if paragraphOpenRe.MatchString(html) {
+                return injectInterferenceHTML(html, rng, interval)
+        }
+        return injectInterferencePlainText(html, rng, interval)
+}
+
+// injectInterferenceHTML — HTML 模式干扰插入 (每 interval 个 <p> 开标签前插 1).
+//   实现: 用 paragraphOpenRe.FindAllStringIndex 找所有 <p> 开标签位置, 在第
+//   interval/2*interval/... 个 <p> 之前插入干扰 <p class="content-note">...</p>.
+//   不破坏原 <p> 段落结构 (干扰 <p> 独立成段, 与原文 <p> 平行).
+func injectInterferenceHTML(html string, rng *rand.Rand, interval int) string {
+        matches := paragraphOpenRe.FindAllStringIndex(html, -1)
+        if len(matches) < interval {
+                return html
+        }
+        var b strings.Builder
+        b.Grow(len(html) + 64)
+        last := 0
+        for i, m := range matches {
+                if i > 0 && i%interval == 0 {
+                        b.WriteString(html[last:m[0]])
+                        sent := interfereLibrary[rng.Intn(len(interfereLibrary))]
+                        fmt.Fprintf(&b, `<p class="%s">%s</p>`, interfereContentNoteClass, sent)
+                        last = m[0]
+                }
+        }
+        b.WriteString(html[last:])
+        return b.String()
+}
+
+// injectInterferencePlainText — plainText 模式干扰插入 (每 interval 段后插 1).
+//   段间分隔: \n\n (与 NormalizeParagraphs 同口径). 干扰段为纯文本 (无 <p> 包裹,
+//   与原 plainText 输出格式一致, 渲染端若按 <p> 自动分段会生成独立干扰段).
+func injectInterferencePlainText(text string, rng *rand.Rand, interval int) string {
+        segs := twoNewlineRe.Split(text, -1)
+        if len(segs) < interval {
+                return text
+        }
+        out := make([]string, 0, len(segs)+len(segs)/interval+1)
+        for i, seg := range segs {
+                if i > 0 && i%interval == 0 {
+                        sent := interfereLibrary[rng.Intn(len(interfereLibrary))]
+                        out = append(out, sent)
+                }
+                out = append(out, seg)
+        }
+        return strings.Join(out, "\n\n")
+}
+
+// newSeededRand — 基于 seed 字符串构造确定性 rand.Rand (FNV-1a hash → rand.Source).
+//   同 seed → 同序列 → 同章节同干扰插入位置 + 同句子 (避免每次渲染不同 → 内容抖动
+//   → SEO 反向扣分). 用 FNV-1a (64 位) 而非 SHA (够散列, 性能优; 干扰不是密码学
+//   用途, 无需抗碰撞). rand.New(rand.NewSource(int64(h.Sum64()))) 返 *rand.Rand
+//   (goroutine-unsafe, 但本函数每章节调一次, 不共享, 无 race).
+func newSeededRand(seed string) *rand.Rand {
+        h := fnv.New64a()
+        _, _ = h.Write([]byte(seed))
+        return rand.New(rand.NewSource(int64(h.Sum64())))
+}
+
+// CleanContentHtmlWithInterference — clean + interfere 组合 (R69-B 接入点).
+//   若 interfere == nil 或 Enabled=false → 等价于 CleanContentHtml (默认 false,
+//   不破坏现有 71 Rule clean 段). 否则 → CleanContentHtml + InjectInterferenceSentences.
+//   caller: runner.go CrawlChapterContent (R69 wiring 范围外, 留交接; 切换 1 行:
+//     `cleaned = CleanContentHtml(content.Content, &cfg.Rule.Clean)` →
+//     `cleaned = CleanContentHtmlWithInterference(content.Content, &cfg.Rule.Clean,
+//       &InterfereConfig{Enabled: <开关>, Seed: bc.BookID+":"+q.ChID, Interval: 4})`).
+//   设计: 因 types.go CleanConfig 跨范围 (R69-B 严禁改 types.go, InterfereConfig
+//    单独建在 cleaner.go), admin Rule 编辑时若加 interfere 段 (R69 admin 范围)
+//    可序列化为 InterfereConfig 传入; 若不加则 interfere=nil 默认关.
+func CleanContentHtmlWithInterference(raw string, cfgOverride *CleanConfig, interfere *InterfereConfig) string {
+        cleaned := CleanContentHtml(raw, cfgOverride)
+        if interfere == nil || !interfere.Enabled {
+                return cleaned
+        }
+        interval := interfere.Interval
+        if interval <= 0 {
+                interval = 4
+        }
+        return applyInterference(cleaned, interfere.Seed, interval)
 }

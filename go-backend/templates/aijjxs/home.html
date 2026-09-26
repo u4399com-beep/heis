@@ -39,8 +39,8 @@
 <section>
 <article class="panel latest-upload latest-upload-expand">
 <h3 class="latest">最新上传<small></small></h3>
-<div class="body grid2">
-<ul class="lines lines-books lines-books-2col">
+<div class="body grid2" style="grid-template-columns:1fr;">
+<ul class="lines lines-books lines-books-2col" style="grid-column:1/-1;">
 {{range .Books}}
 <li>
 <span class="line-main">
@@ -52,7 +52,7 @@
 </li>
 {{end}}
 </ul>
-<div class="latest-upload-more-wrap">
+<div class="latest-upload-more-wrap" style="grid-column:1/-1;align-self:start;">
 <a href="/?view=category" class="latest-upload-more">查看更多书籍</a>
 </div>
 </div>

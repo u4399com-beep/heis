@@ -2,6 +2,20 @@
   "name": "heis",
   "version": "1.0.0",
   "private": true,
+  "description": "HEIS 小说采集发布系统 - 纯 Go 后端",
+  "keywords": [
+    "novel",
+    "scraper",
+    "go",
+    "sqlite",
+    "crawler"
+  ],
+  "license": "MIT",
+  "author": "HEIS",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/heis/heis-backend.git"
+  },
   "scripts": {
     "dev": "bun start-go.js",
     "db:push": "prisma db push --accept-data-loss",

@@ -39,6 +39,13 @@ go-backend/*.log
 server.log
 dev.log
 dev.out.log
+# R66-D 日志轮转: wrapper.log 是 start-go.js 主日志 (10MB → rename .bak)
+# (已被 *.log 覆盖, 此处显式列出便于检索)
+wrapper.log
+wrapper.log.*
+# R69-C: agent 临时日志 (/tmp/r<id>-wrapper.log 是 sub-agent 派发时的 wrapper 子进程日志,
+# 在仓库外但显式忽略防误拷贝)
+/tmp/r*-wrapper.log
 
 # ── 环境变量 ──
 # .env 含本机 DATABASE_URL 等配置, 不应入库; .env.example 是模板, 显式保留
@@ -75,6 +82,9 @@ tmp-shots/
 go-backend/r57probe/
 go-backend/*.bak
 go-backend/*_tmp_*.go
+# R67-C/R69-C: 全局 .bak 兜底 (R67-C 临时备份文件可能不止 go-backend/, 加根级 *.bak
+# 兜底忽略任意位置的 .bak 备份文件; 旧版 go-backend/*.bak 保留作历史注释)
+*.bak
 
 # ── Python venv 兜底（部分 mini-services 可选 Python 子进程, 防误入库） ──
 mini-services/**/.venv/
