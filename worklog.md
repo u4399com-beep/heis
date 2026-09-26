@@ -28444,3 +28444,45 @@ Stage Summary:
      但若某 key 写失败 (e.g. SQL 约束), 返 500 + Rollback 整 tx, 已正确.
   7. **R70 交接 #2/#3 (71 Rule audit UI + featured-books UI + homeLayout UI 接入
      templates/admin/**)**: 仍留 R71-C 范围 (templates 严禁 R71-D 改).
+
+---
+Task ID: R71
+Agent: Super Z (主控 R71)
+Task: 用户 4 项需求 — 放弃 Next.js 深化 + 持续开发审查修复 + 清理精简 + 推送 git
+
+Work Log:
+- 侦察: wrapper PID 1068 在但 heis-backend 不在 (:3000=000). 编译 + 启动 wrapper PID 7035 + heis-backend PID 7040, :3000=200 3.4ms. git HEAD 1598047 (cron commit). DB 668 books. package.json name=heis.
+- 并行派发 4 agent: R71-A (main.go+home.html homeLayout/featured 前台) / R71-B (rules.html audit UI) / R71-C (crawl gofmt+精简+深抓) / R71-D (admin homeLayout 错误返回+BUG-88+深抓).
+- R71-A 完成: main.go +209 + home.html +10. homeHandler 注入 homeLayout 4 字段 (HomeCategoryCount/Books/LatestBooks/HotBooks 读 Setting 表 homeLayout.{siteID} JSON) + featuredBooks 前台消费 (getFeaturedBooks helper 读 Setting featuredBooks.{siteID} + N+1 SELECT 元数据 + 空 fallback TopBooks) + 外部 CSS 文件 watcher (60s ticker mtime 轮询 + reloadExternalCSSCache 全量重载 + sync.RWMutex 并发读 inlineExternalCSS). home.html range .LatestBooks/.FeaturedBooks 替代 .Books/.TopBooks + .HomeCategoryCount/.HomeCategoryBooks 替代硬编码 2/6.
+- R71-B 完成: rules.html +301. 71 Rule audit UI (4 数字卡片 total/complete/partial/empty + 完整度进度条 + 筛选 toolbar 全部/完整/部分/空 + 审计表格 7 字段 ✓/✗ + 缺失字段 + 操作). JS: loadAudit/ensureAuditLoaded 单页缓存/renderAuditSummary/setActiveFilter/filterAudit/classifyRule/renderAuditTable. 补全辅助: showFixSuggestion modal + FIELD_SUGGESTIONS 7 字段中文文案 + FIELD_DEFAULTS 默认提取规则模板 + applyFieldDefaults 一键合并入 config textarea + editRuleFromAudit 跳编辑.
+- R71-C 完成: crawl 6 文件 gofmt -w 规整 (cleaner/runner/storage/types/sorter/parser, 8-space→tab, gofmt -l 0 输出) + R38-R54 注释精简 3 处 (runner.go IncCaptcha doc + 2 inline 注释删, 95% 含 why rationale 保留) + 4 bug (BUG-91 P2 parser cssSelect #(\d[\w-]*) → idNumericFixRe 包级预编译 / BUG-92 P2 ApplyTransform base64 数据正则 → base64DataRe / BUG-93 P3 tokenizeJsonPath JSONPath 过滤 → jsonPathEqRe+NeRe / BUG-94 P3 applyConstTemplate 占位符 → constTemplateRe, hot path regexp.MustCompile 集中优化与 R47-1A cleaner/R45-1C smart 同款) + BUG-95~97 documented (IDMap deadcode/FinalizeBook latestChapter 特殊章节/ExecuteTask defer recover).
+- R71-D 完成: admin.go +61. homeLayout 错误返回 (sqlExecer 接口抽象 *sql.DB/*sql.Tx 共有 Exec + setHomeLayoutSetting 签名重构返 error + caller 传 tx 让 Setting 写入随 Site 主表 tx 原子化 + Rollback 还原 + 不再 _ = 静默吞) + BUG-88 sort.Strings (adminSettingsUpdate 两阶段 validate-then-save, Phase 1 sort.Strings 排序 keys 收集 badKeys+oversizeKeys 不立即返, Phase 2 一次报全部非法 key) + 3 bug (BUG-91 P3 batchGenerateTDK 静默吞 err → siteTDK 加 Applied+Error 字段 / BUG-92 P3 getHomeLayoutSetting 仅 float64 → intField 双格式 / BUG-93 P3 adminBackupRestoreHandler Books struct SourceRule→SourceRuleID 名匹配). 精简: 0 重复 helper + 0 deadcode + 4 处 R38-R54 注释删 + 0 ST1003 + readHomeLayoutFromBody 删冗余 clampIntAdm.
+- 主控统一编译: go build -o heis-backend . = 0 errors + go vet ./... = 0 warnings, 二进制 25,482,861 bytes (R70 25,460,718 → +22,143: R71-A +209 main + R71-D +61 admin + R71-C gofmt 微调).
+- 主控重启 wrapper: kill heis-backend → wrapper 自愈重启 PID 17944, :3000=200 4.6ms.
+- 验证: / = 200 4.6ms / /health=200 / /api/admin/rules?action=audit 200 返回 71 Rule complete=43/partial=14/empty=14.
+- 用户需求 #4 推送 git: git add -A (10 文件) + git commit (2964 insertions/1714 deletions) + git push origin main (2483a21..3ecafa8 fast-forward). ✅ 推送成功.
+
+Stage Summary:
+- 用户 4 项需求全部完成:
+  · 需求 1 (放弃 Next.js 深化): R67-R70 基础 + R71 持续, 0 Next.js 残留, package.json name=heis 3 deps 0 devDeps, node_modules 243MB
+  · 需求 2 (持续开发+采集+反反爬+深抓): 4 agent 并行 + R70 交接 8 项推进 (homeLayout/featured 前台消费 + audit UI + BUG-88 sort.Strings + homeLayout 错误返回 + CSS watcher + gofmt)
+  · 需求 3 (清理整合精简): R71-C crawl 6 文件 gofmt -w 规整 + R38-R54 注释精简 3 处 + R71-D admin 4 处注释删 + readHomeLayoutFromBody 删冗余
+  · 需求 4 (推送 git): git push origin main 成功 (2483a21..3ecafa8)
+- 编译: go build ./... 0 errors + go vet ./... 0 warnings, 二进制 25,482,861 bytes.
+- Bug 修复累计: 90 → 97 项 (R71 新增 7 unique bug: R71-C 4 BUG-91~94 parser 预编译 + R71-D 3 BUG-91~93 admin 静默吞/float64/SourceRule, 编号冲突主控去重).
+- gofmt: crawl 6 文件规整 ✓ (8-space→tab).
+- homeLayout: 后台 API (R70-D) + 前台消费 (R71-A) 全链路.
+- featuredBooks: 后台 API (R70-D) + 前台消费 (R71-A) 全链路.
+- 71 Rule audit: 后端 API (R70-D) + admin UI (R71-B) 全链路.
+- CSS watcher: R70-A 启动加载 + R71-A 60s mtime 轮询重载.
+- git: push origin main 成功 (commit 3ecafa8).
+
+未解决 (交接 R72):
+1. **R71-C BUG-95 IDMap deadcode**: runner.go IDMap 从不写回, cascade 清理. R72.
+2. **R71-C BUG-96 FinalizeBook latestChapter 特殊章节**: 末项是番外/楔子时误导. R72 fallback.
+3. **R71-C BUG-97 ExecuteTask defer recover**: startCrawlTask 兜底但 ExecuteTask 主循环无. R72.
+4. **R71-D adminSiteByIDHandler PUT themeId="" 允许**: 与 Create 不一致. R72.
+5. **R71-D adminDownloadsCreate obfuscateDensity 仅 float64**: 无 floatField helper. R72.
+6. **gofmt 全项目剩余文件**: fetcher/hostgate/smart/main/admin 未 gofmt (R71-C 仅 crawl 6 文件). R72.
+7. **R71-B 14 empty+14 partial 实际补全**: UI 就位, 需人工逐个核对源站 DOM. R72.
+8. **R71-A featuredBooks N+1 SELECT**: 大列表时慢. R72 优化批量查.
