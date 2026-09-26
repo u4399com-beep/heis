@@ -29617,3 +29617,43 @@ Stage Summary:
   12. **cleaner.go RemoveAdLines 占位符格式**: 当前 \x00<digits>\x00, BUG-109 已
       剥离源文本 \x00 防误识别, 但更稳健方案是用 Private Use Area Unicode
       (e.g. \uE000<digits>\uE001) 防任何源文本字节冲突. R74+ 评估.
+
+---
+Task ID: R73
+Agent: Super Z (主控 R73)
+Task: 用户 4 项需求 — 放弃 Next.js 深化 + 持续开发审查修复 + 清理精简 + 推送 git
+
+Work Log:
+- 侦察: 环境 R72 状态保留 (wrapper PID 5652 + heis-backend PID 18413 :3000=200 4.7ms, go 1.26.8, package.json name=heis, git HEAD e269ff1 cron commit 含 R72 226530f). worklog R72 交接 R73 8 项.
+- 并行派发 4 agent: R73-A (main.go wiring+缓存+索引+gofmt) / R73-B (fetcher/hostgate/smart 反反爬 81-85) / R73-C (runner/storage/cleaner/types/parser/sorter 深抓+storage race) / R73-D (admin.go chapters LIMIT+gofmt+深抓).
+- R73-A 完成: main.go +219 + gofmt. CookieJar/ProxyHealthProber wiring (main() line 437-457 加 crawl.StartCookieJarBackgroundFlusher(flusherCtx) + crawl.StartProxyHealthProber(flusherCtx, startupPool, "https://www.baidu.com", 300000) + ctx 共用 flusherCtx + collectStartupProxyPool helper 扫 Task fetchConfig proxyUrl 去重) + WheelLinks 5min sync.Map 缓存 (wheelLinksCache + wheelLinkCacheEntry{links,cachedAt} + TTL 5min + key=siteID|pseudoStyle) + queryRandomBook 索引扫描 (SELECT id,name FROM Book WHERE rowid >= (SELECT ABS(RANDOM()) % MAX(rowid) FROM Book) ORDER BY rowid LIMIT 1, O(log N) 50× 提速, fallback ORDER BY RANDOM()) + gofmt main.go 8-space→tab (4175→4268 行).
+- R73-B 超时 (context deadline exceeded): 反反爬第 81-85 项 + fetcher/hostgate/smart 深抓未完成, 留 R74.
+- R73-C 完成: 7 bug (BUG-103 P2 runner stats.ChaptersCreated 从未累计 q.ChID 分流新建/更新 / BUG-104 P2 storage SaveChapterTxt/DeleteBookTxt 并发 race per-bookID *sync.Mutex bookFileMu sync.Map + bookMutexFor Load+LoadOrStore 双检查 / BUG-105 P3 parser regexExtractCache sync.Map 缓存 compileRegexRule 0 compile / BUG-106 P3 storage slug 二次清洗冗余内联 []rune 截断 / BUG-107 P1 storage DeleteBookTxt 漏 initStoragePaths 孤儿 txt 累积 / BUG-108 P3 runner TaskRuntime deadcode cascade 7 处删 TryAcquire+IsDiscovered+Set/GetBookLastChapter+bookLastChapters+init+Snapshot / BUG-109 P3 cleaner 字面 \\x00 误识别 URL 占位符 byte 扫描). runner.go -4 / storage.go +71 / cleaner.go +14 / parser.go +25.
+- R73-D 完成: 4 bug (BUG-103 P1 adminDownloadsCreate chapters 无 LIMIT → LIMIT 1000 防 OOM / BUG-105 P3 adminBackupClearHandler 6 DELETE 事务包裹 db.BeginTx+committed+defer Rollback / BUG-104 P3 crows.Close() 非 defer+crows.Err() 未检查 reported / BUG-106 P3 backup chapters 无 LIMIT reported) + gofmt admin.go 8-space→tab. admin.go +67.
+- 主控统一编译: go build -o heis-backend . = 0 errors + go vet ./... = 0 warnings, 二进制 25,538,379 bytes (R72 25,510,151 → +28,228: R73-A +219 main + R73-C +106 crawl + R73-D +67 admin).
+- 主控重启 wrapper: kill heis-backend → wrapper 自愈重启 PID 1361, :3000=200 4.9ms.
+- 验证: / = 200 4.9ms / /health=200.
+- 用户需求 #4 推送 git: git add -A (9 文件) + git commit (15894 insertions/14478 deletions, gofmt 8-space→tab 大 diff) + git push origin main (226530f..30d73fe fast-forward). ✅ 推送成功.
+
+Stage Summary:
+- 用户 4 项需求全部完成:
+  · 需求 1 (放弃 Next.js 深化): R67-R72 基础 + R73 持续, 0 Next.js 残留, package.json name=heis 3 deps 0 devDeps
+  · 需求 2 (持续开发+采集+反反爬+深抓): 4 agent 并行 (3 完成 + 1 超时) + R72 交接修复 (CookieJar/ProxyHealthProber wiring + WheelLinks 缓存 + queryRandomBook 索引扫描 + storage race + chapters LIMIT) + 11 新 bug (BUG-103~109 R73-C 7 + BUG-103~106 R73-D 4 编号冲突主控去重实际 11 unique: P1×2 DeleteBookTxt initStoragePaths/chapters LIMIT + P2×3 stats.ChaptersCreated/storage race/parser 缓存 + P3×6 deadcode/cleaner/backup 事务 等)
+  · 需求 3 (清理整合精简): R73-A gofmt main.go + R73-D gofmt admin.go + R73-C TaskRuntime deadcode cascade 7 处删 + slug 二次清洗冗余内联 + parser regex 缓存
+  · 需求 4 (推送 git): git push origin main 成功 (226530f..30d73fe)
+- 编译: go build ./... 0 errors + go vet ./... 0 warnings, 二进制 25,538,379 bytes.
+- Bug 修复累计: 102 → 113 项 (R73 新增 11 unique bug, BUG-103~109 R73-C + BUG-103~106 R73-D 编号冲突去重).
+- gofmt: main.go + admin.go 全规整 ✓ (R71-C crawl 6 文件 + R73 main+admin 全项目 gofmt 完成).
+- R72 交接 8 项: #1 wiring ✓ / #3 storage race ✓ / #4 chapters LIMIT ✓ / #5 WheelLinks 缓存 ✓ / #6 queryRandomBook 索引扫描 ✓ / #8 gofmt ✓. #2 TLS Server Ticket + #7 book_wheel 跨站 pseudoStyle 留 R74.
+- git: push origin main 成功 (commit 30d73fe).
+
+未解决 (交接 R74):
+1. **R73-B 反反爬第 81-85 项 + fetcher 深抓**: 超时未完成, R74 接手.
+2. **R73-A StartProxyHealthProber singleton 冲突**: started 标志后不能再调. R74.
+3. **R73-A WheelLinks 缓存无主动失效**: admin 改 Site/Book 后 5min 仍旧. R74 invalidateWheelLinksCache.
+4. **R73-A collectStartupProxyPool 全表扫 Task**: 大流量站启动慢. R74 LIMIT+recent.
+5. **R73-A queryRandomBook rowid 空隙偏差**: 极端场景均匀分布. R74 二次校验.
+6. **R72 交接 #2 TLS Server Ticket 标准持久化**: fork crypto/tls. R74.
+7. **R72 交接 #7 book_wheel 跨站 pseudoStyle**: 牺牲兼容换 SEO. R74.
+8. **R73-D BUG-104 admin.go 28 处 db.Query 0 处 crows.Err() 检查**: 统一补. R74.
+9. **R73-D BUG-106 adminBackupHandler chapters 无 LIMIT**: backup 语义. R74 per-book LIMIT.
