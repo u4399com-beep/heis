@@ -158,6 +158,7 @@
 <div class="mod-footer-main ui-wm">
 <div class="mod-footer-info">本站所有小说为完本转载作品，所有内容版权归版权方或原作者所有。</div>
 <p>Copyright © {{.Site.Name}} ({{.Site.Domain}})</p>
+{{if .WheelLinks}}<p>随机推荐：{{range .WheelLinks}}{{if eq .Type "book_intra"}}<a href="{{.URL}}" target="_blank" rel="nofollow">{{.Name}}</a> {{end}}{{end}}{{range .WheelLinks}}{{if eq .Type "home_wheel"}}<a href="{{.URL}}" target="_blank" rel="nofollow">{{.Name}}</a> {{end}}{{end}}{{range .WheelLinks}}{{if eq .Type "book_wheel"}}<a href="{{.URL}}" target="_blank" rel="nofollow">{{.Name}}</a> {{end}}{{end}}</p>{{end}}
 </div>
 </div>
 <div class="mod-footer-border"></div>

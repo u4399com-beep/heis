@@ -184,6 +184,7 @@
 <p>Copyright © {{.Site.Name}}（{{.Site.Domain}}）</p>
 <div>
 友情連結：<a href="/" target="_blank" title="{{.Site.Name}}">{{.Site.Name}}</a>|
+{{if .WheelLinks}}随机推荐：{{range .WheelLinks}}{{if eq .Type "book_intra"}}<a href="{{.URL}}" target="_blank" rel="nofollow">{{.Name}}</a> {{end}}{{end}}{{range .WheelLinks}}{{if eq .Type "home_wheel"}}<a href="{{.URL}}" target="_blank" rel="nofollow">{{.Name}}</a> {{end}}{{end}}{{range .WheelLinks}}{{if eq .Type "book_wheel"}}<a href="{{.URL}}" target="_blank" rel="nofollow">{{.Name}}</a> {{end}}{{end}}{{end}}
 <div style="clear:both;"></div>
 </div>
 </div>

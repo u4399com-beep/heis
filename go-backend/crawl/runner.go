@@ -844,6 +844,17 @@ type BookMetaResult struct {
 }
 
 // BookMetaContext — 阶段 2 章节采集所需的书本上下文.
+//
+// R72-C BUG-95 (P3) 修复 (R71 交接 #1): 删除 IDMap map[string]string 字段 (cascade
+//
+//	deadcode). 原 R47-1A 实现创建 idMap 在 CrawlBookMeta 填所有 toc.URL → "" (暂为
+//	空, 声称 "阶段 2 落库后填充"), 但 phase 2 CrawlChapterContent 从不写回 idMap
+//	(ch.ID 优先用 q.ChID, 不存在时直接走 UpsertChapter 不查 IDMap), phase 2 落库后
+//	也不更新 IDMap[toc.URL] = created.ID. 故 IDMap[url] 永远是 "" → 查 IDMap 分支
+//	`id, ok := q.BookCtx.IDMap[q.URL]; ok && id != ""` 的 `&& id != ""` 条件恒 false,
+//	IDMap 查询永远不命中 (lookup miss). IDMap 是纯 deadcode, 删除字段 + 相关 4 处
+//	(init + 赋值 + lookup). (注: 不补 "phase 2 落库后写回 IDMap" 是因为 ch.ID 来源
+//	q.ChID 已覆盖 admin retry-failed 场景, IDMap 多此一举.)
 type BookMetaContext struct {
 	BookID          string
 	BookName        string
@@ -851,7 +862,6 @@ type BookMetaContext struct {
 	TocItems        []TocItem
 	DetectedStatus  string // completed | ongoing | unknown
 	ParsedWordCount int64
-	IDMap           map[string]string // url → chId
 	FetchCfg        FetchConfig
 }
 
@@ -872,7 +882,22 @@ type ChapterTask struct {
 //	阶段 3: 串行 finalizeBook (单本书收尾统计 + 状态分流)
 //
 //	错误隔离: 单本/单章失败不影响其他; BudgetExceeded / CircuitBreak 上抛任务级
-func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) error {
+//
+// R72-C BUG-97 (P2) 修复 (R71 交接 #3): ExecuteTask 主循环无 defer recover. caller
+//
+//	(admin.go startCrawlTask) 已有 BUG-87 R70-D 加的 defer recover 兜底, 但 ExecuteTask
+//	主循环 + phase 1/2 goroutine 边界偶发 panic (e.g. cfg.DB InsertTaskLog 在 defer
+//	recover 之外被调 / progress 字段类型断言失败 / 罕见 nil 指针) 时, panic 跨 goroutine
+//	传播到 caller 后 caller recover 也只能 "日志记 + 不杀进程", 任务状态会停在 "running"
+//	状态 (admin UI 看到任务永远 running 不结束). 本修复在 rt 注册到 tr.runtimes 之后加
+//	defer recover: panic 时用闭包捕获的 rt 直接调 MarkStopped + log + 返 err, 与 phase
+//	1/2 goroutine 的 defer recover 同款 defense in depth. (注: 用 named return (retErr)
+//	让 defer 能在 panic 时设 ret, 正常路径不影响. recover 注册在 cleanup 之前 — LIFO
+//	顺序: cleanup 先触发 → 删 tr.runtimes; recover 后触发 → 闭包捕获 rt 直接 MarkStopped
+//	+ log + 设 retErr (rt 仍可访问, Go 闭包按引用捕获). 若 panic 发生在 NewTaskRuntime /
+//	SetMaxRequests / MarkRunning (rt 注册前, defer 注册前) — caller (admin.go
+//	startCrawlTask) 已有 R70-D BUG-87 兜底, 不在本修复范围.)
+func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) (retErr error) {
 	rt := NewTaskRuntime(cfg.TaskID)
 	// R41-1A: maxRequests 写入移到 MarkRunning / registration 之前 (happens-before 关系
 	// 保证 admin Snapshot 看到非零值). 原代码在 tr.runtimes[cfg.TaskID] = rt 之后写,
@@ -888,6 +913,28 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) error {
 	tr.mu.Lock()
 	tr.runtimes[cfg.TaskID] = rt
 	tr.mu.Unlock()
+	// R72-C BUG-97 (P2): defer recover — ExecuteTask 主循环 panic 兜底.
+	//   注册在 cleanup defer 之前 (LIFO: cleanup 先触发 → 删 tr.runtimes → recover
+	//   后触发 → 闭包捕获 rt 直接 MarkStopped + log + 设 retErr, 不依赖 tr.runtimes
+	//   查询). caller (admin.go startCrawlTask) 已有 R70-D BUG-87 兜底, 本兜底是
+	//   defense in depth.
+	//   注: 即使 cleanup 已删 tr.runtimes[cfg.TaskID]=rt, 闭包仍持有 rt 指针 (Go
+	//   闭包按引用捕获), rt.MarkStopped 直接调 rt.mu.Lock() 标 stopped=true, 与
+	//   tr.runtimes 是否含 rt 无关.
+	defer func() {
+		if r := recover(); r != nil {
+			// 标记 runtime 为 stopped (防 admin Snapshot 看到 running 状态)
+			rt.MarkStopped()
+			// 写一条 error 日志 (best-effort, 不再嵌套 panic)
+			func() {
+				defer func() { _ = recover() }() // 二次兜底: cfg.DB InsertTaskLog panic 时不再传播
+				if cfg.DB != nil {
+					_ = cfg.DB.InsertTaskLog(cfg.TaskID, LogError, fmt.Sprintf("🔴 ExecuteTask panic: %v", r))
+				}
+			}()
+			retErr = fmt.Errorf("ExecuteTask panic: %v", r)
+		}
+	}()
 	defer func() {
 		tr.mu.Lock()
 		if cur, ok := tr.runtimes[cfg.TaskID]; ok && cur == rt {
@@ -1753,19 +1800,14 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
 	rt.RemoveFromFailed(bookURL)
 
 	// 构建 BookMetaContext
-	idMap := map[string]string{}
-	// R47-1A: 删 `_ = i` dead code (for-range 不需要 i 时直接用 _)
-	for _, toc := range toc.Items {
-		idMap[toc.URL] = "" // 暂为空, 阶段 2 落库后填充
-	}
-
+	// R72-C BUG-95 (P3): 删除 idMap 创建 (cascade deadcode, IDMap 字段已删).
+	//   原 idMap := map[string]string{} + for-range 填 "" 全程不读, alloc 浪费.
 	bookCtx := &BookMetaContext{
 		BookID:         bookID,
 		BookName:       parsed.Name,
 		BookURL:        bookURL,
 		TocItems:       toc.Items,
 		DetectedStatus: detectedStatus,
-		IDMap:          idMap,
 		FetchCfg:       cfg.Override,
 	}
 
@@ -1948,9 +1990,10 @@ func CrawlChapterContent(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRun
 		}
 		if q.ChID != "" {
 			ch.ID = q.ChID
-		} else if id, ok := q.BookCtx.IDMap[q.URL]; ok && id != "" {
-			ch.ID = id
 		}
+		// R72-C BUG-95 (P3): 删除 IDMap lookup (cascade deadcode, IDMap 字段已删).
+		//   原 `else if id, ok := q.BookCtx.IDMap[q.URL]; ok && id != "" { ch.ID = id }`
+		//   分支恒不命中 (IDMap[url] 永远是 "", `&& id != ""` 永远 false), 删除.
 		_, err := cfg.DB.UpsertChapter(ch)
 		if err != nil {
 			return false, "other", fmt.Sprintf("章节入库失败 %s: %v", q.Title, err)
@@ -1999,9 +2042,27 @@ func FinalizeBook(cfg ExecuteTaskConfig, rt *TaskRuntime, bc *BookMetaContext, p
 		if bc.DetectedStatus != "unknown" {
 			_ = cfg.DB.UpdateBookStatus(bc.BookID, bc.DetectedStatus)
 		}
-		// latestChapter (取 toc 末章标题)
+		// latestChapter (取 toc 末章标题, 番外/楔子等特殊章节时 fallback 到最后一个有编号的章)
+		//
+		// R72-C BUG-96 (P3) 修复 (R71 交接 #2): 原实现无条件取 TocItems[len-1].Title 作
+		//   latestChapter. 源站 TOC 末项是番外/楔子/序章/尾声/后记/前言/引子等特殊章节时
+		//   (e.g. "番外: 主角的婚礼" / "楔子" / "后记"), 写入 Book.latestChapter 误导用户
+		//   ("最新章节: 番外: 主角的婚礼" 实际正文最新是第N章正文). 修复: 末项通过
+		//   extractChapterNumber 提取失败 (无编号 = 特殊章节) 时, 向前扫找最后一个有编号
+		//   的章节作 latestChapter. 全部无编号 (e.g. 短篇/无标准章节编号的小说) 时回退
+		//   原末项标题 (与原行为一致). 使用 sorter.go extractChapterNumber (同包可见).
 		if len(bc.TocItems) > 0 {
 			latest := bc.TocItems[len(bc.TocItems)-1].Title
+			if _, ok := extractChapterNumber(latest); !ok {
+				// 末项无编号 (特殊章节), 向前扫找最后一个有编号的章
+				for i := len(bc.TocItems) - 2; i >= 0; i-- {
+					if _, ok2 := extractChapterNumber(bc.TocItems[i].Title); ok2 {
+						latest = bc.TocItems[i].Title
+						break
+					}
+				}
+				// 全部无编号 → 回退原末项 (与原行为一致, 不破坏短篇/特殊章节书)
+			}
 			_ = cfg.DB.UpdateBookLatestChapter(bc.BookID, latest)
 		}
 	}

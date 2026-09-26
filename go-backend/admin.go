@@ -449,6 +449,38 @@ func intField(m map[string]interface{}, key string, def, lo, hi int) int {
         return n
 }
 
+// floatField 从 map 取 float64 (钳制范围, R72-D BUG-99).
+//
+// 与 intField 同口径: 支持 float64 (JSON number) + string ("0.5") 双格式,
+// 缺失或 nil 返 def, 值越界钳回 [lo, hi]. hi<=0 表示无上界 (与 intField
+// 同款 "hi>0 才钳" 语义). 用于 adminDownloadsCreate.obfuscateDensity 等
+// 浮点配置项 — 原仅接受 v.(float64), 用户传 "0.5" (string) 静默为 0.0
+// 与提交意图不符 (与 R71-D BUG-92 getHomeLayoutSetting 仅 float64 同款 bug).
+func floatField(m map[string]interface{}, key string, def, lo, hi float64) float64 {
+        v, ok := m[key]
+        if !ok || v == nil {
+                return def
+        }
+        var n float64
+        switch x := v.(type) {
+        case float64:
+                n = x
+        case string:
+                // strconv.ParseFloat 比 fmt.Sscanf "%f" 更严格 (拒绝 "0.5abc" 这类
+                // 混合串), 与 adminDownloadsCreate 其他字段的 strField + 显式校验同口径.
+                if f, err := strconv.ParseFloat(strings.TrimSpace(x), 64); err == nil {
+                        n = f
+                }
+        }
+        if n < lo {
+                n = lo
+        }
+        if hi > 0 && n > hi {
+                n = hi
+        }
+        return n
+}
+
 // boolField 从 map 取 bool (默认 false; 显式 false 返回 false; 显式 true 返回 true).
 func boolField(m map[string]interface{}, key string, def bool) bool {
         v, ok := m[key]
@@ -3182,17 +3214,11 @@ func adminDownloadsCreate(w http.ResponseWriter, r *http.Request) {
                 options["obfuscateMode"] = mode
         }
         if v, ok := body["obfuscateDensity"]; ok && v != nil {
-                n := 0.0
-                if f, ok2 := v.(float64); ok2 {
-                        n = f
-                }
-                if n < 0 {
-                        n = 0
-                }
-                if n > 1 {
-                        n = 1
-                }
-                options["obfuscateDensity"] = n
+                // R72-D BUG-99 (P3, R71 交接 #5): 原仅 v.(float64) 接受 JSON number,
+                //   用户传 "0.5" (string) 静默为 0.0 与提交意图不符. 改调 floatField
+                //   (与 intField 同口径) 支持 float64 + string 双格式, clamp 到 [0, 1].
+                //   与 R71-D BUG-92 getHomeLayoutSetting 改 intField 同款方法论.
+                options["obfuscateDensity"] = floatField(body, "obfuscateDensity", 0, 0, 1)
         }
         if v, ok := body["headerTemplate"]; ok && v != nil {
                 options["headerTemplate"] = strField(body, "headerTemplate", 5000)
@@ -4596,19 +4622,29 @@ func adminSiteByIDHandler(w http.ResponseWriter, r *http.Request) {
                 }
                 if v, ok := body["themeId"]; ok && v != nil {
                         t := strField(body, "themeId", 64)
+                        // R72-D BUG-98 (P3, R71 交接 #4): 与 adminSitesCreate 严格校验一致性.
+                        //   原 PUT 允许 themeId="" 跳过 adminThemes 校验, 直接写 Site.themeId=""
+                        //   → getSite 找不到主题模板 (adminThemes 列表无空 ID) → 前台 homeHandler
+                        //   兜底到默认主题但与用户提交意图不符. adminSitesCreate (line 4888-4905)
+                        //   严格校验 themeId 必填 + 在 adminThemes 列表内; PUT 应同口径, 不允许
+                        //   空字符串绕过校验. 修复: themeId 为空时返 400 (与 adminSitesCreate
+                        //   line 4889-4893 "themeId 必填" + 默认 clone-shipsay 兜底不同 — PUT 是
+                        //   增量更新, 用户显式传 themeId 应有值, 不应默认兜底).
+                        if t == "" {
+                                writeJSONErr(w, "themeId 不能为空 (请选择已注册主题)", 400)
+                                return
+                        }
                         // 校验主题在已注册表 (adminThemes) 中
-                        if t != "" {
-                                valid := false
-                                for _, th := range adminThemes {
-                                        if th.ID == t {
-                                                valid = true
-                                                break
-                                        }
+                        valid := false
+                        for _, th := range adminThemes {
+                                if th.ID == t {
+                                        valid = true
+                                        break
                                 }
-                                if !valid {
-                                        writeJSONErr(w, "themeId 不在已注册主题列表", 400)
-                                        return
-                                }
+                        }
+                        if !valid {
+                                writeJSONErr(w, "themeId 不在已注册主题列表", 400)
+                                return
                         }
                         sets = append(sets, "themeId=?")
                         args = append(args, t)

@@ -374,6 +374,8 @@ func main() {
         http.HandleFunc("/api/public/sites", sitesHandler)
         http.HandleFunc("/api/public/book", bookDetailHandler)
         http.HandleFunc("/api/public/chapter", chapterHandler)
+        // R72-A 目标B: 链轮随机链接 API (用户需求 #1), 供前端 JS 动态拉取站群互推链接.
+        http.HandleFunc("/api/public/random-link", randomLinkHandler)
 
         // R54-1A: 公共反馈提交 (前台浮窗按钮的 POST 目标, 受 Setting.feedbackEnabled 开关控制)
         http.HandleFunc("/api/feedback", publicFeedbackSubmitHandler)
@@ -546,6 +548,13 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 "HomeURL":       buildHomeURL(pseudoStyle),
         }
 
+        // R72-A 目标B: 注入链轮链接供前台友情链接模块渲染 (用户需求 #1).
+        //   组合 1 站内随机书 + 2 站群首页 + 2 站群书 = 5 个链接, per-request random.
+        //   模板用 {{range .WheelLinks}}<a href="{{.url}}">{{.name}}</a>{{end}} 渲染 (R72-B 模板范围).
+        //   site["ID"] 为本站 cuid; 排除当前站防 self-link; pseudoStyle 用当前站编 book_intra URL.
+        siteDBID, _ := site["ID"].(string)
+        data["WheelLinks"] = getWheelLinks(siteDBID, pseudoStyle)
+
         // 按 view 装配数据
         switch view {
         case "book":
@@ -571,9 +580,19 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 data["FirstChapterId"] = firstChID
                 // R63-A: 注入 URL builder 输出供模板消费 (本轮 Go 端就绪, 模板层 R63-B 接入).
                 data["BookURL"] = buildBookURL(pseudoStyle, id)
-                if firstChID != "" {
+                // R72-A 目标A: 总是注入 FirstChapterURL + ChapterListAnchor, 修用户需求 #0 按钮 bug.
+                //   原 R64-D 仅 firstChID != "" 时注入 FirstChapterURL — 无章节书 (爬虫未抓到
+                //   Chapter 行 / 异常状态) 模板渲染 <a href=""> 在线阅读全文</a> 空 href, 按钮无效.
+                //   修复: firstChID == "" 时 fallback 到书籍详情页 (buildBookURL); 总是有值.
+                //   ChapterListAnchor 固定 "chapter_list" 供模板 href="{{.ChapterListAnchor}}"
+                //   或静态 href="#chapter_list" 跳转到 <article id="chapter_list"> 锚点.
+                //   注: R72-B (模板范围) 可改模板用 {{.ChapterListAnchor}} 动态拼 href="#{{.ChapterListAnchor}}".
+                if firstChID == "" {
+                        data["FirstChapterURL"] = buildBookURL(pseudoStyle, id)
+                } else {
                         data["FirstChapterURL"] = buildChapterURL(pseudoStyle, firstChID, id)
                 }
+                data["ChapterListAnchor"] = "chapter_list"
         case "read":
                 chID := r.URL.Query().Get("chapter")
                 if chID == "" {
@@ -3831,4 +3850,200 @@ func bookIDFromMap(book map[string]interface{}) string {
                 return id
         }
         return ""
+}
+
+// ===== R72-A 目标B: 站群链轮随机链接 (用户需求 #1) =====
+//
+// 设计: 给前台"友情链接"模块提供站群互推链接, 三种类型:
+//   - book_intra: 当前站内随机 1 本书 (URL 用当前站 pseudoStaticStyle 编码).
+//   - home_wheel: 站群内随机 1 站首页 (URL 协议相对 "//{domain}/" 跨域).
+//   - book_wheel: 站群内随机 1 站 + 该站随机 1 本书 (URL 用 query 串跨站兼容, 不依赖目标站 pseudoStyle).
+// 触发: homeHandler 各 view 注入 data["WheelLinks"] 供模板渲染;
+//   GET /api/public/random-link?type={book_intra|home_wheel|book_wheel}&site={siteID} 返单条 JSON.
+// 性能: per-request random (SQLite ORDER BY RANDOM() LIMIT N, ~1ms for ~10K books / <100 sites);
+//   无缓存层 (轮换频率高, 缓存意义不大; 实际 ~5ms 总开销 homeHandler 内 5 个 SELECT).
+// 排除: home_wheel/book_wheel 排除当前 siteID 防链轮跳回自身 (站群内 self-link 无 SEO 价值).
+
+// wheelSite — 链轮站点行 (id / name / domain), 用于 home_wheel + book_wheel 注入.
+//   domain 字段为裸域名 (e.g. "www.example.com" 不含 protocol); 跨站 URL 用 "//"+domain+"/" 协议相对.
+type wheelSite struct {
+        id     string
+        name   string
+        domain string
+}
+
+// queryRandomBook — 从 Book 表 ORDER BY RANDOM() LIMIT 1 取 (id, name).
+//   单次调用 ~1ms for ~10K rows (SQLite RANDOM() 扫全表 + LIMIT 1 取首行).
+//   失败 (空表 / DB 错误) 返 ok=false, caller 静默跳过.
+func queryRandomBook() (id, name string, ok bool) {
+        var bid, bname sql.NullString
+        err := db.QueryRow(`SELECT id, name FROM Book ORDER BY RANDOM() LIMIT 1`).Scan(&bid, &bname)
+        if err != nil || !bid.Valid || bid.String == "" {
+                return "", "", false
+        }
+        return bid.String, bname.String, true
+}
+
+// queryRandomWheelSites — 从 Site 表 (inLinkWheel=1 AND status=1 AND domain!='') 随机取 n 站.
+//   excludeID 非空时排除当前 site 防链轮跳回自身 (站群内 self-link 无 SEO 价值).
+//   返回 []wheelSite, 长度 <= n (DB 行不足时按实际返回).
+//   domain!='' 过滤掉未配置 domain 的站点 (协议相对 URL 需 domain 非空).
+func queryRandomWheelSites(n int, excludeID string) []wheelSite {
+        out := []wheelSite{}
+        if n <= 0 {
+                return out
+        }
+        var q string
+        var args []interface{}
+        if excludeID != "" {
+                q = `SELECT id, name, domain FROM Site WHERE inLinkWheel=1 AND status=1 AND domain!='' AND id!=? ORDER BY RANDOM() LIMIT ?`
+                args = []interface{}{excludeID, n}
+        } else {
+                q = `SELECT id, name, domain FROM Site WHERE inLinkWheel=1 AND status=1 AND domain!='' ORDER BY RANDOM() LIMIT ?`
+                args = []interface{}{n}
+        }
+        rows, err := db.Query(q, args...)
+        if err != nil {
+                return out
+        }
+        defer rows.Close()
+        for rows.Next() {
+                var sid, sname, sdomain sql.NullString
+                if err := rows.Scan(&sid, &sname, &sdomain); err != nil {
+                        continue
+                }
+                if sid.Valid && sdomain.String != "" {
+                        out = append(out, wheelSite{id: sid.String, name: sname.String, domain: sdomain.String})
+                }
+        }
+        return out
+}
+
+// getSitePseudoStaticStyle — 取指定 siteID 的 pseudoStaticStyle (status=1 兜底).
+//   siteID 空 / 不存在时 fallback 默认站 (isDefault=1).
+//   用于 randomLinkHandler book_intra 类型 (API 调用方传 site 查 pseudoStyle 给当前站编 URL).
+//   失败 (无任何 status=1 站) 返 "query" 兜底.
+//   单次 db.QueryRow, ~0.5ms; 不调 getSite 全量 (避免 Setting 子查询开销).
+func getSitePseudoStaticStyle(siteID string) string {
+        var style sql.NullString
+        if siteID != "" {
+                _ = db.QueryRow(`SELECT COALESCE(pseudoStaticStyle,'query') FROM Site WHERE id=? AND status=1`, siteID).Scan(&style)
+        }
+        if !style.Valid || style.String == "" {
+                _ = db.QueryRow(`SELECT COALESCE(pseudoStaticStyle,'query') FROM Site WHERE isDefault=1 AND status=1`).Scan(&style)
+        }
+        if style.String == "" {
+                return "query"
+        }
+        return style.String
+}
+
+// getWheelLinks — 装配 5 个链轮链接供前台友情链接模块渲染 (用户需求 #1).
+//   组合: 1 站内随机书 (book_intra) + 2 站群随机首页 (home_wheel) + 2 站群随机书 (book_wheel).
+//   currentSiteID 非空时排除当前站 (home_wheel/book_wheel 不返 self).
+//   currentPseudoStyle 用于 book_intra 编 URL (与当前站伪静态风格一致).
+//   返回 []map{url, name, type, [siteName]}; 单条失败静默跳过, 总数可能 < 5.
+//   调用点: homeHandler 各 view 注入 data["WheelLinks"], 模板 {{range .WheelLinks}}<a href="{{.url}}">{{.name}}</a>{{end}}.
+func getWheelLinks(currentSiteID, currentPseudoStyle string) []map[string]interface{} {
+        out := []map[string]interface{}{}
+        // 1. book_intra: 站内随机 1 书
+        if bid, bname, ok := queryRandomBook(); ok {
+                out = append(out, map[string]interface{}{
+                        "url":  buildBookURL(currentPseudoStyle, bid),
+                        "name": bname,
+                        "type": "book_intra",
+                })
+        }
+        // 2-5. home_wheel + book_wheel: 查 2 个 distinct wheel sites (排除当前 site)
+        sites := queryRandomWheelSites(2, currentSiteID)
+        for _, s := range sites {
+                // home_wheel: 协议相对跨站首页
+                out = append(out, map[string]interface{}{
+                        "url":  "//" + s.domain + "/",
+                        "name": s.name,
+                        "type": "home_wheel",
+                })
+                // book_wheel: 同站 + 随机 1 书 (URL 用 query 串跨站兼容)
+                if bid, bname, ok := queryRandomBook(); ok {
+                        out = append(out, map[string]interface{}{
+                                "url":      "//" + s.domain + "/?view=book&id=" + bid,
+                                "name":     bname,
+                                "type":     "book_wheel",
+                                "siteName": s.name,
+                        })
+                }
+        }
+        return out
+}
+
+// randomLinkHandler — GET /api/public/random-link?type={book_intra|home_wheel|book_wheel}&site={siteID}
+//
+//   单条随机链接 API, 供前端 JS 动态拉取 (非 homeHandler 静态注入路径).
+//   type=book_intra (默认): 当前站随机 1 书, 返 {url, name, type: "book_intra"}.
+//   type=home_wheel:         站群随机 1 站首页 (排除 site 参数所指当前站), 返 {url, name, type}.
+//   type=book_wheel:         站群随机 1 站 + 随机 1 书, 返 {url, name, type, siteName}.
+//   site 参数: book_intra 用此查 pseudoStyle; home_wheel/book_wheel 用此作 excludeID 防自指.
+//   失败 (无数据 / DB 错误) 返 {ok: false, error: "..."}.
+//   无副作用 (只读 SELECT, 不写 DB); 无鉴权 (公开 API); CORS * 同其它 /api/public/* 一致.
+func randomLinkHandler(w http.ResponseWriter, r *http.Request) {
+        typ := r.URL.Query().Get("type")
+        if typ == "" {
+                typ = "book_intra"
+        }
+        siteID := r.URL.Query().Get("site")
+        switch typ {
+        case "book_intra":
+                pseudoStyle := getSitePseudoStaticStyle(siteID)
+                bid, bname, ok := queryRandomBook()
+                if !ok {
+                        writeJSON(w, map[string]interface{}{"ok": false, "error": "no book available"})
+                        return
+                }
+                writeJSON(w, map[string]interface{}{
+                        "ok": true,
+                        "data": map[string]interface{}{
+                                "url":  buildBookURL(pseudoStyle, bid),
+                                "name": bname,
+                                "type": "book_intra",
+                        },
+                })
+        case "home_wheel":
+                sites := queryRandomWheelSites(1, siteID)
+                if len(sites) == 0 {
+                        writeJSON(w, map[string]interface{}{"ok": false, "error": "no wheel site available"})
+                        return
+                }
+                s := sites[0]
+                writeJSON(w, map[string]interface{}{
+                        "ok": true,
+                        "data": map[string]interface{}{
+                                "url":  "//" + s.domain + "/",
+                                "name": s.name,
+                                "type": "home_wheel",
+                        },
+                })
+        case "book_wheel":
+                sites := queryRandomWheelSites(1, siteID)
+                if len(sites) == 0 {
+                        writeJSON(w, map[string]interface{}{"ok": false, "error": "no wheel site available"})
+                        return
+                }
+                s := sites[0]
+                bid, bname, ok := queryRandomBook()
+                if !ok {
+                        writeJSON(w, map[string]interface{}{"ok": false, "error": "no book available"})
+                        return
+                }
+                writeJSON(w, map[string]interface{}{
+                        "ok": true,
+                        "data": map[string]interface{}{
+                                "url":      "//" + s.domain + "/?view=book&id=" + bid,
+                                "name":     bname,
+                                "type":     "book_wheel",
+                                "siteName": s.name,
+                        },
+                })
+        default:
+                writeJSON(w, map[string]interface{}{"ok": false, "error": "invalid type (use book_intra|home_wheel|book_wheel)"})
+        }
 }

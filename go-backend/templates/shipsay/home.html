@@ -107,6 +107,7 @@
 <footer class="container">
 <p><i class="fa fa-flag"></i>&nbsp;<a href="{{.HomeURL}}">{{.Site.Name}}</a>&nbsp;书友最值得收藏的网络小说阅读网</p>
 <p>本站所有小说为完本转载作品，所有内容版权归版权方或原作者所有。</p>
+{{if .WheelLinks}}<p>随机推荐：{{range .WheelLinks}}{{if eq .Type "book_intra"}}<a href="{{.URL}}" target="_blank" rel="nofollow">{{.Name}}</a> {{end}}{{end}}{{range .WheelLinks}}{{if eq .Type "home_wheel"}}<a href="{{.URL}}" target="_blank" rel="nofollow">{{.Name}}</a> {{end}}{{end}}{{range .WheelLinks}}{{if eq .Type "book_wheel"}}<a href="{{.URL}}" target="_blank" rel="nofollow">{{.Name}}</a> {{end}}{{end}}</p>{{end}}
 </footer>
 
 </body>

@@ -121,6 +121,7 @@
 </p>
 <p class="copyright">本站小说由根据搜索引擎转码，只为让更多读者欣赏，不保存小说内及数据，仅作宣传展示。</p>
 <p class="copyright">Copyright © {{.Site.Name}} ({{.Site.Domain}})</p>
+{{if .WheelLinks}}<p class="copyright">随机推荐：{{range .WheelLinks}}{{if eq .Type "book_intra"}}<a href="{{.URL}}" target="_blank" rel="nofollow">{{.Name}}</a> {{end}}{{end}}{{range .WheelLinks}}{{if eq .Type "home_wheel"}}<a href="{{.URL}}" target="_blank" rel="nofollow">{{.Name}}</a> {{end}}{{end}}{{range .WheelLinks}}{{if eq .Type "book_wheel"}}<a href="{{.URL}}" target="_blank" rel="nofollow">{{.Name}}</a> {{end}}{{end}}</p>{{end}}
 </div>
 </div>
 

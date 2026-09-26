@@ -24,6 +24,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/PuerkitoBio/goquery"
@@ -271,38 +272,75 @@ var (
 	// R71-C BUG-94: 预编译 applyConstTemplate 占位符正则 (原每次
 	//   applyConstTemplate call 都重编译, const 字段路径 hot path).
 	constTemplateRe = regexp.MustCompile(`\{([a-zA-Z_][a-zA-Z0-9_.]*)\}`)
+
+	// R72-C BUG-98 (P2): 用户 ReplaceFrom pattern 编译缓存 (sync.Map).
+	//   原 ApplyTransform line ~286 `regexp.Compile("(?i)" + src)` 每次 call 都重
+	//   编译, hot path 每字段提取都跑. 1000 章 × 10 字段 × N ReplaceFrom = N 万次
+	//   编译 → CPU 浪费 + GC 压力. 与 cleaner.compileUserAdPattern (R65-C BUG-42)
+	//   同款 sync.Map 缓存: key=pattern (含 "(?i)" 前缀) value=compiledAdPattern
+	//   {re, ok}. 首次 compile 后任务级复用率 ~100% (同 Rule 多次跑), 0 compile 开销.
+	//   ReDoS 闸门 + 长度上限 1000 与原实现一致, 仅把 compile 提到 cache miss 路径.
+	replaceFromUserCache sync.Map
 )
+
+// compileUserReplaceFrom — 用户 ReplaceFrom pattern 编译 + 缓存 (R72-C BUG-98).
+//
+//	与 cleaner.compileUserAdPattern 同口径: 首次 compile 后复用; ok=false 也缓存
+//	(避免重复 compile 失败 pattern). ReDoS 闸门 (reDoSNestedQuantifier, 同文件 line
+//	254) + 长度 ≤1000 (与原 ApplyTransform 内联闸门一致).
+func compileUserReplaceFrom(src string) (*regexp.Regexp, bool) {
+	if v, ok := replaceFromUserCache.Load(src); ok {
+		cp := v.(compiledAdPattern)
+		return cp.re, cp.ok
+	}
+	re, ok := func() (*regexp.Regexp, bool) {
+		if src == "" || len(src) > 1000 {
+			return nil, false
+		}
+		if reDoSNestedQuantifier.MatchString(src) {
+			return nil, false
+		}
+		re, err := regexp.Compile("(?i)" + src)
+		if err != nil {
+			return nil, false
+		}
+		return re, true
+	}()
+	replaceFromUserCache.Store(src, compiledAdPattern{re: re, ok: ok})
+	return re, ok
+}
 
 // ApplyTransform — 字段值后处理 (stripTags / replaceFrom / decode / index).
 // ReDoS 防护: 长度上限 1000 + 嵌套量词闸门 + chunk 200 字符切片跑.
+// R72-C BUG-98 (P2): ReplaceFrom pattern 编译提到 compileUserReplaceFrom sync.Map
+//
+//	缓存 (与 cleaner.compileUserAdPattern 同口径), 0 compile 开销 (任务级复用).
 func ApplyTransform(value string, rule FieldRule) string {
 	v := value
 	if rule.StripTags {
 		v = tagStripRe.ReplaceAllString(v, "")
 	}
 	if rule.ReplaceFrom != "" {
-		src := rule.ReplaceFrom
-		if len(src) <= 1000 && !reDoSNestedQuantifier.MatchString(src) {
-			re, err := regexp.Compile("(?i)" + src)
-			if err == nil {
-				to := rule.ReplaceTo
-				if len(v) <= 200 {
-					v = re.ReplaceAllString(v, to)
-				} else {
-					// chunk 200 字符切片跑
-					out := ""
-					CHUNK := 200
-					runes := []rune(v)
-					for i := 0; i < len(runes); i += CHUNK {
-						end := i + CHUNK
-						if end > len(runes) {
-							end = len(runes)
-						}
-						sub := string(runes[i:end])
-						out += re.ReplaceAllString(sub, to)
+		// R72-C BUG-98 (P2): 用 sync.Map 缓存 (避免每 ApplyTransform call 重 compile)
+		re, ok := compileUserReplaceFrom(rule.ReplaceFrom)
+		if ok && re != nil {
+			to := rule.ReplaceTo
+			if len(v) <= 200 {
+				v = re.ReplaceAllString(v, to)
+			} else {
+				// chunk 200 字符切片跑
+				out := ""
+				chunk := 200
+				runes := []rune(v)
+				for i := 0; i < len(runes); i += chunk {
+					end := i + chunk
+					if end > len(runes) {
+						end = len(runes)
 					}
-					v = out
+					sub := string(runes[i:end])
+					out += re.ReplaceAllString(sub, to)
 				}
+				v = out
 			}
 		}
 	}
@@ -1373,6 +1411,14 @@ func ParseToc(ctx context.Context, firstURL, html string, pageRule PageRule, pag
 	samePathStreak := 0
 	lastPath := ""
 	pagesUsed := 0
+	// R72-C BUG-99 (P2): 翻页循环 seen map 初始化时加 firstURL, 防回到首页死循环.
+	//   原: seen["__page__"+next] 仅在翻页前更新 next, firstURL 从未入 seen.
+	//   若第 N 页的 "下一页" 链接指回 firstURL (源站循环导航 e.g. 第3页→第1页),
+	//   seen["__page__"+firstURL]=false → 不 break → 重新抓第1页 → 提取同内容 →
+	//   再次翻页 → 同样循环 → 直到 maxPages (10/20) 才停 → 浪费 N×firstURL 请求预算 +
+	//   N 重复内容入 toc (ParseToc) 或 content (ParseContent). 修复: 启动时把
+	//   firstURL 标已访问, 翻页 next=firstURL 时 seen 命中 break.
+	seen["__page__"+firstURL] = true
 
 	for p := 1; p <= maxPages && curURL != ""; p++ {
 		pagesUsed = p
@@ -1557,6 +1603,10 @@ func ParseContent(ctx context.Context, firstURL, html string, pageRule PageRule,
 	var parts []string
 	seen := map[string]bool{}
 	pagesUsed := 0
+	// R72-C BUG-99 (P2): 同 ParseToc, 翻页循环 seen 初始化时加 firstURL, 防回到首页死循环.
+	//   详见 ParseToc line 1413 注释. ParseContent 影响更大: 翻页死循环 → 同内容
+	//   N 次拼接进 parts → 章节正文 N 倍冗余 (e.g. maxPages=10 → 单章 10 倍长度).
+	seen["__page__"+firstURL] = true
 
 	for p := 1; p <= maxPages && curURL != ""; p++ {
 		pagesUsed = p
