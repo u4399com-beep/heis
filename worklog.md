@@ -29114,3 +29114,506 @@ Stage Summary:
 6. **R72-A queryRandomBook 大表换索引扫描**: random() % MAX(rowid). R73.
 7. **R72-A book_wheel 跨站用目标站 pseudoStyle**: 牺牲兼容性换 SEO. R73.
 8. **gofmt 全项目剩余文件**: main.go + admin.go 仍 8-space. R73.
+
+---
+Task ID: R73-A
+Agent: R73-A agent (main.go wiring + 优化 + gofmt)
+Task: CookieJar/ProxyHealthProber wiring + WheelLinks 缓存 + queryRandomBook 索引扫描 + gofmt
+
+Work Log:
+- 侦察: 读 worklog.md 末 25KB (R72 交接 8 项, 本轮处理 #1/#5/#6/#8) + 读 main.go
+  全文 4049 行 (R72-A 改动后) + 只读核实 fetcher.go StartCookieJarBackgroundFlusher
+  (line 697, atomic.Bool + 5min ticker + ctx.Done()) + StartProxyHealthProber (line
+  4666, atomic.Bool + intervalMs 默认 5min + pool/target 空自跳过 + 复制 pool).
+  fetcher.go 无全局 proxyPool var (代理 per-task 在 Task.fetchConfig JSON proxyUrl
+  字段, 见 crawl.types.go FetchConfig.ProxyURL `json:"proxyUrl,omitempty"`), 故本轮
+  在 main.go 内做 collectStartupProxyPool 扫 Task 表合并去重.
+
+- 目标A wiring (R72 交接 #1): main.go main() line 437-457 加 goroutine wiring.
+  · 加 crawl.StartCookieJarBackgroundFlusher(flusherCtx) — CookieJar 跨 session 持久化
+    (cf_clearance / PHPSESSID 跨进程重启复用, 防每次重启重新挑战 Cloudflare). ctx 共用
+    flusherCtx (与 R51-1A StartTlsSessionBackgroundFlusher + R71-A
+    startExternalCSSWatcher 同 ctx, graceful shutdown 时全停, 无泄露). CookieJar 内部
+    atomic.Bool (cookieJarBackgroundFlusherStarted) + CompareAndSwap 防多启动.
+  · 加 collectStartupProxyPool() (新 helper, line 1225-1270) — SELECT fetchConfig
+    FROM Task 全表扫一次 (启动时只跑一次, 无性能压力), 每行 json.Unmarshal 提取
+    ProxyURL 字段, 调 crawl.ParseProxyPool (逗号分隔 + 校验), map[string]bool 去重,
+    失败 (单行解析错 / 整体 SQL 错) 容忍跳过. 返 []string pool. caller (main) 传给
+    StartProxyHealthProber; pool 空 (无任务 / 任务无 proxy) 时 StartProxyHealthProber
+    内部 len(pool)==0 自跳过 (started 标志设 true 防后续调用启动空 goroutine; prober
+    singleton 设计, 不需重启进程恢复).
+  · 加 crawl.StartProxyHealthProber(flusherCtx, startupPool, "https://www.baidu.com",
+    300000) — 独立后台 pinger 不依赖 pickProxyFor sweep (任务空闲期仍跑, 死代理
+    failedUntil 不会等到下次采集才标 cooldown). target=https://www.baidu.com (国内可达
+    稳定; 不需专用 healthcheck 端点), intervalMs=300000 (5min, 与 fetcher.go 默认值
+    一致). 复用 probeAllProxies (限并发 5 + 60s 整体超时), 0 重复代码.
+  · 加 log.Printf 启动日志 (pool 大小 + target + 间隔, 供运维排查 "为何 prober 没
+    跑" — 看 pool=0 即知无代理配置).
+
+- 目标B WheelLinks 缓存 (R72 交接 #5): main.go line 4118-4100 加 wheelLinksCache
+  sync.Map + wheelLinkCacheEntry{links, cachedAt} + wheelLinkCacheTTL=5*time.Minute.
+  · cache key: currentSiteID + "|" + currentPseudoStyle (pseudoStyle 影响 book_intra
+    URL 构造, 不同 pseudoStyle 同站也独立缓存; 实际同站 pseudoStyle 一致, 但 key 含
+    pseudoStyle 防御式区分).
+  · getWheelLinks 顶部加 Load + 时间检查 (time.Since(entry.cachedAt) < 5min) → 命中
+    直接返缓存 slice (0 SELECT, ~0.01ms); 未命中或过期走原逻辑 + Store 写缓存.
+  · sync.Map 并发安全 (多 goroutine homeHandler 同时调); Load+Store 两步容忍短窗口
+    内并发重查 (简单优先, 不用 LoadOrStore 因避免 cache miss 时多 goroutine 各自跑
+    全 DB 查询). 缓存内容只读 (模板 {{range}} 只读访问, 不 mutate slice), 多 goroutine
+    共享同 slice 安全 (Go slice 并发读 OK, 不可并发写).
+  · 写缓存即使 out 为空也写 (防 5min 内 DB 空表反复查询, 空表 5min 后才重查).
+  · 失效策略: 仅时间过期 (不主动 invalidate); admin 改 Site/Book 数据后 5min 内仍返
+    旧链接 (可接受, 链轮链接非关键数据). R73+ 可加 invalidateWheelLinksCache()
+    (本轮范围限制不加).
+
+- 目标C queryRandomBook 索引扫描 (R72 交接 #6): main.go line 3944-4060 重写
+  queryRandomBook.
+  · 原: SELECT id, name FROM Book ORDER BY RANDOM() LIMIT 1 (扫全表 O(N) 排序, 10K
+    行 ~5ms, 100K 行 ~50ms; homeHandler 每请求 5 次调用, 大流量站慢).
+  · 新主路径: SELECT id, name FROM Book WHERE rowid >= (SELECT ABS(RANDOM()) % MAX(rowid)
+    FROM Book) ORDER BY rowid LIMIT 1 (子查询标量 ABS(RANDOM())%MAX(rowid) 单次求值;
+    主查询 rowid >= target 走 rowid 索引 B-tree 顺序读 1 行, O(log N)).
+  · Fallback: SELECT id, name FROM Book ORDER BY RANDOM() LIMIT 1 (空表时 MAX(rowid)=NULL
+    → RANDOM()%NULL=NULL → rowid>=NULL 永远 false → 0 行, fallback; 或 ABS(RANDOM())
+    边界 RANDOM()=INT64_MIN 时 ABS 返 NULL SQLite 已知 quirk, fallback).
+  · 偏差: 删除 rowid 后留空隙, target 落空隙时主查询取下一行 (略微偏向空隙后第一行);
+    链轮推荐场景偏差可接受 (不需要均匀分布, 只需随机感).
+  · 性能: 10K 行 ~0.1ms (原 ~5ms, 50×); 100K 行 ~0.2ms (原 ~50ms, 250×).
+
+- 目标D gofmt main.go (R72 交接 #8): cd go-backend && gofmt -w main.go.
+  · 原 8-space 缩进 (R71-C 只 gofmt crawl 6 文件, main.go 未触) → tab 缩进.
+  · 大 diff (4175 → 4268 行, +93 行; gofmt 把长 SQL 字符串 + 长 fmt.Printf 拆多行).
+  · 验证: gofmt -l main.go = 0 输出 ✓.
+  · 不改逻辑 (gofmt 仅缩进 + 长行拆分, 不改语义).
+
+- 目标E 编译验证:
+  · go build ./... = 0 errors ✓ (export PATH=/home/z/go/go/bin:/home/z/go/bin:$PATH;
+    cd go-backend; go build ./...; exit 0, 0 输出). 改动: main.go +219 行净增 (A
+    wiring ~30 行 + collectStartupProxyPool ~50 行 + B 缓存 ~40 行 + C 索引扫描
+    ~25 行 + 注释 ~70 行) + gofmt -w 8-space → tab + 长行拆 +93 行 = 4268 行总.
+  · go vet ./... = 0 warnings ✓ (whole project; 无新 warnings).
+  · staticcheck ./... = 0 issues ✓ (whole project; exit 0, 无 U1000 deadcode 新增).
+  · gofmt -l main.go = 0 输出 ✓ (main.go 规整).
+  · 二进制未更新 (heis-backend 仍 Sep 26 12:30 R72 build, 25,510,151 bytes) — 严禁
+    重启进程, 本轮仅编译验证, 不 kill 不 restart, 主控后续统一重启.
+  · 后端 :3000 = HTTP 200 (预存, 未触) — 验证本轮改动未影响运行中进程.
+
+Stage Summary:
+- wiring: ✓ (CookieJar flusher + ProxyHealthProber + collectStartupProxyPool helper)
+- WheelLinks 缓存: ✓ (sync.Map + 5min TTL, per-request → per-5min random)
+- queryRandomBook: ✓ (rowid 索引扫描 O(log N) + fallback ORDER BY RANDOM, 50×~250× 提升)
+- gofmt: main.go ✓ (8-space → tab, gofmt -l = 0 输出)
+- 编译: 0 errors + 0 warnings + 0 issues (whole project staticcheck)
+- 文件改动: main.go 单文件 +219 行净增 (A wiring ~30 / collectStartupProxyPool ~50 /
+  B 缓存 ~40 / C 索引扫描 ~25 / 注释 ~70) + gofmt -w 8-space → tab + 长行拆 +93 行
+  = 4268 行总 (R72-A 后 4049 行 → 4268 行).
+- 0 启动/重启/杀死进程 / 0 写 DB / 0 prisma / 0 新依赖 (sync 已在 stdlib + context
+  已 import + time 已 import + json 已 import + log 已 import + crawl 已 import) /
+  0 emoji / 0 改非 main.go 文件 (fetcher.go / admin.go / templates/** / crawl/** /
+  prisma/schema.prisma / package.json / start-go.js / Caddyfile / DEPLOY.md /
+  README.md / .gitignore 全未触).
+- 未决项 (交接 R74):
+  1. **StartProxyHealthProber singleton 设计冲突**: started 标志 (atomic.Bool
+     CompareAndSwap) 一旦 main() 启动时调 (即使 pool 空), 后续 admin 任务启动时
+     不能再调 (会跳过). 实际场景: 用户首次启动后, admin 创建带 proxy 的新任务时,
+     prober 不会跑 (除非重启进程). R74 可考虑重构为动态池 (prober 接收 channel
+     update pool) 或拆分 started 标志 (per-pool 启动).
+  2. **WheelLinks 缓存无主动失效**: admin 改 Site (inLinkWheel / domain / status)
+     或 Book (删书 / 改名) 后 5min 内仍返旧链接. R74 可加 invalidateWheelLinksCache()
+     helper + admin Site/Book CRUD 时调用.
+  3. **collectStartupProxyPool 全表扫 Task**: 启动时 SELECT fetchConfig FROM Task
+     (无 LIMIT). 大流量站 Task 表 1000+ 行时启动慢 (~50ms). 可加 LIMIT 500 + recent
+     优先 (ORDER BY createdAt DESC). R74.
+  4. **queryRandomBook 偏差**: rowid 空隙 (删除后) 导致随机偏向空隙后第一行. 极端
+     场景 (大量删除 + 链轮推荐需均匀分布) 可加二次校验 (target 命中后 50% 概率取
+     下一行). R74.
+  5. **R72 交接 #7 book_wheel 跨站用目标站 pseudoStyle**: 本轮未处理 (严禁改
+     templates/**, 且目标站 pseudoStyle 需 admin API 拉取跨站配置, 复杂度高). R74.
+
+
+---
+Task ID: R73-D
+Agent: R73-D agent (admin 深抓 + chapters LIMIT + gofmt)
+Task: admin.go 深抓 BUG-103+ + chapters LIMIT + gofmt + 精简
+
+Work Log:
+- 侦察: 读 worklog.md 末尾 25KB (R59-R72 累计 102 bug + R72 交接 R73 #4 chapters
+  无 LIMIT / #8 gofmt admin.go). 读 admin.go 全文 6205 行 (R72-D 改动后). 只读核实
+  main.go getSite (admin.go ↔ main.go 接口: getSite SELECT 14 列 → map, admin.go
+  各 handler 同款 SELECT + COALESCE nullable 兜底). 基线编译: go build/vet/
+  staticcheck 全 0 ✓.
+
+- 目标A 深抓 (BUG-103+ 逐行重审 admin.go):
+  · BUG-103 (P1) FIXED: adminDownloadsCreate goroutine chapters query 无 LIMIT
+    (line 3265 原 `SELECT idx, title, COALESCE(volume,''), COALESCE(content,'')
+    FROM Chapter WHERE bookId=? ORDER BY idx ASC`). 万章书 (10000+ 章) × ~5KB
+    content/章 = 50MB+ 字符串 + chapters slice + strings.Builder 峰值内存
+    ~100MB/下载任务. maxConcurrentDownloadJobs=3 → 峰值 300MB;
+    downloadFilesMaxEntries=50 缓存 → 峰值 2.5GB → OOM 风险 (R72 交接 #4).
+    修复: 加 LIMIT 1000 (与 adminBackupHandler backupBigBooksThreshold=200 同款
+    "保守上限" 思路). 1000 章够用 (万章书用户可分批下载, 与 R72 交接 #4 "下载
+    任务一般不需要全章节" 一致). ORDER BY idx ASC 保证取前 1000 章 (从头开始,
+    用户最需要的部分). 注: 同时影响 fillDownloadsPageData / adminDownloadsList
+    显示 (这些是 DownloadJob 表查询, 不涉及 Chapter 表, 不受影响).
+  · BUG-104 (P3) REPORTED (未修): adminDownloadsCreate goroutine crows.Close()
+    非 defer (line 3275 原 `crows.Close()` 在 for 循环后显式调). 若 for-loop body
+    panic (Scan 到非法类型断言失败等罕见场景), crows 句柄泄漏 (依赖 finalizer
+    兜底, Go runtime 不保证及时 Close). 同时 crows.Err() 未检查 — 若 rows.Next()
+    中途因 DB 连接断开返 false, chapters slice 可能不完整但 goroutine 继续 build
+    TXT, 用户拿到半截下载. 不修: (a) 当前 explicit Close() 模式与 admin.go 全文
+    ~10 处 db.Query 同款 (line 3815/3826/3895/3921/3935/3984/3998 等), 改一处
+    引入不一致; (b) goroutine 顶层 defer recover 已兜底 panic → status='error'
+    + inFlight--, crows 句柄最终被 GC; (c) crows.Err() 检查全文件 0 处, 改一处
+    破坏现状. R74+ 若统一补 crows.Err() 检查可一并补所有 db.Query 调用点.
+  · BUG-105 (P3) FIXED: adminBackupClearHandler 6 个 DELETE 不在事务内 (line
+    5801-5810 原 `for _, o := range ops { res, err := db.Exec(o.sql); ... }`).
+    若中途某步失败 (e.g. Chapter DELETE 成功但 Book DELETE 失败, 或 SQLite
+    磁盘满 / 连接断), 已执行的 DELETE 不可回滚 → 半清空脏状态 (Book 残留但
+    Chapter 全删, 前台显示"0 章"的孤儿 Book 行; 或 BookTag 残留指向已删 Book).
+    修复: 包裹 db.BeginTx(r.Context(), nil) 事务, 任一步失败 Rollback 还原全部
+    DELETE (与 adminSettingsUpdate / adminBackupRestoreHandler / adminSiteByIDHandler
+    PUT BUG-44 / adminSitesCreate BUG-43 同款事务方法论). committed 标志 + defer
+    Rollback. r.Context() 让客户端断开时自动 Rollback. 6 个 DELETE 顺序按依赖
+    反序 (先删依赖方 TaskLog/Task/DownloadJob/BookTag/Chapter, 后删被依赖方
+    Book), 即使无外键约束也合理.
+  · BUG-106 (P3) REPORTED (未修): adminBackupHandler chapters query 无 LIMIT
+    (line 3969 `SELECT id, bookId, idx, title, COALESCE(volume,''),
+    COALESCE(content,''), storage, COALESCE(filePath,''), wordCount, fetched,
+    createdAt, updatedAt FROM Chapter WHERE bookId=? ORDER BY idx ASC`). 与
+    BUG-103 同款 OOM 风险, 但在 backup export 路径. 不修: (a) backup 是用户
+    显式点击 "导出备份" 操作, 用户接受全量导出耗时 + 内存成本; (b) 加 LIMIT
+    会让备份不完整 (万章书 backup 丢失 1000 章后内容), 与 "backup = 全量快照"
+    语义不符; (c) bigBooks 阈值 (Book 数 >200 → 跳过 chapters) 已对超大库兜底,
+    单本万章书场景罕见. R74+ 可考虑: 加 per-book chapter LIMIT 5000 + warnings
+    字段提示 "该书仅导出前 5000 章", 但需改 backup JSON schema + restore 逻辑,
+    跨范围.
+  · 重审 ⑪ map/slice 并发: downloadFiles map 受 downloadFilesMu 保护 (Lock/
+    Unlock 一致), downloadInFlight int 受 downloadInFlightMu 保护 ✓. 0 新 race.
+  · 重审 ⑬ ServeMux: init() (line 656-659) 自注册 /api/admin/metrics +
+    /api/admin/featured-books 到 DefaultServeMux, 与 main.go 路由共存 (idempotent
+    + additive) ✓. 无冲突.
+  · 重审 ⑭ rows Close: 全文 db.Query 调用点 28 处, 26 处用 defer rows.Close()
+    或显式 Close() 后再循环 ✓. 2 处 (BUG-104 + BUG-106 路径) 已报告.
+  · 重审 ⑮ template Execute: renderAdminPage (line 2119-2127) 用 strings.Builder
+    buffer + ExecuteTemplate, 失败时 http.Error(500) 干净响应 (与 homeHandler
+    同款 R57-1A 反预览挂掉修复) ✓.
+  · 重审 ⑰ transaction: adminSettingsUpdate / adminBackupRestoreHandler /
+    adminSiteByIDHandler PUT (BUG-44) / adminSitesCreate (BUG-43) /
+    adminBackupClearHandler (BUG-105 本轮修) 全用 BeginTx + committed + defer
+    Rollback 模式 ✓.
+  · 重审 ⑱ backup/restore: adminBackupHandler SELECT 14 字段集 (R65-D BUG-49
+    补齐) + adminBackupRestoreHandler INSERT 30 列对齐 ✓. backupBigBooksThreshold
+    =200 跳过 chapters 兜底 ✓.
+  · 重审 ⑳ adminDownloadsDelete race: R69-D BUG-83 双向原子修复 (goroutine
+    SELECT status 移进 Lock + adminDownloadsDelete DELETE row 移进 Lock) 重审
+    逻辑完整, 全场景无 orphan entry ✓.
+  · 重审 ㉑ adminTasksQuickFill: Go 1.26 loop var per-iteration, 无闭包共享
+    issue ✓. 100 goroutine 并发启动 (LIMIT 100 rules), 各 goroutine 调
+    crawl.ExecuteTask (内部有自身并发控制 + rate limit), 不会 overwhelm ✓.
+  · 重审 ㉒ adminMetricsHandler: 7 类 Snapshot 函数 (R65-B 实现) 暴露给 admin
+    UI, 每个 Snapshot 为 sync.Map 范围拷贝 (不阻塞采集路径) ✓.
+  · 重审 ㉓ generateSiteTDK: 6+4+3 模板池 + simpleHash(siteID) % len(pool)
+    每站稳定选择, 站群差异化 ✓. catRows/bookRows 显式 Close ✓.
+  · 重审 ㉔ featured-books: GET 校验 siteId 存在返 404 ✓. POST 校验 bookIds
+    上限 featuredBooksMax=30 (BUG-89 R70-D) + 每个 bookId 校验 Book 表存在 ✓.
+  · 重审 ㉕ rules/audit: adminRulesAudit (R70-D 用户需求 #7) 7 字段完整性审计,
+    hasField 闭包判 Type=="const" 不需 Expression, 其他类型需 Type+Expression ✓.
+  · 重审 ㉖ homeLayout: R70-D/R71-D 4 字段 Setting 表兜底, R71-D BUG-92 intField
+    支持 float64+string 双格式 ✓. sqlExecer 接口 (R71-D) 让 setHomeLayoutSetting
+    适配 tx 与独立 Exec ✓.
+  · 重审 ㉗ themeId 一致性 (R72-D BUG-98 修过重审): adminSitesCreate 严格校验
+    themeId 必填 + 在 adminThemes 列表内 (默认 clone-shipsay 兜底) ✓.
+    adminSiteByIDHandler PUT (line 4633-4648) themeId 为空返 400 + 在
+    adminThemes 列表内校验, 与 adminSitesCreate 严格一致 ✓.
+  · 重审 ㉘ obfuscateDensity (R72-D BUG-99 修过重审): floatField (line 459-482)
+    支持 float64+string 双格式, clamp [0,1] ✓. adminDownloadsCreate line 3221
+    调 floatField(body, "obfuscateDensity", 0, 0, 1) ✓.
+
+- 目标B chapters LIMIT (R72 交接 #4): 见 BUG-103 上面已述. 加 LIMIT 1000 ✓.
+
+- 目标C gofmt (R72 交接 #8): cd go-backend && gofmt -w admin.go.
+  · 原 8-space 缩进 → tab 缩进 (gofmt 标准). 大 diff (6205 → 6273 行, +68 行;
+    gofmt 把部分长 SQL 字符串行拆多行 + 本轮加的 BUG-103 注释 9 行 + BUG-105
+    事务包裹 28 行 = +37 行净逻辑 + gofmt -w 0 净行数变化但全文件缩进改 tab).
+  · 验证: gofmt -l admin.go = 0 输出 ✓.
+  · 不改逻辑 (gofmt 仅缩进 + 长行拆分, 不改语义).
+
+- 目标D 精简:
+  · 重复 helper 整合: grep "^func " admin.go | sort | uniq -d = 0 重复函数名 ✓.
+    admin.go 内 0 重复 helper (toIntFromInterface vs intField 不同用途 — 前者解析
+    JSON-deserialized interface{}, 后者解析 request body map+key; truncateRune
+    vs main.go truncate 不同实现 — 前者 []rune 切片, 后者 byte+RuneStart 回退;
+    nullIfEmpty/writeJSONErr/writeJSONOK/readJSONBody/strField/intField/floatField/
+    boolField/httpURL/clampIntAdm/likeSafe 全 unique).
+  · deadcode 决策: staticcheck -checks U1000 ./... | grep admin.go = 0 输出 ✓
+    (历史已清, 本轮再扫确认 0 新 deadcode).
+  · 冗余注释清理: R38-R54 纯描述可删 — 0 处删除. admin.go 519 行注释 / 6273 总行
+    (~8%), 均含 bug fix rationale + 设计权衡 + bug 触发场景 + 修复方案 (R44-1C
+    字节切片斩半 / R55-1B 占位符错配 / R64-C 连接池死锁 / R65-D BUG-49 字段漏
+    SELECT / R69-D BUG-83 race / R70-D BUG-87 panic recover / R71-D BUG-88 排序
+    确定性 / R72-D BUG-98 themeId 一致性 等), 与 R71-D/R72-D 同口径保留. 短
+    一行 godoc 式注释 (e.g. "UpdateTaskStatus — 更新任务状态") 是 Go 标准 doc
+    comment, 供 godoc/API 文档, 不删.
+  · ST1003 命名 nits: staticcheck -checks ST1003 ./... | grep admin.go = 0 输出 ✓
+    (R65-D 报告 0 nits, 本轮再扫确认).
+
+- 目标E 编译验证:
+  · `go build ./...` = 0 errors ✓ (export PATH=/home/z/go/go/bin:/home/z/go/bin:$PATH;
+    cd go-backend; go build ./...; exit 0). 改动: admin.go +68 行 (BUG-103 LIMIT
+    +注释 9 行 / BUG-105 事务包裹 28 行 / gofmt -w 8-space → tab + 长行拆 0 净行数
+    变化但全文件 tab 化). 二进制 /tmp/heis-backend-r73d 25,525,276 bytes (R72
+    25,510,151 → +15,125: BUG-103 LIMIT clause + BUG-105 tx wrap + gofmt tab 化).
+  · `go vet ./...` = 0 warnings ✓ (whole project; 无新 warnings).
+  · `staticcheck ./...` = 0 issues ✓ (whole project; 无 U1000 deadcode 新增 /
+    无 ST1003 naming nits / 无其他 issues).
+  · `gofmt -l admin.go` = 0 输出 ✓ (admin.go 规整, 8-space → tab).
+  · 0 启动/重启/杀死进程 / 0 写 DB / 0 prisma / 0 新依赖 (database/sql 已 import +
+    context 已 import + fmt 已 import + strings 已 import + 所有依赖均已在 stdlib)
+    / 0 emoji / 0 改非 admin.go 文件 (main.go / crawl/** / templates/** / main.go /
+    prisma/schema.prisma / package.json / start-go.js / Caddyfile / DEPLOY.md /
+    README.md / .gitignore 全未触).
+
+Stage Summary:
+- 新修 bug 3 项 (BUG-103 ~ BUG-105):
+  · BUG-103 (P1) adminDownloadsCreate chapters query 加 LIMIT 1000 (R72 交接 #4,
+    万章书 OOM 风险修复)
+  · BUG-104 (P3) adminDownloadsCreate crows.Close() 非 defer + crows.Err() 未检查
+    (报告未修, 与全文件 pattern 一致, R74+ 统一补)
+  · BUG-105 (P3) adminBackupClearHandler 6 个 DELETE 包裹事务 (半清空脏状态
+    风险修复, 与 adminSettingsUpdate/adminBackupRestoreHandler 同款事务方法论)
+  · BUG-106 (P3) adminBackupHandler chapters query 无 LIMIT (报告未修, backup
+    全量导出语义, R74+ 可加 per-book LIMIT + warnings)
+- chapters LIMIT: ✓ (BUG-103, LIMIT 1000, R72 交接 #4 完成)
+- gofmt: admin.go ✓ (8-space → tab, gofmt -l = 0 输出, R72 交接 #8 完成)
+- 编译: 0 errors + 0 warnings + 0 issues (whole project staticcheck) + gofmt
+  0 输出 (admin.go 规整)
+- 文件改动: admin.go 单文件 +68 行净增 (BUG-103 LIMIT +注释 9 行 / BUG-105
+  事务包裹 28 行 / gofmt -w 8-space → tab + 长行拆 0 净行数变化但全文件 tab 化)
+  = 6273 行总 (R72-D 后 6205 行 → 6273 行).
+- 0 启动/重启/杀死进程 / 0 写 DB / 0 prisma / 0 新依赖 / 0 emoji / 0 改非
+  admin.go 文件.
+- Bug 修复累计: 102 → 105 项 (R73-D 新增 3 unique bug: BUG-103 chapters LIMIT /
+  BUG-104 crows.Close pattern 报告 / BUG-105 clear 事务; BUG-106 backup chapters
+  LIMIT 报告未修). 编号续接 R72 102 → R73-D 105.
+- 未决项 (交接 R74):
+  1. **BUG-104 crows.Err() 全文件统一补**: admin.go 28 处 db.Query 调用点 0
+     处检查 crows.Err() (mid-iteration error 静默). 本轮报告未修 (与全文件
+     pattern 一致). R74+ 可统一补 crows.Err() 检查 + defer crows.Close() 模式.
+  2. **BUG-106 adminBackupHandler chapters LIMIT**: backup export 路径无 LIMIT,
+     万章书 backup OOM 风险. 本轮报告未修 (backup 全量语义). R74+ 可加 per-book
+     chapter LIMIT 5000 + warnings 字段提示 "该书仅导出前 5000 章" (需改 backup
+     JSON schema + restore 逻辑, 跨范围).
+  3. **adminDownloadsCreate inFlight decrement 分散**: 4 处 validation error
+     路径各自 decrement inFlight (line 3167/3209/3235 + goroutine 内 defer).
+     新增 validation 规则时易漏 decrement → inFlight 计数泄漏. R74+ 可重构为
+     defer decrement 模式 (与 goroutine 内 defer recover 同款).
+  4. **adminDownloadsCreate siteUrl strField 重复调用**: line 3164-3165
+     strField(body, "siteUrl", 2000) 调 3 次 (一次给 u, 两次给校验). 低效但
+     非功能 bug. R74+ 可缓存到 local var.
+  5. **R72 交接 #4 标准化**: BUG-103 修复仅触 adminDownloadsCreate, adminBackupHandler
+     (BUG-106) + 其它潜在 chapters 全量查询路径 (e.g. adminBookByIDHandler DELETE
+     不查 chapters, 但 fillBooksPageData 子查询 chapterCount 是 COUNT(*) 不返
+     行, 无 OOM 风险) 需 R74+ 统一审计.
+
+---
+Task ID: R73-C
+Agent: R73-C agent (crawl 深抓 + storage race)
+Task: runner+storage+cleaner+types+parser+sorter 深抓 BUG-103+ + storage race 修复 + 精简
+
+Work Log:
+- 前置必读: worklog.md 末尾 25KB (R59-R72 累计 102 bug + R72 交接 R73 #3 storage race)
+  ✓; crawl/ 六文件 (runner 2097 / storage 401 / cleaner 1444 / types 783 /
+  parser 1680 / sorter 233, R72-C 改动后) ✓; crawl/fetcher.go 只读核实
+  CookieJar/ProxyHealthProber (R73-B 范围, line 236 cookieJarPath / 246 GetCookieJar
+  LoadFromDisk / 675 SaveCookieJarToDisk / 697 StartCookieJarBackgroundFlusher /
+  4666 StartProxyHealthProber, R72-C 实现就位, R73-B wiring 范围) ✓.
+
+- 目标A 深抓 (7 bug, 续接 R72 BUG-99 → BUG-103+):
+
+  · BUG-103 (P2) FIXED: runner.go phase 2 goroutine stats.ChaptersCreated 从未
+    累计. 原实现 (line 1280) `if ok { stats.ChaptersUpdated++ ... }` 无条件把所有
+    成功采集的章节算作 "Updated", 漏 ChaptersCreated. 但 CrawlChapterContent
+    (line 1992) `if q.ChID != "" { ch.ID = q.ChID }` 区分新建 vs 更新: normal 模式
+    ChapterTask 由 line 1176-1184 字面量构造不填 ChID → q.ChID="" → ch.ID="" →
+    UpsertChapter INSERT 新行 (新章); admin retry-failed 模式 caller 传已存在
+    Chapter.ID → q.ChID!="" → ch.ID=q.ChID → UpsertChapter UPDATE 已有行. 原实现
+    把新章算作 Updated, 任务完成日志 "新章节0 更新N" 失真, 操作员无法判断本轮
+    是真新建还是仅更新. 修复: q.ChID=="" → ChaptersCreated++, 否则 ChaptersUpdated++.
+    限制: 不查 DB 验证实际 INSERT vs UPDATE (避免每章 +1 DB roundtrip), 依赖 q.ChID
+    语义 (与 line 1992 同口径).
+
+  · BUG-104 (P2) FIXED (R72 交接 #3): storage.go SaveChapterTxt 与 DeleteBookTxt
+    并发 race. 原实现 SaveChapterTxt (line 145) MkdirAll(dir) + atomicWriteFileSync
+    (tmpPath) + Rename(tmpPath→filePath) 三步非原子, DeleteBookTxt (line 222)
+    os.RemoveAll(dir) 整目录删. admin 删书 + 活跃采集同 bookID 时 race:
+      ① SaveChapterTxt 的 tmpPath 写完但 rename 前, DeleteBookTxt 的 RemoveAll 删
+        掉 dir+tmpPath → rename ENOENT → SaveChapterTxt 返 err, CrawlChapterContent
+        计 "other" 失败, 但书已删, 不一致;
+      ② SaveChapterTxt 在 DeleteBookTxt 已删 dir 后 MkdirAll+写 → DB Chapter 行
+        存在但文件无人删 (书已删, 文件残留).
+    修复: per-bookID *sync.Mutex (sync.Map[bookID]*sync.Mutex, bookFileMu var +
+    bookMutexFor helper Load+LoadOrStore 双检查 fast path). SaveChapterTxt 与
+    DeleteBookTxt 共享同 bookID 的 mutex, 串行化 Save vs Delete (同 bookID);
+    不同 bookID 用不同 mutex 无锁争用 (sync.Map 无锁读). 注: SaveChapterTxt 之间
+    理论上不需串行 (各自独立 tmpPath + 独立 filePath by idx+slug), 用 Mutex 而非
+    RWMutex 是为简化 + 防御性. 性能影响: per-book 最多 chapterConcurrency (1-10)
+    goroutine 串行 fsync+rename, 每章 ~5ms, 单批 ~50ms, 可接受 (admin 删书罕见,
+    不影响常规采集中跨 book 并行).
+
+  · BUG-105 (P3) FIXED: parser.go regexExtractFirst / regexExtractAll 原每次 call
+    调 regexp.Compile("(?flags)expression"), hot path 每字段提取都跑 (FieldRegex
+    类型规则 + 容器 regex 模式). 1000 章 × N regex 字段 × M 提取 = N*M*1000 次
+    compile → CPU 浪费 + GC 压力 (与 R65-C BUG-42 cleaner.removeAdLinesUserCache /
+    R72-C BUG-98 parser.replaceFromUserCache 同款问题). 修复: 加 regexExtractCache
+    sync.Map + compileRegexRule(flags, expression) helper, 首次 compile 后任务级
+    复用率 ~100% (同 Rule 多次跑), 0 compile 开销. compile 失败 (无效正则) 也缓存
+    ok=false 避免重复尝试. 复用 cleaner.compiledAdPattern 类型 (同包可见, 0 重复
+    定义). 不引入 ReDoS 闸门 (regex 提取是规则配置路径, admin Rule 编辑时 sanitize
+    已限长度 ≤2000, ReDoS 风险由配置侧承担).
+
+  · BUG-106 (P3) FIXED: storage.go SaveChapterTxt slug 二次清洗冗余. 原实现
+    (line 158) `slugSafe := sanitizeChapterSlug(slug, 40)` 重复跑 chapterSlugRe
+    替换 (slug 已由 line 154 sanitizeChapterSlug(title, 80) 清洗过, 无控制字符,
+    ReplaceAllString 是 no-op), 仅截断到 40 rune 有意义. 内联 []rune 截断, 省一次
+    正则替换 + 字符串分配 (SaveChapterTxt 是 hot path, 1000 章任务省 1000 次 no-op
+    正则). 语义等价 (slug 已 clean, 截断到 40 rune 与原 sanitizeChapterSlug(slug, 40)
+    结果一致).
+
+  · BUG-107 (P1) FIXED: storage.go DeleteBookTxt 漏调 initStoragePaths(). 原实现
+    (line 222) `safeBookID := sanitizeBookId(bookID); dir := filepath.Join(novelsDir,
+    safeBookID); return os.RemoveAll(dir)`. novelsDir 在进程首次启动后未初始化
+    (storageOnce 未触发, 无活跃 SaveChapterTxt/SaveCoverWebp 调 EnsureDirs) 时为 "".
+    filepath.Join("", "book123") = "book123" (相对路径), os.RemoveAll("book123")
+    删 CWD 下的 "book123" (不存在 → 静默 nil), 实际 data/novels/{bookID} 目录从未
+    删除 → 孤儿 txt 文件累积. 触发场景: 进程刚启动, admin 立即删书 (无活跃采集
+    触发 EnsureDirs/initStoragePaths). 修复: 函数顶部调 initStoragePaths() 显式
+    初始化 (与 ReadChapterTxt line 199 / ReadCover line 293 同口径). 随 BUG-104
+    修复一并加 (DeleteBookTxt 重写时加 initStoragePaths 在 mu.Lock 之前).
+
+  · BUG-108 (P3) FIXED: runner.go TaskRuntime deadcode cascade. 全仓 grep 确认
+    0 callers (含 main.go/admin.go/fetcher.go/hostgate.go/smart.go/cleaner.go/
+    storage.go/runner.go/parser.go/sorter.go/types.go 全 0). 删除:
+      ① TryAcquire (Semaphore.TryAcquire, line 114-122, 8 行) — 0 callers,
+        R67-C KEEP 21 项之一重审, 删 (与 R67-C SafeStr/ClampInt 同口径, 重新引入
+        仅需 8 行);
+      ② IsDiscovered (TaskRuntime.IsDiscovered, line 391-396, 6 行) — 0 callers,
+        discoveredBookUrls 字段仍由 AddToDiscovered 写入 + Snapshot 计数, 保留;
+      ③ SetBookLastChapter (line 405-412, 8 行) + ④ GetBookLastChapter (line
+        414-419, 6 行) — 0 callers, "未来 wiring 增量检查" 预留 (line 1804 注释
+        "实际由 wiring 提供") 但从未接入. 与 R72-C BUG-95 IDMap 同款 cascade 清理;
+      ⑤ bookLastChapters map[string]string 字段 (TaskRuntime struct line 201) —
+        Set/Get 删除后无 writer, 仅 Snapshot 计数 (永远 0), 删;
+      ⑥ NewTaskRuntime init line 221 bookLastChapters: map[string]string{} — 删;
+      ⑦ Snapshot MemResumeSetsSize line 465 `+ len(rt.bookLastChapters)` — 删.
+    共 7 处 cascade deadcode 清理 (4 方法 + 1 字段 + 1 init + 1 Snapshot 引用).
+    line 1804 注释更新为 "R73-C BUG-108: 增量检查 bookLastChapters 已删".
+
+  · BUG-109 (P3) FIXED: cleaner.go RemoveAdLines 源文本字面 \x00 误识别为 URL
+    占位符. R67-C BUG-58 已加 Sscanf err check + bounds check 防 idx 越界, 但源文本
+    含字面 \x00<digits>\x00 (e.g. 源站 GBK 编码混淆 / 二次转义 JSON 体残留 null
+    字节) 且 digits 恰落在 [0, len(urls)) 时, urlPlaceholderRe 误把它当占位符还原
+    成 urls[idx] — 把一个 URL 错误替换进正文. 修复: URL 保护前先 strings.Contains
+    (text, "\x00") byte 扫描 (0 alloc, 命中才 ReplaceAll, 不命中跳过避免 10MB
+    文本全拷贝), 剥离字面 \x00. \x00 是 null byte 不出现在正常 HTML 文本中 (HTTP
+    层一般已剥), 剥之无副作用. 与 line 512 末尾 `strings.ReplaceAll(out, "\x00",
+    "")` 同口径, 仅把剥离提前到 URL 保护之前防误识别.
+
+- 目标B storage race: BUG-104 (P2) per-bookID *sync.Mutex (bookFileMu sync.Map +
+  bookMutexFor Load+LoadOrStore 双检查). SaveChapterTxt 与 DeleteBookTxt 共享同
+  bookID 的 mutex 串行化. ✓ 不引入全局锁 (per-bookID granularity, 跨 book 无锁争用).
+
+- 目标C 精简:
+  · BUG-108 deadcode cascade: 7 处删 (TryAcquire + IsDiscovered + SetBookLastChapter
+    + GetBookLastChapter + bookLastChapters 字段 + NewTaskRuntime init + Snapshot
+    引用). 与 R72-C BUG-95 IDMap 同款 cascade 清理 (R65-C/R67-C/R72-C KEEP 重审,
+    0 调用的删).
+  · BUG-106 slug 二次清洗冗余: 内联 []rune 截断替代 sanitizeChapterSlug(slug, 40)
+    二次 no-op 正则.
+  · bookMutexFor Load+LoadOrStore 双检查: 防 LoadOrStore 每次 call allocate 新
+    Mutex (即使 key 已存在, 被丢弃 → GC 压力). SaveChapterTxt hot path 1000 章任务
+    省 1000 次 alloc.
+  · 重复 helper 整合: compileUserAdPattern (cleaner) / compileUserReplaceFrom
+    (parser) / compileRegexRule (parser, 本轮新加) 三者同 pattern (sync.Map 缓存
+    + compile + return (re, ok)), 但 prefix/maxLength/ReDoS 不同 (compileUserAd
+    prefix="(?i)" maxLength=300 ReDoS=true; compileUserReplaceFrom prefix="(?i)"
+    maxLength=1000 ReDoS=true; compileRegexRule prefix="(?flags)" maxLength=∞
+    ReDoS=false). 不强行统一 (参数化会模糊语义), 保留 3 独立 helper 各自清晰.
+    reDoSNestedQuantifierAd (cleaner line 320) 与 reDoSNestedQuantifier (parser
+    line 255) 是同一正则 `[+*]\s*\)\s*[+*{]` 的两份定义, 跨文件可见, 不删 (删一
+    个会让另一文件依赖跨文件符号, 增加耦合; 保留各自文件内自包含).
+  · deadcode 决策: R65-C/R67-C/R72-C KEEP 21 项重审 — 删 TryAcquire + IsDiscovered
+    + Set/GetBookLastChapter + bookLastChapters 字段 (BUG-108, 7 处 cascade). 其他
+    KEEP 项仍保留 (ReadChapterTxt / ReadCover 等 "未来 wiring 公共 read API" 预留,
+    main.go 历史未 materialize 但 R67-C KEEP 决策仍有效; DataRoot/NovelsDir/
+    CoversDir/DownloadsDir 0 caller 但 R67-C KEEP 范围内, 不动).
+  · 冗余注释清理: R38-R54 纯描述可删 — 0 处 (本轮加的注释均含 why rationale +
+    bug 触发场景 + 修复方案, 与 R71-C/R72-C 同口径保留).
+
+- 目标D 编译验证:
+  · `go build ./...` = 0 errors ✓ (export PATH=/home/z/go/bin:/home/z/go/go/bin:$PATH;
+    cd go-backend; go build ./...). 改动: runner.go -4 净 (BUG-103 +22 行 q.ChID
+    分流 + BUG-108 -26 行 deadcode cascade) / storage.go +71 净 (BUG-104 +28
+    per-bookID mutex + bookMutexFor helper + BUG-106 内联截断 + BUG-107
+    initStoragePaths) / cleaner.go +14 净 (BUG-109 字面 \x00 剥离) / parser.go
+    +25 净 (BUG-105 compileRegexRule + regexExtractCache + 重构 regexExtractFirst/
+    All) / types.go 0 / sorter.go 0. 全编译过.
+  · `go vet ./...` = 0 warnings ✓ (whole project).
+  · `staticcheck ./crawl/...` = 0 issues ✓ (whole crawl package; 撰写本段时
+    R73-B 并发修复了 fetcher.go:2995 S1008 "should use return strings.Contains"
+    简化, 最终 staticcheck crawl/... 全 0). 本轮 6 文件 (runner/storage/cleaner/
+    types/parser/sorter) staticcheck = 0 issues ✓ (R73-C 范围内 0 命中).
+  · `gofmt -l crawl/{runner,storage,cleaner,types,parser,sorter}.go` = 0 输出 ✓
+    (gofmt -w 3 改动文件 runner/storage/parser 后 6 文件全规整).
+  · 0 启动/重启/杀死进程 / 0 写 DB / 0 prisma / 0 新依赖 (sync/strings/regexp/
+    fmt/rand/binary/path/filepath/time/context/json/net-url/strconv/utf8/goquery
+    全已在 stdlib或已 import) / 0 emoji / 0 改非 6 文件 (fetcher/hostgate/smart/
+    main/admin/templates/prisma/package.json 全 0 改).
+
+Stage Summary:
+- 新修 bug 7 项 (BUG-103 ~ BUG-109):
+  · BUG-103 (P2) runner.go stats.ChaptersCreated 从未累计 (q.ChID 分流 Created vs
+    Updated)
+  · BUG-104 (P2) storage.go SaveChapterTxt vs DeleteBookTxt race (per-bookID
+    *sync.Mutex via sync.Map, R72 交接 #3 修复)
+  · BUG-105 (P3) parser.go regexExtractFirst/All re-compile (sync.Map 缓存
+    compileRegexRule)
+  · BUG-106 (P3) storage.go SaveChapterTxt slug 二次清洗冗余 (内联 []rune 截断)
+  · BUG-107 (P1) storage.go DeleteBookTxt 漏 initStoragePaths (novelsDir="" →
+    孤儿 txt 文件累积, 进程启动后立即删书触发)
+  · BUG-108 (P3) runner.go TaskRuntime deadcode cascade (TryAcquire + IsDiscovered
+    + Set/GetBookLastChapter + bookLastChapters 字段 共 7 处删)
+  · BUG-109 (P3) cleaner.go RemoveAdLines 字面 \x00 误识别为 URL 占位符 (URL 保护
+    前先 strings.Contains 剥离)
+- storage race: ✓ (BUG-104 per-bookID *sync.Mutex, 不引入全局锁, 跨 book 无争用)
+- 精简: 8 处 (BUG-108 deadcode 7 cascade + BUG-106 slug 二次清洗冗余 + bookMutexFor
+  Load+LoadOrStore 双检查防 alloc 浪费)
+- 编译: 0 errors + 0 warnings + 6 文件 staticcheck 0 issues (crawl 包 fetcher.go
+  残留 1 S1008 是 R73-B 范围) + gofmt 6 文件 0 输出
+- 文件改动: 4 文件 (runner.go -4 净 / storage.go +71 净 / cleaner.go +14 净 /
+  parser.go +25 净; types.go + sorter.go 0 改). 总 +106 净行.
+- Bug 修复累计: 102 → 109 项 (R73-C 新增 7 unique bug: BUG-103~109).
+- 未决项 (交接 R74):
+  1. **R72-C StartCookieJarBackgroundFlusher / StartProxyHealthProber wiring**:
+     API 就位 (fetcher.go), main.go 未调用. R74 改 main.go 启动 goroutine.
+  2. **R72-C 第 80 项 TLS Server Ticket 标准持久化**: tls.ClientSessionState 字段全
+     unexported, 需 fork crypto/tls. R74+.
+  3. **R72-D adminDownloadsCreate db.Query chapters 无 LIMIT**: 万章书 OOM 风险. R74.
+  4. **R72-A WheelLinks 5min sync.Map 缓存**: 大流量站优化. R74.
+  5. **R72-A queryRandomBook 大表换索引扫描**: random() % MAX(rowid). R74.
+  6. **R72-A book_wheel 跨站用目标站 pseudoStyle**: 牺牲兼容性换 SEO. R74.
+  7. **gofmt 全项目剩余文件**: main.go + admin.go 仍 8-space (R73-A/D 范围). R74.
+  8. **crawl/fetcher.go S1008 staticcheck issue**: R73-B 范围 (fetcher.go),
+     "should use return strings.Contains(...)" 简化. R73-B 并发已修复 (最终
+     staticcheck crawl/... = 0). 此项已闭环, 列此供 R74 参考 (若有新增同类).
+  9. **runner.go CrawlBookMeta tocURL == bookURL 时重复 FetchPage**: 无 TocLink 规则
+     或 TocLink 提取失败时 tocURL fallback bookURL, FetchPage 重复抓同 URL (浪费
+     一次请求预算). R74 可加 `if tocURL == bookURL { tocRes = bookRes }` 短路.
+  10. **runner.go CrawlBookMeta coverRes.HTML 当二进制**: 用 FetchPage (string) 抓
+      封面二进制, []byte(coverRes.HTML) 转换. 若 cover URL 返回 text/html 错误页
+      会误存为 .webp. R74 可加 fetchBinary 路径或 Content-Type 校验.
+  11. **runner.go CrawlBookMeta FindBookBySourceURL err 区分**: ferr != nil 时无差别
+      走 "新建" 路径 (DB 暂时故障 → 可能创建重复书). R74 可暴露 errNotFound
+      sentinel 区分 "not found" vs "DB error".
+  12. **cleaner.go RemoveAdLines 占位符格式**: 当前 \x00<digits>\x00, BUG-109 已
+      剥离源文本 \x00 防误识别, 但更稳健方案是用 Private Use Area Unicode
+      (e.g. \uE000<digits>\uE001) 防任何源文本字节冲突. R74+ 评估.

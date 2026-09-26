@@ -468,9 +468,23 @@ func compileUserAdPattern(p string) (*regexp.Regexp, bool) {
 //	54000+ compile, ~1-2s CPU 浪费 + GC 压力. 修复: ① EXTRA_AD_PATTERNS 包级 init
 //	预编译 (extraAdPatternsCompiled); ② 用户 patterns 用 sync.Map 缓存
 //	(removeAdLinesUserCache, 任务级复用率高, 首次 compile 后零开销).
+//
+// R73-C BUG-109 (P3) 修复: R67-C BUG-58 已加 Sscanf err check + bounds check 防
+//
+//	idx 越界, 但源文本含字面 \x00<digits>\x00 (e.g. 源站 GBK 编码混淆 / 二次转义 JSON
+//	体残留 null 字节) 且 digits 恰落在 [0, len(urls)) 时, urlPlaceholderRe 会误把它
+//	当占位符还原成 urls[idx] — 把一个 URL 错误替换进正文. 修复: URL 保护前先扫一遍
+//	text 是否含 \x00 (strings.Contains byte 扫描, 0 alloc, 命中才 ReplaceAll, 不命中
+//	跳过避免 10MB 文本全拷贝). \x00 是 null byte 不出现在正常 HTML 文本中 (HTTP 层
+//	一般已剥), 剥之无副作用. 与 line 512 末尾 `strings.ReplaceAll(out, "\x00", "")`
+//	同口径, 仅把剥离提前到 URL 保护之前防误识别.
 func RemoveAdLines(text string, patterns []string) string {
 	if text == "" {
 		return ""
+	}
+	// R73-C BUG-109: 源文本含字面 \x00 时先剥离, 防 urlPlaceholderRe 误识别.
+	if strings.Contains(text, "\x00") {
+		text = strings.ReplaceAll(text, "\x00", "")
 	}
 	urls := []string{}
 	out := urlProtectRe.ReplaceAllStringFunc(text, func(m string) string {

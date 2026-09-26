@@ -491,13 +491,42 @@ func cssExtractAll(doc *goquery.Document, scope *goquery.Selection, rule FieldRu
 
 // ---------- Regex 提取 ----------
 
-func regexExtractFirst(html string, rule FieldRule) string {
-	flags := rule.Flags
+// R73-C BUG-105 (P3) 修复: regexExtractFirst / regexExtractAll 原每次 call 调
+//
+//	regexp.Compile("(?flags)expression"), hot path 每字段提取都跑 (FieldRegex
+//	类型规则 + 容器 regex 模式 + findNextLink 兜底). 1000 章 × N regex 字段
+//	× M 提取 = N*M*1000 次 compile → CPU 浪费 + GC 压力 (与 R65-C BUG-42
+//	cleaner.removeAdLinesUserCache / R72-C BUG-98 parser.replaceFromUserCache
+//	同款问题). 修复: sync.Map 缓存 (key=flags+expression value=compiledAdPattern{re, ok}).
+//	首次 compile 后任务级复用率 ~100% (同 Rule 多次跑), 0 compile 开销. compile 失败
+//	(无效正则) 也缓存 ok=false 避免重复尝试. 复用 cleaner.compiledAdPattern 类型
+//	(同包可见, 0 重复定义). 不引入 ReDoS 闸门 (regex 提取是规则配置路径, 与
+//	compileUserAdPattern/compileUserReplaceFrom 同口径 — admin Rule 编辑时 sanitize
+//	已限长度 ≤2000, ReDoS 风险由配置侧承担, 此处仅做 compile 缓存).
+var regexExtractCache sync.Map
+
+// compileRegexRule — 编译 FieldRegex 规则的 (flags, expression) → *regexp.Regexp + 缓存.
+//
+//	首次 compile 后复用; ok=false 也缓存 (避免重复 compile 失败 pattern). flags 空时
+//	默认 "gis" (与原 regexExtractFirst/All 同口径).
+func compileRegexRule(flags, expression string) (*regexp.Regexp, bool) {
 	if flags == "" {
 		flags = "gis"
 	}
-	re, err := regexp.Compile("(?" + flags + ")" + rule.Expression)
-	if err != nil {
+	key := flags + "\x00" + expression
+	if v, ok := regexExtractCache.Load(key); ok {
+		cp := v.(compiledAdPattern)
+		return cp.re, cp.ok
+	}
+	re, err := regexp.Compile("(?" + flags + ")" + expression)
+	cp := compiledAdPattern{re: re, ok: re != nil && err == nil}
+	regexExtractCache.Store(key, cp)
+	return cp.re, cp.ok
+}
+
+func regexExtractFirst(html string, rule FieldRule) string {
+	re, ok := compileRegexRule(rule.Flags, rule.Expression)
+	if !ok || re == nil {
 		return ""
 	}
 	m := re.FindStringSubmatch(html)
@@ -511,12 +540,8 @@ func regexExtractFirst(html string, rule FieldRule) string {
 }
 
 func regexExtractAll(html string, rule FieldRule) []string {
-	flags := rule.Flags
-	if flags == "" {
-		flags = "gis"
-	}
-	re, err := regexp.Compile("(?" + flags + ")" + rule.Expression)
-	if err != nil {
+	re, ok := compileRegexRule(rule.Flags, rule.Expression)
+	if !ok || re == nil {
 		return nil
 	}
 	matches := re.FindAllStringSubmatch(html, -1)

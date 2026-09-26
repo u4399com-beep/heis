@@ -111,16 +111,6 @@ func (s *Semaphore) Acquire(ctx context.Context) error {
 	}
 }
 
-// TryAcquire — 非阻塞获取, 成功返回 true.
-func (s *Semaphore) TryAcquire() bool {
-	select {
-	case s.ch <- struct{}{}:
-		return true
-	default:
-		return false
-	}
-}
-
 // Release — 释放一个许可.
 func (s *Semaphore) Release() {
 	<-s.ch
@@ -198,7 +188,9 @@ type TaskRuntime struct {
 	completedBookUrls  map[string]bool
 	ongoingBookUrls    map[string]bool
 	failedBookUrls     map[string]bool
-	bookLastChapters   map[string]string
+	// R73-C BUG-108 (P3): 删除 bookLastChapters map[string]string 字段 (cascade
+	//   deadcode — SetBookLastChapter/GetBookLastChapter 0 callers, 字段仅 Snapshot
+	//   计数用, 永远 0). 与 R72-C BUG-95 IDMap 同款 cascade 清理.
 
 	// 熔断
 	circuitTrippedAt int64
@@ -218,7 +210,7 @@ func NewTaskRuntime(taskID string) *TaskRuntime {
 		completedBookUrls:  map[string]bool{},
 		ongoingBookUrls:    map[string]bool{},
 		failedBookUrls:     map[string]bool{},
-		bookLastChapters:   map[string]string{},
+		// R73-C BUG-108: 删 bookLastChapters init (字段已删).
 	}
 }
 
@@ -396,12 +388,9 @@ func (rt *TaskRuntime) AddToDiscovered(url string) {
 	}
 }
 
-// IsDiscovered — 是否已发现.
-func (rt *TaskRuntime) IsDiscovered(url string) bool {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	return rt.discoveredBookUrls[url]
-}
+// R73-C BUG-108 (P3): 删除 IsDiscovered (0 callers, deadcode). discoveredBookUrls
+//   字段仍由 AddToDiscovered 写入 + Snapshot 计数, 保留. 未来需 dedup 查询时
+//   重新加 1 行 wrapper 即可 (与 R67-C SafeStr/ClampInt 删除同口径).
 
 // IsCompleted — 是否已完结.
 func (rt *TaskRuntime) IsCompleted(url string) bool {
@@ -410,21 +399,10 @@ func (rt *TaskRuntime) IsCompleted(url string) bool {
 	return rt.completedBookUrls[url]
 }
 
-// SetBookLastChapter — 记录书末章 (增量检查用).
-func (rt *TaskRuntime) SetBookLastChapter(url, lastChapter string) {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	if len(rt.bookLastChapters) < 10000 {
-		rt.bookLastChapters[url] = lastChapter
-	}
-}
-
-// GetBookLastChapter — 取书末章.
-func (rt *TaskRuntime) GetBookLastChapter(u string) string {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	return rt.bookLastChapters[u]
-}
+// R73-C BUG-108 (P3): 删除 SetBookLastChapter + GetBookLastChapter (0 callers,
+//   deadcode) + bookLastChapters 字段 (cascade). 原为 "未来 wiring 增量检查" 预留
+//   (line 1804 注释 "实际由 wiring 提供"), 但从未接入. 与 R72-C BUG-95 IDMap 同款
+//   cascade deadcode 清理. 未来需增量检查时重新加 4 行 (字段 + Set + Get + init).
 
 // Snapshot — 任务实时快照 (供 admin UI 实时显示).
 type TaskSnapshot struct {
@@ -462,7 +440,7 @@ func (rt *TaskRuntime) Snapshot() *TaskSnapshot {
 		RunStartedAt:        rt.runStartedAt,
 		CurrentURL:          rt.currentURL,
 		MaxRequests:         rt.maxRequests,
-		MemResumeSetsSize:   len(rt.discoveredBookUrls) + len(rt.completedBookUrls) + len(rt.ongoingBookUrls) + len(rt.failedBookUrls) + len(rt.bookLastChapters),
+		MemResumeSetsSize:   len(rt.discoveredBookUrls) + len(rt.completedBookUrls) + len(rt.ongoingBookUrls) + len(rt.failedBookUrls),
 		RecentLogs:          logsCopy,
 		FailedBookUrlsCount: len(rt.failedBookUrls),
 		CaptchaEncountered:  atomic.LoadInt64(&rt.captchaEncountered),
@@ -1277,7 +1255,22 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) (retErr error) {
 					var logMsg string
 					var shouldLog bool
 					if ok {
-						stats.ChaptersUpdated++
+						// R73-C BUG-103 (P2) 修复: 原 stats.ChaptersUpdated 无条件 ++, 漏
+						//   stats.ChaptersCreated. phase 2 goroutine 调 cfg.DB.UpsertChapter(ch)
+						//   时, 若 q.ChID == "" (normal 模式: ChapterTask 由 line 1176-1184 字面量
+						//   构造, 不填 ChID) → ch.ID == "" → UpsertChapter INSERT 新行 (新章); 若
+						//   q.ChID != "" (admin retry-failed 模式: caller 传已存在 Chapter.ID
+						//   重试) → ch.ID = q.ChID → UpsertChapter UPDATE 已有行 (更新). 原
+						//   实现把新章算作 Updated, 任务完成日志 "新章节0 更新N" 失真, 操作员
+						//   无法判断本轮是真新建还是仅更新. 修复: q.ChID == "" → Created++,
+						//   否则 Updated++. 限制: 不查 DB 验证实际 INSERT vs UPDATE (避免每
+						//   章 +1 DB roundtrip), 依赖 q.ChID 语义 (与 CrawlChapterContent
+						//   line 1992 `if q.ChID != "" { ch.ID = q.ChID }` 同口径).
+						if q.ChID == "" {
+							stats.ChaptersCreated++
+						} else {
+							stats.ChaptersUpdated++
+						}
 						consecutiveErrs = 0
 						done++
 						progress.ContentDone = done
@@ -1786,7 +1779,10 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
 		return &BookMetaResult{Status: BookMetaStatusEmptyToc, BookURL: bookURL}, nil
 	}
 
-	// 增量检查: 比较 bookLastChapters (本场景简化, 实际由 wiring 提供)
+	// R73-C BUG-108: 增量检查 bookLastChapters 已删 (字段+Set+Get 全 cascade deadcode).
+	//   原 line 1804 注释 "增量检查: 比较 bookLastChapters (本场景简化, 实际由 wiring 提供)"
+	//   暗示未来 wiring, 但 SetBookLastChapter 0 callers 从未接入. 删除后这里仅保留
+	//   状态分流 (AddToCompleted / AddToOngoing) 供 Snapshot 计数.
 	if detectedStatus == "completed" {
 		rt.AddToCompleted(bookURL)
 	}

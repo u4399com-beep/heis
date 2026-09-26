@@ -32,6 +32,20 @@ var (
 	novelsDir    string
 	coversDir    string
 	downloadsDir string
+
+	// R73-C BUG-104 (P2): per-bookID mutex 防 SaveChapterTxt 与 DeleteBookTxt 并发 race.
+	//   原 SaveChapterTxt (atomicWriteFileSync + rename 到 data/novels/{bookID}/{idx}_{slug}.txt)
+	//   与 DeleteBookTxt (os.RemoveAll 整个 data/novels/{bookID} 目录) 在 admin 删书与
+	//   活跃采集同时跑时 race: SaveChapterTxt 的 MkdirAll(dir) + atomicWriteFileSync(tmpPath)
+	//   + Rename(tmpPath→filePath) 三步非原子, DeleteBookTxt 的 RemoveAll 可能在 tmpPath 写
+	//   完但 rename 前删掉 dir + tmpPath → rename ENOENT; 或 SaveChapterTxt 在 DeleteBookTxt
+	//   已删 dir 后 MkdirAll+写 → DB Chapter 行存在但文件无人删 (书已删). per-bookID
+	//   *sync.Mutex 串行化同 bookID 的 Save/Delete (不同 bookID 无锁争用, 0 影响并发).
+	//   注: SaveChapterTxt 之间理论上不需串行 (各自独立 tmpPath + 独立 filePath by idx+slug),
+	//   但为简化实现 + 防御性 (e.g. 同 idx 同 slug 的极端 race) 用 Mutex 而非 RWMutex. 性能
+	//   影响: per-book 最多 chapterConcurrency (1-10) 个 goroutine 串行 fsync+rename, 每
+	//   章 ~5ms, 单批 ~50ms, 可接受 (admin 删书是罕见操作, 不影响常规采集中跨 book 并行).
+	bookFileMu sync.Map // key=safeBookID string, value=*sync.Mutex
 )
 
 func initStoragePaths() {
@@ -126,6 +140,23 @@ func sanitizeCoverName(name string) string {
 	return cleaned
 }
 
+// bookMutexFor — 取 (或首次创建) per-bookID 的 *sync.Mutex (R73-C BUG-104).
+//
+//	sync.Map.LoadOrStore 保证并发首次创建只生效一次 (其余 goroutine 拿到先创建的实例).
+//	不删 mutex (bookID 数 = DB 书籍数, 上限 ~万级, *sync.Mutex ~8 字节, 总 ~80KB 可接受;
+//	admin 删书后 mutex 留在 map 中, 后续同 bookID 重采复用, 无 leak 风险).
+//	双检查 (Load fast path + LoadOrStore slow path): 原 `LoadOrStore(k, &sync.Mutex{})`
+//	每次 call 都 allocate 新 Mutex (即使 key 已存在, 被丢弃 → GC 压力). SaveChapterTxt
+//	是 hot path (每章一次), 1000 章任务 = 1000 次 alloc 浪费. Load 先查 (atomic read,
+//	0 alloc), 命中直接返; 未命中才 LoadOrStore (alloc + store, race-safe).
+func bookMutexFor(safeBookID string) *sync.Mutex {
+	if v, ok := bookFileMu.Load(safeBookID); ok {
+		return v.(*sync.Mutex)
+	}
+	v, _ := bookFileMu.LoadOrStore(safeBookID, &sync.Mutex{})
+	return v.(*sync.Mutex)
+}
+
 // ---------- SaveChapterTxt ----------
 
 // SaveChapterTxt — 章节txt存储: data/novels/{bookId}/{idx pad5}_{slug}.txt
@@ -142,11 +173,23 @@ func sanitizeCoverName(name string) string {
 //	同款). 修复: 改用 atomicWriteFileSync (含 fsync, R51-1A 在 fetcher.go 已实现, 同
 //	crawl 包内可直接调), 保证 crash 安全. fsync 在 Linux 约 5-50ms, 章节 .txt 通常
 //	<100KB, 总开销 <100ms 可接受.
+//
+// R73-C BUG-104 (P2) 修复: 加 per-bookID *sync.Mutex 串行化 SaveChapterTxt 与 DeleteBookTxt
+//
+//	(同 bookID). 原实现 MkdirAll + atomicWriteFileSync(tmpPath) + Rename 三步非原子, 与
+//	DeleteBookTxt 的 RemoveAll(dir) race (admin 删书 + 活跃采集同 bookID 时, tmpPath 被
+//	删 → rename ENOENT, 或 Save 在 Delete 后 MkdirAll+写 → 文件残留). per-bookID mutex
+//	串行化同 bookID 的 Save/Delete; 不同 bookID 无锁争用 (sync.Map.LoadOrStore 无锁读路径).
+//	详见 var bookFileMu 注释.
 func SaveChapterTxt(bookID string, idx int, title, content string) (string, error) {
 	if err := EnsureDirs(); err != nil {
 		return "", err
 	}
 	safeBookID := sanitizeBookId(bookID)
+	// R73-C BUG-104: per-bookID mutex 串行化 Save vs Delete (同 bookID).
+	mu := bookMutexFor(safeBookID)
+	mu.Lock()
+	defer mu.Unlock()
 	dir := filepath.Join(novelsDir, safeBookID)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", err
@@ -155,7 +198,15 @@ func SaveChapterTxt(bookID string, idx int, title, content string) (string, erro
 	if slug == "" {
 		slug = "chapter"
 	}
-	slugSafe := sanitizeChapterSlug(slug, 40)
+	// R73-C BUG-106 (P3) 精简: 原二次 sanitizeChapterSlug(slug, 40) 重复跑 chapterSlugRe
+	//   替换 (slug 已无控制字符, ReplaceAllString 是 no-op), 仅截断到 40 rune 有意义.
+	//   内联 []rune 截断, 省一次正则替换 + 字符串分配 (SaveChapterTxt 是 hot path, 1000 章
+	//   任务省 1000 次 no-op 正则).
+	runes := []rune(slug)
+	if len(runes) > 40 {
+		runes = runes[:40]
+	}
+	slugSafe := string(runes)
 	if slugSafe == "" {
 		slugSafe = "chapter"
 	}
@@ -219,8 +270,28 @@ func ReadChapterTxt(relPath string) (string, error) {
 
 // DeleteBookTxt — 删除整本书的 TXT 目录 (bookId 路径穿越防御).
 //   - 与 SaveChapterTxt 同款清洗后再拼路径, 防 caller 误传 '../../etc' 等恶意 ID.
+//
+// R73-C BUG-104 (P2) 修复: 加 per-bookID *sync.Mutex 串行化与 SaveChapterTxt 的并发
+//
+//	(同 bookID). 原实现 os.RemoveAll(dir) 与 SaveChapterTxt 的 atomicWriteFileSync +
+//	rename race (admin 删书 + 活跃采集同 bookID 时, 见 SaveChapterTxt BUG-104 注释).
+//	per-bookID mutex 让 DeleteBookTxt 等待所有 in-flight SaveChapterTxt 完成后再删
+//	dir (SaveChapterTxt 调 mu.Lock → 本函数 mu.Lock 阻塞直到 Save 释放).
+//
+// R73-C BUG-107 (P1) 修复: 原实现漏调 initStoragePaths(), novelsDir 在进程首次启动后
+//
+//	未初始化 (storageOnce 未触发) 时为 "". filepath.Join("", "book123") = "book123"
+//	(相对路径), os.RemoveAll("book123") 删 CWD 下的 "book123" (不存在 → 静默 nil),
+//	实际 data/novels/{bookID} 目录从未删除 → 孤儿 txt 文件累积. 触发场景: 进程刚启
+//	动, admin 立即删书 (无活跃采集触发 EnsureDirs/initStoragePaths). 修复: 函数顶部
+//	调 initStoragePaths() 显式初始化 (与 ReadChapterTxt/ReadCover 同口径).
 func DeleteBookTxt(bookID string) error {
+	initStoragePaths()
 	safeBookID := sanitizeBookId(bookID)
+	// R73-C BUG-104: 与 SaveChapterTxt 共享 per-bookID mutex, 串行化 Save vs Delete.
+	mu := bookMutexFor(safeBookID)
+	mu.Lock()
+	defer mu.Unlock()
 	dir := filepath.Join(novelsDir, safeBookID)
 	return os.RemoveAll(dir)
 }
