@@ -1301,7 +1301,10 @@ func sanitizeChapterHTML(s string) string {
 // coverURL constructs the public-facing cover URL from the stored cover field.
 //   - empty cover → "" (front-end shows SVG placeholder via /covers/ handler)
 //   - external http(s) URL → returned as-is (browser loads directly from origin)
-//   - relative path (e.g. "covers/abc.webp") → "/" + path (handled by /covers/ handler)
+//   - "data:" inline base64 image → returned as-is (no network round-trip)
+//   - "/..." absolute path on this host → returned as-is (don't double-slash)
+//   - relative path (e.g. "covers/abc.webp" / "images/foo.jpg") → "/" + path
+//     (handled by /covers/ FileServer or other static handlers)
 //
 // R67-D BUG-56 (P2): adminBooksCreate (admin.go line ~1467) + adminBookByIDHandler PUT
 //   explicitly allow external cover URLs (http:// | https:// | /covers/ | /). crawl
@@ -1312,13 +1315,38 @@ func sanitizeChapterHTML(s string) string {
 //   host 的相对路径请求 → /covers/ handler 不认 → 404 + 封面破图. 修复: 加 helper
 //   分辨 http(s):// 前缀, 原样返回; 否则前缀 "/". 应用到 4 处 cover 输出
 //   (bookDetailHandler / getBooks / bookRowFromScan / getBookViewData).
+//
+// R68-D BUG-73 (P2): R67-D coverURL 漏 3 类边界 — adminBooksCreate 显式允许
+//   "/..." 前缀 (站内绝对路径, e.g. "/covers/foo.webp" "/foo.jpg"), 原实现
+//   `"/" + cover` 把 "/foo.jpg" 拼成 "//foo.jpg" → 浏览器视作协议相对 URL
+//   (proto-relative, e.g. http://foo.jpg) → 跳到外部 host foo.jpg 而非本站
+//   /foo.jpg, 跨域 + 404 + 破图. 同款: "data:image/png;base64,..." 内联图也
+//   被前缀 "/" 拼成 "/data:..." → 浏览器不识别 data URI → 破图. 用户在 admin
+//   UI 直接粘贴 base64 内联图 (避免一次 CDN 请求) 时破图. 修复: 加 3 类边界
+//   显式 passthrough (http(s):// / data: / / 开头), 仅相对路径 (covers/foo.webp
+//   / images/foo.jpg) 加 "/" 前缀走 /covers/ FileServer. 与 adminBooksCreate +
+//   adminBookByIDHandler PUT 的 cover 校验 (允许 http(s):// + /covers/ + / 开头)
+//   + crawl UpsertBook (允许任意字符串, source 站 CDN 直存) 三处对齐.
 func coverURL(cover string) string {
         if cover == "" {
                 return ""
         }
+        // 外链 URL: http(s):// 原样返回 (浏览器直连源站 CDN).
         if strings.HasPrefix(cover, "http://") || strings.HasPrefix(cover, "https://") {
                 return cover
         }
+        // 内联 base64 图: data:image/... 原样返回 (无网络请求, 浏览器直接解码).
+        if strings.HasPrefix(cover, "data:") {
+                return cover
+        }
+        // 站内绝对路径: "/covers/foo.webp" "/foo.jpg" 原样返回 (已是绝对路径,
+        //   再加 "/" 前缀会拼成 "//foo.jpg" → 协议相对 URL 跨域).
+        if strings.HasPrefix(cover, "/") {
+                return cover
+        }
+        // 相对路径: "covers/abc.webp" "images/foo.jpg" → "/covers/abc.webp" 走 /covers/
+        //   FileServer 或 /images/ 等其他静态 handler. 这是 SaveCoverWebp 落盘路径
+        //   "covers/{name}.webp" 的默认形态 (R65-C BUG-44).
         return "/" + cover
 }
 

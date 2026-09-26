@@ -85,21 +85,15 @@ __pycache__/
 # ── 系统/编辑器 ──
 .DS_Store
 *.pem
-*.tsbuildinfo
 local-*
 .claude
 .z-ai-config
-.vercel
 
-# ── 历史 Next.js/Bun 残留防御（项目已纯 Go 化, 这些规则兜底防误入库） ──
+# ── Bun 运行时（prisma CLI + @prisma/client 引擎等 JS 工具链依赖, 不入库） ──
+# package.json 仅 3 deps (prisma + @prisma/client + z-ai-web-dev-sdk), start-go.js
+# 不需 JS 类型, Bun 内置全局可用 (R68-A 删 bun-types 后 243M 体积).
 node_modules
-/.pnp
-.pnp.*
-/.next/
-/out/
-/build
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
-next-env.d.ts
+
+# ── R67 路径 bug 产生的错误目录（cd go-backend 后 go build -o go-backend/. 的
+#     误用形式会生成 go-backend/go-backend/ 二级嵌套, 防误入库） ──
+go-backend/go-backend/

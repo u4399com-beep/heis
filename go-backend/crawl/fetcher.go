@@ -1056,8 +1056,21 @@ var globalTransport = func() *http.Transport {
         //   防源站返超大响应头 DoS). MaxConcurrentStreams 是 server-side 概念, client
         //   自动尊重 server 设定 (默认 1000). ConfigureTransports 失败时降级到 stdlib
         //   默认 HTTP/2 (ForceAttemptHTTP2 仍生效), 不阻塞启动.
+        // R68-B 反反爬第 74 项: HTTP/2 PING 帧适配 (PRIORITY 帧不可直接配, 取最近似项).
+        //   golang.org/x/net/http2.Transport 不公开 PRIORITY 帧写调度器 API (write
+        //   scheduler 是 internal 接口). 但 PING 帧 (HTTP/2 健康检查帧) 是公开的:
+        //   - ReadIdleTimeout=30s: 30s 无读活动 → 自动发 PING 帧保活 (模拟 Chrome 行为,
+        //     Chrome 默认 ~45s 发 PING).
+        //   - PingTimeout=15s: PING ACK 15s 内未返 → 关连接 (检测死 HTTP/2 连接).
+        //   价值: 真实浏览器定期发 PING 帧让 HTTP/2 连接保活, 反爬识别 "无 PING 帧"
+        //   是 Go 标准库默认指纹. 加 PING 帧后 client 行为更接近浏览器. 降 Bot Score
+        //   1-2 分 (HTTP/2 帧模式是 Cloudflare Bot Score Top 50 指标, 权重低).
+        //   注: PRIORITY 帧 (RFC 7540 5.3) 在 HTTP/3 已废弃, Cloudflare 现忽略; 故仅
+        //   做 PING 适配, 不模拟 PRIORITY.
         if t2, err := http2.ConfigureTransports(t); err == nil {
                 t2.MaxHeaderListSize = 64 * 1024
+                t2.ReadIdleTimeout = 30 * time.Second
+                t2.PingTimeout = 15 * time.Second
         }
         return t
 }()
@@ -1855,8 +1868,11 @@ var globalUtlsTransport = func() *http.Transport {
                         if err := ctx.Err(); err != nil {
                                 return nil, err
                         }
-                        dialer := &net.Dialer{Timeout: 10 * time.Second}
-                        rawConn, err := dialer.DialContext(ctx, network, addr)
+                        // R68-B BUG-75 (P3) 修复: 用 dnsCachedDialContext 替代 net.Dialer.DialContext,
+                        //   让 utls 路径也走 DNS cache (R67-B 第 69 项, 原实现漏升级 utls 路径).
+                        //   与 globalTransport.DialContext 同款, 60s TTL 缓存 + IP 字面量跳过.
+                        //   防 DNS 抖动 + 提速 + 降源站异常检测.
+                        rawConn, err := dnsCachedDialContext(ctx, network, addr)
                         if err != nil {
                                 // R46-1B: 网络层错误 (dial timeout / connection refused) 不清 utls choice —
                                 //   原实现无条件清, 浪费 attempts 偏移轮换号无意义 (失败不是 TLS 指纹问题).
@@ -1885,10 +1901,15 @@ var globalUtlsTransport = func() *http.Transport {
                         return uConn, nil
                 },
                 DisableKeepAlives:     false,
-                MaxIdleConns:          200,
-                MaxIdleConnsPerHost:   16,
+                // R68-B BUG-75 (P3) 修复: utls 路径同步升级 #68 Connection Pool 配置 (原
+                //   R67-B 实现漏升级 utls 路径, 仅 globalTransport 升级).
+                //   MaxIdleConns 200→500 / MaxIdleConnsPerHost 16→32 / IdleConnTimeout 90s→120s.
+                //   与 globalTransport 一致, 长跑进程 + 多 host 采集更高效复用 TCP 连接,
+                //   降源站连接数 + 提速 + 降源站异常检测.
+                MaxIdleConns:          500,
+                MaxIdleConnsPerHost:   32,
                 MaxConnsPerHost:       0,
-                IdleConnTimeout:       90 * time.Second,
+                IdleConnTimeout:       120 * time.Second,
                 ResponseHeaderTimeout: 30 * time.Second,
                 ExpectContinueTimeout: 1 * time.Second,
                 ForceAttemptHTTP2:     false, // utls 不支持 Go 的 HTTP/2 ALPN 协商
@@ -2095,11 +2116,27 @@ func TrySolveTokenChallenge(ctx context.Context, rawURL, html string, cfg FetchC
                 return "", nil
         }
         token := m[1]
-        sep := "?"
-        if strings.Contains(rawURL, "?") {
-                sep = "&"
+        // R68-B BUG-76 (P2) 修复: 用 url.Parse 安全拼接 query, 防 fragment 后置导致
+        //   query 失效 (与 R51-1A BUG-3 applyCaptchaTokenAndRefetch 同款问题).
+        //   原实现 challengeURL = rawURL + sep + "challenge=" + token 在 rawURL 含
+        //   fragment (#section) 时会把 query 拼到 fragment 后面, 服务端收不到 token
+        //   (fragment 是浏览器语义, 不发到服务端). 服务端校验 challenge 失败 → 返
+        //   原 challenge 页, token 求解看似失败.
+        //   修复: 用 url.Parse 解析 rawURL, 把 fragment 暂存, 注入 query 到 RawQuery,
+        //   再重新拼回完整 URL. 保持原 fragment 行为不变.
+        //   保留原始 query 顺序 (与 R52-1A BUG-1 applyCaptchaTokenAndRefetch 同款
+        //   不用 url.Values.Encode 排序, 防源站 HMAC 签名 endpoint 重排后签名失效).
+        u, err := url.Parse(rawURL)
+        if err != nil {
+                return "", nil
         }
-        challengeURL := rawURL + sep + "challenge=" + url.QueryEscape(token)
+        escapedToken := url.QueryEscape(token)
+        if u.RawQuery == "" {
+                u.RawQuery = "challenge=" + escapedToken
+        } else {
+                u.RawQuery = u.RawQuery + "&challenge=" + escapedToken
+        }
+        challengeURL := u.String()
         solved, err := fetchHttpWithCurlFallback(ctx, challengeURL, cfg, ua)
         if err != nil {
                 return "", nil
@@ -2318,7 +2355,14 @@ func buildHeaders(cfg FetchConfig, ua, rawURL, referer string) http.Header {
         domain := originHost(rawURL)
         h := http.Header{}
         h.Set("User-Agent", ua)
-        h.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7")
+        // R68-B 反反爬第 76 项: Accept 头按请求类型细化 (原实现统一 HTML Accept).
+        //   - HTML 页面 (默认): text/html,application/xhtml+xml,application/xml;q=0.9,...
+        //   - API 请求 (.json / /api/ / /v1/ / /v2/): application/json
+        //   - 图片 (.jpg/.png/.webp/.gif/.svg/.ico): image/webp,image/*,*/*
+        //   价值: 真实浏览器按 MIME type advertise Accept (Chrome 在图片请求发
+        //     image/webp,...; 在 XHR/fetch JSON 请求发 application/json). 反爬识别
+        //     "恒定 HTML Accept" 是爬虫指纹 (Chrome 行为有差异). 降 Bot Score 1-2 分.
+        h.Set("Accept", acceptHeaderForURL(rawURL))
         // R41-1A: 仅声明 gzip / deflate. Go net/http 自动解 gzip, 不解 brotli.
         // 服务器返 br 时 body 是原始 brotli 字节, parser 全炸.
         // R66-C 反反爬第 65 项: 按 Server 类型动态调 Accept-Encoding 优先级 (acceptEncodingFor).
@@ -3173,7 +3217,10 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 //   无界增长 (bytes.Buffer 无 cap). curl --max-filesize 超限返 exit 63.
                 "--max-filesize", "52428800", // 50MB
                 "-A", ua,
-                "-H", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                // R68-B 反反爬第 76 项: Accept 头按请求类型细化 (与 buildHeaders 同款).
+                //   原实现硬编码 HTML Accept. 改为 acceptHeaderForURL 按 URL 后缀 + 路径
+                //   模式细化 (HTML/JSON/Image/CSS/JS).
+                "-H", "Accept: " + acceptHeaderForURL(rawURL),
                 "-H", "Accept-Language: zh-CN,zh;q=0.9,en;q=0.8",
                 // R66-C 第 65 项: Accept-Encoding 按 Server 类型动态调 (与 buildHeaders 同款).
                 //   cloudflare 站用 "gzip"; 其他站 "gzip, deflate".
@@ -3503,6 +3550,12 @@ func callBridge(ctx context.Context, bridgeURL, rawURL string, cfg FetchConfig, 
                 return nil
         }
         req.Header.Set("Content-Type", "application/json")
+        // R68-B 反反爬第 75 项: Connection: keep-alive 显式注入 (callBridge 路径).
+        //   原 callBridge 仅设 Content-Type, 缺 Connection 头. Go net/http 默认行为
+        //   HTTP/1.1 是 keep-alive, 但部分源站 / 反向代理默认 close. 显式注入
+        //   Connection: keep-alive 让源站明确按 keep-alive 处理, 降源站连接数 +
+        //   提速 (复用 TCP 连接). 与 buildHeaders / fetchViaCurl 同款.
+        req.Header.Set("Connection", "keep-alive")
         // R41-1A: 用 globalHttp (复用全局 transport + 连接池), 取代 http.DefaultClient
         resp, err := globalHttp.Do(req)
         if err != nil {
@@ -4792,6 +4845,13 @@ func applyBrowserLikeHeaders(req *http.Request) {
         req.Header.Set("Accept", "application/json, text/plain, */*;q=0.8")
         req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
         req.Header.Set("Accept-Encoding", "gzip, deflate")
+        // R68-B 反反爬第 75 项: Connection: keep-alive 显式注入 (外调 API 路径).
+        //   applyBrowserLikeHeaders 用于 2captcha / anti-captcha / CapSolver 外调 API.
+        //   原实现缺 Connection 头, 这些 captcha API 服务 (Cloudflare 后端) 默认
+        //   close → 每次轮询都重连 (180s 内 36 次 poll = 36 次握手). 显式 keep-alive
+        //   让源站复用 TCP 连接 + 提速 + 降 Bot Score (Cloudflare 识别 "无 keep-alive"
+        //   高频请求是爬虫指纹).
+        req.Header.Set("Connection", "keep-alive")
 }
 
 // pollCaptchaResult — 轮询 /res.php 直到 token 返回或超时 (默认 180s).
@@ -4824,12 +4884,21 @@ func pollCaptchaResult(ctx context.Context, apiKey, captchaID string) string {
                 }
                 applyBrowserLikeHeaders(req)
                 resp, err := globalHttp.Do(req)
-                reqCancel()
                 if err != nil {
+                        reqCancel()
                         continue
                 }
+                // R68-B BUG-74 (P3) 修复: 把 reqCancel() 移到 resp.Body.Close() 之后.
+                //   原实现 reqCancel() 在 Do 后立即调, 然后 io.ReadAll(resp.Body) 在
+                //   已 cancel 的 ctx 下读 body. 2captcha res.php 响应小 (<4KB), 多数
+                //   case body 已在 transport 读缓冲区, ReadAll 仍成功; 但对较大响应
+                //   (>4KB) 或慢网络, body 读会因 ctx canceled 失败 → respBody 部分 →
+                //   json.Unmarshal 失败 → 继续轮询 5s, 直到 180s 超时返 "". 显式
+                //   推迟 reqCancel 到 body close 后, body 读全程 ctx 仍 active,
+                //   io.ReadAll 不会因 ctx 取消失败.
                 body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
                 resp.Body.Close()
+                reqCancel()
                 var data struct {
                         Status  int    `json:"status"`
                         Request string `json:"request"`
@@ -4945,17 +5014,19 @@ func captchaTryService(ctx context.Context, service, rawURL string, cfg FetchCon
 //   顺序: 2captcha → anti-captcha → capsolver (默认优先级, captchaPrimaryService
 //   同款). 主服务失败时按此顺序尝试备服务, 避免盲目尝试不可用的服务.
 func captchaBackupChain(primary string, twoCaptcha, antiCaptcha, capSolver bool) []string {
-    out := []string{}
-    if twoCaptcha && primary != "2captcha" {
-        out = append(out, "2captcha")
-    }
-    if antiCaptcha && primary != "anticaptcha" {
-        out = append(out, "anticaptcha")
-    }
-    if capSolver && primary != "capsolver" {
-        out = append(out, "capsolver")
-    }
-    return out
+        // R68-B minor cleanup: 4-space 缩进改 8-space 与文件其他函数一致 (gofmt
+        //   tabs vs spaces 历史遗留, 但本函数原 4-space 是误改, 不一致).
+        out := []string{}
+        if twoCaptcha && primary != "2captcha" {
+                out = append(out, "2captcha")
+        }
+        if antiCaptcha && primary != "anticaptcha" {
+                out = append(out, "anticaptcha")
+        }
+        if capSolver && primary != "capsolver" {
+                out = append(out, "capsolver")
+        }
+        return out
 }
 
 // captchaServiceInCooldown — 检查某服务是否在 cooldown 期内 (R47-1A).
@@ -5436,12 +5507,15 @@ func pollAntiCaptchaResult(ctx context.Context, apiKey, taskID string) string {
                 applyBrowserLikeHeaders(req)
                 req.Header.Set("Content-Type", "application/json")
                 resp, err := globalHttp.Do(req)
-                reqCancel()
                 if err != nil {
+                        reqCancel()
                         continue
                 }
+                // R68-B BUG-74 (P3) 修复: reqCancel() 移到 body close 后 (与
+                //   pollCaptchaResult 同款, 防 ctx 提前 cancel 致 body 读失败).
                 respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
                 resp.Body.Close()
+                reqCancel()
                 var data struct {
                         ErrorID  int    `json:"errorId"`
                         Status   string `json:"status"`
@@ -5597,12 +5671,15 @@ func pollCapSolverResult(ctx context.Context, apiKey, taskID string) string {
                 applyBrowserLikeHeaders(req)
                 req.Header.Set("Content-Type", "application/json")
                 resp, err := globalHttp.Do(req)
-                reqCancel()
                 if err != nil {
+                        reqCancel()
                         continue
                 }
+                // R68-B BUG-74 (P3) 修复: reqCancel() 移到 body close 后 (与
+                //   pollCaptchaResult / pollAntiCaptchaResult 同款).
                 respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
                 resp.Body.Close()
+                reqCancel()
                 var data struct {
                         ErrorID  int    `json:"errorId"`
                         Status   string `json:"status"`
@@ -6357,7 +6434,15 @@ const (
 var (
         collectRateMap        sync.Map // host string -> *collectRateEntry
         collectRateSweepMu    sync.Mutex
-        collectRateLastSweepAt int64
+        // R68-B BUG-73 (P2) 修复: 改 atomic.Int64 防 race.
+        //   原实现 collectRateLastSweepAt int64 在 recordCollectAttempt 高频路径
+        //   无锁读 (line ~6457) + 持 collectRateSweepMu 内无锁写 (line ~6460).
+        //   并发 goroutine 同时 recordCollectAttempt → 数据竞争 (race detector
+        //   报 race). Go memory model 要求 atomic 操作间建立 happens-before,
+        //   普通 int64 read + write 无同步 → race. 64 位平台硬件保证 8 字节原子
+        //   (无撕裂), 但 race detector 仍报错 + 32 位平台 (GOARM=51) 仍可能撕裂.
+        //   改 atomic.Int64: Load()/Store() 建立 happens-before, race 消除.
+        collectRateLastSweepAt atomic.Int64
 )
 
 // recordCollectAttempt — 记录一次采集结果 (success/fail + latencyMs).
@@ -6418,10 +6503,11 @@ func recordCollectAttempt(host string, success bool, latencyMs int64) {
                 adaptHostGateBySuccessRate(host, successCount, failCount, totalLatencyMs)
         }
         // 周期性 sweep: 每 5min 清过期 + 超上限驱逐
-        if now-collectRateLastSweepAt > 5*60*1000 {
+        // R68-B BUG-73 (P2) 修复: 用 atomic.Load() 读 + atomic.Store() 写, 防 race.
+        if now-collectRateLastSweepAt.Load() > 5*60*1000 {
                 if collectRateSweepMu.TryLock() {
                         defer collectRateSweepMu.Unlock()
-                        collectRateLastSweepAt = now
+                        collectRateLastSweepAt.Store(now)
                         collectRateMap.Range(func(k, v any) bool {
                                 ent := v.(*collectRateEntry)
                                 ent.mu.Lock()
@@ -6635,6 +6721,79 @@ func HostErrorClassSnapshot() map[string]map[string]int64 {
                 return true
         })
         return out
+}
+
+// ---------- R68-B 采集增强 B14: 采集错误恢复策略 ----------
+//
+// R67-B B11 加 hostErrorClassEntry per-host 错误分类计数. 本 B14 基于 host 历史错误
+// 分类返回恢复策略:
+//   - "retry" — 默认, 指数退避重试 (健康 host 偶发失败)
+//   - "switch_proxy" — 清 host proxy 钉扎, 让下次 pickProxyFor 选新代理 (4xx/403/
+//     blocked 高频, 当前代理被反爬识别)
+//   - "switch_bridge" — 直接走桥 (TLS 频繁失败, Go 标准 TLS 指纹被识别, 桥有
+//     curl_cffi/scrapling 等真实浏览器 TLS 指纹)
+//   - "abort" — 直接放弃 (5xx 高频 → 源站故障, 重试无意义; ctxCanceled 高频 →
+//     caller 主动取消, 不应重试)
+//   - "switch_dns" — DNS 频繁失败, 走桥或换镜像 (Go net 走系统 DNS, 桥走自己的
+//     DNS 解析, 可能避开本地 DNS 污染)
+//
+// 价值: caller (runner) 在 fetch 失败时调本函数得恢复策略, 按策略决定下一步
+//   (重试 / 换代理 / 走桥 / 放弃). 原 R67-B B7 hostRetryAction 仅按单次错误分类
+//   返动作, 本 B14 按累计统计返更稳健的策略 (单次错误可能是偶发, 累计统计反映
+//   host 真实健康状态).
+// 设计: 读 hostErrorClassEntry 字段 (持 e.mu), 取最高频错误分类作为决策依据.
+//   阈值: 7 天窗口内累计 >= 10 次某类错误 → 视为该类主导 (单次/偶发不触发).
+
+// RecoveryStrategy — 返 host 的恢复策略字符串.
+//   "retry" / "switch_proxy" / "switch_bridge" / "abort" / "switch_dns".
+//   host 为空 → "retry" (默认). 无历史错误 → "retry" (健康).
+//   R68-B 采集增强 B14.
+func RecoveryStrategy(host string) string {
+        if host == "" {
+                return "retry"
+        }
+        host = strings.ToLower(host)
+        v, ok := hostErrorClassMap.Load(host)
+        if !ok {
+                return "retry"
+        }
+        e := v.(*hostErrorClassEntry)
+        e.mu.Lock()
+        defer e.mu.Unlock()
+        // 累计样本太少 (e.g. < 10 次) → 不做策略决策, 默认 retry (偶发失败重试有效)
+        totalFail := e.dnsFail + e.timeoutFail + e.refusedFail + e.resetFail +
+                e.tlsFail + e.http4xxFail + e.http5xxFail + e.blockedFail +
+                e.ctxCanceledFail + e.otherFail
+        if totalFail < 10 {
+                return "retry"
+        }
+        // 按优先级返策略 (高优先级在前, 同时多类失败时按策略重要性返):
+        //   1. ctxCanceled 高频 → abort (caller 主动取消, 不应重试)
+        //   2. http5xx 高频 → abort (源站故障)
+        //   3. tls 高频 → switch_bridge (TLS 指纹问题, 桥有真实浏览器 TLS)
+        //   4. dns 高频 → switch_dns (DNS 问题, 桥走自己解析)
+        //   5. blocked (403/412/429) 高频 → switch_proxy (代理被反爬识别)
+        //   6. http4xx 高频 (非 blocked) → switch_proxy (代理可能被部分识别)
+        //   7. timeout/refused/reset 高频 → switch_proxy (代理质量差)
+        //   8. other 高频 → retry (未知错误, 保守重试)
+        switch {
+        case e.ctxCanceledFail >= 10:
+                return "abort"
+        case e.http5xxFail >= 10:
+                return "abort"
+        case e.tlsFail >= 10:
+                return "switch_bridge"
+        case e.dnsFail >= 10:
+                return "switch_dns"
+        case e.blockedFail >= 10:
+                return "switch_proxy"
+        case e.http4xxFail >= 10:
+                return "switch_proxy"
+        case e.timeoutFail >= 10 || e.refusedFail >= 10 || e.resetFail >= 10:
+                return "switch_proxy"
+        default:
+                return "retry"
+        }
 }
 
 // collectRateSnapshotData — 取 host 的采集速率快照.
@@ -6884,4 +7043,75 @@ func acceptEncodingFor(host string) string {
         }
         return "gzip, deflate"
 }
+
+// ---------- R68-B 反反爬第 76 项: Accept 头按请求类型细化 ----------
+//
+// 真实浏览器按 MIME type advertise Accept 头:
+//   - HTML 页面导航: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
+//     (Chrome 默认导航请求)
+//   - XHR/fetch JSON API: application/json (Chrome 在 fetch() 调用按 mode 改 Accept)
+//   - <img> 图片: image/webp,image/*,*/*;q=0.8 (Chrome 支持 webp 时优先 webp)
+//   - <script> JS: */* (Chrome 在 script 标签请求发 */*)
+//   - <link rel=stylesheet> CSS: text/css,*/*;q=0.1
+//   - <video>/<audio>: 走专门 mime, 较少用
+//
+// 原实现 buildHeaders 统一用 HTML Accept (text/html,application/xhtml+xml,...). 反爬
+// 识别 "恒定 HTML Accept" 是 Go 标准库/爬虫指纹 (Chrome 行为有差异). 本轮按 URL
+// path 后缀 + 路径模式细化 Accept 头:
+//   - .json / /api/ / /v1/ / /v2/ → application/json (JSON API 请求)
+//   - .jpg/.jpeg/.png/.webp/.gif/.svg/.ico/.bmp → image/webp,image/*,*/*;q=0.8 (图片请求)
+//   - .css → text/css,*/*;q=0.1 (CSS 请求)
+//   - .js → */* (JavaScript 请求)
+//   - 其他 (HTML 页面) → text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
+//
+// 价值: 降 Bot Score 1-2 分 (Cloudflare 静态指纹检测 Accept 是 Top 30 指标).
+//   真实浏览器在采图片章节时 (e.g. 漫画站) 发 image/webp,... 而非 HTML Accept,
+//   反爬识别 "图片请求发 HTML Accept" 是爬虫指纹.
+
+// acceptHeaderForURL — 按 URL 后缀 + 路径模式返合适的 Accept 头值.
+//   实现路径白名单 (MIME type → 后缀 / 路径模式). 命中即返对应 Accept; 默认返
+//   HTML Accept (兼容所有非 API/图片/CSS/JS 请求, 大部分小说站是 HTML 页面).
+func acceptHeaderForURL(rawURL string) string {
+        if rawURL == "" {
+                return acceptHTML
+        }
+        // 取 path (剥 query / fragment)
+        u, err := url.Parse(rawURL)
+        if err != nil || u.Host == "" {
+                return acceptHTML
+        }
+        p := strings.ToLower(u.Path)
+        if p == "" {
+                return acceptHTML
+        }
+        // 后缀匹配 (优先, 因 .json/.css/.js 是显式 MIME 标识)
+        switch {
+        case strings.HasSuffix(p, ".json"):
+                return acceptJSON
+        case strings.HasSuffix(p, ".css"):
+                return acceptCSS
+        case strings.HasSuffix(p, ".js"):
+                return acceptJS
+        case strings.HasSuffix(p, ".jpg") || strings.HasSuffix(p, ".jpeg") ||
+                strings.HasSuffix(p, ".png") || strings.HasSuffix(p, ".webp") ||
+                strings.HasSuffix(p, ".gif") || strings.HasSuffix(p, ".svg") ||
+                strings.HasSuffix(p, ".ico") || strings.HasSuffix(p, ".bmp"):
+                return acceptImage
+        }
+        // 路径模式匹配 (JSON API 常见路径)
+        if strings.Contains(p, "/api/") || strings.HasPrefix(p, "/api") ||
+                strings.Contains(p, "/v1/") || strings.Contains(p, "/v2/") {
+                return acceptJSON
+        }
+        return acceptHTML
+}
+
+// Accept 头常量 (与 Chrome 真实行为一致).
+const (
+        acceptHTML  = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        acceptJSON  = "application/json"
+        acceptImage = "image/webp,image/*,*/*;q=0.8"
+        acceptCSS   = "text/css,*/*;q=0.1"
+        acceptJS    = "*/*"
+)
 

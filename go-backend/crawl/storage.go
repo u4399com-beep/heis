@@ -275,11 +275,21 @@ func SaveCoverWebp(buf []byte, name string) (string, error) {
 // ReadCover — 读取封面文件.
 //  - path.basename 剥目录组件 + sibling-prefix 绕过防御 (与 ReadChapterTxt 同口径)
 //  - 必须 === COVERS_DIR 或以 COVERS_DIR + sep 开头
+//
+// R68-C BUG-75 (P3) 修复: 原条件 `full != coversDir && !HasPrefix(full, coversDir+sep)`
+//   用 && 组合, 当 full == coversDir (用户传 fileName="." 或 "" 经 filepath.Base+Join
+//   后等于 coversDir 本身) 时条件 `full != coversDir` 为 false, 整个 && 短路 false,
+//   不触发 early return → 进入 os.ReadFile(coversDir) → 返 "is a directory" 错误
+//   (ReadChapterTxt 同款场景 line 200-205 用两个独立 if 分别处理 full==dataRoot 与
+//   HasPrefix, 不存在此 bug). 修复: 改 || 组合 (full == coversDir OR 不在 coversDir/
+//   子树内都视为越界, 返 nil,nil). 与 ReadChapterTxt 同口径. (注: ReadCover 在 R67-C
+//   deadcode 决策 KEEP 16 项内, 但 bug 真实, 修在死代码上也修.)
 func ReadCover(fileName string) ([]byte, error) {
         initStoragePaths()
         safe := filepath.Base(fileName)
         full := filepath.Join(coversDir, safe)
-        if full != coversDir && !strings.HasPrefix(full, coversDir+string(filepath.Separator)) {
+        // R68-C BUG-75: 改 || 组合, full==coversDir (dir) 也走 nil,nil 早返 (与 ReadChapterTxt 同口径)
+        if full == coversDir || !strings.HasPrefix(full, coversDir+string(filepath.Separator)) {
                 return nil, nil
         }
         data, err := os.ReadFile(full)

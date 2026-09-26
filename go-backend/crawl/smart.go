@@ -25,6 +25,7 @@ import (
         "sort"
         "strings"
         "sync"
+        "time"
 )
 
 // 标准分类 + 关键词权重 (R52-1A: 改 4 字名, 15 分类).
@@ -591,3 +592,190 @@ func SortTaskPriorityQueue(items []TaskPriorityItem) []TaskPriorityItem {
         })
         return out
 }
+
+// ---------- R68-B 采集增强 B12: 采集任务并发自适应 ----------
+//
+// admin 调度采集任务时, 按当前活跃任务数动态调每任务并发 (per-task concurrency).
+// 设计意图: 任务多则降并发防源站过载 (单 host 同时间被打过多 → 频控 + 反爬识别
+// "高频请求" 是爬虫指纹); 任务少则提并发提速采集. caller (admin / runner) 在
+// 启动任务时调本函数得推荐并发, 传入 TaskRuntime.SetConcurrency.
+//
+// 阈值表 (基于经验值, 防源站过载 + 兼顾提速):
+//   activeTasks == 0 → 默认并发 8 (无活跃任务, 用默认值, 不会被调)
+//   activeTasks == 1 → 16 (单任务, 充分利用带宽)
+//   activeTasks 2-3 → 12 (轻度并发, 仍提速)
+//   activeTasks 4-8 → 8 (中度并发, 降源站压力)
+//   activeTasks 9-16 → 4 (重度并发, 防过载)
+//   activeTasks 17-32 → 2 (极重度并发, 仅 2 并发/任务)
+//   activeTasks > 32 → 1 (海量任务, 单并发, 防 IP 封禁)
+//
+// 价值: 防 N 任务 × M 并发 = N×M 总请求率 → 源站识别 "高频" → 频控. 自适应调
+//   并发让 N×M 趋于稳定 (e.g. 1 任务 16 并发 = 16 req/s, 16 任务 4 并发 = 64 req/s,
+//   32 任务 1 并发 = 32 req/s). 上限 ~64 req/s 不超源站频控阈值.
+// caller: admin API 在 /api/admin/tasks/start 路径调本函数得 recommended concurrency,
+//   传入 TaskRuntime + cfg.Concurrency.
+
+// AdaptiveTaskConcurrency — 按活跃任务数返推荐 per-task 并发.
+//   activeTasks < 0 视为 0 (容错). 0 时返默认 8 (caller 可不调本函数, 用默认值).
+//   R68-B 采集增强 B12.
+func AdaptiveTaskConcurrency(activeTasks int) int {
+        if activeTasks < 0 {
+                activeTasks = 0
+        }
+        switch {
+        case activeTasks == 0:
+                return 8
+        case activeTasks == 1:
+                return 16
+        case activeTasks <= 3:
+                return 12
+        case activeTasks <= 8:
+                return 8
+        case activeTasks <= 16:
+                return 4
+        case activeTasks <= 32:
+                return 2
+        default:
+                return 1
+        }
+}
+
+// ---------- R68-B 采集增强 B13: 采集进度预估 ----------
+//
+// admin UI 展示任务进度时, 不仅显示已完成/总数, 还预估完成时间 (ETA).
+// 数据源: caller (runner) 周期性调 RecordTaskProgress(taskID, completed, total),
+//   本函数基于历史速率 (completed / elapsed_seconds) + 剩余量 (total - completed)
+//   预估完成时间. 速率不足 (样本太少) → ok=false, caller 显示 "计算中...".
+//
+// 设计:
+//   - taskProgressTracker 进程级单例, sync.Map[taskID] -> *taskProgress.
+//   - taskProgress: {completed, total, startedAt, lastUpdateAt}.
+//   - ETA = now + (total - completed) / rate, rate = completed / (now - startedAt).
+//   - 容错: rate == 0 (无样本) → ok=false.
+//   - 容错: completed >= total → ok=true, eta = now (已完成).
+//   - 清理: caller 显式调 ClearTaskProgress(taskID) 在任务完成/取消时. 不自动 sweep
+//     (任务数有限, 1000+ 任务也只占少量内存).
+//
+// 价值: admin UI 展示 ETA 让操作员判断 "还要多久完成" (e.g. 万章书 30 分钟完成,
+//   操作员可决定是否等待或并行启新任务). 不影响采集性能 (数据已存在, 仅算除法).
+
+// taskProgress — 单个任务的进度快照.
+//   R68-B BUG-77 (P3) 修复: 加 mu sync.Mutex 保护字段读 / 写, 防数据竞争.
+//   原 RecordTaskProgress 写 + EstimateTaskETA / TaskProgressSnapshot 读 无锁,
+//   并发场景 (runner 写 + admin 读) → race. 改: 所有访问持 mu.
+type taskProgress struct {
+        mu           sync.Mutex
+        completed    int64
+        total        int64
+        startedAt    int64 // UnixMilli, 首次 record 时间
+        lastUpdateAt int64 // UnixMilli, 最近 record 时间
+}
+
+// taskProgressMap — taskID string -> *taskProgress (进程级单例).
+var taskProgressMap sync.Map
+
+// RecordTaskProgress — 记录任务进度 (caller 在周期性 update 时调).
+//   completed < 0 / total < 0 视为 0 (容错). taskID == "" 不记录.
+//   completed > total 时仍记录 (caller 可能误传, 但 ETA 计算会 ok=true 视为完成).
+//   首次 record 设 startedAt = now. 后续只更新 completed / total / lastUpdateAt.
+//   R68-B 采集增强 B13. R68-B BUG-77: 持 p.mu 写防 race.
+func RecordTaskProgress(taskID string, completed, total int64) {
+        if taskID == "" {
+                return
+        }
+        if completed < 0 {
+                completed = 0
+        }
+        if total < 0 {
+                total = 0
+        }
+        now := time.Now().UnixMilli()
+        var p *taskProgress
+        if v, ok := taskProgressMap.Load(taskID); ok {
+                p = v.(*taskProgress)
+        } else {
+                p = &taskProgress{startedAt: now}
+                actual, _ := taskProgressMap.LoadOrStore(taskID, p)
+                p = actual.(*taskProgress)
+        }
+        p.mu.Lock()
+        p.completed = completed
+        p.total = total
+        p.lastUpdateAt = now
+        p.mu.Unlock()
+}
+
+// ClearTaskProgress — 清除任务进度 (caller 在任务完成/取消时调).
+//   R68-B 采集增强 B13.
+func ClearTaskProgress(taskID string) {
+        if taskID == "" {
+                return
+        }
+        taskProgressMap.Delete(taskID)
+}
+
+// EstimateTaskETA — 预估任务完成时间.
+//   返 (estimatedAt, ok). ok=false 表示无样本或 total=0, caller 显示 "计算中...".
+//   ok=true 时 estimatedAt = now + (total - completed) / rate.
+//   rate = completed / (now - startedAt) (整体速率). 若 rate == 0 (startedAt == now
+//   或 completed == 0) → ok=false.
+//   completed >= total → ok=true, estimatedAt = now (已完成).
+//   R68-B 采集增强 B13. R68-B BUG-77: 持 p.mu 读防 race.
+func EstimateTaskETA(taskID string) (estimatedAt time.Time, ok bool) {
+        if taskID == "" {
+                return time.Time{}, false
+        }
+        v, loaded := taskProgressMap.Load(taskID)
+        if !loaded {
+                return time.Time{}, false
+        }
+        p := v.(*taskProgress)
+        now := time.Now().UnixMilli()
+        p.mu.Lock()
+        defer p.mu.Unlock()
+        // 无样本或未启动: 返 ok=false
+        if p.total <= 0 || p.startedAt == 0 {
+                return time.Time{}, false
+        }
+        // 已完成 (completed >= total): 返 now (caller 显示 "已完成")
+        if p.completed >= p.total {
+                return time.UnixMilli(now), true
+        }
+        // 速率计算
+        elapsed := now - p.startedAt
+        if elapsed <= 0 {
+                // startedAt == now (首次 record 刚发生): 无样本, ok=false
+                return time.Time{}, false
+        }
+        if p.completed <= 0 {
+                // 无完成样本: ok=false (无法估速率)
+                return time.Time{}, false
+        }
+        // rate = completed / elapsed (项/ms)
+        // remaining = total - completed (项)
+        // etaMs = remaining / rate = (total - completed) * elapsed / completed
+        remaining := p.total - p.completed
+        etaMs := remaining * elapsed / p.completed
+        return time.UnixMilli(now + etaMs), true
+}
+
+// TaskProgressSnapshot — admin / metrics 查询用: 返回任务进度快照.
+//   R68-B 采集增强 B13. R68-B BUG-77: 持 p.mu 读防 race.
+func TaskProgressSnapshot() map[string]map[string]int64 {
+        out := map[string]map[string]int64{}
+        taskProgressMap.Range(func(k, v any) bool {
+                p := v.(*taskProgress)
+                p.mu.Lock()
+                m := map[string]int64{
+                        "completed":    p.completed,
+                        "total":         p.total,
+                        "startedAt":     p.startedAt,
+                        "lastUpdateAt":  p.lastUpdateAt,
+                }
+                p.mu.Unlock()
+                out[k.(string)] = m
+                return true
+        })
+        return out
+}
+

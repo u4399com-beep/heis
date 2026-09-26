@@ -15,9 +15,11 @@
 聚合 / 全文搜索）直接消费库内数据，封面图 `/covers/<name>` 走 SVG 占位兜底
 （不存在则返回渐变色块 + 书名首字）。
 
-R38 → R66 已完成 Next.js → Go 全面迁移 + 反反爬累计 60 项 + 采集增强 7 项 +
+R38 → R66 已完成 JS 栈 → 纯 Go 栈全面迁移 + 反反爬累计 60 项 + 采集增强 7 项 +
 9 主题模板 1:1 复刻 + 智能 TDK + 10 套伪静态风格 + admin 全页面 CRUD 补齐 +
-DEPLOY 详细图文教程 + start-go.js 4 项稳定性增强。
+DEPLOY 详细图文教程 + start-go.js 4 项稳定性增强。R67-A 把 package.json 49 deps
+瘦身到 3 deps + node_modules 1GB→272MB；R68-A 删 bun-types 后进一步 272MB→243MB +
+.gitignore 清理历史 JS 栈残留 + DEPLOY/README 全面 Go-only 化。
 
 ## 功能特性
 
@@ -104,17 +106,24 @@ DEPLOY 详细图文教程 + start-go.js 4 项稳定性增强。
 通用样板。由 `mini-services/start-all.sh` 一键拉起，端口独占、互不冲突；mini-services
 绑 `127.0.0.1:<port>`，仅本机 heis-backend 访问。
 
-## 快速开始（3 步跑起来）
+## 快速开始（5 步跑起来）
 
 ```bash
 # 1. clone（沙箱已是 /home/z/my-project）
 cd /home/z/my-project
 
-# 2. 初始化数据库（11 张表）
+# 2. 安装 JS 工具链依赖（仅 3 deps: prisma + @prisma/client + z-ai-web-dev-sdk，约 243M）
+bun install
+
+# 3. 初始化数据库（11 张表）
 echo 'DATABASE_URL=file:/home/z/my-project/db/custom.db' > .env
 bunx prisma db push --accept-data-loss
 
-# 3. 启动 wrapper + 后端（前台测试 / 后台用 nohup）
+# 4. 编译 Go 后端（首次约 1-3 分钟，下载 modernc.org/sqlite + goquery + utls + chromedp）
+cd go-backend && /home/z/go/go/bin/go build -o heis-backend . && cd ..
+#   注: 若跳过此步, bun start-go.js 也会自动检测并 build（auto-build 机制）
+
+# 5. 启动 wrapper + 后端（前台测试 / 后台用 nohup）
 bun start-go.js
 #   或:  nohup bun start-go.js > wrapper.log 2>&1 & disown
 ```
@@ -192,7 +201,8 @@ curl -s http://localhost:3000/api/admin/backup > backup-$(date +%F).json
 
 ---
 
-**项目版本**：R66-D（2025-09-25，纯 Go 栈；R38→R65 全链路迁移完成；R65-B 反反爬
-55→60 项；R66 主控修复 wrapper 监听 `*.html` 模板改动；R66-D DEPLOY 重写为部署
-导向 10 章节图文教程 + README 项目概览 + start-go.js 4 项稳定性增强）。详细部署见
-[DEPLOY.md](./DEPLOY.md)，完整工作日志见 [worklog.md](./worklog.md)。
+**项目版本**：R68-A（2025-09-25+，纯 Go 栈深化清理；R38→R66 完成 JS 栈 → 纯 Go 栈
+全链路迁移；R67-A package.json 49 deps 瘦身到 3 deps + node_modules 1GB→272MB；
+R68-A 删 bun-types 后 272MB→243MB + .gitignore 清理历史 JS 栈残留 + DEPLOY/README
+全面 Go-only 化）。详细部署见 [DEPLOY.md](./DEPLOY.md)，完整工作日志见
+[worklog.md](./worklog.md)。

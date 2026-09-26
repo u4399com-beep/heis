@@ -31,6 +31,7 @@ import (
         "sync"
         "sync/atomic"
         "time"
+        "unicode/utf8"
 
         "github.com/PuerkitoBio/goquery"
 )
@@ -1119,10 +1120,9 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) error {
                         okMetaBooks = append(okMetaBooks, r.BookCtx)
                 }
         }
-        bookDoneMap := map[string]int{}
-        for _, bc := range okMetaBooks {
-                bookDoneMap[bc.BookID] = 0
-        }
+        // R68-C 目标B: bookDoneMap 已删 (FinalizeBook 签名精简后无消费者, cascade deadcode).
+        //   原 bookDoneMap 用于占位 "未来 wiring 增量统计", 但 stats.ChaptersCreated/Updated
+        //   在 phase 2 goroutine 内累计 (与 bookDoneMap 路径无关), 故 bookDoneMap 全程 0 外部消费.
 
         if len(globalQueue) > 0 && !rt.IsStopped() && !rt.IsStale(myEpoch) {
                 progress.Phase = "content"
@@ -1140,7 +1140,7 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) error {
                 chapterSem := NewSemaphore(chapterConcurrency)
                 // R41-1A: 引入 batchMu 保护章节 goroutine 内共享变量写
                 // (stats.Errors / stats.ChaptersUpdated / consecutiveErrs / done /
-                //  progress.ContentDone / bookDoneMap 都是跨 goroutine 共享)
+                //  progress.ContentDone 都是跨 goroutine 共享; R68-C 删 bookDoneMap)
                 var batchMu sync.Mutex
                 // R42-1B: budgetExceeded 标志 (CrawlChapterContent 返回的 "other" 含 BudgetExceeded
                 // 时, 由 goroutine 写此标志, 主循环 wg.Wait() 后检查并上抛任务级)
@@ -1216,7 +1216,7 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) error {
                                                 consecutiveErrs = 0
                                                 done++
                                                 progress.ContentDone = done
-                                                bookDoneMap[q.BookCtx.BookID]++
+                                                // R68-C 目标B: 删 bookDoneMap[q.BookCtx.BookID]++ (FinalizeBook 不再读 bookDone)
                                         } else {
                                                 switch kind {
                                                 case "no-url":
@@ -1327,8 +1327,9 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) error {
                         if rt.IsStopped() || rt.IsStale(myEpoch) {
                                 break
                         }
-                        bookDone := bookDoneMap[bc.BookID]
-                        if err := FinalizeBook(ctx, cfg, rt, myEpoch, bc, bookDone, &stats, &progress); err != nil {
+                        // R68-C 目标B: FinalizeBook 签名精简 (删 ctx/myEpoch/bookDone/stats 4 参),
+                        //   删 bookDone := bookDoneMap[bc.BookID] (无消费者, cascade deadcode).
+                        if err := FinalizeBook(cfg, rt, bc, &progress); err != nil {
                                 if IsBudgetExceeded(err) || IsCircuitBreak(err) {
                                         return err
                                 }
@@ -1569,9 +1570,23 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                         //   intro/cover 不更新), 也不写 status/categoryId. 修复: 调 UpsertBook 刷新
                         //   meta 字段 + 仅当新算出 status != "unknown" 时覆盖 + 仅当新算出
                         //   categoryID != "" 时覆盖 (避免空值清空已有值).
-                        existing.Name = CleanTextField(parsed.Name, 200)
-                        existing.Author = CleanTextField(parsed.Author, 100)
-                        existing.Intro = CleanIntro(parsed.Intro, 2000)
+                        // R68-C BUG-73 (P2) 修复: 原 Name/Author/Intro 无条件覆盖 (与 Cover 的条件覆盖
+                        //   不一致). 源站模板变更 / parse 部分失败 (selector 不匹配 → parsed.Name="") →
+                        //   existing.Name 被清空, DB Book.name 字段被擦成空串, 前台显示空白. 修复:
+                        //   与 Cover 同款条件覆盖 (parsed 字段非空才覆盖, 空则保留 existing 值).
+                        //   触发场景: 用户改 rule book.fields.name selector 后首次跑 → 旧 selector 已
+                        //   失效, 新 selector 未生效 (e.g. 配置错误) → parsed.Name="" → 旧实现擦空
+                        //   DB.name, 用户看到书名变空. 修复后保留旧 name, 等 selector 修好后下次
+                        //   任务再覆盖.
+                        if v := CleanTextField(parsed.Name, 200); v != "" {
+                                existing.Name = v
+                        }
+                        if v := CleanTextField(parsed.Author, 100); v != "" {
+                                existing.Author = v
+                        }
+                        if v := CleanIntro(parsed.Intro, 2000); v != "" {
+                                existing.Intro = v
+                        }
                         if parsed.Cover != "" {
                                 existing.Cover = parsed.Cover
                         }
@@ -1603,10 +1618,21 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                                 SourceURL:     bookURL,
                                 UpdatedAt:     time.Now(),
                         }
+                        // R68-C BUG-74 (P2) 修复: 原 created, err := UpsertBook(newBook); if err == nil { bookID = created.ID }
+                        //   静默吞 err, bookID 留空 → 后续 line 1631 `if bookID == "" { bookID = "tmp_..." }`
+                        //   fallback 生成 fake ID. 然后 CrawlBookMeta 继续 fetch toc + SaveCoverWebp(用 tmp_ ID)
+                        //   + 构建 BookMetaContext{BookID: tmp_...}. phase 2 CrawlChapterContent 用 q.BookCtx.BookID="tmp_..."
+                        //   调 UpsertChapter → DB 出现 bookId="tmp_..." 的 orphan 章节 (无对应 Book 行).
+                        //   phase 3 FinalizeBook 用 bc.BookID="tmp_..." 调 UpdateBookWordCount/Status → UPDATE
+                        //   影响行 0 (无匹配行), 静默失败. 章节入库失败也吞. 整本书"完成"但实际无 Book 行.
+                        //   修复: UpsertBook(newBook) 失败时 return error 让 caller (phase 1 goroutine)
+                        //   走 err 路径 (stats.Errors++ + AddToFailed + results[idx]=Error), phase 2 跳过该书.
+                        //   task 重跑时 FindBookBySourceURL 仍返 "not found", 重试新建 (若 DB 错误已修).
                         created, err := cfg.DB.UpsertBook(newBook)
-                        if err == nil {
-                                bookID = created.ID
+                        if err != nil {
+                                return nil, fmt.Errorf("新建书 UpsertBook 失败 %s: %w", bookURL, err)
                         }
+                        bookID = created.ID
                 }
         }
         if bookID == "" {
@@ -1886,20 +1912,37 @@ func CrawlChapterContent(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRun
         // 累计字节
         rt.IncBytes(int64(len(cleaned)))
 
+        // R68-C 目标C: 累计 ParsedWordCount (rune 数) — 供 phase 3 FinalizeBook 写 Book.WordCount
+        //   (R67-C 未决项 3 报告 ParsedWordCount 从未设置 → Book.WordCount 恒 0).
+        //   多 goroutine 并发写同一 BookCtx.ParsedWordCount (同书多章 phase 2 并发) → 用
+        //   atomic.AddInt64 (与 MarkRunning/IncRequest/IncCaptcha 同口径, 无锁并发安全).
+        //   phase 2 wg.Wait() 建立 happens-before → phase 3 FinalizeBook 可安全读 (atomic.LoadInt64).
+        //   限制: incremental recrawl 场景下 ParsedWordCount 仅含本轮新采章节字数, 非 DB 全章
+        //   节总和 (R67-C 建议的 DB 聚合路径 SUM(LENGTH(content)) FROM Chapter WHERE bookId=?
+        //   需扩 DBClient 接口 + admin.go wiring, 范围外, 留 R69+).
+        atomic.AddInt64(&q.BookCtx.ParsedWordCount, int64(utf8.RuneCountInString(cleaned)))
+
         return true, "", ""
 }
 
 // ---------- FinalizeBook (阶段 3) ----------
 
 // FinalizeBook — 阶段 3: 单本书收尾 (统计 + 状态分流 + latestChapter).
-func FinalizeBook(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, myEpoch int64, bc *BookMetaContext, bookDone int, stats *TaskStats, progress *TaskProgress) error {
+//
+// R68-C 目标B (R67 交接 #5) 签名精简: 删 4 个未用参数 (ctx / myEpoch / bookDone / stats).
+//   原签名 FinalizeBook(ctx, cfg, rt, myEpoch, bc, bookDone, stats, progress) 中 ctx/myEpoch/
+//   bookDone/stats 4 参数函数体从未引用 (仅 cfg + bc + rt + progress 被用). 调用点同步精简.
+//   bookDone 在 R67-C 前用于占位 "未来 wiring 增量统计", 但 stats.ChaptersCreated/Updated
+//   在 phase 2 goroutine 内累计 (与 bookDone 路径无关), 故 bookDone 全程 0 调用 → 删.
+//   同步删 ExecuteTask 内 bookDoneMap (init/increment/read 全 0 外部消费, cascade deadcode).
+func FinalizeBook(cfg ExecuteTaskConfig, rt *TaskRuntime, bc *BookMetaContext, progress *TaskProgress) error {
         // 更新书籍 wordCount / latestChapter
         if cfg.DB != nil && bc.BookID != "" {
-                // 聚合 fetched 章节字数 (简化: 走 ParsedWordCount 兜底)
-                wordCount := bc.ParsedWordCount
-                if wordCount == 0 {
-                        // TODO: DB 聚合 sum(len(chapter.content))
-                }
+                // R68-C 目标C: ParsedWordCount 在 CrawlChapterContent 内 atomic.AddInt64 累计
+                //   (本轮 crawl 章节字数总和, rune 数). phase 2 wg.Wait() 建立 happens-before,
+                //   此处 atomic.LoadInt64 安全读最新值. 限制: incremental recrawl 仅含本轮
+                //   新采章节字数 (非 DB 全章节总和), 详见 CrawlChapterContent 注释.
+                wordCount := atomic.LoadInt64(&bc.ParsedWordCount)
                 if wordCount > 0 {
                         _ = cfg.DB.UpdateBookWordCount(bc.BookID, wordCount)
                 }

@@ -691,11 +691,14 @@ func safeStr(s string, max int) string {
                 }
                 b = append(b, r)
         }
-        out := string(b)
-        if max > 0 && len([]rune(out)) > max {
-                out = string([]rune(out)[:max])
+        // R68-C 目标D 精简: 原实现做两次冗余 []rune 转换 (len([]rune(out)) > max 与
+        //   string([]rune(out)[:max]) 各一次), 直接用已构建的 b 切片做截断, 省一次
+        //   []rune 分配 (safeStr 是 sanitize 热路径, 每 JSON 字段都跑, 万字段场景
+        //   省万次分配).
+        if max > 0 && len(b) > max {
+                b = b[:max]
         }
-        return out
+        return string(b)
 }
 
 func safeStrArr(arr []any, maxCount, maxLen int) []string {

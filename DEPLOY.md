@@ -8,6 +8,11 @@
 >
 > 主控 R66 已修复 `start-go.js` 监听 `*.html` 模板改动，R66-D 在此基础上再加 4 项稳定性
 > 增强（Go 工具链自愈 / WAL checkpoint / 心跳死锁检测 / 日志轮转），见 §9。
+>
+> R68-A 在 R66-D 基础上做历史 JS 栈残留深化清理：删 `bun-types` devDependency +
+> `.gitignore` 去除历史构建产物与类型定义残留（`.next/` / `next-env.d.ts` /
+> `*.tsbuildinfo` / `.vercel` / yarn-pnp / npm-debug 等）+ DEPLOY/README 文案全面
+> Go-only 化（环境准备仅列 Bun + Go + sqlite3 + Caddy 四件套，无任何 JS 框架依赖）。
 
 ## 目录
 
@@ -45,7 +50,7 @@
 
 #### 1.2.1 Bun（JS runtime）
 
-`start-go.js` 用 Bun 跑（不是 Node，因为 Bun 内置 fetch / spawn / fs，无需 npm install）。
+`start-go.js` 用 Bun 跑（不是 Node，因为 Bun 内置 fetch / spawn / fs，无需任何 JS 依赖安装即可拉起 Go 后端 wrapper）。
 
 ```bash
 # Linux/macOS（官方脚本）
@@ -1145,7 +1150,7 @@ caddy validate --config /home/z/my-project/Caddyfile
 
 - [README.md](./README.md) — 项目概览 + 快速开始
 - [worklog.md](./worklog.md) — 完整工作日志（~25000 行，R3-a → R66 全链路）
-- [package.json](./package.json) — 依赖清单（仅 `scripts.dev = "bun start-go.js"`）
+- [package.json](./package.json) — 依赖清单（3 deps: prisma + @prisma/client + z-ai-web-dev-sdk，devDependencies 已 0；scripts.dev = "bun start-go.js"）
 - [prisma/schema.prisma](./prisma/schema.prisma) — DB schema（11 表）
 - [go-backend/go.mod](./go-backend/go.mod) — Go 依赖（modernc.org/sqlite + goquery + utls + chromedp）
 - [Caddyfile](./Caddyfile) — 网关配置
@@ -1153,4 +1158,7 @@ caddy validate --config /home/z/my-project/Caddyfile
 
 ---
 
-**文档版本**：R66-D（2025-09-25）。覆盖 R38→R65 累计成果，重写为部署导向图文教程。
+**文档版本**：R68-A（2025-09-25+）。覆盖 R38→R65 累计成果（R66-D 重写为部署导向图文教程，
+10 章节 + FAQ）；R67-A 把 package.json 49 deps 瘦身到 3 deps + node_modules
+1GB→272MB；R68-A 删 bun-types 后进一步 272MB→243MB + .gitignore 清理历史 JS 栈
+残留 + DEPLOY/README 全面 Go-only 化。

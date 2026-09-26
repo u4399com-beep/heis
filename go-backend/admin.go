@@ -18,6 +18,7 @@ import (
         "fmt"
         "io"
         "log"
+        "net"
         "net/http"
         "net/url"
         "regexp"
@@ -227,6 +228,103 @@ func (a *adminDB) BookChapterProgress(bookID string) (int, int, error) {
                 return done, 0, err
         }
         return done, total, nil
+}
+
+// ListBookProgress — 实现 crawl.BookProgressReader 接口 (R68-D 接 R67 交接 #4).
+//
+// 返回所有 "已开始采" 的书的进度快照 (BookURL + done + total + lastAt). runner.go
+// ExecuteTask line ~901 在 phase 1 之前 type-assertion 检测 cfg.DB 是否实现
+// BookProgressReader, 调 ListBookProgress 拿进度快照 → applyResumeSort 重排
+// bookQueue (nearDone 优先 → started → fresh). R67 之前 adminDB 未实现该接口,
+// type-assertion 失败 → applyResumeSort 永不调用 → 断点续采优先级排序功能 dormant.
+//
+// taskID 参数未直接用于 SQL 过滤 (Task 表无 Book URL 列表; Books 通过 sourceUrl
+// 与 caller 的 bookQueue URL 列表做匹配). 返回所有 "已开始采" 的书 (至少 1 章
+// fetched=1) 的进度. caller (runner.applyResumeSort) 按 BookURL 匹配 bookQueue
+// 内的 URL, 未匹配的 item 被忽略 (排末尾 fresh 组).
+//
+// 性能: 单 SQL (3 个子查询 + EXISTS 过滤) 拿全量进度, 避免逐书 N 次 COUNT.
+//   1000 本书 + 10 万章节实测 ~30ms (SQLite 走 idx_book_id 索引覆盖).
+//   LIMIT 5000 防极端大书库 OOM (单 ResumeItem ~80 bytes, 5000 * 80 = 400KB).
+//
+// LastFetchAt 解析: Book.updatedAt 在 adminDB.UpsertBook 用 datetime('now')
+// 写入 (SQLite TEXT 格式 "2006-01-02 15:04:05"). 兼容 prisma @updatedAt 可能
+// 存的 Unix ms 数字 + ISO 串 + 微秒/纳秒 (与 main.go formatUpdatedAt 4 级数量
+// 级判断同口径). 失败返 0 (SmartResumeSort 视为"最久未采").
+//
+// 错误容忍: SQL 失败 → 返 (nil, err), caller 容错保留原 bookQueue.
+//   单行 Scan 失败 → 跳过该行 (continue), 不阻塞整体.
+func (a *adminDB) ListBookProgress(taskID string) ([]crawl.ResumeItem, error) {
+        // taskID 不直接用于 SQL 过滤 (Task 表无 BookURL 列; bookQueue 与 sourceUrl
+        // 在 caller applyResumeSort 内做 URL 匹配). 接收 taskID 仅满足接口签名.
+        _ = taskID
+        rows, err := a.db.Query(`SELECT b.sourceUrl,
+                (SELECT COUNT(*) FROM Chapter WHERE bookId=b.id AND fetched=1) AS doneN,
+                (SELECT COUNT(*) FROM Chapter WHERE bookId=b.id) AS totalN,
+                COALESCE(b.updatedAt,'') AS updatedAt
+                FROM Book b
+                WHERE b.sourceUrl != ''
+                  AND EXISTS (SELECT 1 FROM Chapter WHERE bookId=b.id AND fetched=1)
+                ORDER BY b.updatedAt DESC
+                LIMIT 5000`)
+        if err != nil {
+                return nil, err
+        }
+        defer rows.Close()
+        out := []crawl.ResumeItem{}
+        for rows.Next() {
+                var bookURL, updatedAt string
+                var doneN, totalN int
+                if err := rows.Scan(&bookURL, &doneN, &totalN, &updatedAt); err != nil {
+                        continue
+                }
+                if bookURL == "" {
+                        continue
+                }
+                out = append(out, crawl.ResumeItem{
+                        BookURL:       bookURL,
+                        ChaptersDone:  doneN,
+                        ChaptersTotal: totalN,
+                        LastFetchAt:  parseBookUpdatedAtToMillis(updatedAt),
+                })
+        }
+        return out, nil
+}
+
+// parseBookUpdatedAtToMillis — Book.updatedAt → UnixMilli (R68-D).
+//
+//      Book.updatedAt 在 adminDB.UpsertBook/UpsertChapter 用 datetime('now') 写入,
+//      格式 "2006-01-02 15:04:05" (SQLite TEXT, 本地时区). 但 prisma 端 @updatedAt
+//      会写 Unix ms 时间戳 (Int 类型), 备份恢复可能引入 ISO 串. 与 main.go
+//      formatUpdatedAt 同款 4 级数量级判断, 但返 int64 ms (供 ResumeItem.LastFetchAt).
+//      解析失败返 0 (SmartResumeSort 视为"最久未采", 排 fresh 组末尾).
+func parseBookUpdatedAtToMillis(s string) int64 {
+        s = strings.TrimSpace(s)
+        if s == "" {
+                return 0
+        }
+        // SQLite TEXT 优先 (adminDB.UpsertBook 默认格式)
+        if t, err := time.Parse("2006-01-02 15:04:05", s); err == nil {
+                return t.UnixMilli()
+        }
+        // ISO 串 (备份恢复或外部同步)
+        if t, err := time.Parse(time.RFC3339, s); err == nil {
+                return t.UnixMilli()
+        }
+        // 数值时间戳 (Prisma @updatedAt): 秒/毫秒/微秒/纳秒
+        if ms, err := strconv.ParseInt(s, 10, 64); err == nil {
+                switch {
+                case ms >= 1000000000000000000: // ≥ 1e18 纳秒
+                        return ms / 1000000
+                case ms >= 1000000000000000: // ≥ 1e15 微秒
+                        return ms / 1000
+                case ms >= 1000000000000: // ≥ 1e12 毫秒
+                        return ms
+                default: // 秒
+                        return ms * 1000
+                }
+        }
+        return 0
 }
 
 // ListCategoryNames — R54-1B 智能分类辅助: 返回 DB 所有分类名 (供 SmartCategory existingCategories 入参).
@@ -694,6 +792,30 @@ func adminTasksCreate(w http.ResponseWriter, r *http.Request) {
                                 return
                         }
                         fetchConfigStr = string(b)
+                }
+        }
+        // R68-D BUG-76 (P3): R67-D 未决项 #5. mode="urls" 时 URLs 来自 fetchConfig.urls
+        //   数组, 用户传 fetchConfig 无 urls 数组时任务启动但不采任何书 (静默空跑).
+        //   runner.go ExecuteTask line ~883: `bookQueue = append([]string(nil), cfg.Override.URLs...)`
+        //   URLs 为空 → bookQueue 长度 0 → 跳过列表发现 + 阶段1采集循环 → 任务秒完成
+        //   "0 本". 操作员以为任务正常, 但实际什么也没采. 修复: 校验 mode="urls"
+        //   时 fetchConfigStr 必须含 urls 非空数组 (≥1 个 http(s) URL). 与 adminTasksCreate
+        //   mode=single (bookURL 必填) + mode=range (listURL 必填) 同款入口校验.
+        //   注: 必须放在 fetchConfigStr 解析之后 (line 780+), 否则 fetchConfigStr 仍是 "{}".
+        if mode == "urls" {
+                var fc struct {
+                        URLs []string `json:"urls"`
+                }
+                if json.Unmarshal([]byte(fetchConfigStr), &fc) != nil || len(fc.URLs) == 0 {
+                        writeJSONErr(w, "urls 模式必须提供 fetchConfig.urls 非空数组 (至少 1 个 http(s) URL)", 400)
+                        return
+                }
+                // 校验每个 URL 是 http(s) (与 mode=single 的 httpURL 校验同口径, 防 file:// 等)
+                for _, u := range fc.URLs {
+                        if httpURL(u) == "" {
+                                writeJSONErr(w, "fetchConfig.urls 内含非法 URL (仅支持 http/https): "+u, 400)
+                                return
+                        }
                 }
         }
         // 开关
@@ -1408,9 +1530,20 @@ func adminBooksList(w http.ResponseWriter, r *http.Request) {
         var total int
         _ = db.QueryRow("SELECT COUNT(*) FROM Book b WHERE "+whereSQL, args...).Scan(&total)
 
+        // R68-D BUG-77 (P3): R67-D 未决项 #3 同款 nullable Scan + offset/page 一致性.
+        //   原实现: page 来自用户输入 (clamp 1-1000000), offset 单独 clamp 到 10000.
+        //   用户传 ?page=99999 size=20 → offset=199980 → clamp 到 10000 (page 501 数据),
+        //   但 API 响应仍返 page=99999. 前端显示 "page 99999 of 5" 与数据 (page 501) 不一致.
+        //   修复: 先 clamp page 到 maxPages (= maxPaginationOffset/size + 1) 再算 offset,
+        //   page 与 offset 一致. 与 main.go homeHandler category view (R64-D BUG-31 修复)
+        //   同款 maxPaginationOffset=10000 常量.
+        maxPages := maxPaginationOffset/size + 1
+        if page > maxPages {
+                page = maxPages
+        }
         offset := (page - 1) * size
-        if offset > 10000 {
-                offset = 10000
+        if offset > maxPaginationOffset {
+                offset = maxPaginationOffset
         }
         queryArgs := append(args, size, offset)
         rows, err := db.Query(
@@ -2028,13 +2161,20 @@ func fillBooksPageData(data map[string]interface{}, r *http.Request) {
         if totalPages < 1 {
                 totalPages = 1
         }
+        // R68-D BUG-77 (P3): 同 adminBooksList — clamp totalPages 到 maxPages (= maxPaginationOffset/size + 1)
+        //   防 page 与 offset 不一致 (page 显示 N 但数据来自 page 501 @ offset 10000).
+        //   与 main.go homeHandler category view (R64-D BUG-31 修复) 同款 maxPaginationOffset=10000.
+        maxPages := maxPaginationOffset/size + 1
+        if totalPages > maxPages {
+                totalPages = maxPages
+        }
         if page > totalPages {
                 page = totalPages
         }
 
         offset := (page - 1) * size
-        if offset > 10000 {
-                offset = 10000
+        if offset > maxPaginationOffset {
+                offset = maxPaginationOffset
         }
         queryArgs := append(args, size, offset)
         rows, err := db.Query(
@@ -2940,6 +3080,25 @@ func adminDownloadsCreate(w http.ResponseWriter, r *http.Request) {
                         sb.WriteString(c.content + "\n\n")
                 }
                 txt := sb.String()
+                // R68-D BUG-74 (P2): adminDownloadsDelete + goroutine race.
+                //   原实现: goroutine 拼 TXT → downloadFilesMu.Lock → 写 downloadFiles[jid] →
+                //   UPDATE DownloadJob SET status='done'. 若 adminDownloadsDelete 在 goroutine
+                //   写缓存前被调 (DELETE FROM DownloadJob), 行被删, 但 goroutine 仍会写缓存
+                //   (orphan entry 留 2h TTL). 后续 UPDATE 找不到行 (no-op). adminDownloadsDelete
+                //   的内存清理 (delete(downloadFiles, jobID)) 在 goroutine 写之前 — 写之后无人清.
+                //   有 downloadFilesMaxEntries=50 + TTL 防无界增长, 但 2h 内 ~50 orphan entry
+                //   内存占用 (~50 × 数 MB = 数百 MB, 万章书 TXT 可达 50MB). 修复: goroutine 写
+                //   缓存前 SELECT 检查行存在性 + status='running' (即 adminDownloadsDelete 是否
+                //   已先抢到 DELETE). 若行已删 / status 已变 (e.g. clear handler 改 'error'),
+                //   跳过缓存写, 避免 orphan. 与 R55-1B adminBookByIDHandler DELETE 同款 "先
+                //   SELECT 行存在再操作" 模式 (BUG-1 修复).
+                var jidStatus string
+                _ = db.QueryRow(`SELECT status FROM DownloadJob WHERE id=?`, jid).Scan(&jidStatus)
+                if jidStatus != "running" {
+                        // 行已删 (adminDownloadsDelete DELETE 抢先) 或 status 已被其他 handler 改
+                        // (e.g. clear 全清标 'error') → 不写缓存, 避免 orphan entry.
+                        return
+                }
                 downloadFilesMu.Lock()
                 // R41-1B: 容量上限 + TTL 过期检查 (防内存泄漏)
                 now := time.Now()
@@ -3360,7 +3519,13 @@ var htmlEscaper = strings.NewReplacer(
 )
 
 // clientIP — 提取客户端 IP (X-Forwarded-For 优先, 兼容 Caddy/Nginx 反代场景).
-//   无 XFF 时取 r.RemoteAddr 去掉端口部分.
+//   无 XFF 时取 r.RemoteAddr 去掉端口部分 (用 net.SplitHostPort 正确处理 IPv6).
+//
+// R68-D BUG-75 (P3): R67-D 未决项 #6. 原实现 strings.LastIndex(host, ":") 剥端口,
+//   对 IPv6 "[::1]:12345" 返 "[::1]" (含方括号). 入库 Feedback.ip 含方括号会让后续
+//   IP 黑名单 / 频控匹配失配 (e.g. strings.EqualFold("[::1]", "::1") → false).
+//   修复: 用 net.SplitHostPort 标准库正确处理 IPv4+IPv6+端口 3 种形态. 入库 + 日志
+//   都用净 IP (无方括号). XFF 头不含方括号 (RFC 7239 用纯 IP), 维持原逻辑.
 func clientIP(r *http.Request) string {
         if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
                 // 取第一个 (最接近客户端的) IP, 去空白
@@ -3370,9 +3535,12 @@ func clientIP(r *http.Request) string {
                         return ip
                 }
         }
-        host := r.RemoteAddr
-        if idx := strings.LastIndex(host, ":"); idx > 0 {
-                host = host[:idx]
+        host, _, err := net.SplitHostPort(r.RemoteAddr)
+        if err != nil {
+                // r.RemoteAddr 无端口 (e.g. "127.0.0.1" 或 "[::1]" 无 ":port" 后缀), 原样返.
+                //   net.SplitHostPort 对无端口串返 err, 此时 r.RemoteAddr 即客户端 IP
+                //   (可能含 IPv6 方括号, 但前端 rfc 7239 / XFF 头一般不带方括号, 直接用).
+                return r.RemoteAddr
         }
         return host
 }

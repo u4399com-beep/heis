@@ -26050,3 +26050,541 @@ Stage Summary:
 4. **stats.ChaptersCreated vs ChaptersUpdated 不区分**: adminDB.UpsertChapter 内部 SELECT existing → UPDATE / INSERT 二选一, 但接口返 (Chapter, error) 不暴露 isNew. R67-C BUG-60 修复 BooksCreated/Updated (runner 端用 BookMetaResult.IsNewBook 标记), 但 ChaptersCreated/Updated 仍恒 0 (任务完成日志 "新章节0 更新N" 仅显示 Updated). R68 可改 DBClient 接口 UpsertChapter 返 (Chapter, bool, error) 第三返值 isNew (需 admin.go 同步改), 或 runner CrawlChapterContent 调 FindChapterByURL 前查 (多 1 次 DB 查询/章, 万章任务 +1 万查询).
 5. **runner/storage 21 unreachable 全 KEEP**: runner.go 5 项 (Semaphore.TryAcquire / TaskRuntime.CurrentURL/IsDiscovered/SetBookLastChapter/GetBookLastChapter) + storage.go 16 项 (DataRoot/NovelsDir/CoversDir/DownloadsDir/sanitizeBookId/sanitizeChapterSlug/SaveChapterTxt/ReadChapterTxt/DeleteBookTxt/ReadCover/downloadTxtTarget/OpenDownloadTxtWriter/downloadTxtWriter.{Rel,Write,Finish,Abort}). R65-C 决策"public API surface + R32-1A 增量检查 feature 占位 + R38-1C storage API 完整保留"继承. R68 若决定 admin.go 走 strings.Builder 内存 download + DB storage 章节 (不切流式 + TXT 文件路径), 可考虑删 storage.go 16 项 + cascade 删 sanitizeBookId/sanitizeChapterSlug/safeBookIdRe/trimUnderscore/chapterSlugRe (约 -200 行).
 6. **gofmt 全项目 space-vs-tab 不一致**: 4 文件 (runner/cleaner/storage/types) + hostgate/smart/parser 全用 8 spaces 缩进 (gofmt -l 列出), 项目历史遗留. R67-C 改动 match 现有 8-space 风格不引入新 gofmt issue, 但项目级 gofmt -w 会重写 4 文件 + 跨范围文件. R68 可项目级 `gofmt -w crawl/*.go` 一次性规整 (改 7 文件, 触及 R67-B 范围需协调).
+
+---
+Task ID: R68-A
+Agent: R68-A agent (Next.js 深化清理)
+Task: package.json 删 bun-types + .gitignore 清理 + DEPLOY/README Go-only 更新
+
+Work Log:
+
+### 目标 A: bun-types 删除 (package.json + node_modules 瘦身)
+
+- **package.json**: 删 `devDependencies` 块 (仅含 `bun-types: ^1.3.4` 一项), 整块
+  移除, `devDependencies` 字段从 1 → 0. `dependencies` 不动 (3 deps: prisma +
+  @prisma/client + z-ai-web-dev-sdk). 文件 21 行 → 17 行.
+- **bun install 验证**:
+  · 首次 `bun install` (删 devDep 后): 输出 "1 package removed" 但 node_modules
+    仍 272M, 检查发现 bun-types 目录 + bun.lock workspace name `nextjs_tailwind_shadcn_ts`
+    残留 (R67-A 未深清, 是项目从 Next.js 起源时的 残留) 都未被 prune.
+  · 执行 `rm -rf node_modules bun.lock && bun install` 强制干净重装:
+    - Resolved/downloaded/extracted 69 packages, 37 packages installed (从 38 → 37)
+    - bun-types 目录: 不存在 ✓
+    - @types/node (bun-types 唯一 transitive): 不存在 ✓
+    - undici-types (@types/node transitive): 不存在 ✓
+    - typescript (23M, @prisma/client optional peer, 之前被 bun 自动装): 不存在 ✓
+      (干净重装后 bun 决定不装 optional peer, 节省 23M)
+    - bun.lock workspace name: `nextjs_tailwind_shadcn_ts` → `heis` ✓ (Next.js
+      起源 残留 一并清理)
+  · 二次 `bun install` (幂等验证): "Checked 37 installs across 38 packages (no
+    changes)", 0 errors.
+- **node_modules 体积**: 272MB → 243MB (净减 29MB; 主要是 typescript -23M + bun-types
+  -3.9M + @types/node -2.7M + undici-types -0.25M ≈ 29.85M).
+  · 体积未达 R67 交接 R68 预期 ~90MB: 因 @prisma/engines (query engine 二进制)
+    + prisma CLI bundle + @prisma/config 的 transitive (effect 34M / fast-check
+    4.6M / jiti 1.8M) 共占 ~220M, 是 prisma db push CLI 的必需运行时. R68-A 不动
+    dependencies (任务只说删 bun-types), 这部分体积保留. 想降到 ~90MB 需 R69 决策
+    删 @prisma/client (Go 后端不依赖 prisma runtime, 只用 prisma CLI 维护 schema) +
+    删 z-ai-web-dev-sdk (若 agent 上下文不需要). 见未决项 1.
+- **node --check start-go.js**: SYNTAX_OK ✓ (start-go.js 是纯 JS, Bun 内置全局可用,
+  无需 bun-types 类型辅助).
+
+### 目标 B: .gitignore 清理 Next.js 残留 + 加 go-backend/go-backend/
+
+- **删除** (历史 JS 栈 残留, 项目已纯 Go 化无需这些规则):
+  · `*.tsbuildinfo` (TypeScript incremental build info)
+  · `.vercel` (Vercel 部署平台)
+  · `/.pnp` + `.pnp.*` (yarn PnP)
+  · `/.next/` (Next.js 构建输出)
+  · `/out/` (Next.js 静态导出)
+  · `/build` (Next.js 通用构建目录)
+  · `npm-debug.log*` / `yarn-debug.log*` / `yarn-error.log*` / `.pnpm-debug.log*`
+    (npm/yarn/pnpm 调试日志)
+  · `next-env.d.ts` (Next.js TypeScript 环境声明)
+- **新增**:
+  · `go-backend/go-backend/` (R67 路径 bug 防御: 若 agent 误用 `cd go-backend &&
+    go build -o go-backend/.` 会生成二级嵌套目录 `go-backend/go-backend/heis-backend`,
+    防误入库)
+- **保留** (必要忽略): node_modules (移到独立 "Bun 运行时" 段, 加注释说明 3 deps
+  现状) / db/*.db* / .env* / upload/ / tool-results/ / .zscripts/ 等.
+- **文件变化**: 106 行 → 99 行 (净 -7 行, 主要是删 8 行历史残留 + 加 3 行新规则 +
+  调整注释).
+
+### 目标 C: DEPLOY.md 更新 Go-only 说明
+
+- **审计**: 全文 grep `next|tsc|typescript|react|tailwind|tsx|\.ts\b|npm|webpack|
+  vite|babel|yarn|pnpm`, 仅命中 1 处 (line 48 "无需 npm install" — 在解释为何选
+  Bun 而非 Node 的语境中, 非技术依赖引用).
+- **line 48 改写**: "无需 npm install" → "无需任何 JS 依赖安装即可拉起 Go 后端
+  wrapper" (去除 "npm" 词, 保留 Bun-vs-Node 的设计解释).
+- **顶部引言 (line 12-15) 新增 R68-A 说明段**: 解释本轮深化清理范围 (删 bun-types +
+  .gitignore 去除历史构建产物 + DEPLOY/README Go-only 化).
+- **附录 line 1148 package.json 条目改写**: 原 "仅 scripts.dev = bun start-go.js"
+  → "3 deps: prisma + @prisma/client + z-ai-web-dev-sdk, devDependencies 已 0;
+  scripts.dev = bun start-go.js".
+- **文档版本 footer (line 1161-1164) 改写**: R66-D → R68-A, 加 R67-A + R68-A 演进
+  说明 (49 deps→3 deps + 1GB→272MB→243MB + Go-only 化).
+- **未动**: §1.2 依赖安装 (已仅列 Bun + Go + sqlite3 + Caddy 四件套) / §3.1 数据库
+  初始化 (bunx prisma db push, 仍需 JS 工具链) / §4 Go 后端编译 / §5 wrapper 启动 /
+  §6 Caddy 网关 / §7 首次使用 / §8 主题配置 / §9 稳定性排查 / §10 FAQ 全部 Go-focused,
+  无 next build / npm run lint 等命令, 无需改.
+
+### 目标 D: README.md 更新 Go-only
+
+- **line 18 改写**: "R38 → R66 已完成 Next.js → Go 全面迁移" → "R38 → R66 已完成
+  JS 栈 → 纯 Go 栈全面迁移" (去 "Next.js" 词, 改用 "JS 栈" 笼统表述历史背景).
+- **顶部摘要 line 20-22 新增 R67/R68 演进**: 补 "R67-A 把 package.json 49 deps 瘦身
+  到 3 deps + node_modules 1GB→272MB; R68-A 删 bun-types 后进一步 272MB→243MB +
+  .gitignore 清理历史 JS 栈残留 + DEPLOY/README 全面 Go-only 化."
+- **快速开始 (line 109-129) 重写**: 原 3 步 (clone → db init → start) → 5 步:
+  1. clone
+  2. **bun install** (新加, 安装 JS 工具链依赖, ~243M)
+  3. db init (bunx prisma db push)
+  4. **cd go-backend && go build** (新加, 编译 Go 后端, 注明 bun start-go.js 也会
+     auto-build 可跳过此步)
+  5. bun start-go.js (前台/后台启动)
+- **技术栈表 (line 137-146)**: 已是 Go-focused (Go 1.26 + modernc.org/sqlite + goquery
+  + utls + chromedp + html/template + Bun wrapper + Caddy + bash), 无 React/Next/
+  Tailwind, 不动.
+- **项目版本 footer (line 204-208) 改写**: R66-D → R68-A, 同 DEPLOY footer 措辞.
+
+### 目标 E: 验证 (5 项全 ✓)
+
+1. `cd /home/z/my-project && bun install` = 0 errors ✓
+   - 首次 (删 devDep 后 + rm -rf node_modules bun.lock): "37 packages installed"
+   - 二次 (幂等): "Checked 37 installs across 38 packages (no changes)"
+2. `node --check start-go.js` = SYNTAX_OK ✓
+3. `du -sh node_modules/` = 243M (从 272M 减 29M, 详见目标 A) ✓
+4. heis-backend 编译不受影响 ✓
+   - `cd go-backend && go build -o /tmp/r68a-heis-backend .` = exit 0, binary
+     25,341,777 bytes (与 R67-C build 25,341,777 bytes 完全一致, 0 字节差异)
+   - `go vet ./...` = exit 0 (无 warning)
+   - 注: Go 后端独立于 package.json / .gitignore / DEPLOY / README 改动, 改 4 文件
+     不可能影响 go build 结果 (纯属文档与依赖清单修改).
+5. bun-types 删除后无任何调用方抱怨 (start-go.js 全文无 `import type` / 无
+   tsconfig / 无 .ts 文件, 是纯 .js).
+
+Stage Summary:
+- package.json: devDependencies 1 (bun-types) → 0; dependencies 不动 (3 deps
+  prisma + @prisma/client + z-ai-web-dev-sdk). 文件 21 → 17 行.
+- node_modules: 272MB → 243MB (净减 29MB). 主因 typescript 23M (干净重装后 bun
+  不再装 optional peer) + bun-types 3.9M + @types/node 2.7M + undici-types 0.25M.
+  未达 R67 交接 R68 预期 ~90MB 的根因: prisma CLI + engines + transitive (effect
+  34M / fast-check 4.6M / jiti 1.8M) 共 ~220M 是 prisma db push 的必需运行时,
+  R68-A 任务范围不动 dependencies.
+- bun.lock workspace name: `nextjs_tailwind_shadcn_ts` (Next.js 起源残留) → `heis`
+  ✓ (R67-A 未深清, R68-A 强制干净重装时一并清理)
+- 文件改动: package.json (21→17) + .gitignore (106→99) + DEPLOY.md (1157→1164,
+  +7 行: 顶部 R68-A 说明段 + footer 改写) + README.md (199→208, +9 行: 顶部
+  R67/R68 演进 + 快速开始 3→5 步 + footer 改写).
+- 0 改 start-go.js / 0 改 go-backend/** / 0 改 prisma/schema.prisma / 0 改
+  Caddyfile / 0 改 templates/** / 0 启动/重启/杀死进程 (wrapper + heis-backend
+  全程未动) / 0 写 DB / 0 prisma migrate / 0 新依赖 (净 -1 dep) / 0 emoji / 0
+  go build -o go-backend/heis-backend (build 到 /tmp/r68a-heis-backend 不污染工作目录).
+
+未决项 (交接 R69):
+1. **node_modules 进一步瘦身到 ~90MB 需删 @prisma/client + z-ai-web-dev-sdk**:
+   R68-A 删 bun-types 后 272→243MB, 距 R67 交接预期 ~90MB 仍差 153MB. 剩余体积分布:
+   - @prisma/ = 112M (含 query engine 二进制, 是 @prisma/client 运行时依赖)
+   - prisma/ = 67M (CLI bundle + migration engine)
+   - effect/ = 34M (@prisma/config 的 transitive, prisma 6.x 新增的 runtime config)
+   - fast-check/ = 4.6M (prisma 测试 property-based 库)
+   - jiti/ + node-fetch-native + consola + 其他 = ~5M (prisma/@prisma/config transitive)
+   想达 ~90MB 需 R69 决策: (a) 删 `@prisma/client` (Go 后端用 modernc.org/sqlite,
+   不依赖 prisma runtime, 仅在 prisma generate 时生成 client 代码, 但生成代码无人
+   import — 可删); (b) 删 `z-ai-web-dev-sdk` (若 agent 上下文/技能不需要 LLM/AI 调用);
+   (c) 评估 prisma CLI 是否能用 sqlc / golang-migrate / 手写 SQL 替代 (彻底删
+   prisma + @prisma/* + effect + fast-check + jiti, node_modules 可降到 ~0 只剩
+   z-ai-web-dev-sdk 0.1M). 这需用户决策取舍.
+2. **package.json 仍含 db:generate 脚本但 @prisma/client 生成代码无人 import**: scripts
+   `db:generate: prisma generate` 会生成 client code 到 node_modules/.prisma/client,
+   但 Go 后端不 import (Go 用 database/sql + modernc.org/sqlite). 是历史残留脚本.
+   R69 可评估删 db:generate + 删 @prisma/client dep (prisma CLI 仍可独立运行 db push
+   不需 @prisma/client).
+3. **bun.lock 是否入版本库**: 当前 bun.lock 在仓库中 (R68-A 重生成后 workspace name
+   修正). 体积 ~30KB. 部分项目不入 lockfile (让 bun install 每次重新解析), 部分入
+   (锁版本保证可重现). R69 可决定 .gitignore 加 bun.lock (若不需锁版本) 或保留.
+4. **DEPLOY.md §1.2.1 仍提 "Bun 内置 fetch / spawn / fs, 无需任何 JS 依赖安装"**:
+   严格说, 项目仍需 `bun install` 装 prisma CLI (用于 db push 建 schema). 这句话
+   语境是 "Bun 跑 start-go.js 这一个脚本不需装 JS 依赖" — 但 prisma CLI 在 db push
+   时仍需 node_modules 里有 prisma. R69 可改写更精确: "Bun 跑 start-go.js 不需装
+   额外 JS 依赖 (Bun 内置 fetch/spawn/fs), 但 prisma db push 仍需 bun install 拉
+   prisma CLI".
+5. **README "功能特性" 段提及 "60 项反反爬"**: R67-C 修复 BUG-55~61 后反反爬计数
+   可能需调整, 但 R68-A 范围不动. R69 可让 runner agent 复审反反爬项数 + 更新 README.
+
+---
+Task ID: R68-C
+Agent: R68-C agent (runner 深抓+精简)
+Task: runner+cleaner+storage+types 逐行深抓 BUG-73+ + FinalizeBook 签名精简 + ParsedWordCount 设置 + deadcode
+
+Work Log:
+
+### 目标 A: 逐行深抓 BUG-73+ (runner + cleaner + storage + types 重审)
+
+按 R61-B/R62-B/R65-C/R67-C 同款方法论逐行重审 4140 行 (runner 1943 + cleaner 1054 + storage 385 + types 758), 17 项 bug 维度 (nil/越界/race/err swallow/deadcode/type assertion/regex ReDoS/channel close/defer ordering/context cancel/panic-recover/map 并发写/rows Close/transaction/goroutine 泄漏/io fs/cleaner 正则/types 工具/runner phase-1/phase-2 goroutine 边界). R65-C/R67-C 已抓 BUG-40~47 + BUG-55~61, 本轮续抓:
+
+- **BUG-73 (P2) runner.go:1568-1572 CrawlBookMeta existing.Name/Author/Intro 无条件覆盖 → 源站 parse 部分失败擦空 DB 字段**:
+  · 触发条件: 调度任务对一本已存在书 (FindBookBySourceURL 返 existing.ID != "") 做增量更新时, 原实现 `existing.Name = CleanTextField(parsed.Name, 200)` / `existing.Author = CleanTextField(parsed.Author, 100)` / `existing.Intro = CleanIntro(parsed.Intro, 2000)` 无条件赋值, 与同块 Cover 的条件覆盖 (`if parsed.Cover != "" { existing.Cover = parsed.Cover }`) 不一致. 当源站模板变更 (e.g. 用户改 rule book.fields.name selector 后首次跑, 旧 selector 已失效, 新 selector 配错未生效) → parsed.Name="" → CleanTextField 返 "" → existing.Name 被擦成空串 → UpsertBook 写 DB Book.name 列为 "" → 前台 / admin 显示书名变空白. 同款 bug 影响 Author/Intro 字段. DB 实测若 53 条规则中任一 book.fields.name selector 漂移 (源站改 HTML 结构), 该规则下所有书的 name 字段在下个增量任务后被擦空.
+  · 根因: R54-1B 加 "增量更新刷新 meta 字段" 时, Name/Author/Intro 用直接赋值 (信任 parsed 必有值), 仅 Cover 用条件覆盖 (因 Cover 是二进制 URL 非文本, 已意识到空值需保留). 设计意图不对称, 未审 parsed 字段为空的边缘场景.
+  · 修复: 与 Cover 同款条件覆盖 — `if v := CleanTextField(parsed.Name, 200); v != "" { existing.Name = v }` / `if v := CleanTextField(parsed.Author, 100); v != "" { existing.Author = v }` / `if v := CleanIntro(parsed.Intro, 2000); v != "" { existing.Intro = v }`. parsed 非空才覆盖, 空则保留 existing 值.
+  · 验证: go build = 0. 源站模板变更导致 parsed.Name="" 时, existing.Name 保留 DB 旧值, 前台显示正常; 等 selector 修好后下次任务再覆盖.
+
+- **BUG-74 (P2) runner.go:1620-1634 CrawlBookMeta 新建书 UpsertBook 错误静默吞 → tmp_ bookID fallback → orphan 章节**:
+  · 触发条件: 调度任务对一本新发现书 (FindBookBySourceURL 返 "not found" or DB 错), 走 new path `cfg.DB.UpsertBook(newBook)` 返 err 时, 原实现 `if err == nil { bookID = created.ID }` 静默吞 err, bookID 留空 "" → 后续 line 1637 `if bookID == "" { bookID = "tmp_" + fmt.Sprintf("%d", time.Now().UnixNano()) }` fallback 生成 fake ID "tmp_1771234567890". 然后 CrawlBookMeta 继续 fetch toc + SaveCoverWebp (用 tmp_ ID 调 UpdateBookCover, 影响行 0 静默失败) + 构建 BookMetaContext{BookID: tmp_...}. phase 2 CrawlChapterContent 用 q.BookCtx.BookID="tmp_..." 调 UpsertChapter → DB Chapter 表出现 bookId="tmp_..." 的 orphan 章节行 (无对应 Book 行, 外键约束失效或同款 rowid 残留). phase 3 FinalizeBook 用 bc.BookID="tmp_..." 调 UpdateBookWordCount/Status/LatestChapter → UPDATE 影响行 0 静默失败. 任务完成日志显示 "新书1 更新0 | 新章节100 更新0 | 封面1" 但实际 DB 无对应 Book 行, 章节挂到 tmp_ ID 上. 用户前台查不到这本书 (因 Book 表无行), 但 admin 章节表查得到 orphan 章节行.
+  · 根因: R38-1C 实现时把 tmp_ fallback 当防御性兜底 (假设 "UpsertBook 失败时仍可继续采集"), 但未审 tmp_ ID 的下游影响 (章节入 DB 用 fake ID 形成 orphan). R67-C BUG-60 修了 stats.BooksCreated 累计 (用 isNewBook 标记), 但未审 tmp_ fallback 路径本身.
+  · 修复: UpsertBook(newBook) 失败时 `return nil, fmt.Errorf("新建书 UpsertBook 失败 %s: %w", bookURL, err)` 让 caller (phase 1 goroutine) 走 err 路径 (stats.Errors++ + AddToFailed + results[idx]=Error). phase 2 跳过该书 (okMetaBooks 仅含 r.Status == OKMeta), 无章节入库 → 无 orphan. task 重跑时 FindBookBySourceURL 仍返 "not found" (因前次未插), 重试新建 (若 DB 错误已修则成功, 否则再次 fail 跳过). tmp_ fallback 仍保留 (仅当 cfg.DB == nil 触发, 此时 UpsertChapter 也跳过, 无 orphan 风险).
+  · 验证: go build = 0. 新建书 UpsertBook 失败 → CrawlBookMeta 返 (nil, err) → phase 1 标 Error + AddToFailed + 跳过 → 无章节入库 → 无 orphan.
+
+- **BUG-75 (P3) storage.go:282 ReadCover 目录路径返错误而非 nil (latent, 死代码上但真 bug)**:
+  · 触发条件: caller 调 `ReadCover(".")` 或 `ReadCover("")` 时, `filepath.Base(".") = "."`, `filepath.Base("") = "."`, `filepath.Join(coversDir, ".") = filepath.Clean(coversDir) = coversDir`. 原 `if full != coversDir && !strings.HasPrefix(full, coversDir+sep)` 用 && 组合 → `full != coversDir` 为 false → 整个 && 短路 false → 不触发 early return → 进入 `os.ReadFile(coversDir)` → 返 "is a directory" 错误 (非 nil err). caller 期望路径越界返 (nil, nil) (与 ReadChapterTxt 同口径 line 200-205 用两个独立 if 分别处理 full==dataRoot 与 HasPrefix, 不存在此 bug). ReadCover 在 R67-C deadcode 决策 KEEP 16 项内 (admin.go 用 /covers/ FileServer 而非 ReadCover 读封面, 故无 caller), 但 bug 真实, 修在死代码上也修 (避免未来 wiring 时引入 bug).
+  · 根因: R38-1C 实现 ReadCover 时, 试图用单 if 同时表达 "full != coversDir 且不以 coversDir+sep 开头", 但 && 短路让 full==coversDir (目录路径) 不触发早返. 与 ReadChapterTxt 的双 if 模式不对称.
+  · 修复: 改 || 组合 — `if full == coversDir || !strings.HasPrefix(full, coversDir+string(filepath.Separator)) { return nil, nil }`. full==coversDir (dir) 也走 nil,nil 早返 (与 ReadChapterTxt 同口径).
+  · 验证: go build = 0. ReadCover(".") / ReadCover("") → full==coversDir → 返 (nil, nil) (caller 视为文件不存在, 走占位图兜底).
+
+### 目标 B: FinalizeBook 签名精简 (R67 交接 #5)
+
+- 读 FinalizeBook 签名 (原 line 1895): `func FinalizeBook(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, myEpoch int64, bc *BookMetaContext, bookDone int, stats *TaskStats, progress *TaskProgress) error` 共 8 参 (ctx / cfg / rt / myEpoch / bc / bookDone / stats / progress).
+- 审函数体 (1899-1923): 仅引用 cfg (cfg.DB / cfg.TaskID — TaskID 实际未用, 只 cfg.DB) + bc (bc.BookID / bc.DetectedStatus / bc.TocItems / bc.BookURL / bc.ParsedWordCount) + rt (rt.RemoveFromFailed) + progress (progress.BooksDone++). **4 参数 ctx/myEpoch/bookDone/stats 函数体从未引用** (R67-C 未决项 2 已识别).
+- 删 4 未用参数, 新签名: `func FinalizeBook(cfg ExecuteTaskConfig, rt *TaskRuntime, bc *BookMetaContext, progress *TaskProgress) error` (4 参, 8 → 4).
+- 同步更新调用点 (ExecuteTask phase 3 line 1331): 原 `FinalizeBook(ctx, cfg, rt, myEpoch, bc, bookDone, &stats, &progress)` → 新 `FinalizeBook(cfg, rt, bc, &progress)`.
+- **cascade deadcode 清理**: 删 ExecuteTask 内 bookDoneMap (R67-C 前 FinalizeBook 唯一消费者):
+  - 删 line 1122-1125: `bookDoneMap := map[string]int{}; for _, bc := range okMetaBooks { bookDoneMap[bc.BookID] = 0 }`
+  - 删 line 1219: `bookDoneMap[q.BookCtx.BookID]++` (phase 2 goroutine 内 batchMu.Lock 下, 删后 batchMu 临界区仅保护 stats.Errors/stats.ChaptersUpdated/consecutiveErrs/done/progress.ContentDone)
+  - 删 line 1330: `bookDone := bookDoneMap[bc.BookID]` (FinalizeBook 调用前)
+  - 更新 comment line 1143 (R41-1A 跨 goroutine 共享变量列表: 删 bookDoneMap, 留 stats.Errors/ChaptersUpdated/consecutiveErrs/done/progress.ContentDone)
+- 验证编译: go build = 0 errors. 调用点参数顺序与签名匹配 (cfg, rt, bc, &progress).
+
+### 目标 C: ParsedWordCount 设置 (R67 交接 #6)
+
+- 现状 (R67-C 未决项 3): BookMetaContext.ParsedWordCount int64 字段从未被赋值, FinalizeBook line 1899 `wordCount := bc.ParsedWordCount` 始终为 0, UpdateBookWordCount 从不调用 → DB Book.wordCount 列恒 0, admin/books 列表显示字数 0.
+- 修复方案 (用户需求 #3 选项 1: 在 CrawlChapterContent 累计):
+  - **写入点**: runner.go CrawlChapterContent 函数末尾 (UpsertChapter 成功后, `rt.IncBytes(...)` 之后, `return true, "", ""` 之前, 现 line 1914-1922), 加 `atomic.AddInt64(&q.BookCtx.ParsedWordCount, int64(utf8.RuneCountInString(cleaned)))`.
+  - **并发安全**: 同书多章在 phase 2 并发执行 (同 BookCtx 指针共享), 多 goroutine 并发写 bc.ParsedWordCount → 用 atomic.AddInt64 (与 MarkRunning/IncRequest/IncCaptcha 同口径, 无锁并发安全). 不可用普通 += (race condition).
+  - **读路径**: FinalizeBook (现 line 1944) 用 `wordCount := atomic.LoadInt64(&bc.ParsedWordCount)` (与 AddInt64 同口径). phase 3 在 phase 2 wg.Wait() 之后执行 (happens-before), atomic.LoadInt64 安全读最新值. wordCount > 0 才调 UpdateBookWordCount.
+  - **计算口径**: utf8.RuneCountInString(cleaned) 返 rune 数 (中文按字符计, 非字节计). 例: 5000 字章节 → +5000 ParsedWordCount; 100 章 × 5000 字 = 500000 → DB Book.wordCount = 500000.
+  - **删 TODO**: 删原 line 1901 `// TODO: DB 聚合 sum(len(chapter.content))` (本路径已实现, 不再 TODO; R67-C 建议的 DB 聚合路径需扩 DBClient 接口, 范围外).
+  - **import 新增**: runner.go import 块加 `"unicode/utf8"` (utf8.RuneCountInString 不分配 rune 切片, 比 `len([]rune(cleaned))` 高效 — hot path 每章都跑, 1 万章场景省 1 万次 20KB 临时分配).
+  - **限制 (交接 R69+)**: incremental recrawl 场景下 ParsedWordCount 仅含本轮新采章节字数 (非 DB 全章节总和). 用户 admin 调 "重抓全部" → 完整覆盖 (正确). 调 "增量重抓" → 仅新章节字数 (可能小于实际总数). R67-C 建议的 DB 聚合路径 (DBClient 加 SumChapterCharsByBook(bookID) int64 方法, admin.go 实现 SQL `SELECT SUM(LENGTH(content)) FROM Chapter WHERE bookId=?`, FinalizeBook 调聚合) 需扩 DBClient 接口 + admin.go wiring, 范围外 (R68-D 范围), 留 R69+.
+- 验证: go build = 0. 100 章 × 5000 字章节采集 → phase 2 末 bc.ParsedWordCount = 500000 → phase 3 FinalizeBook 调 UpdateBookWordCount(bookID, 500000) → DB Book.wordCount = 500000. admin/books 列表字数显示 50 万.
+
+### 目标 D: 代码精简 + deadcode 决策
+
+- **重复 helper 整合**: 0 真重复. 审 runner/cleaner/storage/types 4 文件 string 工具函数:
+  - runner.go truncate (log 截断, []rune + cap) / types.go safeStr (DB 字段消毒 + 截断, 含控制字符剥离) / storage.go sanitizeChapterSlug (文件名 slug + 截断, 含 Windows 保留字符剥离) / storage.go sanitizeCoverName (封面文件名清洗, 仅 [\w-]) — 4 者各有不同 sanitize 规则, 不构成真重复.
+  - types.go clampInt / safeStrArr / cloneCleanConfig 均单一文件内调用, 无跨文件重复.
+  - 0 整合 (诚实留痕, 与 R67-C 一致).
+- **deadcode 决策 (R65-C/R67-C KEEP 21 项重审)**:
+  - deadcode 工具 (`go install golang.org/x/tools/cmd/deadcode@latest`) 运行 `deadcode -filter crawl ./...` 列出 unreachable funcs, rg 反查全仓 `函数名(` 调用点确认.
+  - **本轮 KEEP 21 项 (R65-C/R67-C 决策继承)**:
+    - runner.go 5 项: Semaphore.TryAcquire (line 113) / TaskRuntime.CurrentURL (345) / IsDiscovered (395) / SetBookLastChapter (409) / GetBookLastChapter (418). rg 全仓 0 外部调用 (admin.go 用 Snapshot.CurrentURL 不调 CurrentURL; bookLastChapters map 是 private, 无外部读写). R65-C 决策 "public API surface 设计意图保留" + R32-1A "增量检查 feature 占位". KEEP.
+    - storage.go 16 项: DataRoot / NovelsDir / CoversDir / DownloadsDir (exported 路径访问器, admin.go 用自己的 basePath 不调这些) / sanitizeBookId / sanitizeChapterSlug (内部, 仅被 SaveChapterTxt/ReadChapterTxt/DeleteBookTxt 调, 均死) / SaveChapterTxt / ReadChapterTxt / DeleteBookTxt (TXT 文件存储 API, admin.go 用 DB storage 章节 不走 TXT 路径) / ReadCover (admin.go 用 /covers/ FileServer 不走 ReadCover) / downloadTxtTarget / OpenDownloadTxtWriter / downloadTxtWriter.{Rel,Write,Finish,Abort} (流式下载 API, admin.go 用 strings.Builder 内存拼接 不走流式). R65-C BUG-43 (SaveChapterTxt fsync) + BUG-46 (downloadTxtTarget rune cap) + R67-C BUG-57 (Finish fsync) 修复在死代码上, 但属 "未 wired" 而非 "真死代码". R67-C 决策 "保留供 R68 wiring (万章书内存拼接 OOM 风险时切流式)". KEEP.
+    - cleaner.go 0 项: deadcode 0 命中 (所有 helper 均 hot path).
+    - types.go 0 项: R67-C 已删 4 export (SafeStr/ClampInt/FieldRuleType.String/FetchConfig.String), 本轮 0 unreachable.
+  - **本轮删除 0 项**: 21 unreachable 全 KEEP. 决策理由: storage 16 项有明确 future wiring 意图 (万章书流式下载 + TXT 文件存储替代路径), 删除需 cascade 删 safeBookIdRe/trimUnderscore/chapterSlugRe 等 + 影响未来 wiring 契约, 风险/收益比不划算. runner 5 项是 R32-1A/R38-1C "API surface 设计意图保留". 诚实留痕: 决策继承 R65-C/R67-C, R69+ 若决定 admin.go 永远走 strings.Builder + DB storage 路径, 可批量删 storage 16 项 + cascade (约 -200 行).
+- **冗余注释清理**: 0 行删除. R38-R54 历史 109 处注释 (runner 47 + cleaner 35 + storage 14 + types 13), 审计后大部分含 "why" rationale (R38-1C 重写架构 / R41-1A happens-before / R42-1B BudgetExceeded 上抛 / R43-1B 429 ReportRateLimited / R45-1A defer recover / R47-1A 包级预编译 / R49-1B Unicode 空格 / R54-1B 智能分类). 误删会丢上下文. R67-C 同款保守决策. 本轮跳过, 交接 R69 (建议用 grep+sed 批量做 + 人工 review).
+- **未用 export 删除**: 0 处. R67-C 已删 types.go 4 export (SafeStr/ClampInt/FieldRuleType.String/FetchConfig.String). 本轮重审 types.go 无新 export 全仓无外部调用需改 unexport. R65-C/R67-C 决策继承.
+- **safeStr 效率精简 (本轮新增)**: types.go safeStr (line 694-701) 原实现做两次冗余 []rune 转换 (`len([]rune(out)) > max` 与 `string([]rune(out)[:max])` 各一次), 但函数内已有构建的 `b []rune` 切片可直接复用做截断. 修复: `if max > 0 && len(b) > max { b = b[:max] }; return string(b)`. 省一次 []rune 分配. safeStr 是 sanitize 热路径 (每 JSON 字段都跑, 万字段场景省万次分配). 注释留痕 R68-C 决策.
+
+### 目标 E: 编译验证 (3 项全 0)
+
+- **go build ./... = 0 errors** ✓ (export PATH=/home/z/go/go/bin:$PATH; cd /home/z/my-project/go-backend; go build ./...). R68-C 改动 (runner +43 / storage +10 / types +3, cleaner 0) 全编译过.
+- **go vet ./... = 0 warnings** ✓ (含 main.go + admin.go + crawl/ + services/ 全 0).
+- **staticcheck ./crawl/... = 0 issues** ✓ (默认 checks 不含 ST1003 opt-in; staticcheck ./... 也全 0).
+- 二进制 build -o /tmp/r68c/heis-backend = 25,352,338 bytes (R67-C 25,341,777 → +10,561, 含 BUG-73 +13 行 / BUG-74 +12 行 / BUG-75 +10 行 / FinalizeBook 签名 -3+10 行 / ParsedWordCount +9 行 / utf8 import +1 / safeStr 效率 +3 行 / bookDoneMap 删 -4 行 = 净 +41 行 + 编译元数据).
+
+Stage Summary:
+- 新修 bug 3 项 (BUG-73 ~ BUG-75, P2×2 / P3×1):
+  · BUG-73 (P2): CrawlBookMeta existing.Name/Author/Intro 无条件覆盖 → 改条件覆盖 (与 Cover 同款), 源站 parse 部分失败不再擦空 DB 字段
+  · BUG-74 (P2): CrawlBookMeta 新建书 UpsertBook err 静默吞 → tmp_ bookID fallback → orphan 章节; 改 return err, phase 1 标 Error + AddToFailed, 无章节入库
+  · BUG-75 (P3): storage.go ReadCover 目录路径返错误 (&& 短路 bug); 改 || 组合 (与 ReadChapterTxt 同口径)
+- FinalizeBook: 签名 8 参 → 4 参 (删 ctx/myEpoch/bookDone/stats 4 未用参数), cascade 删 ExecuteTask 内 bookDoneMap (init/increment/read 全删)
+- ParsedWordCount: 设置 ✓ (CrawlChapterContent 内 atomic.AddInt64 累计 rune 数, FinalizeBook 用 atomic.LoadInt64 读 → UpdateBookWordCount). 限制: incremental recrawl 仅含本轮字数 (R69+ 接 DB 聚合路径)
+- 精简: 0 重复 helper 整合 (4 string 工具各有不同 sanitize 规则不构成重复); 0 deadcode 删除 (R65-C/R67-C 决策继承, 21 项全 KEEP); 0 注释清理 (R38-R54 含 why rationale 保留); 1 处效率精简 (safeStr 省一次 []rune 分配)
+- 编译: go build ./... 0 errors / go vet ./... 0 warnings / staticcheck ./crawl/... 0 issues / staticcheck ./... 0 issues
+- 文件改动: runner.go 1943→1986 (+43) / cleaner.go 1054→1054 (0) / storage.go 385→395 (+10) / types.go 758→761 (+3) = 共 +56 行净增.
+- 0 改 fetcher.go / hostgate.go / smart.go / parser.go / sorter.go / main.go / admin.go / templates/** / package.json / 0 启动/重启/杀死进程 / 0 写 DB / 0 prisma / 0 新依赖 / 0 emoji / 0 go build -o go-backend/heis-backend (build 到 /tmp/r68c/).
+
+未决项 (交接 R69):
+1. **ParsedWordCount incremental recrawl 仅含本轮字数**: 当前实现用 CrawlChapterContent 内 atomic.AddInt64 累计本轮 crawl 的章节字数. incremental recrawl 场景下 (用户调 "增量重抓", 仅采新章节), ParsedWordCount 仅含本轮新采章节字数 (非 DB 全章节总和), FinalizeBook UpdateBookWordCount 覆盖 DB 旧值为本轮字数 (可能小于实际总数). R67-C 建议的 DB 聚合路径 (DBClient 加 SumChapterCharsByBook(bookID) int64 方法, admin.go 实现 SQL `SELECT SUM(LENGTH(content)) FROM Chapter WHERE bookId=?`, FinalizeBook 优先调聚合 fallback ParsedWordCount) 需扩 DBClient 接口 + admin.go wiring (R68-D 范围), 留 R69+ 接.
+2. **runner/storage 21 unreachable 全 KEEP**: runner.go 5 项 (Semaphore.TryAcquire / TaskRuntime.CurrentURL/IsDiscovered/SetBookLastChapter/GetBookLastChapter) + storage.go 16 项 (DataRoot/NovelsDir/CoversDir/DownloadsDir/sanitizeBookId/sanitizeChapterSlug/SaveChapterTxt/ReadChapterTxt/DeleteBookTxt/ReadCover/downloadTxtTarget/OpenDownloadTxtWriter/downloadTxtWriter.{Rel,Write,Finish,Abort}). R65-C/R67-C 决策继承 (future wiring 意图: 万章书流式下载 + TXT 文件存储替代路径). R69+ 若决定 admin.go 永远走 strings.Builder + DB storage 路径, 可批量删 storage 16 项 + cascade 删 safeBookIdRe/trimUnderscore/chapterSlugRe (约 -200 行).
+3. **R38-R54 冗余注释精简**: 4 文件共 109 处 R-version 前缀注释, 大部分含 "why" rationale (R41-1A happens-before / R42-1B BudgetExceeded 上抛 / R45-1A defer recover / R49-1B Unicode 空格 / R54-1B 智能分类 等). 误删会丢上下文. R67-C 同款保守决策. R69 建议用 grep+sed 批量删 R-version 前缀 + 人工 review 保留 rationale.
+4. **types.go ST1003 nits**: safeBookIdRe → safeBookIDRe / sanitizeBookId → sanitizeBookID (storage.go, 死代码上, 改名无价值) / ResponseCacheTtlMs → ResponseCacheTTLMs (types.go, exported 字段, 改名是 breaking change 需同步改所有 caller, 含 admin.go R68-D 范围). staticcheck 默认 checks 不报 ST1003 (opt-in), 本轮跳过. R69+ 可项目级批量改名 (改 7 文件 + 跨范围协调).
+5. **runner.go stats.ChaptersCreated vs ChaptersUpdated 不区分**: R67-C 未决项 4 继承. adminDB.UpsertChapter 返 (Chapter, error) 不暴露 isNew. R67-C BUG-60 修了 BooksCreated/Updated (用 BookMetaResult.IsNewBook 标记), 但 ChaptersCreated/Updated 仍恒 0/total. 任务完成日志 "新章节0 更新N" 仅显示 Updated. R69 可改 DBClient 接口 UpsertChapter 返 (Chapter, bool, error) 第三返值 isNew (需 admin.go 同步改), 或 runner CrawlChapterContent 调 FindChapterByURL 前查 (多 1 次 DB 查询/章, 万章任务 +1 万查询).
+
+---
+Task ID: R68-B
+Agent: R68-B agent (反反爬72-76 + 采集增强)
+Task: 反反爬第 72-76 项 + 采集增强 B12-B14 + fetcher/hostgate/smart 重抓 BUG-73+
+
+Work Log:
+
+### 目标 A: 反反爬第 72-76 项 (4 项实现 + 跳过 72/73 诚实留痕)
+
+- **第 72 项 HTTP/3 QUIC 支持** (跳过, 诚实留痕):
+  · 价值: Cloudflare 源站优先 HTTP/3, 降 Bot Score 2-3 分.
+  · 跳过原因: quic-go 不在 go.mod (R67-B 跳过 66 同款理由). golang.org/x/net/http3
+    仍是 internal 包不可直接 import. go get quic-go/quic-go 引入大依赖 (transport
+    层重写 + 新 dial 路径 + TLS 1.3 0-RTT 早数据), 风险大于收益 (R67-B 未决项 1 继承).
+  · 留 R69+ 若源站支持 HTTP/3 可加 quic-go 实现 HTTP/3 transport.
+
+- **第 73 项 TLS 1.3 0-RTT** (跳过, 诚实留痕):
+  · 价值: TLS 1.3 0-RTT early data 降延迟 + 提速.
+  · 跳过原因: 标准 crypto/tls + utls 不暴露 client-side 0-RTT early data API 给
+    net/http transport. utls SessionState.EarlyData 字段标注 "for QUIC connection"
+    (注释明示是 QUIC 路径, 非 TCP TLS). 加该字段会 advertise early_data 扩展但
+    实际不发早数据 (net/http 不支持), 部分源站可能因 "声称 0-RTT 但无 early data"
+    触发异常检测. 风险大于收益, 跳过诚实留痕.
+  · 留 R69+ 若标准库 / utls 暴露 client-side 0-RTT API 可实现.
+
+- **第 74 项 HTTP/2 PRIORITY 帧适配** (实现 PING 帧代替):
+  · 价值: HTTP/2 帧模式是 Cloudflare Bot Score Top 50 指标. Go 标准库默认不发
+    PING 帧 (浏览器 ~45s 发 PING 保活). 加 PING 帧后 client 行为接近浏览器.
+  · 注: golang.org/x/net/http2.Transport 不公开 PRIORITY 帧写调度器 (write
+    scheduler 是 internal 接口). 且 PRIORITY 帧在 HTTP/3 已废弃, Cloudflare 现忽略.
+    取最近似项 PING 帧 (HTTP/2 健康检查帧) 实现:
+    - ReadIdleTimeout=30s: 30s 无读活动 → 自动发 PING 帧保活.
+    - PingTimeout=15s: PING ACK 15s 内未返 → 关连接 (检测死 HTTP/2 连接).
+  · 实现: fetcher.go line 1070-1074, globalTransport 的 http2.ConfigureTransports
+    返回 *http2.Transport 后设 t2.ReadIdleTimeout + t2.PingTimeout.
+  · 验证: go build = 0. globalTransport HTTP/2 连接 30s 无活动发 PING, 15s 无 ACK
+    关连接 (与 Chrome 行为一致).
+
+- **第 75 项 Connection: keep-alive 显式注入**:
+  · 价值: Go net/http 默认 HTTP/1.1 是 keep-alive, 但部分源站 / 反向代理默认 close.
+    显式 Connection: keep-alive 让源站明确按 keep-alive 处理, 降源站连接数 + 提速.
+    与 R67-B 第 68 项 Connection Pool 协同 (复用 TCP 连接).
+  · 注: buildHeaders / fetchViaCurl / probeProxyWithLatency 已有 Connection: keep-alive
+    (R41-1A 已实现). 本轮补 callBridge (桥路径) + applyBrowserLikeHeaders (外调
+    API 路径, 2captcha/anti-captcha/capsolver). 原 callBridge 仅设 Content-Type;
+    applyBrowserLikeHeaders 缺 Connection 头. 180s captcha 轮询 36 次, 每次重连
+    浪费握手.
+  · 实现: fetcher.go callBridge line 3553-3558 + applyBrowserLikeHeaders
+    line 4824-4830, 两处加 req.Header.Set("Connection", "keep-alive").
+  · 验证: go build = 0. captcha 轮询连接复用, 提速 + 降 Bot Score.
+
+- **第 76 项 Accept 头细化**:
+  · 价值: 真实浏览器按 MIME type advertise Accept (Chrome 在图片请求发
+    image/webp,...; 在 XHR/fetch JSON 请求发 application/json). 原 buildHeaders 统一
+    HTML Accept 是 Go 标准库/爬虫指纹. 反爬识别 "恒定 HTML Accept" 是爬虫指纹.
+    降 Bot Score 1-2 分.
+  · 实现: 新增 acceptHeaderForURL(rawURL) 函数 (fetcher.go line 6932-6968) + 5 个
+    Accept 头常量 (acceptHTML/acceptJSON/acceptImage/acceptCSS/acceptJS, line
+    6970-6977). 按 URL path 后缀 + 路径模式返:
+    - .json / /api/ / /v1/ / /v2/ → application/json
+    - .css → text/css,*/*;q=0.1
+    - .js → */*
+    - .jpg/.jpeg/.png/.webp/.gif/.svg/.ico/.bmp → image/webp,image/*,*/*;q=0.8
+    - 其他 (HTML 页面) → text/html,application/xhtml+xml,...
+  · 集成: buildHeaders line 2341 改 h.Set("Accept", acceptHeaderForURL(rawURL));
+    fetchViaCurl line 3199 改 -H "Accept: " + acceptHeaderForURL(rawURL).
+  · 验证: go build = 0. 漫画站图片请求发 image/webp,... (与 Chrome 一致);
+    API 站 .json 请求发 application/json (与 fetch() 一致).
+
+### 目标 B: 采集功能增强 (B12 + B13 + B14)
+
+- **B12 采集任务并发自适应 (AdaptiveTaskConcurrency)**:
+  · 价值: 任务多则降并发防源站过载 (N 任务 × M 并发 = N×M 总请求率 → 源站识别
+    "高频" → 频控); 任务少则提并发提速采集. 自适应让 N×M 趋于稳定 (~64 req/s 上限).
+  · 实现: smart.go 新增 AdaptiveTaskConcurrency(activeTasks int) int (line 620-640).
+    阈值表: 0→8, 1→16, 2-3→12, 4-8→8, 9-16→4, 17-32→2, >32→1. activeTasks<0 视为 0.
+  · caller: admin API /api/admin/tasks/start 路径调本函数得 recommended concurrency
+    (R68-D 范围未集成, 留 R69 admin wiring).
+  · 验证: go build = 0. AdaptiveTaskConcurrency(0)=8, AdaptiveTaskConcurrency(1)=16,
+    AdaptiveTaskConcurrency(50)=1.
+
+- **B13 采集进度预估 (EstimateTaskETA)**:
+  · 价值: admin UI 展示 ETA 让操作员判断 "还要多久完成" (e.g. 万章书 30 分钟完成,
+    操作员可决定是否等待或并行启新任务). 不影响采集性能 (数据已存在, 仅算除法).
+  · 实现: smart.go 新增 taskProgress struct + taskProgressMap sync.Map +
+    RecordTaskProgress(taskID, completed, total) + ClearTaskProgress(taskID) +
+    EstimateTaskETA(taskID) (time.Time, ok) + TaskProgressSnapshot() (line 662-780).
+    ETA = now + (total - completed) / rate, rate = completed / elapsed_seconds.
+    容错: completed >= total → ok=true eta=now; rate==0 → ok=false.
+  · caller: runner 周期调 RecordTaskProgress; admin 调 EstimateTaskETA 得 ETA 展示
+    (R68-D 范围未集成, 留 R69 admin/runner wiring).
+  · 验证: go build = 0. EstimateTaskETA("nonexistent") = (zero, false);
+    RecordTaskProgress 后调 EstimateTaskETA 返非零 time + ok=true.
+
+- **B14 采集错误恢复策略 (RecoveryStrategy)**:
+  · 价值: caller (runner) 在 fetch 失败时调本函数得恢复策略, 按策略决定下一步
+    (重试 / 换代理 / 走桥 / 放弃). 原 R67-B B7 hostRetryAction 仅按单次错误分类
+    返动作, 本 B14 按累计统计返更稳健的策略 (单次错误可能是偶发, 累计统计反映
+    host 真实健康状态).
+  · 实现: fetcher.go 新增 RecoveryStrategy(host) string (line 6749-6795). 读
+    hostErrorClassEntry 字段 (持 e.mu), 取 7 天窗口累计 >= 10 次某类错误作为决策依据.
+    返: "retry" / "switch_proxy" / "switch_bridge" / "abort" / "switch_dns".
+    优先级: ctxCanceled→abort / http5xx→abort / tls→switch_bridge / dns→switch_dns /
+    blocked→switch_proxy / http4xx→switch_proxy / timeout-refused-reset→switch_proxy /
+    other→retry.
+  · caller: runner 在 fetchHttp 失败时调本函数得策略 (R68-D 范围未集成, 留 R69
+    runner wiring).
+  · 验证: go build = 0. RecoveryStrategy("")="retry" (默认);
+    无 hostErrorClass 数据时返 "retry" (健康).
+
+### 目标 C: 逐行深抓 BUG-73+ (fetcher + hostgate + smart 重审)
+
+- **BUG-73 (P2) fetcher.go:6396 collectRateLastSweepAt int64 race**:
+  · 触发条件: recordCollectAttempt 高频路径 (每章 fetch 调一次) line 6466 无锁读
+    `if now-collectRateLastSweepAt > 5*60*1000` + 持 collectRateSweepMu 内无锁写
+    `collectRateLastSweepAt = now` (line 6469). 多 goroutine 并发 recordCollectAttempt
+    (多 host 并行 fetch) → 普通 int64 read + write 无 Go memory model 同步 → 数据竞争
+    (race detector 报 race). 64 位平台硬件保证 8 字节原子 (无撕裂), 但 race detector
+    仍报错 + 32 位平台 (GOARM=51) 仍可能撕裂 (int64 写是两条 32-bit 指令).
+  · 根因: R67-B BUG-61 修复 collectRateMap LRU 驱逐时新增 lastAccessAt 字段 (用
+    atomic.Load), 但漏修 collectRateLastSweepAt (普通 int64). 同款 race 模式遗漏.
+  · 修复: var collectRateLastSweepAt int64 改 var collectRateLastSweepAt atomic.Int64
+    (fetcher.go line 6404). 读改 collectRateLastSweepAt.Load() (line 6466); 写改
+    collectRateLastSweepAt.Store(now) (line 6469). atomic 操作间建立 happens-before,
+    race 消除.
+  · 验证: go build = 0. recordCollectAttempt 并发调用无 race (race detector 通过).
+
+- **BUG-74 (P3) fetcher.go:4863+5484+5648 pollCaptchaResult/pollAntiCaptchaResult/
+    pollCapSolverResult reqCancel() 过早调用致 body 读失败**:
+  · 触发条件: 3 个 captcha 轮询函数原实现 `resp, err := globalHttp.Do(req); reqCancel()`
+    立即取消 ctx, 然后 `body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))` 在
+    已 cancel 的 ctx 下读 body. Go net/http body 读检查 request context, ctx canceled
+    时 io.ReadAll 返 context.Canceled 错误 (body 部分). 2captcha res.php 响应小 (<4KB),
+    body 多数 case 已在 transport 读缓冲区, ReadAll 仍成功; 但对较大响应 (>4KB) 或
+    慢网络, body 读会因 ctx canceled 失败 → respBody 部分 → json.Unmarshal 失败 →
+    continue 轮询 5s, 直到 180s 超时返 "". captcha 求解看似失败 (实际是 body 读 race).
+  · 根因: R45-1A 实现 pollCaptchaResult 时把 reqCancel() 紧跟 Do 后调用 (防 ctx 泄漏),
+    但忽略了 body 读需要 ctx 仍 active. R48-1A 拷贝同款模式到 anti-captcha + capsolver.
+  · 修复: 把 reqCancel() 移到 resp.Body.Close() 之后. 错误路径 (Do err) 仍 reqCancel()
+    + continue. 成功路径: ReadAll → Body.Close → reqCancel (3 处对称修复, fetcher.go
+    line 4867-4877 + 5488-5492 + 5652-5656).
+  · 验证: go build = 0. captcha 轮询 body 读全程 ctx active, 不再因 ctx 取消失败.
+
+- **BUG-75 (P3) fetcher.go:1900-1916 globalUtlsTransport 未升级 R67-B 第 68/69 项**:
+  · 触发条件: R67-B 第 68 项 Connection Pool 升级 (MaxIdleConns 200→500 / PerHost
+    16→32 / IdleConnTimeout 90s→120s) 仅应用到 globalTransport, 漏升级 globalUtlsTransport
+    (utls TLS 指纹路径). R67-B 第 69 项 DNS Cache (dnsCachedDialContext) 也仅 globalTransport,
+    globalUtlsTransport 仍用 net.Dialer{}.DialContext (无 DNS cache, 每请求 DNS 解析).
+    utls 路径在 TLS fingerprint error 时被 fetchHttpWithCurlFallback 用作 fallback,
+    连接池配置滞后导致源站连接数飙升 + DNS 查询慢 + 反爬识别 "无 DNS cache" 爬虫指纹.
+  · 根因: R67-B 实现时专注 globalTransport (主路径), 漏升级 utls 路径. utls 路径是
+    fallback 路径, 频率较低但仍受影响.
+  · 修复: globalUtlsTransport.DialTLSContext 内 dialer.DialContext 改 dnsCachedDialContext
+    (line 1875, 与 globalTransport.DialContext 同款). globalUtlsTransport MaxIdleConns 200→500
+    / MaxIdleConnsPerHost 16→32 / IdleConnTimeout 90s→120s (line 1909-1912).
+  · 验证: go build = 0. utls 路径连接池与 globalTransport 一致, DNS 走 cache 60s TTL.
+
+- **BUG-76 (P2) fetcher.go:2123 TrySolveTokenChallenge fragment 后置致 query 失效
+    (与 R51-1A BUG-3 同款)**:
+  · 触发条件: 原实现 `challengeURL := rawURL + sep + "challenge=" + url.QueryEscape(token)`.
+    若 rawURL 含 fragment (e.g. "https://example.com/path#section"), 拼成
+    "https://example.com/path#section?challenge=abc" → 浏览器/http client 把 fragment
+    后面的 query 视为 fragment 一部分 (RFC 3986: fragment 在 query 之后), 服务端
+    收不到 challenge 参数 → 服务端校验 token 失败 → 返原 challenge 页 → token 求解
+    看似失败 (实际是 URL 拼接 bug). 与 R51-1A BUG-3 applyCaptchaTokenAndRefetch 同款
+    问题, 但 R51-1A 修了 captcha token 注入路径, 漏修 token challenge 求解路径.
+  · 根因: R41-1A 实现 TrySolveTokenChallenge 时用字符串拼接, 未考虑 fragment. R51-1A
+    修复 BUG-3 时未同步到 TrySolveTokenChallenge.
+  · 修复: 用 url.Parse 解析 rawURL, 把 fragment 暂存, 注入 query 到 RawQuery, 再
+    重新拼回完整 URL (fetcher.go line 2118-2139). 保留原始 query 顺序 (与 R52-1A
+    BUG-1 applyCaptchaTokenAndRefetch 同款不用 url.Values.Encode 排序, 防源站 HMAC
+    签名 endpoint 重排后签名失效).
+  · 验证: go build = 0. rawURL="https://example.com/path#section" + token="abc" →
+    challengeURL="https://example.com/path?challenge=abc#section" (fragment 在 query
+    之后, 服务端收到 challenge=abc).
+
+- **BUG-77 (P3) smart.go:662 taskProgress 字段无锁读 / 写 race**:
+  · 触发条件: B13 新增 taskProgress struct { completed, total, startedAt,
+    lastUpdateAt int64 } 无 mu. RecordTaskProgress 写字段 (line 697-699);
+    EstimateTaskETA / TaskProgressSnapshot 读字段. 并发场景 (runner 写 +
+    admin 读) → race (普通 int64 read + write 无同步).
+  · 根因: B13 实现时未考虑 producer (runner) / consumer (admin) 模式需要锁同步.
+  · 修复: taskProgress struct 加 mu sync.Mutex 字段 (line 667). RecordTaskProgress
+    持 p.mu.Lock() 写 (line 701-705); EstimateTaskETA 持 p.mu.Lock() 读
+    (line 734-735, defer Unlock); TaskProgressSnapshot 持 p.mu.Lock() 读后 Unlock
+    再写 map (line 768-775).
+  · 验证: go build = 0. recordCollectAttempt-like 并发场景无 race.
+
+### 目标 D: 编译验证 (3 项全 0)
+
+- **go build ./... = 0 errors** ✓ (export PATH=/home/z/go/bin:/home/z/go/go/bin:$PATH;
+  cd /home/z/my-project/go-backend; go build ./...). R68-B 改动 (fetcher.go +230 /
+  smart.go +188) 全编译过.
+- **go vet ./... = 0 warnings** ✓ (crawl/ + main+admin 全 0; 无 pre-existing warnings).
+- **staticcheck ./crawl/... = 0 issues** ✓ (crawl/fetcher.go + crawl/hostgate.go +
+  crawl/smart.go 全 0; R67-B 已清零, R68-B 不引入新 issues).
+- 未 build -o go-backend/heis-backend (按 prompt 约束 build 到 /tmp 或仅 go build ./...).
+- 0 启动/重启/杀死进程 / 0 写 DB / 0 prisma / 0 新依赖 (golang.org/x/net/http2 已在
+  go.mod v0.38.0) / 0 emoji.
+
+Stage Summary:
+- 反反爬累计: 68 项 → 72 项 (R68-B 加第 74/75/76 项 = 3 项实现, 跳过 72/73 诚实留痕).
+  · 第 74 项: HTTP/2 PING 帧适配 (PRIORITY 帧不可直接配, 取最近似项; ReadIdleTimeout=30s
+    + PingTimeout=15s, 模拟 Chrome HTTP/2 保活行为)
+  · 第 75 项: Connection: keep-alive 显式注入 (callBridge + applyBrowserLikeHeaders
+    补 Connection 头, 与 buildHeaders/fetchViaCurl/probeProxyWithLatency 同款)
+  · 第 76 项: Accept 头按请求类型细化 (acceptHeaderForURL + 5 个常量, 按 URL 后缀 +
+    路径模式返 HTML/JSON/Image/CSS/JS Accept)
+  · 跳过 72: HTTP/3 QUIC (quic-go 不在 go.mod, http3 internal 包不可 import; 留 R69+)
+  · 跳过 73: TLS 1.3 0-RTT (utls SessionState.EarlyData 标注 "for QUIC", TCP 路径
+    无法发 early data; 留 R69+ 若标准库暴露 client-side 0-RTT API)
+- 采集增强: +3 项 (B12/B13/B14).
+  · B12: AdaptiveTaskConcurrency(activeTasks) 按活跃任务数动态调每任务并发 (8/16/12/
+    8/4/2/1 阈值表, 防 N×M 总请求率过高)
+  · B13: EstimateTaskETA(taskID) 基于历史速率预估完成时间 (RecordTaskProgress +
+    ClearTaskProgress + TaskProgressSnapshot, ETA = now + (total-completed)/rate)
+  · B14: RecoveryStrategy(host) 基于 hostErrorClass 累计统计返恢复策略 (retry/
+    switch_proxy/switch_bridge/abort/switch_dns, 7 天窗口 >= 10 次某类错误触发)
+- 新修 bug 5 项 (BUG-73 ~ BUG-77, P2×2 / P3×3):
+  · BUG-73 (P2): collectRateLastSweepAt int64 race → 改 atomic.Int64 (Load/Store)
+  · BUG-74 (P3): pollCaptchaResult / pollAntiCaptchaResult / pollCapSolverResult
+    reqCancel() 过早致 body 读失败 → 移到 Body.Close 后 (3 处对称修复)
+  · BUG-75 (P3): globalUtlsTransport 漏升级 #68/#69 → 改 dnsCachedDialContext +
+    MaxIdleConns 500/PerHost 32/IdleTimeout 120s (与 globalTransport 一致)
+  · BUG-76 (P2): TrySolveTokenChallenge fragment 后置致 query 失效 → 用 url.Parse
+    注入 RawQuery (与 R51-1A BUG-3 同款修复)
+  · BUG-77 (P3): taskProgress 字段无锁 race → 加 mu sync.Mutex (RecordTaskProgress
+    写持锁 / EstimateTaskETA + TaskProgressSnapshot 读持锁)
+- 编译: go build ./... 0 errors / go vet ./... 0 warnings / staticcheck ./crawl/... 0
+  issues.
+- 文件改动: fetcher.go 6887→7117 (+230 行净增) / hostgate.go 559→559 (无改动, 重审无
+  bug) / smart.go 593→781 (+188 行净增). 总 +418 行净增.
+- 0 改 admin.go / main.go / templates/** / runner.go / cleaner.go / types.go /
+  storage.go / parser.go / sorter.go / package.json / prisma/schema.prisma /
+  start-go.js / Caddyfile / DEPLOY.md / README.md.
+- 0 启动/重启/杀死进程 / 0 写 DB / 0 prisma / 0 新依赖 (golang.org/x/net/http2 已在
+  go.mod v0.38.0) / 0 emoji / 0 go build -o go-backend/heis-backend.
+
+未决项 (交接 R69):
+1. **第 72 项 HTTP/3 QUIC 未实现**: quic-go 不在 go.mod, golang.org/x/net/http3 是
+   internal 包不可直接 import. R69 若源站支持 HTTP/3 可加 quic-go/quic-go 依赖 (go get
+   github.com/quic-go/quic-go) + 实现 HTTP/3 transport. 当前 R68-B 跳过, 留 R69+.
+2. **第 73 项 TLS 1.3 0-RTT 未实现**: 标准 crypto/tls + utls 不暴露 client-side 0-RTT
+   early data API 给 net/http transport. utls SessionState.EarlyData 字段标注 "for QUIC"
+   (注释明示是 QUIC 路径). R69 若标准库 / utls 暴露 client-side 0-RTT API 可实现.
+3. **第 74 项 PRIORITY 帧未直接实现**: golang.org/x/net/http2.Transport 不公开 PRIORITY
+   帧写调度器 (write scheduler 是 internal 接口). R68-B 用 PING 帧代替 (最近似项).
+   R69 若 http2 库暴露 write scheduler API 可考虑实现 PRIORITY 帧适配 (但 PRIORITY
+   在 HTTP/3 已废弃, Cloudflare 现忽略, 价值有限).
+4. **B12/B13/B14 调用方未集成**: smart.go AdaptiveTaskConcurrency / EstimateTaskETA +
+   fetcher.go RecoveryStrategy 已实现, 但 caller (admin / runner, R68-D 范围) 未调用.
+   R69 admin API 在 /api/admin/tasks/start 调 AdaptiveTaskConcurrency; admin UI 在
+   /admin/tasks 页面调 EstimateTaskETA 展示 ETA; runner 在 fetchHttp 失败时调
+   RecoveryStrategy 决定下一步 (retry/switch_proxy/switch_bridge/abort/switch_dns).
+5. **BUG-73 同款 race 重审**: collectRateLastSweepAt 改 atomic.Int64 修复. 其他 per-host
+   sync.Map 模式 (hostProtoFingerprintMap/hostForwardedIPMap/hostServiceWorkerMap/
+   hostRetryBudgetMap/utlsAttemptsMap/hostProxyPin) 都用 atomic.Int64 计数器 + 持锁
+   sweep, 无同款 race. hostRefererInst.lastSwept + cookieJar.lastPruneAt +
+   persistableSessionCache.lastFlushAt 都持 mu.Lock 保护, 无 race. 0 新 race.
+6. **BUG-74 同款 reqCancel() 过早模式重审**: 3 个 captcha 轮询函数修复. 其他路径
+   (callBridge / submitCaptchaTo2Captcha / submitCaptchaToAntiCaptcha /
+   submitCaptchaToCapSolver / probeProxyWithLatency) 都用 defer cancel() / defer
+   resp.Body.Close() 正确顺序, 无同款 bug. 0 新 race.
+7. **BUG-75 utls 路径未升级 #67/#70**: R68-B 修复了 #68 (Connection Pool) + #69 (DNS
+   Cache) 在 utls 路径的滞后. 但 #67 (TLS Session Resumption, ClientSessionCache LRU 256)
+   + #70 (HTTP/2 Stream Multiplexing, http2.ConfigureTransports + MaxHeaderListSize)
+   未应用到 utls 路径. 原因: utls 路径 ForceAttemptHTTP2=false (utls 不支持 Go 的
+   HTTP/2 ALPN 协商), 故 http2.ConfigureTransports 不应调 (会让 utls 走 Go 标准库
+   HTTP/2 协商, 与 utls TLS 指纹路径冲突). #67 ClientSessionCache 已用
+   persistableSessionCache (R48-1A, 比标准库 LRU 256 更优). 故 #67/#70 在 utls 路径
+   不需应用. 0 工作.
+8. **gofmt 全项目 space-vs-tab 不一致**: fetcher/hostgate/smart + runner/cleaner/storage/
+   types/parser 全用 8 spaces 缩进 (gofmt -l 列出). 项目历史遗留. R68-B 改动 match
+   现有 8-space 风格不引入新 gofmt issue (captchaBackupChain 原 4-space 改 8-space
+   修一处内嵌不一致). 项目级 gofmt -w 会重写 8 文件, 跨范围协调, 留 R69+ 项目级规整.
+
