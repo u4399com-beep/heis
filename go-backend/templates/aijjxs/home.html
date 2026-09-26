@@ -75,36 +75,38 @@
 <article class="panel latest-upload" style="margin-top:14px;">
 <h3>小说分类</h3>
 <div class="body grid2">
+{{/* R70-C 目标A: 修复"女生小说"硬编码与内容错配 bug. 原模板硬编码"女生小说"+"热门推荐"
+     但 {{range $.Books}}/{{range .Popular}} 均遍历最新上传的混合分类书单 → 标签与 categoryId
+     不一致 (DB 也无"女生小说"分类). 改用 .NavCats (DB Category.name 真实分类名) + 按 categoryId
+     过滤 $.Books, 每个分类卡片显示该分类下的最新上传.
+     注: 第一遍 range 计算 $count (该分类匹配几本), $count==0 跳过空分类 (test data 奇幻魔幻
+     可能 0 本); 第二遍 range 渲染时 lt $perCard 6 限制每卡最多 6 本 (与"最新上传"区块
+     视觉平衡). $shown 限制最多 2 卡填充 grid2 双列布局. */}}
+{{$books := $.Books}}
+{{$shown := 0}}
+{{range $c := $.NavCats}}{{if lt $shown 2}}
+{{$count := 0}}{{range $b := $books}}{{if eq $b.categoryId $c.id}}{{$count = add $count 1}}{{end}}{{end}}
+{{if gt $count 0}}
 <div>
-<h4>女生小说 <a href="/?view=category">更多&gt;&gt;</a></h4>
+<h4>{{$c.name}} <a href="{{$c.URL}}">更多&gt;&gt;</a></h4>
 <ul class="lines lines-books">
-{{range $.Books}}
+{{$perCard := 0}}
+{{range $b := $books}}{{if and (eq $b.categoryId $c.id) (lt $perCard 6)}}
 <li>
 <span class="line-main">
-<span class="cat">{{.category}}</span>
-<a href="{{.URL}}" target="_blank">{{.name}}</a>
-<span class="author">{{.author}}</span>
+<span class="cat">{{$b.category}}</span>
+<a href="{{$b.URL}}" target="_blank">{{$b.name}}</a>
+<span class="author">{{$b.author}}</span>
 </span>
-<span class="date new"><span class="new">{{fmtDateMD .updatedAt}}</span></span>
+<span class="date new"><span class="new">{{fmtDateMD $b.updatedAt}}</span></span>
 </li>
-{{end}}
+{{$perCard = add $perCard 1}}
+{{end}}{{end}}
 </ul>
 </div>
-<div>
-<h4>热门推荐 <a href="/?view=fulltext">更多&gt;&gt;</a></h4>
-<ul class="lines lines-books">
-{{range .Popular}}
-<li>
-<span class="line-main">
-<span class="cat">热</span>
-<a href="{{.URL}}" target="_blank">{{.name}}</a>
-<span class="author">{{.author}}</span>
-</span>
-<span class="date new"><span class="new">{{fmtDateMD .updatedAt}}</span></span>
-</li>
+{{$shown = add $shown 1}}
 {{end}}
-</ul>
-</div>
+{{end}}{{end}}
 </div>
 </article>
 

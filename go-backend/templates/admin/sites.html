@@ -212,6 +212,38 @@
           </div>
         </div>
       </details>
+      <!-- R70-C 目标B: 首页布局设置折叠区 (4 字段: homeCategoryCount/Books/LatestBooks/HotBooks).
+           注: 这些字段 DB Site 表无列, 后端 R70-D 范围会加 API 接收并写入 Setting 表
+           key=homeLayout:{siteID} JSON (与 navCategoryCount/homeModuleLimit 不同, 后两者
+           有真实 DB 列; 这 4 个是更细粒度 per-site 布局控制, 用 Setting JSON 兜底).
+           UI 先就位, editSiteFromRow/openCreateModal/submitEdit 三处已同步. -->
+      <details style="margin-top:14px;border:1px solid var(--border);border-radius:8px;padding:0 14px;background:var(--card-2);">
+        <summary style="padding:12px 0;cursor:pointer;font-size:13px;color:var(--muted);font-weight:600;list-style:none;">
+          ▸ 首页布局设置 (4 字段: 分类卡数 / 每卡书数 / 最新书数 / 热门书数)
+        </summary>
+        <div class="form-grid" style="margin-top:6px;padding-bottom:14px;">
+          <div class="field">
+            <label>首页分类卡数 (homeCategoryCount, 4-12)</label>
+            <input type="number" name="homeCategoryCount" value="8" min="4" max="12">
+            <div class="hint">小说分类区块展示的分类卡片数量 (默认 8, 钳 4-12)</div>
+          </div>
+          <div class="field">
+            <label>每卡书数 (homeCategoryBooks, 3-12)</label>
+            <input type="number" name="homeCategoryBooks" value="6" min="3" max="12">
+            <div class="hint">每个分类卡片展示的书籍数量 (默认 6, 钳 3-12)</div>
+          </div>
+          <div class="field">
+            <label>最新上传书数 (homeLatestBooks, 6-24)</label>
+            <input type="number" name="homeLatestBooks" value="12" min="6" max="24">
+            <div class="hint">最新上传区块展示的书籍数量 (默认 12, 钳 6-24)</div>
+          </div>
+          <div class="field">
+            <label>热门推荐书数 (homeHotBooks, 6-24)</label>
+            <input type="number" name="homeHotBooks" value="12" min="6" max="24">
+            <div class="hint">热门推荐区块展示的书籍数量 (默认 12, 钳 6-24)</div>
+          </div>
+        </div>
+      </details>
     </form>
     <div class="modal-foot">
       <button class="btn" onclick="closeModal('editModal')">取消</button>
@@ -285,6 +317,11 @@ function editSiteFromRow(btn){
   f.chapterSeoTitleTemplate.value=s.chapterSeoTitleTemplate||'';
   f.chapterSeoDescTemplate.value=s.chapterSeoDescTemplate||'';
   f.chapterSeoKeywordsTemplate.value=s.chapterSeoKeywordsTemplate||'';
+  // R70-C 目标B: 首页布局 4 字段回填 (data-site JSON 中后端 R70-D 会注入, 当前未注入则用默认).
+  f.homeCategoryCount.value=s.homeCategoryCount||8;
+  f.homeCategoryBooks.value=s.homeCategoryBooks||6;
+  f.homeLatestBooks.value=s.homeLatestBooks||12;
+  f.homeHotBooks.value=s.homeHotBooks||12;
   onPaginationModeChange(); // 同步 words/pages 启用状态
   document.getElementById('editModal').classList.add('open');
 }
@@ -320,6 +357,11 @@ function openCreateModal(){
   f.chapterSeoTitleTemplate.value='';
   f.chapterSeoDescTemplate.value='';
   f.chapterSeoKeywordsTemplate.value='';
+  // R70-C 目标B: 首页布局 4 字段默认值 (与上方表单 min/max 一致).
+  f.homeCategoryCount.value=8;
+  f.homeCategoryBooks.value=6;
+  f.homeLatestBooks.value=12;
+  f.homeHotBooks.value=12;
   onPaginationModeChange(); // 默认 off → words/pages 均 disabled
   document.getElementById('editModal').classList.add('open');
 }
@@ -358,7 +400,12 @@ function submitEdit(){
     chapterSeoAuto:f.chapterSeoAuto.checked,
     chapterSeoTitleTemplate:f.chapterSeoTitleTemplate.value.trim(),
     chapterSeoDescTemplate:f.chapterSeoDescTemplate.value.trim(),
-    chapterSeoKeywordsTemplate:f.chapterSeoKeywordsTemplate.value.trim()
+    chapterSeoKeywordsTemplate:f.chapterSeoKeywordsTemplate.value.trim(),
+    // R70-C 目标B: 首页布局 4 字段提交 (后端 R70-D 范围会接收并写入 Setting 表 homeLayout:{siteID} JSON).
+    homeCategoryCount:parseInt(f.homeCategoryCount.value,10)||8,
+    homeCategoryBooks:parseInt(f.homeCategoryBooks.value,10)||6,
+    homeLatestBooks:parseInt(f.homeLatestBooks.value,10)||12,
+    homeHotBooks:parseInt(f.homeHotBooks.value,10)||12
   };
   if(!body.name){showToast('站点名必填',false);return;}
   if(!body.domain){showToast('域名必填',false);return;}

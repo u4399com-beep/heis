@@ -620,8 +620,10 @@ func adminMetricsHandler(w http.ResponseWriter, r *http.Request) {
 //   db var, 请求到达时 db 已初始化 (main() 内 sql.Open 后再 ListenAndServe).
 //   R66-D 主控只改 DEPLOY.md+README.md 不改 main.go, 本轮所有新 endpoint
 //   (quick-fill 走 adminTaskSubHandler 子路径 + metrics 走 init) 都在 admin.go 范围内.
+// R70-D: 加 /api/admin/featured-books 路由 (封面推荐 API; 用户需求 #8).
 func init() {
         http.HandleFunc("/api/admin/metrics", adminMetricsHandler)
+        http.HandleFunc("/api/admin/featured-books", adminFeaturedBooksHandler)
 }
 
 // adminTasksHandler — GET 列任务 / POST 创建任务并启动.
@@ -1041,6 +1043,22 @@ func startCrawlTask(taskID, ruleID, ruleConfig, mode, bookURL, listURL, fetchCon
         threadMin, threadMax, intervalMin, intervalMax int, recrawlMode string,
         smartCategory, smartComplete, autoSuggest bool) {
 
+        // R70-D BUG-87 (P1): 原 startCrawlTask 无 panic recovery. crawl.ExecuteTask panic
+        //   时 (规则 config 含非法 regex / runtime.Caller 栈溢出 / 第三方 moli/scrapling
+        //   桥 panic / goquery CSS 解析失败等), goroutine 崩溃但 Task 行 status='running'
+        //   残留永远 — adminTasksCreate/adminTasksQuickFill/adminTaskControlHandler 三个
+        //   caller 都 launch goroutine 无 recover, 仅 adminBackupClearHandler 手动触发
+        //   才能清掉. 用户看到任务卡 'running' 几小时不知道挂了. 修复: defer recover()
+        //   把 panic 转 DB UPDATE status='error' (与 adminDownloadsCreate goroutine
+        //   line 3075 同款 panic-safe 模式). 注: 此 defer 在 status='running' UPDATE 前
+        //   注册, panic 发生时仍能 UPDATE 标 error (DB UPDATE 是幂等).
+        defer func() {
+                if r := recover(); r != nil {
+                        log.Printf("[task:%s] panic: %v", taskID, r)
+                        _, _ = db.Exec(`UPDATE Task SET status='error', updatedAt=datetime('now') WHERE id=?`, taskID)
+                }
+        }()
+
         // 更新状态为 running
         _, _ = db.Exec(`UPDATE Task SET status='running', updatedAt=datetime('now') WHERE id=?`, taskID)
 
@@ -1272,6 +1290,11 @@ func adminTaskSnapshotHandler(w http.ResponseWriter, r *http.Request) {
 
 // adminRulesHandler — GET 列规则 / POST 创建规则.
 func adminRulesHandler(w http.ResponseWriter, r *http.Request) {
+        // R70-D: GET ?action=audit → 71 Rule 字段完整性审计 (用户需求 #7).
+        if r.Method == http.MethodGet && r.URL.Query().Get("action") == "audit" {
+                adminRulesAudit(w, r)
+                return
+        }
         switch r.Method {
         case http.MethodGet:
                 adminRulesList(w, r)
@@ -1322,6 +1345,114 @@ func adminRulesList(w http.ResponseWriter, r *http.Request) {
                 })
         }
         writeJSONOK(w, out)
+}
+
+// adminRulesAudit — GET /api/admin/rules?action=audit (R70-D; 用户需求 #7).
+//
+// 71 Rule 字段完整性审计: 遍历 Rule 表, 解析 config JSON (crawl.ParseRuleConfig 已含
+// 白名单消毒), 检查 7 个关键字段是否配置:
+//   book.name / book.author / book.category / book.intro / book.cover
+//   toc.list    = Toc.Enabled && (Toc.ItemSelector!=nil || len(Toc.Fields)>0)
+//   content.content = Content.Enabled && len(Content.Fields)>0
+//
+// 返回 {total, complete, partial, empty, rules:[{ruleId, name, fields:{...}, missing:[...]}]}
+//   complete = 7 字段全配置 (missing=[])
+//   partial  = 1-6 字段配置 (0 < len(missing) < 7)
+//   empty    = 0 字段配置 (len(missing)==7, 即 Rule.config 是默认空模板或解析失败)
+//
+// 路由: GET /api/admin/rules?action=audit (adminRulesHandler 顶部 dispatch)
+//       GET /api/admin/rules/audit (adminRuleByIDHandler 顶部 dispatch, parts[0]=="audit")
+//
+// 字段配置判定: hasField(rule, key) = Fields[key] 存在 && (Type=="const" || (Type != "" && Expression != ""))
+//   const 类型不需 Expression (用 DefaultValue 兜底); 其他类型 (css/xpath/regex/json) 必须有
+//   Type + Expression 才算配置完整.
+//
+// 错误容忍: rows.Scan 失败 → 跳过该 rule; ParseRuleConfig 失败 → cfg 是 DefaultRuleConfig
+//   (全空), 该 rule 被归 empty 类 (合理, 配置 JSON 损坏 = 无配置).
+func adminRulesAudit(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodGet {
+                writeJSONErr(w, "method not allowed", 405)
+                return
+        }
+        rows, err := db.Query(`SELECT id, name, COALESCE(config,'{}') FROM Rule ORDER BY updatedAt DESC LIMIT 500`)
+        if err != nil {
+                writeJSONErr(w, "查询失败: "+err.Error(), 500)
+                return
+        }
+        type auditRow struct{ ID, Name, Config string }
+        collected := []auditRow{}
+        for rows.Next() {
+                var ar auditRow
+                if err := rows.Scan(&ar.ID, &ar.Name, &ar.Config); err == nil {
+                        collected = append(collected, ar)
+                }
+        }
+        rows.Close()
+
+        hasField := func(rule crawl.PageRule, key string) bool {
+                fr, ok := rule.Fields[key]
+                if !ok {
+                        return false
+                }
+                if fr.Type == "const" {
+                        return true
+                }
+                if fr.Type == "" || fr.Expression == "" {
+                        return false
+                }
+                return true
+        }
+
+        type auditResult struct {
+                RuleID  string          `json:"ruleId"`
+                Name    string          `json:"name"`
+                Fields  map[string]bool `json:"fields"`
+                Missing []string        `json:"missing"`
+        }
+
+        out := []auditResult{}
+        complete, partial, emptyCount := 0, 0, 0
+        fieldKeys := []string{"name", "author", "category", "intro", "cover", "toc", "content"}
+
+        for _, ar := range collected {
+                cfg := crawl.ParseRuleConfig(ar.Config)
+                fields := map[string]bool{
+                        "name":    hasField(cfg.Book, "name"),
+                        "author":  hasField(cfg.Book, "author"),
+                        "category": hasField(cfg.Book, "category"),
+                        "intro":   hasField(cfg.Book, "intro"),
+                        "cover":   hasField(cfg.Book, "cover"),
+                        "toc":     cfg.Toc.Enabled && (cfg.Toc.ItemSelector != nil || len(cfg.Toc.Fields) > 0),
+                        "content": cfg.Content.Enabled && len(cfg.Content.Fields) > 0,
+                }
+                missing := []string{}
+                for _, k := range fieldKeys {
+                        if !fields[k] {
+                                missing = append(missing, k)
+                        }
+                }
+                switch len(missing) {
+                case 0:
+                        complete++
+                case 7:
+                        emptyCount++
+                default:
+                        partial++
+                }
+                out = append(out, auditResult{
+                        RuleID:  ar.ID,
+                        Name:    ar.Name,
+                        Fields:  fields,
+                        Missing: missing,
+                })
+        }
+        writeJSONOK(w, map[string]interface{}{
+                "total":    len(collected),
+                "complete": complete,
+                "partial":  partial,
+                "empty":    emptyCount,
+                "rules":    out,
+        })
 }
 
 // adminRulesCreate — POST 创建规则.
@@ -1381,6 +1512,17 @@ func adminRuleByIDHandler(w http.ResponseWriter, r *http.Request) {
         parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/admin/rules/"), "/")
         if len(parts) < 1 || parts[0] == "" {
                 writeJSONErr(w, "缺少规则 id", 400)
+                return
+        }
+        // R70-D: GET /api/admin/rules/audit → 71 Rule 字段完整性审计 (与 ?action=audit 同款 dispatch).
+        //   Rule ID 形如 "g<36base-ts><hex-12>" (≥14 字符, 前缀 'g'), Prisma cuid 前缀 'cl' (≥24 字符);
+        //   "audit" (5 字符, 前缀 'a') 不会与真实 Rule ID 碰撞, 安全 dispatch.
+        if parts[0] == "audit" {
+                if r.Method != http.MethodGet {
+                        writeJSONErr(w, "method not allowed", 405)
+                        return
+                }
+                adminRulesAudit(w, r)
                 return
         }
         ruleID := parts[0]
@@ -4594,6 +4736,11 @@ func adminSiteByIDHandler(w http.ResponseWriter, r *http.Request) {
                         return
                 }
                 committed = true
+                // R70-D: homeLayout 4 字段独立写 Setting 表 (与 tx 解耦, 失败不影响 Site 主表 UPDATE).
+                //   仅在 body 含 homeLayout 任一字段时写 (增量更新, 避免覆盖用户已有的 homeLayout).
+                if homeLayoutChanged(body) {
+                        _ = setHomeLayoutSetting(id, readHomeLayoutFromBody(body))
+                }
                 writeJSONOK(w, map[string]interface{}{"id": id, "updated": true})
         case http.MethodDelete:
                 var exist, isDefault string
@@ -4629,37 +4776,53 @@ func adminSitesList(w http.ResponseWriter, r *http.Request) {
                 writeJSONErr(w, "查询失败: "+err.Error(), 500)
                 return
         }
-        defer rows.Close()
-        out := []map[string]interface{}{}
+        // R70-D BUG-90 (P1): R64-C BUG-38 同款 — 外层 rows 持锁期间若在 for rows.Next() 内
+        //   调 db.QueryRow(homeLayout) → modernc.org/sqlite SetMaxOpenConns(1) 等待 rows
+        //   释放 → 30s+ 超时死锁 (Site 表非空时必现). R70-D 在 list 内加 getHomeLayoutSetting
+        //   调 db.QueryRow → 嵌套查 → 触发 BUG-38 pattern. 修复: 先收齐 site 行转 []struct
+        //   + 显式 Close rows, 再循环逐 site 调 getHomeLayoutSetting (与 adminRulesList /
+        //   adminCategoriesList / fillCategoriesPageData 同款方法论).
+        type siteRow struct {
+                ID, Name, Domain, ThemeID, Title, Desc, Kw, Icbm, GeoR, GeoP, PseudoStaticStyle string
+                FooterText, FooterCopyright, FooterIcp, ChapterPaginationMode                    string
+                ChapterSeoTitleTemplate, ChapterSeoDescTemplate, ChapterSeoKeywordsTemplate      string
+                CreatedAt, UpdatedAt                                                              string
+                Offset, NavCategoryCount, HomeModuleLimit, ChapterPaginationWords                  int
+                ChapterPaginationPages                                                            int
+                IsDefault, Status, InLinkWheel, FooterStats, ChapterSeoAuto                       bool
+        }
+        siteRows := []siteRow{}
         for rows.Next() {
-                var id, name, domain, themeID, title, desc, kw, icbm, geoR, geoP, pseudoStaticStyle string
-                var footerText, footerCopyright, footerIcp, chapterPaginationMode, chapterSeoTitleTemplate, chapterSeoDescTemplate, chapterSeoKeywordsTemplate string
-                var createdAt, updatedAt string
-                var offset, navCategoryCount, homeModuleLimit, chapterPaginationWords, chapterPaginationPages int
-                var isDefault, status, inLinkWheel, footerStats, chapterSeoAuto bool
-                _ = rows.Scan(&id, &name, &domain, &themeID, &isDefault, &title, &desc, &kw, &icbm, &geoR, &geoP, &offset, &status, &inLinkWheel, &pseudoStaticStyle,
-                        &footerText, &footerCopyright, &footerIcp, &footerStats, &navCategoryCount, &homeModuleLimit,
-                        &chapterPaginationMode, &chapterPaginationWords, &chapterPaginationPages,
-                        &chapterSeoAuto, &chapterSeoTitleTemplate, &chapterSeoDescTemplate, &chapterSeoKeywordsTemplate,
-                        &createdAt, &updatedAt)
-                if pseudoStaticStyle == "" {
-                        pseudoStaticStyle = "query"
+                var sr siteRow
+                _ = rows.Scan(&sr.ID, &sr.Name, &sr.Domain, &sr.ThemeID, &sr.IsDefault, &sr.Title, &sr.Desc, &sr.Kw, &sr.Icbm, &sr.GeoR, &sr.GeoP, &sr.Offset, &sr.Status, &sr.InLinkWheel, &sr.PseudoStaticStyle,
+                        &sr.FooterText, &sr.FooterCopyright, &sr.FooterIcp, &sr.FooterStats, &sr.NavCategoryCount, &sr.HomeModuleLimit,
+                        &sr.ChapterPaginationMode, &sr.ChapterPaginationWords, &sr.ChapterPaginationPages,
+                        &sr.ChapterSeoAuto, &sr.ChapterSeoTitleTemplate, &sr.ChapterSeoDescTemplate, &sr.ChapterSeoKeywordsTemplate,
+                        &sr.CreatedAt, &sr.UpdatedAt)
+                siteRows = append(siteRows, sr)
+        }
+        rows.Close()
+        out := []map[string]interface{}{}
+        for _, sr := range siteRows {
+                if sr.PseudoStaticStyle == "" {
+                        sr.PseudoStaticStyle = "query"
                 }
-                if chapterPaginationMode == "" {
-                        chapterPaginationMode = "off"
+                if sr.ChapterPaginationMode == "" {
+                        sr.ChapterPaginationMode = "off"
                 }
                 out = append(out, map[string]interface{}{
-                        "id": id, "name": name, "domain": domain, "themeId": themeID,
-                        "isDefault": isDefault, "title": title, "description": desc, "keywords": kw,
-                        "icbm": icbm, "geoRegion": geoR, "geoPlacename": geoP, "offset": offset,
-                        "status": status, "inLinkWheel": inLinkWheel, "pseudoStaticStyle": pseudoStaticStyle,
-                        "footerText": footerText, "footerCopyright": footerCopyright, "footerIcp": footerIcp,
-                        "footerStats": footerStats, "navCategoryCount": navCategoryCount,
-                        "homeModuleLimit": homeModuleLimit, "chapterPaginationMode": chapterPaginationMode,
-                        "chapterPaginationWords": chapterPaginationWords, "chapterPaginationPages": chapterPaginationPages,
-                        "chapterSeoAuto": chapterSeoAuto, "chapterSeoTitleTemplate": chapterSeoTitleTemplate,
-                        "chapterSeoDescTemplate": chapterSeoDescTemplate, "chapterSeoKeywordsTemplate": chapterSeoKeywordsTemplate,
-                        "createdAt": createdAt, "updatedAt": updatedAt,
+                        "id": sr.ID, "name": sr.Name, "domain": sr.Domain, "themeId": sr.ThemeID,
+                        "isDefault": sr.IsDefault, "title": sr.Title, "description": sr.Desc, "keywords": sr.Kw,
+                        "icbm": sr.Icbm, "geoRegion": sr.GeoR, "geoPlacename": sr.GeoP, "offset": sr.Offset,
+                        "status": sr.Status, "inLinkWheel": sr.InLinkWheel, "pseudoStaticStyle": sr.PseudoStaticStyle,
+                        "footerText": sr.FooterText, "footerCopyright": sr.FooterCopyright, "footerIcp": sr.FooterIcp,
+                        "footerStats": sr.FooterStats, "navCategoryCount": sr.NavCategoryCount,
+                        "homeModuleLimit": sr.HomeModuleLimit, "chapterPaginationMode": sr.ChapterPaginationMode,
+                        "chapterPaginationWords": sr.ChapterPaginationWords, "chapterPaginationPages": sr.ChapterPaginationPages,
+                        "chapterSeoAuto": sr.ChapterSeoAuto, "chapterSeoTitleTemplate": sr.ChapterSeoTitleTemplate,
+                        "chapterSeoDescTemplate": sr.ChapterSeoDescTemplate, "chapterSeoKeywordsTemplate": sr.ChapterSeoKeywordsTemplate,
+                        "homeLayout": getHomeLayoutSetting(sr.ID), // R70-D: 4 字段 Setting 兜底 (rows 已 Close, 不嵌套查)
+                        "createdAt": sr.CreatedAt, "updatedAt": sr.UpdatedAt,
                 })
         }
         writeJSONOK(w, out)
@@ -4814,6 +4977,10 @@ func adminSitesCreate(w http.ResponseWriter, r *http.Request, body map[string]in
                 return
         }
         committed = true
+        // R70-D: homeLayout 4 字段写 Setting 表 (Site 表无此 4 列; Setting 兜底).
+        //   独立于上方 tx (Setting 表读写不嵌事务, 失败仅丢 homeLayout 配置不影响 Site 主表 INSERT).
+        homeLayout := readHomeLayoutFromBody(body)
+        _ = setHomeLayoutSetting(id, homeLayout)
         writeJSONOK(w, map[string]interface{}{
                 "id": id, "name": name, "domain": domain, "themeId": themeID,
                 "isDefault": isDefault, "status": status, "inLinkWheel": inLinkWheel,
@@ -4824,6 +4991,262 @@ func adminSitesCreate(w http.ResponseWriter, r *http.Request, body map[string]in
                 "chapterPaginationWords": chapterPaginationWords, "chapterPaginationPages": chapterPaginationPages,
                 "chapterSeoAuto": chapterSeoAuto, "chapterSeoTitleTemplate": chapterSeoTitleTemplate,
                 "chapterSeoDescTemplate": chapterSeoDescTemplate, "chapterSeoKeywordsTemplate": chapterSeoKeywordsTemplate,
+                "homeLayout": homeLayout, // R70-D: 返写回 4 字段让前端立即拿到生效值
+        })
+}
+
+// ---------- 首页布局参数 API (R70-D 新增; 用户需求 #4) ----------
+//
+// 4 个字段 (配合 R70-C admin/sites.html 表单):
+//   homeCategoryCount  首页显示的分类数 (默认 8, 范围 4-20)
+//   homeCategoryBooks  每分类下显示的书籍数 (默认 6, 范围 2-12)
+//   homeLatestBooks    最新更新模块书籍数 (默认 12, 范围 4-30)
+//   homeHotBooks       热门推荐模块书籍数 (默认 12, 范围 4-30)
+//
+// 因 DB Site 表无此 4 列 (改 schema 需 prisma migrate, 跨范围), 用 Setting 表
+// key=homeLayout.{siteID} JSON 兜底存储 (与 R69-A Setting 表全局开关同款模式).
+// R70-A main.go getSite 也读 Setting 表, 与本 API 对齐.
+
+var homeLayoutDefaults = map[string]int{
+        "homeCategoryCount": 8,
+        "homeCategoryBooks": 6,
+        "homeLatestBooks":   12,
+        "homeHotBooks":      12,
+}
+
+// homeLayoutRanges — 4 字段的合法取值范围 [lo, hi] (clampIntAdm 用).
+var homeLayoutRanges = map[string][2]int{
+        "homeCategoryCount": {4, 20},
+        "homeCategoryBooks": {2, 12},
+        "homeLatestBooks":   {4, 30},
+        "homeHotBooks":      {4, 30},
+}
+
+// getHomeLayoutSetting — 读 Setting 表 key=homeLayout.{siteID}, 返 4 字段 map (含默认值兜底).
+//
+// 错误容忍: Setting 行缺失 / JSON 解析失败 / 字段类型不对 → 返全默认值 (与 getFeedbackEnabled 同款安全默认).
+// 字段值越界 → 用 clampIntAdm 钳回 [lo,hi] (防用户通过 admin/settings 页面手改坏值后前台 N>20 渲染崩).
+func getHomeLayoutSetting(siteID string) map[string]int {
+        out := map[string]int{}
+        for k, v := range homeLayoutDefaults {
+                out[k] = v
+        }
+        if siteID == "" {
+                return out
+        }
+        var raw string
+        _ = db.QueryRow(`SELECT value FROM Setting WHERE key=?`, "homeLayout."+siteID).Scan(&raw)
+        if raw == "" || raw == "{}" {
+                return out
+        }
+        var parsed map[string]interface{}
+        if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+                return out
+        }
+        for k, def := range homeLayoutDefaults {
+                if v, ok := parsed[k]; ok && v != nil {
+                        if f, ok := v.(float64); ok {
+                                n := int(f)
+                                if r, ok := homeLayoutRanges[k]; ok {
+                                        n = clampIntAdm(n, r[0], r[1])
+                                } else {
+                                        n = def
+                                }
+                                out[k] = n
+                        }
+                }
+        }
+        return out
+}
+
+// setHomeLayoutSetting — 写 Setting 表 key=homeLayout.{siteID}, JSON 序列化 4 字段.
+//
+// 入参 m 可缺少 key (用默认值兜底); 值越界 → clampIntAdm 钳回 [lo,hi].
+// 返 error 仅在 INSERT/UPDATE SQL 失败 (SQLite 磁盘满 / 连接断等罕见场景).
+func setHomeLayoutSetting(siteID string, m map[string]int) error {
+        payload := map[string]int{}
+        for k, def := range homeLayoutDefaults {
+                v, ok := m[k]
+                if !ok {
+                        v = def
+                }
+                if r, ok := homeLayoutRanges[k]; ok {
+                        v = clampIntAdm(v, r[0], r[1])
+                }
+                payload[k] = v
+        }
+        b, err := json.Marshal(payload)
+        if err != nil {
+                return err
+        }
+        _, err = db.Exec(`INSERT INTO Setting (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+                "homeLayout."+siteID, string(b))
+        return err
+}
+
+// readHomeLayoutFromBody — 从 request body 读 4 字段 (任一缺失用默认; clamp 到合法范围).
+//
+//   返的 map 永远包含 4 个 key (homeCategoryCount/homeCategoryBooks/homeLatestBooks/homeHotBooks),
+//   适合直接传给 setHomeLayoutSetting (无 key 校验负担).
+//   与 intField 同款 (float64=JSON number / string="20" 两种入参格式都支持).
+func readHomeLayoutFromBody(body map[string]interface{}) map[string]int {
+        out := map[string]int{}
+        for k, def := range homeLayoutDefaults {
+                v := def
+                if r, ok := homeLayoutRanges[k]; ok {
+                        v = clampIntAdm(intField(body, k, def, r[0], r[1]), r[0], r[1])
+                }
+                out[k] = v
+        }
+        return out
+}
+
+// homeLayoutChanged — 检测 body 是否包含任一 homeLayout 字段 (用于 PUT 增量更新逻辑).
+func homeLayoutChanged(body map[string]interface{}) bool {
+        for k := range homeLayoutDefaults {
+                if v, ok := body[k]; ok && v != nil {
+                        return true
+                }
+        }
+        return false
+}
+
+// ---------- 封面推荐 API (R70-D 新增; 用户需求 #8) ----------
+//
+// GET  /api/admin/featured-books?siteId={siteId} → 读 Setting 表 key=featuredBooks.{siteID},
+//     返回 {siteId, books:[{id, name, author, cover}]} (按保存顺序, 已删书自动跳过)
+// POST /api/admin/featured-books  body {siteId, bookIds:["id1","id2",...]} → 写 Setting 表,
+//     返回 {siteId, books:[{id, name, author, cover}]} (过滤掉不存在的 bookId 后的 saved 列表)
+//
+// 路由注册: init() (与 adminMetricsHandler 同款, 不改 main.go).
+//   注: key 用 "featuredBooks." 前缀 + siteID (Setting 表 key 无 schema 约束;
+//   settingKeyRE 允许 . 字符, 故 admin/settings 页面也可手动编辑此 key).
+//   注: 单站最多 30 本封面推荐 (featuredBooksMax 防超量导致前台布局断裂 + JSON 过大).
+
+const featuredBooksMax = 30
+
+// adminFeaturedBooksHandler — 路由分发 GET / POST.
+func adminFeaturedBooksHandler(w http.ResponseWriter, r *http.Request) {
+        switch r.Method {
+        case http.MethodGet:
+                adminFeaturedBooksList(w, r)
+        case http.MethodPost:
+                adminFeaturedBooksUpdate(w, r)
+        default:
+                writeJSONErr(w, "method not allowed", 405)
+        }
+}
+
+// adminFeaturedBooksList — GET /api/admin/featured-books?siteId={siteId}.
+//
+// 校验 siteId 非空 + 站点存在 (返 404 防 typo siteId), 读 Setting 表 JSON,
+// 按 bookIds 顺序逐本 SELECT 元数据 (id/name/author/cover), 已删书 (Scan ErrNoRows) 跳过.
+//   注: 不在本接口缓存 book 元数据 — admin UI 调用频率低 (打开 dashboard 才查 1 次),
+//   每次 ~N 次 SELECT (N≤30) 共 ~3ms, 不需缓存层.
+func adminFeaturedBooksList(w http.ResponseWriter, r *http.Request) {
+        siteID := strings.TrimSpace(r.URL.Query().Get("siteId"))
+        if siteID == "" {
+                writeJSONErr(w, "缺少 siteId", 400)
+                return
+        }
+        var exist string
+        _ = db.QueryRow(`SELECT id FROM Site WHERE id=?`, siteID).Scan(&exist)
+        if exist == "" {
+                writeJSONErr(w, "站点不存在", 404)
+                return
+        }
+        var raw string
+        _ = db.QueryRow(`SELECT value FROM Setting WHERE key=?`, "featuredBooks."+siteID).Scan(&raw)
+        bookIDs := []string{}
+        if raw != "" && raw != "{}" {
+                var parsed map[string]interface{}
+                if json.Unmarshal([]byte(raw), &parsed) == nil {
+                        if arr, ok := parsed["bookIds"].([]interface{}); ok {
+                                for _, e := range arr {
+                                        if s, isStr := e.(string); isStr && s != "" {
+                                                bookIDs = append(bookIDs, s)
+                                        }
+                                }
+                        }
+                }
+        }
+        out := []map[string]interface{}{}
+        for _, bid := range bookIDs {
+                var name, author, cover string
+                err := db.QueryRow(`SELECT COALESCE(name,''), COALESCE(author,''), COALESCE(cover,'') FROM Book WHERE id=?`, bid).
+                        Scan(&name, &author, &cover)
+                if err != nil {
+                        continue // 书已删 (ErrNoRows) 或 Scan 失败 → 跳过, 不阻塞整体返回.
+                }
+                out = append(out, map[string]interface{}{
+                        "id": bid, "name": name, "author": author, "cover": cover,
+                })
+        }
+        writeJSONOK(w, map[string]interface{}{
+                "siteId": siteID,
+                "books":  out,
+        })
+}
+
+// adminFeaturedBooksUpdate — POST /api/admin/featured-books body {siteId, bookIds:[]}.
+//
+// 校验 siteId 非空 + 站点存在; bookIds 上限 featuredBooksMax=30 (超量截断);
+// 每个 bookId 校验在 Book 表存在 (过滤掉已删/typo ID); upsert Setting 表; 返回 saved 列表.
+func adminFeaturedBooksUpdate(w http.ResponseWriter, r *http.Request) {
+        body := readJSONBody(r)
+        siteID := strings.TrimSpace(strField(body, "siteId", 64))
+        if siteID == "" {
+                writeJSONErr(w, "缺少 siteId", 400)
+                return
+        }
+        var exist string
+        _ = db.QueryRow(`SELECT id FROM Site WHERE id=?`, siteID).Scan(&exist)
+        if exist == "" {
+                writeJSONErr(w, "站点不存在", 404)
+                return
+        }
+        bookIDs := []string{}
+        if v, ok := body["bookIds"]; ok && v != nil {
+                if arr, ok2 := v.([]interface{}); ok2 {
+                        for _, e := range arr {
+                                if s, isStr := e.(string); isStr && s != "" {
+                                        if len(bookIDs) >= featuredBooksMax {
+                                                break // R70-D BUG-89 (P2): 防超量导致前台布局断裂 + JSON 字段过大.
+                                        }
+                                        bookIDs = append(bookIDs, s)
+                                }
+                        }
+                }
+        }
+        // 过滤掉不存在的 bookId (typo / 已删) — admin UI 应已校验, 这里兜底防脏数据.
+        valid := []string{}
+        for _, bid := range bookIDs {
+                var bExist string
+                _ = db.QueryRow(`SELECT id FROM Book WHERE id=?`, bid).Scan(&bExist)
+                if bExist != "" {
+                        valid = append(valid, bid)
+                }
+        }
+        payload, _ := json.Marshal(map[string]interface{}{"bookIds": valid})
+        _, err := db.Exec(`INSERT INTO Setting (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+                "featuredBooks."+siteID, string(payload))
+        if err != nil {
+                writeJSONErr(w, "保存失败: "+err.Error(), 500)
+                return
+        }
+        // 读回 resolved book 列表返响应 (与 GET 同款 SELECT 元数据, 让前端立即拿到 name/cover 不需再查).
+        out := []map[string]interface{}{}
+        for _, bid := range valid {
+                var name, author, cover string
+                _ = db.QueryRow(`SELECT COALESCE(name,''), COALESCE(author,''), COALESCE(cover,'') FROM Book WHERE id=?`, bid).
+                        Scan(&name, &author, &cover)
+                out = append(out, map[string]interface{}{
+                        "id": bid, "name": name, "author": author, "cover": cover,
+                })
+        }
+        writeJSONOK(w, map[string]interface{}{
+                "siteId": siteID,
+                "books":  out,
         })
 }
 

@@ -86,15 +86,156 @@
         </table>
       </div>
     </div>
+
+    <!-- R70-C 目标C: 封面推荐编辑区块. UI 先就位, 调 API placeholder.
+         后端 R70-D 范围加 GET/POST /api/admin/featured-books 读写 Setting 表
+         key=featuredBooks:{siteID} JSON. 当前 API 未实现 → fetch 失败 toast 报错
+         不影响页面渲染. -->
+    <div class="table-card" style="margin-top:16px;">
+      <div class="head">
+        <h2>封面推荐编辑</h2>
+        <div class="tools" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <label style="font-size:12px;color:var(--dim);">站点 ID:</label>
+          <input type="text" id="featuredSiteInput" placeholder="cmR..." style="width:240px;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--card-2);color:var(--text);font-size:12px;">
+          <button class="btn btn-sm" onclick="loadFeaturedBooks()">加载</button>
+          <button class="btn btn-sm btn-primary" onclick="openAddFeaturedModal()">+ 添加推荐</button>
+          <button class="btn btn-sm btn-primary" onclick="saveFeaturedBooks()">保存</button>
+        </div>
+      </div>
+      <div style="font-size:12px;color:var(--dim);padding:8px 14px;">
+        管理前台首页"封面推荐"区块展示的精选书籍. 输入 site ID 后点"加载"读现有列表, 点"+ 添加推荐"搜索书名加新推荐, "保存"提交.
+      </div>
+      <table>
+        <thead>
+          <tr><th style="width:60px;">序号</th><th style="width:220px;">书籍 ID</th><th style="width:60px;">封面</th><th>书名</th><th style="width:140px;">作者</th><th style="width:80px;">操作</th></tr>
+        </thead>
+        <tbody id="featuredBooksBody">
+          <tr><td colspan="6" class="empty-state">输入 site ID 后点"加载"读现有推荐列表</td></tr>
+        </tbody>
+      </table>
+    </div>
   </div>
 </main>
 </div>
+
+<!-- R70-C 目标C: 添加推荐搜索 modal. 搜索书名 → 选书 → 加推荐 (调 GET /api/admin/books?q=&size=20 placeholder). -->
+<div class="modal-backdrop" id="addFeaturedModal">
+  <div class="modal" style="max-width:720px;">
+    <div class="modal-head"><h2>添加封面推荐</h2><button class="btn btn-sm" onclick="closeModalFeatured()">✕</button></div>
+    <div class="modal-body" style="padding:12px 18px;">
+      <div style="display:flex;gap:8px;margin-bottom:12px;">
+        <input type="text" id="featuredSearchInput" placeholder="输入书名或作者搜索" style="flex:1;padding:7px 10px;border-radius:6px;border:1px solid var(--border);background:var(--card-2);color:var(--text);" onkeydown="if(event.key==='Enter'){searchFeaturedBooks();}">
+        <button class="btn btn-primary" onclick="searchFeaturedBooks()">搜索</button>
+      </div>
+      <div class="table-card">
+        <table>
+          <thead><tr><th>书名</th><th style="width:120px;">作者</th><th style="width:120px;">分类</th><th style="width:80px;">操作</th></tr></thead>
+          <tbody id="featuredSearchBody">
+            <tr><td colspan="4" class="empty-state">输入书名搜索</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 function fmtTS(ts){if(!ts)return'-';var d=new Date(ts);return d.getHours().toString().padStart(2,'0')+':'+d.getMinutes().toString().padStart(2,'0')+':'+d.getSeconds().toString().padStart(2,'0');}
 function toast(msg, ok){
   var t=document.createElement('div');t.className='toast '+(ok?'ok':'err');t.textContent=msg;document.body.appendChild(t);
   setTimeout(function(){t.classList.add('show');},10);setTimeout(function(){t.classList.remove('show');},2500);
   setTimeout(function(){if(t.parentNode)t.parentNode.removeChild(t);},2800);
+}
+// R70-C 目标C: 封面推荐编辑 UI 函数. 注: API 端点为 placeholder, R70-D admin.go 范围会接线
+//   实现 GET/POST /api/admin/featured-books. 当前 API 未实现 → fetch 失败 toast 报错, 不影响页面渲染.
+var featuredBooksList = [];
+var _featuredSearchResult = [];
+function escapeFeatHTML(s){
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+// loadFeaturedBooks — GET /api/admin/featured-books?site={siteID} 读现有推荐书列表.
+//   预期响应: {ok:true, books:[{id,name,author,cover,category}, ...]}
+function loadFeaturedBooks(){
+  var sid=document.getElementById('featuredSiteInput').value.trim();
+  if(!sid){toast('请输入 site ID',false);return;}
+  fetch('/api/admin/featured-books?site='+encodeURIComponent(sid))
+    .then(function(r){return r.json();}).then(function(j){
+      if(j&&j.ok){
+        featuredBooksList=j.books||[];
+        renderFeaturedBooks();
+        toast('已加载 '+(featuredBooksList.length)+' 本推荐',true);
+      }else{toast('加载失败: '+(j&&j.error||''),false);}
+    }).catch(function(e){toast('请求失败: '+e.message,false);});
+}
+// renderFeaturedBooks — 渲染 featuredBooksList 到表格 tbody.
+function renderFeaturedBooks(){
+  var body=document.getElementById('featuredBooksBody');
+  if(!featuredBooksList.length){
+    body.innerHTML='<tr><td colspan="6" class="empty-state">暂无推荐书, 点"+ 添加推荐"按钮添加</td></tr>';
+    return;
+  }
+  var html='';
+  for(var i=0;i<featuredBooksList.length;i++){
+    var b=featuredBooksList[i];
+    var cover=b.cover?'<img src="'+escapeFeatHTML(b.cover)+'" alt="" style="width:40px;height:54px;object-fit:cover;border-radius:4px;">':'-';
+    html+='<tr><td>'+(i+1)+'</td><td><code style="font-size:11px;background:var(--bg-2);padding:1px 6px;border-radius:4px;">'+escapeFeatHTML(b.id)+'</code></td><td>'+cover+'</td><td>'+escapeFeatHTML(b.name||'')+'</td><td>'+escapeFeatHTML(b.author||'')+'</td><td><button class="btn btn-sm btn-err" onclick="removeFeaturedBook('+i+')">删除</button></td></tr>';
+  }
+  body.innerHTML=html;
+}
+// removeFeaturedBook — 从 featuredBooksList 删除 idx 项 + 重新渲染.
+function removeFeaturedBook(idx){
+  if(idx<0||idx>=featuredBooksList.length)return;
+  featuredBooksList.splice(idx,1);
+  renderFeaturedBooks();
+}
+// openAddFeaturedModal — 打开搜索 modal, 清空输入 + 表格.
+function openAddFeaturedModal(){
+  document.getElementById('featuredSearchInput').value='';
+  document.getElementById('featuredSearchBody').innerHTML='<tr><td colspan="4" class="empty-state">输入书名或作者搜索</td></tr>';
+  document.getElementById('addFeaturedModal').classList.add('open');
+}
+function closeModalFeatured(){document.getElementById('addFeaturedModal').classList.remove('open');}
+// searchFeaturedBooks — GET /api/admin/books?q={query}&size=20 搜索书 (现有 admin API).
+//   响应字段: id/name/author/cover/category (adminBooksList line 1516 admin.go).
+function searchFeaturedBooks(){
+  var q=document.getElementById('featuredSearchInput').value.trim();
+  if(!q){toast('请输入书名或作者',false);return;}
+  fetch('/api/admin/books?q='+encodeURIComponent(q)+'&size=20')
+    .then(function(r){return r.json();}).then(function(j){
+      if(j&&j.ok&&j.books){
+        _featuredSearchResult=j.books;
+        var body=document.getElementById('featuredSearchBody');
+        if(!j.books.length){body.innerHTML='<tr><td colspan="4" class="empty-state">无匹配书籍</td></tr>';return;}
+        var html='';
+        for(var i=0;i<j.books.length;i++){
+          var b=j.books[i];
+          var already=featuredBooksList.some(function(x){return x.id===b.id;});
+          html+='<tr><td>'+escapeFeatHTML(b.name||'')+'</td><td>'+escapeFeatHTML(b.author||'')+'</td><td>'+escapeFeatHTML(b.category||'')+'</td><td>'+(already?'<span class="pill pill-ok">已添加</span>':'<button class="btn btn-sm btn-primary" onclick="addFeaturedBook('+i+')">添加</button>')+'</td></tr>';
+        }
+        body.innerHTML=html;
+      }else{toast('搜索失败: '+(j&&j.error||''),false);}
+    }).catch(function(e){toast('请求失败: '+e.message,false);});
+}
+// addFeaturedBook — 从 _featuredSearchResult 取 idx 项, 加入 featuredBooksList + 重新渲染.
+function addFeaturedBook(idx){
+  var b=_featuredSearchResult[idx];
+  if(!b)return;
+  if(featuredBooksList.some(function(x){return x.id===b.id;})){toast('已在推荐列表中',false);return;}
+  featuredBooksList.push({id:b.id,name:b.name,author:b.author,cover:b.cover,category:b.category});
+  renderFeaturedBooks();
+  toast('已添加: '+(b.name||''),true);
+}
+// saveFeaturedBooks — POST /api/admin/featured-books body {siteID, bookIds:[...]} 保存.
+//   预期响应: {ok:true}
+function saveFeaturedBooks(){
+  var sid=document.getElementById('featuredSiteInput').value.trim();
+  if(!sid){toast('请输入 site ID',false);return;}
+  var bookIds=featuredBooksList.map(function(b){return b.id;});
+  fetch('/api/admin/featured-books',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({siteID:sid,bookIds:bookIds})})
+    .then(function(r){return r.json();}).then(function(j){
+      if(j&&j.ok){toast('已保存 '+bookIds.length+' 本推荐',true);}
+      else{toast('保存失败: '+(j&&j.error||''),false);}
+    }).catch(function(e){toast('请求失败: '+e.message,false);});
 }
 </script>
 </body>

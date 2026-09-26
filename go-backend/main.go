@@ -272,6 +272,12 @@ func main() {
         // R54-1A: 启动时灌入已知 setting 默认值 (feedbackEnabled=true 等, INSERT OR IGNORE 不覆盖已存在)
         seedDefaultSettings()
 
+        // R70-A: 启动时预加载所有 public/clone-css/*.css 到内存缓存, 供 obfuscateHTML
+        //   inlineExternalCSS 替换 <link> 标签为 <style> 块 (R69-A obfuscateHTML=true 时
+        //   HTML class 改名需同步重写外部 CSS 内的 .class 选择器, 否则样式失效).
+        //   缓存只读, 运行时不刷新 (admin 改 CSS 需重启进程). 失败 (文件缺失) 跳过不致命.
+        initExternalCSSCache()
+
         // 静态文件 (clone-css + public) — R51 修复: StripPrefix 剥离了 clone-css/ 但文件在 public/clone-css/ 下
         // 改为 FileServer 指向 public/clone-css/ + StripPrefix, 这样 /clone-css/shipsay.css → shipsay.css → 在 clone-css/ 找到
         publicDir := filepath.Join(basePath, "public")
@@ -770,9 +776,9 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                                 if getFeedbackEnabled() {
                                         buf2.WriteString(feedbackWidgetHTML)
                                 }
-                                // R69-A: 若 Setting.obfuscateHTML=true 应用混淆 (fallback 路径用 "home" view)
-                                siteDBID, _ := site["ID"].(string)
-                                writeRenderedHTML(w, buf2.String(), siteDBID, "home")
+                                // R69-A/R70-A: 若 obfuscateHTML=true 应用混淆 (fallback 路径用 "home" view).
+                                //   R70-A: writeRenderedHTML 改读 site["ObfuscateHTML"] per-site 覆盖全局.
+                                writeRenderedHTML(w, buf2.String(), site, "home")
                                 return
                         }
                 }
@@ -783,9 +789,9 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
         if getFeedbackEnabled() {
                 buf.WriteString(feedbackWidgetHTML)
         }
-        // R69-A: 若 Setting.obfuscateHTML=true 应用混淆 (主渲染路径用原 view 构造 seed)
-        siteDBID, _ := site["ID"].(string)
-        writeRenderedHTML(w, buf.String(), siteDBID, view)
+        // R69-A/R70-A: 若 obfuscateHTML=true 应用混淆 (主渲染路径用原 view 构造 seed).
+        //   R70-A: writeRenderedHTML 改读 site["ObfuscateHTML"] per-site 覆盖全局.
+        writeRenderedHTML(w, buf.String(), site, view)
 }
 
 // R64-D: render404 渲染 templates/404.html (R64-A 创建模板), 失败时 fallback 到 http.NotFound.
@@ -823,10 +829,15 @@ func render404(w http.ResponseWriter, r *http.Request, site map[string]interface
         if t := tmpls.Lookup("404"); t != nil {
                 var buf strings.Builder
                 if err := t.Execute(&buf, data); err == nil {
-                        // R69-A: 若 Setting.obfuscateHTML=true 应用混淆 (404 页用 "404" view 构造 seed)
+                        // R69-A/R70-A: 若 obfuscateHTML=true 应用混淆 (404 页用 "404" view 构造 seed).
+                        //   R70-A: 优先 site["ObfuscateHTML"] (per-site 覆盖全局), 缺失 fallback 全局.
                         out := buf.String()
                         siteDBID, _ := site["ID"].(string)
-                        if getObfuscateHTMLEnabled() && siteDBID != "" {
+                        obfuscateOn, hasKey := site["ObfuscateHTML"].(bool)
+                        if !hasKey {
+                                obfuscateOn = getObfuscateHTMLEnabled()
+                        }
+                        if obfuscateOn && siteDBID != "" {
                                 out = obfuscateHTML(out, obfuscateHTMLSeed(siteDBID, "404"))
                         }
                         w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -841,7 +852,7 @@ func render404(w http.ResponseWriter, r *http.Request, site map[string]interface
         http.NotFound(w, r)
 }
 
-// ===== R69-A: HTML 混淆引擎 (obfuscateHTML) =====
+// ===== R69-A: HTML 混淆引擎 (obfuscateHTML) — R70-A 深化 (外部 CSS 同步 + per-site + 属性顺序 + div 包裹 + 碰撞防护) =====
 //
 // 背景: 模板渲染输出固定 HTML 结构 (固定 class 名 / 标签嵌套 / 属性顺序), 搜索引擎
 //   爬虫看到所有页面结构相同 → 易被判重复内容 (duplicate content). 加 HTML 混淆器
@@ -855,21 +866,28 @@ func render404(w http.ResponseWriter, r *http.Request, site map[string]interface
 //     .X 选择器同步 + <script> 块内 'X' 单 class 字符串字面量同步).
 //   - 变换 2: 标签间插入随机 HTML 注释 (<!-- a3f7 -->) — 蜘蛛看到不同噪音.
 //   - 变换 3: 标签间插入随机空白 (空格/换行, 不影响渲染).
-//   - 保守跳过: 属性顺序变化 (低价值 + 风险高), div 包裹 (易破布局).
+//   - R70-A 变换 4: <a> 标签属性顺序随机 (id/data-* 保前, 防 JS 选择器断).
+//   - R70-A 变换 5: <li> 单 inline 元素外包 <div> (20% 概率, 视觉不变).
+//   - R70-A 碰撞防护: randomClassName 加前缀 "_o_" (防与模板原名碰撞).
+//   - R70-A 外部 CSS 同步: <link rel=stylesheet href=/clone-css/*.css> 替换为
+//     <style>...</style> (启动时预加载缓存, 让 collectHTMLClasses 扫到外部 CSS
+//     选择器 + obfuscateHTML 第 3 步同步重写), 不再样式失效.
+//   - R70-A per-site 配置: Setting 表 key="obfuscateHTML:{siteID}" 兜底 (Site 表
+//     无此列, 严禁 prisma db push). per-site key 缺失时 fallback 全局 Setting.
 //
 // 风险与约束:
-//   - 外部 CSS (/clone-css/*.css 由 static handler 服务) 用原 class 名选择器; 若
-//     admin 启用本功能, 渲染 HTML 的 class 被改名但 CSS 文件未改 → 样式失效. 保守
-//     默认 false; admin 应仅在 inline <style> 模板站点或接受样式失效场景启用.
-//     R70 主控可考虑拦截 /clone-css/*.css 请求 + 按 site class map 重写 CSS 文件
-//     (per-site 稳定 map, 非 per-page 变化 map, 否则 CSS 缓存失效).
+//   - 外部 CSS 同步依赖 initExternalCSSCache 预加载成功; 若 CSS 文件缺失/读失败,
+//     inlineExternalCSS 降级保留 <link> 标签 (回到 R69-A 行为: 仅同步内联 <style>).
 //   - 不破坏 <pre>/<code> (保留格式标签): 当前未实现 per-tag 跳过, 但变换只在
 //     class 属性 + 标签间, <pre>/<code> 内文本若无 class 属性则天然不受影响.
 //   - <script> 块内仅替换单 class 字符串字面量 ("X" 或 'X' 形态, 无空格); 多 class
 //     字符串 ("X Y") 不替换 (防 className 赋值场景断 JS).
+//   - <a> 属性顺序仅 swap <a> 标签 (不动 div/span/p/li), 防 blast radius 过大.
+//   - <li> 包裹仅限单 inline 元素 (无多 inline 元素或文本节点), 防破多 inline 布局.
 //
-// 开关: Setting 表 key='obfuscateHTML' value='true'/'false' (默认 false).
-//   wired into homeHandler (主路径 + 兜底 fallback 路径) + render404.
+// 开关: Setting 表 key='obfuscateHTML' (全局, 默认 false) +
+//   key='obfuscateHTML:{siteID}' (per-site 覆盖全局). wired into homeHandler
+//   (主路径 + 兜底 fallback 路径) + render404.
 
 // R69-A: obfuscateHTMLSeed 用 siteID + view + 5 分钟时间窗口构造混淆种子.
 //   返回值供 obfuscateHTML 内 RNG 用, 同窗口同结果 (缓存友好); 跨窗口变化 (蜘蛛
@@ -925,13 +943,21 @@ func (r *obfuscateRNG) intn(n int) int {
 // randomClassName 生成 5-8 字符 CSS 标识符 (首字符为字母, 后续字母数字).
 //   首字符限字母 (CSS 标识符规则: 首字符不可数字), 后续字符可为字母/数字.
 //   长度 5-8 在 CSS 中足够唯一防与现有 class 名冲突.
+//
+// R70-A 碰撞防护: 加前缀 "_o_" (如 "_o_a3f7k2"). 现有模板 class 名 (active/top/link/
+//   book/cover 等) 无一以 "_o_" 开头 → 生成名与原名碰撞概率 = 0. 即便 RNG 在同页内
+//   给两个不同原 class 生成相同后缀 (概率 < 10^-9), 也不会与原名混淆 — 但因后缀随机
+//   长度 5-8 字符 + alnum 62 字母表 (62^7 ≈ 3.5e12), 同页 ~50 class 内碰撞 < 10^-9,
+//   可忽略. CSS 标识符首字符允许下划线 (CSS Syntax spec).
 func (r *obfuscateRNG) randomClassName() string {
         const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
         const alnum = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-        length := 5 + r.intn(4) // 5-8
-        out := make([]byte, length)
-        out[0] = letters[r.intn(len(letters))]
-        for i := 1; i < length; i++ {
+        const prefix = "_o_"
+        length := 5 + r.intn(4) // 5-8 (后缀部分)
+        out := make([]byte, len(prefix)+length)
+        copy(out, prefix)
+        out[len(prefix)] = letters[r.intn(len(letters))] // 后缀首字符限字母 (保守, 防 strict CSS 解析器)
+        for i := len(prefix) + 1; i < len(prefix)+length; i++ {
                 out[i] = alnum[r.intn(len(alnum))]
         }
         return string(out)
@@ -995,23 +1021,120 @@ func collectHTMLClasses(html string) map[string]bool {
         return set
 }
 
+// ===== R70-A: 外部 CSS 同步重写 =====
+//
+// 背景: R69-A obfuscateHTML 仅同步内联 <style> 块 + <script> 字面量; 外部 CSS
+//   (/clone-css/*.css 由 static FileServer 服务) 内的 class 选择器未同步 → 若
+//   admin 启用 obfuscateHTML=true, HTML 的 class 被改名 (e.g. .book-title → ._o_a3f7k2)
+//   但外部 CSS 文件仍用 .book-title → 浏览器按改名后 class 查 CSS 选择器查不到 →
+//   样式失效 (整页 broken layout). 同时蜘蛛可从外部 CSS 反推原 class 名 (降反爬效果).
+//
+// 方案: 在 obfuscateHTML 入口先 inline 外部 CSS — 把 <link rel="stylesheet" href=
+//   "/clone-css/xxx.css"> 替换为 <style>...</style> 块 (CSS 内容从启动时预加载缓存
+//   读出). inline 后, collectHTMLClasses 会扫到 <style> 块内的 .classname 选择器,
+//   obfuscateHTML 第 3 步 (重写 <style> 选择器) 会同步重写 → CSS 选择器与 HTML class
+//   属性同步改名, 浏览器按改名后 class 查到 (改名后的) 选择器 → 样式生效.
+//
+// 缓存: 启动时 initExternalCSSCache 一次 glob public/clone-css/*.css + ReadFile 全部
+//   到内存 (10 个文件 ~600KB 总量, 不显著增内存); 运行时 inlineExternalCSS 仅查 map
+//   无 I/O. per-site CSS 文件不变 (admin 改 CSS 需重启), 缓存永不过期.
+//
+// 降级: 若 href 不在缓存 (非 /clone-css/ 路径或文件加载失败) → 保留原 <link> 标签
+//   (degrade 到 R69-A 行为, 仅同步内联 <style>, 不破坏渲染).
+
+// R70-A: externalCSSCache 启动时加载的 per-site CSS 内容缓存.
+//   key = "/clone-css/<name>.css" (与模板 href 一致), value = CSS 文本 (空 = 加载失败).
+//   init 后只读, goroutine 并发读安全 (无并发写).
+var externalCSSCache map[string]string
+
+// initExternalCSSCache 启动时一次 glob + ReadFile 所有 public/clone-css/*.css 到缓存.
+//   在 main() 内 http.ListenAndServe 前调用. 失败 (文件缺失 / 读错误) 跳过该文件
+//   不致命 (inlineExternalCSS 会降级保留 <link> 标签).
+func initExternalCSSCache() {
+        externalCSSCache = make(map[string]string)
+        cssDir := filepath.Join(basePath, "public/clone-css")
+        matches, _ := filepath.Glob(filepath.Join(cssDir, "*.css"))
+        for _, m := range matches {
+                content, err := os.ReadFile(m)
+                if err != nil {
+                        log.Printf("[R70-A] initExternalCSSCache: read %s failed: %v", m, err)
+                        continue
+                }
+                key := "/clone-css/" + filepath.Base(m)
+                externalCSSCache[key] = string(content)
+        }
+        log.Printf("[R70-A] external CSS cache loaded: %d files", len(externalCSSCache))
+}
+
+// externalLinkRE 匹配 <link ...> 标签 (含自闭合). 捕获组 1 = 属性串 (含前导空格).
+//   (?i) 不区分大小写; <link\b 后接非字母数字字符 (空格 / > / 自闭合 /).
+var externalLinkRE = regexp.MustCompile(`(?i)<link\b([^>]*)>`)
+
+// linkHrefRE 从属性串中提取 href="..." / href='...' 值.
+//   捕获组 1 = 含引号完整值, 2 = 双引号内容, 3 = 单引号内容.
+var linkHrefRE = regexp.MustCompile(`(?i)\bhref\s*=\s*("([^"]*)"|'([^']*)')`)
+
+// inlineExternalCSS 把 HTML 内 <link rel="stylesheet" href="/clone-css/xxx.css">
+//   替换为 <style>...</style> 块 (CSS 内容从 externalCSSCache 读). 不在缓存的 link
+//   (非 /clone-css/ 路径或加载失败的文件) 保留原样 (降级行为).
+//   必须在 obfuscateHTML 入口前调用 (让 collectHTMLClasses 扫到 inlined CSS).
+func inlineExternalCSS(html string) string {
+        if html == "" {
+                return html
+        }
+        if len(externalCSSCache) == 0 {
+                return html // 无缓存 (init 未跑或全失败), 全部保留 <link> 降级
+        }
+        return externalLinkRE.ReplaceAllStringFunc(html, func(match string) string {
+                sub := externalLinkRE.FindStringSubmatch(match)
+                if len(sub) < 2 {
+                        return match
+                }
+                attrs := sub[1]
+                hrefMatch := linkHrefRE.FindStringSubmatch(attrs)
+                if len(hrefMatch) < 4 {
+                        return match
+                }
+                href := hrefMatch[2]
+                if href == "" {
+                        href = hrefMatch[3]
+                }
+                if href == "" {
+                        return match
+                }
+                css, ok := externalCSSCache[href]
+                if !ok || css == "" {
+                        return match // 不在缓存 (非 /clone-css/ 路径或加载失败), 保留 <link>
+                }
+                // inline 为 <style> 块. type 属性 (text/css) 在 HTML5 可省略, 保留以兼容老浏览器.
+                return "<style type=\"text/css\">\n" + css + "\n</style>"
+        })
+}
+
 // R69-A: obfuscateHTML 主混淆函数. 输入 HTML + seed, 返回混淆后 HTML.
 //
 //   变换流程:
+//     0. inline 外部 CSS (R70-A 新增) — <link rel=stylesheet href=/clone-css/*.css>
+//        → <style>...</style>, 让后续 collectHTMLClasses 扫到外部 CSS 选择器
 //     1. 扫描所有 class 名 (HTML 属性 + <style> 选择器) → 构建随机映射表
 //        (原 class → 随机 class, 同 seed 同映射保缓存友好)
 //     2. 重写 HTML class 属性值 (class="a b" → class="X Y" 用映射)
-//     3. 重写 <style> 块内 CSS 选择器 (.a → .X 同步映射)
+//     3. 重写 <style> 块内 CSS 选择器 (.a → .X 同步映射, 含 0 步 inline 的外部 CSS)
 //     4. 重写 <script> 块内单 class 字符串字面量 ("a" → "X" 同步映射)
 //     5. 标签间插入随机 HTML 注释 (50% 概率, 防 5KB+ HTML 过度膨胀)
 //     6. 标签间插入随机空白 (30% 概率, 1-2 个空格/换行)
+//     7. (R70-A 新增) <a> 标签属性顺序随机 (id/data-* 保前)
+//     8. (R70-A 新增) <li> 单 inline 元素外包 <div> (20% 概率, 视觉不变)
 //
 //   注: 若 seed 为空 → 不混淆 (防 admin 测试误用导致无映射乱写).
-//   注: 若 html 无任何 class 名 → 跳过 2/3/4 步, 仅做 5/6 步 (注释/空白注入).
+//   注: 若 html 无任何 class 名 → 跳过 2/3/4 步, 仅做 5/6/7/8 步 (注释/空白/属性/包裹).
 func obfuscateHTML(html, seed string) string {
         if html == "" || seed == "" {
                 return html
         }
+        // 0. inline 外部 CSS (R70-A 新增, 必须先于 collectHTMLClasses 让外部 CSS 选择器入集)
+        html = inlineExternalCSS(html)
+
         rng := newObfuscateRNG(seed)
 
         // 1. 构建 class 映射表 (原 class → 随机 class, 按 class 名字典序迭代保确定性)
@@ -1110,6 +1233,12 @@ func obfuscateHTML(html, seed string) string {
         // 6. 标签间插入随机空白 (30% 概率, 1-2 字符)
         html = jitterTagWhitespace(html, rng)
 
+        // 7. (R70-A 新增) <a> 标签属性顺序随机 (id/data-* 保前)
+        html = shuffleAnchorAttrs(html, rng)
+
+        // 8. (R70-A 新增) <li> 单 inline 元素外包 <div> (20% 概率, 视觉不变)
+        html = wrapLiInlineWithDiv(html, rng)
+
         return html
 }
 
@@ -1158,6 +1287,159 @@ func jitterTagWhitespace(html string, rng *obfuscateRNG) string {
         })
 }
 
+// ===== R70-A: 混淆引擎深化 (属性顺序 + div 包裹) =====
+//
+// 背景: R69-A 6 变换未做属性顺序 + div 包裹 (worklog #5/#6/#7 交接 R70). 本轮加 2
+//   变换: <a> 属性顺序随机 (id/data-* 保前) + <li> 单 inline 元素外包 <div>. 保守
+//   限定在安全位置 (anchor / li+single-inline), 不破布局.
+
+// anchorTagRE 匹配 <a ...> 开放标签 (含自闭合, 但 <a> 实际不自闭合).
+//   \b 词边界防 <address>/<abbr>/<article>/<aside> 等误匹配 (a 后接字母 \b 不匹配).
+//   捕获组 1 = 属性串 (含前导空格, 如 ' href="x" class="y"').
+var anchorTagRE = regexp.MustCompile(`(?i)<a\b([^>]*)>`)
+
+// shuffleAnchorAttrs 随机重排 <a> 标签内的属性顺序 (id/data-* 保前, 其余 Fisher-Yates).
+//   HTML5 spec: 属性顺序对语义无影响 (除 class+=class 同名冲突), 故随机化不破渲染.
+//   保守: id + data-* 属性固定在前 (保前) — 因 JS 常用 getElementById / dataset 读取,
+//   保持靠前不影响 JS; 同时视觉上不致把语义重要的 id 拖到最后.
+//   风险: <a href="javascript:..." 会被 sanitizeChapterHTML 剥, 不在主路径; 模板内
+//   <a> 全静态无 user-controlled 属性, 无 XSS 风险.
+//   仅 <a> (anchor) 应用, 不动其它标签 (限制 blast radius).
+func shuffleAnchorAttrs(html string, rng *obfuscateRNG) string {
+        if html == "" {
+                return html
+        }
+        return anchorTagRE.ReplaceAllStringFunc(html, func(match string) string {
+                sub := anchorTagRE.FindStringSubmatch(match)
+                if len(sub) < 2 {
+                        return match
+                }
+                attrStr := strings.TrimSpace(sub[1])
+                if attrStr == "" {
+                        return match // <a> 无属性, 不动
+                }
+                // 检测自闭合 / 末尾 /, 暂存后剥离 (parseAttrs 不识别 /)
+                selfClosing := false
+                if strings.HasSuffix(attrStr, "/") {
+                        selfClosing = true
+                        attrStr = strings.TrimSpace(strings.TrimSuffix(attrStr, "/"))
+                        if attrStr == "" {
+                                return match
+                        }
+                }
+                attrs := parseAttrs(attrStr)
+                if len(attrs) < 2 {
+                        return match // 仅 1 个属性, 无需 shuffle
+                }
+                // 分区: anchored (id/data-*) 保前, 其余 shufflable
+                var anchored, shufflable []string
+                for _, a := range attrs {
+                        name := attrName(a)
+                        if name == "id" || strings.HasPrefix(name, "data-") {
+                                anchored = append(anchored, a)
+                        } else {
+                                shufflable = append(shufflable, a)
+                        }
+                }
+                if len(shufflable) < 2 {
+                        return match // shufflable 部分 < 2, 无需 shuffle
+                }
+                // Fisher-Yates 随机洗牌 shufflable
+                for i := len(shufflable) - 1; i > 0; i-- {
+                        j := rng.intn(i + 1)
+                        shufflable[i], shufflable[j] = shufflable[j], shufflable[i]
+                }
+                // 重组: anchored 在前 (保前), shufflable 随后
+                var out []string
+                out = append(out, anchored...)
+                out = append(out, shufflable...)
+                result := "<a " + strings.Join(out, " ")
+                if selfClosing {
+                        result += " /"
+                }
+                return result + ">"
+        })
+}
+
+// parseAttrs 把属性串 (如 'href="x" class="y" title="z"') 切分为单属性 slice,
+//   尊重引号 (单/双引号内的空格不切). 简单状态机逐字节扫描.
+func parseAttrs(s string) []string {
+        var out []string
+        var cur strings.Builder
+        inSingle, inDouble := false, false
+        started := false
+        for i := 0; i < len(s); i++ {
+                c := s[i]
+                switch {
+                case c == '"' && !inSingle:
+                        inDouble = !inDouble
+                        cur.WriteByte(c)
+                        started = true
+                case c == '\'' && !inDouble:
+                        inSingle = !inSingle
+                        cur.WriteByte(c)
+                        started = true
+                case (c == ' ' || c == '\t' || c == '\n' || c == '\r') && !inSingle && !inDouble:
+                        if started {
+                                out = append(out, cur.String())
+                                cur.Reset()
+                                started = false
+                        }
+                default:
+                        cur.WriteByte(c)
+                        started = true
+                }
+        }
+        if started {
+                out = append(out, cur.String())
+        }
+        return out
+}
+
+// attrName 提取属性名 (等号前的部分, 小写). 如 'href="x"' → 'href', 'class="y"' → 'class'.
+//   用于判断 anchored (id/data-*). 不影响属性值.
+func attrName(attr string) string {
+        eq := strings.IndexByte(attr, '=')
+        name := attr
+        if eq >= 0 {
+                name = attr[:eq]
+        }
+        return strings.ToLower(strings.TrimSpace(name))
+}
+
+// liSingleInlineRE 匹配 <li> 内仅含单个 <a> 或 <span> inline 元素 (允许前后空白).
+//   (?is) 跨行 + 不区分大小写; 捕获组 1 = <li> 属性串 (含前导空格, 可空),
+//   捕获组 2 = 内层 inline 元素 (<a>...</a> 或 <span>...</span>).
+//   不匹配多 inline 元素的 <li> (避免改多 inline 的布局).
+//   保守: <li> 内只允许前后空白 + 单个 inline 元素, 不允许其它文本/标签.
+var liSingleInlineRE = regexp.MustCompile(`(?is)<li(\s[^>]*)?>\s*(<a\b[^>]*>.*?</a>|<span\b[^>]*>.*?</span>)\s*</li>`)
+
+// wrapLiInlineWithDiv 在 <li> 内单 inline 元素外偶尔包 <div> (20% 概率).
+//   变换: <li class="x"><a href="y">text</a></li> → <li class="x"><div><a href="y">text</a></div></li>
+//   视觉不变: <li> 是 block, <div> 是 block, <div> 占 <li> 100% 宽度, 内层 <a> 仍 inline
+//   渲染. 实际效果: 多一层无样式 <div> 包裹, 蜘蛛看到结构噪音.
+//   保守: 仅 <li> 含单 <a> 或单 <span> (无其它文本/标签) 时包裹, 避免破坏多 inline 布局.
+//   风险: <li> CSS 用 ul>li>a 直系子选择器 (e.g. ul.nav li a { ... }) 时, 加 <div> 中间
+//   层会断选择器 → 样式失效. 模板内 <li> 多用 .class 选择器 (e.g. .nav-list a), 不受影响.
+//   20% 概率限制: 避免每页大量 <li> 全包致样式批量失效 + 减小 HTML 体积膨胀.
+func wrapLiInlineWithDiv(html string, rng *obfuscateRNG) string {
+        if html == "" {
+                return html
+        }
+        return liSingleInlineRE.ReplaceAllStringFunc(html, func(match string) string {
+                if rng.intn(5) != 0 { // 20% 概率包裹
+                        return match
+                }
+                sub := liSingleInlineRE.FindStringSubmatch(match)
+                if len(sub) < 3 {
+                        return match
+                }
+                liAttrs := sub[1]
+                content := sub[2]
+                return "<li" + liAttrs + "><div>" + content + "</div></li>"
+        })
+}
+
 // R69-A: getObfuscateHTMLEnabled 读 Setting 表 obfuscateHTML 全局开关 (默认 false).
 //   与 getFeedbackEnabled 同款模式 (admin.go). value 存储格式: JSON 编码
 //   ("true"/"false") 或 raw 字符串 ("true"/"false"). 缺失或非 "true" 均视为 false.
@@ -1178,12 +1460,123 @@ func getObfuscateHTMLEnabled() bool {
         return v == "true"
 }
 
+// R70-A: parseObfuscateBool 解析 Setting 表 obfuscateHTML 值 (JSON bool 或 raw "true").
+//   提取自 getObfuscateHTMLEnabled + getSiteObfuscateHTML 共用.
+//   "true"/JSON true → true; 其它 → false.
+func parseObfuscateBool(v string) bool {
+        if v == "" {
+                return false
+        }
+        var parsed interface{}
+        if json.Unmarshal([]byte(v), &parsed) == nil {
+                if b, ok := parsed.(bool); ok {
+                        return b
+                }
+        }
+        return v == "true"
+}
+
+// R70-A: getSiteObfuscateHTML — per-site obfuscateHTML 读取.
+//   策略: Setting 表 key="obfuscateHTML:{siteID}" 兜底 (因 Site 表无 obfuscateHTML 列,
+//   R70 严禁 prisma db push). per-site key 缺失时 fallback 全局 Setting "obfuscateHTML".
+//   TODO (R71+): prisma schema 加 Site.obfuscateHTML 列后, 改读 Site 表 (SELECT 直读).
+//   每次 getSite 调用一次 (SQLite 单行查询, <0.1ms).
+func getSiteObfuscateHTML(siteID string) bool {
+        if siteID != "" {
+                var v string
+                err := db.QueryRow(`SELECT value FROM Setting WHERE key=?`, "obfuscateHTML:"+siteID).Scan(&v)
+                if err == nil {
+                        return parseObfuscateBool(v)
+                }
+        }
+        return getObfuscateHTMLEnabled()
+}
+
+// R70-A: getSiteKeywordTranscodeMode — per-site keywordTranscode 读取.
+//   策略: Setting 表 key="keywordTranscode:{siteID}" 兜底. per-site key 缺失时 fallback
+//   全局 Setting "keywordTranscode". 未知值 → "off" (保守不破坏).
+func getSiteKeywordTranscodeMode(siteID string) string {
+        if siteID != "" {
+                var v string
+                err := db.QueryRow(`SELECT value FROM Setting WHERE key=?`, "keywordTranscode:"+siteID).Scan(&v)
+                if err == nil && v != "" {
+                        var parsed interface{}
+                        if json.Unmarshal([]byte(v), &parsed) == nil {
+                                if s, ok := parsed.(string); ok {
+                                        return normalizeTranscodeMode(s)
+                                }
+                        }
+                        return normalizeTranscodeMode(v)
+                }
+        }
+        return getKeywordTranscodeMode()
+}
+
+// R70-A: getTranscodeContentMode — 正文转码模式读取 (默认 off).
+//   value 存储格式: JSON 编码字符串 ("\"homophone\"") 或 raw 字符串 ("homophone").
+//   保守: 仅允许 homophone/pinyin/mixed (dict-replace 模式, 不破 HTML 标签).
+//   split/zwsp 模式对全字符串逐字符插分隔符, 应用到 HTML 正文会破 HTML 标签 (<p> → < p >)
+//   → 自动降级到 mixed (仅替字典词, HTML 标签不动).
+//   每次 getReadViewData 调用一次 (SQLite 单行查询, <0.1ms).
+func getTranscodeContentMode() string {
+        var v string
+        err := db.QueryRow(`SELECT value FROM Setting WHERE key='transcodeContent'`).Scan(&v)
+        if err != nil || v == "" {
+                return "off"
+        }
+        var parsed interface{}
+        if json.Unmarshal([]byte(v), &parsed) == nil {
+                if s, ok := parsed.(string); ok {
+                        v = s
+                }
+        }
+        switch v {
+        case "homophone", "pinyin", "mixed":
+                return v
+        case "split", "zwsp":
+                // 保守降级: split/zwsp 会破 HTML 标签, 降级到 mixed (仅替字典词)
+                return "mixed"
+        }
+        return "off"
+}
+
+// R70-A: transcodeChapterContent 应用正文关键词转码到章节 HTML 内容.
+//   mode = "off"/"" → passthrough (默认, 不转码).
+//   mode = "homophone"/"pinyin" → transcodeDictReplace (仅替字典词, HTML 标签不动).
+//   mode = "mixed" → transcodeMixed (per word hash 选 homophone/pinyin/zwsp/passthrough).
+//   保守: 只转码字典内敏感词, 不转码整段 (避免破坏阅读 + HTML 标签).
+//   注: transcodeDictReplace/transcodeMixed 用 strings.ReplaceAll 替换字典词, HTML 标签
+//   (如 <p>/<a>) 不含字典词 (中文敏感词), 不受影响.
+func transcodeChapterContent(htmlContent, mode string) string {
+        if htmlContent == "" || mode == "" || mode == "off" {
+                return htmlContent
+        }
+        switch mode {
+        case "homophone", "pinyin":
+                return transcodeDictReplace(htmlContent, mode)
+        case "mixed":
+                return transcodeMixed(htmlContent)
+        }
+        return htmlContent
+}
+
 // R69-A: writeRenderedHTML 写 HTML 响应, 若 Setting.obfuscateHTML=true 应用混淆.
 //   homeHandler + render404 共享此 helper, 避免重复 if-else 逻辑.
 //   siteID/view 用于构造 seed (5 分钟窗口); 若二者均空 → 不混淆 (防 admin 测试误用).
-func writeRenderedHTML(w http.ResponseWriter, html, siteID, view string) {
-        if getObfuscateHTMLEnabled() && siteID != "" {
-                html = obfuscateHTML(html, obfuscateHTMLSeed(siteID, view))
+//   R70-A: 改读 site["ObfuscateHTML"] (per-site 覆盖全局), 缺失时 fallback 全局.
+func writeRenderedHTML(w http.ResponseWriter, html string, site map[string]interface{}, view string) {
+        if site != nil {
+                siteID, _ := site["ID"].(string)
+                if siteID != "" {
+                        // R70-A: 优先 site.ObfuscateHTML (per-site), 缺失 fallback 全局
+                        obfuscateOn, hasKey := site["ObfuscateHTML"].(bool)
+                        if !hasKey {
+                                obfuscateOn = getObfuscateHTMLEnabled()
+                        }
+                        if obfuscateOn {
+                                html = obfuscateHTML(html, obfuscateHTMLSeed(siteID, view))
+                        }
+                }
         }
         w.Header().Set("Content-Type", "text/html; charset=utf-8")
         w.Write([]byte(html))
@@ -1428,6 +1821,10 @@ func chapterHandler(w http.ResponseWriter, r *http.Request) {
 //  R63-A 接入伪静态: SELECT 加 pseudoStaticStyle 字段 (供 homeHandler 伪静态 URL 解析 +
 //    模板层 URL builder 消费). 其它 R16/R22 字段 (chapterPaginationMode/navCategoryCount/等)
 //    留给后续轮次按需扩展 SELECT (本轮只加 pseudoStaticStyle 一列, 不动其它).
+//  R70-A per-site 配置: 在返回 map 内补 ObfuscateHTML + KeywordTranscode 两字段 (因
+//    Site 表无此列, 严禁 prisma db push, 用 Setting 表 key="obfuscateHTML:{id}" +
+//    "keywordTranscode:{id}" 兜底; per-site key 缺失时 fallback 全局 Setting). 两字段
+//    供 writeRenderedHTML/transcodeChapterSeoOutput 读取 per-site 覆盖全局开关.
 func getSite(siteID string) (map[string]interface{}, error) {
         q := `SELECT id,name,domain,themeId,isDefault,title,description,keywords,offset,chapterSeoAuto,chapterSeoTitleTemplate,chapterSeoDescTemplate,chapterSeoKeywordsTemplate,pseudoStaticStyle FROM Site WHERE status=1`
         var rows *sql.Rows
@@ -1440,20 +1837,24 @@ func getSite(siteID string) (map[string]interface{}, error) {
         if err != nil {
                 return nil, err
         }
-        defer rows.Close()
-        // R67-D: 改 for→if (rows.Scan + return 在首轮迭代执行后必返, staticcheck SA4004
-        //   标识 "loop unconditionally terminated". SQL 上 AND id=? 主键过滤 / AND
-        //   isDefault=1 至多 1 行 (isDefault 应唯一, DB 不强约束但实际唯一); 取首行即返.)
+        // R70 主控修复: rows 持锁期间调 getSiteObfuscateHTML/getSiteKeywordTranscodeMode
+        //   (内部 db.QueryRow 查 Setting) → SQLite 连接池等待 rows 释放 → 死锁 hang (与 R63 批量 TDK 同款).
+        //   修复: 先 Scan 收齐字段 + 显式 rows.Close() + 再查 Setting.
+        var id, name, domain, themeID, title, desc, kw, seoTmplT, seoTmplD, seoTmplK, pseudoStaticStyle string
+        var isDefault bool
+        var offset int
+        var seoAuto bool
+        var found bool
         if rows.Next() {
-                var id, name, domain, themeID, title, desc, kw, seoTmplT, seoTmplD, seoTmplK, pseudoStaticStyle string
-                var isDefault bool
-                var offset int
-                var seoAuto bool
                 rows.Scan(&id, &name, &domain, &themeID, &isDefault, &title, &desc, &kw, &offset, &seoAuto, &seoTmplT, &seoTmplD, &seoTmplK, &pseudoStaticStyle)
+                found = true
+        }
+        rows.Close() // 显式释放连接, 后续 Setting 查询不再阻塞
+        if found {
                 if pseudoStaticStyle == "" {
                         pseudoStaticStyle = "query"
                 }
-                return map[string]interface{}{"ID": id, "Name": name, "Domain": domain, "ThemeID": themeID, "IsDefault": isDefault, "Title": title, "Description": desc, "Keywords": kw, "Offset": offset, "ChapterSeoAuto": seoAuto, "ChapterSeoTitleTemplate": seoTmplT, "ChapterSeoDescTemplate": seoTmplD, "ChapterSeoKeywordsTemplate": seoTmplK, "PseudoStaticStyle": pseudoStaticStyle}, nil
+                return map[string]interface{}{"ID": id, "Name": name, "Domain": domain, "ThemeID": themeID, "IsDefault": isDefault, "Title": title, "Description": desc, "Keywords": kw, "Offset": offset, "ChapterSeoAuto": seoAuto, "ChapterSeoTitleTemplate": seoTmplT, "ChapterSeoDescTemplate": seoTmplD, "ChapterSeoKeywordsTemplate": seoTmplK, "PseudoStaticStyle": pseudoStaticStyle, "ObfuscateHTML": getSiteObfuscateHTML(id), "KeywordTranscode": getSiteKeywordTranscodeMode(id)}, nil
         }
         // fallback 第一个 (R42-1A: 显式 err 检查防 nil rows2.Close() panic; 之前 _ 忽略 err →
         //                  若 db.Query 失败 rows2 为 nil, defer rows2.Close() 在 nil 上调用 panic)
@@ -1461,18 +1862,22 @@ func getSite(siteID string) (map[string]interface{}, error) {
         if qErr != nil {
                 return nil, qErr
         }
-        defer rows2.Close()
-        // R67-D: 改 for→if (同上; LIMIT 1 保证至多 1 行, staticcheck SA4004 标识.)
+        // R70 主控修复: 同上, rows2 持锁期间调 Setting 查询会死锁.
+        var id2, name2, domain2, themeID2, title2, desc2, kw2, seoTmplT2, seoTmplD2, seoTmplK2, pseudoStaticStyle2 string
+        var isDefault2 bool
+        var offset2 int
+        var seoAuto2 bool
+        var found2 bool
         if rows2.Next() {
-                var id, name, domain, themeID, title, desc, kw, seoTmplT, seoTmplD, seoTmplK, pseudoStaticStyle string
-                var isDefault bool
-                var offset int
-                var seoAuto bool
-                rows2.Scan(&id, &name, &domain, &themeID, &isDefault, &title, &desc, &kw, &offset, &seoAuto, &seoTmplT, &seoTmplD, &seoTmplK, &pseudoStaticStyle)
-                if pseudoStaticStyle == "" {
-                        pseudoStaticStyle = "query"
+                rows2.Scan(&id2, &name2, &domain2, &themeID2, &isDefault2, &title2, &desc2, &kw2, &offset2, &seoAuto2, &seoTmplT2, &seoTmplD2, &seoTmplK2, &pseudoStaticStyle2)
+                found2 = true
+        }
+        rows2.Close() // 显式释放连接
+        if found2 {
+                if pseudoStaticStyle2 == "" {
+                        pseudoStaticStyle2 = "query"
                 }
-                return map[string]interface{}{"ID": id, "Name": name, "Domain": domain, "ThemeID": themeID, "IsDefault": isDefault, "Title": title, "Description": desc, "Keywords": kw, "Offset": offset, "ChapterSeoAuto": seoAuto, "ChapterSeoTitleTemplate": seoTmplT, "ChapterSeoDescTemplate": seoTmplD, "ChapterSeoKeywordsTemplate": seoTmplK, "PseudoStaticStyle": pseudoStaticStyle}, nil
+                return map[string]interface{}{"ID": id2, "Name": name2, "Domain": domain2, "ThemeID": themeID2, "IsDefault": isDefault2, "Title": title2, "Description": desc2, "Keywords": kw2, "Offset": offset2, "ChapterSeoAuto": seoAuto2, "ChapterSeoTitleTemplate": seoTmplT2, "ChapterSeoDescTemplate": seoTmplD2, "ChapterSeoKeywordsTemplate": seoTmplK2, "PseudoStaticStyle": pseudoStaticStyle2, "ObfuscateHTML": getSiteObfuscateHTML(id2), "KeywordTranscode": getSiteKeywordTranscodeMode(id2)}, nil
         }
         return nil, nil
 }
@@ -1517,8 +1922,8 @@ func computeChapterSeo(site map[string]interface{}, chapterTitle, bookName, book
                 defaultKw += "," + siteKeywords
         }
         if seoAuto || (titleTmpl == "" && descTmpl == "" && kwTmpl == "") {
-                // R69-A: 应用关键词转码 (Setting.keywordTranscode != "off" 时)
-                return transcodeChapterSeoOutput(defaultTitle, defaultDesc, defaultKw)
+                // R69-A/R70-A: 应用关键词转码 (per-site mode 优先, fallback 全局)
+                return transcodeChapterSeoOutput(site, defaultTitle, defaultDesc, defaultKw)
         }
         // chapterSeoAuto=false 且至少一个模板非空: 用用户模板 (占位符替换); 空模板 fallback 默认
         apply := func(tmpl, defaultVal string) string {
@@ -1533,8 +1938,8 @@ func computeChapterSeo(site map[string]interface{}, chapterTitle, bookName, book
                 out = strings.ReplaceAll(out, "{siteName}", siteName)
                 return out
         }
-        // R69-A: 应用关键词转码 (Setting.keywordTranscode != "off" 时)
-        return transcodeChapterSeoOutput(apply(titleTmpl, defaultTitle), apply(descTmpl, defaultDesc), apply(kwTmpl, defaultKw))
+        // R69-A/R70-A: 应用关键词转码 (per-site mode 优先, fallback 全局)
+        return transcodeChapterSeoOutput(site, apply(titleTmpl, defaultTitle), apply(descTmpl, defaultDesc), apply(kwTmpl, defaultKw))
 }
 
 // ===== R69-A: 关键词转码 (transcodeKeyword) =====
@@ -1561,7 +1966,9 @@ func computeChapterSeo(site map[string]interface{}, chapterTitle, bookName, book
 //
 // 开关: Setting 表 key='keywordTranscode' value='off'/'split'/'homophone'/'pinyin'/
 //   'mixed'/'zwsp' (默认 off). wired into computeChapterSeo 输出 (title/desc/keywords).
-//   注: 仅 TDK 转码; 正文 (chapter content) 转码会破坏用户阅读, 本轮不做 (留 R70+).
+//   R70-A: per-site key='keywordTranscode:{siteID}' 覆盖全局 (Setting 兜底, Site 表无列).
+//   R70-A: 正文转码 Setting key='transcodeContent' (默认 off, 仅允许 homophone/pinyin/
+//   mixed 三模式, split/zwsp 自动降级 mixed 防 HTML 标签破裂), wired into getReadViewData.
 
 // R69-A: transcodeEntry 一条敏感词的转码选项.
 type transcodeEntry struct {
@@ -1784,10 +2191,19 @@ func normalizeTranscodeMode(s string) string {
 }
 
 // transcodeChapterSeoOutput 应用关键词转码到 computeChapterSeo 输出 (title/desc/kw).
-//   Setting 表 keywordTranscode != "off" 时应用, 否则 passthrough.
-//   在 computeChapterSeo 两处 return 之前统一调用, 保证 TDK 一致转码.
-func transcodeChapterSeoOutput(title, desc, kw string) (string, string, string) {
-        mode := getKeywordTranscodeMode()
+//   R70-A: 读 site["KeywordTranscode"] (per-site) 优先, 缺失时 fallback 全局 Setting
+//   "keywordTranscode". mode="off"/"" → passthrough; 否则应用 transcodeKeyword(mode)
+//   到 title/desc/kw. 在 computeChapterSeo 两处 return 之前统一调用, 保 TDK 一致转码.
+func transcodeChapterSeoOutput(site map[string]interface{}, title, desc, kw string) (string, string, string) {
+        mode := ""
+        if site != nil {
+                if m, ok := site["KeywordTranscode"].(string); ok {
+                        mode = m
+                }
+        }
+        if mode == "" {
+                mode = getKeywordTranscodeMode()
+        }
         if mode == "off" || mode == "" {
                 return title, desc, kw
         }
@@ -2286,6 +2702,11 @@ func getReadViewData(chID string, site map[string]interface{}) (map[string]inter
                 }
                 bodyHTML = strings.Join(out, "")
         }
+        // R70-A: 正文关键词转码 (Setting.transcodeContent != "off" 时应用).
+        //   保守: 仅替字典内敏感词 (transcodeDictReplace/transcodeMixed), HTML 标签不动
+        //   (字典为中文敏感词, 不出现在 <p>/<a> 标签名内, 不破 HTML). split/zwsp 模式
+        //   会逐字符插分隔符破 HTML → getTranscodeContentMode 自动降级到 mixed.
+        bodyHTML = transcodeChapterContent(bodyHTML, getTranscodeContentMode())
         chapter := map[string]interface{}{
                 "id": cid.String, "title": title.String, "content": template.HTML(bodyHTML),
                 "idx": idx, "wordCount": wc,
