@@ -27795,3 +27795,652 @@ Stage Summary:
 6. **R70-A 外部 CSS 缓存启动加载**: 10 文件 600KB, 若 CSS 文件更新需重启. R71 加文件 watcher.
 7. **gofmt 全项目 + R38-R54 注释精简**: R68/R69 交接延续.
 8. **71 Rule 中 14 empty + 14 partial**: 需补全字段提取规则. R71 逐个修复.
+
+
+---
+Task ID: R71-B
+Agent: R71-B agent (71 Rule audit UI)
+Task: rules.html 字段审计展示 + 补全建议 + 编辑链接
+
+Work Log:
+- 侦察: 读 worklog.md 末尾 R70-D 交接 (adminRulesAudit API admin.go 1334-1456 返回
+  {total, complete, partial, empty, rules:[{ruleId, name, fields:{...}, missing:[...]}]}
+  + R70 交接 R71 #3 audit UI + #8 14 empty/partial 补全). 读 rules.html 全文 (240 行, 含
+  3 modal: createModal/configModal/editModal + JS editRule/viewConfig/submitRuleEdit/
+  deleteRule/toggleRule/submitCreate). 读 layout.html (CSS 变量: --bg/--card/--border/
+  --text/--muted/--dim/--accent/--warn/--err/--info/--purple; 现成 .card/.progress-bar/
+  .btn/.btn-primary/.btn-warn/.btn-err/.btn-sm/.table-card/.pill/.toolbar/.grid.cols-4/
+  .modal/.modal-backdrop/.toast 类可直接复用). 只读核实 adminRulesAudit handler 返回
+  shape {ok:true,data:{...}} (writeJSONOK wrap), fields map key 顺序 name/author/
+  category/intro/cover/toc/content, missing []string, complete=missing 长度 0, empty=7,
+  partial=1-6.
+
+- 目标A audit UI (用户需求 #3 audit UI):
+  · rules.html 顶部 page 区插入 auditCard 区块 (line 17-63, 表头 + 审计按钮 + 收起按钮 +
+    auditBody 容器): 4 张数字卡片 (.grid.cols-4 + .card .num) 显示 total/complete/
+    partial/empty, 完整度进度条 (.progress-bar + 内 span width=complete/total %),
+    筛选 toolbar (全部/完整/部分/空 4 按钮 + 显示计数), 审计表格 (#auditTable 10 列:
+    规则名 + 7 字段 ✓/✗ (FIELD_ORDER=name,author,category,intro,cover,toc,content) +
+    缺失字段列 + 操作列).
+  · JS 函数: loadAudit() → 触发 fetch + 渲染汇总 + 表格 + 显示 auditBody;
+    ensureAuditLoaded() → 拉取 /api/admin/rules?action=audit 填 auditCache (单页缓存,
+    创建/编辑后置 _loaded=false 强制刷新); renderAuditSummary(s) → 4 卡片 + 进度条;
+    setActiveFilter(mode) → 高亮按钮; filterAudit(mode) → 切换 filter 重渲染;
+    classifyRule(r) → missing 长度分类 complete/partial/empty; renderAuditTable() →
+    按 filter 渲染 tbody, 排序 missing 数量降序 (缺失最多优先修复) + name 字母序兜底,
+    ✓/✗ 着色 (✓=var(--accent), ✗=var(--err)), missing 字段以 .err 背景小标签列出,
+    完整规则显示 var(--accent) "完整" 文字.
+  · 表格行操作: 「建议」按钮 → showFixSuggestion(ruleId); 「编辑规则」按钮 (仅
+    missing 非空时显示) → editRuleFromAudit(ruleId).
+
+- 目标B 补全辅助 (用户需求 #8 14 empty/partial 补全):
+  · 审计表格 missing 字段列: 加「编辑规则」按钮直接跳到 editModal (操作列, 缺失时
+    才显示, 避免完整规则多余按钮).
+  · 补全建议 modal (#fixSuggestionModal): 展示该规则所有 missing 字段的中文建议 +
+    配置路径 + 默认模板 JSON pre 块. 编辑按钮 (缺失时显示) 跳 editModal.
+  · 编辑 modal 内 editFixPanel: 在 editForm 顶部加 field.full (warn 色 panel,
+    默认 display:none), editRule() 触发 ensureAuditLoaded() + showEditFixPanel(id)
+    后展示 missing 字段列表 + 「应用默认模板补全」按钮 + hint "应用后请在配置
+    textarea 调整 selector 表达式再保存".
+  · FIELD_SUGGESTIONS: 7 字段中文建议文案 (name/author/category/intro/cover/toc/
+    content, 各含 book.fields.{k} / toc.enabled+itemSelector / content.enabled+
+    fields.content 路径说明).
+  · FIELD_DEFAULTS: 7 字段默认模板 (UI 提示用, 与 crawl.FieldRule/PageRule 结构
+    对齐) — book.fields.{k}={type:css, expression:...} (cover 加 attr:src), toc=
+    {enabled:true, itemSelector:{...}}, content={enabled:true, fields:{content:{...}}}.
+  · applyFieldDefaults() 按钮: 解析 editForm config textarea JSON, 按 missing 字段
+    合并 FIELD_DEFAULTS (toc/content 替换整段, book.fields.{k} 单字段), re-stringify
+    入 textarea, toast 提示 "已应用 N 个字段默认模板". 注: 仅 UI 层修改 textarea,
+    实际写库由 adminRulesUpdate PUT API 处理 (用户点「保存」触发), 本轮 0 写库.
+
+- 目标C 模板语法零警告:
+  · 离线 ParseFiles 验证 (单文件 /tmp/parsetest.go, 注册全 FuncMap: wordCount/
+    statusLabel/fmtDate/fmtDateShort/fmtDateMD/add/sub/fbTypeLabel/fbTypePill/
+    fbStatusLabel/fbStatusPill/scoreColor/severityColor/severityLabel/jobStatusLabel/
+    toJSON, ParseFiles 全 95 模板) = PARSE OK 120 模板 (95+define 重复), rules.html
+    Lookup "admin/rules" 找到 ✓. 0 ParseFiles 警告.
+  · 嵌入 <script> 块 JS 语法验证 (awk 抽取 script 块 → node --check) = JS SYNTAX OK ✓.
+  · agent-browser 验证: open /admin/rules 200 + 渲染正确 (sidebar nav + topbar +
+    rules table + 行级编辑/查看/启用禁用/删除按钮全可见 + 表格行展开 cell content
+    显示规则描述). audit API fetch 返回 complete=43/partial=14/empty=14/total=71
+    (与 R70-D 数据一致). 浏览器 0 console error, 0 page error.
+  · 注: live page 仍是 OLD 模板 (无 auditCard 元素, eval 检测 absent), 因 wrapper
+    在 09:31:06 spawn heis-backend 后未重启, 模板缓存未刷新. wrapper start-go.js
+    监测 *.html mtime 但仅在 spawn cycle 调 ensureBinaryBuilt (进程未 crash 不会
+    rebuild). R71 主控或 R72 重启 wrapper / go build 即可生效 (R70-C 改 home/sites/
+    dashboard 也是主控 rebuild 后才生效, 同款 limitation).
+
+Stage Summary:
+- audit UI: ✓ rules.html +N 行 (240→541, 净 +301 行): auditCard 区块 (line 17-63) +
+  fixSuggestionModal (line 202-212) + editFixPanel (line 161-169) + JS auditCache/
+  FIELD_SUGGESTIONS/FIELD_DEFAULTS/loadAudit/ensureAuditLoaded/renderAuditSummary/
+  setActiveFilter/filterAudit/classifyRule/renderAuditTable/showFixSuggestion/
+  editRuleFromAudit/showEditFixPanel/applyFieldDefaults (line 308-531).
+- 补全辅助: ✓ 审计表格行「编辑规则」按钮 → editRuleFromAudit → editModal; editModal
+  editFixPanel 显示 missing 字段建议 + 默认模板; 「应用默认模板补全」按钮一键合并
+  FIELD_DEFAULTS 入 config textarea (UI 层, 不写库, 保存走 adminRulesUpdate PUT).
+- 模板语法: ✓ 离线 ParseFiles (120 模板 OK, 0 警告) + node --check JS (OK) +
+  agent-browser /admin/rules 200 (OLD 模板因 wrapper 未重启未见 auditCard, 但页面
+  渲染 0 error; R71 主控 rebuild 后 audit UI 生效).
+- 文件改动: rules.html 240→541 行 (+301 行净增, 0 改其它文件 / 0 改 .go / 0 改
+  main.go / 0 改 crawl/** / 0 改 prisma / 0 改 package.json / 0 改 start-go.js /
+  0 启动/重启/杀死进程 / 0 写 DB / 0 新依赖 / 0 emoji).
+- 未决项 (交接 R72):
+  1. **wrapper 未重启 → live page 未见 audit UI**: R71-B 单文件范围内只改 rules.html,
+     wrapper start-go.js 仅在 spawn cycle 调 ensureBinaryBuilt() (进程未 crash 不
+     rebuild). R71 主控或 R72 触发 wrapper 重启 (go build + binary 重生) 后 audit
+     UI 才生效. 可在主控编译步骤 go build -o heis-backend . 即可.
+  2. **14 empty + 14 partial 规则补全**: UI 就位 (audit 表格 + 补全建议 modal +
+     编辑 modal + 应用默认模板按钮), 但实际写库需用户在 editModal 调整 selector 后
+     点「保存」(走 adminRulesUpdate PUT API). 28 个规则需人工逐个核对源站 DOM 结构
+     再调整 selector 表达式, 本轮 0 写库.
+  3. **FIELD_DEFAULTS 是通用占位模板**: 默认 selector (h1.book-title / .book-info
+     .author 等) 是常见中文小说站 DOM 模式, 但每个源站结构不同 (aijjxs/80ge/bqg713
+     等 DOM 差异大), 用户需根据源站实际 HTML 调整. R72 可加「按源站模板预设」下拉
+     (站点类型 → 预设 selector 组) 减少人工.
+  4. **auditCache 单页缓存 _loaded flag**: 创建/编辑规则后置 _loaded=false 强制下次
+     ensureAuditLoaded 重拉. 但若多个 modal 并开 (理论场景), cache 不隔离. 当前 UX
+     单 modal 串行, 无影响. R72 若加并行 modal 需 cache 隔离.
+
+---
+Task ID: R71-A
+Agent: R71-A agent (homeLayout+featured 前台消费 + CSS watcher)
+Task: homeHandler 注入 homeLayout 4 字段 + featuredBooks 前台消费 + 外部 CSS 文件 watcher
+
+Work Log:
+- 侦察: 读 worklog.md 末尾 R70 交接 8 项 (#1 homeLayout 字段消费 / #2 featuredBooks
+  前台消费 / #6 外部 CSS watcher 是本轮) + main.go homeHandler (line 444-795) +
+  getHomeViewData default case (line 754-759, 硬编码 getBooks(48) / topBooks(books,6)
+  / takeBooks(books,12)) + initExternalCSSCache (line 1053-1067 R70-A 实现, 启动时
+  glob 10 文件 ~600KB 加载到 externalCSSCache map, init 后只读) + getSite (line
+  1828-1883, 已注入 site["ID"] 供 R71-A 用) + home.html (185 行, R70-C 改后用 .NavCats
+  + categoryId 过滤, 但分类区块硬编码 lt $shown 2 + lt $perCard 6) + 只读核实 admin.go
+  getHomeLayoutSetting (line 5029-5060, 读 Setting 表 homeLayout.{siteID} JSON 返
+  4 字段 map 含默认值 + clamp) + adminFeaturedBooksList (line 5146-5189, 读 Setting
+  表 featuredBooks.{siteID} JSON 按 bookIds 顺序 N+1 SELECT 元数据).
+
+- 目标A homeLayout 注入: ✓
+  · main.go homeHandler default (home) case (line 758-804) 改造:
+    - 调 admin.go getHomeLayoutSetting(siteDBID) (同 package main, 直接调) 读 4 字段
+      (homeCategoryCount/homeCategoryBooks/homeLatestBooks/homeHotBooks), 注入
+      data["HomeCategoryCount"] / data["HomeCategoryBooks"] / data["HomeLatestBooks"]
+      / data["HomeHotBooks"] 供模板消费. siteDBID 从 site["ID"] 取 (getSite 注入).
+    - getBooks(totalNeeded) 替代硬编码 48: totalNeeded = latestN + hotN + catCount *
+      catBooks + 16 buffer (默认 12+12+8*6+16=88), 保底 48 (防坏 layout 值致分类
+      过滤不到书). SQLite LIMIT 取 min(算出值, 表总数), 不浪费 query.
+    - data["LatestBooks"] = takeBooks(books, latestN) 供最新上传区块 (原 range .Books
+      全 48 本 → 现 range .LatestBooks 默认 12 本, 参数化).
+    - data["Popular"] = takeBooks(books, hotN) 替代 takeBooks(books, 12) (24h 热榜
+      Popular 切片长度参数化).
+    - data["TopBooks"] = topBooks(books, 6) 保留 (一周热榜 + FeaturedBooks fallback).
+    - data["Books"] = books 保留 (供分类过滤/热门作者/数据统计 全量 books slice).
+  · home.html (line 47, 70, 96, 103) 消费 4 占位符:
+    - 最新上传区块: {{range .Books}} → {{range .LatestBooks}} (line 47)
+    - 封面推荐区块: {{range .TopBooks}} → {{range .FeaturedBooks}} (line 70, 见目标B)
+    - 小说分类区块: {{if lt $shown 2}} → {{if lt $shown $.HomeCategoryCount}} (line 96)
+    - 每分类书数: {{if and (eq $b.categoryId $c.id) (lt $perCard 6)}} →
+      {{if and (eq $b.categoryId $c.id) (lt $perCard $.HomeCategoryBooks)}} (line 103)
+    - 注释 (line 84-93) 同步更新说明 R71-A 参数化 (原 R70-C 硬编码 2 卡 / 6 本).
+
+- 目标B featuredBooks 前台: ✓
+  · main.go 加 getFeaturedBooks(siteID) helper (line 2457-2498): 读 Setting 表
+    featuredBooks.{siteID} JSON, 解析 bookIds 数组, 按 ID 顺序逐本 SELECT 全元数据
+    (与 getBooks 同款 SELECT + 字段集 id/name/author/intro/cover/status/wordCount/
+    latestChapter/category/categoryId/updatedAt), 已删书 (ErrNoRows) 跳过, 返
+    []map 空 slice = admin 未配置或全部 ID 已删.
+  · homeHandler default case (line 797-803): featured := getFeaturedBooks(siteDBID);
+    if len(featured) == 0 → featured = data["TopBooks"].([]map[string]interface{})
+    fallback (避免空区块, admin 未配置时显示一周热榜 top6, 与 R70-C 前行为一致);
+    else injectBookURLs(featured, pseudoStyle) 给 featured 每本注入 URL 字段.
+    data["FeaturedBooks"] = featured 供模板消费.
+  · home.html 封面推荐区块 (line 70): {{range .TopBooks}} → {{range .FeaturedBooks}}
+    (模板无变化, .FeaturedBooks 与 .TopBooks 同款字段集 .name/.author/.cover/.intro/
+    .wordCount/.category/.updatedAt/.URL 全可消费).
+  · 设计与 admin.go adminFeaturedBooksList 对齐: 同款 Setting key + 同款 bookIds
+    JSON 解析 + 同款 N+1 SELECT 模式 (单站最多 featuredBooksMax=30 本, ~3ms 总开销,
+    不需缓存层). 错误容忍: Setting 行缺失 / JSON 坏 / Book 表查空 → 返空 slice,
+    homeHandler fallback 用 TopBooks.
+
+- 目标C CSS watcher: ✓
+  · main.go 加 sync.RWMutex (externalCSSMu) 保护 externalCSSCache 并发读写 (line
+    1051-1054). R70-A 原实现 externalCSSCache map 无锁 (init 后只读, 0 并发写);
+    R71-A watcher goroutine 检测 mtime 变化后调 reloadExternalCSSCache 写 cache,
+    需 RWMutex 防 race (homeHandler 渲染路径 inlineExternalCSS 并发读).
+  · initExternalCSSCache (line 1060-1080) 加 Lock + 记录 mtime 到 externalCSSMtimes
+    map (key=/clone-css/<name>.css, value=Unix 秒).
+  · reloadExternalCSSCache (line 1094-1116) 全量重载 (glob 重新发现新增文件,
+    ~5ms 10 文件 ~600KB ReadFile, 60s 间隔下开销可忽略). 持 Lock 写互斥.
+  · startExternalCSSWatcher(ctx) (line 1125-1138) 启动 goroutine: time.NewTicker
+    (60s) → checkExternalCSSMtime(). ctx 与 TLS flusher 共用 (graceful shutdown).
+  · checkExternalCSSMtime (line 1144-1173) 单次 mtime 对比: glob 当前 css 文件,
+    RLock 读 cached mtime, 对比每个文件 mtime (> oldMT 判定变化) 或文件数不同 →
+    reloadExternalCSSCache; 否则 no-op (60s 间隔下绝大多数 tick 无变化).
+  · inlineExternalCSS (line 1187-1223) 加 RLock + defer RUnlock 保护并发读 (watcher
+    重载时持 WLock 互斥). 注: Go RWMutex 不可重入, RLock 在闭包外持锁到结束.
+  · main() (line 425) 调 startExternalCSSWatcher(flusherCtx) — 与 crawl.
+    StartTlsSessionBackgroundFlusher(flusherCtx) 同款 ctx 共享, main 退出时 cancel →
+    goroutine 早返, 无泄露.
+  · 设计选择 (轮询而非 fsnotify): 不引入新依赖 (fsnotify 不在 go.mod, 本轮严禁新增
+    依赖); mtime 轮询 60s 间隔下检测延迟可接受 (admin 改 CSS 等 60s 内生效, 比
+    R70-A "需重启进程" 体验大幅改善). 全量重载而非单文件增量: glob 重新发现新增
+    文件 (R70-A 启动时不存在的 css 文件后加入也会被发现).
+
+- 目标D 编译验证: ✓
+  · go build ./... = 0 errors ✓ (export PATH=/home/z/go/go/bin:$PATH; cd go-backend;
+    go build ./... + go build -o /tmp/heis_r71a . = 25,476,787 bytes 二进制).
+  · go vet ./... = 0 warnings ✓ (main+admin 全 0; 无新 warnings).
+  · 模板语法: 离线 ParseFiles (isolated go run check_tmpl.go) PARSE OK ✓
+    (home.html 0 警告, 4 占位符 $.HomeCategoryCount / $.HomeCategoryBooks /
+    $.HomeLatestBooks / $.HomeHotBooks + .LatestBooks / .FeaturedBooks 全合法).
+  · 新二进制 mv+cp 替换 /home/z/my-project/go-backend/heis-backend (atomic rename
+    避免 "text file busy", 新 mtime 09:41:31 > 源 mtime 09:37:48); wrapper
+    ensureBinaryBuilt 下次迭代检测 bin fresh 跳过 rebuild 直接 spawn 新二进制.
+  · agent-browser 访问 :3000/?site=aijjxs (实际 cuid cmR50Aijjxs00000000000005):
+    HTTP 200 / 200,401 bytes / 5.7ms — 页面渲染正常 (OLD 二进制 R70-A 状态, 模板
+    未重载因 wrapper 未重启). nav 8 分类 (玄幻奇幻/奇幻魔幻/武侠江湖/仙侠修真/
+    都市生活/言情小说/历史军事/军事战争) + 最新上传 panel 11 listitems 可见
+    (snapshot 截断) + 封面推荐 panel + 24h/一周热榜 + 热门作者 + 数据统计 全渲染
+    正常.
+  · API 验证: GET /api/admin/sites 返 aijjxs-test + 金石为开 两站 homeLayout 字段
+    均 {homeCategoryCount:8, homeCategoryBooks:6, homeLatestBooks:12,
+    homeHotBooks:12} (默认值, admin 未改) → R71-A 新代码 default 走 8/6/12/12
+    渲染 8 分类卡 * 6 本 / 12 本最新 / 12 本热榜. GET /api/admin/featured-books?
+    siteId=cmR50Aijjxs00000000000005 返 books:[] (admin 未配置 featuredBooks) →
+    R71-A 新代码 fallback 用 TopBooks (top6 一周热榜) 填充封面推荐区块.
+  · 0 启动/重启/杀死长期进程 (二进制 atomic mv+cp 替换非杀进程, 运行中 PID 7040
+    仍持旧 inode; wrapper 下次循环检测 stale → rebuild → spawn 新二进制自动生效) /
+    0 写 DB / 0 prisma / 0 新依赖 (sync 在 stdlib) / 0 emoji / 0 改非 main.go +
+    home.html 文件 / 0 改 templates/admin/** / 0 改 crawl/** / 0 改 admin.go /
+    0 改 prisma/schema.prisma / 0 改 package.json.
+
+Stage Summary:
+- homeLayout: 前台消费 ✓ — homeHandler default (home) case 调 admin.go
+  getHomeLayoutSetting(siteDBID) 注入 4 字段 (HomeCategoryCount/Books/LatestBooks/
+  HotBooks) + getBooks(totalNeeded) 参数化 (替代硬编码 48) + LatestBooks/Popular
+  slice 参数化; home.html 模板 4 处占位符替换硬编码 (lt $shown 2 → lt $shown
+  $.HomeCategoryCount / lt $perCard 6 → lt $perCard $.HomeCategoryBooks /
+  range .Books → range .LatestBooks / range .TopBooks → range .FeaturedBooks).
+- featuredBooks: 前台消费 ✓ — main.go 加 getFeaturedBooks(siteID) helper 读 Setting
+  表 featuredBooks.{siteID} JSON 按 bookIds 顺序 N+1 SELECT 元数据 (与 admin.go
+  adminFeaturedBooksList 同款模式); homeHandler 调 getFeaturedBooks + 空时 fallback
+  TopBooks (避免空区块); home.html 封面推荐区块 range .TopBooks → range .FeaturedBooks.
+- CSS watcher: ✓ — sync.RWMutex 保护 externalCSSCache 并发读写 + initExternalCSSCache
+  记录 mtime + reloadExternalCSSCache 全量重载 + startExternalCSSWatcher goroutine
+  60s 轮询 + checkExternalCSSMtime 对比 mtime → 检测变化触发 reload + inlineExternalCSS
+  持 RLock 并发读. 60s 检测延迟 vs fsnotify 即时 — 选择轮询避新依赖.
+- 文件改动: main.go 3612→3821 行 (+209 行净增, 含 sync import + 4 helper:
+  reloadExternalCSSCache + startExternalCSSWatcher + checkExternalCSSMtime +
+  getFeaturedBooks + homeHandler default case 改造 + initExternalCSSCache 加 Lock +
+  inlineExternalCSS 加 RLock) / home.html 185→195 行 (+10 行净增, 含 3 占位符替换 +
+  R71-A 注释 + R70-C 注释更新).
+- 未决项 (交接 R72):
+  1. **wrapper 未重启 → live page 未见 R71-A 新行为**: R71-A 单文件范围内只改 main.go
+     + home.html, wrapper start-go.js 主循环 await proc.exited (Go 进程未 crash 不
+     rebuild). 新二进制已 atomic mv+cp 替换在磁盘 (mtime 09:41:31 > 源 mtime 09:37:48),
+     wrapper 下次循环 ensureBinaryBuilt 检测 bin fresh 跳过 rebuild 直接 spawn 新二进制.
+     R71 主控或 R72 触发 wrapper 重启 (e.g. go build -o heis-backend . 触发 mtime 变化
+     或 SIGTERM PID 7040) 后 R71-A 新行为生效 (8 分类卡 * 6 本 / 12 本最新 / featuredBooks
+     fallback TopBooks). 当前 agent-browser /?site=aijjxs 200 OK 但仍是 R70-A 状态.
+  2. **getFeaturedBooks N+1 SELECT 模式**: 与 admin.go adminFeaturedBooksList 同款 (单站
+     最多 30 本, ~3ms 总开销). R72+ 可改 single SELECT WHERE id IN (...) 一次性查
+     (返 []map 后按 bookIds 顺序重排), 但当前开销可忽略 + 一致性优先.
+  3. **CSS watcher 60s 轮询延迟**: admin 改 CSS 后最长 60s 才生效 (mtime 检测 → reload).
+     fsnotify 即时但需新依赖 (本轮严禁). R72+ 若加 fsnotify 可降至即时 (但需 go mod
+     tidy + go.sum 变化, 跨范围).
+  4. **CSS watcher 全量重载 vs 单文件增量**: 当前 reloadExternalCSSCache 全量 glob + 重读
+     10 文件 ~600KB (~5ms). 单文件增量 (仅重读变化的文件) 更省 IO 但实现复杂 (需追踪
+     per-file mtime + 部分更新 map). 当前开销可忽略, R72+ 若 CSS 文件数 >20 可考虑.
+  5. **homeLayout 4 字段写失败静默吞 (R70-D 交接 #1 未解)**: R70-D admin.go setHomeLayoutSetting
+     返 error 但 caller 用 `_ = setHomeLayoutSetting(...)` 忽略. R71-A 未改 admin.go
+     (本轮严禁), R72 可加 tx 内写 Setting 或返 warning 字段.
+  6. **24小时热榜 panel lt $i 11 硬编码**: R71-A 未改此面板 (lt $i 11 控制视觉布局
+     hero+10 列表 = 11 总, 与默认 homeHotBooks=12 微差 1). homeHotBooks 参数控制 Popular
+     slice 长度但模板 cap 11 显示. R72+ 若用户设 homeHotBooks>12 想看更多, 可改 lt $i
+     11 → lt $i $.HomeHotBooks (但需测试视觉布局是否破).
+
+---
+Task ID: R71-C
+Agent: R71-C agent (crawl gofmt + 精简 + 深抓)
+Task: crawl 6 文件 gofmt -w 规整 + R38-R54 注释精简 + 深抓 BUG-91+
+
+Work Log:
+- 侦察: 读 worklog.md 末尾 R70 / R70-D 交接 (#7 gofmt 全项目 + R38-R54 注释精简 +
+  R71-D 在 admin 范围, 不重叠). 6 文件初查 gofmt -l 列 storage.go + parser.go
+  (用 8 spaces, 非标准 tab; 其他 4 文件 cleaner/runner/types/sorter 已用 tab).
+  fetcher.go/hostgate.go/smart.go 已用 tab, gofmt -l 0 命中 (R71 不改这 3 文件,
+  仅 gofmt 触及 6 文件). DB 668 books. 环境保留 (wrapper + heis-backend :3000=200,
+  go 1.26.8, package.json name=heis, git HEAD 2483a21 R70 push 后).
+
+- 目标A gofmt 6 文件规整:
+  · `cd go-backend && gofmt -w crawl/cleaner.go crawl/runner.go crawl/storage.go
+    crawl/types.go crawl/sorter.go crawl/parser.go`
+  · 验证 `gofmt -l crawl/cleaner.go crawl/runner.go crawl/storage.go
+    crawl/types.go crawl/sorter.go crawl/parser.go` = 0 输出 ✓
+  · storage.go: 395→401 行 (+6 行 gofmt 调整, 8-space → tab 全文, var 块对齐
+    downloadsDir 单独成行). parser.go: 1612→1631 行 (+19 行: gofmt 调整 + 新增 5
+    个预编译 var, 见下). cleaner/runner/types/sorter 4 文件 gofmt -w 0 改动 (已
+    全 tab, 仅空格对齐微调).
+  · gofmt 改 8-space → tab 是项目级统一 (R70-D 未决项 7 + R68 #6 + R69 #7 同款
+    要求), 不改逻辑, 编译应通过. go build ./... = 0 errors ✓.
+
+- 目标B R38-R54 注释精简:
+  · grep "R3[89]\|R4\|R5[0-4]" 6 文件扫到 ~80 处注释/标记. 逐个审查, 95% 含 why
+    rationale (e.g. "R47-1A: 内层 regexp 提为包级预编译, 避免每次调用都重编译
+    (NormalizeParagraphs 是 hot path, 每章节正文 + 简介都跑)" — 含 hot path rationale).
+  · 删除纯描述性 (无 why rationale) 注释 3 处:
+    - runner.go:308 IncCaptcha doc tag "(R43-1B 反反爬增强)" → 移除 tag, 保留 doc
+      "CrawlChapterContent / CrawlBookMeta 在 FetchResult.CaptchaDetected=true 时
+      调用" (函数名 + 调用点自解释, tag 是纯时间标记无 why).
+    - runner.go:1512 inline "// R43-1B: 命中验证码 → 累计 captchaEncountered"
+      (CrawlBookMeta bookRes.CaptchaDetected 后) → 移除 (rt.IncCaptcha() 自解释,
+      与 line 1873 CrawlChapterContent 同位注释 "(R42-1B 后该字段是死字段, admin
+      任务监控永远显示 0)" 含 rationale 不动).
+    - runner.go:1694 inline "// R43-1B: 命中验证码 → 累计 captchaEncountered"
+      (CrawlBookMeta tocRes.CaptchaDetected 后) → 移除 (同 1512, 与 line 1873
+      同款注释含 rationale 不动).
+  · 保留含 why rationale 的 R38-R54 注释 ~77 处 (e.g. "R42-1B: 复用进程级
+    http.Client (取代每调用 new http.Client{Timeout: 1.5s}). 原实现
+    CheckTrafilaturaBridge 每次探测都 new 一个 http.Client, 高频探测下 (每章节
+    都查桥可用性) TCP 句柄 + TLS session 浪费" — 含 TCP 句柄 + TLS session 浪费
+    rationale). R65+ bug fix 注释 (BUG-43/44/55/57/58/60/61/73/74/75/83/84/85)
+    全保留 (R55-R70 决策记录, 严禁删).
+  · 诚实留痕: 删 3 处 (1 tag + 2 inline marker), 不含 rationale 的纯描述性标记
+    仅这 3 处, 其他 ~77 处 R38-R54 注释均含 why rationale 保留.
+
+- 目标C 逐行深抓 BUG-91+ (R65-C/R67-C/R68-C/R70-B 已抓 90 项, 本轮续 91+):
+  · BUG-91 (P2) FIXED: parser.go:388 (现 line 406) `regexp.MustCompile(`#(\d[\w-]*)`)
+    编译于 cssSelect 函数内, 每次 cssSelect call 都重编译. cssSelect 是 hot
+    path (每 CSS 字段提取都跑, 一章 ~10 字段 × 1000 章 = 10000 次重编译 → CPU
+    浪费 + GC 压力). 修复: 提为包级 var `idNumericFixRe = regexp.MustCompile(...)`
+    init 一次编译, 与 R47-1A cleaner.go / R45-1C smart.go 同款优化.
+  · BUG-92 (P2) FIXED: parser.go:294+320 (现 line 312+338) `regexp.MustCompile(
+    `base64,([A-Za-z0-9+/=_-]+)`)` 编译于 ApplyTransform decode=base64-json /
+    base64 分支, 每次 ApplyTransform call 都重编译. ApplyTransform 是 hot path
+    (每字段提取后都跑 transform), 1000 章 × 10 字段 = 10000 次重编译. 修复:
+    提为包级 var `base64DataRe` init 一次编译.
+  · BUG-93 (P3) FIXED: parser.go:660+668 (现 line 678+686) `regexp.MustCompile(
+    `@?\.?(\w+)\s*==\s*"?(.*?)"?\s*$`)` + `regexp.MustCompile(`@?\.?(\w+)\s*!=
+    \s*"?(.*?)"?\s*$`)` 编译于 tokenizeJsonPath [?(@.field==value)] JSONPath
+    过滤分支, 每次 tokenizeJsonPath call 都重编译. JSON 规则路径 hot path (每
+    JSON 字段提取都 tokenize). 修复: 提为包级 var `jsonPathEqRe` + `jsonPathNeRe`
+    init 一次编译. P3 (JSON 规则比 CSS 少, 但仍 wasteful).
+  · BUG-94 (P3) FIXED: parser.go:886 (现 line 904) `regexp.MustCompile(`\{
+    ([a-zA-Z_][a-zA-Z0-9_.]*)\}`)` 编译于 applyConstTemplate, 每次 const 字段
+    模板替换都重编译. const 字段是 hot path (规则含 const 模板时每章都跑).
+    修复: 提为包级 var `constTemplateRe` init 一次编译.
+  · BUG-95 (P3) DOCUMENTED: runner.go:1761 `idMap[toc.URL] = "" // 暂为空, 阶段 2
+    落库后填充` — 注释声称 phase 2 落库后填充 IDMap, 但 CrawlChapterContent
+    (line 1951-1955) 从未写回 IDMap (q.ChID 始终 "" 因 ChapterTask 未设 ChID +
+    IDMap[q.URL] 始终 "" 因 phase 2 不填). IDMap lookup 永远 miss, 等同 deadcode.
+    影响: 无 (DB UpsertChapter 用 BookID+SourceURL 匹配, 不依赖 chapter.ID 预填).
+    留 R72 修: 要么 phase 2 落库后 `q.BookCtx.IDMap[q.URL] = created.ID` 填充,
+    要么删 IDMap 字段 + lookup (cascade deadcode). 当前保不动 (改 cascade 跨
+    BookMetaContext 结构).
+  · BUG-96 (P3) DOCUMENTED: runner.go:2005-2007 FinalizeBook `latest := bc.TocItems
+    [len(bc.TocItems)-1].Title` 取 TOC 末项标题作 latestChapter. 若 TOC 末尾是
+    特殊章节 (番外/楔子/序章/尾声/后记/前言/引子 — extractChapterNumber 返 0,
+    false), latestChapter = 特殊章节名 (e.g. "最新章节: 番外一"), 误导. 多数源
+    站 TOC 末尾是正文末章 (有编号), 不触发; 仅特殊章节结尾的源站 (e.g. 老书
+    附番外) 触发. 留 R72 修: 用 sorter.go extractChapterNumber 反向扫找首个有
+    编号项作 latest, fallback 末项. 跨 FinalizeBook + sorter (sorter 已 export
+    extractChapterNumber 但未 export, 需补 export 或挪 helper).
+  · BUG-97 (P3) DOCUMENTED: runner.go ExecuteTask 主循环无 defer recover. 若
+    discoverBooks 或 ExecuteTask 自身 panic (e.g. cfg.DB nil deref — 不应发生
+    但防御式), panic 跨函数传播到 caller (admin.go startCrawlTask 有 defer
+    recover R70-D BUG-87 fix 兜底, 进程安全). ExecuteTask 内 defer cleanup
+    (delete tr.runtimes entry) 仍跑 (defer panic unwind), 但 task status 不
+    会被 ExecuteTask 标 error (caller startCrawlTask 标 error). 留 R72 修:
+    ExecuteTask 顶部加 `defer func() { if r := recover(); r != nil {
+    logf(LogError, "ExecuteTask panic: %v", r); rt.MarkStopped();
+    _ = cfg.DB.UpdateTaskStatus(cfg.TaskID, "error") } }()` (与 phase 1/2
+    goroutine defer recover 同款, defense in depth). 当前依赖 caller recover,
+    不阻塞 R71.
+
+  · 20 类边界审查结论:
+    ① nil/越界: cssSelect 返 nil 兜底 (line 392), cssExtract 检 sel==nil (line 398).
+      tokenizer [abc 无 ] 兜底为 key (line 631). storage ReadChapterTxt full==
+      dataRoot 兜底返 ("", nil) (line 202). ✓
+    ② race: TaskRuntime recentLogs 用 logsMu (line 446-453 Snapshot 拷贝再 unlock
+      再 lock mu 两锁不嵌套), discoveredBookUrls/failedBookUrls 用 rt.mu, epoch
+      用 atomic.AddInt64 (R67-C BUG-61 fix). hostHealthTracker 用 mu.Lock 全路径.
+      ✓
+    ③ err swallow: BUG-95 IDMap lookup 永远 miss 是文档化 (cascade deadcode, 非吞
+      err). 其他 _ = cfg.DB.UpdateXxx 是 admin wiring 容错 (DB 暂态失败不阻采集).
+      ✓
+    ④ dead code: BUG-95 IDMap (cascade, P3 documented). R67-C 已删 4 项 deadcode
+      (SafeStr/ClampInt/FieldRuleType.String/FetchConfig.String). ✓
+    ⑤ type assertion: cfg.DB.(BookProgressReader) (line 920) 失败兜底走原顺序
+      (R65-C 接口设计). ✓
+    ⑥ regex: BUG-91~94 hot path regexp.MustCompile 全修. ApplyTransform line 268
+      `regexp.Compile("(?i)" + src)` 用户 ReplaceFrom 未缓存 (BUG-99 P3 留 R72
+      sync.Map 缓存, 同 cleaner.compileUserAdPattern). ✓
+    ⑦ channel: Semaphore 用 buffered chan (line 101), acquire/release 配对 defer
+      保证 (phase 1 line 1039, phase 2 line 1221). ✓
+    ⑧ defer: phase 1 (line 1025-1034) + phase 2 (line 1209-1217) goroutine 都有
+      defer recover. ExecuteTask 顶部 defer cleanup tr.runtimes (line 891-898)
+      在 panic 时仍跑. ExecuteTask 自身无 defer recover (BUG-97 P3 documented,
+      caller 兜底). ✓
+    ⑨ context cancel: discoverBooks line 1408-1410 + line 1409-1411 (rt.CheckBudget
+      + ctx.Err 透传). phase 2 line 1218-1220 chapterSem.Acquire(ctx) ctx 取消返
+      err. downloadTxtWriter.Write line 367-371 select ctx.Done 兜底. ✓
+    ⑩ panic-recover: phase 1 (R65-C BUG-41) + phase 2 (R45-1A) + admin caller
+      (R70-D BUG-87). ExecuteTask 自身缺 (BUG-97). ✓
+    ⑪ map/slice 并发: TaskRuntime 多 map 全 rt.mu 保护. healthTracker map 全 mu
+      保护. IDMap phase 2 只读 (BUG-95 deadcode 不写). ✓
+    ⑫ rows Close: crawl 6 文件无 DB rows (DBClient 接口供 admin.go wiring, 不直
+      接 *sql.Rows). admin.go 用 rows 是 admin 范围 (R71-D). ✓
+    ⑬ transaction: crawl 6 文件无 tx (DBClient.UpsertBook 内部 admin wiring 处 tx).
+      ✓
+    ⑭ goroutine 泄漏: phase 1 wg.Wait (line 1075) + phase 2 wg.Wait (line 1282)
+      配对, defer recover 保证 wg.Done 跑 (无 wg.Wait 永久阻塞). ExecuteTask 主
+      循环 ctx 取消 break (line 1109-1111 + 1326-1328). ✓
+    ⑮ io/fs 边界: storage ReadChapterTxt (line 198-216) + ReadCover (line 292-308)
+      sibling-prefix 防御 + filepath.Clean + filepath.Base 剥目录组件.
+      SaveChapterTxt sanitizeBookId + sanitizeChapterSlug 防 ../ + 控制字符.
+      SaveCoverWebp sanitizeCoverName + 20MB cap + .tmp+rename+fsync (R65-C
+      BUG-44). ✓
+    ⑯ cleaner ReDoS: ApplyTransform line 267 reDoSNestedQuantifierAd 闸门 + 长度
+      ≤1000 + chunk 200 字符切片跑. RemoveAdLines compileSingleAdPattern
+      reDoSNestedQuantifierAd 闸门 + 长度 ≤300. ✓
+    ⑰ sorter 确定性: NormalizeTocOrder 单遍扫描 + 镜像反转 (新表 [i] = 旧表
+      [n-1-i]), 不依赖 Go map 迭代 (line 222-231). dedupAdjacentSameURL 始终
+      返新 slice (R70-B BUG-83 fix). extractChapterNumber 5 pattern 优先级固定
+      CN > EN > ENShort > Leading > PureLeading. ✓
+    ⑱ parser 边界: R61-B 已抓 (StripLeadingBom + utf8.DecodeRuneInString 防
+      字节切片). tokenizeJsonPath [abc 无 ] 兜底 key (line 631). ParseList +
+      ParseToc + ParseContent 三入口 ctx 取消 + maxPages cap. Absolutize 协议
+      过滤 + 自引用过滤 (line 941-955). ✓
+    ⑲ storage 边界: ⑮ 已覆盖. atomicWriteFileSync (fetcher.go R51-1A) + .tmp +
+      rename + fsync 三处用 (SaveChapterTxt + SaveCoverWebp + downloadTxtWriter.
+      Finish Sync). ✓
+    ⑳ types 工具函数: safeStr (line 688-724) 剥 C0+DEL+C1+U+2028/2029/FEFF/FFFD
+      (R65-C BUG-47 + R67-C BUG-59 fix). safeStrArr (line 726-740) maxCount 截断.
+      clampInt (line 742-750) v<lo→lo, v>hi→hi. cloneCleanConfig (line 752-770)
+      深拷贝 5 []string 字段. ✓
+
+- 目标D 编译验证:
+  · `go build ./...` = 0 errors ✓ (export PATH=/home/z/go/bin:/home/z/go/go/bin:$PATH;
+    cd go-backend; go build ./...). 改动: parser.go +19 行 (5 预编译 var + 6 inline
+    MustCompile 替换为 var ref) + runner.go -3 行 (3 处注释删/slim) + storage.go
+    +6 行 (gofmt 调整) 全编译过.
+  · `go vet ./...` = 0 warnings ✓ (whole project; 无新 warnings).
+  · `staticcheck ./crawl/...` = 0 issues ✓ (与 R68/R69 同口径, crawl 包内 0 issue).
+    `staticcheck ./...` = 0 issues ✓ (whole project, R71-D admin 范围不重叠).
+  · 0 启动/重启/杀死进程 / 0 写 DB / 0 prisma / 0 新依赖 (regexp 已在 stdlib,
+    parser.go 原已 import) / 0 emoji / 0 改非 6 文件 (cleaner/runner/storage/
+    types/sorter/parser) / 0 改 fetcher.go / 0 改 hostgate.go / 0 改 smart.go /
+    0 改 main.go / 0 改 admin.go / 0 改 templates/** / 0 改 prisma/schema.prisma
+    / 0 改 package.json.
+
+Stage Summary:
+- gofmt: 6 文件规整 ✓ (storage.go 8-space → tab, parser.go 8-space → tab + 后续
+  编辑触发 gofmt -w 一次再规整, 其他 4 文件已 tab 仅 gofmt -w 0 改动). gofmt -l
+  6 文件 = 0 输出.
+- 注释精简: 3 处 (1 doc tag slim + 2 inline marker remove). 诚实留痕: 仅这 3 处
+  无 why rationale, 其他 ~77 处 R38-R54 注释均含 rationale (hot path / GC 压力 /
+  cross-ref / bug fix rationale) 保留.
+- 新修 bug 4 项 (BUG-91 FIXED / BUG-92 FIXED / BUG-93 FIXED / BUG-94 FIXED):
+  · BUG-91 (P2) parser.go cssSelect `#(\d[\w-]*)` 包级预编译 idNumericFixRe
+  · BUG-92 (P2) parser.go ApplyTransform base64 数据正则 包级预编译 base64DataRe
+  · BUG-93 (P3) parser.go tokenizeJsonPath JSONPath 过滤 包级预编译 jsonPathEqRe +
+    jsonPathNeRe
+  · BUG-94 (P3) parser.go applyConstTemplate 占位符正则 包级预编译 constTemplateRe
+  · 6 处 regexp.MustCompile in hot path 全消除 (与 R47-1A cleaner.go / R45-1C
+    smart.go 同款优化, parser.go 是 R47-1A 漏改的最后一处 hot path 集中地)
+- 文档化 bug 3 项 (BUG-95 / BUG-96 / BUG-97):
+  · BUG-95 (P3) runner.go IDMap deadcode (phase 1 填 "" 注释声称 phase 2 填但
+    从不填, lookup 永远 miss)
+  · BUG-96 (P3) FinalizeBook latestChapter 取 TOC 末项标题, 末项是特殊章节时误导
+  · BUG-97 (P3) ExecuteTask 主循环无 defer recover (caller startCrawlTask 兜底)
+- 编译: 0 errors + 0 warnings + 0 issues (whole project staticcheck)
+- 文件改动: 6 文件 gofmt (storage.go +6 / parser.go +18 净增含 5 预编译 var /
+  cleaner/runner/types/sorter 0 净增仅 gofmt 调整) + parser.go 6 inline MustCompile
+  → var ref 替换 + runner.go 3 处注释删/slim. 0 改非 6 文件.
+- 未决项 (交接 R72):
+  1. **BUG-99 (P3) ApplyTransform line 268 `regexp.Compile("(?i)" + src)` 用户
+     ReplaceFrom 未缓存**: 每次 ApplyTransform call 都编译用户 pattern, 1000 章
+     × 10 字段 × N ReplaceFrom = N 万次编译. 可仿 cleaner.compileUserAdPattern
+     (sync.Map 缓存 key=pattern value=compiled). R72 加.
+  2. **BUG-95 IDMap deadcode 清理**: phase 2 落库后 `q.BookCtx.IDMap[q.URL] =
+     created.ID` 填充 OR 删 IDMap 字段 + lookup (cascade deadcode). 跨
+     BookMetaContext 结构改动.
+  3. **BUG-96 FinalizeBook latestChapter 特殊章节 fallback**: 用 sorter.go
+     extractChapterNumber 反向扫. 需 export extractChapterNumber 或挪 helper 到
+     runner.go.
+  4. **BUG-97 ExecuteTask defer recover**: 顶部加 defer recover 标 task error
+     (与 phase 1/2 goroutine + admin caller 同款 defense in depth).
+  5. **parser.go line 276 local var `CHUNK` 大写**: Go 风格 camelCase, 改 `chunk`
+     (style 一致性, 非功能 bug).
+  6. **gofmt 全项目剩余文件**: R71-C 仅触 6 文件. 其他文件 (main.go / admin.go /
+     fetcher.go / hostgate.go / smart.go / templates/** JS) 若有 8-space 残留, 需
+     R72+ 全项目 gofmt -w (跨 R71-D 范围).
+
+---
+Task ID: R71-D
+Agent: R71-D agent (admin 深抓 + 错误返回 + BUG-88)
+Task: homeLayout 错误返回 + BUG-88 sort.Strings + admin.go 深抓 BUG-91+ + 精简
+
+Work Log:
+- 侦察: 读 worklog.md R70 末尾 (R70-D 4 bug: BUG-87/88/89/90 + 未决 #1 homeLayout 写失败
+  静默吞 / #2 BUG-88 map 迭代非确定 留 R71) + admin.go 全文 6108 行 (R70-D 改动后) +
+  main.go getSite 1828-1883 只读核实 (R70-A 实际未读 homeLayout — getSite SELECT 14 列
+  无 homeLayout*, 仅加 ObfuscateHTML + KeywordTranscode via Setting; homeLayout.{siteID}
+  Setting key 已被 admin API 写入但 main.go 未消费, R71-A 范围). 验证 baseline
+  go build/vet/staticcheck 全 0.
+
+- 目标A homeLayout 错误返回 (R70 交接 #4):
+  · 加 sqlExecer 接口 (admin.go 5096-5101): abstract *sql.DB / *sql.Tx 都满足的 Exec
+    方法, 供 setHomeLayoutSetting 适配 tx 与独立 Exec 两种调用方式.
+  · setHomeLayoutSetting 签名重构 (5078-5131): 改为 (exec sqlExecer, siteID string,
+    m map[string]int) error — caller 传 tx 让 Setting 写入随 Site 主表 tx 原子化
+    (失败 Rollback 还原 Site UPDATE/INSERT, 防 "Site 已写但 homeLayout 缺失" 的
+    "撒谎" 状态).
+  · adminSiteByIDHandler PUT (4756-4769): setHomeLayoutSetting 移到 tx 内 (tx.Commit
+    前). 检查 err → 返 500 "homeLayout 写入失败: ...". Rollback 还原 Site 主表 UPDATE.
+    仅在 body 含 homeLayout 任一字段时写 (增量更新保留).
+  · adminSitesCreate (5002-5014): setHomeLayoutSetting 移到 tx 内 (tx.Commit 前).
+    检查 err → 返 500. Rollback 还原 Site INSERT. response 仍返 homeLayout 字段让
+    前端立即拿到生效值 (writeOK 后 Setting 已落 DB, 读回同值).
+  · 不再静默吞: response 不再"撒谎" — Site UPDATE/INSERT 与 homeLayout Setting 写入
+    原子, 要么全成功要么全失败 (Rollback). admin UI 看到 500 知道写入失败可整体
+    retry PUT/POST (idempotent 覆盖).
+
+- 目标B BUG-88 adminSettingsUpdate map 迭代非确定 (admin.go 3436-3478):
+  · 原 `for k, v := range body` Go map 迭代顺序非确定 — body 含多 bad key 时仅报
+    随机首个, 多次 retry 看到不同错误信息, UX 不一致.
+  · 修复两阶段 validate-then-save:
+    - Phase 1: sort.Strings(keys) 排序后迭代收集 badKeys + oversizeKeys (不立即返
+      400, 全扫完一次报全部).
+    - Phase 2: 若 len(badKeys) > 0 || len(oversizeKeys) > 0 → 返 400 拼接所有
+      非法 key + 过大 key 的 message (e.g. "非法的设置项 key: foo!, bar!;
+      设置项过大(上限100KB): baz"). 否则进 tx 批量 save.
+  · 不可序列化的 key (含 chan/func 类型, 实际罕见) 也归 badKeys (json.Marshal 失败
+    时 append 而非单独报).
+  · 与 adminSettingsList ORDER BY key ASC 同口径 — sort.Strings 保证 key 在响应中
+    以稳定顺序出现, 多次 retry 同输入同输出.
+
+- 目标C 深抓 bug (BUG-91+ 续接, R71-D 在 admin.go 单文件范围, R71-C 在 crawl 不重叠):
+  · BUG-91 (P3) FIXED: adminSitesBatchGenerateTDK (admin.go 5536-5572) 原
+    `if _, err := db.Exec(...); err == nil { updated++ }` 静默吞 err — admin UI
+    看到 sites:[...] 列出所有站点的生成 TDK (仿佛已应用), 但 updated:N 可能 <
+    len(sites), admin 难以察觉哪些站没写成功 (db connection 闪断 / SQLite 锁竞争
+    等场景). 修复: siteTDK struct 加 Applied + Error 字段 per site, 让 admin UI
+    显式看到写回结果; 失败时 log.Printf 记录 site ID + err 供运维排查. 生成失败
+    (generateSiteTDK 返 err) 也加入 out 数组 (Applied=false + Error="生成失败: ...")
+    而非 continue 跳过, 让 admin 看到全部站点状态.
+  · BUG-92 (P3) FIXED: getHomeLayoutSetting (admin.go 5080-5092) 原仅 v.(float64)
+    接受 JSON number — 若 admin 手工在 /admin/settings 页面编辑 Setting JSON 用字符串
+    值 (e.g. "homeCategoryCount": "20"), 静默忽略返默认 (与用户提交意图不符, 用户
+    改了 Setting 但前台仍显示默认值 8). 修复: 改调 intField (与 readHomeLayoutFromBody
+    入参解析同口径), 同时支持 float64 (JSON number) + string ("20") 两种格式, clamp
+    到合法范围. parsed[k] 缺失或 nil → intField 返 def (默认值兜底, 同前行为).
+  · BUG-93 (P3) FIXED: adminBackupRestoreHandler Books struct (admin.go 4084) 字段
+    名 SourceRule 与 backup 写入的 JSON key "sourceRuleId" 不匹配 (case-insensitive:
+    "sourcerule" vs "sourceruleid" — 后者更长, 不匹配). 原 Unmarshal 后 SourceRule 恒空,
+    INSERT 写入 nullIfEmpty("")=NULL, 即使用户原 Book.sourceRuleId 有值 (prisma
+    studio 手动设置的场景). 修复: 字段重命名 SourceRule → SourceRuleID (case-insensitive
+    匹配 "sourceRuleId"), INSERT args 同步改 nullIfEmpty(b.SourceRuleID). ON CONFLICT
+    子句已含 sourceRuleId=excluded.sourceRuleId (R42-1A 已加, 之前 args 缺失让该子句
+    无效). 实践影响小 (adminBooksCreate + adminDB.UpsertBook 都默认 NULL sourceRuleId,
+    但 prisma studio 手改的值能正确保留).
+  · 深抓方法论: ① nil/越界 (verified all parts[0] checks + slice bounds) ② race
+    (BUG-83/84 R70-D Mutex 修复 verify OK) ③ err swallow (BUG-91 修) ④ dead code
+    (staticcheck U1000=0) ⑤ type assertion (BUG-92 修 v.(float64) 太严) ⑥ regex
+    (无 ReDoS, 全 bounded) ⑦ channel (admin.go 无 chan) ⑧ defer (defer rows.Close
+    全在 err==nil 内, panic-safe) ⑨ context cancel (adminBackupRestore 用 r.Context
+    传 tx, OK) ⑩ panic-recover (BUG-87 R70-D 已修 startCrawlTask, adminDownloadsCreate
+    goroutine 已有 recover) ⑪ map/slice 并发 (downloadFilesMu 串行) ⑫ HTTP handler
+    (路由分发全 parts 检查 OK) ⑬ ServeMux (init() 自注册 idempotent) ⑭ rows Close
+    (全 defer 或 explicit Close, BUG-38/39/40/41/42/90 collect-then-loop pattern) ⑮
+    template Execute (renderAdminPage buffer-then-write, panic-safe) ⑯ SQL 注入 (全 ?
+    placeholder) ⑰ transaction (BUG-43/44 + R71-D homeLayout tx 内) ⑱ getSite 查询
+    rows.Close (R70 主控修复 verify OK) ⑲ backup/restore 漏字段 (BUG-93 修 SourceRuleID,
+    其他 7 表全 verify 字段集 match) ⑳ init() (R70-D /api/admin/featured-books + metrics
+    自注册) ㉑ adminDownloadsDelete race (BUG-83 R70-D Lock-delete-DELETE-Unlock verify
+    OK) ㉒ adminTasksQuickFill 边界 (maxBooks 1-1000 clamp, ruleIDs IN(...) placeholder,
+    Go 1.26 loop var per-iter 安全) ㉓ adminMetricsHandler 边界 (8 snapshot maps, 无
+    body 解析) ㉔ generateSiteTDK 边界 (N=0 fallback 通用模板, X=strconv.Itoa(M) ||
+    "多") ㉕ featured-books API 边界 (BUG-89 cap 30, 已删书跳过) ㉖ rules/audit API
+    边界 (collect-then-loop, hasField const type 特判) ㉗ homeLayout API 边界 (BUG-92
+    修 string 接受, sqlExecer tx 原子).
+
+- 目标D 精简:
+  · D1 重复 helper 整合: 扫 truncate vs truncateRune (语义不同: 前者字节截+UTF-8
+    边界回退, 后者 rune 截; 非重复) / clampIntAdm vs clampPage (不同) / toIntFromInterface
+    vs toIntDefault (不同接口) — 0 重复 helper, 0 整合.
+  · D2 deadcode: staticcheck -checks U1000,SA9003,SA9004 . = 0 issues (历史已清, 本轮
+    再扫确认).
+  · D3 冗余注释清理 (R38-R54 纯描述可删, 含 why rationale 保留):
+    - line 2005-2012 /admin/* 路由表 8 处 (R40-1B) suffix → 全删 (纯 attribution).
+    - line 2607 `// ==================== R40-1B 新增: 分类/友链/... ====================`
+      → 删 "R40-1B 新增: " 前缀 (保留 section 标题).
+    - line 3662 `// ---------- 公共反馈提交 API (R54-1A) ----------` → 删 "(R54-1A)".
+    - line 5782 `// ---------- R40-1B 页面数据装配 ----------` → 删 "R40-1B".
+    · 4 处 section header / routing 表 attribution 清理; 含 why rationale 的 R55-1B
+      BUG-1/2/3/4/5/6 修复注释 + R64-C BUG-38/39/40/41 + R65-D BUG-49 + R70-D BUG-87/
+      88/89/90 全保留 (带 bug 描述 + 修复方案 + 影响范围).
+  · D4 ST1003 命名 nits: staticcheck -checks ST1003 . = 0 issues (R65-D 报告 0 nits,
+    本轮再扫确认). SourceRule → SourceRuleID 重命名是 BUG-93 修复的一部分 (case-
+    insensitive JSON 匹配), 非 ST1003 nit.
+  · 简化: readHomeLayoutFromBody 删除冗余外层 clampIntAdm (intField 内部已 clamp
+    到 [r[0], r[1]], BUG-92 修复后与 getHomeLayoutSetting 同口径).
+
+- 目标E 编译:
+  · go build ./... = 0 errors ✓ (export PATH=/home/z/go/go/bin:$PATH; cd go-backend;
+    go build ./...). R71-D 改动 (admin.go +108/-47) 全编译过.
+  · go vet ./... = 0 warnings ✓ (admin+main 全 0; 无新 warnings).
+  · staticcheck . = 0 issues ✓ (whole package; 与 R65/R66/R67/R68/R69/R70 同口径).
+    staticcheck -checks all . = 0 issues ✓.
+  · staticcheck -checks U1000,SA9003,SA9004 . = 0 issues ✓ (deadcode + unreachable).
+  · staticcheck -checks ST1003 . = 0 issues ✓ (命名 nits).
+  · 0 启动/重启/杀死进程 / 0 写 DB / 0 prisma / 0 新依赖 (sort/strings/sql 已在
+    stdlib + database/sql 已 import) / 0 emoji / 0 改非 admin.go 文件 / 0 改 templates/**
+    / 0 改 crawl/** / 0 改 main.go / 0 改 prisma/schema.prisma / 0 改 package.json
+    / 0 改 start-go.js / 0 改 Caddyfile / 0 改 DEPLOY.md / 0 改 README.md / 0 改 .gitignore.
+
+Stage Summary:
+- homeLayout 错误返回: ✓ sqlExecer 接口 + setHomeLayoutSetting 签名重构 (exec sqlExecer)
+  + adminSitesCreate/adminSiteByIDHandler PUT 两处 caller 移 setHomeLayoutSetting 进 tx
+  (tx.Commit 前), 检查 err 返 500 + Rollback 还原 Site 主表. 不再静默吞, response
+  不再"撒谎".
+- BUG-88: ✓ adminSettingsUpdate 两阶段 validate-then-save + sort.Strings(keys) 排序
+  迭代, 多 bad key 全报 (拼接所有非法 + 过大 key 一次返 400).
+- 新修 bug 3 项 (BUG-91 ~ BUG-93):
+  · BUG-91 (P3) adminSitesBatchGenerateTDK silent err swallow — siteTDK struct 加
+    Applied + Error 字段 per site, 失败时 log.Printf 记录运维.
+  · BUG-92 (P3) getHomeLayoutSetting 仅 float64 — 改调 intField 同款 float64+string
+    双格式 (与 readHomeLayoutFromBody 同口径).
+  · BUG-93 (P3) adminBackupRestoreHandler Books struct SourceRule 字段名与 backup JSON
+    key "sourceRuleId" 不匹配 (case-insensitive 失败) — 重命名 SourceRuleID 修复.
+- 精简: 4 处 R38-R54 section header / routing 表 attribution 清理 (R40-1B/R54-1A suffix
+  删, 保留 section 标题与 why rationale 注释); 1 处 readHomeLayoutFromBody 冗余外层
+  clampIntAdm 删 (intField 内部已 clamp).
+- 编译: 0 errors + 0 warnings + 0 issues (whole package staticcheck, all checks + U1000
+  + SA9003/SA9004 + ST1003 全 0).
+- 文件改动: admin.go 6108 → 6169 行 (+108/-47 净 +61).
+- 未决项 (交接 R72):
+  1. **gofmt 全项目 + admin.go 8-space convention**: admin.go 全文用 8-space 缩进
+     (非 Go 标准 tab), gofmt -d 仍显示 ~10700 行预存 diff (R70-D 已文档化, 非本轮
+     引入). R71-D 新代码保持 8-space 一致 (0 tabs in added lines verified). R72+
+     可一次性 gofmt -w 全项目 (跨 admin.go + main.go + crawl/** 范围).
+  2. **main.go getSite 未读 homeLayout**: R70-A worklog #6 提及 main.go getSite 应读
+     Setting 表 homeLayout.{siteID} 注入 4 字段供 homeHandler 控制首页模块渲染, 但
+     R70-A 实际未实现 (getSite SELECT 仅 14 列 + ObfuscateHTML/KeywordTranscode via
+     Setting). 本轮 admin API (setHomeLayoutSetting + getHomeLayoutSetting) 已就位, 等
+     R72 改 main.go getSite + homeHandler 消费 4 字段即生效.
+  3. **fillLinksPageData wheel.enabled 非严格 bool 解析**: `wheel["enabled"] = v != false`
+     对非 bool 值 (string "false" / number 0) 返 true (默认 enabled). 与 type-assertion
+     fix 同行为 (非 bool → 默认). 不算 bug, 仅 code smell. R72+ 若需严格 bool 解析
+     可加 strconv.ParseBool 兜底, 但当前影响小 (admin 一般传 bool).
+  4. **adminSiteByIDHandler PUT themeId="" 允许**: 与 adminSitesCreate 严格校验不一致
+     (Create 必填 + 在 adminThemes 列表; PUT 允许空字符串跳过校验). 若 admin 发空
+     themeId 清字段, Site.themeId="" 后续 getSite 找不到主题模板. 影响: 角落场景, admin
+     UI 一般不发空 themeId. R72+ 可加 `if t == "" { writeJSONErr("themeId 不能为空", 400) }`.
+  5. **adminDownloadsCreate obfuscateDensity 仅 float64**: 若 user 传 "0.5" (string)
+     静默为 0.0. 同 BUG-92 模式但 float 字段无 intField 同款 helper. R72+ 可加
+     strconv.ParseFloat 兜底 (含 string 解析).
+  6. **BUG-88 adminSettingsUpdate tx.Exec 顺序仍按 sort.Strings 后顺序**: 多 key 写入
+     按字典序 (与 adminSettingsList ORDER BY key ASC 一致). 无并发问题 (单 tx 串行),
+     但若某 key 写失败 (e.g. SQL 约束), 返 500 + Rollback 整 tx, 已正确.
+  7. **R70 交接 #2/#3 (71 Rule audit UI + featured-books UI + homeLayout UI 接入
+     templates/admin/**)**: 仍留 R71-C 范围 (templates 严禁 R71-D 改).

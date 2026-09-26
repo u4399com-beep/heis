@@ -305,7 +305,7 @@ func (rt *TaskRuntime) IncRequest() int64 {
 	return atomic.AddInt64(&rt.requestCount, 1)
 }
 
-// IncCaptcha — 累计验证码触发次数 (R43-1B 反反爬增强).
+// IncCaptcha — 累计验证码触发次数.
 // CrawlChapterContent / CrawlBookMeta 在 FetchResult.CaptchaDetected=true 时调用.
 func (rt *TaskRuntime) IncCaptcha() int64 {
 	return atomic.AddInt64(&rt.captchaEncountered, 1)
@@ -1509,7 +1509,6 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
 	// R65-C: 延迟 + 调 AdjustMinGap (无论是否 Blocked, 都有 HTTP 响应, 延迟有效)
 	getHealthTracker().recordLatency(bookHost, latencyMs)
 	GetHostGate().AdjustMinGap(bookHost, latencyMs)
-	// R43-1B: 命中验证码 → 累计 captchaEncountered
 	if bookRes.CaptchaDetected {
 		rt.IncCaptcha()
 	}
@@ -1691,7 +1690,6 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
 	//   避免与 recordFailure 双计数. recordLatency + AdjustMinGap 保留在前.
 	getHealthTracker().recordLatency(tocHost, tocLatencyMs)
 	GetHostGate().AdjustMinGap(tocHost, tocLatencyMs)
-	// R43-1B: 命中验证码 → 累计 captchaEncountered
 	if tocRes.CaptchaDetected {
 		rt.IncCaptcha()
 	}

@@ -2002,14 +2002,14 @@ func toIntDefault(s string, def int) int {
 //      /admin/books       → books
 //      /admin/rules       → rules
 //      /admin/sites       → sites
-//      /admin/categories  → categories  (R40-1B)
-//      /admin/links       → links       (R40-1B)
-//      /admin/themes      → themes      (R40-1B)
-//      /admin/downloads   → downloads   (R40-1B)
-//      /admin/settings    → settings    (R40-1B)
-//      /admin/feedback    → feedback    (R40-1B)
-//      /admin/backup      → backup      (R40-1B)
-//      /admin/seo-audit   → seo-audit   (R40-1B)
+//      /admin/categories  → categories
+//      /admin/links       → links
+//      /admin/themes      → themes
+//      /admin/downloads   → downloads
+//      /admin/settings    → settings
+//      /admin/feedback    → feedback
+//      /admin/backup      → backup
+//      /admin/seo-audit   → seo-audit
 func adminPageHandler(w http.ResponseWriter, r *http.Request) {
         // 提取 sub path
         path := strings.TrimPrefix(r.URL.Path, "/admin")
@@ -2604,7 +2604,7 @@ func shortTime(s string) string {
         return s
 }
 
-// ==================== R40-1B 新增: 分类/友链/主题/下载/设置/反馈/备份/SEO审计 ====================
+// ==================== 分类/友链/主题/下载/设置/反馈/备份/SEO审计 ====================
 
 // ---------- 主题静态注册表 (10 套精仿主题) ----------
 
@@ -3435,21 +3435,46 @@ func adminSettingsUpdate(w http.ResponseWriter, r *http.Request) {
         }
         type kv struct{ key, value string }
         pairs := make([]kv, 0, len(body))
-        for k, v := range body {
+        // R71-D BUG-88 (P3): 排序 map keys 后迭代保证确定性. 原 `for k, v := range body`
+        //   Go map 迭代顺序非确定 — body 含多个非法 key 时仅报随机首个, 多次 retry 看到
+        //   不同错误信息, UX 不一致.
+        keys := make([]string, 0, len(body))
+        for k := range body {
+                keys = append(keys, k)
+        }
+        sort.Strings(keys)
+        // R71-D BUG-88: 两阶段 validate-then-save — 先全 validate 收集所有 bad key 后
+        //   一次报 400, 让 admin UI 一次看到全部非法 key (不只报随机首个). 与 adminSettingsList
+        //   ORDER BY key ASC 同口径 (sort.Strings 保证 key 在响应中以稳定顺序出现).
+        badKeys := []string{}
+        oversizeKeys := []string{}
+        for _, k := range keys {
                 if !settingKeyRE.MatchString(k) {
-                        writeJSONErr(w, "非法的设置项 key: "+k, 400)
-                        return
+                        badKeys = append(badKeys, k)
+                        continue
                 }
-                b, err := json.Marshal(v)
+                b, err := json.Marshal(body[k])
                 if err != nil {
-                        writeJSONErr(w, "设置项 "+k+" 不可序列化", 400)
-                        return
+                        // 不可序列化的 key 也归 bad (e.g. 含 chan/func 类型, 实际罕见).
+                        badKeys = append(badKeys, k)
+                        continue
                 }
                 if len(b) > settingValueMax {
-                        writeJSONErr(w, "设置项 "+k+" 过大(上限100KB)", 400)
-                        return
+                        oversizeKeys = append(oversizeKeys, k)
+                        continue
                 }
                 pairs = append(pairs, kv{key: k, value: string(b)})
+        }
+        if len(badKeys) > 0 || len(oversizeKeys) > 0 {
+                var msgs []string
+                if len(badKeys) > 0 {
+                        msgs = append(msgs, "非法的设置项 key: "+strings.Join(badKeys, ", "))
+                }
+                if len(oversizeKeys) > 0 {
+                        msgs = append(msgs, "设置项过大(上限100KB): "+strings.Join(oversizeKeys, ", "))
+                }
+                writeJSONErr(w, strings.Join(msgs, "; "), 400)
+                return
         }
         // R42-1A: 单事务包裹所有 keys (失败回滚防半保存状态). 之前逐 key Exec 失败留下"前 N 个已保存"的半提交脏状态.
         tx, txErr := db.BeginTx(r.Context(), nil)
@@ -3634,7 +3659,7 @@ func adminFeedbackByIDHandler(w http.ResponseWriter, r *http.Request) {
         }
 }
 
-// ---------- 公共反馈提交 API (R54-1A) ----------
+// ---------- 公共反馈提交 API ----------
 
 // publicFeedbackSubmitHandler — 前台浮窗反馈按钮的 POST 目标.
 //
@@ -4056,7 +4081,7 @@ func adminBackupRestoreHandler(w http.ResponseWriter, r *http.Request) {
                                 Enabled bool `json:"enabled"`
                         } `json:"rules"`
                         Books []struct {
-                                ID, Name, Author, CategoryID, Intro, Cover, Status, Keywords, LatestChapter, SourceURL, SourceRule, StorageMode, CollectedAt, CreatedAt, UpdatedAt string
+                                ID, Name, Author, CategoryID, Intro, Cover, Status, Keywords, LatestChapter, SourceURL, SourceRuleID, StorageMode, CollectedAt, CreatedAt, UpdatedAt string
                                 WordCount int `json:"wordCount"`
                                 Chapters  []struct {
                                         ID, BookID, Title, Volume, URL, Content, Storage, FilePath, CreatedAt, UpdatedAt string
@@ -4166,7 +4191,7 @@ func adminBackupRestoreHandler(w http.ResponseWriter, r *http.Request) {
         for _, b := range payload.Data.Books {
                 // R42-1A: 16 cols + 16 ? + 16 args (R41-1B 注释声称 16 ? 但实际写入 14 ?; 已修正)
                 if _, err := tx.Exec(`INSERT INTO Book (id, name, author, categoryId, intro, cover, status, keywords, latestChapter, wordCount, sourceUrl, sourceRuleId, storageMode, collectedAt, createdAt, updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, author=excluded.author, categoryId=excluded.categoryId, intro=excluded.intro, cover=excluded.cover, status=excluded.status, keywords=excluded.keywords, latestChapter=excluded.latestChapter, wordCount=excluded.wordCount, sourceUrl=excluded.sourceUrl, sourceRuleId=excluded.sourceRuleId, storageMode=excluded.storageMode`,
-                        b.ID, b.Name, b.Author, nullIfEmpty(b.CategoryID), b.Intro, b.Cover, b.Status, b.Keywords, b.LatestChapter, b.WordCount, b.SourceURL, nullIfEmpty(b.SourceRule), b.StorageMode, nullIfEmpty(b.CollectedAt), nullIfEmpty(b.CreatedAt), nullIfEmpty(b.UpdatedAt)); err != nil {
+                        b.ID, b.Name, b.Author, nullIfEmpty(b.CategoryID), b.Intro, b.Cover, b.Status, b.Keywords, b.LatestChapter, b.WordCount, b.SourceURL, nullIfEmpty(b.SourceRuleID), b.StorageMode, nullIfEmpty(b.CollectedAt), nullIfEmpty(b.CreatedAt), nullIfEmpty(b.UpdatedAt)); err != nil {
                         writeJSONErr(w, fmt.Sprintf("Book %s 导入失败: %s", b.ID, err.Error()), 500)
                         return
                 }
@@ -4731,16 +4756,21 @@ func adminSiteByIDHandler(w http.ResponseWriter, r *http.Request) {
                                 return
                         }
                 }
+                // R71-D (R70 交接 #4): homeLayout 写入移到 tx 内, 失败 Rollback 还原 Site 主表 UPDATE
+                //   防 "Site 已写但 homeLayout 缺失" 的 "撒谎" 状态. setHomeLayoutSetting 已返 error,
+                //   调用方检查 + 返错误响应 (不再静默吞). 仅在 body 含 homeLayout 任一字段时写
+                //   (增量更新, 避免覆盖用户已有的 homeLayout).
+                if homeLayoutChanged(body) {
+                        if err := setHomeLayoutSetting(tx, id, readHomeLayoutFromBody(body)); err != nil {
+                                writeJSONErr(w, "homeLayout 写入失败: "+err.Error(), 500)
+                                return
+                        }
+                }
                 if err := tx.Commit(); err != nil {
                         writeJSONErr(w, "提交事务失败: "+err.Error(), 500)
                         return
                 }
                 committed = true
-                // R70-D: homeLayout 4 字段独立写 Setting 表 (与 tx 解耦, 失败不影响 Site 主表 UPDATE).
-                //   仅在 body 含 homeLayout 任一字段时写 (增量更新, 避免覆盖用户已有的 homeLayout).
-                if homeLayoutChanged(body) {
-                        _ = setHomeLayoutSetting(id, readHomeLayoutFromBody(body))
-                }
                 writeJSONOK(w, map[string]interface{}{"id": id, "updated": true})
         case http.MethodDelete:
                 var exist, isDefault string
@@ -4972,15 +5002,19 @@ func adminSitesCreate(w http.ResponseWriter, r *http.Request, body map[string]in
                         return
                 }
         }
+        homeLayout := readHomeLayoutFromBody(body)
+        // R71-D (R70 交接 #4): homeLayout 写入移到 tx 内, 失败 Rollback 还原 Site INSERT
+        //   防 "Site 已建但 homeLayout 缺失" 的 "撒谎" 状态. setHomeLayoutSetting 已返 error,
+        //   调用方检查 + 返错误响应 (不再静默吞).
+        if err := setHomeLayoutSetting(tx, id, homeLayout); err != nil {
+                writeJSONErr(w, "homeLayout 写入失败: "+err.Error(), 500)
+                return
+        }
         if err := tx.Commit(); err != nil {
                 writeJSONErr(w, "提交事务失败: "+err.Error(), 500)
                 return
         }
         committed = true
-        // R70-D: homeLayout 4 字段写 Setting 表 (Site 表无此 4 列; Setting 兜底).
-        //   独立于上方 tx (Setting 表读写不嵌事务, 失败仅丢 homeLayout 配置不影响 Site 主表 INSERT).
-        homeLayout := readHomeLayoutFromBody(body)
-        _ = setHomeLayoutSetting(id, homeLayout)
         writeJSONOK(w, map[string]interface{}{
                 "id": id, "name": name, "domain": domain, "themeId": themeID,
                 "isDefault": isDefault, "status": status, "inLinkWheel": inLinkWheel,
@@ -5044,26 +5078,38 @@ func getHomeLayoutSetting(siteID string) map[string]int {
                 return out
         }
         for k, def := range homeLayoutDefaults {
-                if v, ok := parsed[k]; ok && v != nil {
-                        if f, ok := v.(float64); ok {
-                                n := int(f)
-                                if r, ok := homeLayoutRanges[k]; ok {
-                                        n = clampIntAdm(n, r[0], r[1])
-                                } else {
-                                        n = def
-                                }
-                                out[k] = n
-                        }
+                r, hasRange := homeLayoutRanges[k]
+                if !hasRange {
+                        continue
                 }
+                // R71-D BUG-92 (P3): 原仅 v.(float64) 接受 JSON number, 若 admin 手工
+                //   在 /admin/settings 页面编辑 Setting JSON 用字符串值 (e.g.
+                //   "homeCategoryCount": "20"), 静默忽略返默认 (与用户提交意图不符).
+                //   修复: 改调 intField (与 readHomeLayoutFromBody 入参解析同口径),
+                //   同时支持 float64 (JSON number) + string ("20") 两种格式, clamp 到
+                //   合法范围. parsed[k] 缺失或 nil → intField 返 def (默认值兜底).
+                out[k] = intField(parsed, k, def, r[0], r[1])
         }
         return out
+}
+
+// sqlExecer — 抽象 *sql.DB / *sql.Tx 都满足的 Exec 接口 (R71-D).
+//   供 setHomeLayoutSetting 适配 tx 与独立 Exec 两种调用方式 — 让 caller 把
+//   Setting 写入随 Site 主表的 tx 原子化 (失败 Rollback 还原 Site UPDATE/INSERT,
+//   防 "Site 已写但 homeLayout 缺失" 的 "撒谎" 状态, R71-D R70 交接 #4).
+type sqlExecer interface {
+        Exec(query string, args ...interface{}) (sql.Result, error)
 }
 
 // setHomeLayoutSetting — 写 Setting 表 key=homeLayout.{siteID}, JSON 序列化 4 字段.
 //
 // 入参 m 可缺少 key (用默认值兜底); 值越界 → clampIntAdm 钳回 [lo,hi].
+// exec 参数 (R71-D): caller 传 *sql.Tx 让写入随 caller tx 原子 (失败 Rollback
+//   还原 Site 主表); 传 *sql.DB 则独立写入 (失败仅丢 homeLayout 不影响 caller).
+//   推荐传 tx (atomic), 详见 adminSiteByIDHandler PUT / adminSitesCreate.
 // 返 error 仅在 INSERT/UPDATE SQL 失败 (SQLite 磁盘满 / 连接断等罕见场景).
-func setHomeLayoutSetting(siteID string, m map[string]int) error {
+//   调用方需检查 err 并返错误响应 (不再静默吞, R71-D R70 交接 #4).
+func setHomeLayoutSetting(exec sqlExecer, siteID string, m map[string]int) error {
         payload := map[string]int{}
         for k, def := range homeLayoutDefaults {
                 v, ok := m[k]
@@ -5079,7 +5125,7 @@ func setHomeLayoutSetting(siteID string, m map[string]int) error {
         if err != nil {
                 return err
         }
-        _, err = db.Exec(`INSERT INTO Setting (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+        _, err = exec.Exec(`INSERT INTO Setting (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
                 "homeLayout."+siteID, string(b))
         return err
 }
@@ -5092,11 +5138,13 @@ func setHomeLayoutSetting(siteID string, m map[string]int) error {
 func readHomeLayoutFromBody(body map[string]interface{}) map[string]int {
         out := map[string]int{}
         for k, def := range homeLayoutDefaults {
-                v := def
                 if r, ok := homeLayoutRanges[k]; ok {
-                        v = clampIntAdm(intField(body, k, def, r[0], r[1]), r[0], r[1])
+                        // R71-D: intField 内部已 clamp 到 [r[0], r[1]] (与 BUG-92 修复后的
+                        //   getHomeLayoutSetting 同口径), 不需再外层 clampIntAdm.
+                        out[k] = intField(body, k, def, r[0], r[1])
+                } else {
+                        out[k] = def
                 }
-                out[k] = v
         }
         return out
 }
@@ -5484,14 +5532,23 @@ func adminSitesBatchGenerateTDK(w http.ResponseWriter, r *http.Request, body map
         rows.Close() // 显式释放连接, 后续 generateSiteTDK 的 Query/Exec 不再阻塞
         type siteTDK struct {
                 ID, Title, Desc, Kw string
+                Applied             bool
+                Error               string
         }
         out := []siteTDK{}
         updated := 0
+        // R71-D BUG-91 (P3): 原 `if _, err := db.Exec(...); err == nil { updated++ }`
+        //   静默吞 err — admin UI 看到 sites:[...] 列出所有站点的生成 TDK (仿佛已应用),
+        //   但 updated:N 可能 < len(sites), admin 难以察觉哪些站没写成功. 修复: 加
+        //   Applied + Error 字段 per site, 让 admin UI 显式看到写回结果. 同时 log 失败
+        //   的 err 供运维排查 (db connection 闪断 / SQLite 锁竞争等).
         for _, m := range metas {
                 t, d, k, gerr := generateSiteTDK(m.ID)
                 if gerr != nil {
+                        out = append(out, siteTDK{ID: m.ID, Title: t, Desc: d, Kw: k, Applied: false, Error: "生成失败: " + gerr.Error()})
                         continue
                 }
+                entry := siteTDK{ID: m.ID, Title: t, Desc: d, Kw: k, Applied: false}
                 if apply {
                         var sets []string
                         var args []interface{}
@@ -5501,11 +5558,15 @@ func adminSitesBatchGenerateTDK(w http.ResponseWriter, r *http.Request, body map
                         }
                         sets = append(sets, "description=?", "keywords=?", "updatedAt=datetime('now')")
                         args = append(args, d, k, m.ID)
-                        if _, err := db.Exec(`UPDATE Site SET `+strings.Join(sets, ",")+` WHERE id=?`, args...); err == nil {
+                        if _, err := db.Exec(`UPDATE Site SET `+strings.Join(sets, ",")+` WHERE id=?`, args...); err != nil {
+                                entry.Error = "写回失败: " + err.Error()
+                                log.Printf("[adminSitesBatchGenerateTDK] site=%s UPDATE 失败: %v", m.ID, err)
+                        } else {
+                                entry.Applied = true
                                 updated++
                         }
                 }
-                out = append(out, siteTDK{ID: m.ID, Title: t, Desc: d, Kw: k})
+                out = append(out, entry)
         }
         writeJSONOK(w, map[string]interface{}{
                 "updated": updated,
@@ -5718,7 +5779,7 @@ func adminBackupClearHandler(w http.ResponseWriter, r *http.Request) {
         writeJSONOK(w, map[string]interface{}{"cleared": cleared})
 }
 
-// ---------- R40-1B 页面数据装配 ----------
+// ---------- 页面数据装配 ----------
 
 func fillCategoriesPageData(data map[string]interface{}) {
         rows, err := db.Query(`SELECT id, name, sortOrder, createdAt FROM Category ORDER BY sortOrder ASC LIMIT 500`)

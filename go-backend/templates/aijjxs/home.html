@@ -41,7 +41,10 @@
 <h3 class="latest">最新上传<small></small></h3>
 <div class="body grid2" style="grid-template-columns:1fr;">
 <ul class="lines lines-books lines-books-2col" style="grid-column:1/-1;">
-{{range .Books}}
+{{/* R71-A: 用 .LatestBooks 替代 .Books 供最新上传区块消费 (homeHandler 注入, 
+     受 homeLayout.homeLatestBooks 参数控制, 默认 12, 范围 4-30). .Books 仍供
+     小说分类过滤/热门作者/数据统计用, 保持全量 books slice. */}}
+{{range .LatestBooks}}
 <li>
 <span class="line-main">
 <span class="cat">{{.category}}</span>
@@ -61,7 +64,10 @@
 <article class="panel" style="margin-top:14px;">
 <h3>封面推荐</h3>
 <div class="body grid2">
-{{range .TopBooks}}
+{{/* R71-A 目标B: 封面推荐区块改用 .FeaturedBooks (homeHandler 读 Setting 表
+     featuredBooks.{siteID} JSON 查 Book 表返). admin 未配置 featuredBooks 时
+     homeHandler fallback 用 TopBooks 避免空区块, 与 R70-C 前行为一致. */}}
+{{range .FeaturedBooks}}
 <div class="book">
 {{if .cover}}<img src="{{.cover}}" alt="{{.name}}封面">{{end}}
 <h4><span class="badge">荐</span><a href="{{.URL}}" target="_blank">{{.name}}</a></h4>
@@ -80,18 +86,21 @@
      不一致 (DB 也无"女生小说"分类). 改用 .NavCats (DB Category.name 真实分类名) + 按 categoryId
      过滤 $.Books, 每个分类卡片显示该分类下的最新上传.
      注: 第一遍 range 计算 $count (该分类匹配几本), $count==0 跳过空分类 (test data 奇幻魔幻
-     可能 0 本); 第二遍 range 渲染时 lt $perCard 6 限制每卡最多 6 本 (与"最新上传"区块
-     视觉平衡). $shown 限制最多 2 卡填充 grid2 双列布局. */}}
+     可能 0 本); 第二遍 range 渲染时 lt $perCard $.HomeCategoryBooks 限制每卡最多 N 本
+     (默认 6, admin 可配 2-12, 与"最新上传"区块视觉平衡). $shown 限制最多
+     $.HomeCategoryCount 卡 (默认 8, admin 可配 4-20) 填充 grid2 双列布局.
+     R71-A: 原 R70-C 硬编码 2 卡 / 6 本 → 改用 $.HomeCategoryCount / $.HomeCategoryBooks
+     占位符 (homeHandler 读 Setting 表 homeLayout.{siteID} JSON 注入). */}}
 {{$books := $.Books}}
 {{$shown := 0}}
-{{range $c := $.NavCats}}{{if lt $shown 2}}
+{{range $c := $.NavCats}}{{if lt $shown $.HomeCategoryCount}}
 {{$count := 0}}{{range $b := $books}}{{if eq $b.categoryId $c.id}}{{$count = add $count 1}}{{end}}{{end}}
 {{if gt $count 0}}
 <div>
 <h4>{{$c.name}} <a href="{{$c.URL}}">更多&gt;&gt;</a></h4>
 <ul class="lines lines-books">
 {{$perCard := 0}}
-{{range $b := $books}}{{if and (eq $b.categoryId $c.id) (lt $perCard 6)}}
+{{range $b := $books}}{{if and (eq $b.categoryId $c.id) (lt $perCard $.HomeCategoryBooks)}}
 <li>
 <span class="line-main">
 <span class="cat">{{$b.category}}</span>

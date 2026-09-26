@@ -18,8 +18,9 @@ import (
         "runtime"
         "sort"
         "strconv"
-        "time"
         "strings"
+        "sync"
+        "time"
         "unicode/utf8"
 
         "heis-backend/crawl"
@@ -275,7 +276,8 @@ func main() {
         // R70-A: 启动时预加载所有 public/clone-css/*.css 到内存缓存, 供 obfuscateHTML
         //   inlineExternalCSS 替换 <link> 标签为 <style> 块 (R69-A obfuscateHTML=true 时
         //   HTML class 改名需同步重写外部 CSS 内的 .class 选择器, 否则样式失效).
-        //   缓存只读, 运行时不刷新 (admin 改 CSS 需重启进程). 失败 (文件缺失) 跳过不致命.
+        //   R71-A: 缓存运行时可刷新 (watcher goroutine 每 60s 检 mtime 变化 → 重载);
+        //   admin 改 CSS 无需重启进程. 失败 (文件缺失) 跳过不致命.
         initExternalCSSCache()
 
         // 静态文件 (clone-css + public) — R51 修复: StripPrefix 剥离了 clone-css/ 但文件在 public/clone-css/ 下
@@ -418,6 +420,9 @@ func main() {
         flusherCtx, flusherCancel := context.WithCancel(context.Background())
         defer flusherCancel()
         crawl.StartTlsSessionBackgroundFlusher(flusherCtx)
+        // R71-A: CSS 文件 watcher goroutine (60s mtime 轮询; 与 flusher 共用 ctx,
+        //   main 退出时 cancel → goroutine 早返, 无泄露).
+        startExternalCSSWatcher(flusherCtx)
 
         // R57-1A 反预览挂掉增强: http.Server 加 ReadHeader/Read/Write/Idle 超时.
         //   原 http.ListenAndServe 用默认 Server (无超时), 慢客户端 (含恶意 slowloris)
@@ -751,11 +756,51 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 data["TopBooks"] = topBooks(books, 6)
                 data["Popular"] = takeBooks(books, 12)
         default: // home
-                books, _ := getBooks(48)
+                // R71-A: homeLayout 4 字段注入 (读 Setting 表 homeLayout.{siteID} JSON).
+                //   admin.go getHomeLayoutSetting 返 map (含默认值兑底, clamp [lo,hi] 防坏值).
+                //   home.html 模板用 .HomeCategoryCount 限分类区块数 (原硬编码 2 卡) +
+                //   .HomeCategoryBooks 限每卡书数 (原硬编码 6) + .HomeLatestBooks 限最新上传
+                //   区块 (原 range .Books 全 48 本) + .HomeHotBooks 限 24h 热榜 (原 takeBooks(books,12)).
+                //   site["ID"] 为本站 ID (getSite 注入). 为空 (无 siteID query 但 isDefault 命中) 时
+                //   用默认值 (R70-D getHomeLayoutSetting 对空 siteID 返全默认 8/6/12/12).
+                siteDBID, _ := site["ID"].(string)
+                layout := getHomeLayoutSetting(siteDBID)
+                catCount := layout["homeCategoryCount"]
+                catBooks := layout["homeCategoryBooks"]
+                latestN := layout["homeLatestBooks"]
+                hotN := layout["homeHotBooks"]
+                data["HomeCategoryCount"] = catCount
+                data["HomeCategoryBooks"] = catBooks
+                data["HomeLatestBooks"] = latestN
+                data["HomeHotBooks"] = hotN
+                // 取足够书籍供各区块使用: latestN + hotN + 分类区块 (catCount * catBooks)
+                //   + buffer 防分类过滤后部分书没分到任何展示位. 默认 8 分类 * 6 + 12 + 12 + 16 = 88,
+                //   实际 SQLite LIMIT 取 min(算出值, 表总数). 不硬编码 48 (R71-A 目标A 需求).
+                totalNeeded := latestN + hotN + catCount*catBooks + 16
+                if totalNeeded < 48 {
+                        totalNeeded = 48 // 保底 48 (防坏 layout 值致分类过滤不到书)
+                }
+                books, _ := getBooks(totalNeeded)
                 injectBookURLs(books, pseudoStyle)
                 data["Books"] = books
-                data["TopBooks"] = topBooks(books, 6)
-                data["Popular"] = takeBooks(books, 12)
+                // R71-A: LatestBooks 独立切片供最新上传区块用 (模板 range .LatestBooks).
+                //   不复用 .Books (后者还供 分类过滤 / 热门作者 / 数据统计 用, 需保持全量).
+                data["LatestBooks"] = takeBooks(books, latestN)
+                // R71-A: HotBooks (24h 热榜) 用 hotN 限 (原硬编码 12).
+                data["Popular"] = takeBooks(books, hotN)
+                // TopBooks 为一周热榜 + FeaturedBooks 的 fallback (原 topBooks(books, 6) 保留).
+                topN := 6
+                data["TopBooks"] = topBooks(books, topN)
+                // R71-A 目标B: FeaturedBooks 封面推荐区块 (读 Setting 表 featuredBooks.{siteID} JSON).
+                //   模板 range .FeaturedBooks 渲染; 为空时 fallback TopBooks 避免空区块 (admin 未配置
+                //   featuredBooks 时显示一周热榜 top6, 与 R70-C 前一致).
+                featured := getFeaturedBooks(siteDBID)
+                if len(featured) == 0 {
+                        featured = data["TopBooks"].([]map[string]interface{})
+                } else {
+                        injectBookURLs(featured, pseudoStyle) // 给 featured 每本注入 URL
+                }
+                data["FeaturedBooks"] = featured
         }
 
         tmplName := theme + "/" + view
@@ -1044,14 +1089,23 @@ func collectHTMLClasses(html string) map[string]bool {
 
 // R70-A: externalCSSCache 启动时加载的 per-site CSS 内容缓存.
 //   key = "/clone-css/<name>.css" (与模板 href 一致), value = CSS 文本 (空 = 加载失败).
-//   init 后只读, goroutine 并发读安全 (无并发写).
-var externalCSSCache map[string]string
+//   R71-A: 加 externalCSSMu RWMutex 保护并发读写 (watcher goroutine 检测 mtime 变化
+//   后调 reloadExternalCSSCache 写 cache, 同时 homeHandler 渲染路径 inlineExternalCSS
+//   读 cache → 需 RWMutex 防 race). 读多写少 → RWMutex 比 Mutex 性能更好 (并发读不互斥).
+var (
+        externalCSSCache map[string]string
+        externalCSSMu   sync.RWMutex
+)
 
 // initExternalCSSCache 启动时一次 glob + ReadFile 所有 public/clone-css/*.css 到缓存.
 //   在 main() 内 http.ListenAndServe 前调用. 失败 (文件缺失 / 读错误) 跳过该文件
 //   不致命 (inlineExternalCSS 会降级保留 <link> 标签).
+//   R71-A: 加 mtime 记录到 externalCSSMtimes, 供 watcher goroutine 对比检测变化.
 func initExternalCSSCache() {
+        externalCSSMu.Lock()
+        defer externalCSSMu.Unlock()
         externalCSSCache = make(map[string]string)
+        externalCSSMtimes = make(map[string]int64)
         cssDir := filepath.Join(basePath, "public/clone-css")
         matches, _ := filepath.Glob(filepath.Join(cssDir, "*.css"))
         for _, m := range matches {
@@ -1062,8 +1116,104 @@ func initExternalCSSCache() {
                 }
                 key := "/clone-css/" + filepath.Base(m)
                 externalCSSCache[key] = string(content)
+                if fi, e := os.Stat(m); e == nil {
+                        externalCSSMtimes[key] = fi.ModTime().Unix()
+                }
         }
         log.Printf("[R70-A] external CSS cache loaded: %d files", len(externalCSSCache))
+}
+
+// R71-A: externalCSSMtimes 记录每个缓存 CSS 文件的 mtime (Unix 秒),
+//   watcher goroutine 每 60s 对比文件系统 mtime → 检测变化 → 调
+//   reloadExternalCSSCache 重载该文件. mtime 单调递增 (同文件 mtime
+//   只增不减, 编辑后 mtime 变大), 故对比 > 即判定为变化.
+var externalCSSMtimes map[string]int64
+
+// R71-A: reloadExternalCSSCache — watcher 检测到变化后, 重载缓存.
+//   全量重载 (而非单文件增量): glob 重新发现新增文件 (R70-A 启动时
+//   不存在的 css 文件后加入也会被发现). 全量重载 ~5ms (10 文件 ~600KB
+//   ReadFile), 60s 间隔下开销可忽略.
+//   调用方持 Lock (写互斥), inlineExternalCSS 并发读会阻塞等待 — 但写
+//   持锁时间 <10ms, 阻塞读请求可容忍.
+func reloadExternalCSSCache() {
+        externalCSSMu.Lock()
+        defer externalCSSMu.Unlock()
+        cssDir := filepath.Join(basePath, "public/clone-css")
+        matches, _ := filepath.Glob(filepath.Join(cssDir, "*.css"))
+        newCache := make(map[string]string)
+        newMtimes := make(map[string]int64)
+        for _, m := range matches {
+                content, err := os.ReadFile(m)
+                if err != nil {
+                        log.Printf("[R71-A] reloadExternalCSSCache: read %s failed: %v", m, err)
+                        continue
+                }
+                key := "/clone-css/" + filepath.Base(m)
+                newCache[key] = string(content)
+                if fi, e := os.Stat(m); e == nil {
+                        newMtimes[key] = fi.ModTime().Unix()
+                }
+        }
+        externalCSSCache = newCache
+        externalCSSMtimes = newMtimes
+        log.Printf("[R71-A] external CSS cache reloaded: %d files", len(newCache))
+}
+
+// R71-A: startExternalCSSWatcher — 启动 CSS 文件 watcher goroutine.
+//   每 60s glob public/clone-css/*.css, 对比 mtime; 任一文件 mtime 变化
+//   或文件数变化 → 调 reloadExternalCSSCache 全量重载.
+//   设计选择 (轮询而非 fsnotify): 不引入新依赖 (fsnotify 不在 go.mod,
+//   本轮严禁新增依赖); mtime 轮询 60s 间隔下检测延迟可接受 (admin 改
+//   CSS 等 60s 内生效, 比 R70-A "需重启进程" 体验大幅改善).
+//   ctx 用于 graceful shutdown (main 退出时取消 ctx, goroutine 早返).
+func startExternalCSSWatcher(ctx context.Context) {
+        go func() {
+                ticker := time.NewTicker(60 * time.Second)
+                defer ticker.Stop()
+                for {
+                        select {
+                        case <-ctx.Done():
+                                return
+                        case <-ticker.C:
+                                checkExternalCSSMtime()
+                        }
+                }
+        }()
+}
+
+// R71-A: checkExternalCSSMtime — 单次 mtime 对比 (从 watcher goroutine 调).
+//   策略: glob 当前 css 文件, 对比每个文件 mtime 与缓存 mtime; 任一变化
+//   或文件数不同 → reloadExternalCSSCache; 否则 no-op (60s 间隔下绝大多数
+//   tick 无变化, 避免无谓重载).
+func checkExternalCSSMtime() {
+        cssDir := filepath.Join(basePath, "public/clone-css")
+        matches, _ := filepath.Glob(filepath.Join(cssDir, "*.css"))
+        externalCSSMu.RLock()
+        cachedCount := len(externalCSSMtimes)
+        needReload := cachedCount != len(matches)
+        if !needReload {
+                for _, m := range matches {
+                        key := "/clone-css/" + filepath.Base(m)
+                        oldMT, ok := externalCSSMtimes[key]
+                        if !ok {
+                                needReload = true // 新文件
+                                break
+                        }
+                        fi, e := os.Stat(m)
+                        if e != nil {
+                                continue // stat 失败跳过, 不触发 reload (防误报)
+                        }
+                        if fi.ModTime().Unix() > oldMT {
+                                needReload = true
+                                break
+                        }
+                }
+        }
+        externalCSSMu.RUnlock()
+        if !needReload {
+                return
+        }
+        reloadExternalCSSCache()
 }
 
 // externalLinkRE 匹配 <link ...> 标签 (含自闭合). 捕获组 1 = 属性串 (含前导空格).
@@ -1082,6 +1232,11 @@ func inlineExternalCSS(html string) string {
         if html == "" {
                 return html
         }
+        // R71-A: 持 RLock 并发读 cache (watcher goroutine 重载时持 WLock 互斥).
+        //   RLock 期间多次 ReplaceAllStringFunc 内层闭包查 map, 解锁后返回. 注: 不能
+        //   在闭包内再 RLock (Go RWMutex 不可重入, 会死锁); 先在闭包外持锁到结束.
+        externalCSSMu.RLock()
+        defer externalCSSMu.RUnlock()
         if len(externalCSSCache) == 0 {
                 return html // 无缓存 (init 未跑或全失败), 全部保留 <link> 降级
         }
@@ -2291,6 +2446,59 @@ func takeBooks(books []map[string]interface{}, n int) []map[string]interface{} {
                 n = len(books)
         }
         return books[:n]
+}
+
+// R71-A: getFeaturedBooks — 读 Setting 表 featuredBooks.{siteID} JSON, 按 bookIds
+//   顺序逐本 SELECT 全元数据 (与 getBooks 同字段集), 已删书 (ErrNoRows) 跳过.
+//   返 []map (空 slice = admin 未配置 featuredBooks 或全部书 ID 已删, homeHandler
+//   fallback 用 TopBooks 避免空区块).
+//
+// 设计与 admin.go adminFeaturedBooksList 对齐: 同款 Setting key, 同款 bookIds JSON
+//   解析, 同款 N+1 SELECT 模式 (单站最多 featuredBooksMax=30 本, ~3ms 总开销, 不需
+//   缓存层). 主路径额外注入 ["URL"] 字段供模板用 {{.URL}}.
+//
+// 错误容忍: Setting 行缺失 / JSON 坏 / Book 表查空 → 返空 slice (homeHandler fallback).
+func getFeaturedBooks(siteID string) []map[string]interface{} {
+        if siteID == "" {
+                return nil
+        }
+        var raw string
+        _ = db.QueryRow(`SELECT value FROM Setting WHERE key=?`, "featuredBooks."+siteID).Scan(&raw)
+        if raw == "" || raw == "{}" {
+                return nil
+        }
+        var parsed map[string]interface{}
+        if json.Unmarshal([]byte(raw), &parsed) != nil {
+                return nil
+        }
+        arr, ok := parsed["bookIds"].([]interface{})
+        if !ok || len(arr) == 0 {
+                return nil
+        }
+        out := []map[string]interface{}{}
+        for _, e := range arr {
+                bid, ok := e.(string)
+                if !ok || bid == "" {
+                        continue
+                }
+                // 与 getBooks 同款 SELECT + 字段集, 保 home.html {{.name}}/{{.author}}/
+                //   {{.cover}}/{{.intro}}/{{.wordCount}}/{{.category}}/{{.updatedAt}} 全可消费.
+                var id, name, author, intro, cover, status, latestChapter, category, categoryID sql.NullString
+                var wordCount int64
+                var updatedAt string
+                err := db.QueryRow(`SELECT b.id,b.name,b.author,b.intro,b.cover,b.status,b.wordCount,b.latestChapter,COALESCE(c.name,'未分类'),b.categoryId,b.updatedAt FROM Book b LEFT JOIN Category c ON b.categoryId=c.id WHERE b.id=?`, bid).
+                        Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryID, &updatedAt)
+                if err != nil {
+                        continue // 书已删 (ErrNoRows) 或 Scan 失败 → 跳过, 不阻塞整体返回.
+                }
+                out = append(out, map[string]interface{}{
+                        "id": id.String, "name": name.String, "author": author.String,
+                        "intro": truncate(intro.String, 120), "cover": coverURL(cover.String),
+                        "status": status.String, "wordCount": wordCount, "latestChapter": latestChapter.String,
+                        "category": category.String, "categoryId": categoryID.String, "updatedAt": formatUpdatedAt(updatedAt),
+                })
+        }
+        return out
 }
 
 // ===== R41-1B: 章节正文安全消毒 (剥离危险标签/事件处理器/JS URL) =====

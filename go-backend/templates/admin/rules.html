@@ -15,6 +15,52 @@
     </div>
   </div>
   <div class="page">
+    <!-- R71-B: 字段审计区块 (71 Rule Field Audit) -->
+    <div class="table-card" id="auditCard" style="margin-bottom:14px;">
+      <div class="head">
+        <h2>字段审计 · 71 Rule Field Audit</h2>
+        <div class="tools">
+          <span id="auditHint" style="color:var(--dim);font-size:12px;margin-right:6px;">未审计</span>
+          <button class="btn btn-primary btn-sm" onclick="loadAudit()">审计</button>
+          <button class="btn btn-sm" onclick="closeAuditCard()" id="auditCollapseBtn" style="display:none;">收起</button>
+        </div>
+      </div>
+      <div id="auditBody" style="display:none;padding:16px;">
+        <div class="grid cols-4" id="auditSummary" style="margin-bottom:14px;"></div>
+        <div style="margin-bottom:12px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <span style="font-size:12px;color:var(--muted);">完整度 (complete / total)</span>
+            <span id="auditProgressLabel" style="font-size:12px;color:var(--dim);">0%</span>
+          </div>
+          <div class="progress-bar"><span id="auditProgressBar" style="width:0%;"></span></div>
+        </div>
+        <div class="toolbar" style="margin-bottom:10px;">
+          <span style="color:var(--muted);font-size:12px;">筛选:</span>
+          <button class="btn btn-sm btn-primary" data-audit-filter="all" onclick="filterAudit('all')">全部</button>
+          <button class="btn btn-sm" data-audit-filter="complete" onclick="filterAudit('complete')">完整</button>
+          <button class="btn btn-sm" data-audit-filter="partial" onclick="filterAudit('partial')">部分</button>
+          <button class="btn btn-sm" data-audit-filter="empty" onclick="filterAudit('empty')">空</button>
+          <span id="auditFilterCount" style="color:var(--dim);font-size:12px;margin-left:8px;"></span>
+        </div>
+        <table id="auditTable">
+          <thead>
+            <tr>
+              <th>规则名</th>
+              <th title="book.name">name</th>
+              <th title="book.author">author</th>
+              <th title="book.category">category</th>
+              <th title="book.intro">intro</th>
+              <th title="book.cover">cover</th>
+              <th title="toc.list">toc</th>
+              <th title="content.content">content</th>
+              <th>缺失字段</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
     <div class="toolbar">
       <span style="color:var(--dim);font-size:12px;">共 {{.Total}} 条规则 · 启用 {{.EnabledCount}} · 禁用 {{.DisabledCount}}</span>
     </div>
@@ -112,6 +158,15 @@
     <div class="modal-head"><h2 id="editTitle">编辑规则</h2><button class="btn btn-sm" onclick="closeModal('editModal')">✕</button></div>
     <form id="editForm" class="modal-body">
       <input type="hidden" name="id" value="">
+      <!-- R71-B: 补全建议面板 (audit missing fields) -->
+      <div id="editFixPanel" class="field full" style="display:none;background:rgba(245,158,11,.08);border:1px solid var(--warn);border-radius:8px;padding:12px;margin-bottom:12px;">
+        <label style="color:var(--warn);">补全建议 · Missing Fields</label>
+        <div id="editFixList" style="font-size:12px;color:var(--text);margin-top:6px;line-height:1.7;"></div>
+        <div style="margin-top:8px;display:flex;gap:8px;align-items:center;">
+          <button type="button" class="btn btn-sm btn-warn" onclick="applyFieldDefaults()">应用默认模板补全</button>
+          <span class="hint" style="margin:0;">应用后请在配置 textarea 调整 selector 表达式再保存</span>
+        </div>
+      </div>
       <div class="form-grid">
         <div class="field full">
           <label>规则名称 *</label>
@@ -143,6 +198,18 @@
 </div>
 
 <div class="toast" id="toast"></div>
+
+<!-- R71-B: 补全建议 Modal -->
+<div class="modal-backdrop" id="fixSuggestionModal">
+  <div class="modal">
+    <div class="modal-head"><h2 id="fixSuggestionTitle">补全建议</h2><button class="btn btn-sm" onclick="closeModal('fixSuggestionModal')">✕</button></div>
+    <div class="modal-body" id="fixSuggestionBody" style="font-size:13px;line-height:1.7;"></div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeModal('fixSuggestionModal')">关闭</button>
+      <button class="btn btn-primary" id="fixSuggestionEditBtn" onclick="closeModal('fixSuggestionModal')">编辑规则</button>
+    </div>
+  </div>
+</div>
 
 <script>
 function openCreateModal(){document.getElementById('createModal').classList.add('open');}
@@ -179,6 +246,9 @@ function editRule(id,name,description){
     var cfg=d.config;
     if(typeof cfg==='object'){f.config.value=JSON.stringify(cfg,null,2);}
     else{f.config.value=cfg||'{}';}
+    // R71-B: 加载审计数据后展示补全建议面板 (missing fields)
+    showEditFixPanel(id);
+    ensureAuditLoaded().then(function(){showEditFixPanel(id);});
   }).catch(function(e){showToast('请求失败: '+e.message,false);});
   document.getElementById('editModal').classList.add('open');
 }
@@ -230,9 +300,240 @@ function submitCreate(){
   try{body.config=JSON.parse(raw);}catch(e){body.config=raw;}
   fetch('/api/admin/rules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(function(r){return r.json();}).then(function(j){
-      if(j&&j.ok){showToast('规则创建成功',true);closeModal('createModal');setTimeout(function(){location.reload();},800);}
+      if(j&&j.ok){showToast('规则创建成功',true);closeModal('createModal');auditCache._loaded=false;setTimeout(function(){location.reload();},800);}
       else{showToast('创建失败: '+(j&&j.error||''),false);}
     }).catch(function(e){showToast('请求失败: '+e.message,false);});
+}
+
+// ===== R71-B: 71 Rule 字段审计 UI =====
+// auditCache: ruleId → {ruleId, name, fields:{...}, missing:[...]} (单页缓存, _loaded 标记是否已加载)
+var auditCache={_loaded:false};
+var auditCurrentFilter='all';
+
+// FIELD_SUGGESTIONS: 每个字段缺失时的中文补全建议文案.
+var FIELD_SUGGESTIONS={
+  name:'该规则缺少 book.name 字段, 建议在 Rule config 的 book 段加 fields.name 提取规则 (CSS selector 指向书名元素, 如 h1.book-title).',
+  author:'该规则缺少 book.author 字段, 建议在 book.fields 加 author 提取规则 (CSS selector 指向作者元素, 如 .book-info .author).',
+  category:'该规则缺少 book.category 字段, 建议在 book.fields 加 category 提取规则 (CSS selector 指向分类元素, 如 .book-category).',
+  intro:'该规则缺少 book.intro 字段, 建议在 book.fields 加 intro 提取规则 (CSS selector 指向简介容器, 如 .intro-text).',
+  cover:'该规则缺少 book.cover 字段, 建议在 book.fields 加 cover 提取规则 (CSS selector 指向封面 <img> 并配 attr:"src", 如 .book-cover img + attr src).',
+  toc:'该规则缺少 toc.list 字段, 建议 toc.enabled=true 并设 itemSelector 指向章节 <a> 元素 (如 .chapter-list a).',
+  content:'该规则缺少 content.content 字段, 建议 content.enabled=true 并在 fields.content 加 CSS selector 指向正文容器 (如 #content).'
+};
+
+// FIELD_DEFAULTS: 每个字段缺失时的默认配置模板 (UI 提示用, 用户点「应用默认模板补全」后合并入 config textarea).
+//   section = Rule config JSON 内的写入路径 (展示用)
+//   tpl    = 默认提取规则模板 (与 crawl.FieldRule/PageRule 结构对齐)
+var FIELD_DEFAULTS={
+  name:{section:'book.fields.name',tpl:{type:'css',expression:'h1.book-title'}},
+  author:{section:'book.fields.author',tpl:{type:'css',expression:'.book-info .author'}},
+  category:{section:'book.fields.category',tpl:{type:'css',expression:'.book-category'}},
+  intro:{section:'book.fields.intro',tpl:{type:'css',expression:'.intro-text'}},
+  cover:{section:'book.fields.cover',tpl:{type:'css',expression:'.book-cover img',attr:'src'}},
+  toc:{section:'toc',tpl:{enabled:true,itemSelector:{type:'css',expression:'.chapter-list a'}}},
+  content:{section:'content',tpl:{enabled:true,fields:{content:{type:'css',expression:'#content'}}}}
+};
+
+// ensureAuditLoaded — 拉取 /api/admin/rules?action=audit 并填入 auditCache (单页缓存, 创建/编辑后置 _loaded=false 强制刷新).
+function ensureAuditLoaded(){
+  if(auditCache._loaded){return Promise.resolve();}
+  return fetch('/api/admin/rules?action=audit').then(function(r){return r.json();}).then(function(j){
+    if(!j||!j.ok){return;}
+    var d=j.data||{};
+    // 重置 cache (清掉旧的 ruleId 索引但保留 _loaded flag)
+    var loaded=true;
+    auditCache={_loaded:loaded};
+    (d.rules||[]).forEach(function(r){auditCache[r.ruleId]=r;});
+    auditCache._summary={total:d.total||0,complete:d.complete||0,partial:d.partial||0,empty:d.empty||0};
+    auditCache._loaded=true;
+  }).catch(function(){/* 静默失败, editRule 主流程不阻塞 */});
+}
+
+// loadAudit — 点击「审计」按钮触发: 拉取 + 渲染汇总 + 表格.
+function loadAudit(){
+  var hint=document.getElementById('auditHint');
+  hint.textContent='加载中…';hint.style.color='var(--info)';
+  auditCache._loaded=false; // 强制刷新
+  ensureAuditLoaded().then(function(){
+    var s=auditCache._summary||{total:0,complete:0,partial:0,empty:0};
+    renderAuditSummary(s);
+    auditCurrentFilter='all';
+    setActiveFilter('all');
+    renderAuditTable();
+    document.getElementById('auditBody').style.display='block';
+    document.getElementById('auditCollapseBtn').style.display='inline-flex';
+    hint.textContent='已审计 '+s.total+' 条';hint.style.color='var(--accent)';
+  }).catch(function(e){
+    hint.textContent='审计失败';hint.style.color='var(--err)';
+    showToast('审计失败: '+e.message,false);
+  });
+}
+
+// closeAuditCard — 收起审计详情 (不重置缓存).
+function closeAuditCard(){
+  document.getElementById('auditBody').style.display='none';
+  document.getElementById('auditCollapseBtn').style.display='none';
+  var hint=document.getElementById('auditHint');
+  if(auditCache._summary){hint.textContent='已审计 '+auditCache._summary.total+' 条';hint.style.color='var(--accent)';}
+  else{hint.textContent='未审计';hint.style.color='var(--dim)';}
+}
+
+// renderAuditSummary — 4 张数字卡片 + 进度条 (complete/total %).
+function renderAuditSummary(s){
+  var pct=s.total>0?Math.round((s.complete/s.total)*100):0;
+  var cards=[
+    {label:'总数',num:s.total,color:'var(--info)'},
+    {label:'完整',num:s.complete,color:'var(--accent)'},
+    {label:'部分',num:s.partial,color:'var(--warn)'},
+    {label:'空',num:s.empty,color:'var(--err)'}
+  ];
+  document.getElementById('auditSummary').innerHTML=cards.map(function(c){
+    return '<div class="card"><h3>'+c.label+'</h3><div class="num" style="color:'+c.color+';">'+c.num+'</div><div class="sub">规则</div></div>';
+  }).join('');
+  document.getElementById('auditProgressBar').style.width=pct+'%';
+  document.getElementById('auditProgressLabel').textContent=pct+'% ('+s.complete+'/'+s.total+')';
+}
+
+// setActiveFilter — 高亮当前筛选按钮.
+function setActiveFilter(mode){
+  var btns=document.querySelectorAll('[data-audit-filter]');
+  for(var i=0;i<btns.length;i++){
+    if(btns[i].getAttribute('data-audit-filter')===mode){btns[i].classList.add('btn-primary');}
+    else{btns[i].classList.remove('btn-primary');}
+  }
+}
+
+// filterAudit — 切换筛选模式并重渲染表格.
+function filterAudit(mode){
+  auditCurrentFilter=mode||'all';
+  setActiveFilter(auditCurrentFilter);
+  renderAuditTable();
+}
+
+// classifyRule — 根据 missing 数量分类: 0=complete / 7=empty / 其他=partial.
+function classifyRule(r){
+  var n=r.missing?r.missing.length:0;
+  if(n===0){return 'complete';}
+  if(n>=7){return 'empty';}
+  return 'partial';
+}
+
+// renderAuditTable — 按当前 filter 渲染审计表格.
+function renderAuditTable(){
+  var tbody=document.querySelector('#auditTable tbody');
+  if(!tbody){return;}
+  var rules=[];
+  for(var k in auditCache){
+    if(k.indexOf('_')===0){continue;}
+    var r=auditCache[k];
+    if(r&&r.ruleId){rules.push(r);}
+  }
+  // 按完整度升序 (缺失最多在最上, 优先修复) + name 字母序兜底
+  rules.sort(function(a,b){
+    var ma=(a.missing||[]).length,mb=(b.missing||[]).length;
+    if(mb!==ma){return mb-ma;}
+    return (a.name||'').localeCompare(b.name||'');
+  });
+  var filtered=rules.filter(function(r){
+    if(auditCurrentFilter==='all'){return true;}
+    return classifyRule(r)===auditCurrentFilter;
+  });
+  document.getElementById('auditFilterCount').textContent='显示 '+filtered.length+' / '+rules.length;
+  if(filtered.length===0){
+    tbody.innerHTML='<tr><td colspan="10" class="empty-state">无符合条件的规则</td></tr>';
+    return;
+  }
+  var FIELD_ORDER=['name','author','category','intro','cover','toc','content'];
+  tbody.innerHTML=filtered.map(function(r){
+    var fields=r.fields||{};
+    var cells=FIELD_ORDER.map(function(k){
+      var ok=!!fields[k];
+      return '<td style="text-align:center;color:'+(ok?'var(--accent)':'var(--err)')+';font-weight:600;">'+(ok?'✓':'✗')+'</td>';
+    }).join('');
+    var miss=r.missing&&r.missing.length?r.missing.map(function(m){return '<span style="display:inline-block;padding:1px 6px;margin:2px 2px 0 0;border-radius:4px;background:rgba(239,68,68,.15);color:var(--err);font-size:11px;">'+m+'</span>';}).join(''):'<span style="color:var(--accent);font-size:12px;">完整</span>';
+    var actions='<button class="btn btn-sm" onclick=\'showFixSuggestion("'+r.ruleId+'")\'>建议</button> '+(r.missing&&r.missing.length?'<button class="btn btn-sm btn-primary" onclick=\'editRuleFromAudit("'+r.ruleId+'")\'>编辑规则</button>':'');
+    return '<tr><td><b>'+(r.name||'(unnamed)')+'</b><div style="color:var(--dim);font-size:11px;">'+r.ruleId+'</div></td>'+cells+'<td>'+miss+'</td><td>'+actions+'</td></tr>';
+  }).join('');
+}
+
+// showFixSuggestion — 打开补全建议 modal, 展示该规则所有 missing 字段的建议 + 默认模板.
+function showFixSuggestion(ruleId){
+  var r=auditCache[ruleId];
+  var title='补全建议 — '+(r?r.name:ruleId);
+  document.getElementById('fixSuggestionTitle').textContent=title;
+  var body='';
+  if(!r){
+    body='<div style="color:var(--dim);">无审计数据, 请先点击「审计」按钮</div>';
+  }else if(!r.missing||r.missing.length===0){
+    body='<div style="color:var(--accent);">该规则 7 字段全部配置完整, 无需补全</div>';
+  }else{
+    body='<div style="margin-bottom:10px;color:var(--muted);">缺失 '+r.missing.length+' 个字段, 建议在 Rule config 内补全 (以下为各字段建议路径与默认模板):</div>';
+    body+=r.missing.map(function(k){
+      var d=FIELD_DEFAULTS[k]||{section:'?',tpl:{}};
+      return '<div style="margin-bottom:10px;padding:10px;background:var(--card-2);border-radius:6px;">'+
+        '<div style="color:var(--warn);font-weight:600;margin-bottom:4px;">'+k+'</div>'+
+        '<div style="color:var(--text);font-size:12px;margin-bottom:4px;line-height:1.6;">'+(FIELD_SUGGESTIONS[k]||'请补充该字段提取规则')+'</div>'+
+        '<div style="font-size:11px;color:var(--dim);margin-bottom:4px;">配置路径: '+d.section+'</div>'+
+        '<pre style="background:#0a0f1a;border:1px solid var(--border);padding:8px;border-radius:4px;font-size:11px;overflow:auto;color:var(--text);margin:0;">'+JSON.stringify(d.tpl,null,2)+'</pre>'+
+        '</div>';
+    }).join('');
+  }
+  document.getElementById('fixSuggestionBody').innerHTML=body;
+  var editBtn=document.getElementById('fixSuggestionEditBtn');
+  if(r&&r.missing&&r.missing.length>0){
+    editBtn.style.display='inline-flex';
+    editBtn.onclick=function(){closeModal('fixSuggestionModal');editRuleFromAudit(r.ruleId);};
+  }else{
+    editBtn.style.display='none';
+  }
+  document.getElementById('fixSuggestionModal').classList.add('open');
+}
+
+// editRuleFromAudit — 审计表格内的「编辑规则」按钮入口: 从 auditCache 取 name 后调 editRule, 避免在 HTML 属性内拼接 name 字符串 (单引号转义问题).
+function editRuleFromAudit(ruleId){
+  var r=auditCache[ruleId];
+  editRule(ruleId, r?r.name:'', '');
+}
+
+// showEditFixPanel — 在编辑 modal 内展示 missing 字段提示 (R71-B 目标 B).
+function showEditFixPanel(ruleId){
+  var panel=document.getElementById('editFixPanel');
+  var list=document.getElementById('editFixList');
+  if(!panel||!list){return;}
+  var r=auditCache[ruleId];
+  if(!r||!r.missing||r.missing.length===0){panel.style.display='none';return;}
+  panel.style.display='block';
+  list.innerHTML=r.missing.map(function(k){
+    return '<div style="margin-bottom:6px;"><b style="color:var(--warn);">'+k+'</b> <span style="color:var(--dim);font-size:11px;">路径: '+(FIELD_DEFAULTS[k]||{}).section+'</span><div style="color:var(--muted);font-size:11px;margin-top:2px;">'+(FIELD_SUGGESTIONS[k]||'')+'</div></div>';
+  }).join('');
+}
+
+// applyFieldDefaults — 「应用默认模板补全」按钮: 将 FIELD_DEFAULTS 合并入 config textarea (UI 层, 不写库).
+function applyFieldDefaults(){
+  var f=document.getElementById('editForm');
+  var id=f.id.value;
+  if(!id){showToast('缺少 rule id',false);return;}
+  var r=auditCache[id];
+  if(!r||!r.missing||r.missing.length===0){showToast('该规则无需补全',false);return;}
+  var raw=f.config.value||'{}';
+  var cfg;
+  try{cfg=JSON.parse(raw);}
+  catch(e){showToast('当前 config 不是合法 JSON, 请先修正: '+e.message,false);return;}
+  if(typeof cfg!=='object'||cfg===null){cfg={};}
+  cfg.book=cfg.book||{};cfg.book.fields=cfg.book.fields||{};
+  cfg.toc=cfg.toc||{};
+  cfg.content=cfg.content||{};
+  var applied=0;
+  r.missing.forEach(function(k){
+    var d=FIELD_DEFAULTS[k];
+    if(!d){return;}
+    if(k==='toc'){cfg.toc=d.tpl;}
+    else if(k==='content'){cfg.content=d.tpl;}
+    else{cfg.book.fields[k]=d.tpl;}
+    applied++;
+  });
+  f.config.value=JSON.stringify(cfg,null,2);
+  showToast('已应用 '+applied+' 个字段默认模板, 请调整 selector 后保存',true);
 }
 </script>
 </body>
