@@ -747,6 +747,13 @@ func adminTasksList(w http.ResponseWriter, r *http.Request) {
 			"updatedAt": updatedAt,
 		})
 	}
+	// R74-D BUG-111 (P3): rows.Err() 检查 — mid-iteration 错误 (e.g. SQLite 连接断开
+	//   中途) 静默吞, 用户看到截断的任务列表以为是全部. 与全文件 crows.Err() pattern
+	//   统一 (R73-D BUG-104 报告). writeJSONErr 后返, 不返半截数据.
+	if err := rows.Err(); err != nil {
+		writeJSONErr(w, "迭代任务列表失败: "+err.Error(), 500)
+		return
+	}
 	writeJSONOK(w, out)
 }
 
@@ -971,6 +978,13 @@ func adminTasksQuickFill(w http.ResponseWriter, r *http.Request) {
 				rules = append(rules, ri)
 			}
 		}
+		// R74-D BUG-122 (P3): rows.Err() 检查 — mid-iteration 错误静默吞, rules 截断
+		//   → 后续 quick-fill 仅创建部分任务. 与 adminTasksList BUG-111 同款 pattern.
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			writeJSONErr(w, "迭代规则列表失败: "+err.Error(), 500)
+			return
+		}
 		rows.Close()
 	} else {
 		// 默认查所有 enabled=1 规则
@@ -984,6 +998,13 @@ func adminTasksQuickFill(w http.ResponseWriter, r *http.Request) {
 			if err := rows.Scan(&ri.id, &ri.name, &ri.config); err == nil {
 				rules = append(rules, ri)
 			}
+		}
+		// R74-D BUG-122 (P3): rows.Err() 检查 — 同上 if 分支, 防 enabled 规则列表
+		//   迭代中断静默吞, 部分 enabled 规则未建任务.
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			writeJSONErr(w, "迭代规则列表失败: "+err.Error(), 500)
+			return
 		}
 		rows.Close()
 	}
@@ -1370,6 +1391,13 @@ func adminRulesList(w http.ResponseWriter, r *http.Request) {
 		_ = rows.Scan(&rr.ID, &rr.Name, &rr.Description, &rr.Config, &rr.Enabled, &rr.CreatedAt, &rr.UpdatedAt)
 		ruleRows = append(ruleRows, rr)
 	}
+	// R74-D BUG-112 (P3): rows.Err() 检查 — mid-iteration 错误静默吞, 部分 ruleRows
+	//   被截断. 与 adminTasksList BUG-111 同款 pattern (R73-D BUG-104 报告).
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		writeJSONErr(w, "迭代规则列表失败: "+err.Error(), 500)
+		return
+	}
 	rows.Close()
 	out := []map[string]interface{}{}
 	for _, rr := range ruleRows {
@@ -1434,6 +1462,13 @@ func adminRulesAudit(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(&ar.ID, &ar.Name, &ar.Config); err == nil {
 			collected = append(collected, ar)
 		}
+	}
+	// R74-D BUG-113 (P3): rows.Err() 检查 — mid-iteration 错误静默吞, 部分 audit 数据
+	//   缺失. 与 adminTasksList BUG-111 / adminRulesList BUG-112 同款 pattern.
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		writeJSONErr(w, "迭代规则审计失败: "+err.Error(), 500)
+		return
 	}
 	rows.Close()
 
@@ -1787,6 +1822,12 @@ func adminBooksList(w http.ResponseWriter, r *http.Request) {
 			"updatedAt":     updatedAt,
 		})
 	}
+	// R74-D BUG-114 (P3): rows.Err() 检查 — mid-iteration 错误静默吞, 部分 books 被截断.
+	//   与 adminTasksList BUG-111 同款 pattern.
+	if err := rows.Err(); err != nil {
+		writeJSONErr(w, "迭代书籍列表失败: "+err.Error(), 500)
+		return
+	}
 	writeJSONOK(w, map[string]interface{}{
 		"total": total, "page": page, "size": size, "books": books,
 	})
@@ -1861,6 +1902,10 @@ func adminBooksCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSONErr(w, "创建失败: "+err.Error(), 500)
 		return
 	}
+	// R74-D BUG-110 (R73 交接 #3 / R74-A 接口): 新建 Book 后失效 WheelLinks 缓存.
+	//   新书可被 queryRandomBook 选中进 book_intra/book_wheel 推荐, 5min TTL 内
+	//   wheel 推荐仍不含新书. invalidateAllWheelLinksCache() 让新书立即进推荐池.
+	invalidateAllWheelLinksCache()
 	writeJSONOK(w, map[string]interface{}{
 		"id": bookID, "name": name, "author": author,
 		"categoryId": categoryID, "status": status,
@@ -1969,6 +2014,12 @@ func adminBookByIDHandler(w http.ResponseWriter, r *http.Request) {
 			writeJSONErr(w, "更新失败: "+err.Error(), 500)
 			return
 		}
+		// R74-D BUG-110 (R73 交接 #3 / R74-A 接口): 改 Book 后失效全部 WheelLinks 缓存.
+		//   book name/cover 改动影响所有 site 的 book_intra/book_wheel 推荐显示,
+		//   5min TTL 内仍返旧 name/cover. invalidateAllWheelLinksCache() 让改动立即
+		//   生效. 注: sourceUrl 改动也会影响跨站 book_wheel URL 构造 (query 串内 id 不
+		//   变故无影响, 但 Book ID 不变 → URL 不变 → 此处仅 name/cover 显示层失效).
+		invalidateAllWheelLinksCache()
 		writeJSONOK(w, map[string]interface{}{"id": bookID, "updated": true})
 	case http.MethodDelete:
 		var exist string
@@ -2024,6 +2075,11 @@ func adminBookByIDHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			downloadFilesMu.Unlock()
 		}
+		// R74-D BUG-110 (R73 交接 #3 / R74-A 接口): 删 Book 后失效全部 WheelLinks 缓存.
+		//   book 已删, queryRandomBook 不会再选到此 id, 但 5min TTL 内其他站 cache
+		//   仍可能含已删 book id 的 book_intra/book_wheel URL → 用户点击 → 404, SEO
+		//   损害. invalidateAllWheelLinksCache() 让下次 homeHandler 重查, 选未删 book.
+		invalidateAllWheelLinksCache()
 		writeJSONOK(w, map[string]interface{}{"id": bookID, "deleted": true})
 	default:
 		writeJSONErr(w, "method not allowed", 405)
@@ -2796,6 +2852,13 @@ func adminCategoriesList(w http.ResponseWriter, r *http.Request) {
 		_ = rows.Scan(&cr.ID, &cr.Name, &cr.SortOrder, &cr.CreatedAt)
 		catRows = append(catRows, cr)
 	}
+	// R74-D BUG-115 (P3): rows.Err() 检查 — mid-iteration 错误静默吞, catRows 截断.
+	//   与 adminTasksList BUG-111 同款 pattern.
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		writeJSONErr(w, "迭代分类列表失败: "+err.Error(), 500)
+		return
+	}
 	rows.Close()
 	out := []map[string]interface{}{}
 	for _, cr := range catRows {
@@ -2902,6 +2965,12 @@ func adminLinksList(w http.ResponseWriter, r *http.Request) {
 			"sortOrder": sortOrder, "enabled": enabled,
 			"createdAt": createdAt, "updatedAt": updatedAt,
 		})
+	}
+	// R74-D BUG-116 (P3): rows.Err() 检查 — mid-iteration 错误静默吞, 部分友链截断.
+	//   与 adminTasksList BUG-111 同款 pattern.
+	if err := rows.Err(); err != nil {
+		writeJSONErr(w, "迭代友链列表失败: "+err.Error(), 500)
+		return
 	}
 	writeJSONOK(w, out)
 }
@@ -3137,6 +3206,12 @@ func adminDownloadsList(w http.ResponseWriter, r *http.Request) {
 			"error": errMsg, "size": size, "createdAt": createdAt,
 		})
 	}
+	// R74-D BUG-117 (P3): rows.Err() 检查 — mid-iteration 错误静默吞, 下载列表截断.
+	//   与 adminTasksList BUG-111 同款 pattern.
+	if err := rows.Err(); err != nil {
+		writeJSONErr(w, "迭代下载列表失败: "+err.Error(), 500)
+		return
+	}
 	writeJSONOK(w, out)
 }
 
@@ -3300,6 +3375,15 @@ func adminDownloadsCreate(w http.ResponseWriter, r *http.Request) {
 			var c chRow
 			_ = crows.Scan(&c.idx, &c.title, &c.volume, &c.content)
 			chapters = append(chapters, c)
+		}
+		// R74-D BUG-123 (P3, R73-D BUG-104 修复): crows.Err() 检查 — mid-iteration
+		//   错误 (e.g. SQLite 连接断) 静默吞, chapters 截断 → 用户下载到部分章节
+		//   以为是完整书. 标 status='error' 让用户重新生成 (与 db.Query 失败同款
+		//   error 路径). 与 adminTasksList BUG-111 / 全文件 crows.Err() pattern 统一.
+		if cerr := crows.Err(); cerr != nil {
+			crows.Close()
+			_, _ = db.Exec(`UPDATE DownloadJob SET status='error', error=? WHERE id=?`, "迭代章节失败: "+cerr.Error(), jid)
+			return
 		}
 		crows.Close()
 		var sb strings.Builder
@@ -3479,6 +3563,12 @@ func adminSettingsList(w http.ResponseWriter, r *http.Request) {
 		}
 		out[key] = v
 	}
+	// R74-D BUG-118 (P3): rows.Err() 检查 — mid-iteration 错误静默吞, 部分 Setting 漏.
+	//   与 adminTasksList BUG-111 同款 pattern.
+	if err := rows.Err(); err != nil {
+		writeJSONErr(w, "迭代设置列表失败: "+err.Error(), 500)
+		return
+	}
 	writeJSONOK(w, out)
 }
 
@@ -3614,6 +3704,12 @@ func adminFeedbackHandler(w http.ResponseWriter, r *http.Request) {
 				"url": urlV, "siteId": siteID, "status": statusV, "ip": ip,
 				"adminNote": adminNote, "createdAt": createdAt, "updatedAt": updatedAt,
 			})
+		}
+		// R74-D BUG-119 (P3): rows.Err() 检查 — mid-iteration 错误静默吞, 反馈列表截断.
+		//   与 adminTasksList BUG-111 同款 pattern.
+		if err := rows.Err(); err != nil {
+			writeJSONErr(w, "迭代反馈列表失败: "+err.Error(), 500)
+			return
 		}
 	}
 	var allCount, newCount, resolvedCount int
@@ -3828,6 +3924,16 @@ func clientIP(r *http.Request) string {
 
 const backupBigBooksThreshold = 200
 
+// backupChaptersPerBookLimit — 单书章节备份上限 (R74-D BUG-125, R73 交接 #9).
+//
+//	原 adminBackupHandler chapters 查询无 LIMIT, 万章书 (10000+ 章) × ~5KB content/章
+//	× 200 本 (backupBigBooksThreshold) = 10GB+ JSON 峰值内存 → OOM 风险. 修复: per-book
+//	LIMIT 5001 (5000 + 1 个 sentinel 行检测 truncation). 实际取前 5000 章, 第 5001 行
+//	仅作 "存在更多" 信号不入 chapters slice. 超限书加 chapterTruncated: true 标记 +
+//	加 warning. 与 adminDownloadsCreate LIMIT 1000 (BUG-103) 同款 "保守上限" 思路,
+//	backup 语义是 "全量导出" 故上限放宽到 5000 (downloads 是单本下载 1000 即可).
+const backupChaptersPerBookLimit = 5000
+
 func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSONErr(w, "method not allowed", 405)
@@ -3972,6 +4078,8 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	// books (+chapters if !bigBooks)
 	books := []map[string]interface{}{}
+	// R74-D BUG-125 (R73 交接 #9): 章节超 5000 的书集合, 用于末尾加 warning.
+	chapterTruncations := []string{}
 	bookQuery := `SELECT id, name, author, COALESCE(categoryId,''), intro, cover, status, keywords, latestChapter, wordCount, sourceUrl, COALESCE(sourceRuleId,''), storageMode, COALESCE(collectedAt,''), createdAt, updatedAt FROM Book`
 	// R64-C BUG-42 (P0): 原实现外层 rows 持锁期间 for rows.Next() 内部逐 book 调
 	//   db.Query(crows) + db.Query(trows) → modernc.org/sqlite 连接池
@@ -3991,6 +4099,13 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
 			_ = rows.Scan(&b.id, &b.name, &b.author, &b.catID, &b.intro, &b.cover, &b.status, &b.kw, &b.latest, &b.wc, &b.srcURL, &b.srcRule, &b.storageMode, &b.collectedAt, &b.createdAt, &b.updatedAt)
 			bookRows = append(bookRows, b)
 		}
+		// R74-D BUG-126 (P3): 外层 book rows.Err() 检查 (与 adminBooksList BUG-114
+		//   同款 pattern). mid-iteration 错误静默吞, 部分 book 漏导.
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			writeJSONErr(w, "迭代书籍备份失败: "+err.Error(), 500)
+			return
+		}
 		rows.Close()
 		for _, b := range bookRows {
 			bookItem := map[string]interface{}{
@@ -4002,8 +4117,20 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			if !bigBooks {
 				chapters := []map[string]interface{}{}
-				if crows, err := db.Query(`SELECT id, bookId, idx, title, COALESCE(volume,''), COALESCE(url,''), COALESCE(content,''), storage, COALESCE(filePath,''), wordCount, fetched, createdAt, updatedAt FROM Chapter WHERE bookId=? ORDER BY idx ASC`, b.id); err == nil {
+				chapterTruncated := false
+				// R74-D BUG-125 (R73 交接 #9): per-book LIMIT 5001 (5000 + 1 sentinel).
+				//   原 chapters 查询无 LIMIT, 万章书 backup OOM 风险. 修复: 加 LIMIT,
+				//   第 5001 行作 "存在更多" 信号 → chapterTruncated=true, break 不入 slice.
+				//   backup JSON bookItem 加 chapterTruncated 字段 (仅 truncated 时存在,
+				//   absence=false 让 restore 可缺省判断). 与 adminDownloadsCreate
+				//   BUG-103 LIMIT 1000 同款 "保守上限" 思路.
+				if crows, err := db.Query(`SELECT id, bookId, idx, title, COALESCE(volume,''), COALESCE(url,''), COALESCE(content,''), storage, COALESCE(filePath,''), wordCount, fetched, createdAt, updatedAt FROM Chapter WHERE bookId=? ORDER BY idx ASC LIMIT ?`, b.id, backupChaptersPerBookLimit+1); err == nil {
 					for crows.Next() {
+						if len(chapters) >= backupChaptersPerBookLimit {
+							// 第 5001 行 → 该书章节 > 5000, 标 truncated 跳出.
+							chapterTruncated = true
+							break
+						}
 						var c struct {
 							id, bookID, title, volume, urlV, content, storage, filePath, createdAt, updatedAt string
 							idx, wc                                                                           int
@@ -4017,7 +4144,20 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
 							"createdAt": c.createdAt, "updatedAt": c.updatedAt,
 						})
 					}
+					// R74-D BUG-127 (P3): crows.Err() 检查 — mid-iteration 错误静默
+					//   吞, chapters 截断用户不知. 与 adminDownloadsCreate BUG-123
+					//   同款 pattern. 不返错误 (backup best-effort 语义, 部分 chapter
+					//   比全失败更可取), 但加 warning 提示用户重备.
+					if cerr := crows.Err(); cerr != nil {
+						chapterTruncations = append(chapterTruncations,
+							fmt.Sprintf("书 %s (id=%s) 章节迭代错误: %s, 已导出 %d 章 (可能不完整)", b.name, b.id, cerr.Error(), len(chapters)))
+					}
 					crows.Close()
+				}
+				if chapterTruncated {
+					bookItem["chapterTruncated"] = true
+					chapterTruncations = append(chapterTruncations,
+						fmt.Sprintf("书 %s (id=%s) 章节数超 %d, 仅备份前 %d 章", b.name, b.id, backupChaptersPerBookLimit, backupChaptersPerBookLimit))
 				}
 				tags := []map[string]interface{}{}
 				if trows, err := db.Query(`SELECT id, bookId, tag, source, hits FROM BookTag WHERE bookId=?`, b.id); err == nil {
@@ -4053,6 +4193,10 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		warnings = []string{}
 	}
+	// R74-D BUG-125 (R73 交接 #9): 章节超 5000 的书加 warning (per-book truncation).
+	//   backup JSON 内 bookItem.chapterTruncated 已标记, warnings 数组汇总提示用户
+	//   "backup 不完整, 章节 > 5000 的书仅备份前 5000 章".
+	warnings = append(warnings, chapterTruncations...)
 	payload := map[string]interface{}{
 		"version":    1,
 		"exportedAt": exportedAt,
@@ -4490,6 +4634,13 @@ func adminSeoAuditHandler(w http.ResponseWriter, r *http.Request) {
 				"offset": strconv.Itoa(offset),
 			})
 		}
+		// R74-D BUG-121 (P3): rows.Err() 检查 — mid-iteration 错误静默吞, SEO 审计
+		//   sites 截断 → audit 漏站点. 与 adminTasksList BUG-111 同款 pattern.
+		if rerr := rows.Err(); rerr != nil {
+			rows.Close()
+			writeJSONErr(w, "迭代站点 SEO 审计失败: "+rerr.Error(), 500)
+			return
+		}
 		rows.Close()
 	}
 	themeIDs := map[string]bool{}
@@ -4844,6 +4995,14 @@ func adminSiteByIDHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		committed = true
+		// R74-D BUG-110 (R73 交接 #3 / R74-A 接口): 改 Site 后失效 WheelLinks 缓存.
+		//   pseudoStaticStyle/inLinkWheel/status/domain 改动影响当前站 book_intra
+		//   URL 构造 + 跨站 book_wheel 选站, 5min TTL 兜底期间其他站仍返旧链接
+		//   (e.g. 改 pseudoStaticStyle 后 5min 内 book_intra URL 用旧 style → 404).
+		//   修复: invalidateWheelLinksCache(id) 清当前站自身 cache (per user task),
+		//   + invalidateAllWheelLinksCache() 清跨站 cache (per R74-A docstring 推荐).
+		invalidateWheelLinksCache(id)
+		invalidateAllWheelLinksCache()
 		writeJSONOK(w, map[string]interface{}{"id": id, "updated": true})
 	case http.MethodDelete:
 		var exist, isDefault string
@@ -4861,6 +5020,11 @@ func adminSiteByIDHandler(w http.ResponseWriter, r *http.Request) {
 			writeJSONErr(w, "删除失败: "+err.Error(), 500)
 			return
 		}
+		// R74-D BUG-110 (R73 交接 #3 / R74-A 接口): 删 Site 后失效 WheelLinks 缓存.
+		//   其他站 wheel 选站池可能含已删站 → home_wheel/book_wheel URL 指向已删
+		//   domain → 404, SEO 损害. 全清更稳 (per R74-A docstring).
+		invalidateWheelLinksCache(id)
+		invalidateAllWheelLinksCache()
 		writeJSONOK(w, map[string]interface{}{"id": id, "deleted": true})
 	default:
 		writeJSONErr(w, "method not allowed", 405)
@@ -4904,6 +5068,13 @@ func adminSitesList(w http.ResponseWriter, r *http.Request) {
 			&sr.ChapterSeoAuto, &sr.ChapterSeoTitleTemplate, &sr.ChapterSeoDescTemplate, &sr.ChapterSeoKeywordsTemplate,
 			&sr.CreatedAt, &sr.UpdatedAt)
 		siteRows = append(siteRows, sr)
+	}
+	// R74-D BUG-120 (P3): rows.Err() 检查 — mid-iteration 错误静默吞, siteRows 截断.
+	//   与 adminTasksList BUG-111 同款 pattern.
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		writeJSONErr(w, "迭代站点列表失败: "+err.Error(), 500)
+		return
 	}
 	rows.Close()
 	out := []map[string]interface{}{}
@@ -5089,6 +5260,13 @@ func adminSitesCreate(w http.ResponseWriter, r *http.Request, body map[string]in
 		return
 	}
 	committed = true
+	// R74-D BUG-110 (R73 交接 #3 / R74-A 接口): 新建 Site 后失效 WheelLinks 缓存.
+	//   R73-A 5min sync.Map 缓存无主动失效, 新建站进 wheel 选站池后 5min 内其他站
+	//   wheel 推荐仍不含新站. 修复: tx.Commit 后调 invalidateWheelLinksCache(id)
+	//   (新站自身 cache key 不存在, no-op 但语义对齐) + invalidateAllWheelLinksCache()
+	//   (让其他站 cache 全失效, 新站立即进 wheel 选站池). 5min TTL 自然过期次优.
+	invalidateWheelLinksCache(id)
+	invalidateAllWheelLinksCache()
 	writeJSONOK(w, map[string]interface{}{
 		"id": id, "name": name, "domain": domain, "themeId": themeID,
 		"isDefault": isDefault, "status": status, "inLinkWheel": inLinkWheel,
@@ -5421,6 +5599,12 @@ func generateSiteTDK(siteID string) (title, description, keywords string, err er
 				cats = append(cats, n)
 			}
 		}
+		// R74-D BUG-124 (P3): catRows.Err() 检查 — mid-iteration 错误静默吞, cats
+		//   截断 → TDK 用 fallback "小说" 占位. best-effort 函数故 log.Printf
+		//   提示运维而不返 err (TDK 仍可生成, 不阻断 adminSiteGenerateTDK 流程).
+		if cerr := catRows.Err(); cerr != nil {
+			log.Printf("[generateSiteTDK] catRows.Err: %v (siteID=%s, cats=%d)", cerr, siteID, len(cats))
+		}
 		catRows.Close()
 	}
 
@@ -5434,6 +5618,11 @@ func generateSiteTDK(siteID string) (title, description, keywords string, err er
 			if n != "" {
 				books = append(books, n)
 			}
+		}
+		// R74-D BUG-124 (P3): bookRows.Err() 检查 — 同 catRows, mid-iteration 错误
+		//   静默吞 books 截断 → TDK 用 fallback "精品小说" 等占位. log.Printf 提示.
+		if cerr := bookRows.Err(); cerr != nil {
+			log.Printf("[generateSiteTDK] bookRows.Err: %v (siteID=%s, books=%d)", cerr, siteID, len(books))
 		}
 		bookRows.Close()
 	}

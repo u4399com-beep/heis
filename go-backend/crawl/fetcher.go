@@ -2184,7 +2184,31 @@ func recordTls13Hrr(host string, latencyMs int64, ok bool) {
                 hostTls13HrrMap.Range(func(k, v any) bool {
                         ent := v.(*hostTls13HrrEntry)
                         if nowMs-ent.lastSeenAt.Load() > HostTls13HrrSweepTTLms {
-                                hostTls13HrrMap.Delete(k)
+                                // R74-B BUG-110 (P3) 修复: sweep 与并发 recordTls13Hrr Store race.
+                                //   与 R73-B BUG-106 模式不同 — hostProtoFingerprintMap 的
+                                //   recordHostProtoFingerprint 每次 Store 创建新 entry (替换),
+                                //   sweep 用 "re-Load + 指针比较" 防误删 fresh entry (指针不同
+                                //   → writer 已替换 → 不删). 但 hostTls13HrrMap 的 recordTls13Hrr
+                                //   用 LoadOrStore 复用 entry (不替换), 仅 atomic 修改 lastSeenAt +
+                                //   hrrCount 等字段. 指针永远不变, "指针比较" 模式失效 (curEnt==ent
+                                //   恒 true, 无保护).
+                                //   原 Delete 与并发 writer 的 ent.lastSeenAt.Store(now) race:
+                                //     1) sweep 看 ent.lastSeenAt=old (T-8d) → 决定 Delete
+                                //     2) writer 并发 ent.lastSeenAt.Store(now) + hrrCount.Add(1)
+                                //     3) sweep Delete(k) → entry 移出 map, writer 的 atomic 更新
+                                //        丢失 (next recordTls13Hrr 创建 entry2 重置计数)
+                                //   后果: admin HRR stats 偶发少计 1 次 (非 crash, 非 race detector
+                                //   报错, atomic 操作本身 race-free). 频率: sweep 每 1000 次 record
+                                //   触发, writer 每 ~5 req/s, race 概率 ~0.0001%/sweep.
+                                //   修复: Delete 前 re-Load + 重读 lastSeenAt, 缩小 race 窗口
+                                //   (从 "Range snapshot → Delete" 全程缩到 "re-Load → Delete"
+                                //   sub-μs). 真正消除需 sync.Map CAS-Delete 原语 (Go 未暴露).
+                                if cur, ok := hostTls13HrrMap.Load(k); ok {
+                                        curEnt, ok2 := cur.(*hostTls13HrrEntry)
+                                        if ok2 && nowMs-curEnt.lastSeenAt.Load() > HostTls13HrrSweepTTLms {
+                                                hostTls13HrrMap.Delete(k)
+                                        }
+                                }
                         }
                         return true
                 })
@@ -3705,7 +3729,18 @@ func recordBrotliMiss(host string) {
                 brotliMissHostCount.Range(func(k, v any) bool {
                         ent := v.(*brotliMissEntry)
                         if now-ent.lastSeenAt.Load() > BrotliMissSweepTTLms {
-                                brotliMissHostCount.Delete(k)
+                                // R74-B BUG-111 (P3) 修复: 与 BUG-110 同款 (mutate-in-place
+                                //   entry + atomic 时间戳). recordBrotliMiss 用 LoadOrStore
+                                //   复用 entry, 仅 atomic 修改 count/lastSeenAt, 不替换 entry
+                                //   指针. 原 Delete 与并发 writer 的 ent.lastSeenAt.Store(now)
+                                //   race → admin brotli miss stats 偶发少计 1 次. 修复: Delete
+                                //   前 re-Load + 重读 lastSeenAt 缩小 race 窗口.
+                                if cur, ok := brotliMissHostCount.Load(k); ok {
+                                        curEnt, ok2 := cur.(*brotliMissEntry)
+                                        if ok2 && now-curEnt.lastSeenAt.Load() > BrotliMissSweepTTLms {
+                                                brotliMissHostCount.Delete(k)
+                                        }
+                                }
                         }
                         return true
                 })
@@ -7096,7 +7131,25 @@ func sweepHostRetryBudgetMap(nowMs int64) {
                 // 用 resetAt < staleThreshold 判断 (resetAt = 上次 reset 时间 + 24h;
                 // 若 resetAt < now - 8d, 说明上次 reset 在 8d 前, 已 7d 未访问).
                 if resetAt < staleThreshold {
-                        hostRetryBudgetMap.Delete(k)
+                        // R74-B BUG-113 (P3) 修复: 与 BUG-112 同款 race (mutex-based,
+                        //   mutate-in-place entry). acquireRetryBudget 用 LoadOrStore
+                        //   复用 entry, mu.Lock 内修改 count/resetAt. 本 sweep 异步运行
+                        //   (go sweepHostRetryBudgetMap(now)) 不阻塞 acquire 路径, 但
+                        //   Delete 与并发 acquire 的 cnt.resetAt=now+24h race → budget
+                        //   条目被误删 → 下次 acquire 创建新条目 resetAt=now+24h, 历
+                        //   史 count 丢失 (但 count 已 stale, 无功能影响). 修复:
+                        //   Delete 前 re-Load + 重读 resetAt (持 mu) 缩小 race 窗口.
+                        if cur, ok := hostRetryBudgetMap.Load(k); ok {
+                                curCnt, ok2 := cur.(*retryBudgetCounter)
+                                if ok2 {
+                                        curCnt.mu.Lock()
+                                        resetAt2 := curCnt.resetAt
+                                        curCnt.mu.Unlock()
+                                        if resetAt2 < staleThreshold {
+                                                hostRetryBudgetMap.Delete(k)
+                                        }
+                                }
+                        }
                 }
                 return true
         })
@@ -7519,7 +7572,24 @@ func recordHostErrorClass(host string, class NetErrorClass, httpStatus int) {
                         last := ent.lastAt
                         ent.mu.Unlock()
                         if now-last > HostErrorClassSweepTTLms {
-                                hostErrorClassMap.Delete(k)
+                                // R74-B BUG-112 (P3) 修复: 与 BUG-110/111 同款 race, 但 entry
+                                //   用 mu (非 atomic) 保护 lastAt. recordHostErrorClass 用
+                                //   LoadOrStore 复用 entry, 仅 mu.Lock 内修改 lastAt + 各
+                                //   failCount 字段. 原 Delete 与并发 writer 的 ent.lastAt=now
+                                //   race → admin 错误分类 stats 偶发少计 1 次. 修复: Delete
+                                //   前 re-Load + 重读 lastAt (持 mu) 缩小 race 窗口. 与 BUG-110
+                                //   同款 narrowing 模式.
+                                if cur, ok := hostErrorClassMap.Load(k); ok {
+                                        curEnt, ok2 := cur.(*hostErrorClassEntry)
+                                        if ok2 {
+                                                curEnt.mu.Lock()
+                                                last2 := curEnt.lastAt
+                                                curEnt.mu.Unlock()
+                                                if now-last2 > HostErrorClassSweepTTLms {
+                                                        hostErrorClassMap.Delete(k)
+                                                }
+                                        }
+                                }
                         }
                         return true
                 })

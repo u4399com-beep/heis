@@ -23,6 +23,7 @@ package crawl
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -192,8 +193,9 @@ type TaskRuntime struct {
 	//   deadcode — SetBookLastChapter/GetBookLastChapter 0 callers, 字段仅 Snapshot
 	//   计数用, 永远 0). 与 R72-C BUG-95 IDMap 同款 cascade 清理.
 
-	// 熔断
-	circuitTrippedAt int64
+	// R74-C BUG-112 (P3): 删除 circuitTrippedAt int64 字段 (dead state —
+	//   Snapshot 不读, 0 callers, 与 R73-C BUG-108 bookLastChapters 同款
+	//   cascade deadcode 清理. 原 line 1338 rt.mu.Lock + 写 circuitTrippedAt 已删).
 
 	// 日志
 	recentLogs []LogEntry
@@ -1332,10 +1334,10 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) (retErr error) {
 
 			// 连续错误熔断检查 (每批次末, 主循环读 consecutiveErrs 无锁 OK:
 			// 因为 wg.Wait() happens-before 这里, 所有 goroutine 写都已发布)
+			// R74-C BUG-112 (P3): 删除 rt.mu.Lock + rt.circuitTrippedAt = ... 写
+			//   (dead state — circuitTrippedAt 字段已删, Snapshot 不读; wg.Wait
+			//   已建立 happens-before, 无需额外 memory barrier).
 			if consecutiveErrs >= CircuitErrorLimit {
-				rt.mu.Lock()
-				rt.circuitTrippedAt = time.Now().UnixMilli()
-				rt.mu.Unlock()
 				logf(LogError, "🔴 熔断中止: 连续 %d 章采集失败, 停止继续请求", consecutiveErrs)
 				saveProgress()
 				return &CircuitBreak{Reason: "连续错误熔断", Consecutive: consecutiveErrs, Limit: CircuitErrorLimit}
@@ -1532,7 +1534,10 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
 	bookHost := HostGateKeyOf(bookURL)
 	if err != nil {
 		// R43-1B: 429 / 503+RetryAfter → ReportRateLimited (与 CrawlChapterContent 同款)
-		if he, ok := err.(*HTTPError); ok && (he.StatusCode == 429 || he.StatusCode == 503) && he.RetryAfterMs > 0 {
+		// R74-C BUG-111 (P3): err.(*HTTPError) → errors.As 防 FetchPage 未来 wrap err
+		//   (当前 FetchPage 直返 *HTTPError, errors.As 兼容; 若 R74+ 改 wrap, 不破).
+		var he *HTTPError
+		if errors.As(err, &he) && (he.StatusCode == 429 || he.StatusCode == 503) && he.RetryAfterMs > 0 {
 			GetHostGate().ReportRateLimited(bookHost, he.RetryAfterMs)
 		}
 		// R65-C: 失败路径记录 per-host 失败计数 (供 AdjustConcurrency 算 health)
@@ -1620,6 +1625,17 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
 	if cfg.DB != nil {
 		// 检查是否已存在 (跨源去重 + 增量更新)
 		existing, ferr := cfg.DB.FindBookBySourceURL(bookURL)
+		// R74-C BUG-116 (P2) 修复 (R73 未决项 #11): ferr 非 sql.ErrNoRows 是 DB
+		//   错误 (连接断/超时/锁等), 原无差别走 "新建" 路径 → 新建路径 newBook.WordCount=0
+		//   + LatestChapter="" 经 UpsertBook 内部 sourceUrl SELECT (admin.go line 99)
+		//   命中已存在行后 UPDATE 清空已有 wordCount/latestChapter (e.g. 10 万字 → 0,
+		//   "第100章" → "", FinalizeBook 仅按本轮 ParsedWordCount 重算 → 字数严重
+		//   欠计). 修复: DB 错误上抛让 caller (phase 1 goroutine) 走 err 路径
+		//   (stats.Errors++ + AddToFailed), 不进新建路径. sql.ErrNoRows 仍走新建 (合法
+		//   "not found"). errors.Is 兼容未来 admin.go wrap err (当前直返 sql.ErrNoRows).
+		if ferr != nil && !errors.Is(ferr, sql.ErrNoRows) {
+			return nil, fmt.Errorf("FindBookBySourceURL DB 错误 %s: %w", bookURL, ferr)
+		}
 		if ferr == nil && existing.ID != "" {
 			bookID = existing.ID
 			isNewBook = false
@@ -1659,8 +1675,15 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
 			}
 			// 保留 existing.WordCount + existing.LatestChapter (UpsertBook UPDATE 直接用 b 字段,
 			//   不会清零, finalizeBook 阶段会重新 UpdateBookWordCount/UpdateBookLatestChapter)
-			if _, err := cfg.DB.UpsertBook(existing); err == nil {
-				// bookID 已为 existing.ID
+			// R74-C BUG-110 (P3) 修复: 原 err 静默吞 (与新建路径 BUG-74 R68-C
+			//   不一致). 书籍 meta 刷新失败 (DB 暂时故障 / 唯一约束冲突 等) 时,
+			//   existing.ID 仍有效 (line 1624 已设), 后续 toc + cover 采集可继续
+			//   (新书已存在, 只是 meta 残旧). log warn 让操作员察觉, 不 return err
+			//   中断整本书 (与新建路径不同 — 新建失败无 bookID 可继续, R68-C BUG-74
+			//   返 err 让 phase 1 走 AddToFailed 路径; existing 路径 bookID 已有, 中断
+			//   反损失更大).
+			if _, err := cfg.DB.UpsertBook(existing); err != nil {
+				rt.Log(LogWarn, fmt.Sprintf("书籍 meta 刷新失败 %s: %v", bookURL, err))
 			}
 		} else {
 			// 新建书
@@ -1712,37 +1735,57 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
 		}
 	}
 	rt.SetCurrentURL(tocURL)
-	// R65-C: 接 R64-B AdjustMinGap + healthTracker (与书籍页同款, 测 toc 页延迟)
-	tocFetchStart := time.Now()
-	tocRes, err := FetchPage(ctx, tocURL, mergeFetchConfig(cfg.Override, FetchConfig{RequestPriority: "book"}))
-	tocLatencyMs := time.Since(tocFetchStart).Milliseconds()
-	tocHost := HostGateKeyOf(tocURL)
-	if err != nil {
-		// R43-1B: 429 / 503+RetryAfter → ReportRateLimited (与书籍页同款)
-		if he, ok := err.(*HTTPError); ok && (he.StatusCode == 429 || he.StatusCode == 503) && he.RetryAfterMs > 0 {
-			GetHostGate().ReportRateLimited(tocHost, he.RetryAfterMs)
+	// R74-C BUG-113 (P3) + BUG-114 (P2) 修复 (R73 未决项 #9): tocURL fallback
+	//   bookURL (TocLink 未配置或提取失败) 时原实现重复 FetchPage 同 URL, 浪费
+	//   请求预算 + hostgate 计数 (书籍页路径 line 1528-1566 已记同 host). 修复:
+	//   复用 bookRes 跳过 toc FetchPage + host 健康追踪. 同时 BUG-114: toc fetch
+	//   原漏 rt.CheckBudget + rt.IncRequest, 预算未计 toc 请求 (admin 设 maxRequests
+	//   =100 实际可消耗 200 = 100 book + 100 toc, 预算永不触发). 修复: 与 book fetch
+	//   (line 1515-1519) 同款, 入口先 CheckBudget + IncRequest (仅 tocURL != bookURL
+	//   路径, 复用路径不重复计 — 同 URL 已在 book fetch 计过).
+	var tocRes *FetchResult
+	if tocURL == bookURL {
+		tocRes = bookRes
+	} else {
+		if err := rt.CheckBudget(); err != nil {
+			return nil, err
 		}
-		// R65-C: 失败路径记录 per-host 失败计数
-		getHealthTracker().recordFailure(tocHost)
-		return nil, err
+		rt.IncRequest()
+		// R65-C: 接 R64-B AdjustMinGap + healthTracker (与书籍页同款, 测 toc 页延迟)
+		tocFetchStart := time.Now()
+		var ferr error
+		tocRes, ferr = FetchPage(ctx, tocURL, mergeFetchConfig(cfg.Override, FetchConfig{RequestPriority: "book"}))
+		tocLatencyMs := time.Since(tocFetchStart).Milliseconds()
+		tocHost := HostGateKeyOf(tocURL)
+		if ferr != nil {
+			// R43-1B: 429 / 503+RetryAfter → ReportRateLimited (与书籍页同款)
+			// R74-C BUG-111 (P3): err.(*HTTPError) → errors.As (与书籍页路径同口径).
+			var he *HTTPError
+			if errors.As(ferr, &he) && (he.StatusCode == 429 || he.StatusCode == 503) && he.RetryAfterMs > 0 {
+				GetHostGate().ReportRateLimited(tocHost, he.RetryAfterMs)
+			}
+			// R65-C: 失败路径记录 per-host 失败计数
+			getHealthTracker().recordFailure(tocHost)
+			return nil, ferr
+		}
+		// R67-C BUG-56 (P2) 修复: 同 books 页路径, recordSuccess 移到 Blocked 检查后
+		//   避免与 recordFailure 双计数. recordLatency + AdjustMinGap 保留在前.
+		getHealthTracker().recordLatency(tocHost, tocLatencyMs)
+		GetHostGate().AdjustMinGap(tocHost, tocLatencyMs)
+		if tocRes.CaptchaDetected {
+			rt.IncCaptcha()
+		}
+		if tocRes.Blocked {
+			// R43-1B: 拦截时也调 ReportFailure (与书籍页同款)
+			GetHostGate().ReportFailure(tocHost)
+			// R65-C: 拦截视为失败
+			getHealthTracker().recordFailure(tocHost)
+			return &BookMetaResult{Status: BookMetaStatusBlocked, BookURL: bookURL}, nil
+		}
+		// 成功 (HTTP 200 + 非 Blocked): 记 success + ReportSuccess
+		getHealthTracker().recordSuccess(tocHost)
+		GetHostGate().ReportSuccess(tocHost)
 	}
-	// R67-C BUG-56 (P2) 修复: 同 books 页路径, recordSuccess 移到 Blocked 检查后
-	//   避免与 recordFailure 双计数. recordLatency + AdjustMinGap 保留在前.
-	getHealthTracker().recordLatency(tocHost, tocLatencyMs)
-	GetHostGate().AdjustMinGap(tocHost, tocLatencyMs)
-	if tocRes.CaptchaDetected {
-		rt.IncCaptcha()
-	}
-	if tocRes.Blocked {
-		// R43-1B: 拦截时也调 ReportFailure (与书籍页同款)
-		GetHostGate().ReportFailure(tocHost)
-		// R65-C: 拦截视为失败
-		getHealthTracker().recordFailure(tocHost)
-		return &BookMetaResult{Status: BookMetaStatusBlocked, BookURL: bookURL}, nil
-	}
-	// 成功 (HTTP 200 + 非 Blocked): 记 success + ReportSuccess
-	getHealthTracker().recordSuccess(tocHost)
-	GetHostGate().ReportSuccess(tocHost)
 
 	// 解析目录 (含翻页)
 	pageFetcher := func(ctx context.Context, u, refererURL string) (string, error) {
@@ -1821,10 +1864,23 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
 			Retries:    1,
 		})
 		if err == nil && !coverRes.Blocked && coverRes.HTML != "" {
-			// 简化: HTML 当字节流 (实际应使用 fetchBinary)
-			if rel, err := SaveCoverWebp([]byte(coverRes.HTML), bookID); err == nil && rel != "" {
-				_ = cfg.DB.UpdateBookCover(bookID, rel)
-				coverSaved = true
+			// R74-C BUG-115 (P3) 修复 (R73 未决项 #10): 原 []byte(coverRes.HTML)
+			//   直接转 string→[]byte, 但 fetcher FetchPage 返回 UTF-8 解码 string
+			//   (FetchResult.HTML 字段, fetcher.go line 2512), 二进制图像字节中无效
+			//   UTF-8 字节 (\xff JPEG / \x89 PNG 等) 被 decoder 替换为 U+FFFD
+			//   (0xEF 0xBF 0xBD), 写入 .webp 后字节已损坏, 浏览器 <img> 解码失败.
+			//   加 HTML 错误页检测: 若 coverRes.HTML 以 < 开头 (HTML 文档 / 404 /
+			//   captcha challenge / 反爬盾), 跳过 SaveCoverWebp 不污染封面文件.
+			//   常见图像格式 (webp/jpeg/png/gif) 首字节非 < (RIFF/\xff\xd8\xff/
+			//   \x89PNG/GIF8), \xff/\x89 经 UTF-8 解码后变 U+FFFD (0xEF 0xBF 0xBD,
+			//   仍非 <). 彻底修复需 fetcher 暴露 raw bytes / fetchBinary API
+			//   (fetcher.go R74-B 范围), 留 R75+ 评估.
+			coverHTML := strings.TrimSpace(coverRes.HTML)
+			if !strings.HasPrefix(coverHTML, "<") {
+				if rel, err := SaveCoverWebp([]byte(coverRes.HTML), bookID); err == nil && rel != "" {
+					_ = cfg.DB.UpdateBookCover(bookID, rel)
+					coverSaved = true
+				}
 			}
 		}
 	}
@@ -1884,7 +1940,9 @@ func CrawlChapterContent(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRun
 		}
 		// R43-1B: HTTPError 429 / 503+RetryAfter → 调 ReportRateLimited (R42-1B 后
 		// 该函数是死代码, 反爬 429 冷却从未触发). 其它网络层错误仍调 ReportFailure.
-		if he, ok := err.(*HTTPError); ok && (he.StatusCode == 429 || he.StatusCode == 503) && he.RetryAfterMs > 0 {
+		// R74-C BUG-111 (P3): err.(*HTTPError) → errors.As (与书籍页/toc 页路径同口径).
+		var he *HTTPError
+		if errors.As(err, &he) && (he.StatusCode == 429 || he.StatusCode == 503) && he.RetryAfterMs > 0 {
 			hostGate.ReportRateLimited(chapterHost, he.RetryAfterMs)
 		}
 		// 分类错误

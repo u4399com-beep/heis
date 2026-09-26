@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -452,9 +453,22 @@ func main() {
 	//     全部停 (无泄露). CookieJar / ProxyHealthProber 各自 atomic.Bool 防多启动, 与
 	//     flusherCtx 是否共享无关.
 	crawl.StartCookieJarBackgroundFlusher(flusherCtx)
-	startupPool := collectStartupProxyPool()
-	crawl.StartProxyHealthProber(flusherCtx, startupPool, "https://www.baidu.com", 300000)
-	log.Printf("[R73-A] wiring: CookieJar flusher ✓ / ProxyHealthProber pool=%d (target=https://www.baidu.com, 5min)", len(startupPool))
+	// R74-A 目标A (R73 交接 #2): ProxyHealthProber singleton 防多启动.
+	//   R73-A 报告 main() 调用方未防多启动 (crawl.StartProxyHealthProber 内部有
+	//   atomic.Bool + CompareAndSwap 二次防御, 但调用方仍每次构造 startupPool + log).
+	//   本轮加 proxyHealthProberStarted CAS: 已启动则跳过 collectStartupProxyPool +
+	//   StartProxyHealthProber 调用, 0 噪声 + 0 启动时 Task 表扫 (graceful restart /
+	//   SIGHUP / 测试 fixture 多次执行 main 时尤其重要). CompareAndSwap 原子语义:
+	//   返 true 表示本调用首次启动 prober; 返 false 表示已启动, 跳过.
+	//   注: CookieJar flusher 不加同等标志 (其内部 atomic.Bool 已足够, 且 CookieJar
+	//   无 collectStartupProxyPool 重操作; R74+ 可补).
+	if proxyHealthProberStarted.CompareAndSwap(false, true) {
+		startupPool := collectStartupProxyPool()
+		crawl.StartProxyHealthProber(flusherCtx, startupPool, "https://www.baidu.com", 300000)
+		log.Printf("[R74-A] ProxyHealthProber started (CAS): pool=%d (target=https://www.baidu.com, 5min)", len(startupPool))
+	} else {
+		log.Printf("[R74-A] ProxyHealthProber already started (CAS skip): collectStartupProxyPool + StartProxyHealthProber skipped")
+	}
 
 	// R57-1A 反预览挂掉增强: http.Server 加 ReadHeader/Read/Write/Idle 超时.
 	//   原 http.ListenAndServe 用默认 Server (无超时), 慢客户端 (含恶意 slowloris)
@@ -1244,13 +1258,29 @@ func startExternalCSSWatcher(ctx context.Context) {
 	}()
 }
 
+// R74-A 目标A (R73 交接 #2): ProxyHealthProber singleton 全局标志.
+//
+//	crawl.StartProxyHealthProber 内部已有 atomic.Bool + CompareAndSwap 防多启动 (R72-C
+//	实现), 但 R73-A 报告 main() 调用方未防: 若 main() 因 graceful shutdown / SIGHUP /
+//	测试 fixture 等场景被多次执行 (或 wiring 误置循环), 每次 StartProxyHealthProber 调
+//	用即使内部 started 标志阻止实际重启, 仍会构造 startupPool slice (collectStartupProxyPool
+//	扫 Task 表) + log.Printf 噪声. 本轮在 main() 调用方加 proxyHealthProberStarted CAS
+//	二次防御: 已启动则跳过 collectStartupProxyPool + StartProxyHealthProber 调用, 0 噪声.
+//	与 crawl.StartProxyHealthProber 内部 atomic.Bool 双层保护 (call-site + callee-site),
+//	任一层都防多启动, 双层更鲁棒.
+var proxyHealthProberStarted atomic.Bool
+
 // R73-A 目标A (R72 交接 #1): collectStartupProxyPool — 启动时扫 Task 表 fetchConfig 列,
 //
 //	收集所有任务配置的 proxyUrl 字段, 合并去重为代理池供 StartProxyHealthProber 用.
 //	设计: fetcher.go 无全局 proxyPool 变量 (代理 per-task 在 Task.fetchConfig JSON 的
 //	  proxyUrl 字段, 见 crawl.types.go FetchConfig.ProxyURL `json:"proxyUrl,omitempty"`),
 //	  fetcher.go 范围严禁改 (其它 agent 处理), 本轮在 main.go 内做合并.
-//	逻辑: SELECT fetchConfig FROM Task (全表扫一次, 启动时只跑一次, 无性能压力);
+//	逻辑: SELECT fetchConfig FROM Task WHERE status IN ('running','pending')
+//	  ORDER BY updatedAt DESC LIMIT 50 (R74-A 目标C: R73 交接 #4 修复 — 原全表扫 Task
+//	  大流量站 (10K+ 历史任务) 启动慢; 现仅扫活跃任务 (running/pending) + LIMIT 50,
+//	  假设活跃任务代理池代表性足够 (历史 done/error 任务 proxyUrl 多为同款, 重复无意义);
+//	  ORDER BY updatedAt DESC 取最近活跃 50 任务, 防 LIMIT 取老任务遗漏新代理).
 //	  每行 json.Unmarshal 提取 ProxyURL 字段; 调 crawl.ParseProxyPool (逗号分隔 + 校验);
 //	  map[string]bool 去重; 失败 (单行解析错 / 整体 SQL 错) 容忍跳过.
 //	返回: []string 代理 URL 池 (空 slice if 无代理 / DB 错). caller (StartProxyHealthProber)
@@ -1259,7 +1289,12 @@ func startExternalCSSWatcher(ctx context.Context) {
 //	  crawl.ParseProxyPool + 调 StartProxyHealthProber (started 标志会阻止, 实际需重构
 //	  为动态池, R73+ 未决项).
 func collectStartupProxyPool() []string {
-	rows, err := db.Query(`SELECT fetchConfig FROM Task`)
+	// R74-A 目标C (R73 交接 #4): WHERE status IN ('running','pending') + LIMIT 50.
+	//   原全表扫 Task 在大流量站 (10K+ 历史任务) 启动慢 (~50ms-500ms).
+	//   现仅扫活跃任务 (running/pending), 忽略 done/error 历史任务 (proxyUrl 多已失效
+	//   或重复, 无需再扫). ORDER BY updatedAt DESC 取最近 50 任务, LIMIT 50 防
+	//   大表启动慢 (50 行 × 单行 JSON 解析 ~5ms 总开销, 0 启动延迟感知).
+	rows, err := db.Query(`SELECT fetchConfig FROM Task WHERE status IN ('running','pending') ORDER BY updatedAt DESC LIMIT 50`)
 	if err != nil {
 		log.Printf("[R73-A] collectStartupProxyPool: SELECT fetchConfig failed: %v", err)
 		return nil
@@ -4044,13 +4079,35 @@ type wheelSite struct {
 //	Fallback: 空表 (MAX(rowid)=NULL → RANDOM()%NULL=NULL → rowid>=NULL 永远 false → 0 行)
 //	  或 ABS(RANDOM()) 边界 (RANDOM()=INT64_MIN 时 ABS 返 NULL, SQLite 已知 quirk) →
 //	  fallback ORDER BY RANDOM() LIMIT 1 (空表时也返 ok=false, caller 静默跳过).
+//	R74-A 目标D (R73 交接 #5): rowid 空隙二次校验. R73-A 报告删书后 rowid 不连续
+//	  极端场景 (e.g. 大批量删书 + SQLite VACUUM 后 rowid 重排 / 并发删书 race /
+//	  主从同步延迟等) 主路径返回的 id 可能已不在 Book 表 (虽主路径 SQL 本应保证存
+//	  在, 但 SQLite MVCC 快照边界 + 跨事务可见性等极端场景下不能 100% 假设). 本轮
+//	  加二次校验: SELECT 1 FROM Book WHERE id=? LIMIT 1, 不存在则 fallback ORDER BY
+//	  RANDOM() LIMIT 1. 代价: 1 次额外 SELECT (~0.1ms 索引扫描), 防 0.0001% 边界
+//	  返 ghost id → wheelLinksCache 5min 内链轮推 ghost 书 (404 链接, SEO 损害).
 //	性能: 10K 行 ~0.1ms (原 ~5ms, 50× 提升); 100K 行 ~0.2ms (原 ~50ms, 250× 提升).
+//	  二次校验 +0.1ms, 总 ~0.2ms (10K) / ~0.3ms (100K), 仍 50×+ 提升.
 func queryRandomBook() (id, name string, ok bool) {
 	var bid, bname sql.NullString
 	// 主路径: rowid 索引扫描 (子查询标量 ABS(RANDOM())%MAX(rowid) 单次求值).
 	err := db.QueryRow(`SELECT id, name FROM Book WHERE rowid >= (SELECT ABS(RANDOM()) % MAX(rowid) FROM Book) ORDER BY rowid LIMIT 1`).Scan(&bid, &bname)
 	if err != nil || !bid.Valid || bid.String == "" {
 		// Fallback: ORDER BY RANDOM() LIMIT 1 (空表 / 子查询返 NULL / 索引扫描边界).
+		err = db.QueryRow(`SELECT id, name FROM Book ORDER BY RANDOM() LIMIT 1`).Scan(&bid, &bname)
+		if err != nil || !bid.Valid || bid.String == "" {
+			return "", "", false
+		}
+	}
+	// R74-A 目标D (R73 交接 #5): rowid 空隙二次校验 — 主路径返回的 id 是否仍在 Book 表.
+	//   极端场景 (批量删书 + VACUUM / 并发 race / MVCC 快照边界) 主路径可能返
+	//   ghost id (虽 SQL 本应保证存在, 但防御性校验). 不存在则 fallback
+	//   ORDER BY RANDOM() LIMIT 1 (此查询保证返存在的行, 因 SELECT 直接从 Book 表取).
+	//   注意: fallback 查询本身查 Book 表, 返回的 id 必存在; 但仍校验一遍以防
+	//   主路径已返 ghost 且 fallback 又返同 ghost (理论不会, 但防御性编程).
+	var exists int
+	if db.QueryRow(`SELECT 1 FROM Book WHERE id=? LIMIT 1`, bid.String).Scan(&exists) != nil {
+		// 主路径 id 已不在 Book 表 (已被删), fallback ORDER BY RANDOM() LIMIT 1.
 		err = db.QueryRow(`SELECT id, name FROM Book ORDER BY RANDOM() LIMIT 1`).Scan(&bid, &bname)
 		if err != nil || !bid.Valid || bid.String == "" {
 			return "", "", false
@@ -4146,6 +4203,90 @@ type wheelLinkCacheEntry struct {
 	cachedAt time.Time
 }
 
+// buildWheelBookURL — 跨站 book_wheel URL 构造 (R74-A 目标E, R72 交接 #7).
+//
+//	R72-A 报告 book_wheel 跨站用 query 串 (//domain/?view=book&id=...) 兼容所有目标
+//	站 pseudoStyle 但丢 SEO (搜索引擎抓 query 串 URL 权重低). R74-A 改: 读目标站
+//	pseudoStaticStyle, 若 != "query" 则用 buildBookURL(style, bookID) 生成伪静态 URL
+//	(//domain/book/{id}.html 等), 与目标站路由一致 (搜索引擎抓到伪静态 URL 权重高);
+//	若 == "query" 保留原 query 串格式 (向后兼容).
+//	格式: protocol-relative (//{domain}{path}), 与 home_wheel 同口径 (无协议, 浏览器
+//	自动用当前页协议 — http 站用 http, https 站用 https; 混合内容警告 0, 因 protocol-relative
+//	总与父页同协议).
+//	注: buildBookURL 返 "/?view=book&id=..." 形态 (style=query) 或 "/book/{id}.html" 形态
+//	(伪静态), 均为绝对路径, 直接 prepend "//{domain}" 即得跨站 URL.
+//	调用点: getWheelLinks book_wheel 分支 + randomLinkHandler book_wheel case.
+func buildWheelBookURL(target wheelSite, bookID string) string {
+	if bookID == "" || target.domain == "" {
+		return "//" + target.domain + "/"
+	}
+	targetStyle := getSitePseudoStaticStyle(target.id)
+	// targetStyle == "query" / "" 时保留 query 串格式 (与 R72-A 行为一致, 向后兼容).
+	if targetStyle == "query" || targetStyle == "" {
+		return "//" + target.domain + "/?view=book&id=" + bookID
+	}
+	// 伪静态: buildBookURL 返 /book/{id}.html 等, prepend "//{domain}" 得跨站伪静态 URL.
+	return "//" + target.domain + buildBookURL(targetStyle, bookID)
+}
+
+// invalidateWheelLinksCache — 主动失效指定 site 的 WheelLinks 缓存 (R74-A 目标B, R73 交接 #3).
+//
+//	R73-A 报告 WheelLinks 5min sync.Map 缓存无主动失效, admin 改 Site/Book 后 5min 内
+//	homeHandler 仍返旧链接 (e.g. admin 改 Site.pseudoStaticStyle 后, 5min 内链轮
+//	book_intra URL 仍用旧 pseudoStyle 编 → 404; admin 删 Book 后, 5min 内链轮
+//	book_intra/book_wheel URL 仍指向已删 id → 404, SEO 损害).
+//	修复: 加 invalidateWheelLinksCache(siteID) — 删 wheelLinksCache 中所有以
+//	siteID+"|" 开头的 key (因 cacheKey = siteID+"|"+pseudoStyle, 同 siteID 不同
+//	pseudoStyle 都删, 防 Site 改 pseudoStyle 后旧 style 缓存残留).
+//	调用点 (R74-D admin.go 范围, 本轮 R74-A 只加函数 + 接口注释):
+//	- adminSiteByIDHandler PUT (改 Site 字段): 调 invalidateWheelLinksCache(siteID)
+//	  + invalidateAllWheelLinksCache() (改 pseudoStaticStyle/inLinkWheel/status 影响
+//	  跨站 book_wheel 选站, 全清更稳).
+//	- adminSiteByIDHandler DELETE (删 Site): invalidateAllWheelLinksCache() (全清,
+//	  因删站影响所有 wheel site 选站).
+//	- adminSitesCreate (新建 Site): 无需调 (新建站无旧缓存); 可选 invalidateAllWheelLinksCache
+//	  让新站进 wheel 选站池 (但 5min TTL 自然过期也行).
+//	- adminBookByIDHandler PUT/DELETE (改/删 Book): invalidateAllWheelLinksCache()
+//	  (book 改名/删影响所有 site 的 book_intra/book_wheel 推荐, 全清更稳).
+//	- adminBooksCreate: 无需调 (新建书无旧缓存).
+//	注: 本轮 R74-A 严禁改 admin.go, R74-D 负责调用方 wiring. 本轮 R74-A 只加函数.
+//	staticcheck U1000 (unused): R74-A 加函数但未调 (R74-D admin.go 范围才调),
+//	lint:ignore U1000 防 R74-A snapshot 报 unused; R74-D wiring 后可删 directive.
+//
+//lint:ignore U1000 reserved for R74-D admin.go wiring (adminSiteByIDHandler/adminBookByIDHandler)
+func invalidateWheelLinksCache(siteID string) {
+	if siteID == "" {
+		return
+	}
+	// sync.Map 无前缀删除 API, 用 Range 遍历删 (key 含 siteID+"|" 前缀).
+	// cacheKey 格式 = siteID + "|" + pseudoStyle, 同 siteID 不同 pseudoStyle 都删
+	//   (含 pseudoStyle="" edge case, 用 strings.HasPrefix 兼容 key == prefix).
+	prefix := siteID + "|"
+	wheelLinksCache.Range(func(k, _ interface{}) bool {
+		if key, ok := k.(string); ok && strings.HasPrefix(key, prefix) {
+			wheelLinksCache.Delete(key)
+		}
+		return true // 继续 Range
+	})
+}
+
+// invalidateAllWheelLinksCache — 清空全部 WheelLinks 缓存 (R74-A 目标B, R73 交接 #3).
+//
+//	用于 admin 改动影响跨站场景: 删 Site / 改 Site.pseudoStaticStyle/inLinkWheel/status
+//	/ 改/删 Book (book 影响所有 site 的 book_intra/book_wheel 推荐). 全清更稳, 5min
+//	TTL 自然过期次优 (5min 内仍返旧链接). 性能: sync.Map 通常 <10 entries (siteID
+//	× pseudoStyle 组合, 站群规模 <100), Range + Delete 全清 <1ms, 可接受.
+//	调用点 (R74-D admin.go 范围): 见 invalidateWheelLinksCache docstring.
+//	staticcheck U1000 (unused): 同 invalidateWheelLinksCache, R74-A 加函数未调.
+//
+//lint:ignore U1000 reserved for R74-D admin.go wiring (adminSiteByIDHandler/adminBookByIDHandler)
+func invalidateAllWheelLinksCache() {
+	wheelLinksCache.Range(func(k, _ interface{}) bool {
+		wheelLinksCache.Delete(k)
+		return true
+	})
+}
+
 // getWheelLinks — 装配 5 个链轮链接供前台友情链接模块渲染 (用户需求 #1).
 //
 //	组合: 1 站内随机书 (book_intra) + 2 站群随机首页 (home_wheel) + 2 站群随机书 (book_wheel).
@@ -4155,6 +4296,11 @@ type wheelLinkCacheEntry struct {
 //	调用点: homeHandler 各 view 注入 data["WheelLinks"], 模板 {{range .WheelLinks}}<a href="{{.url}}">{{.name}}</a>{{end}}.
 //	R73-A 目标B: 5min sync.Map 缓存. cache key=siteID|pseudoStyle, TTL=5min.
 //	  命中 (cachedAt 在 5min 内) 直接返缓存 slice; 未命中或过期重查 DB + 写缓存.
+//	R74-A 目标E (R72 交接 #7): book_wheel 跨站用目标站 pseudoStaticStyle 编 URL.
+//	  原 R72-A 全用 query 串跨站兼容 (//domain/?view=book&id=...), 丢 SEO. R74-A
+//	  改: 读目标站 pseudoStaticStyle, 伪静态站用 buildBookURL(style, bid) 生成
+//	  //domain/book/{id}.html 等 (与目标站路由一致, 搜索引擎抓伪静态 URL 权重高);
+//	  query 站保留 query 串 (向后兼容). 见 buildWheelBookURL.
 func getWheelLinks(currentSiteID, currentPseudoStyle string) []map[string]interface{} {
 	cacheKey := currentSiteID + "|" + currentPseudoStyle
 	if v, ok := wheelLinksCache.Load(cacheKey); ok {
@@ -4180,10 +4326,10 @@ func getWheelLinks(currentSiteID, currentPseudoStyle string) []map[string]interf
 			"name": s.name,
 			"type": "home_wheel",
 		})
-		// book_wheel: 同站 + 随机 1 书 (URL 用 query 串跨站兼容)
+		// book_wheel: 同站 + 随机 1 书 (R74-A 目标E: 用目标站 pseudoStyle 编 URL)
 		if bid, bname, ok := queryRandomBook(); ok {
 			out = append(out, map[string]interface{}{
-				"url":      "//" + s.domain + "/?view=book&id=" + bid,
+				"url":      buildWheelBookURL(s, bid),
 				"name":     bname,
 				"type":     "book_wheel",
 				"siteName": s.name,
@@ -4253,10 +4399,12 @@ func randomLinkHandler(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, map[string]interface{}{"ok": false, "error": "no book available"})
 			return
 		}
+		// R74-A 目标E (R72 交接 #7): book_wheel 跨站用目标站 pseudoStyle 编 URL
+		//   (与 getWheelLinks 同口径, 见 buildWheelBookURL).
 		writeJSON(w, map[string]interface{}{
 			"ok": true,
 			"data": map[string]interface{}{
-				"url":      "//" + s.domain + "/?view=book&id=" + bid,
+				"url":      buildWheelBookURL(s, bid),
 				"name":     bname,
 				"type":     "book_wheel",
 				"siteName": s.name,

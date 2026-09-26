@@ -319,7 +319,13 @@ var EXTRA_AD_PATTERNS = []string{
 var (
 	reDoSNestedQuantifierAd = regexp.MustCompile(`[+*]\s*\)\s*[+*{]`)
 	urlProtectRe            = regexp.MustCompile(`https?://[^\s"'<>]+`)
-	urlPlaceholderRe        = regexp.MustCompile("\x00(\\d+)\x00")
+	// R74-C BUG-117 (P3) 修复 (R73 未决项 #12): 占位符从 \x00<digits>\x00 改为
+	//   \uE000<digits>\uE001 (Unicode Private Use Area). \x00 是 null byte, 源文本
+	//   偶发含字面 \x00 (GBK 编码混淆 / JSON 二次转义残留), BUG-109 已剥 \x00 防误
+	//   识别, 但 PUA 字符 (\uE000/\uE001) 更稳健 — 正常 HTML 文本不含 PUA (PUA 是
+	//   应用私有使用区, 源站正文不出现), 不需额外剥离即可保 urlPlaceholderRe 不误
+	//   识别. Go RE2 支持任意 Unicode 码点匹配, PUA 字符作字面字节匹配无问题.
+	urlPlaceholderRe = regexp.MustCompile("\uE000(\\d+)\uE001")
 
 	// R47-1A: 预编译 cleaner.go 内 hot path 用的 regexp (原每次调用 cleanContentHtmlSync
 	//   / NormalizeParagraphs 都重编译, 高频路径 GC 压力大. R45-1C 已对 smart.go 同款优化).
@@ -478,18 +484,29 @@ func compileUserAdPattern(p string) (*regexp.Regexp, bool) {
 //	跳过避免 10MB 文本全拷贝). \x00 是 null byte 不出现在正常 HTML 文本中 (HTTP 层
 //	一般已剥), 剥之无副作用. 与 line 512 末尾 `strings.ReplaceAll(out, "\x00", "")`
 //	同口径, 仅把剥离提前到 URL 保护之前防误识别.
+//
+// R74-C BUG-117 (P3) 修复 (R73 未决项 #12): 占位符从 \x00<digits>\x00 改为 PUA
+//
+//	\uE000<digits>\uE001 (Unicode Private Use Area). \x00 剥离保留 (defense in
+//	depth, 源文本仍可能含 \x00), 同时剥 PUA \uE000/\uE001 防 urlPlaceholderRe
+//	误识别 (PUA 不出现在正常 HTML 文本, 但源文本理论可含).
 func RemoveAdLines(text string, patterns []string) string {
 	if text == "" {
 		return ""
 	}
-	// R73-C BUG-109: 源文本含字面 \x00 时先剥离, 防 urlPlaceholderRe 误识别.
-	if strings.Contains(text, "\x00") {
-		text = strings.ReplaceAll(text, "\x00", "")
+	// R73-C BUG-109 + R74-C BUG-117: 源文本含字面 \x00 或 PUA (\uE000/\uE001) 时
+	//   先剥离, 防 urlPlaceholderRe 误识别. \x00 + PUA 不出现在正常 HTML 文本中
+	//   (HTTP 层一般已剥), 剥之无副作用. strings.NewReplacer 单遍替换 3 字符,
+	//   比 3 次 ReplaceAll 高效 (1 次分配 vs 3 次).
+	if strings.ContainsAny(text, "\x00\uE000\uE001") {
+		text = strings.NewReplacer("\x00", "", "\uE000", "", "\uE001", "").Replace(text)
 	}
 	urls := []string{}
 	out := urlProtectRe.ReplaceAllStringFunc(text, func(m string) string {
 		urls = append(urls, m)
-		return fmt.Sprintf("\x00%d\x00", len(urls)-1)
+		// R74-C BUG-117: 占位符用 PUA \uE000/\uE001 (原 \x00, 已剥源文本 \x00 防误识别,
+		//   PUA 更稳健 — 正常 HTML 不含 PUA 字符).
+		return fmt.Sprintf("\uE000%d\uE001", len(urls)-1)
 	})
 	// 用户 patterns (缓存复用)
 	for _, p := range patterns {
@@ -509,10 +526,11 @@ func RemoveAdLines(text string, patterns []string) string {
 		}
 		var idx int
 		// R67-C BUG-58 (P3) 修复: 原 fmt.Sscanf 忽略 err, 解析失败时 idx 留 0
-		//   → 误用 urls[0] 还原 (URL 占位符 \x000\x00 指向 idx 0, 解析失败
+		//   → 误用 urls[0] 还原 (URL 占位符 \uE0000\uE001 指向 idx 0, 解析失败
 		//   的占位符也返回 urls[0]). Sscanf 失败场景: 数字溢出 int 范围
-		//   (e.g. \x0099999999999\x00 占位符, 占位符 idx 不可能这么 大, 但
-		//   源文本本身含形如 \x00\d+\x00 的字面字节会被误识别为占位符).
+		//   (e.g. \uE00099999999999\uE001 占位符, 占位符 idx 不可能这么大, 但
+		//   源文本本身含形如 PUA<digits>PUA 的字面字节会被误识别为占位符;
+		//   R74-C BUG-117 已剥源文本 PUA 防误识别, 此处 Sscanf err 防御冗余).
 		//   修复: Sscanf 返 err 时返 "" (与 len(sub)<2 同口径), 不误用 urls[0].
 		if _, err := fmt.Sscanf(sub[1], "%d", &idx); err != nil {
 			return ""
@@ -522,8 +540,9 @@ func RemoveAdLines(text string, patterns []string) string {
 		}
 		return ""
 	})
-	// 清残留 \x00
-	out = strings.ReplaceAll(out, "\x00", "")
+	// R74-C BUG-117: 清残留 \x00 + PUA (\uE000/\uE001) — defense in depth
+	//   (URL 还原失败的占位符残留, 或源文本含字面 PUA 经 cleaner 链后残留).
+	out = strings.NewReplacer("\x00", "", "\uE000", "", "\uE001", "").Replace(out)
 	return out
 }
 
