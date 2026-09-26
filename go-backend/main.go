@@ -3598,26 +3598,31 @@ var (
         reNumericBook       = regexp.MustCompile(`^/book/([A-Za-z0-9]+)\.html$`)
         reNumericRead       = regexp.MustCompile(`^/read/([A-Za-z0-9]+)\.html$`)
         reNumericCategory   = regexp.MustCompile(`^/category/([A-Za-z0-9]+)/(\d+)\.html$`)
+        reNumericCategoryHome = regexp.MustCompile(`^/category/([A-Za-z0-9]+)\.html$`) // R71 主控修复: page=1 无 page 段
 
         // slug: /book/{cuid}/, /read/{cuid}/, /category/{cuid}/page-{page}/
         reSlugBook          = regexp.MustCompile(`^/book/([A-Za-z0-9]+)/$`)
         reSlugRead          = regexp.MustCompile(`^/read/([A-Za-z0-9]+)/$`)
         reSlugCategory      = regexp.MustCompile(`^/category/([A-Za-z0-9]+)/page-(\d+)/$`)
+        reSlugCategoryHome  = regexp.MustCompile(`^/category/([A-Za-z0-9]+)/$`) // R71 主控修复: page=1
 
         // short: /b/{cuid}, /r/{cuid}, /c/{cuid}/{page}
         reShortBook         = regexp.MustCompile(`^/b/([A-Za-z0-9]+)$`)
         reShortRead         = regexp.MustCompile(`^/r/([A-Za-z0-9]+)$`)
         reShortCategory     = regexp.MustCompile(`^/c/([A-Za-z0-9]+)/(\d+)$`)
+        reShortCategoryHome = regexp.MustCompile(`^/c/([A-Za-z0-9]+)$`) // R71 主控修复: page=1
 
         // classic: /book-{cuid}.html, /read-{cuid}.html, /category-{cuid}-{page}.html
         reClassicBook       = regexp.MustCompile(`^/book-([A-Za-z0-9]+)\.html$`)
         reClassicRead       = regexp.MustCompile(`^/read-([A-Za-z0-9]+)\.html$`)
         reClassicCategory   = regexp.MustCompile(`^/category-([A-Za-z0-9]+)-(\d+)\.html$`)
+        reClassicCategoryHome = regexp.MustCompile(`^/category-([A-Za-z0-9]+)\.html$`) // R71 主控修复: page=1
 
         // dir: /book/{cuid}/ (book), /book/{cuid}/chapter/{chCuid}.html (read), /category/{cuid}/{page}/ (category)
         reDirBook           = regexp.MustCompile(`^/book/([A-Za-z0-9]+)/$`)
         reDirRead           = regexp.MustCompile(`^/book/([A-Za-z0-9]+)/chapter/([A-Za-z0-9]+)\.html$`)
         reDirCategory       = regexp.MustCompile(`^/category/([A-Za-z0-9]+)/(\d+)/$`)
+        reDirCategoryHome   = regexp.MustCompile(`^/category/([A-Za-z0-9]+)/$`) // R71 主控修复: page=1 (与 reSlugCategoryHome 相同 regex, 独立变量保清晰)
 
         // hashid: /b/{hash}.html, /r/{hash}.html  (注意 .html 后缀区别于 short/base62)
         reHashidBook        = regexp.MustCompile(`^/b/([A-Za-z0-9]+)\.html$`)
@@ -3631,6 +3636,7 @@ var (
         reSegmentedBook     = regexp.MustCompile(`^/book/([A-Za-z0-9]{2})/([A-Za-z0-9]+)\.html$`)
         reSegmentedRead     = regexp.MustCompile(`^/read/([A-Za-z0-9]{2})/([A-Za-z0-9]+)\.html$`)
         reSegmentedCategory = regexp.MustCompile(`^/category/([A-Za-z0-9]{2})/([A-Za-z0-9]+)/(\d+)\.html$`)
+        reSegmentedCategoryHome = regexp.MustCompile(`^/category/([A-Za-z0-9]{2})/([A-Za-z0-9]+)\.html$`) // R71 主控修复: page=1
 )
 
 // pseudoPatternsByStyle — 按 style 索引的 patterns 表 (R63-A).
@@ -3639,31 +3645,37 @@ var pseudoPatternsByStyle = map[string][]pseudoPattern{
         "numeric": {
                 {reNumericBook, "book", []int{1}, 0},
                 {reNumericRead, "read", []int{1}, 0},
+                {reNumericCategoryHome, "category", []int{1}, 0}, // R71: page=1 home 先匹配
                 {reNumericCategory, "category", []int{1}, 2},
         },
         "alphanumeric": {
                 {reNumericBook, "book", []int{1}, 0},
                 {reNumericRead, "read", []int{1}, 0},
+                {reNumericCategoryHome, "category", []int{1}, 0},
                 {reNumericCategory, "category", []int{1}, 2},
         },
         "slug": {
                 {reSlugBook, "book", []int{1}, 0},
                 {reSlugRead, "read", []int{1}, 0},
+                {reSlugCategoryHome, "category", []int{1}, 0},
                 {reSlugCategory, "category", []int{1}, 2},
         },
         "short": {
                 {reShortBook, "book", []int{1}, 0},
                 {reShortRead, "read", []int{1}, 0},
+                {reShortCategoryHome, "category", []int{1}, 0},
                 {reShortCategory, "category", []int{1}, 2},
         },
         "classic": {
                 {reClassicBook, "book", []int{1}, 0},
                 {reClassicRead, "read", []int{1}, 0},
+                {reClassicCategoryHome, "category", []int{1}, 0},
                 {reClassicCategory, "category", []int{1}, 2},
         },
         "dir": {
                 {reDirBook, "book", []int{1}, 0},
-                {reDirRead, "read", []int{2}, 0}, // dir-style read: chCuid is group 2
+                {reDirRead, "read", []int{2}, 0},
+                {reDirCategoryHome, "category", []int{1}, 0},
                 {reDirCategory, "category", []int{1}, 2},
         },
         "hashid": {
@@ -3675,11 +3687,13 @@ var pseudoPatternsByStyle = map[string][]pseudoPattern{
         "base62": {
                 {reShortBook, "book", []int{1}, 0},
                 {reShortRead, "read", []int{1}, 0},
+                {reShortCategoryHome, "category", []int{1}, 0}, // R71: page=1 home
                 {reShortCategory, "category", []int{1}, 2},
         },
         "segmented": {
                 {reSegmentedBook, "book", []int{1, 2}, 0},
                 {reSegmentedRead, "read", []int{1, 2}, 0},
+                {reSegmentedCategoryHome, "category", []int{1, 2}, 0},
                 {reSegmentedCategory, "category", []int{1, 2}, 3},
         },
 }
