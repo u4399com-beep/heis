@@ -570,6 +570,11 @@ func (j *CookieJar) Store(domain string, setCookieHeaders []string) {
         // R47-1A: 剥端口 (cookie 是 domain-scoped, port 不影响)
         reqHost = stripPort(reqHost)
         src := reqHost
+        // R79-B 反反爬第 98 项: Cookie HttpOnly 属性观测 — 累计本次 Store 的 HttpOnly /
+        //   非 HttpOnly cookie 数, 主循环末尾调 RecordCookieHttpOnlyObserved 供 admin 查询.
+        //   不改 cookieEntry schema (避免破坏 .cookies.json 持久化兼容, R72-C #78).
+        httpOnlyCount := int64(0)
+        nonHttpOnlyCount := int64(0)
         attrNames := map[string]bool{
                 "path": true, "domain": true, "expires": true, "max-age": true,
                 "secure": true, "httponly": true, "samesite": true,
@@ -607,9 +612,16 @@ func (j *CookieJar) Store(domain string, setCookieHeaders []string) {
                 expires := int64(0)
                 sameSite := "" // R75-B 第 88 项: "" = 未设 (Chrome 80+ 视为 Lax, 保守存原值)
                 priority := "" // R77-B 第 93 项: "" = 未设 (Chrome 106+ 默认 Medium)
+                httpOnly := false // R79-B 第 98 项: HttpOnly 布尔属性 (无值, 单 token)
                 attrs := strings.Split(raw, ";")
                 for _, a := range attrs {
                         a = strings.TrimSpace(a)
+                        // R79-B 第 98 项: HttpOnly 是无值布尔 token (RFC 6265 5.2.7), eq<=0
+                        //   跳过会漏识别. 单独 EqualFold 检查 (与 Secure 同款布尔属性).
+                        if strings.EqualFold(a, "HttpOnly") {
+                                httpOnly = true
+                                continue
+                        }
                         eq := strings.Index(a, "=")
                         if eq <= 0 {
                                 continue
@@ -666,6 +678,12 @@ func (j *CookieJar) Store(domain string, setCookieHeaders []string) {
                         }
                 }
                 entry := cookieEntry{v: val, at: time.Now().UnixMilli(), src: src, expires: expires, sameSite: sameSite, priority: priority}
+                // R79-B 第 98 项: 累计 HttpOnly / 非 HttpOnly cookie 计数 (主循环末尾调观测)
+                if httpOnly {
+                        httpOnlyCount++
+                } else {
+                        nonHttpOnlyCount++
+                }
 
                 // 主罐: 存到 request host 罐
                 mainJar := j.jars[reqHost]
@@ -685,6 +703,9 @@ func (j *CookieJar) Store(domain string, setCookieHeaders []string) {
                         subJar[name] = entry
                 }
         }
+        // R79-B 反反爬第 98 项: 主循环末尾调观测 API (一次性记本次 Store 的 HttpOnly /
+        //   非 HttpOnly cookie 数, 供 admin 查询 host 的 HttpOnly cookie ratio).
+        RecordCookieHttpOnlyObserved(reqHost, httpOnlyCount, nonHttpOnlyCount)
 }
 
 // Clear — 清空由该 host 引入的 cookies (含副罐, 防"陈旧会话被毒药"重试语义).
@@ -2984,7 +3005,11 @@ func buildHeaders(cfg FetchConfig, ua, rawURL, referer string) http.Header {
         //   cloudflare 站用 "gzip" (drop deflate, CF HTTP/2 兼容性); 其他站保持 "gzip, deflate".
         //   从不广告 br (Go 无 brotli 解码, BUG-54 路径会触发 curl fallback 兜底).
         h.Set("Accept-Encoding", acceptEncodingFor(domain))
-        h.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+        // R79-B 反反爬第 100 项: Accept-Language 池扩充 (R62-A 第 47 项原 6 条 → 12 条,
+        //   加日/韩/欧洲语言). per-domain 钉扎防 "每请求换 Accept-Language" 爬虫指纹
+        //   (真实浏览器 Accept-Language 固定). PickAcceptLangFor 按 UA 推断主语言 +
+        //   hash(domain) 确定性池选 (同 host 总是同一值, 跨进程稳定).
+        h.Set("Accept-Language", PickAcceptLangFor(domain, ua))
         h.Set("Connection", "keep-alive")
         h.Set("Upgrade-Insecure-Requests", "1")
         // DNT (Do Not Track) - 浏览器等同标识
@@ -3016,9 +3041,25 @@ func buildHeaders(cfg FetchConfig, ua, rawURL, referer string) http.Header {
                 }
                 h.Set("Sec-Ch-Ua", strings.Join(brands, ", "))
                 // Sec-Ch-Ua-Mobile + Sec-Ch-Ua-Platform
+                // R79-B 反反爬第 99 项: Sec-Ch-Ua-Mobile 完整性 (R65-B 第 55 项 Sec-Ch-Ua 加 Mobile).
+                //   真实 Chrome 在发 Sec-Ch-Ua 时一定同时发 Sec-Ch-Ua-Mobile + Sec-Ch-Ua-Platform
+                //   (Chrome 110+ spec). 原实现只在 platform 命中 (Windows/Mac/Linux/Mobile) 时发,
+                //   其他 UA (ChromeOS / FreeBSD / 未知) 漏发 Sec-Ch-Ua-Mobile → 反爬识别
+                //   "Sec-Ch-Ua 有但 Mobile 缺失" 是爬虫指纹 (中权重). 修复: platform 未命中时
+                //   默认 Sec-Ch-Ua-Mobile=?0 + Sec-Ch-Ua-Platform="Windows" (保守 Windows,
+                //   Chrome 最常见 desktop platform, 防"无 Platform"暴露).
                 if IsMobileUA(ua) {
                         h.Set("Sec-Ch-Ua-Mobile", "?1")
-                        h.Set("Sec-Ch-Ua-Platform", `"Android"`)
+                        // R79-B BUG-163 (P3) 修复 (pre-existing): 原 R64-B 实现把所有 mobile UA
+                        //   都标 Sec-Ch-Ua-Platform="Android", iPhone/iPad (iOS) UA 也被误标为
+                        //   Android. 真实 Chrome 在 iPhone UA 发 "iOS" platform. 反爬识别
+                        //   "iPhone UA + Android platform" 是爬虫指纹 (低权重, Chrome 真实
+                        //   行为严格按 UA 推断 platform). 修复: iPhone/iPad UA → "iOS".
+                        if strings.Contains(ua, "iPhone") || strings.Contains(ua, "iPad") {
+                                h.Set("Sec-Ch-Ua-Platform", `"iOS"`)
+                        } else {
+                                h.Set("Sec-Ch-Ua-Platform", `"Android"`)
+                        }
                 } else if strings.Contains(ua, "Windows") {
                         h.Set("Sec-Ch-Ua-Mobile", "?0")
                         h.Set("Sec-Ch-Ua-Platform", `"Windows"`)
@@ -3028,6 +3069,10 @@ func buildHeaders(cfg FetchConfig, ua, rawURL, referer string) http.Header {
                 } else if strings.Contains(ua, "Linux") {
                         h.Set("Sec-Ch-Ua-Mobile", "?0")
                         h.Set("Sec-Ch-Ua-Platform", `"Linux"`)
+                } else {
+                        // R79-B 第 99 项: 平台未识别时默认 desktop (?0 + Windows), 保 Mobile 完整性.
+                        h.Set("Sec-Ch-Ua-Mobile", "?0")
+                        h.Set("Sec-Ch-Ua-Platform", `"Windows"`)
                 }
                 // R64-B 第 55 项: Sec-Ch-Ua-Platform-Version (真实 Chrome 都发).
                 //   Windows → "15.0.0" (Win10/11), macOS → 从 UA "10_15_7" 提取,
@@ -3717,6 +3762,16 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
 
                 // 成功: 记 per-host Referer (下次同站请求可作 Referer)
                 SetHostReferer(rawURL)
+                // R79-B 反反爬第 96 项: HTTP/2 WINDOW_UPDATE 帧适配 — 观测 host 走 HTTP/2
+                //   (Go stdlib 自动发 WINDOW_UPDATE 帧 flow control, INITIAL_WINDOW_SIZE
+                //   无法配, 见 file end 注释). 仅观测, 不改 transport 行为.
+                RecordH2FlowControlObserved(originHost(rawURL))
+                // R79-B 反反爬第 97 项: TLS 1.3 PSK 适配 — 观测 host 是否走 PSK resumption
+                //   (Go crypto/tls ClientSessionCache 已配, resp.TLS.DidResume=true 标识
+                //   resumption 成功, 与 PSK 等价). 强制 PSK 模式需 fork crypto/tls, 不实现.
+                if resp.TLS != nil && resp.TLS.Version == tls.VersionTLS13 {
+                        RecordTls13PskObserved(originHost(rawURL), resp.TLS.DidResume)
+                }
                 return body, nil
         }
         if lastErr != nil {
@@ -9072,6 +9127,10 @@ const HostOriginWithPathSweepTTLms = 7 * 24 * 60 * 60 * 1000
 //      caller: admin 配置 (admin.go 可在 Site.Rule JSON 加 originWithPathHosts 列表,
 //        或单 host 触发 403/412 后 admin 手动 mark) / 未来 fetcher 在 403/412 + 重试
 //        Origin-without-path 仍失败时 mark. 本身 race-safe (Store 替换).
+//      R79-B: 当前 0 fetcher-internal caller (admin.go 范围外, R77-B documented future
+//        wiring point). lint:ignore U1000 防 staticcheck 报 unused, 留 R80+ admin wiring.
+//
+//lint:ignore U1000 R77-B 第 95 项 future admin wiring API; R79-B 不删 (admin.go 范围外, 留作 R80+ wiring 点)
 func markOriginWithPathRequired(host string) {
         if host == "" {
                 return
@@ -9150,4 +9209,477 @@ func computeOriginHeader(rawURL string) (string, bool) {
         }
         // HTML 顶层 GET 导航: 不注入 Origin (Chrome 行为).
         return "", false
+}
+
+// ---------- R79-B 反反爬第 96 项: HTTP/2 WINDOW_UPDATE 帧适配 ----------
+//
+// 任务要求: "fetcher 加 WINDOW_UPDATE 帧适配 (部分源站按窗口大小检测)".
+//
+// 真实浏览器行为 (RFC 7540 6.9):
+//   - HTTP/2 flow control: 接收方通告 WINDOW_UPDATE 帧告诉发送方 "我可接收 N 字节".
+//   - 真实 Chrome 默认 INITIAL_WINDOW_SIZE = 6MB (client stream) + 64KB connection-level.
+//   - 服务端按 client 发的 WINDOW_UPDATE 帧大小判断 "客户端是真浏览器还是 curl/Go 标准库".
+//     Go 标准库 net/http + golang.org/x/net/http2 默认 INITIAL_WINDOW_SIZE = 64KB (远小
+//     于 Chrome 6MB) → 反爬识别 "WINDOW_UPDATE 太小" 是 Go 爬虫指纹 (低权重).
+//
+// 核实: golang.org/x/net/http2.Transport 不暴露 INITIAL_WINDOW_SIZE 字段:
+//   - http2.Transport 公开字段: MaxHeaderListSize / MaxReadFrameSize / MaxDecoderHeader
+//     TableSize / MaxEncoderHeaderTableSize / StrictMaxConcurrentStreams / ReadIdleTimeout
+//     / PingTimeout (R67-B #70 + R68-B #74 + R72-C #77 已配, line 1333-1340).
+//   - INITIAL_WINDOW_SIZE / MAX_CONCURRENT_STREAMS 是 internal 字段 (writeSettings 在
+//     internal transport.go), 无法直接配.
+//   - 真实 mimicking Chrome 6MB INITIAL_WINDOW_SIZE 需 fork x/net/http2 暴露字段 (有版本
+//     锁风险, R73-B #81 PRIORITY 帧同款"技术不可行"评估).
+//
+// 价值评估: 即使实现也降 Bot Score ≤1 分, 跨平台 (HTTP/3) 不通用 (HTTP/3 用
+//   SETTINGS_MAX_FIELD_SECTION_BLOCK_SIZE / SETTINGS_QPACK_MAX_TABLE_CAPACITY, 无
+//   WINDOW_UPDATE 帧概念, RFC 9114 已废弃). R72-C #77 SETTINGS 帧已配置
+//   MaxReadFrameSize + MaxDecoderHeaderTableSize (Akamai H2 fingerprint Top 3 差异项),
+//   WINDOW_SIZE 不在 Top 5 差异项.
+//
+// 诚实留痕: 技术不可行 + 价值低, 不实现 INITIAL_WINDOW_SIZE mimicking. 仅加 observation
+//   tracker hostH2WindowUpdateMap 记录走 HTTP/2 + flow control 的 host (基于
+//   hostProtoFingerprintEntry.Proto == "HTTP/2"), admin 可查询. 未来若 Cloudflare Bot
+//   Score 加入 WINDOW_UPDATE 指标可观测到, 再评估 fork http2 暴露字段.
+
+var hostH2WindowUpdateMap sync.Map // host string -> int64 (UnixMilli 首次观测时间)
+
+// RecordH2FlowControlObserved — 记录 host 走 HTTP/2 + flow control (R79-B 第 96 项).
+//
+//      caller: fetchHttp 在 resp.Proto == "HTTP/2.0" 时调. 仅观测, 不修改 transport 行为
+//      (transport 全局共享, 改 INITIAL_WINDOW_SIZE 影响所有 host).
+func RecordH2FlowControlObserved(host string) {
+        if host == "" {
+                return
+        }
+        if fp := hostProtoFingerprintFor(host); fp != nil && fp.Proto == "HTTP/2" {
+                hostH2WindowUpdateMap.Store(strings.ToLower(host), time.Now().UnixMilli())
+        }
+}
+
+// H2WindowUpdateSnapshot — admin / metrics 查询用: 返回所有观测到 HTTP/2 flow control 的 host.
+func H2WindowUpdateSnapshot() map[string]int64 {
+        out := map[string]int64{}
+        hostH2WindowUpdateMap.Range(func(k, v any) bool {
+                out[k.(string)] = v.(int64)
+                return true
+        })
+        return out
+}
+
+// ClearH2WindowUpdate — 清除 host 的 HTTP/2 flow control 观测记录 (失败排查 / 测试用).
+func ClearH2WindowUpdate(host string) {
+        if host == "" {
+                return
+        }
+        hostH2WindowUpdateMap.Delete(strings.ToLower(host))
+}
+
+// ---------- R79-B 反反爬第 97 项: TLS 1.3 PSK (Pre-Shared Key) 适配 ----------
+//
+// 任务要求: "fetcher 加 TLS 1.3 PSK 扩展适配".
+//
+// 真实浏览器行为 (RFC 8446 4.2.11):
+//   - TLS 1.3 PSK resumption: client 在 ClientHello 发 pre_shared_key 扩展 (含
+//     PSK identity = server-issued session ticket + ticket_age + obfuscated_ticket_age).
+//   - 真实 Chrome 接到 server NewSessionTicket 后缓存, 下次连接发 pre_shared_key 扩展
+//     复用 session (1-RTT 短握手, 加速 + 反爬识别 "无 PSK" 是 Go 标准库指纹).
+//   - Go 标准库 crypto/tls ClientSessionCache (line 1271, R67-B #67 已配 256 LRU) 走
+//     session_ticket 扩展 (RFC 5077, TLS 1.2 风格), 但 TLS 1.3 PSK 复用是同款机制
+//     (RFC 8446 4.6.1 NewSessionTicket + 4.2.11 pre_shared_key).
+//   - utls 路径 persistableSessionCache (line 1755, R48-1A) 同款支持 session resumption.
+//
+// 核实: Go 标准库 + utls 已实现 PSK resumption 机制 (session ticket cache 已配). 缺的是
+//   ① per-host PSK 观测 API (admin 可查询哪些 host 走 PSK resumption)
+//   ② 强制 PSK resumption 模式 (skip session ticket if no cache hit → 全握手)
+//   ③ NewSessionTicket 接收计数 (反爬识别 "PSK 太频繁" 也可指纹, 但低权重)
+//
+// 价值评估: ① 观测 API 加上后 admin 可见 (低价值); ② 强制模式需 fork crypto/tls (技术
+//   不可行); ③ 计数加 + per-host health 协同 (中价值). 本轮实施: 加 hostTls13PskMap
+//   sync.Map 观测 + 计数 PSK resumption 成功 / 失败. caller: fetchHttp 在 resp.TLS
+//   非空 + TLS 1.3 + DidResume=true 时调 (DidResume 标识 session resumption, 与 PSK
+//   等价).
+//
+// 诚实留痕: 强制 PSK 模式 + PSK identity 修改 (server ticket 替换为 client-generated
+//   identity) 需 fork crypto/tls (有版本锁风险), 不实现. 现有 ClientSessionCache +
+//   persistableSessionCache 已提供 PSK resumption 能力, 本轮仅加观测.
+
+type hostTls13PskEntry struct {
+        // firstObservedAt: 首次观测到 PSK resumption 时间 (UnixMilli).
+        firstObservedAt int64
+        // resumptionCount: PSK resumption 成功次数.
+        resumptionCount int64
+        // fullHandshakeCount: PSK resumption 失败 (全握手) 次数. ratio < 0.5 视为 PSK 不健康.
+        fullHandshakeCount int64
+}
+
+var hostTls13PskMap sync.Map // host string -> *hostTls13PskEntry
+
+// RecordTls13PskObserved — 记录 host 的 TLS 1.3 PSK resumption 事件 (R79-B 第 97 项).
+//
+//      didResume=true → PSK resumption 成功 (counter++); false → 全握手 (fullHandshake++).
+//      caller: fetchHttp 在 resp.TLS != nil && resp.TLS.Version == VersionTLS13 时调.
+//      (注: Go crypto/tls 不直接暴露 DidResume, 用 connection state 的 DidResume 字段
+//       — http.Response.TLS 是 *tls.ConnectionState, 含 DidResume bool 字段.)
+func RecordTls13PskObserved(host string, didResume bool) {
+        if host == "" {
+                return
+        }
+        now := time.Now().UnixMilli()
+        var e *hostTls13PskEntry
+        if v, ok := hostTls13PskMap.Load(host); ok {
+                e = v.(*hostTls13PskEntry)
+        } else {
+                e = &hostTls13PskEntry{firstObservedAt: now}
+                actual, _ := hostTls13PskMap.LoadOrStore(host, e)
+                e = actual.(*hostTls13PskEntry)
+        }
+        // R79-B: 用 atomic.AddInt64 防多 goroutine 并发调本函数的 race (与 R68-B
+        //   BUG-77 taskProgress 同款防御口径). firstObservedAt 在 LoadOrStore 后只读.
+        if didResume {
+                atomic.AddInt64(&e.resumptionCount, 1)
+        } else {
+                atomic.AddInt64(&e.fullHandshakeCount, 1)
+        }
+}
+
+// Tls13PskSnapshot — admin / metrics 查询用: 返回所有观测到 TLS 1.3 PSK 的 host.
+//
+//      字段: firstObservedAt / resumptionCount / fullHandshakeCount / resumeRatio (0-100 int).
+func Tls13PskSnapshot() map[string]map[string]int64 {
+        out := map[string]map[string]int64{}
+        hostTls13PskMap.Range(func(k, v any) bool {
+                e := v.(*hostTls13PskEntry)
+                resume := atomic.LoadInt64(&e.resumptionCount)
+                full := atomic.LoadInt64(&e.fullHandshakeCount)
+                total := resume + full
+                ratio := int64(0)
+                if total > 0 {
+                        ratio = resume * 100 / total
+                }
+                out[k.(string)] = map[string]int64{
+                        "firstObservedAt":    e.firstObservedAt,
+                        "resumptionCount":    resume,
+                        "fullHandshakeCount": full,
+                        "resumeRatio":        ratio,
+                }
+                return true
+        })
+        return out
+}
+
+// ClearTls13Psk — 清除 host 的 TLS 1.3 PSK 观测记录 (失败排查 / 测试用).
+func ClearTls13Psk(host string) {
+        if host == "" {
+                return
+        }
+        hostTls13PskMap.Delete(strings.ToLower(host))
+}
+
+// ---------- R79-B 反反爬第 98 项: Cookie HttpOnly 属性适配 ----------
+//
+// 任务要求: "fetcher 加 Cookie HttpOnly 属性适配".
+//
+// 真实浏览器行为 (RFC 6265 5.2.7):
+//   - HttpOnly 属性: 服务端发 Set-Cookie: name=val; HttpOnly; ... → 浏览器存储后,
+//     document.cookie 不可读 (防 XSS 偷 cookie). 但 HttpOnly cookie 仍随请求发送
+//     (Cookie 头中可见).
+//   - HttpOnly 是浏览器侧安全 feature, 对 Go 爬虫无安全影响 (Go 无 JS 引擎, 无 XSS
+//     攻击面). 但反爬识别 "client 不识别 HttpOnly 属性" 是 Go 标准库指纹 (低权重).
+//   - Cloudflare Bot Manager 发 cf_clearance 时一定带 HttpOnly (Chrome 110+ 默认),
+//     源站可检测 "client 发的 Cookie 头未按 HttpOnly 顺序" → 但 Cookie 头本身不携带
+//     属性, 源站无法直接检测 client 是否识别 HttpOnly. 故真实降分价值 ≤1 分.
+//
+// 核实: CookieJar.Store (line 563) 解析 SameSite / Priority 属性 (R75-B #88 + R77-B
+//   #93), 但不解析 HttpOnly (line 575 attrNames 含 "httponly": true 仅作 cookie-name
+//   vs attribute 关键字消歧, 不存储 httpOnly 字段到 cookieEntry). 加 httpOnly 字段
+//   到 cookieEntry 需扩 cookieEntryDump 序列化 schema (破坏 .cookies.json 老格式
+//   兼容, R72-C #78 持久化路径). 范围控制: 不改 cookieEntry schema, 仅加 observation
+//   tracker (per-host HttpOnly cookie 计数), admin 可查询哪些 host 发 HttpOnly cookie.
+//
+// 价值评估: 加观测 API (低价值) + 不改序列化 schema (保守). 诚实留痕: 真正"按
+//   HttpOnly 排序" 在 Cookie 头中不可见 (Cookie 头不带属性), 故"HttpOnly 属性适配"
+//   实质上是观测 + 兼容性保证, 不影响 outbound Cookie 行为.
+
+type hostCookieHttpOnlyEntry struct {
+        httpOnlyCookieCount int64 // HttpOnly cookie 累计观测数
+        nonHttpOnlyCount    int64 // 非 HttpOnly cookie 累计观测数 (供 ratio 计算)
+}
+
+var hostCookieHttpOnlyMap sync.Map // host string -> *hostCookieHttpOnlyEntry
+
+// RecordCookieHttpOnlyObserved — 记录 host 的 HttpOnly cookie 观测 (R79-B 第 98 项).
+//
+//      caller: CookieJar.Store 在解析 Set-Cookie 时调 (按 HttpOnly 属性 presence).
+//      httpOnlyCount = 本响应中含 HttpOnly 属性的 cookie 数.
+//      nonHttpOnlyCount = 本响应中不含 HttpOnly 属性的 cookie 数.
+//      观测后 admin 可查询 host 的 HttpOnly cookie ratio (高 ratio = 源站严格发 HttpOnly).
+func RecordCookieHttpOnlyObserved(host string, httpOnlyCount, nonHttpOnlyCount int64) {
+        if host == "" {
+                return
+        }
+        if httpOnlyCount < 0 {
+                httpOnlyCount = 0
+        }
+        if nonHttpOnlyCount < 0 {
+                nonHttpOnlyCount = 0
+        }
+        if httpOnlyCount == 0 && nonHttpOnlyCount == 0 {
+                return
+        }
+        var e *hostCookieHttpOnlyEntry
+        if v, ok := hostCookieHttpOnlyMap.Load(host); ok {
+                e = v.(*hostCookieHttpOnlyEntry)
+        } else {
+                e = &hostCookieHttpOnlyEntry{}
+                actual, _ := hostCookieHttpOnlyMap.LoadOrStore(host, e)
+                e = actual.(*hostCookieHttpOnlyEntry)
+        }
+        // R79-B: 用 atomic.AddInt64 防多 goroutine 并发 (CookieJar.Store 多请求并发
+        //   写 hostCookieHttpOnlyMap, 同 R68-B BUG-77 防御口径).
+        atomic.AddInt64(&e.httpOnlyCookieCount, httpOnlyCount)
+        atomic.AddInt64(&e.nonHttpOnlyCount, nonHttpOnlyCount)
+}
+
+// CookieHttpOnlySnapshot — admin / metrics 查询用: 返回所有观测到 HttpOnly cookie 的 host.
+//
+//      字段: httpOnlyCookieCount / nonHttpOnlyCount / httpOnlyRatio (0-100 int).
+func CookieHttpOnlySnapshot() map[string]map[string]int64 {
+        out := map[string]map[string]int64{}
+        hostCookieHttpOnlyMap.Range(func(k, v any) bool {
+                e := v.(*hostCookieHttpOnlyEntry)
+                hc := atomic.LoadInt64(&e.httpOnlyCookieCount)
+                nc := atomic.LoadInt64(&e.nonHttpOnlyCount)
+                total := hc + nc
+                ratio := int64(0)
+                if total > 0 {
+                        ratio = hc * 100 / total
+                }
+                out[k.(string)] = map[string]int64{
+                        "httpOnlyCookieCount": hc,
+                        "nonHttpOnlyCount":    nc,
+                        "httpOnlyRatio":       ratio,
+                }
+                return true
+        })
+        return out
+}
+
+// ClearCookieHttpOnly — 清除 host 的 HttpOnly cookie 观测记录 (失败排查 / 测试用).
+func ClearCookieHttpOnly(host string) {
+        if host == "" {
+                return
+        }
+        hostCookieHttpOnlyMap.Delete(strings.ToLower(host))
+}
+
+// ---------- R79-B 反反爬第 100 项: Accept-Language 池扩充 ----------
+//
+// 任务要求: "R62-A 第 47 项 Accept-Language 池 6 条, 扩充到 10+ 条 (日/韩/欧洲语言)".
+//
+// 真实浏览器行为 (RFC 7231 5.3.4):
+//   - Accept-Language 头: client 通告偏好语言 (e.g., zh-CN,zh;q=0.9,en;q=0.8).
+//   - 真实浏览器 Accept-Language 固定 (用户配置 / OS locale), 不每请求换.
+//   - 反爬识别 "Accept-Language 频繁变化" 是爬虫指纹 (中权重).
+//
+// R62-A 第 47 项原 6 条 (zh-CN / en-US / ja-JP / ko-KR / de-DE / fr-FR), R79-B 扩充到
+//   12 条 (加 es-ES / pt-BR / it-IT / ru-RU / zh-TW / en-GB). 涵盖亚洲 (中日韩 + 繁中)
+//   + 欧洲 (德法西葡意俄英) + 南美 (巴西葡) 主要语言区.
+//
+// per-domain 钉扎 (与 PickUAFor 同口径): 首次 pick 按 UA 推断主语言 (Chrome zh-CN →
+//   zh-CN, ja iPhone → ja-JP, ko Android → ko-KR, ...); UA 未识别 → hash(domain)
+//   确定性池选 (同 host 总是同一值, 跨进程稳定, 防 sync.Map 迭代顺序差异导致跨进程
+//   Accept-Language 不一致). 后续 host 复用同一 Accept-Language (钉扎).
+
+// ACCEPT_LANG_POOL — Accept-Language 池 (R79-B 第 100 项 12 条).
+var ACCEPT_LANG_POOL = []string{
+        "zh-CN,zh;q=0.9,en;q=0.8",       // 中国大陆 (项目主受众)
+        "en-US,en;q=0.9",                // 美国英语
+        "ja-JP,ja;q=0.9,en;q=0.8",       // 日本
+        "ko-KR,ko;q=0.9,en;q=0.8",       // 韩国
+        "de-DE,de;q=0.9,en;q=0.8",       // 德国
+        "fr-FR,fr;q=0.9,en;q=0.8",       // 法国
+        "es-ES,es;q=0.9,en;q=0.8",       // 西班牙
+        "pt-BR,pt;q=0.9,en;q=0.8",       // 巴西
+        "it-IT,it;q=0.9,en;q=0.8",       // 意大利
+        "ru-RU,ru;q=0.9,en;q=0.8",       // 俄罗斯
+        "zh-TW,zh;q=0.9,en;q=0.8",       // 台湾 (繁中)
+        "en-GB,en;q=0.9",                // 英国英语
+}
+
+var domainAcceptLangPin sync.Map // host string -> Accept-Language string
+
+// PickAcceptLangFor — per-domain Accept-Language 钉扎 (R79-B 第 100 项).
+//
+//      与 PickUAFor (line 871) 同口径. 钉扎防"每请求换 Accept-Language" 爬虫指纹.
+//      首次 pick: 按 UA 推断主语言 (inferAcceptLangFromUA). UA 未识别 → hash(domain)
+//      确定性池选 (同 host 总是同一值, 跨进程稳定). 后续 host 复用同一 Accept-Language.
+func PickAcceptLangFor(domain, ua string) string {
+        if domain == "" {
+                return ACCEPT_LANG_POOL[0]
+        }
+        if v, ok := domainAcceptLangPin.Load(domain); ok {
+                return v.(string)
+        }
+        lang := inferAcceptLangFromUA(ua)
+        if lang == "" {
+                // hash(domain) 确定性池选 (同 host 总是同一值, 防 sync.Map 迭代顺序差异)
+                var h uint32 = 2166136261 // FNV-1a 32-bit offset basis
+                for i := 0; i < len(domain); i++ {
+                        h ^= uint32(domain[i])
+                        h *= 16777619 // FNV prime
+                }
+                lang = ACCEPT_LANG_POOL[h%uint32(len(ACCEPT_LANG_POOL))]
+        }
+        actual, _ := domainAcceptLangPin.LoadOrStore(domain, lang)
+        return actual.(string)
+}
+
+// inferAcceptLangFromUA — 按 UA 推断主语言 (R79-B 第 100 项).
+//
+//      Windows Chrome → zh-CN (项目主受众, 中国大陆 Chrome 占比 60%+).
+//      Mac Safari → ja-JP (日本 Safari 用户多).
+//      Linux → en-US (国际开发者).
+//      iPhone → ja-JP (日本 iPhone 占比高).
+//      Android → ko-KR (韩国 Android 占比高).
+//      其他 → "" (caller 走 hash 池选).
+func inferAcceptLangFromUA(ua string) string {
+        if ua == "" {
+                return ""
+        }
+        if strings.Contains(ua, "iPhone") || strings.Contains(ua, "iPad") {
+                return ACCEPT_LANG_POOL[2] // ja-JP
+        }
+        if strings.Contains(ua, "Android") {
+                return ACCEPT_LANG_POOL[3] // ko-KR
+        }
+        if strings.Contains(ua, "Macintosh") && strings.Contains(ua, "Safari") && !strings.Contains(ua, "Chrome") {
+                return ACCEPT_LANG_POOL[2] // ja-JP
+        }
+        if strings.Contains(ua, "Linux") {
+                return ACCEPT_LANG_POOL[1] // en-US
+        }
+        if strings.Contains(ua, "Windows") && strings.Contains(ua, "Chrome") {
+                return ACCEPT_LANG_POOL[0] // zh-CN
+        }
+        return ""
+}
+
+// ClearDomainAcceptLang — 清除 host 的 Accept-Language 钉扎 (admin / test 用).
+func ClearDomainAcceptLang(domain string) {
+        if domain == "" {
+                return
+        }
+        domainAcceptLangPin.Delete(domain)
+}
+
+// ---------- R79-B 目标 A: 源站可达性预检 (任务启动前 HEAD 请求) ----------
+//
+// 任务要求: "fetcher 加源站可达性预检 (任务启动前 HEAD 请求测源站, 不可达跳过 + 日志)".
+//
+// 71 Rule 中 partial/empty 的部分原因是源站不可达 (DNS 失败 / TLS 握手失败 / 持续
+//   5xx / 网络黑洞). 任务启动前预检可快速跳过不可达源站, 避免 maxRequests 预算
+//   被无效请求消耗 + 节省采集时间 (万章书 × 不可达源 = 10000 次失败 × 30s 超时 = 长
+//   时间任务挂起). caller (admin.go startCrawlTask 或 runner.ExecuteTaskWithRetry
+//   入口) 在启动前调本函数, 返 (reachable, reason), 不可达时跳过任务 + log.
+//
+// 实现:
+//   - HEAD 请求 (RFC 7231 4.3.2): 仅取响应头, 不取 body, 节省带宽.
+//   - 5s 超时 (短于 fetchHttp 默认 20s, 预检应快).
+//   - 使用 globalTransport (复用 keep-alive + DNS cache, 与生产 fetch 同路径).
+//   - 2xx + 3xx + 4xx (除 429) 视为可达 (404 / 403 也是源站可达, 只是 URL 无效 / 被拦).
+//   - 5xx + 网络错误 + TLS 握手失败 视为不可达.
+//   - 405 Method Not Allowed (部分源站不支持 HEAD): fallback 到 GET (取 body 前几
+//     字节, 与 HEAD 同款超时).
+//
+// 价值: 71 Rule 中 14 empty Rule 若源站不可达, 预检跳过避免浪费采集时间; 14 partial
+//   Rule 若源站部分可达 (list 通但 content 不通), 预检仍返可达 (源站本身有响应).
+//   源站可达性是 R80 人工验证范畴, 本函数仅提供工具.
+
+// PrecheckSourceReachable — 任务启动前预检源站可达性 (R79-B 目标 A).
+//
+//      returns:
+//        (true, reason)  — 源站可达 (HTTP 2xx/3xx/4xx, 接受任务)
+//        (false, reason) — 源站不可达 (网络错误 / TLS 失败 / HTTP 5xx, 跳过任务)
+//      reason 字符串供 admin 日志 (e.g., "HTTP 200" / "网络不可达: dial tcp 1.2.3.4: i/o timeout").
+//      caller 在 reason 含 "网络不可达" 或 "HTTP 5" 时跳过任务 + log warn.
+func PrecheckSourceReachable(ctx context.Context, rawURL string, cfg FetchConfig) (bool, string) {
+        if rawURL == "" {
+                return false, "url 为空"
+        }
+        // SSRF 守卫 (与 FetchPage 同款, 防预检被滥用扫描内网)
+        allowLoopback := LoopbackBypassAllowed(rawURL, cfg)
+        if err := AssertSafeTarget(rawURL, allowLoopback); err != nil {
+                return false, "SSRF 拒绝: " + err.Error()
+        }
+        u, err := url.Parse(rawURL)
+        if err != nil || u.Host == "" {
+                return false, "url 无效"
+        }
+        // 5s 超时 (短于 fetchHttp 默认 20s)
+        precheckCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+        defer cancel()
+        ua := PickUAFor(u.Host, cfg)
+        // HEAD 请求 (复用 globalTransport keep-alive + DNS cache)
+        client := &http.Client{
+                Transport: globalTransport,
+                CheckRedirect: func(req *http.Request, via []*http.Request) error {
+                        // 跟随重定向 (3xx), 最多 5 跳 (与 Chrome 默认一致)
+                        if len(via) >= 5 {
+                                return errors.New("too many redirects")
+                        }
+                        return nil
+                },
+        }
+        req, err := http.NewRequestWithContext(precheckCtx, http.MethodHead, rawURL, nil)
+        if err != nil {
+                return false, "request 构造失败: " + truncate(err.Error(), 80)
+        }
+        req.Header.Set("User-Agent", ua)
+        req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        req.Header.Set("Accept-Language", PickAcceptLangFor(u.Host, ua))
+        resp, err := client.Do(req)
+        if err != nil {
+                // HEAD 失败: 可能源站不支持 HEAD (RFC 7231 4.3.2 允许 server 拒 HEAD), 试 GET
+                getReq, getErr := http.NewRequestWithContext(precheckCtx, http.MethodGet, rawURL, nil)
+                if getErr == nil {
+                        getReq.Header.Set("User-Agent", ua)
+                        getReq.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                        getReq.Header.Set("Accept-Language", PickAcceptLangFor(u.Host, ua))
+                        getResp, getErr := client.Do(getReq)
+                        if getErr == nil {
+                                if getResp != nil && getResp.Body != nil {
+                                        // 仅读前 1KB 判可达 (不取全文, 节省带宽)
+                                        _, _ = io.CopyN(io.Discard, getResp.Body, 1024)
+                                        getResp.Body.Close()
+                                }
+                                status := 0
+                                if getResp != nil {
+                                        status = getResp.StatusCode
+                                }
+                                if status >= 200 && status < 500 && status != 429 {
+                                        return true, fmt.Sprintf("HTTP %d (GET fallback)", status)
+                                }
+                                return false, fmt.Sprintf("HTTP %d (GET fallback)", status)
+                        }
+                }
+                return false, "网络不可达: " + truncate(err.Error(), 100)
+        }
+        status := 0
+        if resp != nil {
+                status = resp.StatusCode
+        }
+        if resp != nil && resp.Body != nil {
+                // HEAD 响应 body 一般为空, 但仍 Close 保 keep-alive
+                _, _ = io.CopyN(io.Discard, resp.Body, 1024)
+                resp.Body.Close()
+        }
+        // 2xx/3xx/4xx (除 429) → 可达; 5xx + 429 → 不可达
+        if status >= 200 && status < 500 && status != 429 {
+                return true, fmt.Sprintf("HTTP %d (HEAD)", status)
+        }
+        if status == 429 {
+                return false, fmt.Sprintf("HTTP %d (限流冷却, 跳过预检)", status)
+        }
+        return false, fmt.Sprintf("HTTP %d (源站 5xx, 不可达)", status)
 }

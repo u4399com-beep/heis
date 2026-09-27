@@ -48,7 +48,7 @@
         </thead>
         <tbody>
         {{range .Tasks}}
-          <tr data-task-id="{{.id}}">
+          <tr data-task-id="{{.id}}" data-task='{{toJSON .}}'>
             <td>
               <a href="javascript:void(0)" onclick="openDetailModal('{{.id}}')">{{.name}}</a>
               <div style="color:var(--dim);font-size:11px;">{{.id}}</div>
@@ -85,6 +85,8 @@
               {{end}}
               {{if eq .status "running"}}<button class="btn btn-sm" onclick="openDetailModal('{{.id}}')">详情</button>{{end}}
               {{if eq .status "paused"}}<button class="btn btn-sm" onclick="openDetailModal('{{.id}}')">详情</button>{{end}}
+              <button class="btn btn-sm" onclick="editTaskFromRow(this)" title="编辑任务配置">编辑</button>
+              <button class="btn btn-sm" onclick="openTaskLogModal('{{.id}}','{{.name}}')" title="查看任务日志">日志</button>
             </td>
           </tr>
         {{else}}
@@ -241,6 +243,146 @@
       <button class="btn" onclick="loadMetrics()">刷新</button>
       <button class="btn" onclick="closeModal('metricsModal')">关闭</button>
     </div>
+  </div>
+</div>
+
+<!-- R79-A 编辑任务 Modal -->
+<div class="modal-backdrop" id="editTaskModal">
+  <div class="modal" style="max-width:780px;">
+    <div class="modal-head"><h2 id="editTaskTitle">编辑采集任务</h2><button class="btn btn-sm" onclick="closeModal('editTaskModal')">✕</button></div>
+    <form id="editTaskForm" class="modal-body" onsubmit="return false;">
+      <input type="hidden" name="id" value="">
+      <div style="margin-bottom:12px;padding:8px 10px;background:var(--card-2);border-radius:6px;font-size:12px;color:var(--muted);">
+        <span>任务 ID: <code id="editTaskIdLabel">—</code></span>
+        <span style="margin-left:14px;">规则: <code id="editTaskRuleLabel">—</code></span>
+        <span style="margin-left:14px;">当前状态: <span id="editTaskStatusLabel">—</span></span>
+        <div style="margin-top:4px;color:var(--dim);">注: ruleId 不可编辑 (绑定规则配置); 运行中任务编辑后需手动停止+重启才生效.</div>
+      </div>
+      <div class="form-grid">
+        <div class="field full">
+          <label>任务名称 *</label>
+          <input type="text" name="name" maxlength="100" required placeholder="如: 采集玄幻新书 2024-09-21">
+        </div>
+        <div class="field">
+          <label>采集模式</label>
+          <select name="mode">
+            <option value="single">single (单本书籍页)</option>
+            <option value="range">range (列表页范围)</option>
+            <option value="urls">urls (指定URL列表)</option>
+          </select>
+          <div class="hint">single=单本; range=列表翻页; urls=fetchConfig.urls 数组</div>
+        </div>
+        <div class="field">
+          <label>重采集模式</label>
+          <select name="recrawlMode">
+            <option value="incremental">incremental (增量)</option>
+            <option value="full">full (全量)</option>
+          </select>
+        </div>
+        <div class="field full">
+          <label>书籍页 URL (single 模式必填)</label>
+          <input type="text" name="bookUrl" maxlength="2000" placeholder="https://example.com/book/123">
+        </div>
+        <div class="field full">
+          <label>列表页 URL 模板 (range 模式必填, 含 {page} 占位符)</label>
+          <input type="text" name="listUrl" maxlength="2000" placeholder="https://example.com/list/{{"{page}"}}.html">
+        </div>
+        <div class="field">
+          <label>列表起页</label>
+          <input type="number" name="listStart" value="1" min="1" max="100000">
+        </div>
+        <div class="field">
+          <label>列表止页</label>
+          <input type="number" name="listEnd" value="1" min="1" max="100000">
+        </div>
+        <div class="field">
+          <label>书籍序号起 (0=不限)</label>
+          <input type="number" name="bookStart" value="0" min="0" max="100000">
+        </div>
+        <div class="field">
+          <label>书籍序号止 (0=不限)</label>
+          <input type="number" name="bookEnd" value="0" min="0" max="100000">
+        </div>
+        <div class="field">
+          <label>存储模式</label>
+          <select name="storageMode">
+            <option value="db">db (正文入库)</option>
+            <option value="txt">txt (文件存储)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>线程数 min</label>
+          <input type="number" name="threadMin" value="1" min="1" max="32">
+        </div>
+        <div class="field">
+          <label>线程数 max</label>
+          <input type="number" name="threadMax" value="3" min="1" max="32">
+        </div>
+        <div class="field">
+          <label>间隔 ms min</label>
+          <input type="number" name="intervalMin" value="500" min="0" max="600000">
+        </div>
+        <div class="field">
+          <label>间隔 ms max</label>
+          <input type="number" name="intervalMax" value="2000" min="0" max="600000">
+        </div>
+        <div class="field">
+          <label>刷新间隔 min (5-1440)</label>
+          <input type="number" name="refreshIntervalMin" value="30" min="5" max="1440">
+          <div class="hint">autoRefresh 开启时, 周期性重新采集的间隔分钟数</div>
+        </div>
+        <div class="field">
+          <label>智能开关</label>
+          <div style="display:flex;flex-direction:column;gap:4px;padding-top:4px;">
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text);">
+              <input type="checkbox" name="smartCategory" value="true"> smartCategory (智能分类)
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text);">
+              <input type="checkbox" name="smartComplete" value="true"> smartComplete (智能补全)
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text);">
+              <input type="checkbox" name="autoSuggest" value="true"> autoSuggest (自动建议)
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text);">
+              <input type="checkbox" name="autoRefresh" value="true"> autoRefresh (自动刷新)
+            </label>
+          </div>
+        </div>
+      </div>
+    </form>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeModal('editTaskModal')">取消</button>
+      <button class="btn btn-primary" onclick="submitEditTask()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- R79-A 任务日志 Modal (TaskLog 表展示) -->
+<div class="modal-backdrop" id="taskLogModal">
+  <div class="modal" style="max-width:1100px;">
+    <div class="modal-head">
+      <h2>任务日志 — <span id="taskLogTitle" style="color:var(--muted);">…</span></h2>
+      <button class="btn btn-sm" onclick="closeModal('taskLogModal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap;font-size:12px;">
+        <span style="color:var(--dim);">级别筛选:</span>
+        <button class="btn btn-sm btn-primary" id="taskLogFilterAll" data-level="all" onclick="filterTaskLogs('all')">全部</button>
+        <button class="btn btn-sm" id="taskLogFilterInfo" data-level="info" onclick="filterTaskLogs('info')">info</button>
+        <button class="btn btn-sm" id="taskLogFilterSuccess" data-level="success" onclick="filterTaskLogs('success')">success</button>
+        <button class="btn btn-sm btn-warn" id="taskLogFilterWarn" data-level="warn" onclick="filterTaskLogs('warn')">warn</button>
+        <button class="btn btn-sm btn-err" id="taskLogFilterError" data-level="error" onclick="filterTaskLogs('error')">error</button>
+        <span id="taskLogCount" style="color:var(--dim);margin-left:8px;">0 条</span>
+        <label style="margin-left:auto;color:var(--dim);display:flex;align-items:center;gap:4px;">
+          <input type="checkbox" id="taskLogAutoRefresh" onchange="toggleTaskLogAutoRefresh()"> 自动刷新 (5s)
+        </label>
+        <button class="btn btn-sm" onclick="loadTaskLogs()">刷新</button>
+      </div>
+      <div id="taskLogBody" style="max-height:520px;overflow-y:auto;">
+        <div class="empty-state">点击刷新加载日志…</div>
+      </div>
+    </div>
+    <div class="modal-foot"><button class="btn" onclick="closeModal('taskLogModal')">关闭</button></div>
   </div>
 </div>
 
@@ -401,6 +543,267 @@ function loadMetrics(){
     body.innerHTML=html;
   }).catch(function(e){body.innerHTML='<div class="empty-state">请求失败: '+e.message+'</div>';});
 }
+
+// ============ R79-A: 任务可编辑 UI ============
+// editTaskFromRow — 从 tr[data-task] 读 JSON 取 id+基础信息, 再 fetch GET /api/admin/tasks
+//   拿全字段配置 (fillTasksPageData 只返子集; adminTasksList API 才返全字段),
+//   填充 editTaskModal 表单后 open. 与 books.html editBookFromRow 同款 (data-* JSON).
+function editTaskFromRow(btn){
+  var row=btn.closest('tr');
+  if(!row){showToast('行未找到',false);return;}
+  var raw=row.getAttribute('data-task');
+  var s;
+  try{s=JSON.parse(raw||'{}');}catch(e){showToast('行数据解析失败',false);return;}
+  var id=s.id||'';
+  if(!id){showToast('任务 ID 为空',false);return;}
+  var form=document.getElementById('editTaskForm');
+  // 先重置 + 显示加载占位
+  form.reset();
+  document.getElementById('editTaskIdLabel').textContent=id;
+  document.getElementById('editTaskRuleLabel').textContent=s.ruleName||'—';
+  document.getElementById('editTaskStatusLabel').textContent=s.statusLabel||s.status||'—';
+  document.getElementById('editTaskStatusLabel').className='pill pill-'+(s.status||'unknown');
+  document.getElementById('editTaskTitle').textContent='编辑采集任务 — '+(s.name||'');
+  // 显示加载状态
+  showToast('加载任务配置…',true);
+  // fetch GET /api/admin/tasks (adminTasksList 返全字段), 客户端按 id 找
+  fetch('/api/admin/tasks').then(function(r){return r.json();}).then(function(j){
+    if(!j||!j.ok){showToast('加载任务配置失败: '+(j&&j.error||'未知'),false);return;}
+    var arr=j.data||[];
+    var found=null;
+    for(var i=0;i<arr.length;i++){
+      if(arr[i]&&arr[i].id===id){found=arr[i];break;}
+    }
+    if(!found){showToast('未在任务列表中找到该任务 (可能已删或 status filter 不匹配)',false);return;}
+    // 填充表单 (found 含全字段)
+    form.id.value=found.id||id;
+    form.name.value=found.name||'';
+    form.mode.value=found.mode||'range';
+    form.bookUrl.value=found.bookUrl||'';
+    form.listUrl.value=found.listUrl||'';
+    form.listStart.value=found.listStart!=null?found.listStart:1;
+    form.listEnd.value=found.listEnd!=null?found.listEnd:1;
+    form.bookStart.value=found.bookStart!=null?found.bookStart:0;
+    form.bookEnd.value=found.bookEnd!=null?found.bookEnd:0;
+    form.recrawlMode.value=found.recrawlMode||'incremental';
+    form.storageMode.value=found.storageMode||'db';
+    form.threadMin.value=found.threadMin!=null?found.threadMin:1;
+    form.threadMax.value=found.threadMax!=null?found.threadMax:3;
+    form.intervalMin.value=found.intervalMin!=null?found.intervalMin:500;
+    form.intervalMax.value=found.intervalMax!=null?found.intervalMax:2000;
+    form.refreshIntervalMin.value=found.refreshIntervalMin!=null?found.refreshIntervalMin:30;
+    // bool 字段 (来自 JSON 是 boolean, 设 checkbox checked 状态)
+    form.smartCategory.checked=!!found.smartCategory;
+    form.smartComplete.checked=!!found.smartComplete;
+    form.autoSuggest.checked=!!found.autoSuggest;
+    form.autoRefresh.checked=!!found.autoRefresh;
+    document.getElementById('editTaskModal').classList.add('open');
+  }).catch(function(e){showToast('请求失败: '+e.message,false);});
+}
+
+// submitEditTask — PUT /api/admin/tasks/:id 提交编辑后的任务配置.
+//   R79-D admin.go 实现 PUT API (handler 待加). 失败兜底 toast. 成功后刷新列表.
+//   注: 不在此处重启任务 — 用户需手动 controlTask(id,'start') 启动新配置.
+function submitEditTask(){
+  var form=document.getElementById('editTaskForm');
+  var id=form.id.value;
+  if(!id){showToast('任务 ID 为空',false);return;}
+  if(!form.name.value||!form.name.value.trim()){showToast('任务名称必填',false);return;}
+  // mode 联动校验 (与 createModal 同款逻辑)
+  var mode=form.mode.value;
+  if(mode==='single'&&!form.bookUrl.value.trim()){
+    showToast('single 模式必须填书籍页 URL',false);return;
+  }
+  if(mode==='range'&&!form.listUrl.value.trim()){
+    showToast('range 模式必须填列表页 URL (含 {page})',false);return;
+  }
+  // 数值范围校验 (clampIntAdm 同款口径, 客户端预校验, 服务端二次校验)
+  var listStart=parseInt(form.listStart.value,10)||1;
+  var listEnd=parseInt(form.listEnd.value,10)||1;
+  // 客户端仅校验非负; 服务端 clampIntAdm 会 swap if listEnd<listStart (与 adminTasksCreate 同款)
+  var threadMin=parseInt(form.threadMin.value,10)||1;
+  var threadMax=parseInt(form.threadMax.value,10)||3;
+  if(threadMax<threadMin){threadMax=threadMin;}
+  var intervalMin=parseInt(form.intervalMin.value,10)||500;
+  var intervalMax=parseInt(form.intervalMax.value,10)||2000;
+  if(intervalMax<intervalMin){intervalMax=intervalMin;}
+  // 构造 body — 仅传 spec 列出的字段, ruleId 不传 (PUT API 应保留原 ruleId)
+  var body={
+    name:form.name.value.trim(),
+    mode:mode,
+    bookUrl:form.bookUrl.value.trim(),
+    listUrl:form.listUrl.value.trim(),
+    listStart:listStart,
+    listEnd:listEnd,
+    bookStart:parseInt(form.bookStart.value,10)||0,
+    bookEnd:parseInt(form.bookEnd.value,10)||0,
+    recrawlMode:form.recrawlMode.value,
+    storageMode:form.storageMode.value,
+    threadMin:threadMin,
+    threadMax:threadMax,
+    intervalMin:intervalMin,
+    intervalMax:intervalMax,
+    refreshIntervalMin:parseInt(form.refreshIntervalMin.value,10)||30,
+    smartCategory:!!form.smartCategory.checked,
+    smartComplete:!!form.smartComplete.checked,
+    autoSuggest:!!form.autoSuggest.checked,
+    autoRefresh:!!form.autoRefresh.checked
+  };
+  fetch('/api/admin/tasks/'+encodeURIComponent(id),{
+    method:'PUT',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body)
+  }).then(function(r){return r.json();}).then(function(j){
+    if(j&&j.ok){
+      showToast('任务配置已保存',true);
+      closeModal('editTaskModal');
+      setTimeout(function(){location.reload();},800);
+    }else{
+      showToast('保存失败: '+(j&&j.error||'未知错误 (PUT /api/admin/tasks/:id 可能尚未由 R79-D 实现)'),false);
+    }
+  }).catch(function(e){showToast('请求失败: '+e.message,false);});
+}
+
+// ============ R79-A: 错误日志展示 ============
+var _taskLogState={id:'',name:'',level:'all',logs:[],autoTimer:null};
+
+// openTaskLogModal — 打开任务日志 modal + 立即加载一次.
+function openTaskLogModal(id,name){
+  _taskLogState.id=id;
+  _taskLogState.name=name||'';
+  _taskLogState.level='all';
+  _taskLogState.logs=[];
+  if(_taskLogState.autoTimer){clearInterval(_taskLogState.autoTimer);_taskLogState.autoTimer=null;}
+  document.getElementById('taskLogTitle').textContent=(_taskLogState.name||id)+' ('+id+')';
+  document.getElementById('taskLogAutoRefresh').checked=false;
+  // 重置筛选按钮 active 样式
+  ['All','Info','Success','Warn','Error'].forEach(function(k){
+    var b=document.getElementById('taskLogFilter'+k);
+    if(b){
+      if(k==='All'){b.classList.add('btn-primary');}
+      else{b.classList.remove('btn-primary');}
+    }
+  });
+  document.getElementById('taskLogBody').innerHTML='<div class="empty-state">加载中…</div>';
+  document.getElementById('taskLogCount').textContent='0 条';
+  document.getElementById('taskLogModal').classList.add('open');
+  loadTaskLogs();
+}
+
+// loadTaskLogs — GET /api/admin/tasks/:id/logs (R79-D admin.go 实现 handler).
+//   期望响应 {ok:true, data:[{id, taskId, level, message, createdAt}]}.
+//   失败时显示错误提示 (404 = API 未实现 或 任务无日志).
+function loadTaskLogs(){
+  var id=_taskLogState.id;
+  if(!id){return;}
+  var body=document.getElementById('taskLogBody');
+  if(!body.innerHTML||body.innerHTML.indexOf('加载中')<0){
+    body.innerHTML='<div class="empty-state">加载中…</div>';
+  }
+  fetch('/api/admin/tasks/'+encodeURIComponent(id)+'/logs').then(function(r){return r.json();}).then(function(j){
+    if(!j||!j.ok){
+      _taskLogState.logs=[];
+      body.innerHTML='<div class="empty-state">加载失败: '+(j&&j.error||'未知')+'<br><span style="color:var(--dim);font-size:11px;">注: PUT/GET /api/admin/tasks/:id/logs API 由 R79-D 实现</span></div>';
+      document.getElementById('taskLogCount').textContent='0 条';
+      renderTaskLogs();
+      return;
+    }
+    var arr=j.data||[];
+    if(!Array.isArray(arr)){arr=[];}
+    _taskLogState.logs=arr;
+    renderTaskLogs();
+  }).catch(function(e){
+    _taskLogState.logs=[];
+    body.innerHTML='<div class="empty-state">请求失败: '+e.message+'<br><span style="color:var(--dim);font-size:11px;">注: GET /api/admin/tasks/:id/logs API 由 R79-D 实现</span></div>';
+    document.getElementById('taskLogCount').textContent='0 条';
+    renderTaskLogs();
+  });
+}
+
+// renderTaskLogs — 客户端按 _taskLogState.level 筛选渲染日志表.
+//   error 级别行红色背景高亮 (.pill-error 同款 rgba(239,68,68,.18)).
+//   日志按 createdAt 降序 (新→旧) 展示. 空 → "暂无日志".
+function renderTaskLogs(){
+  var body=document.getElementById('taskLogBody');
+  var level=_taskLogState.level||'all';
+  var logs=_taskLogState.logs||[];
+  var filtered=logs.filter(function(l){
+    if(level==='all')return true;
+    return (l.level||'')===level;
+  });
+  // 按 createdAt 降序 (字符串比较 ISO 时间 OK; SQLite datetime() 返 'YYYY-MM-DD HH:MM:SS' 也 OK 字符串比较)
+  filtered.sort(function(a,b){
+    var ta=(a.createdAt||'').toString();
+    var tb=(b.createdAt||'').toString();
+    if(ta<tb)return 1;
+    if(ta>tb)return -1;
+    return 0;
+  });
+  document.getElementById('taskLogCount').textContent=filtered.length+' / '+logs.length+' 条';
+  if(filtered.length===0){
+    body.innerHTML='<div class="empty-state">'+(logs.length===0?'暂无日志':'当前筛选级别无日志')+'</div>';
+    return;
+  }
+  // 用 table 形式展示 level + message + createdAt, error 行加红色背景
+  var html='<table style="width:100%;font-size:12px;border-collapse:collapse;">';
+  html+='<thead><tr style="background:var(--card-2);"><th style="padding:6px 8px;text-align:left;width:80px;">级别</th>';
+  html+='<th style="padding:6px 8px;text-align:left;width:160px;">时间</th>';
+  html+='<th style="padding:6px 8px;text-align:left;">消息</th></tr></thead><tbody>';
+  filtered.forEach(function(l){
+    var lv=(l.level||'info').toLowerCase();
+    var msg=(l.message||'').toString();
+    var ts=(l.createdAt||'').toString();
+    // 转义 HTML 防 XSS (日志可能含 <a href=...> 等爬虫报错内容)
+    msg=msg.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    var bg='';
+    var pillCls='pill pill-';
+    if(lv==='error'){bg=' style="background:rgba(239,68,68,.18);"';pillCls+='error';}
+    else if(lv==='warn'){pillCls+='paused';}
+    else if(lv==='success'){pillCls+='running';}
+    else if(lv==='info'){pillCls+='done';}
+    else{pillCls+='unknown';}
+    html+='<tr'+bg+'><td style="padding:6px 8px;vertical-align:top;"><span class="'+pillCls+'">'+lv+'</span></td>';
+    html+='<td style="padding:6px 8px;color:var(--dim);vertical-align:top;font-family:ui-monospace,monospace;white-space:nowrap;">'+ts+'</td>';
+    html+='<td style="padding:6px 8px;word-break:break-all;">'+msg+'</td></tr>';
+  });
+  html+='</tbody></table>';
+  body.innerHTML=html;
+}
+
+// filterTaskLogs — 切换筛选级别, 重新渲染.
+function filterTaskLogs(level){
+  _taskLogState.level=level||'all';
+  // 更新按钮 active 样式 (btn-primary 高亮当前选中)
+  var map={all:'taskLogFilterAll',info:'taskLogFilterInfo',success:'taskLogFilterSuccess',warn:'taskLogFilterWarn',error:'taskLogFilterError'};
+  Object.keys(map).forEach(function(k){
+    var b=document.getElementById(map[k]);
+    if(!b)return;
+    if(k===level){b.classList.add('btn-primary');}
+    else{b.classList.remove('btn-primary');}
+  });
+  renderTaskLogs();
+}
+
+// toggleTaskLogAutoRefresh — 5s interval 自动重新加载日志 (modal 开启时有效).
+function toggleTaskLogAutoRefresh(){
+  var cb=document.getElementById('taskLogAutoRefresh');
+  if(cb.checked){
+    if(_taskLogState.autoTimer){clearInterval(_taskLogState.autoTimer);}
+    _taskLogState.autoTimer=setInterval(function(){
+      // 仅在 modal 仍打开时刷新 (防后台空跑)
+      var m=document.getElementById('taskLogModal');
+      if(!m||!m.classList.contains('open')){
+        if(_taskLogState.autoTimer){clearInterval(_taskLogState.autoTimer);_taskLogState.autoTimer=null;}
+        if(cb)cb.checked=false;
+        return;
+      }
+      loadTaskLogs();
+    },5000);
+  }else{
+    if(_taskLogState.autoTimer){clearInterval(_taskLogState.autoTimer);_taskLogState.autoTimer=null;}
+  }
+}
+
 // URL 模式联动校验
 document.querySelector('[name=mode]').addEventListener('change',function(){
   var v=this.value;

@@ -535,6 +535,21 @@ func SmartResumeSortWithDB(items []SmartResumeItem, lookup BookProgressLookup) [
 			if it.BookID == "" {
 				continue // 无 bookID 无法查 DB
 			}
+			// R79-B BUG-161 (P2) 修复: SmartResumeSortWithDB BookID 语义陷阱.
+			//   runner.go applyResumeSort line 635 把 BookURL 作 BookID 用 (注
+			//  释 "URL 作 ID (SmartResumeSort 不读语义)"), SmartResumeSort 不读
+			//   BookID 字段 → OK. 但 SmartResumeSortWithDB 用 it.BookID 调
+			//   lookup.BookChapterProgress(it.BookID) 做 DB 查询, DB 期望真实
+			//   cuid (24 字符 base36), 传 URL 形态 ("http://...") → DB 返
+			//   not-found / err → continue 保留原 item → SmartResumeSortWithDB
+			//   退化成 SmartResumeSort (DB 协同无效果).
+			//   若 R80+ agent 把 SmartResumeSortWithDB wired 进 runner 用 URL-as-ID
+			//   convention, DB lookup 全静默失败, 操作员无法察觉.
+			//   修复: 检测 BookID 形如 URL (http:// / https:// 前缀) 时跳过 DB
+			//   lookup (URL 形态 ID 不适配 DB 查询, 与"无 BookID"同款处理).
+			if strings.HasPrefix(it.BookID, "http://") || strings.HasPrefix(it.BookID, "https://") {
+				continue // URL 形态 ID 不适配 DB lookup, 保留原 item
+			}
 			done, total, err := lookup.BookChapterProgress(it.BookID)
 			if err != nil {
 				continue // 容错: 保留原 item
@@ -794,4 +809,93 @@ func TaskProgressSnapshot() map[string]map[string]int64 {
 		return true
 	})
 	return out
+}
+
+// ---------- R79-B 目标 A: 智能规则适配 (Rule 字段缺失时 fallback 通用提取逻辑) ----------
+//
+// 任务要求: "smart.go 加智能规则适配 (Rule 字段缺失时 fallback 通用提取逻辑)".
+//
+// 71 Rule 中 14 empty + 14 partial 的部分原因是 Rule config JSON 字段缺失 / 选择器
+//   错误 (list/book/toc/content 四段任一缺关键字段 → parser 走空结果 → 0 本 / 0 章
+//   入库). ApplySmartRuleFallback 在 runner.ExecuteTask 入口对 cfg.Rule 做内存 fallback
+//   (不改 DB 数据, 仅填缺失字段), 让缺失字段的 Rule 也能完成基础采集, 而非彻底 empty.
+//
+// fallback 策略 (保守, 不覆盖已配置字段):
+//   1. List 段: ItemSelector 缺 → 通用 "a[href*='/']" (常见章节列表超链接); Fields["url"]
+//      缺 → "a" CSS + Attr "href" (与 ItemSelector 配合); URLTemplate 缺 → 不填 (caller
+//      走 cfg.Override.URLs 直采路径).
+//   2. Book 段: Fields["name"] 缺 → "<title>" CSS (浏览器 <title> 是书名兜底源); Fields
+//      ["author"] / ["intro"] / ["cover"] 不强制 fallback (源站结构差异大, 误填会污染 DB).
+//   3. Toc 段: ItemSelector 缺 → 通用 "a[href]"; Fields["url"] 缺 → "a" + Attr "href";
+//      Fields["title"] 缺 → "a" CSS (取 anchor text 作章节标题).
+//   4. Content 段: Fields["content"] 缺 → 通用 "#content, .content, .chapter-content, body"
+//      CSS (按 priority 选第一个匹配的容器, 与 ParseContent 内部 Absolutize 同口径).
+//
+// 价值: 14 empty Rule 中, 选择器配置错误的可走 fallback 完成基础采集 (从 0 本 → N 本
+//   入库). 14 partial Rule 中, 缺 toc/content 字段的可走 fallback 补全 (从 partial →
+//   complete). 不影响已配置正确字段的 Rule (fallback 仅在字段缺失时触发).
+//
+// 限制: fallback 选择器是通用启发式, 源站结构特殊 (e.g. SPA / 异步加载 / iframe 嵌套)
+//   时 fallback 也无效. 真正解决 71 Rule 突破需 R80 人工验证 + 修正 Rule config (本
+//   轮只增强代码容错). 调用: caller (admin.go startCrawlTask / runner.ExecuteTaskWithRetry
+//   入口) 在 ExecuteTask 之前对 cfg.Rule 调本函数.
+
+// ApplySmartRuleFallback — RuleConfig 字段缺失时填充通用 fallback (R79-B 目标 A).
+//
+//	保守: 仅填缺失字段, 不覆盖 caller 已配置的字段. 传入 nil 直接返 (无操作).
+//	设计: 四段独立处理 (list/book/toc/content), 互不影响. PageFields 为 nil 时
+//	先初始化空 map (防 nil map 写 panic).
+func ApplySmartRuleFallback(rule *RuleConfig) {
+	if rule == nil {
+		return
+	}
+	// 1. List fallback
+	if rule.List.Fields == nil {
+		rule.List.Fields = PageFields{}
+	}
+	if rule.List.ItemSelector == nil || rule.List.ItemSelector.Type == "" {
+		rule.List.ItemSelector = &FieldRule{Type: FieldCSS, Expression: "a[href*='/']"}
+	}
+	if _, ok := rule.List.Fields["url"]; !ok {
+		rule.List.Fields["url"] = FieldRule{Type: FieldCSS, Expression: "a", Attr: "href"}
+	}
+	if _, ok := rule.List.Fields["bookUrl"]; !ok {
+		// R56-1B 修复 BUG-E: 50+ 规则用 bookUrl 字段名 (非 url). fallback 同时填
+		//   url + bookUrl, 让 ParseList 两种字段名都识别 (ParseList 内部已兼容).
+		rule.List.Fields["bookUrl"] = FieldRule{Type: FieldCSS, Expression: "a", Attr: "href"}
+	}
+	// 2. Book fallback
+	if rule.Book.Fields == nil {
+		rule.Book.Fields = PageFields{}
+	}
+	if _, ok := rule.Book.Fields["name"]; !ok {
+		// <title> 是书名兜底源 (浏览器 tab 标题, 大多源站 <title> 含书名)
+		rule.Book.Fields["name"] = FieldRule{Type: FieldCSS, Expression: "title"}
+	}
+	// 3. Toc fallback
+	if rule.Toc.Fields == nil {
+		rule.Toc.Fields = PageFields{}
+	}
+	if rule.Toc.ItemSelector == nil || rule.Toc.ItemSelector.Type == "" {
+		rule.Toc.ItemSelector = &FieldRule{Type: FieldCSS, Expression: "a[href]"}
+	}
+	if _, ok := rule.Toc.Fields["url"]; !ok {
+		rule.Toc.Fields["url"] = FieldRule{Type: FieldCSS, Expression: "a", Attr: "href"}
+	}
+	if _, ok := rule.Toc.Fields["title"]; !ok {
+		rule.Toc.Fields["title"] = FieldRule{Type: FieldCSS, Expression: "a"}
+	}
+	// 4. Content fallback
+	if rule.Content.Fields == nil {
+		rule.Content.Fields = PageFields{}
+	}
+	if _, ok := rule.Content.Fields["content"]; !ok {
+		// 按源站常见 content container id/class 选择器, 第一个匹配生效
+		// (ParseContent 内部按 FieldRule 顺序提取, 多选择器 comma-separated CSS
+		// 联合 (goquery 支持 CSS selector list)).
+		rule.Content.Fields["content"] = FieldRule{
+			Type:       FieldCSS,
+			Expression: "#content, .content, .chapter-content, .chapter_content, .read-content, #booktxt, body",
+		}
+	}
 }

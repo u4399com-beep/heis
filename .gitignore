@@ -58,6 +58,16 @@ db/*.db.lost-*
 db/*.db-journal
 db/*.db-shm
 db/*.db-wal
+# R79-D (R78 交接 #1 db 清理): prisma/ 目录下 custom.db + dev.db 是 SQLite 数据库文件
+#   (与 db/custom.db 同款运行时数据, 不应入库). R78 之前 .gitignore 仅覆盖 db/*.db,
+#   prisma/*.db 路径不同, custom.db (~76MB 历史版本) 入库了. 加 prisma/*.db +
+#   prisma/*.db-* 忽略; 主控需跑 `git rm --cached prisma/custom.db prisma/dev.db`
+#   从 git 移除但保留本地文件 (agent 严禁跑 git rm, 留主控操作).
+prisma/*.db
+prisma/*.db-journal
+prisma/*.db-shm
+prisma/*.db-wal
+prisma/*.db-lost-*
 /data/
 backups/
 tmp/

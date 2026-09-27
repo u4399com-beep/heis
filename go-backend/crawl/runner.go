@@ -2187,3 +2187,93 @@ func truncate(s string, n int) string {
         }
         return string(r[:n])
 }
+
+// ---------- R79-B 目标 A: 任务重试逻辑 (失败 Rule 自动重试 + 指数退避) ----------
+//
+// 任务要求: "runner.go 加任务重试逻辑 (失败 Rule 自动重试 3 次 + 指数退避)".
+//
+// 71 Rule 中 partial/empty 的部分原因是瞬态失败 (网络抖动 / 429 限流 / 源站临时 5xx /
+//   TLS 握手偶发 fail). 单次 ExecuteTask 失败后整任务停 → 用户重跑 / 跳过. 重试逻辑
+//   让瞬态失败经指数退避后重试, 提升任务完成率.
+//
+// 重试策略:
+//   - 终态错误 (BudgetExceeded / CircuitBreak / ctx cancel): 不重试, 直接返
+//     (BudgetExceeded 是预算耗尽, 重试无意义; CircuitBreak 是源站熔断, 重试会
+//     加重源站压力; ctx cancel 是 caller 主动取消).
+//   - 瞬态错误 (网络层 / TLS / HTTP 5xx / 数据库暂时故障): 重试, 指数退避
+//     baseBackoffMs * 2^attempt (2s → 4s → 8s), cap 30s 防单次重试等太久.
+//   - maxRetries=3 (4 次总执行, 与任务要求一致). maxRetries=0 → 直接 ExecuteTask (无重试).
+//   - baseBackoffMs=2000 (默认 2s).
+//
+// 价值: 14 partial Rule 中, 瞬态失败经重试可成功完成 → partial → complete.
+//   14 empty Rule 中, 源站持续不可达的重试仍失败 (源站可达性是 R80 人工验证范畴,
+//   本函数仅增强瞬态失败容错).
+//
+// caller: admin.go startCrawlTask 在启动任务前调本函数 (替代直接 ExecuteTask):
+//     err := crawl.ExecuteTaskWithRetry(ctx, cfg, 3, 2000)
+//   admin.go 范围外, R79-B 仅提供 API, 不改 admin.go wiring.
+
+// ExecuteTaskWithRetry — 包装 ExecuteTask 加入重试逻辑 (R79-B 目标 A).
+//
+//      失败 (非 BudgetExceeded / 非 CircuitBreak / 非 ctx cancel) 自动重试 maxRetries 次,
+//      指数退避: 第 1 次重试等 baseBackoffMs, 第 2 次 2×, 第 3 次 4× (cap 30s).
+//      maxRetries=0 → 直接 ExecuteTask (无重试).
+//      baseBackoffMs<=0 → 默认 2000ms.
+//      return: 最后一次 ExecuteTask 返的 err (成功时返 nil).
+func ExecuteTaskWithRetry(ctx context.Context, cfg ExecuteTaskConfig, maxRetries int, baseBackoffMs int) error {
+        if maxRetries < 0 {
+                maxRetries = 0
+        }
+        if baseBackoffMs <= 0 {
+                baseBackoffMs = 2000
+        }
+        var lastErr error
+        for attempt := 0; attempt <= maxRetries; attempt++ {
+                // 每轮重试前检查 ctx (caller 取消 / 超时 → 不重试)
+                if err := ctx.Err(); err != nil {
+                        if lastErr != nil {
+                                return fmt.Errorf("ExecuteTaskWithRetry: %w (前次错误: %v)", err, lastErr)
+                        }
+                        return err
+                }
+                err := ExecuteTask(ctx, cfg)
+                if err == nil {
+                        return nil
+                }
+                lastErr = err
+                // 终态错误: 不重试直接返
+                //   BudgetExceeded: 单任务请求预算耗尽, 重试会再耗一次预算 (cfg.MaxRequests)
+                //   CircuitBreak: 连续错误熔断, 重试会加重源站压力 + 触发 IP 封禁
+                //   ctx.Canceled / ctx.DeadlineExceeded: caller 主动取消 / 已超时, 重试延长生命周期
+                if IsBudgetExceeded(err) || IsCircuitBreak(err) {
+                        return err
+                }
+                if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+                        return err
+                }
+                // 最后一次 attempt 失败: 不重试, 直接返
+                if attempt == maxRetries {
+                        return err
+                }
+                // 指数退避: baseBackoffMs * 2^attempt (2s → 4s → 8s → 16s, cap 30s)
+                // R79-B BUG-164 (P3) 修复: shift count overflow 防御. Go spec: shift count >= bit
+                //   size 返 0 (无 backoff 立即重试). maxRetries 3 时无影响 (shift 0/1/2/3 安全),
+                //   但 maxRetries > 30 时 attempt=31+ 会触发 shift 0 → 立即重试无退避, 加重源站
+                //   压力. 防御: 显式 clamp shift 在 30 (2^30 = 1B ms = ~12 天, 已远超 30s cap).
+                shift := uint(attempt)
+                if shift > 30 {
+                        shift = 30
+                }
+                backoff := time.Duration(baseBackoffMs<<shift) * time.Millisecond
+                if backoff > 30*time.Second {
+                        backoff = 30 * time.Second
+                }
+                // 等待期间监听 ctx 取消 (caller 可中断重试)
+                select {
+                case <-time.After(backoff):
+                case <-ctx.Done():
+                        return ctx.Err()
+                }
+        }
+        return lastErr
+}

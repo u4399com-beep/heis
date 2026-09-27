@@ -564,8 +564,10 @@ func likeSafe(s string) string {
 //
 //      path 结尾为 /control → adminTaskControlHandler
 //      path 结尾为 /snapshot → adminTaskSnapshotHandler
-//      path 为 {id} 且 method=DELETE → adminTaskDeleteHandler (R55-1A 新增: 删除任务)
-//      path == "quick-fill" 且 method=POST → adminTasksQuickFill (R66-A 新增: 快速填充采集任务)
+//      path 结尾为 /logs → adminTaskLogsHandler (R79-D Goal A.2, 用户需求 #1)
+//      path 为 {id} (无后缀) 且 method=DELETE → adminTaskDeleteHandler (R55-1A 删除任务)
+//      path 为 {id} (无后缀) 且 method=PUT → adminTaskUpdateHandler (R79-D Goal A.1, 用户需求 #1 编辑任务)
+//      path == "quick-fill" 且 method=POST → adminTasksQuickFill (R66-A 快速填充采集任务)
 //      否则返回 404.
 func adminTaskSubHandler(w http.ResponseWriter, r *http.Request) {
         path := strings.TrimPrefix(r.URL.Path, "/api/admin/tasks/")
@@ -578,13 +580,27 @@ func adminTaskSubHandler(w http.ResponseWriter, r *http.Request) {
                 writeJSONErr(w, "method not allowed", 405)
                 return
         }
-        // path 形如: {id}/control 或 {id}/snapshot
+        // path 形如: {id}/control 或 {id}/snapshot 或 {id}/logs
         if strings.HasSuffix(path, "/control") {
                 adminTaskControlHandler(w, r)
                 return
         }
         if strings.HasSuffix(path, "/snapshot") {
                 adminTaskSnapshotHandler(w, r)
+                return
+        }
+        // R79-D Goal A.2 (用户需求 #1): GET /api/admin/tasks/{id}/logs — 查 TaskLog 表
+        //   最近 100 条日志 (id/level/message/createdAt), 供 admin UI 任务详情弹窗展示
+        //   运行历史 (info/success/warn/error), 与 snapshot (runtime 内存态) 互补.
+        if strings.HasSuffix(path, "/logs") {
+                adminTaskLogsHandler(w, r)
+                return
+        }
+        // R79-D Goal A.1 (用户需求 #1): PUT /api/admin/tasks/{id} — 编辑任务配置字段.
+        //   与 DELETE /:id 同款 "path 为 {id} 无后缀" 分支, 按 method 区分 (PUT 编辑 /
+        //   DELETE 删除). R55-1A DELETE 仅在 path 无 "/" 时生效 (避免 /control 等子路径误触).
+        if r.Method == http.MethodPut && path != "" && !strings.Contains(path, "/") {
+                adminTaskUpdateHandler(w, r, path)
                 return
         }
         // R55-1A: {id} (无后缀) + DELETE → 删除任务 (停止 runtime + 删 Task 行 + TaskLog 行)
@@ -1377,6 +1393,362 @@ func adminTaskSnapshotHandler(w http.ResponseWriter, r *http.Request) {
                 "failedBookUrlsCount": snap.FailedBookUrlsCount,
                 "captchaEncountered":  snap.CaptchaEncountered,
                 "recentLogs":          logs,
+        })
+}
+
+// adminTaskLogsHandler — GET /api/admin/tasks/:id/logs 查 TaskLog 表最近 100 条日志.
+//
+//      R79-D Goal A.2 (用户需求 #1): 任务详情弹窗展示运行历史 (info/success/warn/error),
+//      与 adminTaskSnapshotHandler 的 runtime 内存态 (RecentLogs 最多 50 条 + 运行指标)
+//      互补 — TaskLog 表是持久化历史, runtime 停止后仍可查 (admin 排障 + 任务终态审计).
+//
+// 入参: 路径参数 :id (taskID). 无 query 参数 (LIMIT 100 固定, 防 client 拉全量致 OOM).
+//
+// 响应: {ok:true, logs:[{id, level, message, createdAt}]} — 按 createdAt DESC 排序
+//
+//      (最新在前, 与 adminTaskSnapshotHandler RecentLogs 同款顺序). 任务不存在返 404
+//      (避免 admin UI 把删除任务的空日志误显示为 "无日志运行正常").
+//
+// 错误容忍: rows.Err() 检查 mid-iteration 错误 (R74-D BUG-111 同款 pattern),
+//
+//      log.Printf best-effort 不阻塞返 (返回已收集的部分日志 + 500 错误).
+func adminTaskLogsHandler(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodGet {
+                writeJSONErr(w, "method not allowed", 405)
+                return
+        }
+        // 提取 taskID: path = "{id}/logs", parts[0] = id, parts[1] = "logs".
+        parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/admin/tasks/"), "/")
+        if len(parts) < 2 || parts[0] == "" || parts[1] != "logs" {
+                writeJSONErr(w, "路径格式错误", 404)
+                return
+        }
+        taskID := parts[0]
+        // 存在性检查 (与 adminTaskDeleteHandler 同款, 避免已删任务的 TaskLog 残留 —
+        //   DELETE Task 时已级联 DELETE TaskLog, 但极端场景 (手动 SQL 删 Task 不删 TaskLog)
+        //   仍可返 0 行日志; 此处显式 404 让 admin UI 提示 "任务不存在" 而非 "无日志").
+        var existTask string
+        _ = db.QueryRow(`SELECT id FROM Task WHERE id=?`, taskID).Scan(&existTask)
+        if existTask == "" {
+                writeJSONErr(w, "任务不存在", 404)
+                return
+        }
+        rows, err := db.Query(`SELECT id, level, message, createdAt FROM TaskLog WHERE taskId=? ORDER BY createdAt DESC LIMIT 100`, taskID)
+        if err != nil {
+                writeJSONErr(w, "查询日志失败: "+err.Error(), 500)
+                return
+        }
+        defer rows.Close()
+        logs := []map[string]interface{}{}
+        for rows.Next() {
+                var id, level, message, createdAt sql.NullString
+                if err := rows.Scan(&id, &level, &message, &createdAt); err != nil {
+                        // Scan 失败跳过 (与 adminTasksList line 751 _ = rows.Scan 同款容忍).
+                        continue
+                }
+                logs = append(logs, map[string]interface{}{
+                        "id": id.String, "level": level.String, "message": message.String, "createdAt": createdAt.String,
+                })
+        }
+        // R74-D BUG-111 同款 pattern: rows.Err() 检查 mid-iteration 错误 (e.g. SQLite
+        //   连接断开中途) 静默吞, 用户看到截断的日志列表以为是全部. 与 adminTasksList
+        //   同款返 500 不返半截数据.
+        if err := rows.Err(); err != nil {
+                writeJSONErr(w, "迭代日志失败: "+err.Error(), 500)
+                return
+        }
+        writeJSONOK(w, map[string]interface{}{"logs": logs})
+}
+
+// adminTaskUpdateHandler — PUT /api/admin/tasks/:id 编辑任务配置字段 (R79-D Goal A.1, 用户需求 #1).
+//
+//      R79-D: 全页面编辑功能补全. 原后台仅能 start/pause/stop/delete, 无法编辑已建任务
+//      配置 (name/URL/范围/线程/间隔/智能化开关). 用户需先删任务再建, 失去原 task id
+//      关联的 TaskLog 历史 + 已采书/章数据 (Book.sourceUrl 关联无法清理).
+//
+// 入参 (与 adminTasksCreate 字段对齐, 全可选 — 增量更新):
+//
+//      name / mode / bookUrl / listUrl / listStart / listEnd / bookStart / bookEnd /
+//      recrawlMode / storageMode / threadMin / threadMax / intervalMin / intervalMax /
+//      smartCategory / smartComplete / autoSuggest / autoRefresh / refreshIntervalMin
+//
+// 安全:
+//
+//   - 禁止编辑 status='running' 任务 (避免运行时改 threadMin/Max/intervalMin/Max
+//     引发采集 goroutine 内部 cfg.Override 旧值 vs DB 新值 race — ExecuteTask 启动
+//     时一次性 snapshot cfg, 运行中改 DB 不影响 cfg; 但 adminTaskControlHandler
+//     start 重启会读新 DB 值, 若改前已 running 重启路径会触发新/旧 cfg 混合).
+//     操作员需先 pause/stop 再编辑. (与 adminTaskDeleteHandler 同款运行态保护.)
+//   - 存在性检查: 不存在的 taskID 返 404 (与 adminRuleByIDHandler PUT BUG-85 同款).
+//   - mode 校验: 仅 single/range/urls 合法 (与 adminTasksCreate 一致).
+//   - mode='single' 时 bookUrl 必填 (body 新值 或 DB 现值非空); mode='range' 时
+//     listUrl 必填 (用 effective 值校验: body 新值优先, 否则 DB 现值).
+//   - mode='urls' 不允许通过本 API 切换 (fetchConfig.urls 需创建时配置, 本 API
+//     不允许编辑 fetchConfig 字段). 切到 urls 模式请重建任务.
+//   - bookUrl/listUrl httpURL 校验 (非法返空串, 与 adminTasksCreate 同口径).
+//   - threadMax >= threadMin + intervalMax >= intervalMin (仅当两者都改时校验,
+//     否则无法读 DB 现值 — admin UI 编辑模态同时展示两者, 通常两者都改).
+//   - listStart <= listEnd + bookStart <= bookEnd (改时各自校验, 与 adminTasksCreate
+//     同口径钳制/swap).
+//
+// 响应: {ok:true, task:{...}} (返回最新行 19 字段 + id + status + updatedAt, 供
+//
+//      UI 刷新编辑模态 + 任务列表 + snapshot 缓存失效).
+//
+// 缓存失效: 本 handler 不调 invalidateSitemapCache (Task 改动不影响 sitemap URL,
+//
+//      sitemap 仅含 Book/Chapter URL, Task 是采集元数据不入 sitemap).
+func adminTaskUpdateHandler(w http.ResponseWriter, r *http.Request, taskID string) {
+        if r.Method != http.MethodPut {
+                writeJSONErr(w, "method not allowed", 405)
+                return
+        }
+        // 存在性 + 状态 + mode/URL fallback 校验 (单 SELECT 获取 4 字段, 避免后续 N 次 query).
+        var curStatus, curMode, curBookURL, curListURL string
+        err := db.QueryRow(`SELECT status, mode, bookUrl, listUrl FROM Task WHERE id=?`, taskID).
+                Scan(&curStatus, &curMode, &curBookURL, &curListURL)
+        if err != nil {
+                writeJSONErr(w, "任务不存在", 404)
+                return
+        }
+        if curStatus == "running" {
+                writeJSONErr(w, "任务运行中, 请先暂停或停止再编辑", 400)
+                return
+        }
+        body := readJSONBody(r)
+        sets := []string{}
+        args := []interface{}{}
+        // name (max 100, 与 adminTasksCreate line 809 同口径)
+        if v, ok := body["name"]; ok && v != nil {
+                s := strField(body, "name", 100)
+                if s == "" {
+                        writeJSONErr(w, "任务名称不能为空", 400)
+                        return
+                }
+                sets = append(sets, "name=?")
+                args = append(args, s)
+        }
+        // mode (single/range/urls)
+        var newMode string
+        modeChanged := false
+        if v, ok := body["mode"]; ok && v != nil {
+                m := strField(body, "mode", 10)
+                switch m {
+                case "single", "range", "urls":
+                        newMode = m
+                default:
+                        writeJSONErr(w, "mode 必须是 single/range/urls 之一", 400)
+                        return
+                }
+                // R79-D: 切到 urls 模式拒绝 (本 API 不编辑 fetchConfig, 切到 urls 会让任务
+                //   启动时无 fetchConfig.urls 致 0 本采集 — 与 adminTasksCreate mode='urls'
+                //   必填 fetchConfig.urls 校验互补).
+                if m == "urls" {
+                        writeJSONErr(w, "切换到 urls 模式请重建任务 (本 API 不支持编辑 fetchConfig.urls)", 400)
+                        return
+                }
+                sets = append(sets, "mode=?")
+                args = append(args, newMode)
+                modeChanged = true
+        }
+        // bookUrl (httpURL 校验, 非法返空串)
+        var newBookURL string
+        bookURLChanged := false
+        if v, ok := body["bookUrl"]; ok && v != nil {
+                newBookURL = httpURL(strField(body, "bookUrl", 2000))
+                sets = append(sets, "bookUrl=?")
+                args = append(args, newBookURL)
+                bookURLChanged = true
+        }
+        // listUrl
+        var newListURL string
+        listURLChanged := false
+        if v, ok := body["listUrl"]; ok && v != nil {
+                newListURL = httpURL(strField(body, "listUrl", 2000))
+                sets = append(sets, "listUrl=?")
+                args = append(args, newListURL)
+                listURLChanged = true
+        }
+        // mode/URL consistency (用 effective 值: body 新值优先, 否则 DB 现值)
+        effMode := curMode
+        if modeChanged {
+                effMode = newMode
+        }
+        effBookURL := curBookURL
+        if bookURLChanged {
+                effBookURL = newBookURL
+        }
+        effListURL := curListURL
+        if listURLChanged {
+                effListURL = newListURL
+        }
+        if effMode == "single" && effBookURL == "" {
+                writeJSONErr(w, "单本模式必须填写书籍页URL", 400)
+                return
+        }
+        if effMode == "range" && effListURL == "" {
+                writeJSONErr(w, "范围模式必须填写列表页URL(含{page})", 400)
+                return
+        }
+        // listStart/listEnd (钳 + swap, 与 adminTasksCreate line 830-834 同口径)
+        var newListStart, newListEnd int
+        listStartChanged, listEndChanged := false, false
+        if v, ok := body["listStart"]; ok && v != nil {
+                newListStart = clampIntAdm(intField(body, "listStart", 1, 1, 100000), 1, 100000)
+                sets = append(sets, "listStart=?")
+                args = append(args, newListStart)
+                listStartChanged = true
+        }
+        if v, ok := body["listEnd"]; ok && v != nil {
+                newListEnd = clampIntAdm(intField(body, "listEnd", 1, 1, 100000), 1, 100000)
+                sets = append(sets, "listEnd=?")
+                args = append(args, newListEnd)
+                listEndChanged = true
+        }
+        if listStartChanged && listEndChanged && newListEnd < newListStart {
+                // swap (与 adminTasksCreate line 832-834 同款, 不返错而是 swap 让用户输入任意顺序).
+                // swap 后需更新 sets/args (已 append, 需找到 index 替换). 简化: 重新构建这两条 SET.
+                // args[len(args)-2] = listStart, args[len(args)-1] = listEnd (按 append 顺序).
+                args[len(args)-2], args[len(args)-1] = newListEnd, newListStart
+        }
+        // bookStart/bookEnd (钳 + swap, 与 adminTasksCreate line 835-839 同口径)
+        var newBookStart, newBookEnd int
+        bookStartChanged, bookEndChanged := false, false
+        if v, ok := body["bookStart"]; ok && v != nil {
+                newBookStart = clampIntAdm(intField(body, "bookStart", 0, 0, 100000), 0, 100000)
+                sets = append(sets, "bookStart=?")
+                args = append(args, newBookStart)
+                bookStartChanged = true
+        }
+        if v, ok := body["bookEnd"]; ok && v != nil {
+                newBookEnd = clampIntAdm(intField(body, "bookEnd", 0, 0, 100000), 0, 100000)
+                sets = append(sets, "bookEnd=?")
+                args = append(args, newBookEnd)
+                bookEndChanged = true
+        }
+        if bookStartChanged && bookEndChanged && newBookStart > 0 && newBookEnd > 0 && newBookEnd < newBookStart {
+                // swap (与 adminTasksCreate line 837-839 同口径, 仅当两者都 >0 时 swap, 0=不限).
+                args[len(args)-2], args[len(args)-1] = newBookEnd, newBookStart
+        }
+        // recrawlMode (incremental/full)
+        if v, ok := body["recrawlMode"]; ok && v != nil {
+                s := strField(body, "recrawlMode", 20)
+                if s != "incremental" && s != "full" {
+                        writeJSONErr(w, "recrawlMode 必须是 incremental 或 full", 400)
+                        return
+                }
+                sets = append(sets, "recrawlMode=?")
+                args = append(args, s)
+        }
+        // storageMode (db/txt)
+        if v, ok := body["storageMode"]; ok && v != nil {
+                s := strField(body, "storageMode", 10)
+                if s != "db" && s != "txt" {
+                        writeJSONErr(w, "storageMode 必须是 db 或 txt", 400)
+                        return
+                }
+                sets = append(sets, "storageMode=?")
+                args = append(args, s)
+        }
+        // threadMin/threadMax (钳 + threadMax>=threadMin 校验, 与 adminTasksCreate line 848-852 同口径)
+        var newThreadMin, newThreadMax int
+        threadMinChanged, threadMaxChanged := false, false
+        if v, ok := body["threadMin"]; ok && v != nil {
+                newThreadMin = clampIntAdm(intField(body, "threadMin", 1, 1, 32), 1, 32)
+                sets = append(sets, "threadMin=?")
+                args = append(args, newThreadMin)
+                threadMinChanged = true
+        }
+        if v, ok := body["threadMax"]; ok && v != nil {
+                newThreadMax = clampIntAdm(intField(body, "threadMax", 3, 1, 32), 1, 32)
+                sets = append(sets, "threadMax=?")
+                args = append(args, newThreadMax)
+                threadMaxChanged = true
+        }
+        if threadMinChanged && threadMaxChanged && newThreadMax < newThreadMin {
+                // threadMax = threadMin (与 adminTasksCreate line 850-852 同款, 钳而非 swap).
+                // args[len(args)-1] 是 threadMax (最后 append), 替换为 newThreadMin.
+                args[len(args)-1] = newThreadMin
+        }
+        // intervalMin/intervalMax (钳 + intervalMax>=intervalMin, 与 adminTasksCreate line 853-857 同口径)
+        var newIntervalMin, newIntervalMax int
+        intervalMinChanged, intervalMaxChanged := false, false
+        if v, ok := body["intervalMin"]; ok && v != nil {
+                newIntervalMin = clampIntAdm(intField(body, "intervalMin", 500, 0, 600000), 0, 600000)
+                sets = append(sets, "intervalMin=?")
+                args = append(args, newIntervalMin)
+                intervalMinChanged = true
+        }
+        if v, ok := body["intervalMax"]; ok && v != nil {
+                newIntervalMax = clampIntAdm(intField(body, "intervalMax", 2000, 0, 600000), 0, 600000)
+                sets = append(sets, "intervalMax=?")
+                args = append(args, newIntervalMax)
+                intervalMaxChanged = true
+        }
+        if intervalMinChanged && intervalMaxChanged && newIntervalMax < newIntervalMin {
+                // intervalMax = intervalMin (与 adminTasksCreate line 855-857 同款钳).
+                args[len(args)-1] = newIntervalMin
+        }
+        // bool flags (smartCategory/smartComplete/autoSuggest/autoRefresh)
+        if v, ok := body["smartCategory"]; ok && v != nil {
+                sets = append(sets, "smartCategory=?")
+                args = append(args, boolField(body, "smartCategory", true))
+        }
+        if v, ok := body["smartComplete"]; ok && v != nil {
+                sets = append(sets, "smartComplete=?")
+                args = append(args, boolField(body, "smartComplete", true))
+        }
+        if v, ok := body["autoSuggest"]; ok && v != nil {
+                sets = append(sets, "autoSuggest=?")
+                args = append(args, boolField(body, "autoSuggest", true))
+        }
+        if v, ok := body["autoRefresh"]; ok && v != nil {
+                sets = append(sets, "autoRefresh=?")
+                args = append(args, boolField(body, "autoRefresh", false))
+        }
+        // refreshIntervalMin (钳 5-1440, 与 adminTasksCreate line 905 同口径)
+        if v, ok := body["refreshIntervalMin"]; ok && v != nil {
+                n := clampIntAdm(intField(body, "refreshIntervalMin", 30, 5, 1440), 5, 1440)
+                sets = append(sets, "refreshIntervalMin=?")
+                args = append(args, n)
+        }
+        if len(sets) == 0 {
+                writeJSONErr(w, "无可更新字段", 400)
+                return
+        }
+        sets = append(sets, "updatedAt=datetime('now')")
+        args = append(args, taskID)
+        _, err = db.Exec(`UPDATE Task SET `+strings.Join(sets, ",")+` WHERE id=?`, args...)
+        if err != nil {
+                writeJSONErr(w, "更新失败: "+err.Error(), 500)
+                return
+        }
+        // 返回最新行 19 字段供 UI 刷新 (与 adminTasksList SELECT 字段集对齐, 让前端
+        //   编辑模态 + 任务列表 + snapshot 缓存一致刷新, 不需额外 GET /api/admin/tasks).
+        var (
+                name, ruleID, mode, bookURL, listURL, recrawlModeS, storageModeS, statusS, progress, stats, updatedAt string
+                listStart, listEnd, bookStart, bookEnd, threadMinI, threadMaxI, intervalMinI, intervalMaxI, refreshIntervalMinI int
+                smartCategoryB, smartCompleteB, autoSuggestB, autoRefreshB bool
+        )
+        _ = db.QueryRow(`SELECT name,ruleId,mode,bookUrl,listUrl,listStart,listEnd,bookStart,bookEnd,recrawlMode,storageMode,threadMin,threadMax,intervalMin,intervalMax,smartCategory,smartComplete,autoSuggest,autoRefresh,refreshIntervalMin,status,progress,stats,updatedAt FROM Task WHERE id=?`, taskID).
+                Scan(&name, &ruleID, &mode, &bookURL, &listURL, &listStart, &listEnd, &bookStart, &bookEnd,
+                        &recrawlModeS, &storageModeS, &threadMinI, &threadMaxI, &intervalMinI, &intervalMaxI,
+                        &smartCategoryB, &smartCompleteB, &autoSuggestB, &autoRefreshB, &refreshIntervalMinI,
+                        &statusS, &progress, &stats, &updatedAt)
+        writeJSONOK(w, map[string]interface{}{
+                "task": map[string]interface{}{
+                        "id": taskID, "name": name, "ruleId": ruleID, "mode": mode,
+                        "bookUrl": bookURL, "listUrl": listURL,
+                        "listStart": listStart, "listEnd": listEnd,
+                        "bookStart": bookStart, "bookEnd": bookEnd,
+                        "recrawlMode": recrawlModeS, "storageMode": storageModeS,
+                        "threadMin": threadMinI, "threadMax": threadMaxI,
+                        "intervalMin": intervalMinI, "intervalMax": intervalMaxI,
+                        "smartCategory": smartCategoryB, "smartComplete": smartCompleteB,
+                        "autoSuggest": autoSuggestB, "autoRefresh": autoRefreshB,
+                        "refreshIntervalMin": refreshIntervalMinI,
+                        "status":             statusS, "updatedAt": updatedAt,
+                },
         })
 }
 

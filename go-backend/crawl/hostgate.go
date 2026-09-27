@@ -496,7 +496,9 @@ func (g *HostGate) AdjustConcurrency(host string, health float64) {
 	if now-st.lastConcurrencyAdjustAt < 60*1000 {
 		return
 	}
-	oldBase := st.baseLimit
+	// R79-B BUG-165 (P3) 修复: 删除 oldBase := st.baseLimit + `_ = oldBase` deadcode
+	//   (原 R64-B 实现保留 oldBase 供 "记录调整事件供调试" 但从未用, _ = 赋值是
+	//   suppress unused. 删除减 2 行 + 防 reader 困惑 "为何读 oldBase 后丢弃").
 	if health > 0.8 && st.baseLimit < HostGateMaxLimit {
 		st.baseLimit++
 	} else if health < 0.3 && st.baseLimit > HostGateMinLimit {
@@ -510,8 +512,6 @@ func (g *HostGate) AdjustConcurrency(host string, health float64) {
 	if st.limit > st.baseLimit {
 		st.limit = st.baseLimit
 	}
-	// R64-B B1: 记录调整事件供调试 (不返 event, 调用方按 host 查 baseLimit)
-	_ = oldBase
 }
 
 // AdjustMinGap — 按源站响应延迟动态调 minGapMs (B3).
@@ -536,7 +536,8 @@ func (g *HostGate) AdjustMinGap(host string, latencyMs int64) {
 	if now-st.lastMinGapAdjustAt < 30*1000 {
 		return
 	}
-	oldGap := st.minGapMs
+	// R79-B BUG-165 (P3) 修复: 删除 oldGap := st.minGapMs + `_ = oldGap` deadcode
+	//   (与 AdjustConcurrency oldBase 同款, 删除减 2 行).
 	if latencyMs < 500 {
 		st.minGapMs -= 50
 		if st.minGapMs < 0 {
@@ -553,7 +554,6 @@ func (g *HostGate) AdjustMinGap(host string, latencyMs int64) {
 	// R64-B B3: minGapMsLastValue 同步更新 (与 Acquire 同款, 防 caller 接管误判)
 	st.minGapMsLastValue = st.minGapMs
 	st.lastMinGapAdjustAt = now
-	_ = oldGap
 }
 
 // HostHealthForAdjust — 计算 host 当前健康度 (供 admin / runner 查询).

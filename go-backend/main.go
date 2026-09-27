@@ -3483,19 +3483,27 @@ func getReadViewData(chID string, site map[string]interface{}) (map[string]inter
                 "idx": idx, "wordCount": wc,
         }
 
-        // 2. 查 book (id, name, author, status, category, intro)
-        var bid, bname, bauthor, bstatus, bcategory, bintro sql.NullString
+        // 2. 查 book (id, name, author, status, category, intro, cover)
+        var bid, bname, bauthor, bstatus, bcategory, bintro, bcover sql.NullString
         // R75-A 目标C3 (R74 交接 #5 ParsedWordCount DB 聚合): 同时取 Book.wordCount,
         //   若 ==0 fallback SUM(Chapter.wordCount) FROM Chapter WHERE bookId=?.
         //   原 SQL 不查 wordCount, read view 模板用 .Chapter.wordCount (单章) 不用
         //   Book.wordCount, 但 SEO TDK + 上下章导航 + 后续 R76+ 模板字段对齐需 Book
         //   总字数 (e.g. 面包屑 "本书 100 万字"). 加 wordCount 字段到 SELECT, 与
         //   getBookViewData 同款 fallback 聚合.
+        //
+        // R79-D BUG-161 (P2): 原 SQL 漏 b.cover 列 → bookMap 无 "cover" key → homeHandler
+        //   read view pSEO 注入 (line 868 bookCoverRead, _ := book["cover"].(string)) 拿空
+        //   串 → if bookCoverRead != "" 跳过 → OgImage/TwitterImage 永远不设 → 章节页
+        //   分享到 FB/Twitter 显示裸链接无图 (社交平台分享体验 + og:image SEO 权重双损失).
+        //   修复: SELECT 加 b.cover 列 + Scan 进 bcover (sql.NullString) + bookMap 加
+        //   "cover": coverURL(bcover.String) (与 getBookViewData line 3363 同款 coverURL
+        //   处理). bookMap["cover"] 永远是非空串 (coverURL("") 返 "") 或合法 URL/相对路径.
         var bwc int64
-        if err := db.QueryRow(`SELECT b.id,b.name,b.author,b.status,COALESCE(c.name,'未分类'),b.intro,b.wordCount FROM Book b LEFT JOIN Category c ON b.categoryId=c.id WHERE b.id=?`, bookID.String).Scan(
-                &bid, &bname, &bauthor, &bstatus, &bcategory, &bintro, &bwc); err != nil {
+        if err := db.QueryRow(`SELECT b.id,b.name,b.author,b.status,COALESCE(c.name,'未分类'),b.intro,b.cover,b.wordCount FROM Book b LEFT JOIN Category c ON b.categoryId=c.id WHERE b.id=?`, bookID.String).Scan(
+                &bid, &bname, &bauthor, &bstatus, &bcategory, &bintro, &bcover, &bwc); err != nil {
                 // book 查不到也允许渲染
-                bookMap := map[string]interface{}{"id": bookID.String, "name": "", "author": "", "status": "", "category": "", "intro": "", "wordCount": int64(0)}
+                bookMap := map[string]interface{}{"id": bookID.String, "name": "", "author": "", "status": "", "category": "", "intro": "", "cover": "", "wordCount": int64(0)}
                 // R57-1B: 即使 book 查不到, 也填入 SEO TDK (用空 bookName/author/intro + chapterTitle)
                 if site != nil {
                         seoT, seoD, seoK := computeChapterSeo(site, title.String, "", "", "")
@@ -3517,6 +3525,9 @@ func getReadViewData(chID string, site map[string]interface{}) (map[string]inter
         bookMap := map[string]interface{}{
                 "id": bid.String, "name": bname.String, "author": bauthor.String,
                 "status": bstatus.String, "category": bcategory.String, "intro": bintro.String,
+                // R79-D BUG-161: 加 cover 字段 (coverURL 处理过, 供 homeHandler read view pSEO
+                //   OgImage/TwitterImage 注入消费).
+                "cover":     coverURL(bcover.String),
                 "wordCount": bwc,
         }
         // R57-1B 接入智能 TDK: 调 computeChapterSeo 算 SEO TDK 写入 chapter map.
