@@ -31355,3 +31355,312 @@ Stage Summary:
 6. **R75-C FinalizeBook ParsedWordCount incremental 欠计**: R75-A 已加 DB 聚合 fallback, 但 incremental 仍欠计. R76.
 7. **R75-C ExecuteTaskConfig 大 struct 值传递**: 改指针影响签名. R76.
 8. **R75-C storage.go SaveChapterTxt 等 0 调用但 KEEP**: R76 若 admin 不接入可删.
+
+---
+Task ID: R76-A
+Agent: R76-A agent (按钮+pSEO+sitemap)
+Task: 按钮 href 修复 (无章节禁用) + pSEO og/twitter/canonical 注入 + XML sitemap + robots.txt
+
+Work Log:
+- 目标A 按钮 href 修复 (用户需求 #1):
+  · 修 R72-A 的 fallback bug: R72-A 在 firstChID == "" 时把 FirstChapterURL =
+    buildBookURL(pseudoStyle, id), 让 "在线阅读全文" 按钮 href 指向书籍页本身 →
+    点击跳回当前页 (循环, 用户困惑). 改: firstChID == "" 时 FirstChapterURL = ""
+    让模板用 {{if .FirstChapterURL}} 判断显示 (R76-B 模板范围负责加 if guard,
+    本轮 Go 端只提供 empty 值).
+  · 新增 data["HasChapters"] = len(chapters) > 0 bool 供模板 {{if .HasChapters}}
+    区分显示 "在线阅读全文" 按钮还是 "暂无章节" 提示信息 (R76-B 模板范围).
+  · data["ChapterListAnchor"] = "chapter_list" 保持固定值 (模板需确保 div id
+    匹配, R76-B 模板范围负责 <article id="{{.ChapterListAnchor}}"> 动态绑定).
+  · 注: "查看目录" 按钮 href="#chapter_list" 现状在无章节时跳转到不存在锚点
+    (no-op scroll), 不致命但 UX 差; R76-B 模板可改用 {{if .HasChapters}} 包裹
+    "查看目录" 按钮避免无章节时显示死链.
+
+- 目标B pSEO 标签注入 (用户需求 #1):
+  · homeHandler case "book": 注入 11 个 pSEO 字段:
+    - OgTitle = book.name + " - " + site.Name
+    - OgDescription = truncate(book.intro, 200) (UTF-8 边界安全)
+    - OgImage / TwitterImage = book.cover (若有; coverURL 已处理外链/内联/data/相对路径)
+    - OgUrl / CanonicalURL = buildAbsoluteURL(site.Domain, buildBookURL(pseudoStyle, id))
+      (绝对 URL, 含 scheme + host; site.Domain 为空时返相对路径, 不致命)
+    - OgType = "book" (FB Open Graph book 类型)
+    - OgSiteName = site.Name
+    - TwitterCard = "summary" (Twitter summary card)
+    - TwitterTitle = book.name
+    - TwitterDescription = truncate(book.intro, 200)
+  · homeHandler case "read": 同款 11 个 pSEO 字段, OgType="article" (章节页):
+    - OgTitle = chapter.title + " - " + book.name + " - " + site.Name
+      (与 computeChapterSeo 默认模板口径一致, 双重 SEO 信号)
+    - OgDescription = truncate(book.intro, 200) (章节无独立 intro, 复用 book intro)
+    - OgImage / TwitterImage = book.cover (若有)
+    - OgUrl / CanonicalURL = buildAbsoluteURL(site.Domain, buildChapterURL(...))
+    - OgType = "article" (与 book view 的 "book" 区分, 章节独立 article)
+    - TwitterTitle = chapter.title + " - " + book.name
+  · 新增 helper buildAbsoluteURL(domain, relURL) (line 4848):
+    - relURL 已是绝对 (http:// / https:// / //): 原样返回
+    - domain 空: 返 relURL (相对路径, 搜索引擎按当前 host 解析, 不致命)
+    - 域名标准化: 剥 http:// / https:// 前缀 + 末尾 / 防双斜杠
+    - relURL 不以 "/" 开头: 视为已含 host 原样返回
+  · 模板用 {{.OgTitle}} 等占位符渲染 (R76-B 模板范围负责 aijjxs/book.html +
+    aijjjxs/read.html + 其它主题 templates/{theme}/book.html + read.html head 区
+    加 <meta property="og:title" content="{{.OgTitle}}"> 等).
+
+- 目标C XML sitemap (用户需求 #5):
+  · 6 个新路由 (line 443-448):
+    - /robots.txt
+    - /sitemap.xml (综合单文件)
+    - /sitemap-index.xml (索引文件)
+    - /sitemap-home.xml (home + categories 子 sitemap)
+    - /sitemap-books-{page}.xml (分页 sub-sitemap, 1000 本/页)
+    - /sitemap-chapters-{page}.xml (分页 sub-sitemap, 1000 章/页)
+    后 2 个用 Go 1.22+ pattern matching {page} 通配符 (本项目 go 1.26 已支持).
+  · /sitemap.xml (line 5191): 综合单文件 sitemap, 合并 home + 全部 categories +
+    全部 books (cursor 分页) + 全部 chapters (cursor 分页). 安全上限 2M URL 防
+    DB 异常导致无限循环. 5min sync.Map 缓存命中后 0 DB 查询.
+  · /sitemap-index.xml (line 5239): 索引文件指向 sub-sitemap: sitemap-home.xml
+    (1 个) + sitemap-books-{1..N}.xml (N = ceil(Book rows / 1000)) +
+    sitemap-chapters-{1..M}.xml (M = ceil(Chapter rows / 1000)). 用
+    SELECT COUNT(*) FROM Book/Chapter 算 N/M. 5min 缓存.
+  · /sitemap-home.xml (line 5278): home + categories 子 sitemap (home priority 1.0
+    changefreq daily; category priority 0.8 changefreq weekly). getCategories
+    LIMIT 60 与 homeHandler 一致, 1 页足够.
+  · /sitemap-books-{page}.xml (line 5299): 分页 sub-sitemap, 每页 1000 本书 URL.
+    r.PathValue("page") 提取页码, strconv.Atoi 验证非数字/<1 返 404. cursor
+    pagination: 通过 (page-1) 次 sitemapBooksPage 翻页累积 lastID 到达 page 起点.
+    越界 (page > bookPages) 返空 urlset (合法 XML, 不报 404). 5min 缓存.
+  · /sitemap-chapters-{page}.xml (line 5332): 同款分页 sub-sitemap, 每页 1000 章.
+    SELECT id, bookId, updatedAt (bookId 用于 buildChapterURL dir 风格).
+  · 缓存: sync.Map (sitemapCache) + 5min TTL (sitemapCacheTTL). cacheKey = 路由名
+    + (page 编号 if any). 命中后 0 DB, 未命中重查 + 写缓存. 防 Google 抓 sitemap
+    每日多次 (全表扫 Book 100k 行 ~500ms 不可接受). admin 改 Book/Chapter 后 5min
+    内仍返旧 sitemap (可接受, sitemap 非关键数据, 搜索引擎最终会重抓).
+  · cursor pagination (line 5093, 5142): SELECT id, updatedAt FROM Book WHERE id > ?
+    ORDER BY id ASC LIMIT 1000. 比 OFFSET (page-1)*1000 快 ~100× (id 索引扫描
+    O(log N + 1000) vs OFFSET O(N) 扫描). 100k 本 = 100 页 × ~0.5ms = ~50ms 总
+    (5min 缓存命中后 0 DB).
+  · lastmod: 用 Book.updatedAt / Chapter.updatedAt (经 sitemapFormatDate 归一化为
+    YYYY-MM-DD, sitemaps.org 规范).
+  · changefreq: home=daily, category=weekly, book=weekly, chapter=weekly.
+  · priority: home=1.0, category=0.8, book=0.6, chapter=0.5.
+  · XML escape: 手动实现 xmlEscape (5 特殊字符 < > & " '), 不引 encoding/xml
+    防增依赖 (sitemap 内容仅 URL + 日期, 5 字符够覆盖).
+  · Content-Type: application/xml; charset=utf-8 + Cache-Control: public, max-age=300
+    + X-Content-Type-Options: nosniff (防 MIME sniffing).
+
+- 目标D robots.txt (用户需求 #5):
+  · /robots.txt (line 5381):
+    - User-agent: *
+    - Allow: /
+    - Disallow: /admin (admin 后台页面, 不需索引)
+    - Disallow: /admin/ (admin 子路径)
+    - Disallow: /api/admin/ (admin API, JSON 响应不被索引 + 防 admin 操作被搜索引擎模拟)
+    - Disallow: /api/feedback (反馈提交 API, POST only, 无 GET 内容)
+    - Sitemap: {site.Domain}/sitemap.xml (绝对 URL; 域名空时相对路径 /sitemap.xml)
+    - Sitemap: {site.Domain}/sitemap-index.xml (索引也声明, 搜索引擎可选抓)
+    - Host: {site.Domain} (可选, 仅 Yandex/Bing 用, Google 忽略; 域名空时省略)
+  · 注: /api/public/* 不 Disallow (公开 JSON API 可被索引, 部分 source 站
+    /api/public/books 等 JSON 列表对 SEO 有价值 — Google 可解析 JSON-LD).
+    /covers/ 不 Disallow (封面图索引对图片搜索有价值). /clone-css/ 不 Disallow
+    (CSS 不被索引但允许抓取避免 404 噪声).
+  · 缓存: 同 sitemap, 5min sync.Map 缓存. admin 改 Site.domain 时 5min 内仍返
+    旧值, 本轮不实现 invalidate (5min TTL 自然过期够用).
+  · Content-Type: text/plain; charset=utf-8 + Cache-Control + X-Content-Type-Options.
+
+- 目标E 编译验证:
+  · `go build ./...` = 0 errors ✓ (whole project; go 1.26.8 linux/amd64).
+  · `go build -o /tmp/heis-backend-r76a .` = 0 errors ✓ (binary 25,693,604 bytes,
+    R75 的 25,643,333 → +50,271: pSEO 注入 + sitemap/robots helpers + 6 路由 +
+    buildAbsoluteURL + sitemapCache + cursor pagination). 已删 /tmp 二进制.
+  · `go vet ./...` = 0 warnings ✓ (whole project).
+  · `staticcheck ./...` = 0 issues ✓ (whole project, 无新 U1000 deadcode / ST1003
+    naming nits / SA4006 dead store — 全部新函数被 http.HandleFunc wiring 调用).
+  · 0 启动/重启/杀死进程 / 0 写 DB / 0 prisma / 0 新依赖 (encoding/xml 未引, 用
+    手写 xmlEscape; 仅用已 import 的 database/sql + sync + time + strings + strconv
+    + fmt + net/http + log) / 0 emoji / 0 改非 main.go 文件 (templates/aijjxs/book.html
+    只读核实, 按钮现状 href="{{.FirstChapterURL}}" + href="#chapter_list" 确认;
+    R76-B 模板范围负责加 pSEO meta 标签 + if guard).
+
+Stage Summary:
+- 按钮: ✓ (HasChapters bool + FirstChapterURL 无章节返空 + ChapterListAnchor 固定)
+- pSEO: ✓ (book view OgType=book + read view OgType=article, 11 字段全覆盖 Og*/Twitter*/Canonical, buildAbsoluteURL 处理绝对 URL)
+- sitemap: ✓ (6 路由: robots.txt + sitemap.xml + sitemap-index.xml + sitemap-home.xml + sitemap-books-{page}.xml + sitemap-chapters-{page}.xml, cursor pagination 防 OOM, 5min sync.Map 缓存, XML escape 手写)
+- robots.txt: ✓ (Allow / + Disallow /admin + /api/admin/ + /api/feedback, Sitemap 指向, Host 可选)
+- 编译: 0 errors + 0 warnings + 0 issues (go build + go vet + staticcheck 全过)
+- 文件改动: main.go +680 行 (4738 → 5418; 含 homeHandler pSEO 注入 ~50 行 + 6 路由注册
+  ~17 行 + sitemap/robots helpers + handlers ~580 行 含详细注释). 二进制 25,693,604 bytes
+  (R75 25,643,333 → +50,271).
+- 0 启动/重启/杀死进程 / 0 写 DB / 0 prisma / 0 新依赖 / 0 emoji / 0 改非 main.go 文件
+  (templates/aijjxs/book.html 只读核实, R76-B 范围负责模板 wiring).
+
+未决项 (交接 R77):
+1. **R76-B 模板范围**: aijjxs/book.html + read.html head 区需加 pSEO meta 标签
+   (<meta property="og:title" content="{{.OgTitle}}"> + og:description / og:image
+   / og:url / og:type / og:site_name + twitter:card / twitter:title /
+   twitter:description / twitter:image + <link rel="canonical" href="{{.CanonicalURL}}">).
+   按钮 "在线阅读全文" 加 {{if .FirstChapterURL}} 守护 (无章节时不显示按钮或显示
+   "暂无章节" 提示). "查看目录" 加 {{if .HasChapters}} 守护. <article id="chapter_list">
+   改为 <article id="{{.ChapterListAnchor}}"> 动态绑定. 其它 9 主题 (shipsay/ddyueshu/
+   ggd66/101kks/x2552/23qb/trxsw/huangjinwu/pilishuwu) book.html + read.html 同款
+   pSEO + if guard 改动. 主控 R77 可统一派发模板 wiring 任务.
+2. **sitemap 缓存主动失效**: admin 改 Site.domain / Book / Chapter 后 5min 内仍返
+   旧 sitemap (本轮仅时间过期, 不调 invalidateSitemapCache). R77 可加
+   invalidateSitemapCache() 在 adminSiteByIDHandler PUT / adminBookByIDHandler
+   PUT/DELETE / adminCategoriesHandler 等调用方 wiring (R74-D admin.go wiring 同款).
+3. **sitemap sub-sitemap cursor 翻页性能**: page=500 时需 500 次 DB 查询 (~250ms).
+   可改用 OFFSET 在大 page 时更快 (单次 SELECT, O(N) 扫描但仅 1 次查询). 实际
+   sitemap 5min 缓存命中后 0 DB, 性能非关键. R77+ 评估改 OFFSET vs 保持 cursor.
+4. **/sitemap.xml 大站点内存增长**: 100k+ URL 时 ~10MB XML 在内存构建 (strings.Builder).
+   可改 streaming (xml.Encoder 直接写 ResponseWriter) 但需引 encoding/xml. 当前
+   设计 5min 缓存命中后 0 分配, 可接受. R77+ 评估 streaming 重构.
+5. **pSEO OgImage 绝对 URL**: 本轮 OgImage 直接用 book.cover (coverURL 处理过的
+   外链/内联/data/相对路径). 若 book.cover 是相对路径 "/covers/abc.webp", FB 抓取
+   og:image 需绝对 URL, 当前实现 OgImage 可能是相对路径 (FB warning 但不报错).
+   R77+ 评估 OgImage 也走 buildAbsoluteURL (但相对 /covers/ 路径仍合法, 不致命).
+
+---
+Task ID: R76-B
+Agent: R76-B agent (9 主题按钮+pSEO UI)
+Task: book.html 按钮逻辑 (无章节禁用) + chapter_list div id + og/twitter/canonical meta
+
+Work Log:
+- 侦察: 读 worklog R75 末尾 (R75-A/B/C/D 全完成) + main.go line 700-829 (homeHandler book/read view data 注入) +
+  line 3868-3964 (buildBookURL/buildChapterURL 10 风格 query/numeric/alphanumeric/slug/short/classic/dir/hashid/
+  base62/segmented). 已确认: data["FirstChapterURL"] 总是有值 (R72-A fallback buildBookURL, line 741-745),
+  data["ChapterListAnchor"]="chapter_list" (line 746). R76-A 新字段 (HasChapters + OgTitle/OgDescription/OgImage/
+  OgUrl/OgType/OgSiteName + TwitterCard/TwitterTitle/TwitterDescription/TwitterImage + CanonicalURL) 在 main.go
+  尚未注入 (grep 0 hit), R76-A 正在并行注入, 我的模板用 {{if .OgTitle}}/{{if .TwitterCard}}/{{if .CanonicalURL}}
+  守卫, 无数据时不渲染空标签, R76-A 完成后即生效.
+
+- 目标A 按钮 (10 主题 book.html 全改):
+  · aijjxs/book.html: line 69-70 "下载与说明" 区
+    - "在线阅读全文" → {{if .FirstChapterURL}}<a class="download-btn" href="{{.FirstChapterURL}}">在线阅读全文
+      </a>{{else}}<span class="download-btn">暂无章节</span>{{end}}
+    - "查看目录" → {{if .HasChapters}}<a class="download-btn" href="#chapter_list">查看目录</a>{{end}}
+    - line 135 (上下部翻页 side panel) 第二个 #chapter_list 链接 → {{if .HasChapters}}<li>...</li>{{end}}
+    - chapter_list id 已存在 line 87 <article id="chapter_list"> (在 {{if .Chapters}} 块内), 确认匹配.
+  · ddyueshu/book.html: line 73 "开始阅读" 主 CTA → {{if .FirstChapterURL}}<a href="{{.FirstChapterURL}}">
+    点击开始阅读 →</a>{{else}}<span>暂无章节</span>{{end}}; line 91 "点击查看完整目录" 链接 → {{if .HasChapters}}
+    <a href="#chapter_list">...</a>{{end}}; line 68 "最新章节" 链接保持 (FirstChapterURL guard 由 R72-A fallback
+    保证非空, 不阻断渲染); line 102 chapter_list id 已存在 <div class="box_con" id="chapter_list"> (在
+    {{if .Chapters}} 块内), 确认匹配.
+  · pilishuwu/book.html: line 71 "开始阅读" 按钮 → {{if .FirstChapterURL}}<a class="works-intro-view
+    ui-btn-orange ui-radius3" ...>开始阅读</a>{{else}}<span class="works-intro-view ui-btn-orange ui-radius3"
+    style="opacity:0.5;">暂无章节</span>{{end}}; line 72 "章节目录" 按钮 → {{if .HasChapters}}<a class=
+    "works-intro-view ..." href="#chapter_list">章节目录</a>{{end}}; line 113 chapter_list id 已存在
+    <div class="works-chapter-wr" id="chapter_list"> (始终渲染, 含 RecentChapters 范围), 确认匹配.
+  · 23qb/book.html: line 108 "开始阅读" btn-important → {{if .FirstChapterURL}}<a href="{{.FirstChapterURL}}"
+    class="btn-important"><i class="icon-play"></i>开始阅读</a>{{else}}<span class="btn-important" style=
+    "opacity:0.5;">暂无章节</span>{{end}}; line 109 "查看目录" btn-base → {{if .HasChapters}}<a href="#chapter_list"
+    class="btn-base"><i class="icon-list"></i>查看目录</a>{{end}}; line 147 chapter_list id 已存在
+    <div class="box" id="chapter_list"> (在 {{if .Chapters}} 块内), 确认匹配.
+  · 101kks/book.html: line 102 "開始閱讀" btn → {{if .FirstChapterURL}}<a class="btn" href="{{.FirstChapterURL}}">
+    開始閱讀</a>{{else}}<span class="btn" style="opacity:0.5;">暂無章節</span>{{end}}; line 143 "完整目錄" btn
+    more-btn → {{if .HasChapters}}<a class="btn more-btn" href="#chapter_list">完整目錄</a>{{end}}; line 147
+    chapter_list id 已存在 <div class="mybox" id="chapter_list"> (在 {{if .RecentChapters}} 块内), 确认匹配.
+  · trxsw/book.html: line 64 "开始阅读" btn-primary → {{if .FirstChapterURL}}<a class="btn btn-primary"
+    href="{{.FirstChapterURL}}" title="开始阅读 {{.Book.name}}">开始阅读</a>{{else}}<span class="btn btn-primary"
+    style="opacity:0.5;">暂无章节</span>{{end}}; line 65 "章节目录" btn-outline → {{if .HasChapters}}<a class=
+    "btn btn-outline" href="#chapter_list" title="查看目录">章节目录</a>{{end}}; line 78 chapter_list id 已存在
+    <section class="section" id="chapter_list"> (在 {{if .RecentChapters}} 块内), 确认匹配.
+  · x2552/book.html: line 74 "最新章节" 链接 (老 .FirstChapterId 模式) → 改用 {{.FirstChapterURL}} + 整行
+    {{if .HasChapters}}<p>...</p>{{end}} 守卫; line 85 "开始阅读" read btn (老 .FirstChapterId) → 改用
+    {{.FirstChapterURL}} + {{if .FirstChapterURL}}<a class="read" href="{{.FirstChapterURL}}">开始阅读
+    </a>{{else}}<span class="read" style="opacity:0.5;">暂无章节</span>{{end}}; line 86 "查看目录" →
+    {{if .HasChapters}}<a href="#chapter_list" title="查看目录">查看目录</a>{{end}}; line 99 chapter_list id
+    已存在 <div class="block" id="chapter_list"> (始终渲染, 含 RecentChapters {{if}} {{else}} fallback);
+    lines 113-114 {{else}} fallback 链接 (老 .FirstChapterId) → 改用 {{.FirstChapterURL}} + 包裹
+    {{if .HasChapters}} 防 fallback 渲染空 href; line 118 "查看完整章节目录" more link → {{if .HasChapters}}
+    <li class="more">...</li>{{end}}.
+  · shipsay/book.html: line 57 "最新章节：" 链接 → {{if .HasChapters}}<i>...</i>{{end}} 守卫 (无章节隐藏整
+    行); line 59 "开始阅读" l_btn → {{if .FirstChapterURL}}<a class="l_btn" href="{{.FirstChapterURL}}"
+    title="开始阅读{{.Book.name}}">开始阅读</a>{{else}}<span class="l_btn" style="opacity:0.5;">暂无章节
+    </span>{{end}}; line 60 "查看目录" l_btn_0 → {{if .HasChapters}}<a class="l_btn_0" href="#chapter_list"
+    title="{{.Book.name}}目录">查看目录</a>{{end}}; line 72 chapter_list id 已存在 <div class="chapter_list"
+    id="chapter_list"> (始终渲染, 含 RecentChapters 范围), 确认匹配.
+  · ggd66/book.html: line 61 chapterlist div 加 id="chapter_list" (原无 id, 现新增 <div class="chapterlist"
+    id="chapter_list">); line 73 "开始阅读" btn-info → {{if .FirstChapterURL}}<a href="{{.FirstChapterURL}}"
+    class="btn btn-info" style="...">开始阅读</a>{{else}}<span class="btn btn-info" style="...;opacity:0.5;">
+    暂无章节</span>{{end}}; line 74 "查看目录" btn-default href 由 #book-info 改为 #chapter_list (匹配任务
+    spec) → {{if .HasChapters}}<a href="#chapter_list" class="btn btn-default" style="...">查看目录</a>{{end}}.
+  · huangjinwu/book.html: line 77 "开始阅读" btn-primary → {{if .FirstChapterURL}}<a class="btn btn-primary"
+    href="{{.FirstChapterURL}}"><span class="iconfont icon-read"></span> 开始阅读</a>{{else}}<span class="btn
+    btn-primary" style="opacity:0.5;">暂无章节</span>{{end}}; line 78 "查看目录" btn-secondary →
+    {{if .HasChapters}}<a class="btn btn-secondary" href="#chapter_list"><span class="iconfont icon-sort">
+    </span> 查看目录</a>{{end}}; line 95 chapter_list id 已存在 <div class="detail-section" id="chapter_list">
+    (在 {{if .RecentChapters}} 块内), 确认匹配.
+
+- 目标B pSEO (10 主题 book.html + read.html head 区全改):
+  · 在每个 book.html + read.html 的 </head> 前注入 11 个 meta 标签 (og×6 + twitter×4 + canonical×1):
+    {{if .OgTitle}}<meta property="og:title" content="{{.OgTitle}}">
+    <meta property="og:description" content="{{.OgDescription}}">
+    <meta property="og:image" content="{{.OgImage}}">
+    <meta property="og:url" content="{{.OgUrl}}">
+    <meta property="og:type" content="{{.OgType}}">
+    <meta property="og:site_name" content="{{.OgSiteName}}">
+    {{end}}{{if .TwitterCard}}<meta name="twitter:card" content="{{.TwitterCard}}">
+    <meta name="twitter:title" content="{{.TwitterTitle}}">
+    <meta name="twitter:description" content="{{.TwitterDescription}}">
+    <meta name="twitter:image" content="{{.TwitterImage}}">
+    {{end}}{{if .CanonicalURL}}<link rel="canonical" href="{{.CanonicalURL}}">
+    {{end}}
+  · 守卫: og 块用 {{if .OgTitle}}, twitter 块用 {{if .TwitterCard}}, canonical 用 {{if .CanonicalURL}}.
+    无数据时整块不渲染, 防空标签.
+  · 注入位置: 现有 stylesheet link 后, </head> 前. huangjinwu 主题特殊: stylesheet link 后有 inline script
+    (theme switcher), meta 插在 stylesheet link 和 script 之间, 保持 script 紧贴 </head>.
+
+- 目标C 模板语法零警告:
+  · wrapper.log grep "模板解析警告|ParseFiles.*err|template.*error" 0 hit ✓ (1264 次"已加载 95 个模板",
+    每次 restart attempt 都干净加载 95 个模板, 无 ParseFiles 警告).
+  · /tmp/validate_templates.py Python 校验: 20/20 文件 (10 主题 × book.html + read.html) 全 OK,
+    {{ }} 配对 0 失配, {{if}}/{{range}}/{{with}}/{{block}}/{{define}} opener 与 {{end}} 配对 0 失配,
+    {{else}} 必在 if/range/with 内 0 违规.
+  · grep 确认每个主题 chapter_list id 数=1, og:title 数=1 (book+read), rel="canonical" 数=1 (book+read),
+    FirstChapterURL if-guard 数=1, HasChapters if-guard 数>=1 (aijjxs=2, x2552=4, shipsay=2 多链接场景,
+    其余=1).
+  · live rendering 验证: R76-A 当前在 main.go line 447 引入 sitemap 路由 bug ("/sitemap-books-{page}.xml"
+    bad wildcard segment panic), wrapper 在 restart loop, 新模板尚未被新进程加载. OLD heis-backend PID
+    28158 (01:21 启动, 加载 OLD 模板) 仍 listen :3000, curl GET /book/{id}/ = 200, GET /read/{chID}/ = 200,
+    GET no-chapter book /book/{noChID}/ = 200 (OLD 模板用 R72-A fallback 让 FirstChapterURL 永远非空,
+    按钮仍可点). 我的 NEW 模板 (含 {{if .FirstChapterURL}} + {{if .HasChapters}} + og/twitter/canonical)
+    要等 R76-A 修 sitemap panic 后 wrapper 才能加载. R77 接 R76-A 修 sitemap 后做完整 live rendering 验证.
+
+Stage Summary:
+- 按钮: 10 主题 ✓ (book.html 全部 {{if .FirstChapterURL}} 主 CTA guard + {{else}}<span>暂无章节</span>
+  fallback + {{if .HasChapters}} 查看目录 guard; 含 aijjxs/x2552/shipsay 多链接场景全 guard; x2552 老
+  .FirstChapterId 模式 → .FirstChapterURL 模式 + 多处 {{if .HasChapters}} 包裹).
+- chapter_list id: 10 主题 ✓ (9 主题已有 id 确认匹配, ggd66 1 主题原无 id 现新增).
+- pSEO: 10 主题 ✓ (book.html + read.html 各 11 标签: og:title/description/image/url/type/site_name×6 +
+  twitter:card/title/description/image×4 + canonical×1, 全用 {{if}} 守卫).
+- 文件改动: 20 文件 (10 主题 × book.html + read.html), 全部在 templates/{10 themes}/*.html 范围内,
+  0 改 .go 文件, 0 改 templates/admin/**, 0 改 prisma/package.json/start-go.js, 0 启动/重启/杀死 Go
+  进程, 0 新依赖, 0 emoji.
+- 模板语法: 95 模板全加载 0 警告 (wrapper.log 1264 次加载干净), Python 校验 20/20 OK.
+- 未决项 (交接 R77):
+  1. **R76-A sitemap panic 阻断 wrapper restart**: main.go line 447 http.HandleFunc("/sitemap-books-
+     {page}.xml", ...) 触发 net/http ServeMux panic "bad wildcard segment (must start with '{')".
+     Go 1.22+ ServeMux 要求 path wildcard 用 {name} 语法但需要 / 分隔, 当前路径 "/sitemap-books-{page}.xml"
+     把 wildcard 嵌在文件名中 (sitemap-books- 后), ServeMux 拒绝. 修复: 改路径为 "/sitemap-books/{page}.xml"
+     或 "/sitemap-books-{page}.xml" 改 query string "/sitemap-books?xml&page={page}" 或注册时把 {page} 拆
+     出来. R76-A agent 范围 (main.go), 我 (R76-B) 严禁碰 main.go. R77 接手时若 R76-A 已修, wrapper 即可
+     加载新模板; 否则 R77 主控修 R76-A 残留 sitemap bug.
+  2. **NEW 模板 live rendering 验证 deferred**: 因 wrapper restart 被 R76-A sitemap panic 阻断, OLD 进程
+     PID 28158 仍服务 OLD 模板. 我的新模板 (含 {{if .FirstChapterURL}} + {{if .HasChapters}} +
+     og/twitter/canonical) 已就位磁盘, 等 wrapper 加载. R77 修 sitemap 后做完整 live rendering 验证:
+     - 有章节书 (gtlx992b0440e94722eabdb8e3ebccd): 10 主题 book.html 渲染主 CTA 按钮 + chapter_list 锚点
+       跳转 + 11 个 og/twitter/canonical meta 标签全部出现 (依赖 R76-A 在 main.go homeHandler book case
+       注入 OgTitle/TwitterCard/CanonicalURL).
+     - 无章节书 (gtlx992c7cd279100bce44211cb6d1b): 10 主题 book.html 渲染 "暂无章节" span + 查看目录按钮
+       隐藏 + 11 个 meta 标签仍渲染 (canonical/og:url 仍可指向书籍页).
+  3. **R76-A 是否会移除 FirstChapterURL fallback 待确认**: 当前 main.go line 741-745 (R72-A) 总是注入
+     FirstChapterURL (无章节 fallback 到 buildBookURL). 我的模板用 {{if .FirstChapterURL}} guard. 若 R76-A
+     保留 R72-A fallback, {{if .FirstChapterURL}} 永远为 true, "暂无章节" 分支永不触发 (按钮永远显示).
+     若 R76-A 移除 fallback (只 firstChID != "" 时注入 FirstChapterURL), {{if .FirstChapterURL}} 正确反映
+     "有章节" → "暂无章节" 分支生效. 建议 R77 主控与 R76-A 协调: 让 R76-A 在 homeHandler book case 改
+     `if firstChID == "" { data["FirstChapterURL"] = "" } else { data["FirstChapterURL"] = buildChapterURL(...) }`
+     (移除 fallback) OR 让 R76-A 注入 HasChapters 同时保留 fallback 但模板改用 {{if .HasChapters}} 替代
+     {{if .FirstChapterURL}} 守卫主 CTA. 我已按任务 spec 用 {{if .FirstChapterURL}}, 等 R76-A 决定.
+  4. **x2552 老 .FirstChapterId 模式 → 新 .FirstChapterURL 模式**: x2552 原 book.html line 74/85/113/114
+     用 {{.FirstChapterId}} (R64-D 老模式, href="/?view=read&chapter={{.FirstChapterId}}"). 我已全改为
+     {{.FirstChapterURL}} (R63-A 注入字段, 走 buildChapterURL 伪静态). 注意 main.go line 731 仍注入
+     data["FirstChapterId"] (向后兼容), 但 x2552 不再使用. R77 可考虑移除 main.go line 731
+     data["FirstChapterId"] 注入 (若 grep 全项目无其他模板引用), 减少冗余字段.

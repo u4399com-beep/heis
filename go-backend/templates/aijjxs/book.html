@@ -7,7 +7,18 @@
 <meta name="keywords" content="{{.Book.name}},{{.Book.name}}全文,{{.Book.name}}txt下载,{{.Book.name}}{{.Site.Name}}">
 <meta name="description" content="《{{.Book.name}}》,作者：{{.Book.author}}，简介:{{.Book.intro}}">
 <link rel="stylesheet" href="/clone-css/aijjxs.css">
-</head>
+{{if .OgTitle}}<meta property="og:title" content="{{.OgTitle}}">
+<meta property="og:description" content="{{.OgDescription}}">
+<meta property="og:image" content="{{.OgImage}}">
+<meta property="og:url" content="{{.OgUrl}}">
+<meta property="og:type" content="{{.OgType}}">
+<meta property="og:site_name" content="{{.OgSiteName}}">
+{{end}}{{if .TwitterCard}}<meta name="twitter:card" content="{{.TwitterCard}}">
+<meta name="twitter:title" content="{{.TwitterTitle}}">
+<meta name="twitter:description" content="{{.TwitterDescription}}">
+<meta name="twitter:image" content="{{.TwitterImage}}">
+{{end}}{{if .CanonicalURL}}<link rel="canonical" href="{{.CanonicalURL}}">
+{{end}}</head>
 <body class="page-info">
 <div class="top-float">
 <div class="top-float-inner">
@@ -66,8 +77,8 @@
 <article class="panel" style="margin-top:14px;">
 <h3>下载与说明</h3>
 <div class="body">
-<a class="download-btn" href="{{.FirstChapterURL}}">在线阅读全文</a>
-<a class="download-btn" href="#chapter_list">查看目录</a>
+{{if .FirstChapterURL}}<a class="download-btn" href="{{.FirstChapterURL}}">在线阅读全文</a>{{else}}<span class="download-btn">暂无章节</span>{{end}}
+{{if .HasChapters}}<a class="download-btn" href="#chapter_list">查看目录</a>{{end}}
 <div class="tips">本站所有小说电子书均系网友上传，仅供书友之间免费下载预览！</div>
 </div>
 </article>
@@ -132,7 +143,7 @@
 <div class="body">
 <ul class="lines">
 <li><a href="/?view=category{{if .Book.categoryId}}&cat={{.Book.categoryId}}{{end}}">返回列表</a></li>
-<li><a href="#chapter_list">查看目录</a></li>
+{{if .HasChapters}}<li><a href="#chapter_list">查看目录</a></li>{{end}}
 </ul>
 </div>
 </article>

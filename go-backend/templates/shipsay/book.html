@@ -8,7 +8,18 @@
 <meta name="description" content="{{.Book.intro}}">
 <link rel="stylesheet" href="https://cdn.staticfile.org/font-awesome/4.7.0/css/font-awesome.min.css">
 <link rel="stylesheet" href="/clone-css/shipsay.css">
-</head>
+{{if .OgTitle}}<meta property="og:title" content="{{.OgTitle}}">
+<meta property="og:description" content="{{.OgDescription}}">
+<meta property="og:image" content="{{.OgImage}}">
+<meta property="og:url" content="{{.OgUrl}}">
+<meta property="og:type" content="{{.OgType}}">
+<meta property="og:site_name" content="{{.OgSiteName}}">
+{{end}}{{if .TwitterCard}}<meta name="twitter:card" content="{{.TwitterCard}}">
+<meta name="twitter:title" content="{{.TwitterTitle}}">
+<meta name="twitter:description" content="{{.TwitterDescription}}">
+<meta name="twitter:image" content="{{.TwitterImage}}">
+{{end}}{{if .CanonicalURL}}<link rel="canonical" href="{{.CanonicalURL}}">
+{{end}}</head>
 <body>
 <header>
 <div class="container head">
@@ -54,10 +65,10 @@
 <span>字数：{{wordCount .Book.wordCount}}</span>
 <span>更新：{{fmtDate .Book.updatedAt}}</span>
 </p>
-<i>最新章节：{{if .Book.latestChapter}}<a href="{{.FirstChapterURL}}">{{.Book.latestChapter}}</a>{{else}}<a href="{{.FirstChapterURL}}">第1章</a>{{end}}</i>
+{{if .HasChapters}}<i>最新章节：{{if .Book.latestChapter}}<a href="{{.FirstChapterURL}}">{{.Book.latestChapter}}</a>{{else}}<a href="{{.FirstChapterURL}}">第1章</a>{{end}}</i>{{end}}
 <div>
-<a class="l_btn" href="{{.FirstChapterURL}}" title="开始阅读{{.Book.name}}">开始阅读</a>
-<a class="l_btn_0" href="#chapter_list" title="{{.Book.name}}目录">查看目录</a>
+{{if .FirstChapterURL}}<a class="l_btn" href="{{.FirstChapterURL}}" title="开始阅读{{.Book.name}}">开始阅读</a>{{else}}<span class="l_btn" style="opacity:0.5;">暂无章节</span>{{end}}
+{{if .HasChapters}}<a class="l_btn_0" href="#chapter_list" title="{{.Book.name}}目录">查看目录</a>{{end}}
 </div>
 </div>
 <div class="indent">

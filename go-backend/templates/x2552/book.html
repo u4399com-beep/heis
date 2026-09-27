@@ -6,7 +6,18 @@
 <meta name="keywords" content="{{.Site.Keywords}},{{.Book.name}},{{.Book.author}},{{.Book.category}}">
 <meta name="description" content="{{.Book.intro}}">
 <link rel="stylesheet" href="/clone-css/x2552.css" type="text/css">
-</head>
+{{if .OgTitle}}<meta property="og:title" content="{{.OgTitle}}">
+<meta property="og:description" content="{{.OgDescription}}">
+<meta property="og:image" content="{{.OgImage}}">
+<meta property="og:url" content="{{.OgUrl}}">
+<meta property="og:type" content="{{.OgType}}">
+<meta property="og:site_name" content="{{.OgSiteName}}">
+{{end}}{{if .TwitterCard}}<meta name="twitter:card" content="{{.TwitterCard}}">
+<meta name="twitter:title" content="{{.TwitterTitle}}">
+<meta name="twitter:description" content="{{.TwitterDescription}}">
+<meta name="twitter:image" content="{{.TwitterImage}}">
+{{end}}{{if .CanonicalURL}}<link rel="canonical" href="{{.CanonicalURL}}">
+{{end}}</head>
 <body>
 <div class="main m_head">
 <div class="h_logo fl"><a href="/"><img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iNjAiPjxyZWN0IHdpZHRoPSIxODAiIGhlaWdodD0iNjAiIGZpbGw9IiMyZjQ2OGYiLz48dGV4dCB4PSI5MCIgeT0iMzgiIGZvbnQtc2l6ZT0iMjIiIGZvbnQtZmFtaWx5PSJzYW5zLXNlcmlmIiBmaWxsPSIjZmZmIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXdlaWdodD0iYm9sZCI+5bCP6K+056uZPC90ZXh0Pjwvc3ZnPg==" alt="{{.Site.Name}}"></a></div>
@@ -71,7 +82,7 @@
 <p>类&nbsp;&nbsp;&nbsp;&nbsp;别：{{if .Book.categoryId}}<a href="/?view=category&cat={{.Book.categoryId}}">{{.Book.category}}</a>{{else}}<span>{{.Book.category}}</span>{{end}}</p>
 <p>状&nbsp;&nbsp;&nbsp;&nbsp;态：<span class="hottext">{{statusLabel .Book.status}}</span></p>
 <p>字&nbsp;&nbsp;&nbsp;&nbsp;数：<span class="hottext">{{wordCount .Book.wordCount}}</span></p>
-<p>最新章节：<a href="/?view=read&chapter={{.FirstChapterId}}" title="{{if .Book.latestChapter}}{{.Book.latestChapter}}{{else}}第1章{{end}}">{{if .Book.latestChapter}}{{.Book.latestChapter}}{{else}}第1章{{end}}</a><span style="color:#999;margin-left:8px;">{{fmtDate .Book.updatedAt}}</span></p>
+{{if .HasChapters}}<p>最新章节：<a href="{{.FirstChapterURL}}" title="{{if .Book.latestChapter}}{{.Book.latestChapter}}{{else}}第1章{{end}}">{{if .Book.latestChapter}}{{.Book.latestChapter}}{{else}}第1章{{end}}</a><span style="color:#999;margin-left:8px;">{{fmtDate .Book.updatedAt}}</span></p>{{end}}
 </td>
 </tr>
 <tr>
@@ -82,8 +93,8 @@
 <span style="line-height:26px;text-indent:2em;display:block;">{{.Book.intro}}</span>
 </div>
 <div class="btnlinks">
-<a class="read" href="/?view=read&chapter={{.FirstChapterId}}" title="开始阅读{{.Book.name}}">开始阅读</a>
-<a href="#chapter_list" title="查看目录">查看目录</a>
+{{if .FirstChapterURL}}<a class="read" href="{{.FirstChapterURL}}" title="开始阅读{{.Book.name}}">开始阅读</a>{{else}}<span class="read" style="opacity:0.5;">暂无章节</span>{{end}}
+{{if .HasChapters}}<a href="#chapter_list" title="查看目录">查看目录</a>{{end}}
 <a href="/?view=history" title="加入书架">加入书架</a>
 {{if .Book.categoryId}}<a href="/?view=category&cat={{.Book.categoryId}}" title="返回列表">返回列表</a>{{end}}
 </div>
@@ -108,14 +119,14 @@
 <p>{{$.Book.author}}</p>{{fmtDateShort $.Book.updatedAt}}
 </li>
 {{end}}
-{{else}}
+{{else}}{{if .HasChapters}}
 <li>
-<p class="ul1">《<a class="poptext" href="/?view=read&chapter={{.FirstChapterId}}">{{.Book.name}}</a>》</p>
-<p class="ul2"><a href="/?view=read&chapter={{.FirstChapterId}}">{{if .Book.latestChapter}}{{.Book.latestChapter}}{{else}}第1章{{end}}</a></p>
+<p class="ul1">《<a class="poptext" href="{{.FirstChapterURL}}">{{.Book.name}}</a>》</p>
+<p class="ul2"><a href="{{.FirstChapterURL}}">{{if .Book.latestChapter}}{{.Book.latestChapter}}{{else}}第1章{{end}}</a></p>
 <p>{{.Book.author}}</p>{{fmtDateShort .Book.updatedAt}}
 </li>
-{{end}}
-<li class="more"><a href="#chapter_list">查看完整章节目录...</a></li>
+{{end}}{{end}}
+{{if .HasChapters}}<li class="more"><a href="#chapter_list">查看完整章节目录...</a></li>{{end}}
 </ul>
 </div>
 </div>

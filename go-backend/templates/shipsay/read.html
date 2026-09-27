@@ -8,7 +8,18 @@
 <meta name="description" content="{{.Chapter.seoDesc}}">
 <link rel="stylesheet" href="https://cdn.staticfile.org/font-awesome/4.7.0/css/font-awesome.min.css">
 <link rel="stylesheet" href="/clone-css/shipsay.css">
-</head>
+{{if .OgTitle}}<meta property="og:title" content="{{.OgTitle}}">
+<meta property="og:description" content="{{.OgDescription}}">
+<meta property="og:image" content="{{.OgImage}}">
+<meta property="og:url" content="{{.OgUrl}}">
+<meta property="og:type" content="{{.OgType}}">
+<meta property="og:site_name" content="{{.OgSiteName}}">
+{{end}}{{if .TwitterCard}}<meta name="twitter:card" content="{{.TwitterCard}}">
+<meta name="twitter:title" content="{{.TwitterTitle}}">
+<meta name="twitter:description" content="{{.TwitterDescription}}">
+<meta name="twitter:image" content="{{.TwitterImage}}">
+{{end}}{{if .CanonicalURL}}<link rel="canonical" href="{{.CanonicalURL}}">
+{{end}}</head>
 <body>
 <header>
 <div class="container head">

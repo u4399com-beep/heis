@@ -7,7 +7,18 @@
 <meta name="keywords" content="{{.Book.name}},{{.Book.author}},{{.Book.category}},{{.Site.Keywords}}">
 <meta name="description" content="{{.Book.intro}}">
 <link rel="stylesheet" href="/clone-css/23qb.css">
-</head>
+{{if .OgTitle}}<meta property="og:title" content="{{.OgTitle}}">
+<meta property="og:description" content="{{.OgDescription}}">
+<meta property="og:image" content="{{.OgImage}}">
+<meta property="og:url" content="{{.OgUrl}}">
+<meta property="og:type" content="{{.OgType}}">
+<meta property="og:site_name" content="{{.OgSiteName}}">
+{{end}}{{if .TwitterCard}}<meta name="twitter:card" content="{{.TwitterCard}}">
+<meta name="twitter:title" content="{{.TwitterTitle}}">
+<meta name="twitter:description" content="{{.TwitterDescription}}">
+<meta name="twitter:image" content="{{.TwitterImage}}">
+{{end}}{{if .CanonicalURL}}<link rel="canonical" href="{{.CanonicalURL}}">
+{{end}}</head>
 <body class="homepage">
 <header id="header" class="wrapper">
 <div class="header-content">
@@ -105,8 +116,8 @@
 </div>
 
 <div class="novel-info-footer">
-<a href="{{.FirstChapterURL}}" class="btn-important"><i class="icon-play"></i>开始阅读</a>
-<a href="#chapter_list" class="btn-base"><i class="icon-list"></i>查看目录</a>
+{{if .FirstChapterURL}}<a href="{{.FirstChapterURL}}" class="btn-important"><i class="icon-play"></i>开始阅读</a>{{else}}<span class="btn-important" style="opacity:0.5;">暂无章节</span>{{end}}
+{{if .HasChapters}}<a href="#chapter_list" class="btn-base"><i class="icon-list"></i>查看目录</a>{{end}}
 </div>
 </div>
 </div>

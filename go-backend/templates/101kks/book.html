@@ -9,7 +9,18 @@
 <meta name="keywords" content="{{.Book.name}},{{.Book.author}},{{.Book.category}},{{.Site.Keywords}}">
 <meta name="description" content="{{.Book.intro}}">
 <link rel="stylesheet" type="text/css" href="/clone-css/101kks.css">
-</head>
+{{if .OgTitle}}<meta property="og:title" content="{{.OgTitle}}">
+<meta property="og:description" content="{{.OgDescription}}">
+<meta property="og:image" content="{{.OgImage}}">
+<meta property="og:url" content="{{.OgUrl}}">
+<meta property="og:type" content="{{.OgType}}">
+<meta property="og:site_name" content="{{.OgSiteName}}">
+{{end}}{{if .TwitterCard}}<meta name="twitter:card" content="{{.TwitterCard}}">
+<meta name="twitter:title" content="{{.TwitterTitle}}">
+<meta name="twitter:description" content="{{.TwitterDescription}}">
+<meta name="twitter:image" content="{{.TwitterImage}}">
+{{end}}{{if .CanonicalURL}}<link rel="canonical" href="{{.CanonicalURL}}">
+{{end}}</head>
 <body>
 <div class="leftmenu">
 <div class="menu_close_btn"><i class="iconfont icon-close"></i></div>
@@ -99,7 +110,7 @@
 </div>
 
 <div class="addbtn">
-<a class="btn" href="{{.FirstChapterURL}}">開始閱讀</a>
+{{if .FirstChapterURL}}<a class="btn" href="{{.FirstChapterURL}}">開始閱讀</a>{{else}}<span class="btn" style="opacity:0.5;">暂無章節</span>{{end}}
 <a class="btn" href="/?view=history">加入書架</a>
 <a class="btn" href="javascript:;">投推薦票</a>
 </div>
@@ -140,7 +151,7 @@
 </div>
 </div>
 
-<a class="btn more-btn" href="#chapter_list">完整目錄</a>
+{{if .HasChapters}}<a class="btn more-btn" href="#chapter_list">完整目錄</a>{{end}}
 </div>
 
 {{if .RecentChapters}}

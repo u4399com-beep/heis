@@ -8,7 +8,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0">
 <link rel="stylesheet" href="https://cdn.staticfile.org/font-awesome/4.7.0/css/font-awesome.min.css">
 <link rel="stylesheet" href="/clone-css/ggd66.css">
-</head>
+{{if .OgTitle}}<meta property="og:title" content="{{.OgTitle}}">
+<meta property="og:description" content="{{.OgDescription}}">
+<meta property="og:image" content="{{.OgImage}}">
+<meta property="og:url" content="{{.OgUrl}}">
+<meta property="og:type" content="{{.OgType}}">
+<meta property="og:site_name" content="{{.OgSiteName}}">
+{{end}}{{if .TwitterCard}}<meta name="twitter:card" content="{{.TwitterCard}}">
+<meta name="twitter:title" content="{{.TwitterTitle}}">
+<meta name="twitter:description" content="{{.TwitterDescription}}">
+<meta name="twitter:image" content="{{.TwitterImage}}">
+{{end}}{{if .CanonicalURL}}<link rel="canonical" href="{{.CanonicalURL}}">
+{{end}}</head>
 <body>
 <div class="header">
 <div class="container">
@@ -58,7 +69,7 @@
 </div>
 
 <div class="book">
-<div class="chapterlist">
+<div class="chapterlist" id="chapter_list">
 <dl>
 {{range .Chapters}}<dd><a href="{{.URL}}" title="{{.title}}">{{.title}}</a></dd>
 {{end}}
@@ -70,8 +81,8 @@
 
 <div class="book">
 <div style="padding: 10px 0; text-align: center;">
-<a href="{{.FirstChapterURL}}" class="btn btn-info" style="display:inline-block;padding:6px 24px;margin-right:10px;text-decoration:none;">开始阅读</a>
-<a href="#book-info" class="btn btn-default" style="display:inline-block;padding:6px 24px;text-decoration:none;">查看目录</a>
+{{if .FirstChapterURL}}<a href="{{.FirstChapterURL}}" class="btn btn-info" style="display:inline-block;padding:6px 24px;margin-right:10px;text-decoration:none;">开始阅读</a>{{else}}<span class="btn btn-info" style="display:inline-block;padding:6px 24px;margin-right:10px;text-decoration:none;opacity:0.5;">暂无章节</span>{{end}}
+{{if .HasChapters}}<a href="#chapter_list" class="btn btn-default" style="display:inline-block;padding:6px 24px;text-decoration:none;">查看目录</a>{{end}}
 </div>
 <div class="clear"></div>
 </div>

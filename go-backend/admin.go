@@ -2065,14 +2065,48 @@ func adminBookByIDHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		// 级联清理: Chapter + BookTag + DownloadJob + Book (无外键约束, 手动清).
 		// 顺序: DB DELETE 在前 → map-clean 在后. (R69-D BUG-84)
-		_, _ = db.Exec(`DELETE FROM Chapter WHERE bookId=?`, bookID)
-		_, _ = db.Exec(`DELETE FROM BookTag WHERE bookId=?`, bookID)
-		_, _ = db.Exec(`DELETE FROM DownloadJob WHERE bookId=?`, bookID)
-		_, err := db.Exec(`DELETE FROM Book WHERE id=?`, bookID)
-		if err != nil {
+		// R76-D BUG-149 (P2, R73-D BUG-105 同款 pattern): 4 个 DELETE 包裹事务.
+		//   原实现 4 个独立 db.Exec, 任一中途失败 (e.g. Chapter DELETE 成功但 Book
+		//   DELETE 失败, SQLite 磁盘满 / 连接断) → 半删状态 (Book 残留但 Chapter 全
+		//   删, 前台显示"0 章"孤儿 Book 行; 或 inverse: Book 删了但 Chapter 残留
+		//   orphan rows bookId 指向已删 Book). SQLite FK 未启用 (PRAGMA foreign_keys
+		//   = 0, custom.db 实测), onDelete:Cascade 在 schema 但 DB 不强制, 显式
+		//   DELETE 是必需, 但原子性需 tx 保证. 与 R73-D BUG-105 adminBackupClearHandler
+		//   6 DELETE 事务包裹同款方法论. map-clean (downloadFiles) 仍在 tx 外 (内存
+		//   状态, 不需 DB 原子性; R69-D BUG-84 race fix order "DB DELETE 在前 → map-clean
+		//   在后" 仍保持, tx.Commit 后做 map-clean).
+		tx, txErr := db.BeginTx(r.Context(), nil)
+		if txErr != nil {
+			writeJSONErr(w, "开启事务失败: "+txErr.Error(), 500)
+			return
+		}
+		committed := false
+		defer func() {
+			if !committed {
+				_ = tx.Rollback()
+			}
+		}()
+		if _, err := tx.Exec(`DELETE FROM Chapter WHERE bookId=?`, bookID); err != nil {
+			writeJSONErr(w, "删除章节失败: "+err.Error(), 500)
+			return
+		}
+		if _, err := tx.Exec(`DELETE FROM BookTag WHERE bookId=?`, bookID); err != nil {
+			writeJSONErr(w, "删除标签失败: "+err.Error(), 500)
+			return
+		}
+		if _, err := tx.Exec(`DELETE FROM DownloadJob WHERE bookId=?`, bookID); err != nil {
+			writeJSONErr(w, "删除下载任务失败: "+err.Error(), 500)
+			return
+		}
+		if _, err := tx.Exec(`DELETE FROM Book WHERE id=?`, bookID); err != nil {
 			writeJSONErr(w, "删除失败: "+err.Error(), 500)
 			return
 		}
+		if err := tx.Commit(); err != nil {
+			writeJSONErr(w, "提交事务失败: "+err.Error(), 500)
+			return
+		}
+		committed = true
 		// 后清扫内存下载缓存 (用预收集的 jobID 集, 在 DB DELETE 后做 map-clean).
 		// goroutine 此时 SELECT status 返 ErrNoRows (row gone) → skip write;
 		// 或 goroutine 已 write map (在 DELETE 前抢到 Lock) → 这里 delete map 清掉.
@@ -3183,6 +3217,16 @@ func adminThemesHandler(w http.ResponseWriter, r *http.Request) {
 			var n int
 			_ = rows.Scan(&themeID, &n)
 			counts[themeID] = n
+		}
+		// R76-D BUG-147 (P3, R75-D BUG-128~139 series): rows.Err() 检查 —
+		//   mid-iteration 错误静默吞, counts 部分缺失 → API 返部分主题
+		//   siteCount 错误. R75-D 已给 SSR fillThemesPageData 加同款检查
+		//   (BUG-135 log.Printf best-effort), API 端 adminThemesHandler 漏修.
+		//   API 端用 writeJSONErr 500 后返 (API 调用方需明确错误信号, 与
+		//   adminTasksList BUG-111 / adminCategoriesList BUG-115 同款 API 模式).
+		if rerr := rows.Err(); rerr != nil {
+			writeJSONErr(w, "迭代主题计数失败: "+rerr.Error(), 500)
+			return
 		}
 	}
 	out := []map[string]interface{}{}
@@ -4605,11 +4649,20 @@ func validIcbm(s string) bool {
 	if len(parts) != 2 {
 		return false
 	}
-	var lat, lng float64
-	if _, err := fmt.Sscanf(strings.TrimSpace(parts[0]), "%f", &lat); err != nil {
+	// R76-D BUG-148 (P3): 原 fmt.Sscanf("%f", ...) 对 "35.86166abc" 这类含
+	//   trailing garbage 的输入返 nil err (Sscanf 在 %f 解析完后不强制消费
+	//   全部输入, 接受 trailing 字符) → 用户输 typo (如 "35.86166abc,104.195397")
+	//   被静默接受为合法 ICBM, 写入 Site.icbm 字段 → 前台 <meta name="ICBM"
+	//   content="35.86166abc,..."> 被 SEO 工具拒识别, 但 admin 端 auditSite
+	//   的 validIcbm 仍返 true 不报错. 修复: 改用 strconv.ParseFloat 严格
+	//   解析 (拒绝 trailing garbage), 与 strconv.ParseInt / ParseFloat 在
+	//   intField/floatField 中的同款严格解析口径.
+	lat, err := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
+	if err != nil {
 		return false
 	}
-	if _, err := fmt.Sscanf(strings.TrimSpace(parts[1]), "%f", &lng); err != nil {
+	lng, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+	if err != nil {
 		return false
 	}
 	return lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180

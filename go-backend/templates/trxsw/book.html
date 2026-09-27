@@ -7,7 +7,18 @@
 <meta name="description" content="{{.Book.intro}}">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="stylesheet" href="/clone-css/trxsw.css">
-</head>
+{{if .OgTitle}}<meta property="og:title" content="{{.OgTitle}}">
+<meta property="og:description" content="{{.OgDescription}}">
+<meta property="og:image" content="{{.OgImage}}">
+<meta property="og:url" content="{{.OgUrl}}">
+<meta property="og:type" content="{{.OgType}}">
+<meta property="og:site_name" content="{{.OgSiteName}}">
+{{end}}{{if .TwitterCard}}<meta name="twitter:card" content="{{.TwitterCard}}">
+<meta name="twitter:title" content="{{.TwitterTitle}}">
+<meta name="twitter:description" content="{{.TwitterDescription}}">
+<meta name="twitter:image" content="{{.TwitterImage}}">
+{{end}}{{if .CanonicalURL}}<link rel="canonical" href="{{.CanonicalURL}}">
+{{end}}</head>
 <body>
 <div class="wrap">
 <header class="header">
@@ -61,8 +72,8 @@
 <span class="meta-item"><span class="meta-label">更新：</span><span class="meta-value">{{fmtDate .Book.updatedAt}}</span></span>
 </div>
 <div class="detail-actions">
-<a class="btn btn-primary" href="{{.FirstChapterURL}}" title="开始阅读 {{.Book.name}}">开始阅读</a>
-<a class="btn btn-outline" href="#chapter_list" title="查看目录">章节目录</a>
+{{if .FirstChapterURL}}<a class="btn btn-primary" href="{{.FirstChapterURL}}" title="开始阅读 {{.Book.name}}">开始阅读</a>{{else}}<span class="btn btn-primary" style="opacity:0.5;">暂无章节</span>{{end}}
+{{if .HasChapters}}<a class="btn btn-outline" href="#chapter_list" title="查看目录">章节目录</a>{{end}}
 </div>
 </div>
 </div>

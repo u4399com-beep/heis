@@ -7,7 +7,18 @@
 <meta name="description" content="{{.Book.intro}}">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="stylesheet" href="/clone-css/pilishuwu.css">
-</head>
+{{if .OgTitle}}<meta property="og:title" content="{{.OgTitle}}">
+<meta property="og:description" content="{{.OgDescription}}">
+<meta property="og:image" content="{{.OgImage}}">
+<meta property="og:url" content="{{.OgUrl}}">
+<meta property="og:type" content="{{.OgType}}">
+<meta property="og:site_name" content="{{.OgSiteName}}">
+{{end}}{{if .TwitterCard}}<meta name="twitter:card" content="{{.TwitterCard}}">
+<meta name="twitter:title" content="{{.TwitterTitle}}">
+<meta name="twitter:description" content="{{.TwitterDescription}}">
+<meta name="twitter:image" content="{{.TwitterImage}}">
+{{end}}{{if .CanonicalURL}}<link rel="canonical" href="{{.CanonicalURL}}">
+{{end}}</head>
 <body>
 <div class="mod-top-wr">
 <div class="mod-top-frame">
@@ -68,8 +79,8 @@
 <div class="works-intro-opera">
 <div class="ui-left">
 <div class="works-intro-active clearfix">
-<a class="works-intro-view ui-btn-orange ui-radius3" title="开始阅读{{.Book.name}}" href="{{.FirstChapterURL}}">开始阅读</a>
-<a class="works-intro-view ui-btn-orange ui-radius3" title="{{.Book.name}}目录" href="#chapter_list" style="margin-left:10px;">章节目录</a>
+{{if .FirstChapterURL}}<a class="works-intro-view ui-btn-orange ui-radius3" title="开始阅读{{.Book.name}}" href="{{.FirstChapterURL}}">开始阅读</a>{{else}}<span class="works-intro-view ui-btn-orange ui-radius3" style="opacity:0.5;">暂无章节</span>{{end}}
+{{if .HasChapters}}<a class="works-intro-view ui-btn-orange ui-radius3" title="{{.Book.name}}目录" href="#chapter_list" style="margin-left:10px;">章节目录</a>{{end}}
 </div>
 </div>
 </div>

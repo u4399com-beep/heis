@@ -7,7 +7,18 @@
 <meta name="description" content="{{.Book.intro}}">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,minimum-scale=1,user-scalable=no,viewport-fit=cover">
 <link rel="stylesheet" type="text/css" href="/clone-css/huangjinwu.css">
-<script>(function() {const savedTheme = localStorage.getItem('theme') || 'light';document.documentElement.setAttribute('data-theme', savedTheme);})();</script>
+{{if .OgTitle}}<meta property="og:title" content="{{.OgTitle}}">
+<meta property="og:description" content="{{.OgDescription}}">
+<meta property="og:image" content="{{.OgImage}}">
+<meta property="og:url" content="{{.OgUrl}}">
+<meta property="og:type" content="{{.OgType}}">
+<meta property="og:site_name" content="{{.OgSiteName}}">
+{{end}}{{if .TwitterCard}}<meta name="twitter:card" content="{{.TwitterCard}}">
+<meta name="twitter:title" content="{{.TwitterTitle}}">
+<meta name="twitter:description" content="{{.TwitterDescription}}">
+<meta name="twitter:image" content="{{.TwitterImage}}">
+{{end}}{{if .CanonicalURL}}<link rel="canonical" href="{{.CanonicalURL}}">
+{{end}}<script>(function() {const savedTheme = localStorage.getItem('theme') || 'light';document.documentElement.setAttribute('data-theme', savedTheme);})();</script>
 </head>
 <body>
 <div class="header-group">
@@ -74,8 +85,8 @@
 <span>更新：{{fmtDate .Book.updatedAt}}</span>
 </div>
 <div class="detail-actions">
-<a class="btn btn-primary" href="{{.FirstChapterURL}}"><span class="iconfont icon-read"></span> 开始阅读</a>
-<a class="btn btn-secondary" href="#chapter_list"><span class="iconfont icon-sort"></span> 查看目录</a>
+{{if .FirstChapterURL}}<a class="btn btn-primary" href="{{.FirstChapterURL}}"><span class="iconfont icon-read"></span> 开始阅读</a>{{else}}<span class="btn btn-primary" style="opacity:0.5;">暂无章节</span>{{end}}
+{{if .HasChapters}}<a class="btn btn-secondary" href="#chapter_list"><span class="iconfont icon-sort"></span> 查看目录</a>{{end}}
 </div>
 </div>
 </div>

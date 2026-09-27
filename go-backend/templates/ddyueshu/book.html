@@ -7,7 +7,18 @@
 <meta name="description" content="{{.Book.intro}}">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="stylesheet" type="text/css" href="/clone-css/ddyueshu.css">
-</head>
+{{if .OgTitle}}<meta property="og:title" content="{{.OgTitle}}">
+<meta property="og:description" content="{{.OgDescription}}">
+<meta property="og:image" content="{{.OgImage}}">
+<meta property="og:url" content="{{.OgUrl}}">
+<meta property="og:type" content="{{.OgType}}">
+<meta property="og:site_name" content="{{.OgSiteName}}">
+{{end}}{{if .TwitterCard}}<meta name="twitter:card" content="{{.TwitterCard}}">
+<meta name="twitter:title" content="{{.TwitterTitle}}">
+<meta name="twitter:description" content="{{.TwitterDescription}}">
+<meta name="twitter:image" content="{{.TwitterImage}}">
+{{end}}{{if .CanonicalURL}}<link rel="canonical" href="{{.CanonicalURL}}">
+{{end}}</head>
 <body>
 <div id="wrapper">
 <div class="header">
@@ -70,7 +81,7 @@
 </dl>
 <dl>
 <dt>开始阅读</dt>
-<dd><a href="{{.FirstChapterURL}}">点击开始阅读 →</a></dd>
+<dd>{{if .FirstChapterURL}}<a href="{{.FirstChapterURL}}">点击开始阅读 →</a>{{else}}<span>暂无章节</span>{{end}}</dd>
 <div class="clear"></div>
 </dl>
 <div class="clear"></div>
@@ -88,7 +99,7 @@
 
 <div class="bottem1">
 <a href="{{.HomeURL}}">返回首页</a>
-<a href="#chapter_list">点击查看完整目录</a>
+{{if .HasChapters}}<a href="#chapter_list">点击查看完整目录</a>{{end}}
 </div>
 </div>
 </div>
