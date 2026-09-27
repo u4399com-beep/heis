@@ -583,6 +583,18 @@ func (j *CookieJar) Store(domain string, setCookieHeaders []string) {
         //   可观测哪些 host 严格发 Secure cookie (高 ratio = 源站安全策略强).
         secureCount := int64(0)
         nonSecureCount := int64(0)
+        // R82-B 反反爬第 111 项: Cookie SameParty 属性观测 — CHIPS (Cookies Having
+        //   Independent Partitioned State, RFC draft-ietf-httpbis-cookie-sameparty-00).
+        //   真实 Chrome 110+ 在 cross-site iframe 场景发 SameParty cookie (e.g.
+        //   第三方广告 / 嵌入式 widget 的 partitioned cookie). 我们是顶层导航 client
+        //   不发 SameParty cookie, 但源站可发 Set-Cookie: name=val; SameParty; Secure;
+        //   Partitioned. Go CookieJar 不解析 SameParty → 不影响 outbound Cookie 头
+        //   (SameParty 是属性标记, 不影响 cookie name=value 主体). 但 admin 可观测
+        //   哪些 host 用 CHIPS (高 ratio = 源站严格按 partitioned cookie 协议).
+        //   注: SameParty 必须配 Secure (RFC 6265bis 5.3.10), 无 Secure 的 SameParty
+        //   cookie 被浏览器拒收; 我们观测 SameParty presence 即可, 不二次校 Secure.
+        samePartyCount := int64(0)
+        nonSamePartyCount := int64(0)
         attrNames := map[string]bool{
                 "path": true, "domain": true, "expires": true, "max-age": true,
                 "secure": true, "httponly": true, "samesite": true,
@@ -590,6 +602,9 @@ func (j *CookieJar) Store(domain string, setCookieHeaders []string) {
                 //   cookie-priority-00). 防 cookie name="priority" 误识为 cookie (与
                 //   samesite / httponly 同口径).
                 "priority": true,
+                // R82-B 第 111 项: SameParty 也是 attribute 关键字 (CHIPS RFC draft). 防
+                //   cookie name="sameparty" 误识为 cookie (与 priority / samesite 同口径).
+                "sameparty": true,
         }
         for _, raw := range setCookieHeaders {
                 raw = strings.TrimSpace(raw)
@@ -622,6 +637,7 @@ func (j *CookieJar) Store(domain string, setCookieHeaders []string) {
                 priority := "" // R77-B 第 93 项: "" = 未设 (Chrome 106+ 默认 Medium)
                 httpOnly := false // R79-B 第 98 项: HttpOnly 布尔属性 (无值, 单 token)
                 secure := false   // R81-B 第 108 项: Secure 布尔属性 (无值, 单 token)
+                sameParty := false // R82-B 第 111 项: SameParty 布尔属性 (CHIPS, 无值, 单 token)
                 attrs := strings.Split(raw, ";")
                 for _, a := range attrs {
                         a = strings.TrimSpace(a)
@@ -635,6 +651,14 @@ func (j *CookieJar) Store(domain string, setCookieHeaders []string) {
                         //   与 HttpOnly 并列检测 (两个布尔属性都可能在同一 Set-Cookie 出现).
                         if strings.EqualFold(a, "Secure") {
                                 secure = true
+                                continue
+                        }
+                        // R82-B 第 111 项: SameParty 同款无值布尔 token (CHIPS RFC draft).
+                        //   与 Secure / HttpOnly 并列检测 (CHIPS cookie 通常配 Secure +
+                        //   SameParty + Partitioned 三属性, 我们只观测 SameParty
+                        //   presence 即可代表 CHIPS).
+                        if strings.EqualFold(a, "SameParty") {
+                                sameParty = true
                                 continue
                         }
                         eq := strings.Index(a, "=")
@@ -705,6 +729,12 @@ func (j *CookieJar) Store(domain string, setCookieHeaders []string) {
                 } else {
                         nonSecureCount++
                 }
+                // R82-B 第 111 项: 累计 SameParty / 非 SameParty cookie 计数 (与 Secure 同款).
+                if sameParty {
+                        samePartyCount++
+                } else {
+                        nonSamePartyCount++
+                }
 
                 // 主罐: 存到 request host 罐
                 mainJar := j.jars[reqHost]
@@ -729,6 +759,8 @@ func (j *CookieJar) Store(domain string, setCookieHeaders []string) {
         RecordCookieHttpOnlyObserved(reqHost, httpOnlyCount, nonHttpOnlyCount)
         // R81-B 反反爬第 108 项: 同款调 Secure 观测 API (与 HttpOnly 并列, 一一对应).
         RecordCookieSecureObserved(reqHost, secureCount, nonSecureCount)
+        // R82-B 反反爬第 111 项: 同款调 SameParty 观测 API (CHIPS 协议渗透率, admin 可查).
+        RecordCookieSamePartyObserved(reqHost, samePartyCount, nonSamePartyCount)
 }
 
 // Clear — 清空由该 host 引入的 cookies (含副罐, 防"陈旧会话被毒药"重试语义).
@@ -3131,6 +3163,27 @@ func buildHeaders(cfg FetchConfig, ua, rawURL, referer string) http.Header {
                 if model := extractAndroidModelFromUA(ua); model != "" {
                         h.Set("Sec-Ch-Ua-Model", `"`+model+`"`)
                 }
+                // R82-B 反反爬第 112 项: Sec-Ch-Ua-Bitness (R81 交接 #7 续).
+                //   真实 Chrome 110+ on 64-bit OS 在 Accept-CH opt-in 时发 "Sec-Ch-Ua-Bitness: 64"
+                //   (Chrome 主流 64-bit); 32-bit Chrome 发 "32" (老 Win7 / 低内存场景, 与
+                //   Sec-Ch-Ua-Wow64=?1 路径同源: 32-bit Chrome on 64-bit OS 在 UA 含 "WOW64"
+                //   标识, process 跑在 Windows-on-Windows64 模拟层下). 真实 Chrome 在非
+                //   Chrome UA 不发本头.
+                //   反爬识别 "Chrome UA 无 Sec-Ch-Ua-Bitness" 是爬虫指纹 (低权重, Chrome
+                //   110+ 默认发, Go 标准库 / 老爬虫不发). 修复逻辑:
+                //     - UA 含 "WOW64" → "32" (32-bit Chrome on 64-bit OS, 与 Sec-Ch-Ua-Wow64=?1
+                //       同口径, Bitness 反映 process 真实位数而非 OS)
+                //     - UA 含 "Win64" / "x86_64" / "Intel Mac OS X" → "64" (64-bit process
+                //       on 64-bit OS, 与 Sec-Ch-Ua-Wow64=?0 同口径)
+                //     - 其他 (Android / 未知) → "64" (现代 Chrome 默认 64-bit, Android 10+
+                //       Chrome 默认 64-bit, 老 32-bit Chrome 占比 <5%, 默认 64 更接近真实分布)
+                //   非 Chrome UA (Firefox/Safari) 不发本头 (在 if !IsFirefoxUA && !IsSafariUA
+                //   分支内, 与 Sec-Ch-Ua 头族同位置).
+                if strings.Contains(ua, "WOW64") {
+                        h.Set("Sec-Ch-Ua-Bitness", `"32"`)
+                } else {
+                        h.Set("Sec-Ch-Ua-Bitness", `"64"`)
+                }
         }
 
         // Referer 优先级: cfg.RefererURL > per-host 记忆 > 目标站 origin
@@ -3300,6 +3353,20 @@ func buildHeaders(cfg FetchConfig, ua, rawURL, referer string) http.Header {
                 if h.Get("X-Requested-With") == "" {
                         h.Set("X-Requested-With", "XMLHttpRequest")
                 }
+        }
+
+        // R82-B 反反爬第 113 项: X-DNS-Prefetch-Control 头适配 (privacy extension 模拟).
+        //   X-DNS-Prefetch-Control 标准 (MDN) 是 RESPONSE 头 (server → browser, 控制
+        //   浏览器对页面链接 DNS 预取), Chrome 默认不在 REQUEST 上发. 但部分隐私
+        //   扩展 (uBlock Origin / Privacy Badger / Decentraleyes) 在所有顶层导航
+        //   请求注入 "X-DNS-Prefetch-Control: off" 强制关闭 DNS 预取 (防 DNS leak).
+        //   反爬按本头检测: 部分源站 (privacy-focused / GDPR 严格站) 把"无本头"视为
+        //   非 privacy-conscious 浏览器 (低权重 Bot Score +1). 仅顶层 HTML 文档请求
+        //   注入 (与 secFetchDestForURL 返 "document" 同口径), AJAX / 图片 / 资源不
+        //   注入 (隐私扩展默认仅顶层文档注入, 资源请求扩展不修改). 用户自定义
+        //   cfg.Headers["X-DNS-Prefetch-Control"] 优先 (不覆盖).
+        if secFetchDestForURL(rawURL) == "document" && h.Get("X-DNS-Prefetch-Control") == "" {
+                h.Set("X-DNS-Prefetch-Control", "off")
         }
         return h
 }
@@ -9923,6 +9990,106 @@ func ClearCookieSecure(host string) {
         hostCookieSecureMap.Delete(strings.ToLower(host))
 }
 
+// ---------- R82-B 反反爬第 111 项: Cookie SameParty 属性观测 ----------
+
+// 任务要求: "fetcher 加 Cookie SameParty 属性适配 (防源站 SameParty 校验)".
+//
+// 真实浏览器行为 (CHIPS RFC draft-ietf-httpbis-cookie-sameparty-00 + Chrome 110+):
+//   - SameParty 属性: 服务端发 Set-Cookie: name=val; SameParty; Secure; Partitioned;
+//     浏览器在 cross-site iframe 场景按 partition (top-level site) 隔离存储该 cookie.
+//   - SameParty 必须配 Secure (无 Secure 的 SameParty 被浏览器拒收, RFC 5.3.10).
+//   - Partitioned 是配套属性 (CHIPS 三件套: SameParty + Secure + Partitioned).
+//   - Chrome 110+ 在 cross-site iframe 默认按 partitioned cookie 行为存储 + 发送.
+//
+// 核实: Go net/http CookieJar 不解析 SameParty / Partitioned 属性:
+//   - cookieEntry schema (line 248) 仅含 v/at/src/expires/sameSite/priority 字段,
+//     SameParty/Partitioned 不存 (与 Secure/HttpOnly 同款"观测不存储"原则).
+//   - outbound Cookie 头 (GetWithReferer) 按 name=value 拼接, 不携带属性 →
+//     源站无法直接从 Cookie 头检测 client 是否识别 SameParty.
+//   - 真实 mimicking Chrome "partitioned cookie" 行为需按 top-level site 隔离 cookie
+//     jar (Go CookieJar 是 per-domain 单 jar, 无 partition 概念). 但本项目是
+//     顶层导航 client (无 cross-site iframe), 不需 partition 隔离.
+//
+// 价值评估: ① 观测 API (admin 查询哪些 host 发 SameParty cookie = 用 CHIPS 协议)
+//   低价值 (admin 一般不关心源站是否用 CHIPS); ② outbound 行为不变 (Cookie 头
+//   不携带属性, 与 Secure/HttpOnly 同口径); ③ "防源站 SameParty 校验" 实质是
+//   防 server 用 Set-Cookie 检测 client 是否识别 SameParty — 但 server 无法直接
+//   检测 client 是否识别 (Cookie 头不带属性), 只能通过"client 第二次请求是否带
+//   该 cookie"间接推断, 而 Go CookieJar 已正常存该 cookie (line 715 mainJar 写
+//   不依赖 SameParty 属性), 故 outbound 行为已正确, 无需补"识别"逻辑.
+//   诚实留痕: 仅加观测 + 同款 attrNames 守卫 (防 cookie name="sameparty" 误识).
+
+type hostCookieSamePartyEntry struct {
+        samePartyCookieCount int64 // SameParty cookie 累计观测数 (CHIPS)
+        nonSamePartyCount    int64 // 非 SameParty cookie 累计观测数 (供 ratio 计算)
+}
+
+var hostCookieSamePartyMap sync.Map // host string -> *hostCookieSamePartyEntry
+
+// RecordCookieSamePartyObserved — 记录 host 的 SameParty cookie 观测 (R82-B 第 111 项).
+//
+//      caller: CookieJar.Store 在解析 Set-Cookie 时调 (按 SameParty 属性 presence).
+//      samePartyCount = 本响应中含 SameParty 属性的 cookie 数.
+//      nonSamePartyCount = 本响应中不含 SameParty 属性的 cookie 数.
+//      观测后 admin 可查询 host 的 SameParty cookie ratio (CHIPS 协议渗透率).
+func RecordCookieSamePartyObserved(host string, samePartyCount, nonSamePartyCount int64) {
+        if host == "" {
+                return
+        }
+        if samePartyCount < 0 {
+                samePartyCount = 0
+        }
+        if nonSamePartyCount < 0 {
+                nonSamePartyCount = 0
+        }
+        if samePartyCount == 0 && nonSamePartyCount == 0 {
+                return
+        }
+        var e *hostCookieSamePartyEntry
+        if v, ok := hostCookieSamePartyMap.Load(host); ok {
+                e = v.(*hostCookieSamePartyEntry)
+        } else {
+                e = &hostCookieSamePartyEntry{}
+                actual, _ := hostCookieSamePartyMap.LoadOrStore(host, e)
+                e = actual.(*hostCookieSamePartyEntry)
+        }
+        // R82-B: atomic.AddInt64 防多 goroutine 并发 (与 RecordCookieSecureObserved 同口径).
+        atomic.AddInt64(&e.samePartyCookieCount, samePartyCount)
+        atomic.AddInt64(&e.nonSamePartyCount, nonSamePartyCount)
+}
+
+// CookieSamePartySnapshot — admin / metrics 查询用: 返回所有观测到 SameParty cookie 的 host.
+//
+//      字段: samePartyCookieCount / nonSamePartyCount / samePartyRatio (0-100 int).
+func CookieSamePartySnapshot() map[string]map[string]int64 {
+        out := map[string]map[string]int64{}
+        hostCookieSamePartyMap.Range(func(k, v any) bool {
+                e := v.(*hostCookieSamePartyEntry)
+                sc := atomic.LoadInt64(&e.samePartyCookieCount)
+                nc := atomic.LoadInt64(&e.nonSamePartyCount)
+                total := sc + nc
+                ratio := int64(0)
+                if total > 0 {
+                        ratio = sc * 100 / total
+                }
+                out[k.(string)] = map[string]int64{
+                        "samePartyCookieCount": sc,
+                        "nonSamePartyCount":    nc,
+                        "samePartyRatio":       ratio,
+                }
+                return true
+        })
+        return out
+}
+
+// ClearCookieSameParty — 清除 host 的 SameParty cookie 观测记录 (失败排查 / 测试用).
+func ClearCookieSameParty(host string) {
+        if host == "" {
+                return
+        }
+        hostCookieSamePartyMap.Delete(strings.ToLower(host))
+}
+
 // ---------- R81-B 反反爬第 106 项: HTTP/2 GOAWAY 帧观测 (诚实留痕 0 实现) ----------
 //
 // 任务要求: "fetcher 加 GOAWAY 帧观测 (部分源站按 GOAWAY 检测)".
@@ -9947,6 +10114,48 @@ func ClearCookieSecure(host string) {
 //   (Go 自动); ③ 计数 GOAWAY 事件需 fork (技术不可行). 故诚实留痕 0 实现,
 //   与 R79-B 第 96 项 WINDOW_UPDATE 帧同款 "技术不可行 + 价值低" 评估.
 //   未来若 Cloudflare Bot Score 加入 GOAWAY 指标, 再评估 fork http2.
+
+// ---------- R82-B 反反爬第 109 项: HTTP/2 GOAWAY 帧观测 (re-evaluation 诚实留痕) ----------
+//
+// R81-B 已诚实留痕 (上方 第 106 项 section). 本轮 re-evaluation:
+//   1. fork x/net/http2 风险评估: golang.org/x/net/http2 是 quasi-standard (Go team
+//      维护但独立版本), fork 后锁版本 + 自行维护补丁 + 与 net/http 标准库接口适配
+//      (Transport.RoundTrip 签名变更需同步). 收益: 仅观测 GOAWAY (含 lastStreamID
+//      + errorCode + debugData), 不改变 outbound 行为 (Go 自动重连, 与 Chrome 等价).
+//      成本 >> 收益 (无 outbound 行为改变, 仅观测 admin 查询价值低). 评估结论: 不 fork.
+//   2. 替代方案评估 (无 fork):
+//      a) httptrace.ClientTrace.GotConn: 暴露 conn 重用, 不暴露 GOAWAY (conn 重用
+//         失败可能是 GOAWAY 也可能是 idle timeout, 不可区分).
+//      b) net/http.Transport.IdleConnTimeout 短: GOAWAY 后 conn 不再被复用, 但
+//         同 a 不可区分 GOAWAY vs idle timeout.
+//      c) http2.Transport.NewClientConn + SetTransport: 仍不暴露 goAwayCh (unexported).
+//   3. 行为等价性确认: Go http2.Transport 收 GOAWAY 后自动关闭 conn + 下次请求新连,
+//      与 Chrome "GOAWAY 后重连重试" 行为等价 (无需显式处理). 反爬按 GOAWAY 检测
+//      实质是"看 client 是否在 GOAWAY 后还来" — Go 会来 (重连), 与 Chrome 等价.
+//
+// 评估结论: fork 风险 >> 收益, 替代方案不可行, 行为已等价 → 续诚实留痕 0 实现.
+//   未来若 Cloudflare Bot Score 加入 GOAWAY 指标 (目前未发现), 再评估 fork http2.
+
+// ---------- R82-B 反反爬第 110 项: TLS 1.3 EE 观测 (re-evaluation 诚实留痕) ----------
+//
+// R81-B 已诚实留痕 (下方 第 107 项 section). 本轮 re-evaluation:
+//   1. fork crypto/tls 风险评估: crypto/tls 是 Go 标准库 (Go team 维护, 与 runtime
+//      版本绑死), fork 后每个 Go 版本需 rebase + 兼容性测试. 收益: 仅观测 EE 扩展
+//      (server_name / ALPN / supported_groups / custom cf-ray extension), 不改变
+//      outbound TLS ClientHello (utls 已 mimic ClientHello, R48-1A). 成本 >> 收益.
+//   2. 替代方案评估 (无 fork):
+//      a) utls ClientHelloSpec: 可控 ClientHello, 但 EE 是 server→client 方向, utls
+//         不暴露 EE 解析.
+//      b) ConnectionState.NegotiatedProtocol (ALPN): 已暴露 ALPN 协商结果, 但其他 EE
+//         扩展 (server_name / supported_groups / custom cf-ray) 不在 ConnectionState.
+//      c) Wireshark / tcpdump: 仅调试级观测, 无法编程消费.
+//   3. 行为等价性确认: utls 已 mimic Chrome ClientHello (含 supported_versions /
+//      key_share / signature_algorithms 等扩展, R48-1A persistableSessionCache),
+//      server 收 ClientHello 后按 Chrome 等价响应 EE, Go client 透传 EE 不需额外
+//      处理 (ALPN 已在 ConnectionState, custom EE extension 透传不报错).
+//
+// 评估结论: fork crypto/tls 风险 >> 收益, 替代方案不可行, 行为已等价 → 续诚实留痕
+//   0 实现. 未来若 Cloudflare Bot Score 加入 EE 指标, 再评估 fork crypto/tls.
 
 // ---------- R81-B 反反爬第 107 项: TLS 1.3 Encrypted Extensions 观测 (诚实留痕 0 实现) ----------
 //

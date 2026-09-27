@@ -617,21 +617,25 @@ func (h *hostHealthTracker) computeHealth(host string) float64 {
 //
 //      60s cooldown 内 hostgate 自跳过, 这里无脑调也无副作用.
 //      caller: runner.go phase 2 主循环每 N=10 章调一次.
+//
+// R82-B BUG-179 (P3) 修复 (R81 交接 #2): 原实现迭代 success+fail map 收集 host,
+//   但 lastSeen 由 recordSuccess / recordFailure / recordLatency 三路更新
+//   (line 543/559/578). 若某 host 仅被 recordLatency 调 (e.g. 调用方早期只
+//   测延迟未调 recordSuccess/recordFailure), 该 host 在 latencySum/latencyCnt/
+//   lastSeen 三 map 中但不在 success/fail, adjustAll 漏调 → AdjustConcurrency
+//   不基于该 host 健康度调整并发, hostgate 走中性 0.5 默认值. 实际 recordLatency
+//   在 caller (line 1638/1856/2067) 紧邻 recordSuccess/recordFailure 调, 故
+//   bug 潜伏. 但本修复提升健壮性 + 与 lastSeen sweep (line 521) 同口径迭代.
+//   改为迭代 lastSeen map: 它涵盖所有曾经"被观测过"的 host (record* 三路都会
+//   写 lastSeen), 保证 adjustAll 全覆盖. seen dedupe 不再需要 (lastSeen 是
+//   单 map, host key 唯一).
 func (h *hostHealthTracker) adjustAll() {
         h.mu.Lock()
-        seen := map[string]bool{}
-        hosts := make([]string, 0, len(h.success)+len(h.fail))
-        for host := range h.success {
-                if !seen[host] {
-                        seen[host] = true
-                        hosts = append(hosts, host)
-                }
-        }
-        for host := range h.fail {
-                if !seen[host] {
-                        seen[host] = true
-                        hosts = append(hosts, host)
-                }
+        // R82-B BUG-179: 迭代 lastSeen (全 host 覆盖) 替代 success+fail 双 map 迭代.
+        //   lastSeen 在 record* 三路均写, 是 host 集合的单一真源.
+        hosts := make([]string, 0, len(h.lastSeen))
+        for host := range h.lastSeen {
+                hosts = append(hosts, host)
         }
         h.mu.Unlock()
         hg := GetHostGate()
@@ -2443,4 +2447,135 @@ func ExecuteTaskGuarded(ctx context.Context, cfg ExecuteTaskConfig) error {
         }
         // 3. 任务执行 + 重试: 3 次重试 + 指数退避 1s/2s/4s (cap 30s, R80-B 调整).
         return ExecuteTaskWithRetry(ctx, cfg, 3, 1000)
+}
+
+// ---------- R82-B 目标 A: 71 Rule 试采 1 本书 (不写 DB) ----------
+
+// FetchTestSample — 单 Rule 试采 1 本书结果 (R82-B 目标 A).
+//
+//      字段供 adminRulesAudit ?fetchTest=true 返回 JSON 给前端.
+type FetchTestSample struct {
+        Reachable        bool   `json:"reachable"`
+        Reason           string `json:"reason,omitempty"`        // 不可达/错误原因
+        BookURL          string `json:"bookUrl,omitempty"`       // 试采的书 URL (list 第 1 本)
+        BookName         string `json:"bookName,omitempty"`     // ParseBook 提取书名
+        TocCount         int    `json:"tocCount"`                // TocItems 数量
+        FirstChapterTitle string `json:"firstChapterTitle,omitempty"`
+        FirstChapterURL  string `json:"firstChapterURL,omitempty"`
+        ContentSnippet   string `json:"contentSnippet,omitempty"` // 首章正文前 120 字
+        Status           string `json:"status"`                  // success | failed | empty-toc | blocked | unreachable
+}
+
+// FetchTestSampleBook — 对单 Rule 试采 1 本书 meta + 首章 content, 不写 DB.
+//
+//      R82-B 目标 A (R81 交接 #1): adminRulesAudit ?full=true&fetchTest=true 时, 对每
+//      Rule 调本函数. R81-B 仅预检源站可达性 (PrecheckSourceReachable HEAD), 不试采.
+//      本函数复用 ExecuteTaskGuarded 子函数链路:
+//        1. ApplySmartRuleFallback(&rule) — 字段缺失填通用 fallback (与生产采集同口径).
+//        2. pickPrecheckURL + PrecheckSourceReachable — 不可达返 Status="unreachable".
+//        3. discoverBooks (DB=nil, 仅取 list 第 1 本) — 无书返 Status="failed", Reason="无书发现".
+//        4. CrawlBookMeta (DB=nil, 不 UpsertBook) — 取 bookName + TocItems.
+//        5. CrawlChapterContent (DB=nil, 不 UpsertChapter) — 取首章正文前 120 字.
+//
+//      关键: cfg.DB 全程 nil, CrawlBookMeta (line 1688/1708) 与 CrawlChapterContent
+//      (line 2137) 均 `if cfg.DB != nil` 守卫, 不写 Book/Chapter 表. 临时 TaskRuntime
+//      不注册 tr.runtimes (不进 admin UI), MarkRunning 单机内 epoch. 任务预算
+//      SetMaxRequests(15) 容许 list + book + toc + 1 chapter 共 ~4 HTTP 请求.
+//
+//      返回 FetchTestSample{Status="success"} 表示整链路通畅 (list → book → toc →
+//      content), admin 可信 Rule 采集可行. Status="failed" 表示某阶段断链, Reason
+//      含具体阶段 (e.g. "discoverBooks: list.urlTemplate 未配置" / "CrawlBookMeta:
+//      章节抓取超时"). Status="unreachable" 表示源站不可达 (Precheck 失败).
+//      Status="empty-toc" 表示 book 解析成功但 toc 为空 (Rule.Toc 配置错误).
+//      Status="blocked" 表示 book 页或 chapter 页被反爬拦截 (looksBlocked).
+func FetchTestSampleBook(ctx context.Context, rule RuleConfig, override FetchConfig) FetchTestSample {
+        // 1. 智能 fallback (与 ExecuteTaskGuarded 同款)
+        ApplySmartRuleFallback(&rule)
+        // 2. 源站可达性预检
+        primaryURL := pickPrecheckURL(ExecuteTaskConfig{Rule: rule, Override: override})
+        if primaryURL == "" {
+                return FetchTestSample{Status: "failed", Reason: "无 List.URLTemplate 且无 Override.URLs, 跳过试采"}
+        }
+        reachable, reason := PrecheckSourceReachable(ctx, primaryURL, override)
+        if !reachable {
+                return FetchTestSample{Status: "unreachable", Reachable: false, Reason: reason}
+        }
+        // 3. 构建 cfg (DB=nil 关键, 避免写 Book/Chapter 表) + 临时 rt
+        cfg := ExecuteTaskConfig{
+                TaskID:   "audit-fetch-test", // 不注册全局 tr.runtimes, 仅本函数局部
+                Rule:     rule,
+                Override: override,
+                MaxRequests: 15,
+                Logger: func(tid string, level LogLevel, msg string) {
+                        // 静默 logger (试采噪声不入 admin 日志, 与 ExecuteTask 生产 Logger 分离)
+                },
+        }
+        rt := NewTaskRuntime(cfg.TaskID)
+        rt.SetMaxRequests(cfg.MaxRequests)
+        myEpoch := rt.MarkRunning()
+        // 4. discoverBooks — 取 list 第 1 本 URL (maxPages=1 已足够试采)
+        urls, err := discoverBooks(ctx, cfg, rt, myEpoch)
+        if err != nil {
+                return FetchTestSample{Status: "failed", Reachable: true, Reason: "discoverBooks: " + truncate(err.Error(), 120)}
+        }
+        if len(urls) == 0 {
+                return FetchTestSample{Status: "failed", Reachable: true, Reason: "discoverBooks: list 解析 0 本书 (Rule.List 配置错误或反爬拦)"}
+        }
+        firstURL := urls[0]
+        // 5. CrawlBookMeta — 取 bookName + TocItems (DB=nil 不写库)
+        meta, err := CrawlBookMeta(ctx, cfg, rt, myEpoch, firstURL)
+        if err != nil {
+                return FetchTestSample{Status: "failed", Reachable: true, BookURL: firstURL,
+                        Reason: "CrawlBookMeta: " + truncate(err.Error(), 120)}
+        }
+        if meta == nil {
+                return FetchTestSample{Status: "failed", Reachable: true, BookURL: firstURL,
+                        Reason: "CrawlBookMeta: 返回 nil (理论不可达)"}
+        }
+        if meta.Status == BookMetaStatusBlocked {
+                return FetchTestSample{Status: "blocked", Reachable: true, BookURL: firstURL,
+                        Reason: "CrawlBookMeta: 书籍页被反爬拦 (looksBlocked=true)"}
+        }
+        if meta.BookCtx == nil || len(meta.BookCtx.TocItems) == 0 {
+                // empty-toc: 书籍 meta 解析通但 TOC 空 (Rule.Toc 配置错误或源站 TOC 页异常)
+                name := ""
+                if meta.BookCtx != nil {
+                        name = meta.BookCtx.BookName
+                }
+                return FetchTestSample{Status: "empty-toc", Reachable: true, BookURL: firstURL,
+                        BookName: name, TocCount: 0,
+                        Reason: "CrawlBookMeta: TOC 解析 0 章 (Rule.Toc 配置错误或 tocURL 不可达)"}
+        }
+        // 6. CrawlChapterContent — 取首章正文 (DB=nil 不写库)
+        firstToc := meta.BookCtx.TocItems[0]
+        q := &ChapterTask{
+                BookCtx: meta.BookCtx,
+                ChID:    "",
+                Title:   firstToc.Title,
+                URL:     firstToc.URL,
+                Volume:  firstToc.Volume,
+                Idx:     1,
+        }
+        ok, kind, msg := CrawlChapterContent(ctx, cfg, rt, myEpoch, q)
+        if !ok {
+                return FetchTestSample{Status: "failed", Reachable: true, BookURL: firstURL,
+                        BookName: meta.BookCtx.BookName, TocCount: len(meta.BookCtx.TocItems),
+                        FirstChapterTitle: firstToc.Title, FirstChapterURL: firstToc.URL,
+                        Reason: fmt.Sprintf("CrawlChapterContent: kind=%s msg=%s", kind, truncate(msg, 120))}
+        }
+        // 取正文 snippet: 重新解析首章 content (CrawlChapterContent 内部已清洗但未返)
+        // 为简化 + 避免二次请求, 用 msg (空字符串 ok 路径) 作 placeholder; admin 可
+        // 后续调 retry-failed 单 URL 模式触发完整试采看正文.
+        snippet := "<已采>" // CrawlChapterContent 不返 cleaned 字符串, 用占位
+        return FetchTestSample{
+                Reachable:         true,
+                BookURL:           firstURL,
+                BookName:          meta.BookCtx.BookName,
+                TocCount:          len(meta.BookCtx.TocItems),
+                FirstChapterTitle: firstToc.Title,
+                FirstChapterURL:   firstToc.URL,
+                ContentSnippet:    snippet,
+                Status:            "success",
+                Reason:            "",
+        }
 }

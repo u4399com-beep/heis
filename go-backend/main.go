@@ -1031,12 +1031,40 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 data["RelatedTags"] = relatedTags
                 data["HotBooks"] = takeBooks(books, 12)
         case "history":
-                // 简单占位: 复用 home 数据 (足迹页未独立渲染模板)
-                books, _ := getBooks(48)
-                injectBookURLs(books, pseudoStyle)
-                data["Books"] = books
-                data["TopBooks"] = topBooks(books, 6)
-                data["Popular"] = takeBooks(books, 12)
+                // R82-D 目标A (R81 交接 #8 + R77-D 未决项 #10): history view — 从客户端
+                //   `bookHistory` cookie (JSON `{"ids":["cuid1",...]}` 或 bare array) 读浏览
+                //   历史, 查 Book 表返 books list 保序. JS 在 book view 模板 (future template
+                //   work, 不在 main.go 范围) localStorage 累积最近浏览 book id → 在用户访问
+                //   /?view=history 前 setCookie 序列化 JSON. 隐私: 客户端 cookie (无 userID/
+                //   IP/session 跟踪, 不写 Setting 表).
+                //   Cookie 有真实 history → 替换 Books/TopBooks/Popular 让 shipsay/home 模板
+                //   (用 .Books 主网格) 显示真实浏览历史而非 latest 48 books; 同时注入
+                //   HistoryBooks 供未来 history.html 模板用 {{range .HistoryBooks}} (避免
+                //   shipsay/home 的 navCats × Books 8× 重复渲染, shipsay/home 范围外的模板
+                //   bug).
+                //   Cookie 缺失/空/全删 → fallback latest 48 books 占位 + HistoryBooks=[] 空
+                //   slice (非 nil) 让模板 {{if .HistoryBooks}} 守护跳过渲染空区块.
+                //   Title="浏览足迹" 注入供未来 history.html 写者用 {{.Title}}; shipsay/home
+                //   用 {{.Site.Title}} 不读 .Title, 当前 fallback 路径渲染无影响.
+                var historyBooks []map[string]interface{}
+                if c, cErr := r.Cookie("bookHistory"); cErr == nil {
+                        historyBooks = getHistoryViewData(c.Value)
+                }
+                if len(historyBooks) > 0 {
+                        injectBookURLs(historyBooks, pseudoStyle)
+                        data["HistoryBooks"] = historyBooks
+                        data["Books"] = historyBooks
+                        data["TopBooks"] = topBooks(historyBooks, 6)
+                        data["Popular"] = takeBooks(historyBooks, 12)
+                } else {
+                        books, _ := getBooks(48)
+                        injectBookURLs(books, pseudoStyle)
+                        data["Books"] = books
+                        data["TopBooks"] = topBooks(books, 6)
+                        data["Popular"] = takeBooks(books, 12)
+                        data["HistoryBooks"] = []map[string]interface{}{}
+                }
+                data["Title"] = "浏览足迹"
         default: // home
                 // R71-A: homeLayout 4 字段注入 (读 Setting 表 homeLayout.{siteID} JSON).
                 //   admin.go getHomeLayoutSetting 返 map (含默认值兑底, clamp [lo,hi] 防坏值).
@@ -3011,6 +3039,100 @@ func takeBooks(books []map[string]interface{}, n int) []map[string]interface{} {
                 n = len(books)
         }
         return books[:n]
+}
+
+// R82-D: getHistoryViewData — R81 交接 #8 (history view 缺字段) + R77-D 未决项 #10
+//
+//      修复 BUG-180. 从客户端 `bookHistory` cookie 读浏览历史 (JSON `{"ids":[...]}` 或
+//      bare array `[...]`), 查 Book 表返 books list 保序. 调用点: homeHandler case
+//      "history" (line ~1033). 不复用 getBooks (后者返 latest 48 books 与浏览历史
+//      无关; 仅在 cookie 缺失/空时作 fallback).
+//
+// 设计要点:
+//   - 隐私: 客户端 cookie (无 userID/IP/session 跟踪, 不写 Setting 表).
+//     JS 在 book view 模板 (future template work, 不在 main.go 范围) localStorage
+//     累积最近浏览 book id → 在用户访问 /?view=history 前 setCookie 序列化 JSON.
+//     Cookie 上限 ~4KB (cuid 24 字符 + JSON wrapper ~50 字符/书, 上限 ~80 本),
+//     本函数硬 cap 48 本 (与 home view 一致) 防超大 cookie 占用 DB SELECT.
+//   - 性能: SQL `WHERE id IN (?, ?, ...)` 一次查全部 id (避免 N+1 SELECT, 与
+//     getFeaturedBooks N+1 SELECT 对比). placeholders 数量与 ids 数量一致.
+//   - 保序: 返回 slice 按 cookie 中 ids 顺序排列 (最近浏览在前, JS 端管理顺序);
+//     cookie 中已删书的 id 跳过 (SQL 不返即不在 byID map, loop 跳过).
+//   - 错误容忍: cookie 缺失 / JSON 坏 / DB 错误 → 返 nil (caller fallback latest 48).
+//
+// 与 BUG-180 留痕对比: R81-D 评估 "history view 是简单占位, fallback shipsay/home
+//
+//      模板不用这些字段" → 留痕 0 改. 本轮 R82-D 目标A 实装: 即使 shipsay/home 当前
+//      不消费 .HistoryBooks, 未来 history.html 模板写者 (R82+ templates 范围) 可直接
+//      用 {{range .HistoryBooks}} 渲染真实浏览历史 (含已删书跳过 + 保序 + 48 cap).
+//      .Title="浏览足迹" 同款: 未来 history.html 写者用 {{.Title}} 即得正确标题;
+//      shipsay/home 用 {{.Site.Title}} 不读 .Title, 当前 fallback 路径渲染无影响.
+func getHistoryViewData(cookieValue string) []map[string]interface{} {
+        if cookieValue == "" {
+                return nil
+        }
+        // Cookie size cap (~4KB HTTP header 上限; >8KB 视为异常截断 + log).
+        if len(cookieValue) > 8192 {
+                log.Printf("[R82-D] getHistoryViewData: cookie too large (%d bytes, capping to first 8KB)", len(cookieValue))
+                cookieValue = cookieValue[:8192]
+        }
+        // Parse JSON. 先试 {"ids":[...]} wrapper, 失败再试 bare array.
+        var ids []string
+        var wrapper struct {
+                IDs []string `json:"ids"`
+        }
+        if err := json.Unmarshal([]byte(cookieValue), &wrapper); err == nil && len(wrapper.IDs) > 0 {
+                ids = wrapper.IDs
+        } else if err := json.Unmarshal([]byte(cookieValue), &ids); err != nil {
+                // 非 JSON / 坏 JSON → 静默返 nil (caller fallback). 不 log 防 cookie 测试噪声.
+                return nil
+        }
+        // Cap to 48 (与 home view 一致; 防 cookie 含 100+ ids 致 SQL placeholder 数爆炸).
+        if len(ids) > 48 {
+                ids = ids[:48]
+        }
+        if len(ids) == 0 {
+                return nil
+        }
+        // Build placeholders + args for IN clause.
+        placeholders := make([]string, len(ids))
+        args := make([]interface{}, len(ids))
+        for i, id := range ids {
+                placeholders[i] = "?"
+                args[i] = id
+        }
+        q := `SELECT b.id,b.name,b.author,b.intro,b.cover,b.status,b.wordCount,b.latestChapter,COALESCE(c.name,'未分类'),b.categoryId,b.updatedAt FROM Book b LEFT JOIN Category c ON b.categoryId=c.id WHERE b.id IN (` + strings.Join(placeholders, ",") + `)`
+        rows, err := db.Query(q, args...)
+        if err != nil {
+                log.Printf("[R82-D] getHistoryViewData: db.Query IN(%d ids) failed: %v", len(ids), err)
+                return nil
+        }
+        defer rows.Close()
+        // Map: id → book (保序用).
+        byID := make(map[string]map[string]interface{}, len(ids))
+        for rows.Next() {
+                var id, name, author, intro, cover, status, latestChapter, category, categoryID sql.NullString
+                var wordCount int64
+                var updatedAt string
+                // R81-D BUG-179 同款: per-row Scan err log + skip.
+                if err := rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryID, &updatedAt); err != nil {
+                        log.Printf("[R82-D] getHistoryViewData: rows.Scan failed: %v - skipping row", err)
+                        continue
+                }
+                byID[id.String] = bookRowFromScan(id, name, author, intro, cover, status, latestChapter, category, categoryID, wordCount, updatedAt)
+        }
+        // R75-A 目标C4 同款: rows 迭代后检查 rows.Err().
+        if rerr := rows.Err(); rerr != nil {
+                log.Printf("[R82-D] getHistoryViewData: rows.Err(): %v", rerr)
+        }
+        // Build output 保 cookie 顺序; 跳过 cookie 中已删书的 id (不在 byID).
+        out := []map[string]interface{}{}
+        for _, bid := range ids {
+                if book, ok := byID[bid]; ok {
+                        out = append(out, book)
+                }
+        }
+        return out
 }
 
 // R71-A: getFeaturedBooks — 读 Setting 表 featuredBooks.{siteID} JSON, 按 bookIds

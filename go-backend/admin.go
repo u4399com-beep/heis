@@ -2109,23 +2109,66 @@ func adminRulesAudit(w http.ResponseWriter, r *http.Request) {
         //   预检失败 (网络错误 / TLS 失败 / HTTP 5xx) → sourceReachable=false, fetchTestResult
         //   含 reason 字符串 (e.g. "HTTP 503 (源站 5xx, 不可达)"). 前端可按 sourceReachable
         //   排序展示需修复的 Rule.
+        //
+        // R82-B 目标 A (R81 交接 #1): 加 ?fetchTest=true 试采 1 本书.
+        //   R81-B ?full=true 仅 PrecheckSourceReachable HEAD 测可达性, 不试采 1 本书.
+        //   fetchTest=true 时, 在预检通过后, 对每 Rule 调 crawl.FetchTestSampleBook
+        //   试采 list 第 1 本书 meta + 首章 content (DB=nil 不写库). 71 Rule × ~5s
+        //   单次 (list + book + toc + chapter 共 4 HTTP) / 10 并发 = ~35s 理论上界,
+        //   加网络抖动 + 反爬冷却, 设 300s 总超时 (与 spec "71 规则 × 5s = 6min" 一致).
+        //   返回 fetchTestResult="success: book=<n>, toc=<n>章, 首章=<title>" 或
+        //   "failed: <reason>" 或 "unreachable: <reason>" 或 "blocked: <reason>" 或
+        //   "empty-toc: <reason>". 路由: GET /api/admin/rules?action=audit&full=true&fetchTest=true.
         fullMode := r.URL.Query().Get("full") == "true" || r.URL.Query().Get("full") == "1"
+        fetchTestMode := r.URL.Query().Get("fetchTest") == "true" || r.URL.Query().Get("fetchTest") == "1"
         if fullMode && len(out) > 0 {
                 type precheckResult struct {
                         reachable bool
                         reason    string
                 }
                 results := make([]precheckResult, len(out))
+                // R82-B 目标 A: 试采结果 (仅 fetchTest=true 时填, 否则零值)
+                fetchTestResults := make([]crawl.FetchTestSample, len(out))
                 sem := make(chan struct{}, 10)
                 var wg sync.WaitGroup
                 // 90s 总超时: 71 Rule / 10 并发 × 5s 单次 = 35s 理论上界, 加网络抖动 + DNS
                 //   不命中保留余量. 超时后未完成 Rule 的 sourceReachable=false, reason="预检超时".
-                pctx, pcancel := context.WithTimeout(r.Context(), 90*time.Second)
+                // R82-B 目标 A: fetchTest=true 时延长总超时到 300s (每 Rule 试采 list + book +
+                //   toc + chapter 共 ~4 HTTP, 71 Rule / 10 并发 × 5s 单 = 35s 理论, + 反爬冷却
+                //   + 重试, 与 spec "71 规则 × 5s = 6min" 估算一致).
+                pctxTimeout := 90 * time.Second
+                if fetchTestMode {
+                        pctxTimeout = 300 * time.Second
+                }
+                pctx, pcancel := context.WithTimeout(r.Context(), pctxTimeout)
                 defer pcancel()
+                // R82-B 目标 A: 为 fetchTest 准备每 Rule 的 RuleConfig (避免在 goroutine 内重复解析)
+                parsedRules := make([]crawl.RuleConfig, len(collected))
+                for i, ar := range collected {
+                        parsedRules[i] = crawl.ParseRuleConfig(ar.Config)
+                }
                 for i := range out {
                         wg.Add(1)
                         go func(idx int) {
                                 defer wg.Done()
+                                // R82-B BUG-182 (P2) 修复 (深抓): goroutine 顶层 defer recover.
+                                //   原 R81-B 实现仅在 fetchTest 路径内加 recover (line 2171),
+                                //   PrecheckSourceReachable 路径无 recover. 若 PrecheckSourceReachable
+                                //   panic (理论不可达, 内部 AssertSafeTarget / url.Parse /
+                                //   http.NewRequestWithContext 均返 err 不 panic; 但 globalTransport
+                                //   内部 utls 桥 / DNS resolver 边界偶发 panic 时), 整个 heis-backend
+                                //   进程会被 Go runtime 杀死 (unrecovered goroutine panic 终止进程).
+                                //   admin.go HTTP handler 内启动的 goroutine 必须 recover (与
+                                //   startCrawlTask line 1172 BUG-87 同款 pattern). 修复: 顶层 recover
+                                //   兜底, panic 时填 results[idx] = {false, "预检 panic: ..."}, 不杀进程.
+                                defer func() {
+                                        if rv := recover(); rv != nil {
+                                                results[idx] = precheckResult{false, fmt.Sprintf("预检 panic: %v", rv)}
+                                                // fetchTestResults[idx] 保持零值 (Status=""), 后续
+                                                //   switch 默认 case 不覆盖 out[i].FetchTestResult,
+                                                //   显示 "预检 panic: ..." 即可.
+                                        }
+                                }()
                                 sem <- struct{}{}
                                 defer func() { <-sem }()
                                 if precheckURLs[idx] == "" {
@@ -2134,12 +2177,53 @@ func adminRulesAudit(w http.ResponseWriter, r *http.Request) {
                                 }
                                 reachable, reason := crawl.PrecheckSourceReachable(pctx, precheckURLs[idx], crawl.DefaultFetchConfig)
                                 results[idx] = precheckResult{reachable, reason}
+                                // R82-B 目标 A: 预检通过 + fetchTest=true 时试采 1 本书
+                                //   (源站不可达 → 跳过试采, FetchTestSampleBook 内部会先做
+                                //   同款 PrecheckSourceReachable; 但此处已检过, 重复无副作用
+                                //   且能保证 Status="unreachable" 路径填充 Reason 字段)
+                                if fetchTestMode && reachable {
+                                        defer func() {
+                                                // 防御: FetchTestSampleBook 内部 panic (e.g. cfg.Rule 引用 nil 字段)
+                                                // 不应杀 audit 整体; recover 转 failed 状态.
+                                                if rv := recover(); rv != nil {
+                                                        fetchTestResults[idx] = crawl.FetchTestSample{
+                                                                Reachable: true,
+                                                                Status:    "failed",
+                                                                Reason:    fmt.Sprintf("FetchTestSampleBook panic: %v", rv),
+                                                        }
+                                                }
+                                        }()
+                                        sample := crawl.FetchTestSampleBook(pctx, parsedRules[idx], crawl.DefaultFetchConfig)
+                                        fetchTestResults[idx] = sample
+                                }
                         }(i)
                 }
                 wg.Wait()
                 for i := range out {
                         out[i].SourceReachable = results[i].reachable
+                        // R81-B 默认填预检 reason (兼容原 ?full=true 不带 fetchTest 的 caller).
+                        // R82-B fetchTest=true 时, 试采结果覆盖 fetchTestResult 字段 (更详尽).
                         out[i].FetchTestResult = results[i].reason
+                        if fetchTestMode {
+                                s := fetchTestResults[i]
+                                // 把 FetchTestSample 摘要拼成单字符串供前端展示
+                                // (与 R81-B reason 字段同款 string 兼容, 前端无需改 schema).
+                                // 注: s.Status=="" 表示 FetchTestSampleBook 未跑 (源站不可达
+                                // 跳过预检 + 试采), 此时保留上方 results[i].reason 不覆盖.
+                                switch s.Status {
+                                case "success":
+                                        out[i].FetchTestResult = fmt.Sprintf("试采成功: 书=%s, 目录=%d章, 首章=%s",
+                                                s.BookName, s.TocCount, s.FirstChapterTitle)
+                                case "unreachable":
+                                        out[i].FetchTestResult = "试采失败-源站不可达: " + s.Reason
+                                case "blocked":
+                                        out[i].FetchTestResult = "试采失败-反爬拦: " + s.Reason
+                                case "empty-toc":
+                                        out[i].FetchTestResult = "试采失败-TOC 空: " + s.Reason
+                                case "failed":
+                                        out[i].FetchTestResult = "试采失败: " + s.Reason
+                                }
+                        }
                 }
         }
         writeJSONOK(w, map[string]interface{}{

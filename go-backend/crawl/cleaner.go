@@ -1138,12 +1138,12 @@ func stripPlainTextPromoSegments(text string) string {
 //
 // 设计:
 //  - 干扰句子库 (~150 句) 内置 cleaner.go, 不依赖 DB/外部文件 (避免 IO + 部署复杂度)
-//  - 插入引擎 InjectInterferenceSentences(html, seed): 解析 <p> 段落, 每 3-5 段插 1
+//  - 插入引擎 applyInterference(html, seed, interval): 解析 <p> 段落, 每 3-5 段插 1
 //    干扰 <p class="content-note">; seed 用 chapterID+bookID hash, 同章节同结果
 //    (避免每次渲染不同 → 内容抖动 → SEO 反向扣分)
-//  - 集成入口 CleanContentHtmlWithInterference(raw, cfg, interfere):
-//    interfere == nil || Enabled == false → 等价 CleanContentHtml (默认 false, 不破坏
-//    现有规则); Enabled == true → CleanContentHtml + InjectInterferenceSentences
+//  - 公共接入点 ApplyInterferenceToCleaned(html, cfg): runner CrawlChapterContent
+//    清洗链完成后落库前调 (R70-B 已 wire, runner.go line 2133). cfg.Enabled=false
+//    短路返原 html (不破坏 71 Rule clean 段, 默认关).
 //
 // 注:
 //  - 干扰句子在采集时插入 (CrawlChapterContent → CleanContentHtml 路径), 存入
@@ -1157,6 +1157,21 @@ func stripPlainTextPromoSegments(text string) string {
 //  - types.go CleanConfig 跨范围 (R69-B 严禁改 types.go), 单独建 InterfereConfig
 //    让 admin Rule 编辑时 attach 进 RuleConfig (caller 侧 wiring, 范围外).
 
+// R82-C 精简 (BUG-189 deadcode 删除): 删除 InjectInterferenceSentences +
+//
+//	CleanContentHtmlWithInterference 两个 0-caller exported wrapper (R69-B 加后
+//	R69-R81 13 轮未 wire, R81-C 交接 #2 明确"R82+ 评估删"). runner.go line 2133
+//	调 ApplyInterferenceToCleaned (live), 不调这两个. 删除后 applyInterference +
+//	injectInterferenceHTML/PlainText + newSeededRand + paragraphOpenRe +
+//	interfereContentNoteClass + interfereLibrary 仍被 ApplyInterferenceToCleaned
+//	内部使用, 保留. 未来若需"clean + interfere 一体"组合 API, 复刻 ~12 行:
+//	  func CleanContentHtmlWithInterference(raw string, cfg *CleanConfig, ic *InterfereConfig) string {
+//	      cleaned := CleanContentHtml(raw, cfg)
+//	      if ic == nil || !ic.Enabled { return cleaned }
+//	      interval := ic.Interval; if interval <= 0 { interval = 4 }
+//	      return applyInterference(cleaned, ic.Seed, interval)
+//	  }
+//
 // interfereContentNoteClass — 干扰 <p> 标记 class (避免被 ad 清洗规则误清).
 //
 //	与 EXTRA_AD_PATTERNS / watermarkDomainRe / watermarkPromoRe1..5 / navLinkRe /
@@ -1337,7 +1352,7 @@ var interfereLibrary = []string{
 // paragraphOpenRe — <p> 开标签匹配 (含属性, R69-B 干扰引擎 HTML 模式用).
 //
 //	R69-B 注: 预编译为包级常量 (与 navLinkRe / watermarkRe 同口径, 避免每章节
-//	重编译; 干扰引擎在 CleanContentHtmlWithInterference hot path).
+//	重编译; 干扰引擎在 ApplyInterferenceToCleaned hot path).
 var paragraphOpenRe = regexp.MustCompile(`(?i)<p\b[^>]*>`)
 
 // InterfereConfig — 干扰句子插入配置 (R69-B 用户需求 #3 伪原创降重复).
@@ -1352,27 +1367,10 @@ type InterfereConfig struct {
 	Interval int    `json:"interval,omitempty"` // 插入间隔 (3-5, 0 → 默认 4)
 }
 
-// InjectInterferenceSentences — 在已清洗的章节 HTML 中插入干扰 <p>.
+// applyInterference — 引擎主体 (ApplyInterferenceToCleaned 内部调).
 //
-//	R69-B 用户需求 #3: 采集的章节正文若与源站完全相同, 搜索引擎爬虫易判重复/采集
-//	→ 排名下降. 在 cleaner 清洗后插入伪原创干扰句子 (与原文无关的文学感悟/阅读
-//	提示/无关段子/哲理短句 ~150 句), 让正文与源站差异化 → 降重复判定风险.
-//	策略:
-//	 - 若 html 含 <p> 段落 (HTML 模式): 每 4 个 <p> 后插 1 干扰 <p class="content-note">
-//	 - 若 html 仅含 \n\n 分段 (plainText 模式): 每 4 段后插 1 干扰段 (\n\n 分隔)
-//	 - seed 用 chapterID+bookID hash, 同章节同结果 (避免每次渲染不同)
-//	 - 干扰句子从 interfereLibrary (~150 句) 按 seed 随机选
-//	容错: html 为空 / 库为空 / 段落数 < interval → 返原 html.
-//	interval: 任务说明要求每 3-5 <p> 插 1, 默认 4 (中位数); 调用方可通过
-//	 CleanContentHtmlWithInterference 自定义 interval (3-5, 越界裁到边界).
-func InjectInterferenceSentences(html, seed string) string {
-	return applyInterference(html, seed, 4)
-}
-
-// applyInterference — 引擎主体 (exported via InjectInterferenceSentences /
-//
-//	CleanContentHtmlWithInterference). interval 限 3-5 (越界裁到边界), 0 → 4.
-//	seed=空时用 "default" (返固定结果, 主要用于测试 + 默认调用).
+//	interval 限 3-5 (越界裁到边界), 0 → 4. seed=空时用 "default"
+//	(返固定结果, 主要用于测试 + 默认调用).
 func applyInterference(html, seed string, interval int) string {
 	if html == "" || len(interfereLibrary) == 0 {
 		return html
@@ -1453,36 +1451,13 @@ func newSeededRand(seed string) *rand.Rand {
 	return rand.New(rand.NewSource(int64(h.Sum64())))
 }
 
-// CleanContentHtmlWithInterference — clean + interfere 组合 (R69-B 接入点).
-//
-//	若 interfere == nil 或 Enabled=false → 等价于 CleanContentHtml (默认 false,
-//	不破坏现有 71 Rule clean 段). 否则 → CleanContentHtml + InjectInterferenceSentences.
-//	caller: runner.go CrawlChapterContent (R69 wiring 范围外, 留交接; 切换 1 行:
-//	  `cleaned = CleanContentHtml(content.Content, &cfg.Rule.Clean)` →
-//	  `cleaned = CleanContentHtmlWithInterference(content.Content, &cfg.Rule.Clean,
-//	    &InterfereConfig{Enabled: <开关>, Seed: bc.BookID+":"+q.ChID, Interval: 4})`).
-//	设计: 因 types.go CleanConfig 跨范围 (R69-B 严禁改 types.go, InterfereConfig
-//	 单独建在 cleaner.go), admin Rule 编辑时若加 interfere 段 (R69 admin 范围)
-//	 可序列化为 InterfereConfig 传入; 若不加则 interfere=nil 默认关.
-func CleanContentHtmlWithInterference(raw string, cfgOverride *CleanConfig, interfere *InterfereConfig) string {
-	cleaned := CleanContentHtml(raw, cfgOverride)
-	if interfere == nil || !interfere.Enabled {
-		return cleaned
-	}
-	interval := interfere.Interval
-	if interval <= 0 {
-		interval = 4
-	}
-	return applyInterference(cleaned, interfere.Seed, interval)
-}
-
 // ApplyInterferenceToCleaned — 对已清洗 html 应用干扰句子插入 (R70-B 目标A runner 接入点).
 //
-//	与 CleanContentHtmlWithInterference 区别: 本函数跳过 CleanContentHtml 步骤
-//	(caller 已自行清洗, 含 trafilatura 桥 + fallback 等任意路径), 直接在已清洗
-//	html 上跑 applyInterference. R70-B 接入路径:
-//	  runner.CrawlChapterContent 清洗链 (CleanContentHtml / CleanContentHtmlWithTrafilatura /
-//	  TryTrafilaturaFallback 任一组合) 完成后, 落库前调本函数.
+//	本函数跳过 CleanContentHtml 步骤 (caller 已自行清洗, 含 trafilatura 桥 +
+//	fallback 等任意路径), 直接在已清洗 html 上跑 applyInterference. R70-B 接入
+//	路径: runner.CrawlChapterContent 清洗链 (CleanContentHtml /
+//	CleanContentHtmlWithTrafilatura / TryTrafilaturaFallback 任一组合) 完成后,
+//	落库前调本函数.
 //	cfg.Enabled == false → 短路返原 html (不破坏 71 Rule clean 段, 默认关).
 //	cfg.Interval 钳 3-5 (越界裁到边界), 0 → 默认 4 (与 applyInterference 同口径).
 //	cfg.Seed 空 → applyInterference 内部兜底 "default" (主要测试用; runner 实际

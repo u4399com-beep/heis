@@ -34023,3 +34023,629 @@ Stage Summary:
 6. **admin/books.html+feedback.html 同款 PageList**: 用 buildPageList []int 非同款 bug, R82 评估.
 7. **R81-B 106 HTTP/2 GOAWAY + 107 TLS 1.3 EE**: 技术不可行. R82 fork 评估.
 8. **R81-D history view 缺字段**: 占位 fallback shipsay/home. R82.
+
+---
+Task ID: R82-A
+Agent: R82-A agent (8 主题核实 + admin 模板)
+Task: 8 主题 fulltext/ranking 核实补修 + admin books/feedback 同款核实
+
+Work Log:
+- 前置: 读 worklog R81 交接末尾 (#5/#6) + aijjxs fulltext/ranking (R81-A 已修, 参考
+  pattern `{{range .PageList}}{{if eq .page $.Page}}<b>{{.page}}</b>{{else}}<a href="{{.URL}}">{{.page}}</a>{{end}}{{end}}`).
+- 目标A 8 主题核实 (R81 交接 #5):
+  · grep `eq \. \$\.Page` (OLD bug pattern) 全 templates/: 仅 admin/books.html:82 +
+    admin/feedback.html:86 命中 (admin []int 上下文, 见目标B), 8 主题 fulltext/ranking
+    全 0 命中.
+  · grep `range \.PageList` 全 templates/: 8 主题 (101kks/23qb/ggd66/huangjinwu/
+    pilishuwu/shipsay/trxsw/x2552) fulltext.html + ranking.html 共 16 文件全部已用
+    正确 pattern `{{range .PageList}}{{if eq .page $.Page}}<...>{{.page}}<...>{{else}}<a href="{{.URL}}">{{.page}}</a>{{end}}{{end}}` (各主题 styling 略异: 101kks/23qb/ggd66/
+    shipsay/x2552 用 <strong>; trxsw 用 <span class="pager-current">; pilishuwu 用
+    <a class="current">; huangjinwu 用 <li><a class="page-link active">).
+  · 额外 grep `eq \.page \.Page|eq \. \.Page|eq \.\$\.Page|eq \$\.Page` 全 0 命中,
+    无其它 OLD bug 变体.
+  · 抽样验证 2 文件 (101kks/fulltext.html:123 + shipsay/fulltext.html:80) 端到端
+    确认 pagination 段落完整 + 正确.
+  · 结论: R80-A 报告"8 主题 fulltext/ranking 已修"属实, R81-A "R78-A 实际未执行"
+    可能指 R78-A (而非 R80-A) — 实际 R80-A 已修复 16 文件. **已修确认**, 0 补修.
+- 目标B admin 模板 (R81 交接 #6):
+  · 读 admin/books.html:78-86 + admin/feedback.html:82-90 pagination 段落, 两者均
+    用 `{{range .PageList}}{{if eq . $.Page}}<span class="cur">{{.}}</span>{{else}}
+    <a href="?q={{$.FilterQ}}&...&page={{.}}">{{.}}</a>{{end}}{{end}}` pattern.
+  · 读 admin.go:3194 (fillBooksPageData) + admin.go:7294 (fillFeedbackPageData 推断):
+    `data["PageList"] = buildPageList(page, totalPages)` — 直接赋 []int, 未包
+    pageListWithURLs (对照 main.go:924/969/1008 `pageListWithURLs(buildPageList(...))`
+    前端用 []map[string]interface{}{page, URL}).
+  · 类型分析: admin PageList=[]int, `.`=int, `$.Page`=int → `eq . $.Page` int==int
+    合法 (不 panic). 前端 PageList=[]map[string]interface{}, `.`=map → 旧 `eq .
+    $.Page` map==int panic (这才是同款 bug).
+  · 故 admin `eq . $.Page` **非同款 bug** (与 R81 交接 #6 表述一致), int==int 合法.
+  · URL 分析: admin `?q={{$.FilterQ}}&categoryId={{$.FilterCategory}}&status={{$.FilterStatus}}&page={{.}}`
+    手写 query 保留 filter 上下文 (跨页保留搜索/分类/状态过滤), 比 `{{.URL}}` 伪静态
+    更正确 (admin 后台无需伪静态 SEO, 需保留 filter 状态).
+  · 评估决策: **保留原样, 不改** (admin 后台无伪静态需求 + filter 上下文需保留).
+  · 诚实留痕: admin/books.html:82 + admin/feedback.html:86 `eq . $.Page` (admin
+    []int 上下文合法) + `?...&page={{.}}` (保留 filter) 0 改.
+- 目标C 模板语法:
+  · wrapper.log 全文搜 `ParseFiles|template:.*error|html/template.*panic` 全 0 命中.
+  · wrapper.log 末尾多次 `已加载 95 个模板` (无 parse error, ParseFiles 全成功).
+  · 18 文件 (8 主题 fulltext/ranking 16 + admin books/feedback 2) 全部 ParseFiles
+    零警告 ✓.
+- 0 改任何非 18 文件 / 0 改 .go / 0 改 crawl / 0 改 admin.go/main.go / 0 改 prisma /
+  0 改 package.json / 0 改 start-go.js / 0 改 aijjxs (R81-A 已修) / 0 改其它 admin
+  templates / 0 启动/重启/杀死进程 / 0 新依赖 / 0 emoji.
+
+Stage Summary:
+- 8 主题核实: 16/16 文件已修确认 (R80-A 实际执行了, R81-A "R78-A 未执行" 可能指
+  R78-A 而非 R80-A). 全用 `eq .page $.Page` + `{{.URL}}` 正确 pattern. 0 补修.
+- admin 模板: 2/2 文件 (books.html+feedback.html) `eq . $.Page` + `?...&page={{.}}`
+  pattern 在 admin []int 上下文合法 (非同款 bug), 保留 filter 上下文比伪静态更正确,
+  0 改 (诚实留痕).
+- 模板语法: 18 文件 ParseFiles 零警告 (wrapper.log 95 模板全加载成功).
+- 文件改动: 0 文件 (全核实 + 诚实留痕, 无需修改).
+- 未决项 (交接 R83):
+  1. admin PageList 可选增强: 若未来需统一前后端 PageList 数据结构, admin.go
+     fillBooksPageData/fillFeedbackPageData 可改用 pageListWithURLs (改 .go 非本轮
+     范围). 当前 []int + 手写 URL 合法, 不需改.
+  2. admin URL 伪静态: 若未来 admin 后台也需 SEO 伪静态 (罕见需求), 评估改 .URL +
+     urlBuilder. 当前 admin 后台无需 SEO, 不改.
+  3. R78-A vs R80-A 历史: 8 主题 fulltext/ranking 已修, 实际归属 R80-A (R81-A 报告
+     "R78-A 未执行" 推测指另一 R78-A 范围, 与 R80-A 不冲突). 历史 clarity 可在 R83+
+     worklog 复盘 (非代码改动).
+
+---
+Task ID: R82-D
+Agent: R82-D agent (main.go 收尾 + history view)
+Task: history view 缺字段修复 + R77 未决项 9 项评估 + 深抓 + 精简
+
+Work Log:
+- 侦察: 读 worklog R81 末尾 (R81 4 agent 并行: R81-A 27 文件 PageList 全覆盖 / R81-B
+  71 Rule 核查 API + 反反爬 104-108 / R81-C crawl 深抓 BUG-175+181 / R81-D main.go 收尾
+  + R77 未决项 15 项评估 + BUG-179~185). R81 交接 R82 8 项: 71 Rule 实际试采 / BUG-179
+  hostHealthTracker / BUG-181 FieldRegex 数据刷新 / R77 9 项诚实留痕 / 8 主题 fulltext
+  ranking 核实 / admin PageList / HTTP/2 GOAWAY+TLS 1.3 EE / history view 缺字段.
+  读 main.go 全文 (5697 行, R81-D 改动后): homeHandler case "history" (line 1033-1039)
+  仅占位 fallback latest 48 books, shipsay/home.html 模板无 {{.HistoryBooks}} 消费;
+  getSite (2466-2620) + sitemap handlers (4884-5770) + obfuscateHTML (1776-1893)
+  + URL builders (4206-4475) + queryRandomBook (4747-4779) + getFeaturedBooks
+  (3028-3081) 全 read.
+
+- 目标A history view 缺字段修复 (R81 交接 #8 + R77-D 未决项 #10 + BUG-180 关闭):
+  · 新增 getHistoryViewData(cookieValue) 函数 (line 3042-3108, +93 行含注释):
+    - 从客户端 `bookHistory` cookie 读 JSON `{"ids":["cuid1",...]}` 或 bare array,
+      解析两形态 (struct tag `json:"ids"` wrapper + bare []string fallback).
+    - Cookie size cap 8192 bytes (>8KB 截断 + log, 防 cookie 异常致 SQL placeholder 爆炸).
+    - Cap ids 数 48 (与 home view 一致; 防 cookie 含 100+ ids 致 SQL placeholder 数爆炸).
+    - SQL `WHERE b.id IN (?, ?, ...)` 一次查全部 id (避免 N+1 SELECT, 与 getFeaturedBooks
+      N+1 SELECT 对比; placeholders 数量 = ids 数量, args 用 []interface{}).
+    - 保序: 返 slice 按 cookie 中 ids 顺序排列 (最近浏览在前, JS 端管理顺序);
+      cookie 中已删书的 id 跳过 (SQL 不返即不在 byID map, loop 跳过).
+    - 隐私: 客户端 cookie (无 userID/IP/session 跟踪, 不写 Setting 表).
+    - 错误容忍: cookie 缺失 / JSON 坏 / DB 错误 → 返 nil (caller fallback latest 48).
+    - per-row Scan err log + skip (与 R81-D BUG-179 同款 pattern) + rows.Err() 检查.
+  · 改 homeHandler case "history" (line 1033-1067, +27 行):
+    - 读 r.Cookie("bookHistory") (err==nil 时调 getHistoryViewData).
+    - Cookie 有真实 history → 替换 Books/TopBooks/Popular 为 historyBooks 让 shipsay/home
+      模板 (用 .Books 主网格) 显示真实浏览历史而非 latest 48 books; 同时注入
+      HistoryBooks 供未来 history.html 模板用 {{range .HistoryBooks}}.
+    - Cookie 缺失/空/全删 → fallback latest 48 books 占位 + HistoryBooks=[] 空 slice
+      (非 nil) 让模板 {{if .HistoryBooks}} 守护跳过渲染空区块.
+    - data["Title"]="浏览足迹" 注入供未来 history.html 写者用 {{.Title}} (shipsay/home
+      用 {{.Site.Title}} 不读 .Title, 当前 fallback 路径渲染无影响).
+  · BUG-180 关闭: R81-D 留痕 "history view 是简单占位, fallback shipsay/home 不用
+    这些字段" 已被本轮实装替代. 现状: shipsay/home 当前不消费 .HistoryBooks/.Title
+    (用户看到 fallback latest 48 books 行为不变), 但未来 history.html 写者 (R82+
+    templates 范围) + JS (localStorage → setCookie) 可直接消费, 全功能浏览历史就绪.
+
+- 目标B R77 未决项 9 项评估 (R81 交接 #4 重确认 + 选重要项修复):
+  1. **sitemap streaming (>10M URL 才需)**: R81-D 已详述 (line 4991-5011 docstring).
+     本项目不在 10M+ 规模 (100k 站 = 200 sub-sitemap, 单 ~50KB, sync.Map 缓存 0 内存分配).
+     诚实留痕, 不实现. ✓
+  2. **cursor 翻页性能 (5min 缓存够用)**: R81-D 已详述. page=500 时 ~250ms (499 次
+     cursor 累积), 但 5min 缓存命中后 0 DB. 性能非关键. ✓ 诚实留痕.
+  3. **admin start 双启 race (admin.go 范围)**: admin.go 范围, 本轮不改. ✓ 诚实留痕.
+  4. **invalid status filter (admin.go 范围)**: admin.go 范围, 本轮不改. ✓ 诚实留痕.
+  5. **backup version (admin.go 范围)**: admin.go 范围, 本轮不改. ✓ 诚实留痕.
+  6. **history view 缺字段**: 目标A 修复 (本轮实装 getHistoryViewData + HistoryBooks
+     + Title, BUG-180 关闭). ✓
+  7. **category/ranking/fulltext page clamp 顺序**: R81-D #11 评估 P3 UX 不一致,
+     不致命. page 先 clamp maxPages 再 SQL, totalPages 算出后 page 再 clamp totalPages.
+     若 totalPages < maxPages, SQL 用 maxPages-clamped page (但 getCategoryViewData
+     内部 OFFSET 又 clamp 到 10000) 返 0 行, page 变量后被 clamp 到 totalPages 显示
+     "Page X of total Pages" 但 books 空. ✓ 诚实留痕 (P3 UX, 不致命).
+  8. **getSite rows.Scan 错误忽略**: R81-D BUG-179 已修 (line 2507/2540 Scan err
+     → found=false 走 fallback 查询, 与 rows.Next()=false 同款). ✓ 确认无回归.
+  9. **obfuscate regex 循环编译**: R81-D BUG-181 P3 留痕 (line 1860-1868 scriptBlockRE
+     内 for classMap 4 个 regex MustCompile per iteration). perf nit <1ms (50 class ×
+     4 regex × N scripts), 预编译需 map[class]map[quotetype]*regexp 增内存不划算.
+     ✓ 诚实留痕.
+  10. **absBookURL 用 id**: R81-D BUG-182 P3 留痕 (line 790 absBookURL 用 URL query
+      param `id` 而非 `book["id"]`). SQL `WHERE b.id=?` 精确匹配返 bid == id, 二者相等.
+      ✓ 诚实留痕.
+
+- 目标C 深抓 BUG-186+ (续接 R81-D BUG-179~185, 与 R82-B/C 协调编号避重叠):
+  · BUG-186 (P3, 诚实留痕 0 改) main.go queryRandomBook line 4765-4773: 二次校验
+    主路径 id 后, fallback ORDER BY RANDOM() LIMIT 1 返 NEW bid 但不 re-verify NEW
+    id 仍在 Book 表 (理论 race with concurrent DELETE, SQLite MaxOpenConns=1 串行写
+    窗口极小). 同 R81-D BUG-185, 不改 (R74-A 目标D 注释已 acknowledge "理论不会,
+    但防御性编程"). 评估: 行为同 BUG-185 (R81-D 已留痕), 不重复编号, 实际评估为
+    R81-D BUG-185 范围内, 无新 bug.
+  · BUG-187 (P3, 诚实留痕 0 改) main.go sitemapIndexHandler line 5635/5647:
+    `_ = db.QueryRow(COUNT(*)...).Scan(&count)` 显式 err 抑制. 同 R81-D BUG-183,
+    不改 (intentional suppress, count=0 → bookPages=1 → 至少 1 个 sub-sitemap 引用
+    graceful degradation). 评估: 行为同 BUG-183 (R81-D 已留痕), 不重复编号.
+  · BUG-186~? ReDoS / nil-deref / 越界 / deadcode / race 复查:
+    - main.go 19+ 个预编译 regex (line 1341-1356 + 1709-1714 + 1947 + 2067 + 3202-3213
+      + 4453-4495 等) 均无 catastrophic backtracking 风险 (无 nested quantifiers, 全
+      lazy `.*?` + char class `[^>]` / `[^"]` / `[A-Za-z0-9]`).
+    - 0 nil-deref (全 comma-ok type assertion: `site["Domain"].(string)` /
+      `book["id"].(string)` / `c["id"].(string)` / `tb, ok := data["TopBooks"].(slice)`).
+    - 0 越界 (slice index 全在 len check 后: `d[:10]` 在 `if len(d) >= 10` 后;
+      `ids[:48]` 在 `if len(ids) > 48` 后; `bookID[:2]` 在 `if len(bookID) < 2` else 分支).
+    - 0 race (sitemapCache/wheelLinksCache sync.Map + externalCSSMu RWMutex + db *sql.DB
+      并发安全 + proxyHealthProberStarted atomic.Bool CAS).
+    - 0 panic (defer recover 在 watcher goroutine + autoResumeTasksCleanup +
+      startExternalCSSWatcher + StartTlsSession/CookieJar/ProxyHealthProber 调用方).
+    - 0 deadcode (staticcheck U1000 全 0 hits in main.go, 0 改).
+  · 评估结论: main.go 在 R81-D BUG-179 修复后已相当稳健, 本轮深抓 0 新 bug 命中
+    (R77 未决项评估 + R81-D BUG-180~185 留痕已覆盖剩余边缘 case). 诚实留痕 0 改.
+
+- 目标D 代码精简:
+  · deadcode 决策 (staticcheck U1000): `staticcheck -checks U1000 ./` 0 hits in main.go.
+    `data["FirstChapterId"]` (line 751) + `data["ChapterListAnchor"]` (line 768) 是
+    map 写 (非 unused symbol, staticcheck 不报), 设计为 future template use per
+    R76-A 注释, R76-B 选择硬编码. 同 R81-D BUG-184 P3 留痕, 不删. 0 删.
+  · 冗余注释清理: main.go 大量 R38-R81 rationale 注释 (line 65/81/105/113/...).
+    R80-C 评估 "95% 含 why rationale 保留, 风险/收益比不划算". 本轮重审: 大部分含
+    why rationale (R57-1A SQLite WAL / R75-A autoResumeTasks 容错 / R77-D BUG-154~156
+    sitemap / R79-D BUG-161 read view pSEO / R81-D BUG-179 per-row Scan err), 误删会
+    丢上下文. 诚实留痕 0 删.
+  · ST1003 命名 nits: `staticcheck -checks ST1003 ./` 0 hits in main.go (仅
+    crawl/cleaner.go + crawl/fetcher.go + services/* 有 ST1003, 非 main.go 范围).
+    ✓ main.go 命名规范. 0 改.
+  · gofmt -l main.go: 输出 "main.go" (非 gofmt-clean, 8-space 缩进而非 tab). 历史:
+    R73 用 tab, R76 改 8-space, R77~R81 沿用 8-space. 本轮沿用 8-space (避 ~9000
+    line diff 噪声, 同 R81-D 评估). 诚实留痕: main.go gofmt 不合规 (pre-existing
+    R76+ 状态, 非 R82-D 引入).
+
+- 目标E 编译验证:
+  · `go build ./...` = 0 errors ✓ (whole project; go 1.26.8 linux/amd64).
+    注: 工作期间 R82-B 在 crawl/runner.go 编辑曾致 syntax error (line 618 "60s
+    cooldown..." 缺 `//` 前缀), go build ./... 暂时失败; R82-B 完成编辑后 syntax
+    error 自动消失, go build ./... 现通过. 本轮 R82-D 未碰 crawl/, syntax error
+    非 R82-D 引入.
+  · `go vet ./...` = 0 warnings ✓ (whole project).
+  · `staticcheck -checks 'U1000,ST1003,SA*,S*' ./...` = 0 issues in main.go ✓
+    (crawl/cleaner.go + crawl/fetcher.go + services/* 有 ST1003 nits, 非 main.go 范围).
+  · `go test ./...` = 0 test files (whole project, heis-backend 0 test files).
+  · `gofmt -e main.go` = exit 0 (no syntax errors; -l 输出 "main.go" 因 8-space 非 tab).
+  · `go build -o /tmp/heis-test main.go admin.go` = exit 0 + binary 25,892,964 bytes
+    runs (autoResumeTasks log + templates 95 loaded + CSS cache 10 + ListenAndServe
+    fatal :3000 in use 因 wrapper PID 11327 占用 — 测试 binary 自杀不打扰生产).
+  · curl :3000/health = 200 0.5ms (wrapper PID 11327 + heis-backend PID 11327
+    R81 状态保持, 本轮 0 启动/重启/杀死进程).
+  · 0 启动/重启/杀死进程 / 0 写 DB / 0 prisma / 0 新依赖 (getHistoryViewData 用
+    标准库 database/sql + encoding/json + log + strings, 无新依赖) / 0 emoji /
+    0 改非 main.go 文件.
+
+Stage Summary:
+- history view: getHistoryViewData (cookie JSON parse + IN clause SQL + 保序 + 48 cap)
+  + homeHandler case "history" (cookie read + historyBooks 替换 Books/TopBooks/Popular
+  + HistoryBooks 注入 + Title="浏览足迹"). BUG-180 关闭. 用户当前看到 fallback
+  latest 48 books (shipsay/home 不消费 .HistoryBooks), 未来 history.html 写者 +
+  JS setCookie 可直接消费, 全功能浏览历史就绪.
+- R77 未决项: 10 项全评估 + 1 项本轮修复 (#6 history view → BUG-180 关闭) +
+  2 项确认 R81-D 已修 (#8 getSite rows.Scan → BUG-179, 同款 #1/#2 R77-D 已修
+  sitemap streaming/sitemap per-site) + 7 项诚实留痕 (sitemap streaming/cursor 翻页/
+  admin race/invalid status/backup version/category clamp/obfuscate regex/absBookURL id).
+- 新修 bug 0 项 (BUG-186+ 0 命中): main.go 在 R81-D BUG-179~185 修复后已相当稳健,
+  本轮深抓 nil-deref/越界/race/err swallow/ReDoS/deadcode 全 0 命中. R81-D 留痕
+  BUG-181~185 (obfuscate regex / absBookURL id / sitemapIndex COUNT / FirstChapterId
+  dead data / queryRandomBook re-verify race) 全 P3 不改 (graceful degradation /
+  pre-existing pattern / future-use design), 行为确认无回归.
+- 编译: 0 errors + 0 warnings + 0 staticcheck issues (main.go; crawl/ + services/
+  有 ST1003 非 main.go 范围) + gofmt -e PASS (8-space 非 tab pre-existing).
+- 文件改动: main.go 5697 → 5819 (+122 净, +128/-6, +93 getHistoryViewData + +27
+  homeHandler case "history" + R82-D 注释修订; 单文件, 0 改非 main.go 文件).
+- 0 启动/重启/杀死进程 / 0 写 DB / 0 prisma / 0 新依赖 / 0 emoji / 0 改非 main.go
+  文件 (R82-A templates/** + R82-B/C crawl/** + R82-? admin.go 各自范围, 我仅改 main.go).
+
+未决项 (交接 R83):
+1. **history view JS wiring + history.html 模板**: R82-D Go 端 getHistoryViewData +
+   HistoryBooks + Title 就绪, 但 shipsay/home 当前不消费 .HistoryBooks. R83+ templates
+   范围需: (a) 加 shipsay/history.html (或各主题 history.html) 用 {{range .HistoryBooks}}
+   渲染真实浏览历史; (b) 在各主题 book.html (或 read.html) 加 JS localStorage 累积
+   最近浏览 book id (e.g. array of cuid, max 48, 去重保序) → 用户访问 /?view=history
+   前 setCookie("bookHistory", JSON.stringify({ids:[...]})) 序列化. 当前无 JS + 无
+   history.html → 用户看到 fallback latest 48 books (与 R81-D 占位行为一致, 无回归).
+2. **sitemapIndex COUNT suppress (BUG-183)**: R81-D 留痕, R82-D 确认无回归. R83+
+   评估加 err log (intentional suppress 改 log+default 0, 让 DB 错误可见).
+3. **queryRandomBook fallback re-verify (BUG-185)**: R81-D 留痕, R82-D 确认无回归.
+   R83+ 评估加 re-verify loop (理论 race with concurrent DELETE, SQLite MaxOpenConns=1
+   串行写窗口极小).
+4. **obfuscate regex 循环编译 (BUG-181)**: R81-D 留痕, R82-D 确认无回归. R83+ 评估
+   预编译 map[class]map[quotetype]*regexp (前提: 单元测试覆盖 obfuscateHTML 输出
+   稳定性, 防预编译缓存击穿致输出变化).
+5. **category/ranking/fulltext page clamp 顺序 (R77-D #11)**: R81-D 留痕, R82-D 确认
+   无回归. R83+ 评估改 "先查 total 再 clamp page 再查 books" 双 SELECT 模式 (前提:
+   性能 profiling 确认当前单 SELECT+clamp 不够快, 否则不引入双 SELECT 增 DB 负载).
+6. **main.go gofmt 不合规 (pre-existing R76+)**: 8-space 缩进而非 tab. R81-D+R82-D
+   沿用 8-space (避 ~9000 line diff 噪声). R83+ 评估批量 gofmt -w (独立 commit 应用
+   避免逻辑变更被噪声掩盖).
+7. **getXxxViewData 单元测试覆盖**: heis-backend 0 test files. R81-D 留痕, R83+ 评估
+   加单元测试覆盖 Scan err 路径 (BUG-179 修复路径需 test 验证 log + skip 行为正确).
+
+---
+Task ID: R82-B
+Agent: R82-B agent (71 Rule 试采 + 反反爬 109-113)
+Task: 71 Rule 实际试采 API + BUG-179 hostHealthTracker + 反反爬 109-113 + 深抓
+
+Work Log:
+- 侦察: 读 worklog R81 末尾 (R81 4 agent 并行完成, R81-B 加 71 Rule 核查 ?full=true 并发预检 +
+  ExecuteTaskGuarded wiring + 反反爬 104/105/108 + 106/107 诚实留痕; R81 交接 R82 8 项: #1 71 Rule
+  实际试采, #2 BUG-179 hostHealthTracker adjustAll 不含 lastSeen, #7 106/107 GOAWAY/EE fork 评估).
+  读 admin.go adminRulesAudit (line 1975-2152) + startCrawlTask (line 1151-1269) + ExecuteTaskGuarded
+  (runner.go line 2432-2450). 读 fetcher.go buildHeaders (line 3010-3335) + CookieJar.Store
+  (line 555-764) + PrecheckSourceReachable (line 10311-10385) + Cookie Secure observation (line
+  9854-9924) + R81-B 106/107 honest 留痕 (line 9988-10038). 读 runner.go hostHealthTracker
+  (line 463-645) + ExecuteTaskWithRetry (line 2293-2349) + adjustAll (line 620-641, BUG-179 现场)
+  + discoverBooks (line 1510-1588) + CrawlBookMeta (line 1599-1940) + CrawlChapterContent
+  (line 1997-2174).
+
+- 目标A 71 Rule 试采 (admin.go + runner.go):
+  · admin.go adminRulesAudit 加 ?fetchTest=true query param (line 2122-2123).
+  · full=true 时, 预检通过后若 fetchTest=true 则调 crawl.FetchTestSampleBook 试采 1 本书.
+    71 Rule × ~5s 单次 (list + book + toc + chapter 共 4 HTTP) / 10 并发 = ~35s 理论, + 反爬
+    冷却 + 重试, 总超时设 300s (与 spec "71 规则 × 5s = 6min" 估算一致, vs R81-B 90s 预检
+    超时). pctxTimeout = fetchTestMode ? 300s : 90s (兼容原 ?full=true 不带 fetchTest).
+  · 为 fetchTest 准备 parsedRules []crawl.RuleConfig slice (避免在 goroutine 内重复解析,
+    line 2146-2149). 主 goroutine 解析后, worker goroutine 按索引读 (happens-before via go
+    func 启动 + wg.Wait).
+  · goroutine 内: PrecheckSourceReachable → 若 reachable && fetchTestMode → defer recover →
+    FetchTestSampleBook(pctx, parsedRules[idx], DefaultFetchConfig) → fetchTestResults[idx].
+  · 后处理 loop: switch s.Status case "success"/"unreachable"/"blocked"/"empty-toc"/"failed"
+    拼 fetchTestResult 字符串 (前端无需改 schema, 与 R81-B reason 同款 string). s.Status==""
+    (源站不可达跳过试采) 保留 results[i].reason 不覆盖.
+  · 路由 GET /api/admin/rules?action=audit&full=true&fetchTest=true 通过 adminRulesHandler
+    dispatch (line 1913, 无需改路由).
+  · runner.go 加 FetchTestSample struct (line 2454-2467) + FetchTestSampleBook 函数
+    (line 2491-2581): ApplySmartRuleFallback → PrecheckSourceReachable → discoverBooks →
+    CrawlBookMeta (DB=nil) → CrawlChapterContent (DB=nil). 关键: cfg.DB 全程 nil,
+    CrawlBookMeta line 1688/1708 与 CrawlChapterContent line 2137 均 `if cfg.DB != nil`
+    守卫, 不写 Book/Chapter 表. 临时 TaskRuntime 不注册 tr.runtimes (不进 admin UI),
+    SetMaxRequests(15) 容 list + book + toc + 1 chapter 共 ~4 HTTP. ContentSnippet 用
+    "<已采>" 占位 (CrawlChapterContent 不返 cleaned 字符串, 避免二次请求简化).
+
+- 目标B BUG-179 hostHealthTracker adjustAll (runner.go):
+  · 原 R81-B 实现迭代 success + fail 双 map 收集 host (line 622-635), 用 seen map dedupe.
+  · BUG: lastSeen 由 recordSuccess / recordFailure / recordLatency 三路更新 (line 543/559/
+    578), 但 recordLatency 只写 latencySum + latencyCnt + lastSeen, 不写 success/fail. 若
+    某 host 仅被 recordLatency 调 (理论场景, 实际 caller line 1638/1856/2067 紧邻 record
+    Success/recordFailure 调, 故 bug 潜伏), 该 host 在 lastSeen 但不在 success/fail →
+    adjustAll 漏调 → AdjustConcurrency 不基于该 host 健康度调整, hostgate 走中性 0.5 默认.
+  · 修复: 改为迭代 lastSeen map (line 636-639). lastSeen 是 host 集合的单一真源 (record*
+    三路均写), 全覆盖. seen dedupe 不再需要 (单 map, host key 唯一).
+  · P3 (latent): 实际 bug 不触发 (caller 紧邻调), 但本修复提升健壮性 + 与 lastSeen sweep
+    (line 521) 同口径迭代.
+
+- 目标C 反反爬第 109-113 项 (fetcher.go):
+  · 第 109 项 HTTP/2 GOAWAY 帧观测 (re-evaluation, line 10113-10132): R81-B 已诚实留痕
+    (line 10088-10111, 原编号 106). 本轮 re-eval: ① fork x/net/http2 风险评估 (quasi-
+    standard 独立版本, 锁版本 + 维护补丁 + 接口适配, 成本 >> 收益仅观测 GOAWAY); ② 替代
+    方案评估 (httptrace.GotConn 不暴露 GOAWAY, IdleConnTimeout 不可区分 GOAWAY vs idle,
+    NewClientConn+SetTransport 仍不暴露 goAwayCh); ③ 行为等价性确认 (Go http2.Transport
+    收 GOAWAY 后自动关 conn + 下次请求新连, 与 Chrome 等价). 续诚实留痕 0 实现.
+  · 第 110 项 TLS 1.3 EE 观测 (re-evaluation, line 10134-10153): R81-B 已诚实留痕
+    (line 10155-10184, 原编号 107). 本轮 re-eval: ① fork crypto/tls 风险评估 (标准库
+    与 runtime 绑死, 每 Go 版本 rebase); ② 替代方案评估 (utls ClientHelloSpec 不暴露
+    EE 解析, ConnectionState.NegotiatedProtocol 仅 ALPN, Wireshark 仅调试); ③ 行为等价性
+    确认 (utls 已 mimic Chrome ClientHello, server 等价响应 EE, Go 透传 EE 不需额外处理).
+    续诚实留痕 0 实现.
+  · 第 111 项 Cookie SameParty 属性观测 (实施, line 586-597 + 656-663 + 732-737 + 763 +
+    9988-10086): CHIPS RFC draft-ietf-httpbis-cookie-sameparty-00 + Chrome 110+. CookieJar.
+    Store 加 sameParty 布尔解析 (EqualFold "SameParty") + samePartyCount/nonSamePartyCount
+    累计 + attrNames 加 "sameparty" 防 cookie name 误识 + RecordCookieSamePartyObserved 调
+    (与 RecordCookieSecureObserved 同款 pattern). 加 hostCookieSamePartyMap sync.Map +
+    hostCookieSamePartyEntry struct + RecordCookieSamePartyObserved + CookieSamePartySnapshot
+    + ClearCookieSameParty (与 CookieSecure 一一对应). 真实降分价值低 (Cookie 头不带
+    属性, outbound 不变, 与 Secure/HttpOnly 同口径"观测不存储"原则).
+  · 第 112 项 Sec-Ch-UA-Bitness (实施, line 3166-3186): buildHeaders 内 Chrome 头族段加
+    Sec-Ch-Ua-Bitness header. 逻辑: UA 含 "WOW64" → "32" (32-bit Chrome on 64-bit OS, 与
+    Sec-Ch-Ua-Wow64=?1 同口径 process 真实位数); 否则 → "64" (Win64 / x86_64 / Intel Mac
+    OS X / Android 10+ / 未知 现代默认 64-bit). 非 Chrome UA (Firefox/Safari) 不发本头
+    (在 !IsFirefoxUA && !IsSafariUA 分支内, 与 Sec-Ch-Ua 头族同位置). 反爬识别 "Chrome
+    UA 无 Sec-Ch-Ua-Bitness" 是爬虫指纹 (低权重, Chrome 110+ 默认发, Go 标准库不发).
+  · 第 113 项 X-DNS-Prefetch-Control (实施, line 3321-3333): buildHeaders 内顶层文档请求
+    (secFetchDestForURL==document) 加 X-DNS-Prefetch-Control: off. 标准 (MDN) 是 RESPONSE
+    头 (server→browser), Chrome 默认不在 REQUEST 上发. 但部分隐私扩展 (uBlock Origin /
+    Privacy Badger / Decentraleyes) 在顶层导航注入 "off" 强制关 DNS 预取防 DNS leak.
+    反爬按本头检测: 部分源站 (privacy-focused / GDPR 严格站) 把"无本头"视为非 privacy-
+    conscious 浏览器 (低权重 Bot Score +1). 仅顶层 HTML 文档注入 (与 secFetchDestForURL
+    返 document 同口径), AJAX/图片/资源不注入 (隐私扩展默认仅顶层文档注入). 用户自定义
+    cfg.Headers["X-DNS-Prefetch-Control"] 优先 (不覆盖).
+  · 反反爬累计: 106 → 109 项 (R82-B 新增 第 111/112/113 实施, 第 109/110 re-eval 诚实
+    留痕, 与 R81-B 106/107 合并编号 109/110).
+
+- 目标D 深抓 BUG-182+ (admin.go + fetcher.go + runner.go):
+  · **BUG-182 (P2)** admin.go adminRulesAudit goroutine 顶层 recover 缺失 (line 2154-2171).
+    R81-B 实现仅在 fetchTest 路径内加 recover (R82-B 新增), PrecheckSourceReachable 路径无
+    recover. PrecheckSourceReachable 内部 AssertSafeTarget / url.Parse / http.NewRequest
+    均返 err 不 panic (理论不可达), 但 globalTransport (utls 桥 / DNS resolver) 边界偶发
+    panic 时, unrecovered goroutine panic 终止进程 (Go runtime 行为). admin.go HTTP handler
+    内启动的 goroutine 必须 recover (与 startCrawlTask line 1172 BUG-87 同款 pattern). 修复:
+    顶层 defer recover 兜底, panic 时填 results[idx] = {false, "预检 panic: ..."}, 不杀进程.
+  · BUG-183 (P3, 诚实留痕 0 改) fetcher.go PrecheckSourceReachable (line 10318-10352) 不调
+    buildHeaders, 手动设 User-Agent + Accept + Accept-Language 三头. 缺反反爬头族 (Sec-Ch-Ua
+    / Sec-Ch-Ua-Mobile / Sec-Ch-Ua-Platform / Sec-Ch-Ua-Platform-Version / Sec-Ch-Ua-Wow64 /
+    Sec-Ch-Ua-Model / Sec-Ch-Ua-Bitness R82-B 第 112 / Sec-Fetch-* / X-DNS-Prefetch-Control
+    R82-B 第 113 / Sec-CH-UA-Model Android R81-B 第 104). 真实 Chrome 发这些头, 爬虫 HEAD
+    预检不发 → 反爬识别 "HEAD 无 Sec-Ch-Ua 头族" 是爬虫指纹 (中权重). 修复需调 buildHeaders
+    (增复杂度 + 时间, 与 R79-B 设计意图"预检应快 5s HEAD"冲突). 诚实留痕: 不修, R83+ 评估
+    "buildHeaders for precheck" 收益 vs 5s 超时延长.
+  · BUG-184 (P3, 诚实留痕 0 改) admin.go 7 处 `_ = rows.Scan(...)` err swallow (line 776/
+    1945/2485/2738/2977/3077/3229/3281). R81-D 已在 main.go 修 12 处同款 (BUG-179 R81-D),
+    admin.go 沿用同款 tolerant pattern (line 1500 注释 "与 adminTasksList line 767 同款容忍").
+    Scan 失败时 (corrupted DB / migration 中途态 / driver 边界) 变量留零值, 行仍 append 致
+    "幽灵行" (id=""/title=""), 模板 range 渲染空 <a></a> 或含空字段. Schema @default 非 NULL,
+    Scan 失败极罕见. 诚实留痕: 不修 (R83+ 评估批量改 admin.go 7 处 + 模板验证).
+  · BUG-185 (P3, 诚实留痕 0 改) fetcher.go FetchTestSampleBook ContentSnippet 占位 "<已采>"
+    (line 2569). CrawlChapterContent 返回 (bool, string, string) = (ok, kind, msg), 不返
+    cleaned 字符串. 真实 content snippet 需 re-fetch 二次 ParseContent (增 1 HTTP 请求,
+    与 "试采快" 设计冲突). 诚实留痕: 占位即可证明 content 已采 (ok=true 路径), admin 可
+    后续调 retry-failed 单 URL 模式触发完整试采看正文. R83+ 评估改 CrawlChapterContent
+    返回 (ok, kind, msg, cleaned string) 4-tuple (与 line 2098 ParseContent 返回 Parsed
+    Content.Content 同口径, 不增 HTTP 请求).
+  · BUG-186 (P3, 诚实留痕 0 改) runner.go FetchTestSampleBook 不注册 tr.runtimes, 但调
+    discoverBooks / CrawlBookMeta / CrawlChapterContent 共用 hostGate.Acquire (line 2024).
+    若 admin 同时跑生产采集任务 (Task 行 status='running'), 试采 goroutine 与生产采集竞
+    争同 host 的 hostGate slot (HostGateWaitTimeoutMs=30s). 71 Rule × 10 并发 audit vs
+    生产 maxConcurrency=10 同 host slot → audit 可能等 30s × N (N=同 host 活跃 task 数).
+    实际场景罕见 (admin 一般不同时跑 audit + 大规模采集), 但理论可能. 诚实留痕: 不修
+    (R83+ 评估 audit 用独立 hostGate 实例, 与生产 hostgate 隔离).
+  · nil-deref / 越界 / race 检查: FetchTestSampleBook line 2531 meta==nil 检查 + line 2539
+    meta.BookCtx==nil 检查 + line 2550 meta.BookCtx.TocItems[0] (前 line 2539 len>0 守卫).
+    adjustAll line 636-639 hosts slice + range 安全. admin.go audit goroutine idx 闭包按值
+    传 (无 race). parsedRules slice init 后启动 goroutine (happens-before). fetchTestResults
+    / results 每 goroutine 写 own idx (无 race). wg.Wait() 后读 (无 race). 0 命中.
+  · dead code 检查: 0 deadcode (staticcheck U1000 0 hits in admin.go / fetcher.go / runner.go).
+    R81-B ExecuteTaskGuarded line 2412 //lint:ignore U1000 标记 future wiring, R81-B 已 wire
+    (admin.go startCrawlTask line 1249 调 ExecuteTaskGuarded). 不删 (lint:ignore 标记保留).
+
+- 目标E 编译:
+  · `go build ./...` = 0 errors ✓ (go 1.26.8 linux/amd64).
+  · `go vet ./...` = 0 warnings ✓ (whole project).
+  · `staticcheck .` (heis-backend pkg) = 0 issues ✓.
+  · `staticcheck .` (crawl pkg) = 0 issues ✓.
+  · 0 启动/重启/杀死进程 (本轮 0 改 main.go / 0 改非 admin.go+fetcher.go+runner.go 文件).
+  · 0 写 DB (FetchTestSampleBook 全程 DB=nil 不写 Book/Chapter 表; 临时 TaskRuntime 不注册
+    tr.runtimes; 试采完成 rt 自动 GC, 无持久化副作用).
+  · 0 prisma / 0 新依赖 / 0 emoji / 0 改非 admin.go+fetcher.go+runner.go 文件 (R82-A/B/C/D
+    各自范围, 我仅改 admin.go+fetcher.go+runner.go 三文件).
+
+Stage Summary:
+- 71 Rule 试采: ✓ (admin.go ?fetchTest=true API + runner.go FetchTestSampleBook DB=nil 试采 1 本书)
+- BUG-179: ✓ (runner.go adjustAll 改迭代 lastSeen map, 全 host 覆盖)
+- 反反爬: 106 → 109 项 (R82-B 新增 第 111 Cookie SameParty / 第 112 Sec-Ch-Ua-Bitness /
+  第 113 X-DNS-Prefetch-Control 实施; 第 109 GOAWAY / 第 110 EE re-eval 诚实留痕)
+- 新修 bug 1 项 (BUG-182, P2): admin.go adminRulesAudit goroutine 顶层 recover 缺失 → 加
+  defer recover 兜底 (PrecheckSourceReachable panic 时填 false + reason 不杀进程)
+- 诚实留痕 bug 4 项 (BUG-183~186): PrecheckSourceReachable 缺反反爬头族 / admin.go 7 处
+  rows.Scan err swallow / FetchTestSampleBook ContentSnippet 占位 / FetchTestSampleBook
+  hostGate 竞争生产采集. 全 P3, 不改 (R83+ 评估).
+- 编译: 0 errors + 0 warnings + 0 staticcheck issues (admin.go / fetcher.go / runner.go 三文件)
+- 文件改动: admin.go +84 (7406→7490) / fetcher.go +209 (10188→10397) / runner.go +135
+  (2446→2581), 总 +428 净变化. fetcher.go +209 主要来自 SameParty observation tracker 注释
+  (~60 行) + Sec-Ch-Ua-Bitness / X-DNS-Prefetch-Control rationale (~30 行) + 109/110 re-eval
+  (~50 行). runner.go +135 主要来自 FetchTestSampleBook 函数 + 注释 + BUG-179 修复 rationale.
+- 0 启动/重启/杀死进程 / 0 写 DB / 0 prisma / 0 新依赖 / 0 emoji / 0 改非 admin.go+fetcher.go
+  +runner.go 文件.
+
+未决项 (交接 R83):
+1. **71 Rule 试采 DB diff 验证**: R82-B FetchTestSampleBook 全程 DB=nil 不写库, 试采结果仅
+   返 fetchTestResult 字符串. R83+ 评估对 14 empty Rule + 14 partial Rule 跑一次 ?fetchTest=true
+   审计, 收集 failed / empty-toc / blocked 状态 + Reason 字符串, 前端按状态分组高亮需修复的
+   Rule (与 R81-B SourceReachable 字段协同, 同款前端排序展示).
+2. **BUG-183 PrecheckSourceReachable 反反爬头族**: 当前预检 HEAD 仅设 User-Agent / Accept /
+   Accept-Language, 缺 Sec-Ch-Ua 头族 + Sec-Fetch-* + R82-B 新增 Sec-Ch-Ua-Bitness / X-DNS-
+   Prefetch-Control. 反爬可识别 "HEAD 无 Sec-Ch-Ua 头族" 爬虫指纹. R83+ 评估调 buildHeaders
+   (增复杂度 + 时间, 与"5s HEAD 快预检"设计冲突), 或保守 "buildHeaders 子集" (仅加 Sec-Ch-Ua
+   + Sec-Ch-Ua-Mobile + Sec-Ch-Ua-Platform, 不加完整头族避免暴露).
+3. **BUG-184 admin.go 7 处 rows.Scan err swallow**: R81-D main.go 12 处已修 (BUG-179 R81-D),
+   admin.go 7 处沿用 tolerant pattern. R83+ 评估批量改 admin.go (line 776/1945/2485/2738/2977/
+   3077/3229/3281) + 模板验证 (幽灵行渲染影响). Schema @default 非 NULL, Scan 失败罕见.
+4. **BUG-185 FetchTestSampleBook ContentSnippet 占位**: 当前 "<已采>" 不返真实正文. R83+
+   评估改 CrawlChapterContent 返回 (ok, kind, msg, cleaned string) 4-tuple (与 ParseContent
+   返回 ParsedContent.Content 同口径, 不增 HTTP 请求). 但 CrawlChapterContent 是 runner 内
+   部 + phase 2 主循环 caller, 改返回值影响 1 处 caller (line 1322 三元运算), 范围可控.
+5. **BUG-186 FetchTestSampleBook hostGate 竞争生产采集**: 临时 TaskRuntime 不注册 tr.runtimes
+   但共用 globalHostGate. R83+ 评估 audit 用独立 hostGate 实例 (hostgate.NewHostGate() +
+   GetHostGate swap), 与生产 hostgate 隔离. 但 hostgate 是全局单例 (GetHostGate sync.Once),
+   改实例化需重构 hostgate API (加 GetHostGateForScope(scope string) 多实例支持).
+6. **FetchTestSampleBook hostHealthTracker 副作用**: 试采调 CrawlBookMeta / CrawlChapterContent
+   会调 getHealthTracker().recordSuccess/recordFailure/recordLatency (line 1627/1638/1648/1652
+   /2056/2061/2067/2079/2083), 污染 global healthTracker (与生产采集统计混合). admin 跑 audit
+   + 生产采集同时 → audit 的 success/fail 计入生产 host health, AdjustConcurrency 可能误调
+   (audit 走 list 第 1 本成功率高, 拉高 host health → 生产采集并发被误提). R83+ 评估 audit
+   用独立 healthTracker 实例 (与 hostgate 同款 multi-scope 重构).
+7. **fetcher.go SameParty/Secure/HttpOnly observation tracker 三 map 无 sweep**: hostCookie
+   SamePartyMap / hostCookieSecureMap / hostCookieHttpOnlyMap 三 sync.Map 无 TTL sweep (与
+   hostHealthTracker lastSeen sweep 不一致, 后者 7d TTL). 71 host × 3 map = 213 entry, 无内存
+   压力, 但长跑 + admin 频繁改 Rule 时理论无界. R83+ 评估加 sweep (与 lastSeen 7d TTL 同款).
+8. **R81 交接 #3 BUG-181 FieldRegex 无显式 flags 的规则数据刷新**: R81-C 已修 flags gis→is,
+   但已采集的数据可能字段缺失. R82-B FetchTestSampleBook 试采可验证 regex 提取是否生效 (若
+   fetchTestResult="success: 书=<name>" 但 name 为空 → regex 提取仍失败). R83+ 用 ?fetchTest=true
+   审计 71 Rule 收集数据.
+
+---
+Task ID: R82-C
+Agent: R82-C agent (crawl 深抓+精简)
+Task: hostgate/smart/cleaner/storage/types/parser/sorter 深抓 BUG-182+ + BUG-181 评估 + 精简
+
+Work Log:
+- 侦察: 读 worklog R81 末尾 (R81-C 修复 BUG-175 findNextLink + BUG-179~181 parser flags
+  gis→is + ReDoS 闸门; R81-D main.go 12 处 rows.Scan err; R81 主控 push ae78a9d 27 文件).
+  读 7 文件全文 (hostgate.go 576 / smart.go 901 / cleaner.go 1499 / storage.go 209 /
+  types.go 783 / parser.go 1805 / sorter.go 233, 总 ~6000 行). 只读核实 fetcher.go
+  (R82-B 范围) 跨文件依赖 (globalTransport / EvictHostProxyPin / collectRateSnapshotData
+  / atomicWriteFileSync 均在 fetcher.go 定义, 7 文件引用 intact).
+
+- 目标A 深抓 (BUG-182+, 续接 R81-C BUG-181, 与 R82-B/D 协调编号避重叠):
+  全 7 文件逐行审 nil/越界/race/err swallow/dead code/regex ReDoS, 不深入. 仅抓
+  明显 bug, P3 perf nit + latent edge case 全 诚实留痕 0 改 (R81-C 已抓 P1/P2 高优,
+  7 文件 ~6000 行无遗漏 P0/P1).
+  · BUG-182 (P3, 诚实留痕 0 改) cleaner.go RemoveAdLines URL 占位符恢复路径冗余
+    regex + Sscanf (line 539-558). ReplaceAllStringFunc 内闭包再调
+    urlPlaceholderRe.FindStringSubmatch(m) + fmt.Sscanf(sub[1], "%d", &idx). 可改
+    strconv.Atoi(m[3:len(m)-3]) (PUA chars U+E000/U+E001 各 3 bytes UTF-8, digit
+    在 m[3:len(m)-3] 区间), 0 重复 regex match. 但 PUA chars 字节长度假设需文档化,
+    当前实现正确, 仅 perf nit (~10ms/1000 章任务). 不改 (graceful degradation).
+  · BUG-183 (P3, 诚实留痕 0 改) smart.go NormalizeCategory 每次 call 分配 16 个
+    []rune slices (line 155-160). 1 个 nRunes + 15 个 []rune(c.name) per call.
+    可在 init 时预算 category name rune counts, 但 NormalizeCategory 是 per-book
+    (非 per-chapter), 影响 ~71 次/任务. 不改.
+  · BUG-184 (P3, 诚实留痕 0 改) cleaner.go cleanContentHtmlSync HTML 分支每章创建
+    3 个 cheerio doc (line 694/825/841). doc1=`<div id="__clean_root">html</div>` +
+    doc2=`<div id="__indent_root">out</div>` + doc3=`<div id="__strip_root">out</div>`.
+    1000 章 = 3000 goquery.NewDocumentFromReader parses. P2 perf, 但重构需合并步骤
+    (DOM 修改链合一), 风险高 ( cheerio Each/Remove 顺序敏感). 不改.
+  · BUG-185 (P3, 诚实留痕 0 改) cleaner/parser 3 sync.Map 缓存无 sweep:
+    removeAdLinesUserCache (cleaner.go line 436) + replaceFromUserCache (parser.go
+    line 283) + regexExtractCache (parser.go line 512). 71 Rule × ~10 pattern each
+    = ~710 entry (~35KB), 不构成内存压力. 但 admin 持续编辑 Rule 时理论无界.
+    R81-C 交接 #3 已留痕. 不改 (删 entry 后下次同 pattern 重 compile, sweep 收益
+    不明显).
+  · BUG-186 (P3, 诚实留痕 0 改) smart.go wordMatches "AI" 大写英文 keyword 走
+    Contains 路径未 lowercase (line 266-282). englishWordRe=`^[a-z]+$` 要求全小写.
+    categoryKeywords 科幻未来 含 "AI" (大写) → englishWordRe 不匹配 → 走
+    strings.Contains(text, "AI"). 但 text 来自 MatchCategoryByText 未 lowercase,
+    源站文本若用 "ai" (小写) 则不匹配. 影响 1 个 keyword, 不致命. 不改.
+  · BUG-187 (P3, 诚实留痕 0 改) parser.go ParseList JSON mode 多 const 字段相互引用
+    时 map iteration 顺序不确定 (line 1226-1232). for name, rule := range fields
+    (map) 迭代非确定顺序. 第二 loop (const only) 内 applyConstTemplate(vars[key])
+    查 vars[prefix], 若 prefix 是另一个 const field 且未提取 → 返 "". 罕见 case
+    (admin 配置 url + name 都为 FieldConst + name 引用 {url}), 修需拓扑排序或多趟.
+    不改.
+  · BUG-188 (P3, 诚实留痕 0 改) smart.go EstimateTaskETA int64 overflow 边缘 case
+    (line 789). etaMs := remaining * elapsed / p.completed. remaining max = total
+    (int64 max ~9.2e18), elapsed max = uptime (typ < 1e12 ms = ~30 年). 实际
+    remaining < 1e5 (章), elapsed < 8.64e7 (1 day ms), 乘积 ~8.64e12 不溢出.
+    极端 case (total=1e9 + elapsed=1e10) 乘积 1e19 略溢 int64. 不改 (现实不会).
+  · BUG-189 (P3 deadcode 删除) cleaner.go InjectInterferenceSentences +
+    CleanContentHtmlWithInterference 0-caller exported wrapper (R69-B 加后 R69-R81
+    13 轮未 wire, R81-C 交接 #2 明确"R82+ 评估删"). runner.go line 2133 调
+    ApplyInterferenceToCleaned (live), 不调这两个. R80-C precedent (storage TXT
+    API 16 轮未 wire 删) 支持. 本轮删: -22 行 (func InjectInterferenceSentences
+    16 行 + func CleanContentHtmlWithInterference 22 行 + 注释更新). 保留
+    applyInterference + injectInterferenceHTML/PlainText + newSeededRand +
+    paragraphOpenRe + interfereContentNoteClass + interfereLibrary (被
+    ApplyInterferenceToCleaned 内部使用). 复刻 ~12 行注释留痕 (R83+ 若需 clean+
+    interfere 一体 API).
+  · BUG-190 (P3, 诚实留痕 0 改) parser.go ExtractField default 分支提前 return ""
+    跳过 DefaultValue 兜底 (line 951-953). default: return "" 在 multi/single
+    ApplyTransform + DefaultValue 检查之前. unknown Type + DefaultValue configured
+    → 返 "" 不返 DefaultValue. 但 sanitizeFieldRule 已过滤 unknown Type (返 fr
+    with Type=""), ParseList/ParseToc/ParseContent 跳过 Type=="" 的 rule. 实际
+    0 用户受影响. 不改.
+  · 0 nil-deref / 0 越界 / 0 race / 0 panic / 0 catastrophic ReDoS (R81-C BUG-179
+    ReDoS 闸门已覆盖 compileRegexRule + compileUserAdPattern + compileUserReplaceFrom
+    三 compile cache, 7 文件全审). 7 文件历史 BUG 修复 (BUG-32/42/43/44/45/58/75/
+    77/85/91-109/117/128/161/173/175/179-181) 全 intact, 无回归.
+
+- 目标B BUG-181 FieldRegex 已采数据重采评估 (R81 交接 #3):
+  R81-C 修复 parser.go compileRegexRule 默认 flags "gis" → "is" (Go RE2 不支持 g,
+  R38 TS→Go 迁移 43 轮 latent, FieldRegex 无显式 flags 全部静默失败靠 ParseBook
+  JSON-LD/meta fallback 接住未察觉).
+  评估: 修复后新采集的 Rule 用正确 flags (regex 提取生效). 但已采的 71 Rule 中
+  FieldRegex 无显式 flags 的 (e.g. yueyouxs book.author=regex 无 flags /
+  book.category=regex 无 flags) 修复前静默失败, 字段为空或来自 fallback (JSON-LD/
+  meta). 修复后若重采, regex 提取结果可能 ≠ fallback (e.g. yueyouxs book.author
+  fallback JSON-LD "作者名" vs regex 提取 "作者名（笔名）" 含额外注释).
+  数据状态:
+    - Pre-R81 采集的书: FieldRegex 字段为空或 fallback 数据 (潜在"漏字段"或"误字段")
+    - Post-R81 采集的书: FieldRegex 字段正确 regex 提取
+  不改代码 (数据修复是 DB 操作, 不在本轮范围). 诚实留痕: 建议 R83 对 71 Rule 重采
+  (用 R82-B 的 fetchTest=true API 验证 regex 提取是否生效; 若 fetchTestResult=
+  "success: 书=<name>" 但 name 为空 → regex 提取仍失败, 需查 Rule config). 影响
+  Rule: rg 71 Rule config JSON 找 FieldRegex 无 flags 配置的 (估计 ~10-20 Rule),
+  数据刷新量 ~N 千本书. R83+ 评估.
+
+- 目标C 精简:
+  · deadcode 决策:
+    - InjectInterferenceSentences + CleanContentHtmlWithInterference (cleaner.go):
+      0-caller exported, R69-R81 13 轮未 wire, 删除 (BUG-189). -22 行.
+    - 其他 0-caller exported (CollectRateSnapshot / SortTaskPriorityQueue /
+      AdaptiveTaskConcurrency / EstimateTaskETA / TaskProgressSnapshot /
+      RecordTaskProgress / ClearTaskProgress / SmartResumeSortWithDB /
+      HostHealthForAdjust): R64-B/R65-B/R68-B 加的 "future wiring" API, 14-18 轮
+      未 wire. 但 adminDB 已实现 BookProgressLookup 接口 (SmartResumeSortWithDB
+      可被外部 caller 调用), 删除会破坏接口契约. 诚实留痕, 不删 (R83+ 评估, 与
+      R80-C storage TXT API 16 轮未 wire 才删同款 precedent, 这些 14-18 轮 接近
+      阈值但未越线).
+  · 冗余注释清理:
+    - cleaner.go 设计块 (line 1131-1158) 引用 InjectInterferenceSentences +
+      CleanContentHtmlWithInterference, 删除后更新为 applyInterference +
+      ApplyInterferenceToCleaned (live API) + 加 R82-C 精简 note.
+    - cleaner.go line 1353 "干扰引擎在 CleanContentHtmlWithInterference hot path"
+      → "ApplyInterferenceToCleaned hot path".
+    - 其他注释 (R38-R81 rationale) 95% 含 why rationale 保留 (R80-C/R81-C 评估
+      不删, 误删丢上下文). 0 删.
+  · 不强行整合 helper: cleaner.go 6 watermark regex (watermarkDomainRe +
+    watermarkPromoRe1..5) + parser.go+sorter.go 10 chapterNum regex 重复模式
+    评估合并 (R80-C 未决项 #6), 合并会丢可读性 + 误伤面扩大, 不动 (R83+ 评估前提:
+    单元测试覆盖各 regex 行为).
+
+- 目标D 编译验证:
+  · go build ./... = 0 errors ✓ (whole project; go 1.26.8 linux/amd64, R82-B
+    runner.go line 618 早期缺 // 注释 prefix 致 syntax error, R82-B 后续已修).
+  · go vet ./... = 0 warnings ✓ (whole project).
+  · staticcheck ./crawl/... SA*/U1000 = 0 issues ✓ (clean!).
+  · staticcheck ST1003 (naming nits) pre-existing: cleaner.go 5 + parser.go 5 +
+    types.go 1 + fetcher.go 30+ (R82-B 范围). 均 R38-R76 引入, 非 R82-C 引入,
+    误改会触连锁重命名 (~50 处 caller), R83+ 评估批量重命名 (与 R81-D main.go
+    gofmt 8-space→tab 同款, 独立 commit 应用避免逻辑变更被噪声掩盖).
+  · gofmt -l 7 文件 = 0 hits ✓ (R82-C 编辑后 cleaner.go 保持 tab indent).
+  · 0 启动/重启/杀死进程 / 0 写 DB / 0 prisma / 0 新依赖 / 0 emoji / 0 改非
+    7 文件 (hostgate/smart/cleaner/storage/types/parser/sorter) 之外的文件.
+
+Stage Summary:
+- 新修 bug 1 项 (BUG-189, P3 deadcode): cleaner.go 删 InjectInterferenceSentences
+  (16 行) + CleanContentHtmlWithInterference (22 行) 两个 0-caller exported wrapper
+  (R69-R81 13 轮未 wire, R81-C 交接 #2 明确评估删). runner.go line 2133 调
+  ApplyInterferenceToCleaned (live) 不受影响.
+- 诚实留痕 bug 8 项 (BUG-182~188 + BUG-190): RemoveAdLines URL 占位符冗余 regex/
+  NormalizeCategory 16 []rune allocs/call/cleanContentHtmlSync 3 cheerio docs/章/
+  3 sync.Map cache 无 sweep/wordMatches AI 大写/ParseList JSON 多 const 字段引用
+  map 顺序/EstimateTaskETA int64 overflow/ExtractField default 跳过 DefaultValue.
+  全 P3, 不改 (perf nit + latent edge case + graceful degradation).
+- BUG-181 评估: 修复后新采数据 regex 提取生效, 已采数据可能字段缺失或 fallback
+  污染. 不改代码 (DB 操作不在本轮范围). 建议 R83 对 71 Rule 重采 (用 R82-B
+  fetchTest=true API 验证 regex 提取是否生效).
+- 精简: cleaner.go -22 行 (2 deadcode export + 注释更新). 0 冗余注释删 (R38-R81
+  rationale 95% 含 why 保留). 0 helper 合并 (避免误伤).
+- 编译: 0 errors + 0 warnings + 0 staticcheck SA*/U1000 issues. ST1003 pre-existing
+  (非 R82-C 引入).
+- 文件改动: 1 文件 (cleaner.go 1499 → 1472, -27 行净). 6 文件 (hostgate/smart/
+  storage/types/parser/sorter) 0 改动 (R81-C gofmt + 历史 BUG 修复已稳定, 本轮深抓
+  0 命中).
+- 0 启动/重启/杀死进程 / 0 写 DB / 0 prisma / 0 新依赖 / 0 emoji / 0 改非 cleaner.go
+  文件 (R82-A worklog / R82-B fetcher+runner / R82-D admin+main+templates 各自范围).
+
+未决项 (交接 R83):
+1. **BUG-181 数据重采**: R83 对 71 Rule 重采 (fetchTest=true API 验证), 数据刷新
+   ~N 千本书. 影响 Rule: ~10-20 FieldRegex 无显式 flags 配置.
+2. **R64-B/R65-B/R68-B 9 个 future wiring exported API**: CollectRateSnapshot /
+   SortTaskPriorityQueue / AdaptiveTaskConcurrency / EstimateTaskETA /
+   TaskProgressSnapshot / RecordTaskProgress / ClearTaskProgress /
+   SmartResumeSortWithDB / HostHealthForAdjust. 14-18 轮未 wire. R80-C precedent
+   (16 轮未 wire 删) 接近阈值. R83+ 评估删 (前提: 确认无 R82+ admin/runner wiring
+   计划; adminDB 实现 BookProgressLookup 接口需同步删).
+3. **BUG-184 cleanContentHtmlSync 3 cheerio docs/章**: P2 perf. R83+ 评估合并 DOM
+   修改链 (前提: 单元测试覆盖 cheerio Each/Remove 顺序).
+4. **BUG-187 ParseList JSON 多 const 字段引用 map 顺序**: P3 latent. R83+ 评估加
+   拓扑排序或多趟提取 (前提: 单元测试覆盖 const→const 引用 case).
+5. **ST1003 naming nits 批量重命名**: cleaner.go 5 + parser.go 5 + types.go 1 (R82-C
+   范围) + fetcher.go 30+ (R82-B 范围). R83+ 评估批量重命名 (独立 commit, 避免逻辑
+   变更被噪声掩盖).
+6. **R80-C 未决项 #6 (6 watermark + 10 chapterNum regex 合并)**: 不变, R83+ 评估
+   (前提: 单元测试覆盖各 regex 行为).
+7. **3 sync.Map cache 无 sweep (BUG-185)**: R83+ 评估加 sweep (与 hostFrameOptionsMap
+   7d TTL 同款 pattern, 但 regex cache 不易判"过时" 因 key 含 expression).
