@@ -2382,7 +2382,12 @@ func sitesHandler(w http.ResponseWriter, r *http.Request) {
         for rows.Next() {
                 var id, name, domain, themeID, title, desc, kw string
                 var isDefault bool
-                rows.Scan(&id, &name, &domain, &themeID, &isDefault, &title, &desc, &kw)
+                // R81-D BUG-179: per-row Scan err log + skip (8 plain string + 1 bool,
+                //   非 NullString; 若列中途 ALTER 改 NULL 会 Scan 失败, 旧实现 site 行含空字段).
+                if err := rows.Scan(&id, &name, &domain, &themeID, &isDefault, &title, &desc, &kw); err != nil {
+                        log.Printf("[R81-D] sitesHandler rows.Scan failed: %v - skipping row", err)
+                        continue
+                }
                 sites = append(sites, map[string]interface{}{"id": id, "name": name, "domain": domain, "themeId": themeID, "isDefault": isDefault, "title": title, "description": desc, "keywords": kw})
         }
         // R75-A 目标C4 (fill*-style crows.Err): rows 迭代后检查 rows.Err().
@@ -2504,8 +2509,15 @@ func getSite(siteID string) (map[string]interface{}, error) {
         var seoAuto bool
         var found bool
         if rows.Next() {
-                rows.Scan(&id, &name, &domain, &themeID, &isDefault, &title, &desc, &kw, &offset, &seoAuto, &seoTmplT, &seoTmplD, &seoTmplK, &pseudoStaticStyle)
-                found = true
+                // R81-D BUG-179: per-row Scan err — 旧实现 Scan 失败时 found 仍 true, 致
+                //   返空字段 site map 而非 fallback 查询. schema @default 防 NULL (R77-D
+                //   #12 评估), 但 corrupted DB / migration 中途态仍可能触发. 修复: Scan
+                //   失败 → found 保持 false, 走 fallback 查询 (与 rows.Next()=false 同款).
+                if err := rows.Scan(&id, &name, &domain, &themeID, &isDefault, &title, &desc, &kw, &offset, &seoAuto, &seoTmplT, &seoTmplD, &seoTmplK, &pseudoStaticStyle); err != nil {
+                        log.Printf("[R81-D] getSite primary rows.Scan failed (siteID=%q): %v - falling through to fallback query", siteID, err)
+                } else {
+                        found = true
+                }
         }
         // R75-A 目标C4 (fill*-style crows.Err): rows 迭代后检查 rows.Err().
         if rerr := rows.Err(); rerr != nil {
@@ -2537,8 +2549,13 @@ func getSite(siteID string) (map[string]interface{}, error) {
         var seoAuto2 bool
         var found2 bool
         if rows2.Next() {
-                rows2.Scan(&id2, &name2, &domain2, &themeID2, &isDefault2, &title2, &desc2, &kw2, &offset2, &seoAuto2, &seoTmplT2, &seoTmplD2, &seoTmplK2, &pseudoStaticStyle2)
-                found2 = true
+                // R81-D BUG-179: 同 primary scan, Scan 失败 → found2 保持 false → 返 nil nil
+                //   (homeHandler 走 404 路径, 不返空字段 site map 误导).
+                if err := rows2.Scan(&id2, &name2, &domain2, &themeID2, &isDefault2, &title2, &desc2, &kw2, &offset2, &seoAuto2, &seoTmplT2, &seoTmplD2, &seoTmplK2, &pseudoStaticStyle2); err != nil {
+                        log.Printf("[R81-D] getSite fallback rows2.Scan failed (siteID=%q): %v - returning nil (homeHandler will 404)", siteID, err)
+                } else {
+                        found2 = true
+                }
         }
         // R75-A 目标C4: rows2 迭代后检查 rows2.Err().
         if rerr := rows2.Err(); rerr != nil {
@@ -2905,7 +2922,12 @@ func getCategories() ([]map[string]interface{}, error) {
         cats := []map[string]interface{}{}
         for rows.Next() {
                 var id, name string
-                rows.Scan(&id, &name)
+                // R81-D BUG-179: per-row Scan err log + skip (id/name plain string, 非
+                //   NullString; schema id/name 均 @id/@default 非 NULL, 但 driver 边界防).
+                if err := rows.Scan(&id, &name); err != nil {
+                        log.Printf("[R81-D] getCategories rows.Scan failed: %v - skipping row", err)
+                        continue
+                }
                 cats = append(cats, map[string]interface{}{"id": id, "name": name})
         }
         // R75-A 目标C4 (fill*-style crows.Err): rows 迭代后检查 rows.Err().
@@ -2926,7 +2948,11 @@ func getBooks(limit int) ([]map[string]interface{}, error) {
                 var id, name, author, intro, cover, status, latestChapter, category, categoryID sql.NullString
                 var wordCount int64
                 var updatedAt string
-                rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryID, &updatedAt)
+                // R81-D BUG-179: per-row Scan err log + skip.
+                if err := rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryID, &updatedAt); err != nil {
+                        log.Printf("[R81-D] getBooks rows.Scan failed (limit=%d): %v - skipping row", limit, err)
+                        continue
+                }
                 books = append(books, map[string]interface{}{
                         "id": id.String, "name": name.String, "author": author.String,
                         "intro": truncate(intro.String, 120), "cover": coverURL(cover.String),
@@ -3391,7 +3417,20 @@ func getBookViewData(id string) (map[string]interface{}, []map[string]interface{
                         var cid, title, volume sql.NullString
                         var idx int
                         var wc int64
-                        rows.Scan(&cid, &idx, &title, &wc, &volume)
+                        // R81-D BUG-179 (P3): per-row Scan err swallow → log + skip (与 R77-D
+                        //   sitemapBooksPage BUG-155 同款 pattern, R75-A 仅补 rows.Err 但
+                        //   per-row Scan err 仍静默). 旧实现 Scan 失败时 cid/title 全空仍
+                        //   append, 致 chapters slice 含 "幽灵章" (id=""/title=""), 模板
+                        //   range .Chapters 渲染空 <a></a> + firstChID 永远 "" →
+                        //   FirstChapterURL 不设 → book view "开始阅读" 按钮永远禁用 (即使
+                        //   后续行有有效 cid). schema: Chapter.{id,idx,title,wordCount} 均
+                        //   @default 非 NULL, 但 corrupted DB / migration 中途态 / driver
+                        //   边界 (e.g. idx 列中途 ALTER 改类型) 仍可能触发. 修复: Scan
+                        //   失败 log + continue 跳过该行, firstChID 由下一有效行设.
+                        if err := rows.Scan(&cid, &idx, &title, &wc, &volume); err != nil {
+                                log.Printf("[R81-D] getBookViewData chapters rows.Scan failed (bookID=%s): %v - skipping row", id, err)
+                                continue
+                        }
                         chapters = append(chapters, map[string]interface{}{
                                 "id": cid.String, "idx": idx, "title": title.String,
                                 "wordCount": wc, "volume": volume.String,
@@ -3413,7 +3452,12 @@ func getBookViewData(id string) (map[string]interface{}, []map[string]interface{
                 tmp := []map[string]interface{}{}
                 for rows2.Next() {
                         var cid, title sql.NullString
-                        rows2.Scan(&cid, &title)
+                        // R81-D BUG-179: 同 chapters loop, per-row Scan err log + skip
+                        //   防 "幽灵最近章" (id=""/title="") 入 recent slice.
+                        if err := rows2.Scan(&cid, &title); err != nil {
+                                log.Printf("[R81-D] getBookViewData recent rows2.Scan failed (bookID=%s): %v - skipping row", id, err)
+                                continue
+                        }
                         tmp = append(tmp, map[string]interface{}{"id": cid.String, "title": title.String})
                 }
                 // R75-A 目标C4: rows2 迭代后检查 rows2.Err().
@@ -3435,7 +3479,12 @@ func getBookViewData(id string) (map[string]interface{}, []map[string]interface{
                                 var bid2, name2, author2, intro2, cover2, status2, latestChapter2, category2, categoryID2 sql.NullString
                                 var wordCount2 int64
                                 var updatedAt2 string
-                                rows3.Scan(&bid2, &name2, &author2, &intro2, &cover2, &status2, &wordCount2, &latestChapter2, &category2, &categoryID2, &updatedAt2)
+                                // R81-D BUG-179: 同 chapters/recent loop, per-row Scan err log
+                                //   + skip 防 "幽灵同类书" 入 related slice.
+                                if err := rows3.Scan(&bid2, &name2, &author2, &intro2, &cover2, &status2, &wordCount2, &latestChapter2, &category2, &categoryID2, &updatedAt2); err != nil {
+                                        log.Printf("[R81-D] getBookViewData related rows3.Scan failed (bookID=%s catID=%s): %v - skipping row", id, categoryID.String, err)
+                                        continue
+                                }
                                 related = append(related, bookRowFromScan(bid2, name2, author2, intro2, cover2, status2, latestChapter2, category2, categoryID2, wordCount2, updatedAt2))
                         }
                         // R75-A 目标C4: rows3 迭代后检查 rows3.Err().
@@ -3556,8 +3605,13 @@ func getReadViewData(chID string, site map[string]interface{}) (map[string]inter
         if prow, err := db.Query(`SELECT id, title FROM Chapter WHERE bookId=? AND idx<? ORDER BY idx DESC LIMIT 1`, bookID.String, idx); err == nil {
                 if prow.Next() {
                         var pid, ptitle sql.NullString
-                        prow.Scan(&pid, &ptitle)
-                        prev = map[string]interface{}{"id": pid.String, "title": ptitle.String}
+                        // R81-D BUG-179: per-row Scan err log (prev 仍为 nil, 模板
+                        //   {{if .Prev}} 跳过, 无空 prev section).
+                        if err := prow.Scan(&pid, &ptitle); err != nil {
+                                log.Printf("[R81-D] getReadViewData prev prow.Scan failed (chID=%s): %v - leaving prev nil", chID, err)
+                        } else {
+                                prev = map[string]interface{}{"id": pid.String, "title": ptitle.String}
+                        }
                 }
                 // R75-A 目标C4 (fill*-style crows.Err): prow 迭代后检查 prow.Err().
                 if rerr := prow.Err(); rerr != nil {
@@ -3568,8 +3622,13 @@ func getReadViewData(chID string, site map[string]interface{}) (map[string]inter
         if nrow, err := db.Query(`SELECT id, title FROM Chapter WHERE bookId=? AND idx>? ORDER BY idx ASC LIMIT 1`, bookID.String, idx); err == nil {
                 if nrow.Next() {
                         var nid, ntitle sql.NullString
-                        nrow.Scan(&nid, &ntitle)
-                        next = map[string]interface{}{"id": nid.String, "title": ntitle.String}
+                        // R81-D BUG-179: 同 prev, per-row Scan err log (next 仍为 nil,
+                        //   模板 {{if .Next}} 跳过).
+                        if err := nrow.Scan(&nid, &ntitle); err != nil {
+                                log.Printf("[R81-D] getReadViewData next nrow.Scan failed (chID=%s): %v - leaving next nil", chID, err)
+                        } else {
+                                next = map[string]interface{}{"id": nid.String, "title": ntitle.String}
+                        }
                 }
                 // R75-A 目标C4: nrow 迭代后检查 nrow.Err().
                 if rerr := nrow.Err(); rerr != nil {
@@ -3621,7 +3680,11 @@ func getCategoryViewData(catID string, page, size int) (string, []map[string]int
                 var id, name, author, intro, cover, status, latestChapter, category, categoryID sql.NullString
                 var wordCount int64
                 var updatedAt string
-                rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryID, &updatedAt)
+                // R81-D BUG-179: per-row Scan err log + skip (同 getBookViewData).
+                if err := rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryID, &updatedAt); err != nil {
+                        log.Printf("[R81-D] getCategoryViewData rows.Scan failed (catID=%s page=%d): %v - skipping row", catID, page, err)
+                        continue
+                }
                 books = append(books, bookRowFromScan(id, name, author, intro, cover, status, latestChapter, category, categoryID, wordCount, updatedAt))
         }
         // R75-A 目标C4 (fill*-style crows.Err): rows 迭代后检查 rows.Err().
@@ -3657,7 +3720,11 @@ func getRankingViewData(tab string, page, size int) ([]map[string]interface{}, i
                 var id, name, author, intro, cover, status, latestChapter, category, categoryID sql.NullString
                 var wordCount int64
                 var updatedAt string
-                rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryID, &updatedAt)
+                // R81-D BUG-179: per-row Scan err log + skip.
+                if err := rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryID, &updatedAt); err != nil {
+                        log.Printf("[R81-D] getRankingViewData rows.Scan failed (tab=%s page=%d): %v - skipping row", tab, page, err)
+                        continue
+                }
                 books = append(books, bookRowFromScan(id, name, author, intro, cover, status, latestChapter, category, categoryID, wordCount, updatedAt))
         }
         // R75-A 目标C4 (fill*-style crows.Err): rows 迭代后检查 rows.Err().
@@ -3685,7 +3752,11 @@ func getFulltextViewData(page, size int) ([]map[string]interface{}, int) {
                 var id, name, author, intro, cover, status, latestChapter, category, categoryID sql.NullString
                 var wordCount int64
                 var updatedAt string
-                rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryID, &updatedAt)
+                // R81-D BUG-179: per-row Scan err log + skip.
+                if err := rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryID, &updatedAt); err != nil {
+                        log.Printf("[R81-D] getFulltextViewData rows.Scan failed (page=%d): %v - skipping row", page, err)
+                        continue
+                }
                 books = append(books, bookRowFromScan(id, name, author, intro, cover, status, latestChapter, category, categoryID, wordCount, updatedAt))
         }
         // R75-A 目标C4 (fill*-style crows.Err): rows 迭代后检查 rows.Err().
@@ -3712,7 +3783,11 @@ func getSearchViewData(q string, limit int) []map[string]interface{} {
                 var id, name, author, intro, cover, status, latestChapter, category, categoryID sql.NullString
                 var wordCount int64
                 var updatedAt string
-                rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryID, &updatedAt)
+                // R81-D BUG-179: per-row Scan err log + skip.
+                if err := rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryID, &updatedAt); err != nil {
+                        log.Printf("[R81-D] getSearchViewData rows.Scan failed (q=%q): %v - skipping row", q, err)
+                        continue
+                }
                 // 搜索结果简介取 150 字
                 m := bookRowFromScan(id, name, author, intro, cover, status, latestChapter, category, categoryID, wordCount, updatedAt)
                 m["intro"] = truncate(intro.String, 150)
@@ -3741,7 +3816,11 @@ func getKeywordViewData(tag string, limit int) ([]map[string]interface{}, []stri
                 var id, name, author, intro, cover, status, latestChapter, category, categoryID sql.NullString
                 var wordCount int64
                 var updatedAt string
-                rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryID, &updatedAt)
+                // R81-D BUG-179: per-row Scan err log + skip.
+                if err := rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryID, &updatedAt); err != nil {
+                        log.Printf("[R81-D] getKeywordViewData rows.Scan failed (tag=%q): %v - skipping row", tag, err)
+                        continue
+                }
                 m := bookRowFromScan(id, name, author, intro, cover, status, latestChapter, category, categoryID, wordCount, updatedAt)
                 m["intro"] = truncate(intro.String, 200)
                 books = append(books, m)
@@ -3759,7 +3838,11 @@ func getKeywordViewData(tag string, limit int) ([]map[string]interface{}, []stri
                                 defer rows2.Close()
                                 for rows2.Next() {
                                         var t sql.NullString
-                                        rows2.Scan(&t)
+                                        // R81-D BUG-179: per-row Scan err log + skip.
+                                        if err := rows2.Scan(&t); err != nil {
+                                                log.Printf("[R81-D] getKeywordViewData relatedTags rows2.Scan failed (tag=%q bookID=%s): %v - skipping row", tag, firstBookID, err)
+                                                continue
+                                        }
                                         if t.String != "" {
                                                 relatedTags = append(relatedTags, t.String)
                                         }

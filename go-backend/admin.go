@@ -15,6 +15,7 @@ import (
         "database/sql"
         "encoding/hex"
         "encoding/json"
+        "errors"
         "fmt"
         "io"
         "log"
@@ -1238,8 +1239,23 @@ func startCrawlTask(taskID, ruleID, ruleConfig, mode, bookURL, listURL, fetchCon
         // 6. 执行 (三阶段并发采集)
         ctx, cancel := context.WithCancel(context.Background())
         defer cancel()
-        err := crawl.ExecuteTask(ctx, cfg)
+        // R81-B 目标 B (R80 交接 #1): 调 ExecuteTaskGuarded 替代直接 ExecuteTask.
+        //   ExecuteTaskGuarded 内含 ApplySmartRuleFallback (Rule 字段缺失填通用 fallback)
+        //   + PrecheckSourceReachable (5s HEAD 预检源站可达性) + ExecuteTaskWithRetry
+        //   (3 次重试 + 指数退避 1s/2s/4s, cap 30s). 不可达返 *ErrSourceUnreachable
+        //   sentinel error, 下方 errors.As 判断后跳过任务 + log warn (而非 retry 走
+        //   4 次浪费采集预算). 价值: 14 empty + 14 partial Rule 中源站持续不可达
+        //   (DNS/TLS/5xx) 快速跳过避免浪费 maxRequests + 采集时间.
+        err := crawl.ExecuteTaskGuarded(ctx, cfg)
         if err != nil {
+                // R81-B 目标 B: ErrSourceUnreachable sentinel 单独分支 (跳过 retry 已发生,
+                //   status='error' + log warn; 与一般采集失败区分).
+                var unreachable *crawl.ErrSourceUnreachable
+                if errors.As(err, &unreachable) {
+                        log.Printf("[task:%s] 源站不可达, 跳过任务: %s", taskID, unreachable.Reason)
+                        _, _ = db.Exec(`UPDATE Task SET status='error', updatedAt=datetime('now') WHERE id=?`, taskID)
+                        return
+                }
                 log.Printf("[task:%s] 采集失败: %v", taskID, err)
                 _, _ = db.Exec(`UPDATE Task SET status='error', updatedAt=datetime('now') WHERE id=?`, taskID)
                 return
@@ -1965,7 +1981,7 @@ func adminRulesList(w http.ResponseWriter, r *http.Request) {
 //      toc.list    = Toc.Enabled && (Toc.ItemSelector!=nil || len(Toc.Fields)>0)
 //      content.content = Content.Enabled && len(Content.Fields)>0
 //
-// 返回 {total, complete, partial, empty, rules:[{ruleId, name, fields:{...}, missing:[...]}]}
+// 返回 {total, complete, partial, empty, rules:[{ruleId, name, fields:{...}, missing:[...], sourceReachable, fetchTestResult}]}
 //
 //      complete = 7 字段全配置 (missing=[])
 //      partial  = 1-6 字段配置 (0 < len(missing) < 7)
@@ -1974,6 +1990,10 @@ func adminRulesList(w http.ResponseWriter, r *http.Request) {
 // 路由: GET /api/admin/rules?action=audit (adminRulesHandler 顶部 dispatch)
 //
 //      GET /api/admin/rules/audit (adminRuleByIDHandler 顶部 dispatch, parts[0]=="audit")
+//      GET /api/admin/rules?action=audit&full=true — R81-B 目标 A: 启用源站可达性预检
+//        (对每 Rule 调 crawl.PrecheckSourceReachable 测 List.URLTemplate 首页可达性,
+//        返 sourceReachable + fetchTestResult. 71 Rule × 5s 并发=10 总 ~35s; 默认 false
+//        只检查字段存在性, 不试采, 与 R70-D 原行为一致)
 //
 // 字段配置判定: hasField(rule, key) = Fields[key] 存在 && (Type=="const" || (Type != "" && Expression != ""))
 //
@@ -2024,18 +2044,27 @@ func adminRulesAudit(w http.ResponseWriter, r *http.Request) {
                 return true
         }
 
+        // R81-B 目标 A: 扩展 auditResult 加 sourceReachable + fetchTestResult 字段.
+        //   full=false (默认): 两字段零值 (false / "" — 前端按零值显示 "未测试").
+        //   full=true: 并发预检 (crawl.PrecheckSourceReachable, concurrency=10).
         type auditResult struct {
-                RuleID  string          `json:"ruleId"`
-                Name    string          `json:"name"`
-                Fields  map[string]bool `json:"fields"`
-                Missing []string        `json:"missing"`
+                RuleID          string          `json:"ruleId"`
+                Name            string          `json:"name"`
+                Fields          map[string]bool `json:"fields"`
+                Missing         []string        `json:"missing"`
+                SourceReachable bool            `json:"sourceReachable"`
+                FetchTestResult string          `json:"fetchTestResult"`
         }
 
-        out := []auditResult{}
+        out := make([]auditResult, 0, len(collected))
         complete, partial, emptyCount := 0, 0, 0
         fieldKeys := []string{"name", "author", "category", "intro", "cover", "toc", "content"}
+        // R81-B 目标 A: 预检 URL 候选 (List.URLTemplate 替换 {page}=1). 与 runner.pickPrecheckURL
+        //   同款占位替换 (retry-failed URLs[0] / list URLTemplate {page}=1). audit 无 task
+        //   URLs 信息, 故只用 Rule.List.URLTemplate.
+        precheckURLs := make([]string, len(collected))
 
-        for _, ar := range collected {
+        for i, ar := range collected {
                 cfg := crawl.ParseRuleConfig(ar.Config)
                 fields := map[string]bool{
                         "name":     hasField(cfg.Book, "name"),
@@ -2060,12 +2089,58 @@ func adminRulesAudit(w http.ResponseWriter, r *http.Request) {
                 default:
                         partial++
                 }
+                // R81-B 目标 A: 预检 URL 候选 (List.URLTemplate {page}=1). 无 URLTemplate 时
+                //   预检跳过 (fetchTestResult="无 List.URLTemplate, 跳过预检").
+                primaryURL := ""
+                if cfg.List.URLTemplate != "" {
+                        primaryURL = strings.ReplaceAll(cfg.List.URLTemplate, "{page}", "1")
+                }
+                precheckURLs[i] = primaryURL
                 out = append(out, auditResult{
                         RuleID:  ar.ID,
                         Name:    ar.Name,
                         Fields:  fields,
                         Missing: missing,
                 })
+        }
+
+        // R81-B 目标 A: full=true 时并发预检源站可达性 (concurrency=10, 90s 总超时).
+        //   71 Rule × 5s 单次 / 10 并发 = ~35s 总 (与任务 spec "71 规则 × 3s = 3min" 估算一致).
+        //   预检失败 (网络错误 / TLS 失败 / HTTP 5xx) → sourceReachable=false, fetchTestResult
+        //   含 reason 字符串 (e.g. "HTTP 503 (源站 5xx, 不可达)"). 前端可按 sourceReachable
+        //   排序展示需修复的 Rule.
+        fullMode := r.URL.Query().Get("full") == "true" || r.URL.Query().Get("full") == "1"
+        if fullMode && len(out) > 0 {
+                type precheckResult struct {
+                        reachable bool
+                        reason    string
+                }
+                results := make([]precheckResult, len(out))
+                sem := make(chan struct{}, 10)
+                var wg sync.WaitGroup
+                // 90s 总超时: 71 Rule / 10 并发 × 5s 单次 = 35s 理论上界, 加网络抖动 + DNS
+                //   不命中保留余量. 超时后未完成 Rule 的 sourceReachable=false, reason="预检超时".
+                pctx, pcancel := context.WithTimeout(r.Context(), 90*time.Second)
+                defer pcancel()
+                for i := range out {
+                        wg.Add(1)
+                        go func(idx int) {
+                                defer wg.Done()
+                                sem <- struct{}{}
+                                defer func() { <-sem }()
+                                if precheckURLs[idx] == "" {
+                                        results[idx] = precheckResult{false, "无 List.URLTemplate, 跳过预检"}
+                                        return
+                                }
+                                reachable, reason := crawl.PrecheckSourceReachable(pctx, precheckURLs[idx], crawl.DefaultFetchConfig)
+                                results[idx] = precheckResult{reachable, reason}
+                        }(i)
+                }
+                wg.Wait()
+                for i := range out {
+                        out[i].SourceReachable = results[i].reachable
+                        out[i].FetchTestResult = results[i].reason
+                }
         }
         writeJSONOK(w, map[string]interface{}{
                 "total":    len(collected),

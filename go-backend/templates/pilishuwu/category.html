@@ -126,7 +126,7 @@
 {{if gt .TotalPages 1}}
 <div class="ret-page-wr mod-page" id="pagination2" style="text-align:center;">
 {{if gt .Page 1}}<a href="{{.PrevPageURL}}" class="mod_page_next">上一页</a>{{else}}<a href="javascript:alert('已经是第一页了');" class="mod_page_next">第一页</a>{{end}}
-{{range .PageList}}{{if eq . $.Page}}<a href="javascript:void(0)" class="current">{{.}}</a>{{else}}<a href="/?view=category{{if $.CatID}}&cat={{$.CatID}}{{end}}&page={{.}}">{{.}}</a>{{end}}{{end}}
+{{range .PageList}}{{if eq .page $.Page}}<a href="javascript:void(0)" class="current">{{.page}}</a>{{else}}<a href="{{.URL}}">{{.page}}</a>{{end}}{{end}}
 {{if lt .Page .TotalPages}}<a href="{{.NextPageURL}}" class="mod_page_next">下一页</a>{{else}}<a href="javascript:alert('已经是最后一页了');" class="mod_page_next">最后页</a>{{end}}
 </div>
 {{end}}

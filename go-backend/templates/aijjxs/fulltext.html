@@ -77,7 +77,7 @@
 <div class="pager">
 <a title="总数"><b>{{.Total}}</b></a>&nbsp;&nbsp;&nbsp;
 {{if gt .Page 1}}<a href="{{.PrevPageURL}}">上一页</a>{{end}}
-{{range .PageList}}{{if eq . $.Page}}<b>{{.}}</b>{{else}}<a href="/?view=fulltext&page={{.}}">{{.}}</a>{{end}}{{end}}
+{{range .PageList}}{{if eq .page $.Page}}<b>{{.page}}</b>{{else}}<a href="{{.URL}}">{{.page}}</a>{{end}}{{end}}
 {{if lt .Page .TotalPages}}<a href="{{.NextPageURL}}">下一页</a>{{end}}
 {{if lt .Page .TotalPages}}<a href="/?view=fulltext&page={{.TotalPages}}">尾页</a>{{end}}
 </div>

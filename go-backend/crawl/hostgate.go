@@ -196,17 +196,22 @@ func (g *HostGate) maybeSweepAndEvict() {
 //	新 caller 调 Acquire 传了不同的 minGapMs (会覆写 st.minGapMs 但不动 snapshot),
 //	冷却到期 restore 会反转 caller 的意图 (回到冷却前的旧值, 不是 caller 期望的新值).
 //	修复: 冷却期间 minGapMs 被 caller 覆写 (st.minGapMs != 快照原值) 时跳过还原.
+//
+// R81-C BUG-180 (P3) 修复: 原 if `st.minGapMs != st.minGapMsBeforeCooldown { /* 空 */ }`
+//
+//	是空 branch (staticcheck SA9003). 逻辑分析: 若 minGapMs == 快照原值 (未被 caller
+//	覆写), 还原是 no-op (current == snapshot, 无变化); 若 minGapMs != 快照原值
+//	(caller 覆写), 不还原 (caller 优先). 两种 case 均不做还原, 仅清 snapshot 让
+//	下次冷却重新记. 空 if 等价于 no-op, 移除空 if + 保留注释, 行为不变.
 func (g *HostGate) settleRateLimitExpiry(st *hostState) {
 	if st.rateLimitedUntil > 0 && time.Now().UnixMilli() >= st.rateLimitedUntil {
 		st.rateLimitedUntil = 0
 		st.failStreak = 0
 		if st.minGapMsBeforeCooldown > 0 {
-			// R45-1A: 若 minGapMs == 快照原值 → 冷却期间未被 caller 覆写,
-			//   还原是 no-op (但清 snapshot 让下次冷却重新记). 若 minGapMs !=
-			//   快照原值 → caller 在冷却期间覆写为新值, 不还原 (caller 优先).
-			if st.minGapMs != st.minGapMsBeforeCooldown {
-				// 不还原, caller 的新值生效
-			}
+			// R45-1A: 不还原 minGapMs (两种 case 均不做):
+			//   1. minGapMs == 快照原值 (未被 caller 覆写): 还原是 no-op, 无意义.
+			//   2. minGapMs != 快照原值 (caller 覆写): 不还原, caller 的新值生效.
+			//   R81-C BUG-180: 移除空 if branch (原 SA9003 warning), 行为不变.
 			st.minGapMsBeforeCooldown = 0
 		}
 	}

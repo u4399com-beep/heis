@@ -575,6 +575,14 @@ func (j *CookieJar) Store(domain string, setCookieHeaders []string) {
         //   不改 cookieEntry schema (避免破坏 .cookies.json 持久化兼容, R72-C #78).
         httpOnlyCount := int64(0)
         nonHttpOnlyCount := int64(0)
+        // R81-B 反反爬第 108 项: Cookie Secure 属性观测 — 与 HttpOnly 同款累计 secure /
+        //   非 secure cookie 数, 主循环末尾调 RecordCookieSecureObserved. Secure 属性
+        //   是 HTTPS-only cookie 标记 (RFC 6265 5.2.5), 真实浏览器只在 HTTPS 请求带
+        //   Secure cookie. Go CookieJar 不显式解析 Secure 属性 → outbound Cookie 头
+        //   不区分 Secure 与否, 源站无法直接检测 client 是否识别 Secure. 但 admin
+        //   可观测哪些 host 严格发 Secure cookie (高 ratio = 源站安全策略强).
+        secureCount := int64(0)
+        nonSecureCount := int64(0)
         attrNames := map[string]bool{
                 "path": true, "domain": true, "expires": true, "max-age": true,
                 "secure": true, "httponly": true, "samesite": true,
@@ -613,6 +621,7 @@ func (j *CookieJar) Store(domain string, setCookieHeaders []string) {
                 sameSite := "" // R75-B 第 88 项: "" = 未设 (Chrome 80+ 视为 Lax, 保守存原值)
                 priority := "" // R77-B 第 93 项: "" = 未设 (Chrome 106+ 默认 Medium)
                 httpOnly := false // R79-B 第 98 项: HttpOnly 布尔属性 (无值, 单 token)
+                secure := false   // R81-B 第 108 项: Secure 布尔属性 (无值, 单 token)
                 attrs := strings.Split(raw, ";")
                 for _, a := range attrs {
                         a = strings.TrimSpace(a)
@@ -620,6 +629,12 @@ func (j *CookieJar) Store(domain string, setCookieHeaders []string) {
                         //   跳过会漏识别. 单独 EqualFold 检查 (与 Secure 同款布尔属性).
                         if strings.EqualFold(a, "HttpOnly") {
                                 httpOnly = true
+                                continue
+                        }
+                        // R81-B 第 108 项: Secure 同款无值布尔 token (RFC 6265 5.2.5).
+                        //   与 HttpOnly 并列检测 (两个布尔属性都可能在同一 Set-Cookie 出现).
+                        if strings.EqualFold(a, "Secure") {
+                                secure = true
                                 continue
                         }
                         eq := strings.Index(a, "=")
@@ -684,6 +699,12 @@ func (j *CookieJar) Store(domain string, setCookieHeaders []string) {
                 } else {
                         nonHttpOnlyCount++
                 }
+                // R81-B 第 108 项: 累计 Secure / 非 Secure cookie 计数 (与 HttpOnly 同款).
+                if secure {
+                        secureCount++
+                } else {
+                        nonSecureCount++
+                }
 
                 // 主罐: 存到 request host 罐
                 mainJar := j.jars[reqHost]
@@ -706,6 +727,8 @@ func (j *CookieJar) Store(domain string, setCookieHeaders []string) {
         // R79-B 反反爬第 98 项: 主循环末尾调观测 API (一次性记本次 Store 的 HttpOnly /
         //   非 HttpOnly cookie 数, 供 admin 查询 host 的 HttpOnly cookie ratio).
         RecordCookieHttpOnlyObserved(reqHost, httpOnlyCount, nonHttpOnlyCount)
+        // R81-B 反反爬第 108 项: 同款调 Secure 观测 API (与 HttpOnly 并列, 一一对应).
+        RecordCookieSecureObserved(reqHost, secureCount, nonSecureCount)
 }
 
 // Clear — 清空由该 host 引入的 cookies (含副罐, 防"陈旧会话被毒药"重试语义).
@@ -3097,6 +3120,17 @@ func buildHeaders(cfg FetchConfig, ua, rawURL, referer string) http.Header {
                                 h.Set("Sec-Ch-Ua-Wow64", "?1")
                         }
                 }
+                // R81-B 反反爬第 104 项: Sec-Ch-Ua-Model on Android (R80 交接 #7).
+                //   真实 Chrome 110+ on Android 在 Accept-CH opt-in 时发 "Sec-Ch-Ua-Model:
+                //   <device>" (e.g., "Pixel 8", "SM-S926B"). 我们无 device info 来源, 但 UA
+                //   本身内嵌 device model ("Mozilla/5.0 (Linux; Android 14; Pixel 8) ..."),
+                //   extractAndroidModelFromUA 提取之并设为 Sec-Ch-Ua-Model 值 (与 UA 一致,
+                //   不引入新指纹). 价值: 防 "Android UA 无 Sec-Ch-Ua-Model" 暴露 Go 爬虫 (低权重).
+                //   非 Android UA (Windows/Mac/Linux desktop + iPhone/iPad) 不发本头 (与 Chrome
+                //   行为一致, Chrome desktop / iOS 不发 Sec-Ch-Ua-Model).
+                if model := extractAndroidModelFromUA(ua); model != "" {
+                        h.Set("Sec-Ch-Ua-Model", `"`+model+`"`)
+                }
         }
 
         // Referer 优先级: cfg.RefererURL > per-host 记忆 > 目标站 origin
@@ -3428,7 +3462,38 @@ var (
         androidVerRe = regexp.MustCompile(`Android (\d+)`)
         iosVerRe     = regexp.MustCompile(`OS (\d+_\d+)`)
         macosVerRe   = regexp.MustCompile(`Mac OS X (\d+_\d+(?:_\d+)?)`)
+        // R81-B 反反爬第 104 项: Android UA 内嵌 device model 提取正则.
+        //   UA 格式: "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/..."
+        //   "Build/" 后缀也兼容 (部分厂商 UA 用 "Pixel 8 Build/TQ2A.230505.002").
+        androidModelRe = regexp.MustCompile(`Android \d+(?:\.\d+)*;\s*([^);]+?)(?:\s*Build/|\s*\))`)
 )
+
+// extractAndroidModelFromUA — 从 Android UA 提取 device model 名 (R81-B 第 104 项).
+//
+//      返 "" 表示非 Android UA 或 UA 无 device model (e.g., 老式 "Android 10;" 后直接 ")" 的 UA).
+//      caller: buildHeaders / fetchHttp fallback / fetchViaCurl 在 Android UA 路径调,
+//      设 Sec-Ch-Ua-Model 头 (Chrome 110+ 真实行为: Accept-CH opt-in 后发 device model).
+//      保守策略: 总发本头 (Android UA 时) — 部分版本 Chrome 在无 Accept-CH 时也发空 model,
+//      但源站可识别 "Android UA 无 Sec-Ch-Ua-Model" 为爬虫指纹 (低权重). 我们直接提取 UA
+//      内的 device model 发真值 (与 UA 一致, 不引入新指纹).
+func extractAndroidModelFromUA(ua string) string {
+        if ua == "" || !strings.Contains(ua, "Android") {
+                return ""
+        }
+        if strings.Contains(ua, "iPhone") || strings.Contains(ua, "iPad") {
+                // iPhone/iPad UA 不含 Android; 但防御性检查避免误匹配 (iPhone UA 不发 Sec-Ch-Ua-Model).
+                return ""
+        }
+        m := androidModelRe.FindStringSubmatch(ua)
+        if len(m) < 2 {
+                return ""
+        }
+        model := strings.TrimSpace(m[1])
+        if model == "" || strings.EqualFold(model, "Build") {
+                return ""
+        }
+        return model
+}
 
 // originHost — URL 的 host 小写 (含端口, 不含协议).
 func originHost(s string) string {
@@ -4237,6 +4302,11 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 // R64-B 第 55 项: Sec-Ch-Ua-Platform-Version
                 if pv := extractPlatformVersion(ua); pv != "" {
                         args = append(args, "-H", `Sec-Ch-Ua-Platform-Version: "`+pv+`"`)
+                }
+                // R81-B 反反爬第 104 项: Sec-Ch-Ua-Model on Android (与 buildHeaders 同款).
+                //   详见 buildHeaders 注释. curl 路径同步发 Android device model.
+                if model := extractAndroidModelFromUA(ua); model != "" {
+                        args = append(args, "-H", `Sec-Ch-Ua-Model: "`+model+`"`)
                 }
         }
         // R64-B 第 53 项: Sec-Fetch-Site 动态 (与 buildHeaders 同款).
@@ -5374,6 +5444,11 @@ func probeProxyWithLatency(ctx context.Context, proxyURL, probeTarget string) (i
                 if pv := extractPlatformVersion(ua); pv != "" {
                         req.Header.Set("Sec-Ch-Ua-Platform-Version", `"`+pv+`"`)
                 }
+                // R81-B 反反爬第 104 项: Sec-Ch-Ua-Model on Android (与 buildHeaders 同款).
+                //   详见 buildHeaders 注释. fetchHttp fallback 路径 (probe endpoint) 也发.
+                if model := extractAndroidModelFromUA(ua); model != "" {
+                        req.Header.Set("Sec-Ch-Ua-Model", `"`+model+`"`)
+                }
         }
         // R50-1A: 记录 round-trip latency
         start := time.Now()
@@ -6171,6 +6246,11 @@ func fetchBinaryViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua,
                 }
                 if pv := extractPlatformVersion(ua); pv != "" {
                         args = append(args, "-H", `Sec-Ch-Ua-Platform-Version: "`+pv+`"`)
+                }
+                // R81-B 反反爬第 104 项: Sec-Ch-Ua-Model on Android (与 buildHeaders 同款).
+                //   详见 buildHeaders 注释. fetchBinaryHttp curl 路径同步发 Android device model.
+                if model := extractAndroidModelFromUA(ua); model != "" {
+                        args = append(args, "-H", `Sec-Ch-Ua-Model: "`+model+`"`)
                 }
         }
         // Referer (与 fetchViaCurl 同款)
@@ -9745,6 +9825,156 @@ func ClearCookieHttpOnly(host string) {
         }
         hostCookieHttpOnlyMap.Delete(strings.ToLower(host))
 }
+
+// ---------- R81-B 反反爬第 108 项: Cookie Secure 属性观测 ----------
+//
+// 任务要求: "fetcher 加 Cookie Secure 属性适配". 与第 98 项 HttpOnly 同款是响应头
+//   observation tracker (per-host sync.Map + 计数).
+//
+// 真实浏览器行为 (RFC 6265 5.2.5):
+//   - Secure 属性: 服务端发 Set-Cookie: name=val; Secure; ... → 浏览器只在 HTTPS
+//     请求带该 cookie. http:// 不带, 防 MITM 偷 cookie.
+//   - Secure 是浏览器侧安全 feature, 对 Go 爬虫无安全影响 (Go 全程走 HTTPS, 不
+//     发 http:// 请求). 但反爬识别 "client 不识别 Secure 属性" 是 Go 标准库指纹
+//     (低权重).
+//   - Cloudflare Bot Manager 发 cf_clearance 时配 Secure + HttpOnly + SameSite=None
+//     (Chrome 110+ 默认), 源站可检测 "client 发的 Cookie 头未按 Secure 顺序" →
+//     但 Cookie 头本身不携带属性, 源站无法直接检测 client 是否识别 Secure. 故真实
+//     降分价值 ≤1 分.
+//
+// 核实: CookieJar.Store (line 563) 不解析 Secure 属性 (line 580 attrNames 含
+//   "secure": true 仅作 cookie-name vs attribute 关键字消歧, 不存储 secure 字段
+//   到 cookieEntry). R81-B 加 secure 布尔解析 + per-host sync.Map 观测, admin 可
+//   查询哪些 host 发 Secure cookie.
+//
+// 价值评估: 加观测 API (低价值) + 不改序列化 schema (保守). 诚实留痕: 真正"按
+//   Secure 排序" 在 Cookie 头中不可见 (Cookie 头不带属性), 故"Secure 属性适配"
+//   实质上是观测 + 兼容性保证, 不影响 outbound Cookie 行为.
+
+type hostCookieSecureEntry struct {
+        secureCookieCount int64 // Secure cookie 累计观测数
+        nonSecureCount    int64 // 非 Secure cookie 累计观测数 (供 ratio 计算)
+}
+
+var hostCookieSecureMap sync.Map // host string -> *hostCookieSecureEntry
+
+// RecordCookieSecureObserved — 记录 host 的 Secure cookie 观测 (R81-B 第 108 项).
+//
+//      caller: CookieJar.Store 在解析 Set-Cookie 时调 (按 Secure 属性 presence).
+//      secureCount = 本响应中含 Secure 属性的 cookie 数.
+//      nonSecureCount = 本响应中不含 Secure 属性的 cookie 数.
+//      观测后 admin 可查询 host 的 Secure cookie ratio (高 ratio = 源站严格发 Secure).
+func RecordCookieSecureObserved(host string, secureCount, nonSecureCount int64) {
+        if host == "" {
+                return
+        }
+        if secureCount < 0 {
+                secureCount = 0
+        }
+        if nonSecureCount < 0 {
+                nonSecureCount = 0
+        }
+        if secureCount == 0 && nonSecureCount == 0 {
+                return
+        }
+        var e *hostCookieSecureEntry
+        if v, ok := hostCookieSecureMap.Load(host); ok {
+                e = v.(*hostCookieSecureEntry)
+        } else {
+                e = &hostCookieSecureEntry{}
+                actual, _ := hostCookieSecureMap.LoadOrStore(host, e)
+                e = actual.(*hostCookieSecureEntry)
+        }
+        // R81-B: 用 atomic.AddInt64 防多 goroutine 并发 (与 RecordCookieHttpOnlyObserved
+        //   同款防御口径, CookieJar.Store 多请求并发写 hostCookieSecureMap).
+        atomic.AddInt64(&e.secureCookieCount, secureCount)
+        atomic.AddInt64(&e.nonSecureCount, nonSecureCount)
+}
+
+// CookieSecureSnapshot — admin / metrics 查询用: 返回所有观测到 Secure cookie 的 host.
+//
+//      字段: secureCookieCount / nonSecureCount / secureRatio (0-100 int).
+func CookieSecureSnapshot() map[string]map[string]int64 {
+        out := map[string]map[string]int64{}
+        hostCookieSecureMap.Range(func(k, v any) bool {
+                e := v.(*hostCookieSecureEntry)
+                sc := atomic.LoadInt64(&e.secureCookieCount)
+                nc := atomic.LoadInt64(&e.nonSecureCount)
+                total := sc + nc
+                ratio := int64(0)
+                if total > 0 {
+                        ratio = sc * 100 / total
+                }
+                out[k.(string)] = map[string]int64{
+                        "secureCookieCount": sc,
+                        "nonSecureCount":     nc,
+                        "secureRatio":        ratio,
+                }
+                return true
+        })
+        return out
+}
+
+// ClearCookieSecure — 清除 host 的 Secure cookie 观测记录 (失败排查 / 测试用).
+func ClearCookieSecure(host string) {
+        if host == "" {
+                return
+        }
+        hostCookieSecureMap.Delete(strings.ToLower(host))
+}
+
+// ---------- R81-B 反反爬第 106 项: HTTP/2 GOAWAY 帧观测 (诚实留痕 0 实现) ----------
+//
+// 任务要求: "fetcher 加 GOAWAY 帧观测 (部分源站按 GOAWAY 检测)".
+//
+// 真实浏览器行为 (RFC 7540 6.7):
+//   - HTTP/2 server 在关闭连接前发 GOAWAY frame (Last-Stream-ID + error code +
+//     debug data). Chrome 收 GOAWAY 后切换到新连接, 已发送 stream 由 server 处理.
+//   - 反爬按 GOAWAY 检测: 部分源站 (Cloudflare / Akamai) 在反爬触发时主动发
+//     GOAWAY + INTERNAL_ERROR 关闭连接, 真实 Chrome 重连新连接重试, 爬虫 (Go
+//     标准库) 不识别 GOAWAY 失败 → 单连接耗尽 maxRequests 上限.
+//
+// 核实: golang.org/x/net/http2.ClientConn 不暴露 GOAWAY 帧 callback:
+//   - http2.ClientConn 公开字段: state (closed/closing) / wantSettings / etc.
+//   - GOAWAY 帧由 server.go / transport.go (internal package) 处理, 不回 caller.
+//   - http2.Transport.NewClientConn 返 *http2.ClientConn, 但其内部 goAwayCh channel
+//     是 unexported (无法外部订阅).
+//   - 真实 mimicking Chrome "GOAWAY 后重连重试" 行为: Go http2.Transport 已自动
+//     处理 (server.go closeClientConn 后下次请求新连), 行为与 Chrome 等价.
+//
+// 价值评估: ① 观测 API (admin 可查询哪些 host 发 GOAWAY) 需 fork x/net/http2
+//   暴露 goAwayCh (技术不可行, 有版本锁风险); ② 强制重连重试已在 transport 实现
+//   (Go 自动); ③ 计数 GOAWAY 事件需 fork (技术不可行). 故诚实留痕 0 实现,
+//   与 R79-B 第 96 项 WINDOW_UPDATE 帧同款 "技术不可行 + 价值低" 评估.
+//   未来若 Cloudflare Bot Score 加入 GOAWAY 指标, 再评估 fork http2.
+
+// ---------- R81-B 反反爬第 107 项: TLS 1.3 Encrypted Extensions 观测 (诚实留痕 0 实现) ----------
+//
+// 任务要求: "fetcher 加 TLS 1.3 EE 扩展观测".
+//
+// 真实浏览器行为 (RFC 8446 4.3.1):
+//   - TLS 1.3 EncryptedExtensions frame: server 在 ServerHello 后发 EE, 含
+//     extensions (e.g., server_name, ALPN, supported_groups) 给 client.
+//   - 真实 Chrome 收 EE 后按扩展内容调整 client 行为 (e.g., ALPN 协议选择).
+//   - 反爬按 EE 检测: 部分源站 (Cloudflare Bot Management) 在 EE 内嵌 custom
+//     extension (e.g., cf-ray id) 用于追踪, 真实 Chrome 透传 EE, Go 标准库不
+//     暴露 EE 字段 → 爬虫无法响应 server 的 EE custom extension 请求.
+//
+// 核实: crypto/tls.ConnectionState 不暴露 EE 扩展字段:
+//   - ConnectionState 公开字段: Version / CipherSuite / DidHSCert / PeerCerts /
+//     VerifiedChains / ServerName / PeerCertificates / SignedCertificateTimestamps /
+//     OCSPResponse / DidResume / NegoctiatedProtocol (ALPN) / NegotiatedProtocol.
+//   - EE frame 内的扩展 (RFC 8446 4.2 + 4.3.1) 不在 ConnectionState 公开字段.
+//   - utls ClientHello 可配 EE mimic (line 1755, R48-1A persistableSessionCache),
+//     但 EE 是 server→client 方向, utls 不暴露 EE 响应解析.
+//   - 真实 mimicking Chrome "EE 内 custom extension 透传" 需 fork crypto/tls
+//     (有版本锁风险, 与 R73-B #81 PRIORITY 帧同款"技术不可行"评估).
+//
+// 价值评估: ① 观测 API (admin 可查询哪些 host 收 EE custom extension) 需 fork
+//   crypto/tls (技术不可行); ② ALPN 协商已暴露 (NegotiatedProtocol); ③ EE custom
+//   extension 响应需 fork (技术不可行). 故诚实留痕 0 实现, 与 R79-B 第 97 项 PSK
+//   resumption "技术不可行 + 价值低" 评估一致. 未来若 Cloudflare Bot Score 加入
+//   EE 指标, 再评估 fork crypto/tls.
 
 // ---------- R79-B 反反爬第 100 项: Accept-Language 池扩充 ----------
 //

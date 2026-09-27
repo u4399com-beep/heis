@@ -77,7 +77,7 @@
 <div class="pages">
 <em id="pagestats">共 {{.Total}} 条</em>
 {{if gt .Page 1}}<a href="{{.PrevPageURL}}">上一页</a>{{end}}
-{{range .PageList}}{{if eq . $.Page}}<strong>{{.}}</strong>{{else}}<a href="/?view=category&cat={{$.CatID}}&page={{.}}">{{.}}</a>{{end}}{{end}}
+{{range .PageList}}{{if eq .page $.Page}}<strong>{{.page}}</strong>{{else}}<a href="{{.URL}}">{{.page}}</a>{{end}}{{end}}
 {{if lt .Page .TotalPages}}<a href="{{.NextPageURL}}">下一页</a>{{end}}
 {{if lt .Page .TotalPages}}<a href="/?view=category&cat={{.CatID}}&page={{.TotalPages}}">尾页</a>{{end}}
 </div>

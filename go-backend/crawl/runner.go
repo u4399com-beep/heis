@@ -478,6 +478,11 @@ type hostHealthTracker struct {
         fail       map[string]int
         latencySum map[string]int64
         latencyCnt map[string]int
+        // R81-B 反反爬第 105 项 (R80 交接 #8): host 最后活动时间 (UnixMilli). 用于 7d sweep
+        //   删除长跑进程不再访问的 host (防内存无界增长). 与 fetcher.go hostFrameOptionsMap
+        //   / hostContentTypeOptionsMap / hostOriginIsolationMap 同款 TTL 7d pattern.
+        lastSeen   map[string]int64
+        sweepCount int64 // R81-B 第 105 项: record 调用计数, 每 1000 次触发一次 sweep
 }
 
 var (
@@ -493,9 +498,37 @@ func getHealthTracker() *hostHealthTracker {
                         fail:       map[string]int{},
                         latencySum: map[string]int64{},
                         latencyCnt: map[string]int{},
+                        lastSeen:   map[string]int64{}, // R81-B 第 105 项
                 }
         })
         return healthTrackerInst
+}
+
+// HostHealthSweepTTLms — per-host 健康统计条目 7 天 TTL (R81-B 第 105 项).
+//
+//      与 fetcher.go HostFrameOptionsSweepTTLms / HostContentTypeOptionsSweepTTLms
+//      同口径 (7d). lastSeen 超过本 TTL 的 host 在 sweep 时从所有 4 map 删除.
+const HostHealthSweepTTLms = 7 * 24 * 60 * 60 * 1000
+
+// sweepStaleHostsLocked — 删除 lastSeen 超过 7d 的 host 条目 (R81-B 第 105 项).
+//
+//      必须在 h.mu 持有期间调 (caller 已 Lock). sweep 把 success/fail/latencySum/
+//      latencyCnt/lastSeen 5 map 同步删 (与 record* 5 字段更新对称, 防 map 不一致
+//      导致 computeHealth 读到部分 host 数据). 注: 删除长跑进程 7d 未访问 host
+//      会丢失其累计计数, 但该 host 7d 内无访问 → 健康度无意义 (0.5 默认值), 重新
+//      访问时从 0 累计也合理 (冷启 host). 长跑 admin ~71 host × 5 map = 355 entry,
+//      无内存压力, 但 R82+ 长跑到上千 host 时本 sweep 防无界增长.
+func (h *hostHealthTracker) sweepStaleHostsLocked() {
+        now := time.Now().UnixMilli()
+        for host, seen := range h.lastSeen {
+                if now-seen > HostHealthSweepTTLms {
+                        delete(h.success, host)
+                        delete(h.fail, host)
+                        delete(h.latencySum, host)
+                        delete(h.latencyCnt, host)
+                        delete(h.lastSeen, host)
+                }
+        }
 }
 
 // recordSuccess — per-host 成功计数 +1 (caller: fetch 成功路径).
@@ -505,6 +538,13 @@ func (h *hostHealthTracker) recordSuccess(host string) {
         }
         h.mu.Lock()
         h.success[host]++
+        // R81-B 第 105 项: 更新 lastSeen + 惰性 sweep (每 1000 次 record 触发).
+        now := time.Now().UnixMilli()
+        h.lastSeen[host] = now
+        h.sweepCount++
+        if h.sweepCount%1000 == 0 {
+                h.sweepStaleHostsLocked()
+        }
         h.mu.Unlock()
 }
 
@@ -515,6 +555,12 @@ func (h *hostHealthTracker) recordFailure(host string) {
         }
         h.mu.Lock()
         h.fail[host]++
+        now := time.Now().UnixMilli()
+        h.lastSeen[host] = now
+        h.sweepCount++
+        if h.sweepCount%1000 == 0 {
+                h.sweepStaleHostsLocked()
+        }
         h.mu.Unlock()
 }
 
@@ -528,6 +574,12 @@ func (h *hostHealthTracker) recordLatency(host string, latencyMs int64) {
         h.mu.Lock()
         h.latencySum[host] += latencyMs
         h.latencyCnt[host]++
+        now := time.Now().UnixMilli()
+        h.lastSeen[host] = now
+        h.sweepCount++
+        if h.sweepCount%1000 == 0 {
+                h.sweepStaleHostsLocked()
+        }
         h.mu.Unlock()
 }
 

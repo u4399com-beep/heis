@@ -515,19 +515,53 @@ var regexExtractCache sync.Map
 //
 //	首次 compile 后复用; ok=false 也缓存 (避免重复 compile 失败 pattern). flags 空时
 //	默认 "gis" (与原 regexExtractFirst/All 同口径).
+//
+//	R81-C BUG-179 (P2) 修复: 原实现无 ReDoS 闸门 (R73-C BUG-105 注释声称"同口径"实
+//	不符 — compileUserAdPattern/compileUserReplaceFrom 均有 reDoSNestedQuantifier 检查,
+//	本函数没有). FieldRegex 类型规则经 sanitizeFieldRule 仅限长度 2000, 无 ReDoS 检查.
+//	admin 可配置灾难性 regex 如 `(a+)+b` → regexExtractFirst/All 在 1MB HTML 上灾难
+//	性回溯 → fetcher goroutine 卡死 → 池池耗尽 (与 R65-C BUG-42 compileUserAdPattern
+//	同款风险). 修复: 加 reDoSNestedQuantifier.MatchString(expression) 闸门 + 表达式
+//	长度上限 2000 (与 sanitizeFieldRule safeStr(v, 2000) 同口径). 命中即返 (nil, false)
+//	缓存 (与 compileUserReplaceFrom 同款 pattern: 首次拒绝结果入 cache, 后续调用直接
+//	返缓存, 0 重复 ReDoS 扫).
 func compileRegexRule(flags, expression string) (*regexp.Regexp, bool) {
 	if flags == "" {
-		flags = "gis"
+		// R81-C BUG-181 (P1) 修复: 原 "gis" 默认在 Go RE2 不支持 — `g` 是 JS
+		//   RegExp global flag (find all matches), Go regexp 包不支持 `g`,
+		//   `(?gis)<expr>` compile 失败 "invalid or unsupported Perl syntax:
+		//   `(?g`", regexExtractFirst/All 静默返 "" (FieldRegex 规则无显式 flags
+		//   配置时全部 regex 提取失败). 原 TS 实现 regexExtract 用 JS new
+		//   RegExp(expr, 'gis') + re.exec (单 match) / 'gi' + 循环 exec (多
+		//   match), R38 TS→Go 迁移时保留 "gis" 默认但 Go 不支持, latent 自
+		//   R38 (43 轮未发现, 因 ParseBook pick 顺序 fallback 到 JSON-LD /
+		//   meta tag, 部分字段被 fallback 接住未察觉; ParseList/ParseToc 同款
+		//   fallback 路径). Go 用 FindStringSubmatch / FindAllStringSubmatch 隐
+		//   式 global (不需 `g` flag). 修复: 默认 "is" (case-insensitive +
+		//   dotall, 与 JS 'is' 等价; 全局由 FindAllString API 提供不在 flag).
+		flags = "is"
 	}
 	key := flags + "\x00" + expression
 	if v, ok := regexExtractCache.Load(key); ok {
 		cp := v.(compiledAdPattern)
 		return cp.re, cp.ok
 	}
-	re, err := regexp.Compile("(?" + flags + ")" + expression)
-	cp := compiledAdPattern{re: re, ok: re != nil && err == nil}
-	regexExtractCache.Store(key, cp)
-	return cp.re, cp.ok
+	// R81-C BUG-179: ReDoS 闸门 + 长度上限 (与 compileUserReplaceFrom 同口径).
+	re, ok := func() (*regexp.Regexp, bool) {
+		if expression == "" || len(expression) > 2000 {
+			return nil, false
+		}
+		if reDoSNestedQuantifier.MatchString(expression) {
+			return nil, false
+		}
+		re, err := regexp.Compile("(?" + flags + ")" + expression)
+		if err != nil {
+			return nil, false
+		}
+		return re, true
+	}()
+	regexExtractCache.Store(key, compiledAdPattern{re: re, ok: ok})
+	return re, ok
 }
 
 func regexExtractFirst(html string, rule FieldRule) string {
@@ -1593,25 +1627,46 @@ type TocResult struct {
 	Pages int
 }
 
+// nextLinkEnRe — 英文 "Next" / "Next Page" / "Next Chapter" / "More" 链接文本精确匹配
+// (R81-C BUG-175 修复).
+//
+//	R80-C BUG-175 诚实留痕: 原 "Next"/"More" 用 strings.Contains 子串匹配, 误命中
+//	"More details" / "Next chapter info" 等含 Next/More 子串的链接. R81-C 修复:
+//	  - 中文关键词 ("下一页"/"下页"/"下一章") 保留 strings.Contains (中文站短文本
+//	    子串匹配风险低, 与 cleaner.go navLinkRe 同口径).
+//	  - 英文关键词 ("Next"/"More") 改用本正则精确匹配:
+//	      ^\s*(next(?:\s+(?:page|chapter))?|more)\b[\s\W]*$
+//	    语义: trim 后文本以 next 或 more 开头, next 可选跟 \s+ page/chapter
+//	    (允许 "Next Page"/"Next Chapter" 整体匹配, 与 "Next" 同义); 后跟词边界
+//	    (\b 防 "nextpage" 连写); 后续仅允非字母字符 (空白 + 标点如 > / . / … /
+//	    › / » / 空格) 至末尾.
+//	  - 命中: "Next" / "Next>" / "Next..." / "Next Page" / "Next Chapter" /
+//	    "More" / "More..." / "  Next  " 等.
+//	  - 不命中: "Next chapter info" (后续有字母 chapter 后再接 "info" 不终止) /
+//	    "More details" / "Nextpage" (无词边界) / "Next steps" 等.
+//	  - 不删 "More" 关键词 (R80-C 备选 c): "More" 在英文源站作 "加载更多" 链接
+//	    常见 (与中文 "加载更多" button 同款语义), 保留 + 正则精确匹配防误命中.
+//	caller (ParseToc/ParseContent) 仍保留四层防御: Absolutize 非 http(s) 过滤 +
+//	seen map 防重 + samePathStreak (≥5 同 path 不同 query) break + maxPages 上限.
+//	行为变化: 71 Rule 翻页链路若依赖 "Next chapter info" 等非纯导航文本作下一页
+//	链接, 修复后不命中 (改由 nextRule.Type 配置或 rel=next 或加载更多 button 兜底).
+//	findNextLink 仅在 nextRule 缺失时兜底 (rg 全仓 findNextLink 仅 ParseToc/
+//	ParseContent 两处 caller), 多数 71 Rule 有 nextRule 配置或无翻页 (e.g.
+//	yueyouxs toc/content pagination.enabled=false → findNextLink 不触发),
+//	0 用户受影响.
+var nextLinkEnRe = regexp.MustCompile(`(?i)^\s*(next(?:\s+(?:page|chapter))?|more)\b[\s\W]*$`)
+
 // findNextLink — 兜底找"下一页"链接 (常见中文站点 + HTML5 rel=next + 英文 Next/More).
 //
-// R80-C BUG-175 (P3) 诚实留痕: "Next" / "More" 用 strings.Contains 子串匹配,
-//
-//	会误命中 "More details" / "Next chapter info" 等含 Next/More 子串的链接.
-//	中文关键词 ("下一页" 等) 子串匹配风险低 (中文站短文本), 英文关键词风险高.
-//	当前 0 修复 — caller (ParseToc/ParseContent) 有 Absolutize 非 http(s) 过滤 +
-//	seen map 防重 + samePathStreak (≥5 同 path 不同 query) break + maxPages 上限
-//	四层防御, 误命中最多多抓 1 页 (≤maxPages) 即 break, 不致命. R81 评估改:
-//	  a) 英文关键词改 strings.EqualFold 精确匹配 (丢失 "Next chapter" 子串命中);
-//	  b) 加 \b 词边界 (ASCII 可用 \b, 与 cleaner.go BUG-G chapterHeadCNRe 同款);
-//	  c) 删 "More" 关键词 (5 关键词冗余, "Next" + rel=next + 加载更多 已覆盖).
-//	本轮 0 改 — 避免行为变化影响已 wired 71 Rule 的翻页链路.
+//	R81-C BUG-175 (P3) 修复: 见 nextLinkEnRe 注释. 中文 strings.Contains + 英文
+//	正则精确匹配 (防 "More details" 等子串误命中).
 func findNextLink(doc *goquery.Document) string {
-	keywords := []string{"下一页", "下页", "下一章", "Next", "More"}
-	for _, kw := range keywords {
-		sel := doc.Find("a")
-		for i := range sel.Nodes {
-			s := sel.Eq(i)
+	// 1. 中文关键词: strings.Contains (子串匹配, 中文站短文本风险低).
+	cnKeywords := []string{"下一页", "下页", "下一章"}
+	anchors := doc.Find("a")
+	for _, kw := range cnKeywords {
+		for i := range anchors.Nodes {
+			s := anchors.Eq(i)
 			if strings.Contains(s.Text(), kw) {
 				if href, _ := s.Attr("href"); href != "" {
 					return href
@@ -1619,14 +1674,23 @@ func findNextLink(doc *goquery.Document) string {
 			}
 		}
 	}
-	// HTML5 rel=next
+	// 2. 英文关键词: 正则精确匹配 (防 "More details" / "Next chapter info" 子串误命中).
+	for i := range anchors.Nodes {
+		s := anchors.Eq(i)
+		if nextLinkEnRe.MatchString(strings.TrimSpace(s.Text())) {
+			if href, _ := s.Attr("href"); href != "" {
+				return href
+			}
+		}
+	}
+	// 3. HTML5 rel=next
 	if href, _ := doc.Find(`a[rel="next"]`).Attr("href"); href != "" {
 		return href
 	}
-	// "加载更多" 按钮 data-url
-	sel := doc.Find(`[data-load-more], [data-loadmore], button:contains("加载更多"), a:contains("加载更多")`)
-	if sel.Length() > 0 {
-		if dataURL := sel.First().AttrOr("data-url", sel.First().AttrOr("data-href", "")); dataURL != "" {
+	// 4. "加载更多" 按钮 data-url
+	moreSel := doc.Find(`[data-load-more], [data-loadmore], button:contains("加载更多"), a:contains("加载更多")`)
+	if moreSel.Length() > 0 {
+		if dataURL := moreSel.First().AttrOr("data-url", moreSel.First().AttrOr("data-href", "")); dataURL != "" {
 			return dataURL
 		}
 	}
