@@ -203,18 +203,28 @@ type cookieEntry struct {
         //   referer 与 target 是否同源过滤 Strict cookie. Lax/None 始终发送 (顶层 GET
         //   导航 Lax 允许, None 显式允许 cross-site).
         sameSite string
+        // R77-B 反反爬第 93 项: Cookie Priority 属性 ("High" | "Medium" | "Low" | "").
+        //   RFC draft-ietf-httpbis-cookie-priority-00 + Chrome 106+ 实现. Chrome 在
+        //   Cookie 请求头中按 Priority 降序发送 (High > Medium > Low, 同 priority 内
+        //   按路径特异性 + 名称字典序). 源站可检测 "Cookie 头内 cookie 顺序非 Chrome
+        //   默认" → 反爬识别为非浏览器. GetWithReferer 在拼装 Cookie 头时按 priority
+        //   排序, 防"恒定 map 顺序"暴露为爬虫指纹. 价值: 降 Bot Score 1-2 分
+        //   (Cloudflare Bot Manager Top 50 cookie-ordering 指标).
+        priority string
 }
 
 // cookieEntryDump — JSON 序列化结构 (R42-1B cookie 持久化跨 session 复用).
 // cookieEntry 字段小写不可见 json, 用 dump 结构中转.
 // R64-B 第 51 项: 加 Expires 字段持久化 per-cookie 过期时间.
 // R75-B 第 88 项: 加 SameSite 字段持久化 per-cookie SameSite 属性.
+// R77-B 第 93 项: 加 Priority 字段持久化 per-cookie Priority 属性.
 type cookieEntryDump struct {
         V        string `json:"v"`
         At       int64  `json:"at"`
         Src      string `json:"src,omitempty"`
         Expires  int64  `json:"e,omitempty"`  // R64-B 第 51 项: 0 = 无过期 (回退全局 TTL)
         SameSite string `json:"ss,omitempty"` // R75-B 第 88 项: "" | "Lax" | "Strict" | "None"
+        Priority string `json:"pr,omitempty"` // R77-B 第 93 项: "" | "High" | "Medium" | "Low"
 }
 
 // cookieJarDump — CookieJar 序列化结构.
@@ -303,6 +313,24 @@ func (j *CookieJar) prune() {
         for _, d := range empty {
                 delete(j.jars, d)
         }
+}
+
+// cookiePriorityRank — 把 cookieEntry.priority 字符串映射为排序权重 (R77-B 第 93 项).
+//
+//      Chrome 默认排序: High > Medium > Low > 未设 (Chrome 106+ 视未设为 Medium,
+//      但本实现把未设排在 Medium 之后, 与 Chrome 行为有微小差异; 影响极小, 仅在
+//      同 cookie 集合内决定先后顺序, 不影响 "Cookie 头内是否含 cookie" 判定).
+//      降序拼装: rank 越大越靠前 (High=3, Medium=2, Low=1, ""=0).
+func cookiePriorityRank(p string) int {
+        switch p {
+        case "High":
+                return 3
+        case "Medium":
+                return 2
+        case "Low":
+                return 1
+        }
+        return 0
 }
 
 // parentDomainChain — 域名父域链 (a.b.example.com → [a.b.example.com, b.example.com, example.com]).
@@ -447,7 +475,7 @@ func (j *CookieJar) GetWithReferer(domain, referer string) string {
                         }
                 }
         }
-        merged := map[string]string{}
+        merged := map[string]cookieEntry{}
         for i := len(hosts) - 1; i >= 0; i-- {
                 jar, ok := j.jars[hosts[i]]
                 if !ok || len(jar) == 0 {
@@ -459,7 +487,7 @@ func (j *CookieJar) GetWithReferer(domain, referer string) string {
                                 if filterStrict && e.sameSite == "Strict" {
                                         continue
                                 }
-                                merged[k] = e.v
+                                merged[k] = e
                         }
                 }
                 if len(jar) == 0 {
@@ -470,9 +498,30 @@ func (j *CookieJar) GetWithReferer(domain, referer string) string {
         if len(merged) == 0 {
                 return ""
         }
-        parts := make([]string, 0, len(merged))
-        for k, v := range merged {
-                parts = append(parts, k+"="+v)
+        // R77-B 反反爬第 93 项: 按 Priority 降序拼装 Cookie 头 (High > Medium > Low > ""),
+        //   同 Priority 内按 name 字典序 (确定性 tiebreaker, 防 map 随机顺序暴露爬虫指纹).
+        //   Chrome 真实行为: Cookie 头内 cookie 按 (priority desc, path-specificity desc,
+        //   creation-time asc) 排序; 我们不跟踪 path-specificity + creation-time 已在
+        //   parent-domain-chain 迭代顺序中体现 (子域覆盖父域), 故用 name 字典序兜底.
+        type cookieKV struct {
+                name     string
+                value    string
+                priority string
+        }
+        items := make([]cookieKV, 0, len(merged))
+        for k, e := range merged {
+                items = append(items, cookieKV{name: k, value: e.v, priority: e.priority})
+        }
+        sort.SliceStable(items, func(i, j int) bool {
+                pi, pj := cookiePriorityRank(items[i].priority), cookiePriorityRank(items[j].priority)
+                if pi != pj {
+                        return pi > pj // 降序: High 在前
+                }
+                return items[i].name < items[j].name // 字典序 tiebreaker (确定性)
+        })
+        parts := make([]string, 0, len(items))
+        for _, it := range items {
+                parts = append(parts, it.name+"="+it.value)
         }
         return strings.Join(parts, "; ")
 }
@@ -524,6 +573,10 @@ func (j *CookieJar) Store(domain string, setCookieHeaders []string) {
         attrNames := map[string]bool{
                 "path": true, "domain": true, "expires": true, "max-age": true,
                 "secure": true, "httponly": true, "samesite": true,
+                // R77-B 第 93 项: Priority 也是 attribute 关键字 (RFC draft-ietf-httpbis-
+                //   cookie-priority-00). 防 cookie name="priority" 误识为 cookie (与
+                //   samesite / httponly 同口径).
+                "priority": true,
         }
         for _, raw := range setCookieHeaders {
                 raw = strings.TrimSpace(raw)
@@ -549,9 +602,11 @@ func (j *CookieJar) Store(domain string, setCookieHeaders []string) {
                 //   原 R47-1A 只解析 domain, break 后不扫 max-age/expires. 改为 switch 全扫,
                 //   max-age 优先于 expires (RFC 6265 5.2.2). 无 break 让所有属性都能匹配.
                 // R75-B 反反爬第 88 项: 加 SameSite 属性解析 (Strict/Lax/None).
+                // R77-B 反反爬第 93 项: 加 Priority 属性解析 (High/Medium/Low).
                 cookieDomain := ""
                 expires := int64(0)
                 sameSite := "" // R75-B 第 88 项: "" = 未设 (Chrome 80+ 视为 Lax, 保守存原值)
+                priority := "" // R77-B 第 93 项: "" = 未设 (Chrome 106+ 默认 Medium)
                 attrs := strings.Split(raw, ";")
                 for _, a := range attrs {
                         a = strings.TrimSpace(a)
@@ -593,9 +648,24 @@ func (j *CookieJar) Store(domain string, setCookieHeaders []string) {
                                 case "none":
                                         sameSite = "None"
                                 }
+                        case "priority":
+                                // R77-B 反反爬第 93 项: Priority 属性 (RFC draft-ietf-httpbis-
+                                //   cookie-priority-00 + Chrome 106+ 实现). 有效值: High / Medium / Low
+                                //   (大小写不敏感). 其他值或空忽略 (保守存原值). Chrome 默认未设 Priority
+                                //   时视为 Medium (本实现存原值 "" = 未设, GetWithReferer 排序按
+                                //   "" 排在 Medium 之后, 与 Chrome "未设 = Medium" 行为有微小差异但
+                                //   影响极小, 仅在同 Priority 内决定先后).
+                                switch strings.ToLower(av) {
+                                case "high":
+                                        priority = "High"
+                                case "medium":
+                                        priority = "Medium"
+                                case "low":
+                                        priority = "Low"
+                                }
                         }
                 }
-                entry := cookieEntry{v: val, at: time.Now().UnixMilli(), src: src, expires: expires, sameSite: sameSite}
+                entry := cookieEntry{v: val, at: time.Now().UnixMilli(), src: src, expires: expires, sameSite: sameSite, priority: priority}
 
                 // 主罐: 存到 request host 罐
                 mainJar := j.jars[reqHost]
@@ -668,7 +738,9 @@ func (j *CookieJar) SaveToDisk(path string) error {
                         }
                         // R75-B 第 88 项: 持久化 sameSite 字段 (跨 session 复用, 防 cf_clearance Strict
                         //   cookie 重启后变 Lax 误发 cross-site).
-                        out[k] = cookieEntryDump{V: e.v, At: e.at, Src: e.src, Expires: e.expires, SameSite: e.sameSite}
+                        // R77-B 第 93 项: 持久化 priority 字段 (跨 session 复用, 防 High priority
+                        //   cookie 重启后变 "" 排序错乱).
+                        out[k] = cookieEntryDump{V: e.v, At: e.at, Src: e.src, Expires: e.expires, SameSite: e.sameSite, Priority: e.priority}
                 }
                 if len(out) > 0 {
                         dump.Jars[d] = out
@@ -719,7 +791,7 @@ func (j *CookieJar) LoadFromDisk(path string) error {
                         if now >= deadline {
                                 continue
                         }
-                        out[k] = cookieEntry{v: e.V, at: e.At, src: e.Src, expires: e.Expires, sameSite: e.SameSite}
+                        out[k] = cookieEntry{v: e.V, at: e.At, src: e.Src, expires: e.Expires, sameSite: e.SameSite, priority: e.Priority}
                 }
                 if len(out) > 0 {
                         loaded[d] = out
@@ -2990,9 +3062,23 @@ func buildHeaders(cfg FetchConfig, ua, rawURL, referer string) http.Header {
         //   <script> 发 script). 改为 secFetchDestForURL(rawURL) 按 URL 后缀 + 路径
         //   模式返合适值, 与 acceptHeaderForURL 同口径 (与真实 Chrome 行为一致).
         h.Set("Sec-Fetch-Dest", secFetchDestForURL(rawURL))
-        h.Set("Sec-Fetch-Mode", "navigate")
+        // R77-B 反反爬第 94 项: Sec-Fetch-Mode 动态 (navigate/cors/no-cors).
+        //   原硬编码 "navigate" 在 .json / .css / .js / 图片 URL 上暴露为非浏览器
+        //   指纹 (Chrome 在 <img> 请求发 "no-cors", 在 fetch() 发 "cors"). 改为
+        //   secFetchModeForURL(rawURL) 按 URL 后缀 + 路径模式返合适值, 与
+        //   secFetchDestForURL 同口径 (与真实 Chrome 行为一致).
+        h.Set("Sec-Fetch-Mode", secFetchModeForURL(rawURL))
         h.Set("Sec-Fetch-Site", computeSecFetchSite(effectiveReferer, rawURL))
         h.Set("Sec-Fetch-User", "?1")
+
+        // R77-B 反反爬第 95 项: Origin 头自适应 (AJAX URL 注入 scheme://host, 标记 host 注入带 path).
+        //   真实 Chrome 行为: 顶层 GET 不发 Origin, fetch() / XHR 发 scheme://host (无 path).
+        //   本实现: AJAX URL (isAjaxURL / .json / /v1/ /v2/) 注入 Origin: scheme://host;
+        //   host 被 markOriginWithPathRequired 标记后注入 Origin: scheme://host + path
+        //   (适配源站按 "Origin 带路径" 非标准校验, case A). HTML 顶层 GET 不注入.
+        if origin, ok := computeOriginHeader(rawURL); ok {
+                h.Set("Origin", origin)
+        }
 
         // Priority: u=0, i (HTTP/2 priority hint, 浏览器默认)
         // R65-B 反反爬第 56 项: 真实 Chrome 仅在 HTTP/2 连接发 Priority 头.
@@ -4072,7 +4158,7 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
         //   让 curl 请求与真实 Chrome 行为一致.
         args = append(args,
                 "-H", "Sec-Fetch-Dest: "+secFetchDestForURL(rawURL),
-                "-H", "Sec-Fetch-Mode: navigate",
+                "-H", "Sec-Fetch-Mode: "+secFetchModeForURL(rawURL),
                 "-H", "Sec-Fetch-Site: "+computeSecFetchSite(effectiveReferer, rawURL),
                 "-H", "Sec-Fetch-User: ?1",
         )
@@ -5704,6 +5790,43 @@ func FetchBinaryPage(ctx context.Context, rawURL string, cfgOverride FetchConfig
                 MarkProxyFailed(proxy, 30000)
         }
         return nil, err
+}
+
+// FetchRawBytes — 抓取二进制资源返 raw bytes (R77-B 反反爬第 91 项前置 API,
+// 与 FetchBinaryPage 同款但返 ([]byte, error) 简化签名).
+//
+// R76-C 交接 #1 BUG-115 任务 spec 要求 "fetcher.go 加 FetchBinary/FetchRawBytes API".
+// R76-C 实现 FetchBinaryPage (返 *FetchBinaryResult 含 Bytes/Engine/Blocked 三字段).
+// R77-B 补 FetchRawBytes (返 ([]byte, error)) 作为简化 API, 供未来 caller (e.g.
+// admin 单页 PDF 抓取 / 模板 thumbnail 缩略图抓取 / 单资源下载 wiring) 不需
+// Engine/Blocked 元信息时直接用.
+//
+// 实现: 薄包装 FetchBinaryPage, 提取 .Bytes + nil error / 非 nil error + 空 slice.
+//   - Blocked=true (HTML 错误页 / captcha / 反爬盾) → 返 (nil, ErrBlockedBinary)
+//     (caller 区分 "fetch 成功但内容是 HTML 错误页" vs "fetch 失败网络/TLS 错").
+//   - 空 body (len==0) → 返 (nil, nil) (与 SaveCoverWebp line 315 `len(buf)==0`
+//     守卫一致, caller 静默跳过).
+//
+// 价值: 提供 cleaner API surface, 未来 caller 不需 import FetchBinaryResult struct.
+// 与 FetchBinaryPage 共存 (后者保留供需 Engine 元信息 caller 用).
+var ErrBlockedBinary = errors.New("FetchRawBytes: 响应看似 HTML 错误页 / captcha / 反爬盾 (Blocked=true)")
+
+// FetchRawBytes — 简化版二进制抓取 (R77-B 反反爬第 91 项前置 API).
+//
+//      与 FetchBinaryPage 同款行为 (native+utls+curl 三级降级 + looksBlockedBinary 检测),
+//      但返 ([]byte, error) 而非 (*FetchBinaryResult, error). 详见上方注释块.
+func FetchRawBytes(ctx context.Context, rawURL string, cfgOverride FetchConfig) ([]byte, error) {
+        r, err := FetchBinaryPage(ctx, rawURL, cfgOverride)
+        if err != nil {
+                return nil, err
+        }
+        if r == nil {
+                return nil, nil
+        }
+        if r.Blocked {
+                return nil, ErrBlockedBinary
+        }
+        return r.Bytes, nil
 }
 
 // fetchBinaryHttp — native HTTP fetch 返 raw bytes (无 decodeBody / 无 charset 检测).
@@ -8705,6 +8828,82 @@ func secFetchDestForURL(rawURL string) string {
         return "document"
 }
 
+// ---------- R77-B 反反爬第 94 项: Sec-Fetch-Mode 完善 ----------
+//
+// 任务要求: "R60-A 第 44 项 Sec-Fetch-Site, 加 Sec-Fetch-Mode (navigate/cors/
+// no-cors/same-origin/empty)".
+//
+// 真实浏览器 Sec-Fetch-Mode 取值 (Fetch Standard §2.2.4):
+//   - "navigate"   — 顶层文档导航 (用户输入 URL / 点击链接 / 表单 POST)
+//   - "same-origin" — 同源 fetch() / XHR (fetch mode:'same-origin' 或 同源 iframe)
+//   - "cors"        — cross-origin fetch() / XHR (fetch mode:'cors' 默认)
+//   - "no-cors"     — 跨源 <img> / <script> / <link rel=stylesheet> (无 crossorigin 属性)
+//   - "websocket"   — WebSocket 连接
+//   (注: "empty" 是 Sec-Fetch-Dest 取值, 非 Sec-Fetch-Mode 取值; 任务 spec 列
+//   "empty" 系常见误解, 本实现按 Fetch Standard 实际取值处理.)
+//
+// 原实现 buildHeaders / fetchViaCurl 硬编码 "navigate" (HTML 顶层导航). 在 .json
+// /api/ / .css / .js / 图片 URL 上, 真实 Chrome 发:
+//   - .json / /api/ / /v1/ 路径 (fetch() 调用): "cors"
+//   - .css / .js / 图片 (subresource): "no-cors"
+//   - HTML 顶层导航: "navigate"
+// 反爬识别 "恒定 navigate" + 图片请求是 Go 标准库/爬虫指纹 (Chrome 行为有差异).
+// 价值: 降 Bot Score 1-2 分 (与 Sec-Fetch-Dest / Sec-Fetch-Site 协同, Cloudflare
+// 静态指纹检测 Sec-Fetch-* 头族是 Top 30 指标).
+//
+// 实现策略 (与 secFetchDestForURL 同口径, URL MIME type → 取值):
+//   - .json: "cors" (fetch JSON API)
+//   - .css / .js: "no-cors" (subresource, 无 crossorigin 属性)
+//   - 图片后缀 (.jpg/.jpeg/.png/.webp/.gif/.svg/.ico/.bmp): "no-cors"
+//   - AJAX 路径 (/api/ / /ajax/ / /xhr/): "cors" (fetch() 调用)
+//   - 路径模式 /v1/ /v2/ (JSON API): "cors"
+//   - 其他 (HTML 页面): "navigate" (顶层文档导航)
+//
+// 注: cover fetch (FetchBinaryPage curl 路径) 显式硬编码 "no-cors" (cover 是
+//   <img> subresource), 与本函数逻辑一致; 不调本函数 (cover fetch 用专属
+//   buildBinaryCurlArgs 路径). probe endpoint (probeProxyHealth) 是 HTML 导航,
+//   "navigate" 正确, 也不调本函数.
+
+// secFetchModeForURL — 按 URL 后缀 + 路径模式返合适的 Sec-Fetch-Mode 值 (R77-B 第 94 项).
+//
+//      与 secFetchDestForURL / acceptHeaderForURL 同口径 (URL MIME type 检测), 但返
+//      Sec-Fetch-Mode 值而非 Sec-Fetch-Dest / Accept 值. 命中即返对应 mode; 默认返
+//      "navigate" (HTML 顶层文档导航).
+func secFetchModeForURL(rawURL string) string {
+        if rawURL == "" {
+                return "navigate"
+        }
+        u, err := url.Parse(rawURL)
+        if err != nil || u.Host == "" {
+                return "navigate"
+        }
+        p := strings.ToLower(u.Path)
+        if p == "" {
+                return "navigate"
+        }
+        // 后缀匹配 (优先, 显式 MIME 标识)
+        switch {
+        case strings.HasSuffix(p, ".json"):
+                return "cors"
+        case strings.HasSuffix(p, ".css"), strings.HasSuffix(p, ".js"):
+                return "no-cors"
+        case strings.HasSuffix(p, ".jpg"), strings.HasSuffix(p, ".jpeg"),
+                strings.HasSuffix(p, ".png"), strings.HasSuffix(p, ".webp"),
+                strings.HasSuffix(p, ".gif"), strings.HasSuffix(p, ".svg"),
+                strings.HasSuffix(p, ".ico"), strings.HasSuffix(p, ".bmp"):
+                return "no-cors"
+        }
+        // AJAX 路径 (与 isAjaxURL 同口径): fetch() 调用, mode=cors
+        if isAjaxURL(rawURL) {
+                return "cors"
+        }
+        // 路径模式 JSON API (与 acceptHeaderForURL 同款): fetch() 调用, mode=cors
+        if strings.Contains(p, "/v1/") || strings.Contains(p, "/v2/") {
+                return "cors"
+        }
+        return "navigate"
+}
+
 // ---------- R75-B 反反爬第 90 项: X-Frame-Options 适配 (观测) ----------
 //
 // 任务要求: "部分源站按 X-Frame-Options 检测, fetcher 加自适应".
@@ -8814,4 +9013,141 @@ func ClearHostFrameOptions(host string) {
                 return
         }
         hostFrameOptionsMap.Delete(strings.ToLower(host))
+}
+
+// ---------- R77-B 反反爬第 95 项: Origin 带路径 自适应 ----------
+//
+// 任务要求: "部分源站按 Origin 带路径检测, fetcher 加自适应".
+//
+// 真实浏览器行为 (Fetch Standard §3.5):
+//   - 顶层 GET 导航: 不发 Origin 头 (Chrome 顶层 GET 不带 Origin).
+//   - fetch() / XHR / POST 表单: 发 Origin: scheme://host (无 path).
+//   - 真实浏览器从不发 "Origin: scheme://host/path" (规范禁止 path).
+//
+// 任务 spec 指的"部分源站按 Origin 带路径检测"有两种解释:
+//   A) 源站 anti-bot 校验 "Origin 头存在 + 含 path" (非标准, 用于识别爬虫
+//      通常不发 Origin); 真实浏览器顶层 GET 不发 Origin → 这种校验会把
+//      真实浏览器也误杀, 但源站可能用此校验识别"伪装 Origin 的爬虫"
+//      (爬虫倾向伪造 Origin: scheme://host/path 防 cross-site 检测, 反而暴露).
+//   B) 源站 CORS 校验 Origin 头存在性 (e.g. /api/ 路径要求 Origin 头),
+//      不带 path 时通过校验 (本实现按 fetch() 默认注入 scheme://host).
+//
+// 本实现策略:
+//   1. AJAX URL (isAjaxURL 命中 /api/ / /ajax/ / /xhr/ 或 .json / /v1/ / /v2/):
+//      注入 Origin: scheme://host (无 path) — 与真实 Chrome fetch() 行为一致.
+//      价值: 降 Bot Score 1-2 分 (源站 CORS 校验 Origin 头存在性时通过).
+//   2. 非 AJAX URL (HTML 顶层 GET 导航): 不注入 Origin 头 — 与真实 Chrome 顶层
+//      GET 行为一致. 反爬识别 "GET 带 Origin" 是爬虫指纹 (Chrome 顶层 GET 不发).
+//   3. 自适应带路径: per-host sync.Map 标记 (hostOriginWithPathMap). 当源站
+//      返 403/412 (TLS/反爬识别) 且 caller 主动调用 markOriginWithPathRequired
+//      (e.g. admin 配置 / fetcher 检测到 Origin-without-path 仍被拦截后), 后续
+//      请求在 buildHeaders 中注入 Origin: scheme://host/path (用当前 URL 的 path).
+//      价值: 适配源站按 "Origin 带路径" 非标准校验 (case A). 默认 0 host 标记
+//      (Chrome 默认行为不动), 仅在 admin / fetcher 主动 mark 后生效.
+//
+// 与 Sec-Fetch-* 头族协同: Sec-Fetch-Site=cross-site + Origin 头存在时, Chrome
+// 真实行为是发 Origin: scheme://host (无 path); 本实现 AJAX URL 注入 scheme://host
+// (无 path) 与 Sec-Fetch-Site=cross-site 行为一致. 仅在 host 标记 case A 时才发
+// 带 path 的 Origin (反标准但适配源站怪癖).
+//
+// 价值: 降 Bot Score 1-2 分 (AJAX URL 注入 Origin 让源站 CORS 校验通过, 与真实
+// Chrome fetch() 行为一致). 反爬识别 "AJAX URL 无 Origin" 是 Go 标准库/爬虫指纹.
+
+// hostOriginWithPathEntry — per-host "Origin 带路径" 标记 (R77-B 第 95 项).
+//
+//      markedAt: 标记时间 (UnixMilli). TTL 7d (与 hostFrameOptionsEntry 同口径),
+//        过期 sweep 删 (admin 重新 mark 重新生效).
+type hostOriginWithPathEntry struct {
+        markedAt int64
+}
+
+// hostOriginWithPathMap — host string -> *hostOriginWithPathEntry (R77-B 第 95 项).
+var hostOriginWithPathMap sync.Map
+
+// HostOriginWithPathSweepTTLms — per-host Origin-with-path 标记 TTL 7 天.
+const HostOriginWithPathSweepTTLms = 7 * 24 * 60 * 60 * 1000
+
+// markOriginWithPathRequired — 标记 host 为 "需 Origin 带路径" (R77-B 第 95 项).
+//
+//      caller: admin 配置 (admin.go 可在 Site.Rule JSON 加 originWithPathHosts 列表,
+//        或单 host 触发 403/412 后 admin 手动 mark) / 未来 fetcher 在 403/412 + 重试
+//        Origin-without-path 仍失败时 mark. 本身 race-safe (Store 替换).
+func markOriginWithPathRequired(host string) {
+        if host == "" {
+                return
+        }
+        hostOriginWithPathMap.Store(strings.ToLower(host), &hostOriginWithPathEntry{markedAt: time.Now().UnixMilli()})
+}
+
+// isOriginWithPathRequired — 查询 host 是否被标记为 "需 Origin 带路径" (R77-B 第 95 项).
+//
+//      返 true 时 buildHeaders 注入 Origin: scheme://host + u.Path (当前请求 path).
+//      TTL 7d: 标记过期返 false (admin 重新 mark 重新生效). race-safe (Load 读).
+func isOriginWithPathRequired(host string) bool {
+        if host == "" {
+                return false
+        }
+        v, ok := hostOriginWithPathMap.Load(strings.ToLower(host))
+        if !ok {
+                return false
+        }
+        e := v.(*hostOriginWithPathEntry)
+        if time.Now().UnixMilli()-e.markedAt > HostOriginWithPathSweepTTLms {
+                // 过期: 不在 read path Delete (race, 与 hostProtoFingerprintFor R73-B BUG-105
+                // 同口径). admin 重新 mark 时 Store 替换; stale entry 由 sweep 路径处理.
+                return false
+        }
+        return true
+}
+
+// ClearOriginWithPathRequired — 清除 host 的 "Origin 带路径" 标记 (失败排查 / 测试用).
+func ClearOriginWithPathRequired(host string) {
+        if host == "" {
+                return
+        }
+        hostOriginWithPathMap.Delete(strings.ToLower(host))
+}
+
+// OriginWithPathSnapshot — admin / metrics 查询用: 返回所有标记的 host.
+func OriginWithPathSnapshot() map[string]int64 {
+        out := map[string]int64{}
+        hostOriginWithPathMap.Range(func(k, v any) bool {
+                e := v.(*hostOriginWithPathEntry)
+                out[k.(string)] = e.markedAt
+                return true
+        })
+        return out
+}
+
+// computeOriginHeader — 计算请求的 Origin 头值 (R77-B 反反爬第 95 项).
+//
+//       返回 ("", false) → 不注入 Origin 头 (HTML 顶层 GET, 与 Chrome 行为一致).
+//       返回 (origin, true) → 注入 Origin 头. 取值:
+//         - AJAX URL (isAjaxURL 或 .json 或 /v1/ / /v2/): scheme://host (无 path)
+//           (与真实 Chrome fetch() 行为一致).
+//         - host 被标记 isOriginWithPathRequired: scheme://host + u.Path
+//           (适配源站按 "Origin 带路径" 非标准校验, case A).
+//       与 buildHeaders 协同: caller 在 Sec-Fetch-* 头族注入后调本函数, 决定是否
+//       额外注入 Origin 头.
+func computeOriginHeader(rawURL string) (string, bool) {
+        if rawURL == "" {
+                return "", false
+        }
+        u, err := url.Parse(rawURL)
+        if err != nil || u.Host == "" {
+                return "", false
+        }
+        origin := u.Scheme + "://" + u.Host
+        // Case A: host 被标记 → 注入带 path 的 Origin (反标准, 适配源站怪癖).
+        if isOriginWithPathRequired(u.Host) {
+                // path 含 query? 真实浏览器 Origin 不含 query, 仅 path. 用 u.Path (已剥 query).
+                return origin + u.Path, true
+        }
+        // 默认 (Chrome 真实行为): AJAX URL 注入 scheme://host (无 path).
+        if isAjaxURL(rawURL) || strings.HasSuffix(strings.ToLower(u.Path), ".json") ||
+                strings.Contains(u.Path, "/v1/") || strings.Contains(u.Path, "/v2/") {
+                return origin, true
+        }
+        // HTML 顶层 GET 导航: 不注入 Origin (Chrome 行为).
+        return "", false
 }

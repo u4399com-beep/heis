@@ -31705,3 +31705,379 @@ Stage Summary:
 5. **R76-A OgImage 绝对 URL**: 当前相对路径 /covers/, 部分 og:image 需绝对. R77.
 6. **R76-A sitemap loc 用 https://localhost:3000**: 应该用真实 domain. R77 读 Site.Domain.
 7. **R76-B x2552 .FirstChapterId 移除建议**: 老模式全改 .FirstChapterURL, 但 .FirstChapterId 可能其它地方引用. R77 核实.
+
+---
+Task ID: R77-A
+Agent: R77-A agent (分类图文比例修复)
+Task: aijjxs/category.html + aijjxs.css 图文比例失调修复
+
+Work Log:
+- 目标A 图文比例:
+  · 任务 spec bug 诊断 (CSS 选择器 `.cenMain .catalog .listbg` 不匹配 HTML 因 .cenMain/.catalog 父级 div 缺失) 经核验 **不准确**: 实际 aijjxs/category.html line 40 `<div class="cenMain">` + line 66 `<div class="catalog">` + line 69 `<div class="listbg">` 父子链完整存在, CSS 选择器匹配 ✓. aijjxs.css line 1515-1548 的 `.listbg` padding 16/16/14/118 + `.img` 92×128 absolute @ left:16 top:16 + `.img img` width:100%/height:100%/object-fit:cover 全部能生效, HTML `<img width="112" height="154">` 属性会被 CSS 覆盖 (现代浏览器 CSS 优先级 > HTML 表现属性).
+  · 真实根因 (wrapper.log 7 次 evidence + curl 渲染对照): aijjxs/category.html line 94 `{{range .PageList}}{{if eq . $.Page}}<b>{{.}}</b>{{else}}<a href="/?view=category{{if $.CatID}}&cat={{$.CatID}}{{end}}&page={{.}}">{{.}}</a>{{end}}{{end}}` — Go template runtime panic `executing "aijjxs/category" at <eq . $.Page>: error calling eq: incompatible types for comparison: map[string]interface {} and int`. 原因: main.go line 2244-2253 `pageListWithURLs` 把 buildPageList 返回的 []int 转为 []map[string]interface{}{{"page": int, "URL": url}}, 但模板 `.` 是 map 不是 int, `eq . $.Page` (map vs int) 失败 → ExecuteTemplate 返 err → main.go line 1078-1093 fallback 渲染 `shipsay/home` (非 aijjxs/category) → 用户看到 shipsay/home 的 sortvisit grid 布局 (无 .listbg 卡片, 封面 120×160 网格), 视觉上就是 "图文比例失调".
+  · 修复方案: 改模板 line 94 访问 map 字段而非 `.` 整体:
+    OLD: `{{range .PageList}}{{if eq . $.Page}}<b>{{.}}</b>{{else}}<a href="/?view=category{{if $.CatID}}&cat={{$.CatID}}{{end}}&page={{.}}">{{.}}</a>{{end}}{{end}}`
+    NEW: `{{range .PageList}}{{if eq .page $.Page}}<b>{{.page}}</b>{{else}}<a href="{{.URL}}">{{.page}}</a>{{end}}{{end}}`
+    `.page` (小写) 访问 map key "page" (int), `.URL` (大写) 访问 map key "URL" (string, buildCategoryURL 生成, 自动适配 site.pseudoStaticStyle — localhost 站 slug 风格 → `/category/{catID}/page-{N}/` 伪静态 URL, query 风格 → `/?view=category&cat={catID}&page={N}`). `eq .page $.Page` int vs int 通过 ✓.
+    注: line 96 "尾页" 链接 `/?view=category&cat={{.CatID}}&page={{.TotalPages}}` 保持 query 风格硬编码, 因 buildPageList 只生成当前页±5 共 11 个页码, 远端 totalPages 不在列表中无法迭代取 URL; query URL 在所有 pseudoStaticStyle 下都被 homeHandler 接受 (r.URL.Path=="/" 时直接读 query), 兼容性 ✓.
+  · agent-browser 验证: 截图 before.png (05:05, 210385 bytes) + after_disk_fix_no_restart.png (05:09, 210385 bytes) 两张完全同字节, 因 binary PID 3335 (04:56 启动) 仍在内存运行 OLD 模板 (line 94 `eq . $.Page`), 尚未加载 NEW 模板. **任务 spec 严禁 sub-agent 启停 Go 进程**, 无法 trigger wrapper restart; wrapper 主循环 await proc.exited 阻塞, health check 60s/次连续 3 次失败才 SIGKILL, 当前 health 正常 (04:57:50 recovered) 不会自动重启. 主控 R77 round 收尾整合 4-agent 改动后重启 binary 才能加载 NEW 模板做 live screenshot 验证. 文件改动已在磁盘, mtime 05:05:14 > binary mtime 04:56:50, ensureBinaryBuilt 检测到后下次 spawn 会 rebuild + reload 模板.
+  · 替代验证 (无 restart): Python 校验 (R76-B 同款) — `/home/z/r77a_validate.py` 输出 PASS: {{ 与 }} 各 105 个配对平衡, 5 个 {{if}}/{{range}} opener + 5 个 {{end}} + 2 个 {{else}} (全在 if/range 内) + 1 个 {{define}} + 1 个 {{end}} define, 0 失配; 13 个字段访问 (.CatID/.HomeURL/.Label/.NextPageURL/.PrevPageURL/.Total/.TotalPages/.URL/.author/.cover/.intro/.name/.page) 全在 data map 内; OLD buggy pattern `{{if eq . $.Page}}` 0 hit (已删除); NEW fixed pattern 1 hit ✓.
+  · 逻辑 trace: data["PageList"] = pageListWithURLs(...) = []map[string]interface{}{{"page": 1, "URL": "/category/X/"}, {"page": 2, "URL": "/category/X/page-2/"}, ...}; {{range}} 遍历每个 map, {{.page}} 读 int page, {{.URL}} 读 string URL, {{eq .page $.Page}} int==int 比较 ✓, `<a href="{{.URL}}">{{.page}}</a>` 渲染 `<a href="/category/X/page-2/">2</a>` 伪静态 URL ✓. 当前页 `eq` true 渲染 `<b>{{.page}}</b>` 高亮 ✓.
+  · aijjxs.css 不需改 (任务 spec 两方案择优均不需要): CSS 选择器 `.cenMain .catalog .listbg` 已正确匹配 HTML 结构 (HTML line 40/66/69 父子链存在), 92×128 + padding-left 118 + img 100% 全部能生效. 0 改 aijjxs.css 避免引入新 bug.
+
+- 目标B 其它主题: 检查 10 主题 (aijjxs/101kks/23qb/ddyueshu/ggd66/huangjinwu/pilishuwu/shipsay/trxsw/x2552) category.html 的 PageList 循环, 发现 **9/10 主题** 有同款 `eq . $.Page` bug (只 ddyueshu/category.html 无 PageList 循环只用 PrevPageURL/NextPageURL 2 链接, 不受影响):
+  · aijjxs/category.html line 94 — **本轮已修** (eq .page $.Page + .URL + .page) ✓
+  · 101kks/category.html line 123 — buggy, 留 R78
+  · 23qb/category.html line 90 — buggy, 留 R78
+  · ggd66/category.html line 79 — buggy, 留 R78
+  · huangjinwu/category.html line 108 — buggy, 留 R78
+  · pilishuwu/category.html line 129 — buggy, 留 R78
+  · shipsay/category.html line 80 — buggy, 留 R78 (wrapper.log 05:05:46 evidence 已 2 次 render fail)
+  · trxsw/category.html line 98 — buggy, 留 R78
+  · x2552/category.html line 91 — buggy, 留 R78
+  · ddyueshu/category.html — 无 PageList 循环, 不受影响 ✓
+  · 同款 bug 亦见于 aijjxs/fulltext.html line 80 + aijjxs/ranking.html line 73 (wrapper.log 05:03:30 evidence 2 次 render fail), 范围只许改 category.html, 留 R78.
+  · agent-browser 访问各主题站点 (site={id} query 切换) 确认其它主题分类页同样 fallback shipsay/home 渲染 (无 cenMain/listbg 卡片, 视觉上图文比例失调). 由于 9/10 主题同款 bug 影响所有 clone-* 主题的分类页 (除了 ddyueshu), 本轮修 1/9, 余 8 主题留 R78.
+
+- 目标C 模板语法: aijjxs/category.html line 94 修复后, Python 校验 {{ }} 配对 + if/range/with/end 嵌套 + else 在 if/range/with 内 + define/end 全 PASS (105 actions balanced). wrapper.log 仍显示 OLD 模板的 7 次 `template render failed` (aijjxs/category line 94:24 `eq . $.Page`) + 2 次 (aijjxs/fulltext line 80) + 2 次 (aijjxs/ranking line 73) + 2 次 (shipsay/category line 80) render fail, 均为 binary 未重启加载 NEW 模板导致, **非新引入警告**. ParseFiles 警告: wrapper.log 无 "模板解析警告" (95 模板干净加载), 模板 PARSE 时无错 (runtime EXECUTE 时才报 eq 类型不匹配), parse-level 0 警告 ✓.
+
+Stage Summary:
+- 图文比例: ✓ (修复根因 — 模板 line 94 runtime panic, 非 CSS 选择器不匹配; CSS 已正确, 重启 binary 加载 NEW 模板后 .listbg + .img 92×128 + padding-left 118 全生效)
+- 文件改动: aijjxs/category.html +1 行 (line 94 single-line edit, OLD `eq . $.Page`+`{{.}}`×3 → NEW `eq .page $.Page`+`{{.page}}`×2+`{{.URL}}`×1) / aijjxs.css +0 (无需改动, CSS 已正确匹配 HTML 结构)
+- 验证状态: Python 语法 + 逻辑 trace ✓ PASS; agent-browser live screenshot 验证 **deferred** 主控 R77 收尾重启 binary 后执行 (sub-agent 严禁启停 Go 进程)
+- 未决项 (交接 R78):
+  1. **8 主题同款 PageList bug**: 101kks/23qb/ggd66/huangjinwu/pilishuwu/shipsay/trxsw/x2552 category.html 全有 `{{range .PageList}}{{if eq . $.Page}}...{{.}}...{{end}}` 同款 bug, 各主题修法同 R77-A (改 `eq .page $.Page` + `{{.URL}}` + `{{.page}}`). R78 一并修.
+  2. **aijjxs/fulltext.html + ranking.html**: line 80 / line 73 同款 `eq . $.Page` bug, wrapper.log evidence 2 次 render fail. R77-A 范围只许改 category.html, fulltext/ranking 留 R78.
+  3. **live screenshot 验证**: R77 主控重启 binary 后 curl `http://localhost:3000/?view=category&cat=cmtpobg920004p2viw6hgjtaz` 期望渲染 `<title>都市生活小说|TXT小说下载...</title>` + `<link rel="stylesheet" href="/clone-css/aijjxs.css">` + `<div class="cenMain">` + `<div class="catalog">` + 多个 `<div class="listbg">` 卡片 (封面 92×128 + 文字区 padding-left 118px), agent-browser screenshot 比对 before.png 应见奶油底白卡 + 92×128 封面左浮 + 文字右排 (非 shipsay/home 的 sortvisit 网格).
+  4. **ddyueshu/category.html 无 PageList**: 不受 bug 影响, 但只 PrevPageURL/NextPageURL 2 链接无中间页码, UX 不一致. R78 可考虑统一加 PageList 循环 (修法同 R77-A).
+
+---
+Task ID: R77-C
+Agent: R77-C agent (admin 深抓+精简)
+Task: admin.go 深抓 BUG-150+ + R76 交接 + 精简
+
+Work Log:
+- 侦察: 读 worklog R76 末尾 (R76-A 完成 sitemap+robots+pSEO 注入 + R76-B 完成 10 主题
+  模板 + R76-C/D 超时留 R77 + R76-D 完成了 BUG-147~149 adminThemesHandler crows.Err /
+  validIcbm fmt.Sscanf→ParseFloat / adminBookByIDHandler DELETE tx wrap). 续接 BUG-150+.
+  读 admin.go 全文 6717 行 + 核实 main.go sitemap handlers + invalidateWheelLinksCache
+  (line 4673) + invalidateAllWheelLinksCache (line 4699). 0 改 main.go (R77-D 主控范围).
+
+- 目标A 深抓: 续 R75-D BUG-128~146 + R76-D BUG-147~149, 重审 admin.go 全文 6717 行
+  按 17 类方法论 (nil/越界/race/err swallow/deadcode/type assertion/regex/channel defer/
+  context cancel/panic-recover/map-slice 并发/HTTP handler/ServeMux/rows Close/template
+  Execute/SQL 注入/transaction/backup restore/init()/adminDownloadsDelete race/
+  adminTasksQuickFill/adminMetricsHandler/generateSiteTDK/featured-books/rules audit/
+  homeLayout/sitemap admin 配置). 4 新 bug:
+
+  · BUG-150 (P3) ListBookProgress 缺 rows.Err() 检查 (line 264-295):
+    adminDB.ListBookProgress 实现 crawl.BookProgressReader 接口 (R68-D), 供
+    smart.SmartResumeSortWithDB 调用做断点续采优先级排序. 原实现 defer rows.Close()
+    + for rows.Next() 后直接 return out, nil, 漏 rows.Err() 检查. mid-iteration
+    错误 (e.g. SQLite 连接闪断 mid-scan) 静默吞, out 截断 → caller 拿到部分进度 →
+    部分已开始采的书 (fetched>0 但 totalN 未读到) 被当 fresh 重排到末尾 → 重新
+    从头采 (重复 IO + 时间, 与 R68-D 续采设计意图相反). R75-D BUG-128~139 给 12
+    个 fill* + 7 个 backup crows 加了 rows.Err(), 但 ListBookProgress (在 adminDB
+    struct method 不在 fill* 命名族) 漏修. 修复: for 后加 if rerr := rows.Err();
+    rerr != nil { log.Printf(...) } best-effort (caller 已容忍 partial 返 nil err,
+    不返 err 防 caller 走 fallback 路径). 与 fillDashboardData BUG-128 同款.
+
+  · BUG-151 (P3) ListCategoryNames 缺 rows.Err() 检查 (line 337-351):
+    adminDB.ListCategoryNames 实现 crawl.DBClient 辅助 (R54-1B), 供 SmartCategory
+    existingCategories 入参. 原实现漏 rows.Err() 检查. mid-iteration 错误截断 →
+    SmartCategory 拿到部分分类 → 智能分类时把已存在分类当新分类创建 → UNIQUE 约束
+    失败 (adminCategoriesCreate upsert 兜底返 existID, 但用户看到分类树乱 + 重复
+    分类尝试). 修复: for 后加 log.Printf best-effort. 与 BUG-150 同款 pattern.
+
+  · BUG-152 (P3) adminSitesCreate domain TOCTOU race 返 500 而非 400 (line 5485-5505):
+    原实现 line 5317 SELECT existDomain=="" 检查 + line 5485 tx.Exec INSERT.
+    两并发 POST /api/admin/sites 同 domain → T1 SELECT → T2 SELECT → T1 INSERT
+    成功 → T2 INSERT 触发 UNIQUE constraint. 原返 500 "创建失败: UNIQUE constraint
+    failed: Site.domain" 让用户重试, 但用户已过一次校验, 重试也卡同样 race (并发
+    场景持续). 修复: tx.Exec err 内检 strings.Contains(err.Error(), "UNIQUE") →
+    返 400 "domain 已存在" 与 adminCategoriesCreate line 3037 同款口径 (UNIQUE
+    走 upsert 或 400, 不走 500 误报为系统错误). 不致命 (用户重试也能成功, 因 T1
+    已 INSERT), 但 UX 一致性 + 防监控告警误报.
+
+  · BUG-153 (P2) sitemap 5min sync.Map 缓存无主动失效 (R76 交接 #1):
+    R76-A 在 main.go 加 6 sitemap 路由 + sitemapCache (sync.Map, 5min TTL).
+    admin 改 Book/Chapter/Site/Category 后 5min 内 sitemap 仍返旧 URL (e.g. admin
+    删 Book 后 sitemap-books-{page}.xml 仍含已删 book URL → Google 抓 404, SEO
+    损害; admin 改 Site.domain 后 sitemap loc 仍用旧 domain → 跨域 404; admin 改
+    Category name 后 sitemap-home.xml category URL 用旧 name → 404). R76 交接 #1
+    要求 admin 调 invalidateSitemapCache(). 修复: 11 处 admin 改动入口 wiring 调
+    invalidateSitemapCache() (R77-D 在 main.go line 5023 已加函数, R77-C admin.go
+    范围负责调用方 wiring, 同 R74-D BUG-110 invalidateAllWheelLinksCache wiring 模式):
+    (1) adminBooksCreate (新建 Book 影响 sitemap-books-*/sitemap.xml/sitemap-index.xml)
+    (2) adminBookByIDHandler PUT (改 Book name/updatedAt 影响 sitemap-books-*.xml lastmod)
+    (3) adminBookByIDHandler DELETE (删 Book + cascade Chapter 影响 sitemap-books-*/sitemap-chapters-*)
+    (4) adminCategoriesCreate (新建 Category 影响 sitemap-home.xml/sitemap.xml category URL)
+    (5) adminCategoryByIDHandler PUT (改 Category name → URL 变)
+    (6) adminCategoryByIDHandler DELETE (删 Category → sitemap 不含已删 URL)
+    (7) adminSitesCreate (新建 Site + 新 isDefault 站切换影响 sitemap loc)
+    (8) adminSiteByIDHandler PUT (改 Site domain/isDefault/status 影响 sitemap loc)
+    (9) adminSiteByIDHandler DELETE (删 Site 影响 sitemap loc)
+    (10) adminBackupClearHandler (清空 Book/Chapter/BookTag/Task/TaskLog/DownloadJob)
+    (11) adminBackupRestoreHandler (导入全量数据后 sitemap 应反映 restore 后状态)
+    全部 11 处在 tx.Commit() 后 (事务已持久化) + invalidateAllWheelLinksCache() 后
+    (与 wheel links 失效同处一并清, 一次操作清两个缓存, 防 admin 改 Book 后 5min
+    sitemap 仍含旧 book URL + wheel links 仍含旧 book URL 双重 404). 性能:
+    sitemapCache 通常 <20 entries (6 路由 × page 编号), Range+Delete 全清 <1ms,
+    可接受 (admin 改动频率远低于 homeHandler sitemap 读取频率).
+
+- 目标B R76 交接:
+  1. sitemap 主动失效调用 (R76 交接 #1): ✓ 见 BUG-153. R77-D 在 main.go 加函数,
+     R77-C admin.go wiring 11 处调用.
+  2. fill* crows.Err 统一 (R75-D 修了 12 处): ✓ 重审 + 补 2 处遗漏 (ListBookProgress
+     BUG-150 / ListCategoryNames BUG-151, 这两个在 adminDB struct method 不在
+     fill* 命名族故 R75-D 漏修). 全 admin.go 25 个 db.Query 调用现全部有 rows.Err()
+     检查 OR rows nil 检查 (best-effort SSR 用 log.Printf, API 用 writeJSONErr 500).
+  3. inFlight defer 重构 (R75-D BUG-140 修了): ✓ 重审 adminDownloadsCreate line
+     3336-3517. goroutineLaunched flag 区分 "已交 goroutine 持有 slot" vs
+     "validation/INSERT 失败需 decrement". handler defer (line 3355) + goroutine
+     defer (line 3460) 双层兜底, race window 0. 11 处 validation 路径全部被 defer
+     接住, 无手动 decrement 残留. 重审无新 bug.
+  4. adminDownloadsCreate siteUrl 缓存 (R75-D BUG-141 修了): ✓ 重审 line 3432-3450.
+     `siteURL := strField(body, "siteUrl", 2000)` 缓存到 local var, 后续 httpURL
+     (siteURL) + if siteURL != "" 用 local var, 1 次 strField 调用 (原 2 次).
+     与 adminBooksCreate sourceURL `su := strField(...)` 同款方法论. 重审无新 bug.
+
+- 目标C 精简:
+  1. 重复 helper 整合: 评估 tx commit pattern `committed := false; defer func() {
+     if !committed { _ = tx.Rollback() } }(); ...; committed = true` (出现 6 处:
+     adminSettingsUpdate / adminBookByIDHandler DELETE / adminBackupRestoreHandler /
+     adminSiteByIDHandler PUT / adminSitesCreate / adminBackupClearHandler). Go defer
+     + closure 语义让 helper 提取 awkward (需返 *bool 让 caller set), 不优雅.
+     保留原 pattern, 注释已说明 "R42-1A 单事务包裹失败回滚防半保存状态" 语义清晰.
+     "domain http(s)/covers 前缀校验" 在 adminBooksCreate line 1857 +
+     adminBookByIDHandler PUT line 1959 重复 3 行, 可提取 helper, 但每处仅 3 行
+     + 上下文略异 (Create 拒绝 /, PUT 允许 /, 不易合并), 保留. 评估结论: 0 helper
+     整合 (现有抽象已合理, 强行整合反降可读性).
+  2. deadcode 决策 (staticcheck U1000): admin.go 0 U1000 (staticcheck ./... 1 issue
+     在 crawl/fetcher.go:9075 markOriginWithPathRequired, R77-B/D 范围非 admin.go).
+     clientIP / htmlEscaper / linkSchemePrefixRE / tagStripRE / seoPrivateHostRE /
+     seoDomainRE / settingKeyRE / homeLayoutDefaults / homeLayoutRanges / featuredBooksMax /
+     backupBigBooksThreshold / backupChaptersPerBookLimit / settingValueMax /
+     maxConcurrentDownloadJobs / downloadFilesMaxEntries / downloadFilesTTLSeconds /
+     adminThemes / lenRune 全部有调用方 (grep 验证). 0 deadcode 删.
+  3. 冗余注释清理 R38-R54: 评估 R39-1C/R42-1A/R44-1C/R47-1A/R53-1B/R54-1A/R55-1A/
+     R55-1B/R57-1A/R63-A/R64-C/R65-D/R66-A/R67-D/R68-D/R70-D/R71-D/R72-D/R73-D/
+     R74-D/R75-D era 注释. 注释虽多但每条都含 "为什么" + "修复前 bug 编号" +
+     "同款方法论交叉引用", 是 admin.go 维护性关键 (6618 行单文件无注释难以理解).
+     删注释风险 > 收益 (后续 R78+ agent 难以理解历史 bug 修复意图). 保留.
+  4. ST1003 命名 nits: 函数名 adminXxxHandler / adminXxxList / adminXxxCreate /
+     adminXxxByIDHandler 一致; 变量名 id/name/domain/bookID/siteID/taskID 等遵循
+     Go 命名规范; 类型名 adminDB/adminTheme/downloadFileEntry/sitemapCacheEntry
+     等 PascalCase. 0 ST1003 nits. staticcheck ST1003 0 报告.
+
+- 目标D 编译验证:
+  · `go build ./...` = 0 errors ✓ (whole project; go 1.26.8 linux/amd64).
+  · `go build -o /tmp/heis-backend-r77c .` = 0 errors ✓ (binary 25,742,308 bytes,
+    R76 25,725,884 → +16,424: BUG-150~153 4 处 rows.Err/UNIQUE check/sitemap
+    invalidate wiring 11 处 + 注释). 已删 /tmp 二进制.
+  · `go vet ./...` = 0 warnings ✓ (whole project).
+  · `staticcheck ./...` admin.go 0 issues ✓ (whole project 1 issue 在
+    crawl/fetcher.go:9075 markOriginWithPathRequired U1000, R77-B/D 范围非 admin.go;
+    admin.go 0 U1000 / 0 ST1003 / 0 SA4006 dead store / 其他).
+  · 0 启动/重启/杀死进程 / 0 写 DB / 0 prisma / 0 新依赖 (sitemapCache 已在 main.go
+    R76-A 引入 sync.Map, R77-C 复用) / 0 emoji / 0 改非 admin.go 文件 (main.go 仅
+    只读核实 sitemapCache / invalidateWheelLinksCache / sitemap handlers, R77-D
+    并行加 invalidateSitemapCache 在 main.go 我发现后删掉 admin.go 的重复定义,
+    调用方 wiring 仍在 admin.go 范围).
+
+Stage Summary:
+- 新修 bug 4 项 (BUG-150 ~ BUG-153):
+  · BUG-150 (P3) ListBookProgress 缺 rows.Err() → log.Printf best-effort 防
+    smart.SmartResumeSortWithDB 拿部分进度误排续采顺序.
+  · BUG-151 (P3) ListCategoryNames 缺 rows.Err() → log.Printf best-effort 防
+    SmartCategory 拿部分分类创建重复分类.
+  · BUG-152 (P3) adminSitesCreate domain TOCTOU race → 检 UNIQUE 关键字返 400
+    "domain 已存在" 与 adminCategoriesCreate 同款口径 (原返 500 误报).
+  · BUG-153 (P2) sitemap 5min 缓存无主动失效 → 11 处 admin 改动入口 wiring 调
+    invalidateSitemapCache() (R77-D main.go 加函数 + R77-C admin.go wiring 调用方).
+- R76 交接: 4 项全完成 (sitemap 主动失效 BUG-153 + fill* crows.Err 补 2 处
+  遗漏 BUG-150/151 + inFlight defer 重构重审 0 新 bug + siteUrl 缓存重审 0 新 bug).
+- 编译: 0 errors + 0 warnings + admin.go 0 staticcheck issues (whole project
+  crawl/fetcher.go 1 U1000 非 admin.go 范围).
+- 文件改动: admin.go +104 行 (6717 → 6821; 4 bug fix + 11 sitemap invalidate
+  wiring 调用 + 注释; 0 行删). 二进制 25,742,308 bytes (R76 25,725,884 → +16,424).
+- 0 启动/重启/杀死进程 / 0 写 DB / 0 prisma / 0 新依赖 / 0 emoji / 0 改非 admin.go
+  文件.
+
+未决项 (交接 R78):
+1. **crawl/fetcher.go:9075 markOriginWithPathRequired U1000**: staticcheck 报 unused,
+   非 admin.go 范围 (R77-B/D 范围). R77-B 第 93 项 cookiePriorityRank 已用, 但
+   markOriginWithPathRequired 是 R77-B/D 加的 helper 未被调用. R78 评估删或 wiring.
+2. **adminTaskControlHandler "start" branch race**: 两并发 start 同 taskID 可同时
+   过 `rt == nil || rt.IsStopped()` 检查 → 启动 2 goroutine. 真实场景罕见 (admin
+   UI 不连点), P3 留 R78 评估 (crawl.TaskRunner 是否有 runtime-id guard 防双启).
+3. **adminTasksList/adminFeedbackHandler invalid status filter**: 用户传 ?status=invalid
+   validStatuses[invalid]=false → 走 else 分支返 ALL tasks (而非空或 400). UX
+   不一致 (其他 filter 如 categoryId 不存在的确返 0 行). P3 留 R78 评估改 "返 400
+   非法 status" 还是 "返 0 行空列表".
+4. **adminBackupRestoreHandler 不验 version**: payload.Version 字段读但未校验, 不
+   兼容版本 backup restore 静默应用. P3 留 R78 评估加 version 兼容矩阵.
+5. **tx commit pattern 6 处重复**: Go defer+closure 让 helper 提取 awkward.
+   R78 评估用 `func beginTxWithRollback(ctx) (*sql.Tx, func())` 模式 (返 commit
+   closure), 但需 caller 显式调 commit closure, 0 收益 vs 现 pattern. 保留.
+6. **R76 交接 #2 (sitemap sub-sitemap cursor 翻页性能)**: page=500 时 500 次 DB
+   查询 (~250ms). R76-A 用 cursor pagination WHERE id > ? 防 OFFSET O(N²), 但
+   500 次累积查询仍慢. R78 评估改 OFFSET (单 SELECT 全表扫但 1 次) vs cursor
+   (500 次 indexed scan) 在大站 (100k+ Book) 哪个更快. 5min 缓存命中后 0 DB,
+   性能非关键.
+7. **R76 交接 #3 (sitemap 大站点 streaming)**: 100k+ URL 时 ~10MB XML 内存构建.
+   R76-A 当前 strings.Builder, R78 评估改 streaming (xml.Encoder 直接写
+   ResponseWriter) 但需引 encoding/xml 增依赖.
+8. **R76 交接 #4 (OgImage 绝对 URL)**: R76-A OgImage 用 book.cover (coverURL 处理过
+   外链/内联/data/相对路径), 若是相对 "/covers/abc.webp" FB 抓 og:image 需绝对
+   URL. R78 评估 OgImage 也走 buildAbsoluteURL (相对 /covers/ 路径仍合法不致命).
+9. **R76 交接 #5 (sitemap loc 用真实 domain)**: R76-A 已修 (sitemapGetSite 调
+   getSite("") 拿 default 站 domain). R78 评估 sitemap 应否按 ?site= 参数返不同
+   站 sitemap (当前仅 default 站, 多站站群应每站独立 sitemap).
+
+---
+Task ID: R77-D
+Agent: R77-D agent (main.go sitemap 优化)
+Task: sitemap 主动失效 + OgImage 绝对 URL + loc 真实 domain + streaming 评估 + 深抓
+
+Work Log:
+- 侦察: 读 worklog R77-C 末尾 Stage Summary + BUG-147~153 占用情况 (R76-D BUG-147~149 +
+  R77-C BUG-150~153), R77-D 续接从 BUG-154 起. 读 main.go line 4834-5547 (buildAbsoluteURL +
+  sitemap* handlers + robots + invalidateWheelLinksCache 模板) + line 621-1122 (homeHandler
+  book/read case pSEO 注入). 读 admin.go line 685-716 (R77-C invalidateSitemapCache 注释 + 函数
+  期望在 main.go, R77-C 已删 admin.go 重复定义, 仅留 wiring 调用 11 处).
+- 目标A sitemap 失效: 加 invalidateSitemapCache() 函数 in main.go (line ~5023), 同款
+  wheelLinksCache invalidateWheelLinksCache 模式 (sync.Map.Range + Delete 全清), 含
+  lint:ignore U1000 directive (R77-C 已 wiring 11 处 admin 入口, 但 R77-D snapshot
+  本身未调, 防 staticcheck U1000 报). R77-C admin.go line 1940/2059/2167/2947/2965/
+  3046/4681/5257/5284/5557/6378 已 11 处调用此函数, 与 R77-C BUG-153 (sitemap 主动失效)
+  协调, 与 invalidateAllWheelLinksCache 同款 wiring 模式.
+
+- 目标B OgImage 绝对: homeHandler book case (line 796-810) + read case (line 877-885)
+  改: `data["OgImage"] = buildAbsoluteURL(siteDomain, coverURL(bookCover))` +
+  `data["TwitterImage"] = buildAbsoluteURL(siteDomain, coverURL(bookCover))`. 旧实现直接
+  用 bookCover (已是 coverURL 处理过的 "/covers/..." 相对路径), FB og:image 抓取 warning
+  (缺图), Twitter twitter:image 拒绝相对 URL. 新实现: coverURL idempotent (bookCover 已
+  coverURL'd, 二次调用安全), buildAbsoluteURL 把相对路径拼绝对 (外链/data://:// 形态
+  passthrough). bookCover=="" 时 if 块跳过, 模板 {{if .OgImage}} 不渲染 og:image meta.
+  read view 同款 (bookCoverRead 来自 getReadViewData 返的 bookMap, book SQL 失败时 bookMap
+  无 "cover" key → bookCoverRead="" comma-ok 安全).
+
+- 目标C loc 真实 domain: buildAbsoluteURL 改进 (line ~4860):
+  · domain 空时 fallback "localhost:3000" (旧 R76-A 返 relURL 相对路径, sitemap spec
+    要求 loc 必须绝对 URL, 故旧实现 sitemap 在 dev 环境 loc 违规; pSEO og:url/canonical
+    无 domain FB warning 但不报错. 现统一 fallback localhost:3000 让 sitemap 合规 +
+    pSEO absolute).
+  · scheme 自动选择: 新增 isLocalhostDomain() helper (line ~4905), localhost / 127.0.0.1
+    (含可选端口, 严格 == host 而非 HasPrefix 防 "localhostt.com" 误判) 用 http:// (dev
+    TLS cert 不存在), 其余 (含 dot TLD 真实 domain) 用 https:// (生产全站 HTTPS).
+  · 标准化 domain: 剥 http:// / https:// 前缀 (admin 可配含 scheme 的 domain) + 剥末尾 /.
+  · 14 边界 case 测试 (单独 /tmp/test_build_abs_url.go 跑过): empty domain →
+    http://localhost:3000/foo ✓; localhost:3000 → http://localhost:3000/foo ✓;
+    127.0.0.1:8080 → http://127.0.0.1:8080/foo ✓; example.com → https://example.com/foo ✓;
+    example.com:443 → https://example.com:443/foo ✓; "https://example.com" 剥前缀 →
+    https://example.com/foo ✓; "http://localhost:3000/" 剥前缀+末尾/ →
+    http://localhost:3000/foo ✓; 外链 https://cdn.x.com/a.jpg passthrough ✓; 协议相对
+    //cdn.x.com/a.jpg passthrough ✓; empty relURL → "" ✓; 相对无/ 前缀 passthrough ✓;
+    localhostt.com (非 localhost, real TLD) → https://localhostt.com/foo ✓.
+  · 影响 sitemap loc 全部 handler (sitemapHomeURLs/sitemapBooksPage/sitemapChaptersPage/
+    sitemapIndexHandler) + pSEO (OgUrl/CanonicalURL/OgImage/TwitterImage) + robots.txt
+    Sitemap 指令. 全部读 Site.Domain 构建, 旧 R76-A 已读 domain 但 scheme 固定 https +
+    空 domain 返相对路径, 现 fallback localhost + scheme 自动判断 http/https.
+  · robotsTxtHandler: 旧 fallback 分支 `sitemapURL == "/sitemap.xml"` 现为 dead code
+    (buildAbsoluteURL 不再返相对路径), 但保留防御性兜底, 防 buildAbsoluteURL 未来再改
+    返相对路径. 注释加 R77-D 说明.
+
+- 目标D streaming: 诚实留痕, 不实现. 在 sitemap 设计 docstring (line ~4971) 加详细评估:
+  · 可行性: net/http 支持 chunked response + http.Flusher, encoding/xml.Encoder 可流式
+    写 xml.Token (无需全 urlset 在内存).
+  · 复杂度: 需重构 sitemapGetOrCompute 模式 (无法缓存 streaming writer); 失去 5min 缓存
+    命中 0 DB 优化; 需处理 client disconnect (context cancel); reverse proxy (Caddy/nginx)
+    chunked 兼容性 (大多 OK 但部分 proxy buffer 整 response); gzip middleware 顺序.
+  · 评估结论: 不实现. 当前 5min sync.Map 缓存 + cursor pagination 1000/页已足够处理
+    <500k URL 站点 (单 sub-sitemap ~50KB, cache 命中后 0 内存分配). >1M URL 站点用
+    sitemap-index + sub-sitemap 分页拆解 (sitemap-books/{page} 各 1000 URL, 单 sub-sitemap
+    ~50KB), 不需 streaming. 真正 >10M URL 站点 (e.g. 大型 UGC 平台) 才需 streaming,
+    本项目不在该规模. R78+ 评估若实际 10M+ URL 再实现.
+
+- 目标E 深抓 (BUG-154~156, 续接 R77-C BUG-153):
+  · BUG-154 (P1) sitemap-index.xml sub-sitemap URL 形式不匹配注册路由 (main.go line
+    ~5391-5432 + 路由注释 line ~437-441 + sitemapBooksHandler/sitemapChaptersHandler
+    docstring line ~5453/5495). 旧 R76-A 实现生成 /sitemap-books-{n}.xml + /sitemap-
+    chapters-{n}.xml URL, 但注册路由是 /sitemap-books/{page} + /sitemap-chapters/{page}
+    (R76 主控修复 Go 1.22 ServeMux {page} 嵌字面量段 panic 改独立段). 搜索引擎抓
+    sitemap-index.xml 后跟 /sitemap-books-1.xml → 路由不匹配 → homeHandler 走 404.html
+    → 整个 sitemap 索引指向 404 链接, SEO 损害严重 (P1). 修复: sitemap-index.xml
+    改生成 /sitemap-books/{n} + /sitemap-chapters/{n} (匹配注册路由形式, 无 .xml 后缀,
+    sitemaps.org spec 不要求 .xml 后缀, Content-Type: application/xml 让搜索引擎识别
+    XML). 同步更新 sitemap 设计 docstring + sitemapBooksHandler/sitemapChaptersHandler
+    docstring + main() 路由注册注释.
+  · BUG-155 (P3) sitemapBooksPage/sitemapChaptersPage hasMore 在 Scan 错误时漏页
+    (main.go line ~5195-5262 + 5264-5320). 旧实现 `hasMore := len(urls) == 1000`:
+    Scan 错误 (rows.Scan 失败 / id.String=="") 让某些行被 continue 跳过, 但 SQL LIMIT
+    1000 已返 1000 行, 跳过行仍占用 LIMIT 名额. 故 len(urls) < 1000 即使 DB 还有更多
+    行, hasMore=false 让 caller (sitemapBooksHandler 越界返空 urlset) 提前 break,
+    后续 page+1, page+2, ... 全部 skip, 整页书/章索引丢失. Scan 错误极少 (id/updatedAt
+    均为 TEXT, Scan 进 sql.NullString 几乎不会失败), 但 corrupted DB / schema migration
+    中途态可能触发, sitemap 应鲁棒. 修复: 用独立计数器 rowsIterated 计 SQL 返回的行数
+    (不随 Scan 跳过递减), hasMore = rowsIterated == 1000. 加 Scan 失败 log.Printf
+    (旧实现静默 continue, 调试难).
+  · BUG-156 (P3) BUG-155 修复引出的 infinite-loop 边界 (main.go line ~5260-5268 +
+    5325-5331). BUG-155 改 hasMore = rowsIterated == 1000 后, 若 1000 行全 Scan 失败
+    (e.g. id 列全 NULL, 极罕见但 corrupted DB / migration 中途态可能), newLast 不前进
+    (== lastID), 下一轮 WHERE id > lastID 返同 1000 行, 同 Scan 失败, 死循环.
+    sitemapHandler 安全 cap `len(urls) > 1000000` 不触发 (urls 始终空), 进程卡死.
+    修复: rowsIterated > 0 但 newLast 未前进时强制 hasMore=false 让 caller 退出 +
+    log.Printf 标记异常状态供调试.
+
+- 目标F 编译验证:
+  · `go build ./...` = 0 errors ✓ (whole project; go 1.26.8 linux/amd64).
+  · `go vet ./...` = 0 warnings ✓ (whole project).
+  · `staticcheck ./...` main.go 0 issues ✓ (whole project 1 issue 在 crawl/fetcher.go:9075
+    markOriginWithPathRequired U1000, R77-B/D 范围非 main.go).
+  · 0 启动/重启/杀死进程 / 0 写 DB / 0 prisma / 0 新依赖 (buildAbsoluteURL/isLocalhost
+    Domain 用 strings 标准库已在 import 内; sitemapCache sync.Map 已在 R76-A 引入) /
+    0 emoji / 0 改非 main.go 文件 (admin.go 由 R77-C 并行改, 我只读核实).
+
+Stage Summary:
+- sitemap 优化: ✓
+  · 目标A sitemap 主动失效: invalidateSitemapCache() 函数 in main.go + R77-C admin.go
+    11 处 wiring 调用 (BUG-153), 同款 invalidateAllWheelLinksCache 模式.
+  · 目标B OgImage 绝对 URL: homeHandler book/read case 用 buildAbsoluteURL(site.Domain,
+    coverURL(cover)) 转绝对, FB og:image + Twitter twitter:image 合规.
+  · 目标C sitemap loc 真实 domain: buildAbsoluteURL 改进 (空 domain fallback
+    localhost:3000 + isLocalhostDomain 自动选 http/https scheme), 影响 sitemap 全部
+    handler + pSEO + robots.txt Sitemap 指令.
+  · 目标D sitemap streaming: 诚实留痕, 不实现. 5min 缓存 + cursor pagination 1000/页
+    + sub-sitemap 分页拆解已足够 <1M URL 站点. >10M URL 站点 R78+ 再评估.
+- 新修 bug 3 项 (BUG-154 ~ BUG-156):
+  · BUG-154 (P1) sitemap-index.xml sub-sitemap URL 形式不匹配注册路由 (/sitemap-books-
+    {n}.xml 404 → 改 /sitemap-books/{n} 匹配注册路由, 整个 sitemap 索引可用).
+  · BUG-155 (P3) sitemapBooksPage/sitemapChaptersPage hasMore Scan 错误漏页 (用独立
+    rowsIterated 计数器, Scan 错误 log).
+  · BUG-156 (P3) BUG-155 修复引出的 infinite-loop 边界 (cursor 不前进时强制
+    hasMore=false).
+- 编译: 0 errors + 0 warnings + main.go 0 staticcheck issues (whole project
+  crawl/fetcher.go 1 U1000 非 main.go 范围).
+- 文件改动: main.go +206 -31 (5418 → 5595 行, +177 净增; 3 bug fix + sitemap 优化 +
+  streaming 评估 docstring + buildAbsoluteURL/isLocalhostDomain 改进 + 注释).
+- 0 启动/重启/杀死进程 / 0 写 DB / 0 prisma / 0 新依赖 / 0 emoji / 0 改非 main.go 文件.
+
+未决项 (交接 R78):
+1. **sitemap streaming 真正实现**: 评估在 line ~4971 docstring. 5min 缓存 + sub-sitemap
+   分页拆解已足够 <1M URL 站点. >10M URL 站点 R78+ 评估实现 (encoding/xml.Encoder +
+   http.Flusher, 失去缓存命中 0 DB 优化, 需处理 client disconnect + reverse proxy
+   chunked 兼容性).
+2. **sitemap per-site 独立**: 当前 sitemapGetSite() 调 getSite("") 拿 default 站. 多站
+   站群 (每站独立 domain + 独立 sitemap) R78+ 评估 ?site= 参数返不同站 sitemap (现仅
+   default 站, 多站 sitemap 共用 default 站 domain). R77-C 未决项 #5 同款.
+3. **sitemapBooksHandler page=N cursor 翻页性能**: page=500 时 500 次 DB 查询 (~250ms).
+   5min 缓存命中后 0 DB, 性能非关键. R78 评估改 OFFSET (单 SELECT 全表扫但 1 次) vs
+   cursor (500 次 indexed scan) 在大站 (100k+ Book) 哪个更快. R77-C 未决项 #6 同款.
+4. **sitemapFormatDate 不合法 updatedAt 返原字符串**: formatUpdatedAt 解析失败时返原
+   输入, sitemapFormatDate 返 [:10] 切片. 若 updatedAt="garbage" → <lastmod>garbage
+   </lastmod> (搜索引擎忽略, P3 不致命). R78 评估加正则校验仅 YYYY-MM-DD 通过.
+5. **OgImage coverURL(bookCover) 二次调用冗余**: bookCover 已是 getBookViewData 内
+   coverURL(cover.String) 处理过, coverURL(bookCover) idempotent 但冗余. 防 bookCover
+   来自非 getBookViewData 路径未处理 (e.g. 未来 admin 直注 book["cover"]), 保留. R78
+   评估移除 (若 book["cover"] 永远是 coverURL'd) 减 1 次函数调用.

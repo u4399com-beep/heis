@@ -435,7 +435,8 @@ func main() {
         //   /sitemap.xml: 综合单文件 sitemap (home + categories + 全部 books + 全部 chapters,
         //     cursor pagination 防 OOM, 5min sync.Map 缓存).
         //   /sitemap-index.xml: sitemap 索引, 指向多个分页 sub-sitemap (sitemap-home /
-        //     sitemap-books-{n} / sitemap-chapters-{n}).
+        //     sitemap-books/{n} / sitemap-chapters/{n}, R77-D BUG-154 修: 旧形式
+        //     sitemap-books-{n}.xml 与注册路由不匹配 404).
         //   /sitemap-home.xml: home + categories 子 sitemap (1000 URL 内, 1 页足够).
         //   /sitemap-books/{page}: 分页 sub-sitemap, 每页 1000 本书的 URL (Go 1.22 路径段通配符).
         //   /sitemap-chapters/{page}: 分页 sub-sitemap, 每页 1000 章节的 URL.
@@ -794,8 +795,19 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 data["OgType"] = "book"
                 data["OgSiteName"] = siteName
                 if bookCover != "" {
-                        data["OgImage"] = bookCover
-                        data["TwitterImage"] = bookCover
+                        // R77-D 目标B (R76 交接 #5 OgImage 绝对 URL): bookCover 已是 coverURL
+                        //   处理过的路径 (getBookViewData line ~3347 调 coverURL(cover.String)),
+                        //   可能是 "/covers/abc.webp" (相对) / "https://cdn..." (外链) /
+                        //   "data:image/..." (内联). FB og:image / Twitter twitter:image 须
+                        //   绝对 URL (含 scheme + host), 相对路径 FB 抓取 warning (不报错但
+                        //   缺图), Twitter 拒绝相对路径 (twitter:image 必须绝对 URL). 改:
+                        //   再过一次 coverURL (idempotent, 防 bookCover 来自非 getBookViewData
+                        //   路径未处理) + buildAbsoluteURL(site.Domain, ...) 拼成绝对 URL.
+                        //   外链 / data: / 协议相对 // 形态 buildAbsoluteURL 原样返回 (coverURL
+                        //   passthrough). 仅相对路径 "/covers/..." 拼成 "https://domain/covers/..."
+                        //   (生产 domain) 或 "http://localhost:3000/covers/..." (dev).
+                        data["OgImage"] = buildAbsoluteURL(siteDomain, coverURL(bookCover))
+                        data["TwitterImage"] = buildAbsoluteURL(siteDomain, coverURL(bookCover))
                 }
                 data["TwitterCard"] = "summary"
                 data["TwitterTitle"] = bookName
@@ -863,8 +875,14 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 data["OgType"] = "article"
                 data["OgSiteName"] = siteNameRead
                 if bookCoverRead != "" {
-                        data["OgImage"] = bookCoverRead
-                        data["TwitterImage"] = bookCoverRead
+                        // R77-D 目标B (R76 交接 #5 OgImage 绝对 URL, read view 同款):
+                        //   buildAbsoluteURL 把 "/covers/..." 相对路径拼成绝对 URL. 外链 /
+                        //   data: / // 形态 passthrough (coverURL 已处理). 注: read view
+                        //   的 book 来自 getReadViewData, 当 book SQL 失败时 bookMap 仅含
+                        //   空 fields 无 "cover" key → bookCoverRead="" (comma-ok 安全),
+                        //   本 if 块跳过, 模板 {{if .OgTitle}} 仍渲染 (OgUrl=absChURL).
+                        data["OgImage"] = buildAbsoluteURL(siteDomainRead, coverURL(bookCoverRead))
+                        data["TwitterImage"] = buildAbsoluteURL(siteDomainRead, coverURL(bookCoverRead))
                 }
                 data["TwitterCard"] = "summary"
                 data["TwitterTitle"] = chTitle + " - " + bookNameRead
@@ -4840,13 +4858,23 @@ func randomLinkHandler(w http.ResponseWriter, r *http.Request) {
 //
 // 边界处理:
 //   - relURL 已是绝对 URL (http:// / https://): 原样返回 (coverURL 已处理外链封面).
-//   - domain 为空 (开发/预览环境无 site.Domain 配置): 返回 relURL (相对路径, 搜索引擎
-//     按当前 host 解析, 不致命; og:url 无 domain FB 抓取会 warning 但不报错).
 //   - relURL 为空: 返回空字符串.
 //   - relURL 不以 "/" 开头 (e.g. "//domain.com/path" 协议相对 URL): 原样返回 (browser
 //     按 scheme 自动补全, 不需 prepend).
 //
-// 调用点: homeHandler case "book" / case "read" pSEO 注入, sitemap* handler 绝对 URL.
+// R77-D 目标C (R76 交接 #6 sitemap loc 用真实 domain) 改进:
+//   - domain 为空时: fallback "localhost:3000" + http:// (开发环境). 旧 R76-A 实现返相对
+//     路径 (sitemap spec 要求 loc 必须绝对 URL, 故旧实现返相对路径在 sitemap 是违规;
+//     pSEO og:url/canonical 用相对 URL FB warning 但不报错. 现统一用 localhost:3000
+//     兜底, sitemap 合规 + pSEO absolute. 搜索引擎按 localhost 解析不抓真站, 仅开发期
+//     可接受; 生产部署时 admin 必须配 Site.domain).
+//   - scheme 自动选择: localhost / 127.0.0.1 (含可选端口) 用 http:// (开发期 TLS cert
+//     不存在, https 会 cert error + 浏览器拒绝); 其余 (含 dot 的真实 TLD domain) 用 https://
+//     (生产站全站 HTTPS, SEO 友好). 防 admin 误配 "localhost" 用 https 时 og:image 等
+//     绝对 URL 在本地 dev 环境无法 fetch (curl https://localhost:3000 → cert 错误).
+//
+// 调用点: homeHandler case "book" / case "read" pSEO 注入 (OgImage/TwitterImage/OgUrl/
+// CanonicalURL) + sitemap* handler 绝对 URL + robots.txt Sitemap 指令.
 func buildAbsoluteURL(domain, relURL string) string {
         if relURL == "" {
                 return ""
@@ -4855,8 +4883,11 @@ func buildAbsoluteURL(domain, relURL string) string {
         if strings.HasPrefix(relURL, "http://") || strings.HasPrefix(relURL, "https://") || strings.HasPrefix(relURL, "//") {
                 return relURL
         }
+        // R77-D 目标C: domain 空 fallback "localhost:3000" (开发环境兜底, 让 sitemap loc
+        //   合规 + pSEO og:url/canonical absolute). 旧 R76-A 实现返 relURL 相对路径 (sitemap
+        //   spec 违规). 生产部署时 admin 必须配 Site.domain, fallback 仅在 dev 跑.
         if domain == "" {
-                return relURL
+                domain = "localhost:3000"
         }
         // 标准化 domain: 剥 "http://" / "https://" 前缀 (admin 配置 Site.domain 时可能含 scheme).
         domain = strings.TrimPrefix(domain, "http://")
@@ -4864,35 +4895,69 @@ func buildAbsoluteURL(domain, relURL string) string {
         // 剥末尾 "/" 防止 "//" 双斜杠.
         domain = strings.TrimSuffix(domain, "/")
         if domain == "" {
-                return relURL
+                domain = "localhost:3000"
         }
         // relURL 必须以 "/" 开头才是 site-relative (buildBookURL/buildChapterURL/buildHomeURL/
         // buildCategoryURL 全部返 "/" 开头路径, 故这里安全). 否则视为已含 host 原样返回.
         if !strings.HasPrefix(relURL, "/") {
                 return relURL
         }
-        return "https://" + domain + relURL
+        // R77-D 目标C: scheme 自动选择 — localhost / 127.0.0.1 (含可选端口) 用 http://,
+        //   其余 (生产 domain 含 dot TLD) 用 https://. 防 admin 误配 localhost 用 https
+        //   时 dev 环境无法 fetch (TLS cert 不存在 → 浏览器拒绝).
+        scheme := "https://"
+        if isLocalhostDomain(domain) {
+                scheme = "http://"
+        }
+        return scheme + domain + relURL
+}
+
+// isLocalhostDomain — 判断 domain 是否为 localhost / 127.0.0.1 (含可选端口) (R77-D 目标C).
+//
+//      用于 buildAbsoluteURL 选择 http:// (dev) vs https:// (prod) scheme.
+//      覆盖常见 localhost 形态: "localhost" / "localhost:3000" / "127.0.0.1" / "127.0.0.1:3000".
+//      注: 不处理 IPv6 [::1] 罕见形态 (生产几乎不会配 IPv6 localhost, admin 通常配
+//      "localhost:3000" / "example.com"). 若后续需求再加 IPv6 支持.
+//      防御式: 仅匹配 host 部分 (剥端口后再判断), 防 "localhostt.com" 误判 (prefix
+//      "localhost" 会误匹配, 故严格 == "localhost" 而非 HasPrefix).
+func isLocalhostDomain(domain string) bool {
+        if domain == "" {
+                return false
+        }
+        // 剥可选端口 (host:port 形态, 端口为数字). IPv6 [::1]:port 不处理 (见 docstring).
+        host := domain
+        if idx := strings.LastIndex(domain, ":"); idx > 0 {
+                host = domain[:idx]
+        }
+        return host == "localhost" || host == "127.0.0.1"
 }
 
 // ===== R76-A 目标C: XML sitemap (用户需求 #5) =====
 //
 // 设计:
 //   - 6 路由 (见 main() line ~443): /robots.txt + /sitemap.xml + /sitemap-index.xml +
-//     /sitemap-home.xml + /sitemap-books-{page}.xml + /sitemap-chapters-{page}.xml.
+//     /sitemap-home.xml + /sitemap-books/{page} + /sitemap-chapters/{page}.
+//     (R77-D BUG-154: 路由形式 /sitemap-books/{page} 而非 /sitemap-books-{page}.xml,
+//     因 Go 1.22 ServeMux 拒绝 {page} 嵌字面量段 "sitemap-books-" 中; R76 主控已修.)
 //   - /sitemap.xml: 综合单文件 sitemap (home + categories + 全部 books + 全部 chapters),
 //     cursor pagination 防 OOM (id > ? ORDER BY id LIMIT 1000, 不用 OFFSET 防 O(N²)).
-//   - /sitemap-index.xml: sitemap 索引, 指向多个分页 sub-sitemap (sitemap-home + 1..N
-//     个 sitemap-books + 1..M 个 sitemap-chapters), N/M 由 Book/Chapter 行数算.
+//   - /sitemap-index.xml: sitemap 索引, 指向多个分页 sub-sitemap (sitemap-home +
+//     /sitemap-books/{1..N} + /sitemap-chapters/{1..M}), N/M 由 Book/Chapter 行数算.
+//     (R77-D BUG-154: 生成的 sub-sitemap URL 形式 /sitemap-books/{n} 匹配注册路由.)
 //   - /sitemap-home.xml: 子 sitemap 含 home URL + 全部 category URL (1000 URL 内足够).
-//   - /sitemap-books-{page}.xml: 子 sitemap 含 1000 本书 URL (page=1..N, cursor 分页).
-//   - /sitemap-chapters-{page}.xml: 子 sitemap 含 1000 章节URL (page=1..M, cursor 分页).
+//   - /sitemap-books/{page}: 子 sitemap 含 1000 本书 URL (page=1..N, cursor 分页).
+//   - /sitemap-chapters/{page}: 子 sitemap 含 1000 章节URL (page=1..M, cursor 分页).
+//
+// R77-D 目标A: invalidateSitemapCache() 供 admin 改 Book/Chapter 后主动清缓存
+//
+//      (替代旧 "5min 内仍返旧 sitemap" 行为, 让 admin 改动立即反映).
 //
 // 缓存: 全部 sitemap 路由用 sync.Map (sitemapCache) + 5min TTL (sitemapCacheTTL),
 //
 //      cacheKey = 路由名 + (page 编号 if any). 命中后 0 DB 查询, 未命中重查 + 写缓存.
 //      防每请求查 DB (Google 抓 sitemap 每日多次, 全表扫 Book 100k 行 ~500ms 不可接受;
-//      5min 缓存命中后 ~0.1ms). admin 改 Book/Chapter 后 5min 内仍返旧 sitemap (可接受,
-//      sitemap 非关键数据, 搜索引擎最终会重抓).
+//      5min 缓存命中后 ~0.1ms). admin 改 Book/Chapter 后调 invalidateSitemapCache()
+//      立即清缓存 (R77-D 目标A, R76 交接 #3), 否则 5min 内仍返旧 sitemap.
 //
 // XML 格式 (sitemaps.org/protocol.html):
 //      <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
@@ -4903,6 +4968,28 @@ func buildAbsoluteURL(domain, relURL string) string {
 //      </sitemapindex>
 //
 // XML escape: 手动实现 (避免引 encoding/xml 增依赖; sitemap 内容仅 URL + 日期, 5 特殊字符够用).
+//
+// R77-D 目标D (R76 交接 #4 sitemap streaming) 评估 (诚实留痕, 不实现):
+//   1. 可行性: net/http 支持 chunked response + http.Flusher 接口可分批 flush XML
+//      字节流. encoding/xml.Encoder 可流式写 xml.Token (StartElement/Char/EndElement),
+//      无需全 urlset 在内存.
+//   2. 复杂度: 当前 sitemapBuildURLSet + sitemapGetOrCompute 模式假设全 content []byte
+//      一次生成 + 缓存. 改 streaming 需:
+//      - sitemapHandler 不再走 sitemapGetOrCompute (无法缓存 streaming writer);
+//        需直接 w.Write + w.(http.Flusher).Flush() per N URL;
+//      - sitemapBooksHandler/sitemapChaptersHandler 同款改;
+//      - 失去缓存命中 0 DB 优化 (每请求重新查 DB + 流式写);
+//      - 需处理 client disconnect (context cancel 检测 + 提前返);
+//      - HTTP/2 + reverse proxy (Caddy/nginx) 对 chunked response 的兼容性 (大多 OK,
+//        但部分 proxy 会 buffer 整个 response 再转发 → streaming 失效);
+//      - gzip middleware 顺序 (若 reverse proxy gzip 后置, chunked flush 仍 work;
+//        若 gzip 前置, flush 被压在 gzip buffer 内).
+//   3. 当前评估结论: 不实现. 当前 5min sync.Map 缓存 + cursor pagination 1000/页已足够
+//      处理 <500k URL 站点 (单页 ~50KB, 100 页 ~5MB; cache 命中后 0 内存分配).
+//      >1M URL 站点 (极少见, 100k+ 本书 + 10 章/本 = 1M chapter URL) 会用 sitemap-index
+//      + sub-sitemap 分页拆解 (sitemap-books/{page} 各 1000 URL, 单 sub-sitemap ~50KB),
+//      不需 streaming. 真正 >10M URL 站点 (e.g. 大型 UGC 平台) 才需 streaming, 本项目
+//      不在该规模. R78+ 评估若实际 10M+ URL 再实现.
 
 // sitemapCacheEntry — sitemap XML 缓存条目 (rendered bytes + 生成时间).
 type sitemapCacheEntry struct {
@@ -4917,6 +5004,28 @@ const sitemapCacheTTL = 5 * time.Minute
 //
 //      crawler 同时 GET /sitemap.xml). key=string (路由名 + page 编号), value=sitemapCacheEntry.
 var sitemapCache sync.Map
+
+// invalidateSitemapCache — 主动失效全部 sitemap XML 缓存 (R77-D 目标A, R76 交接 #3).
+//
+//      R76-A sitemap 用 5min sync.Map 缓存 (sitemapGetOrCompute, 同 wheelLinksCache 同款
+//      pattern), admin 改 Book/Chapter 后 5min 内仍返旧 sitemap (新加书不在 sub-sitemap
+//      里, 删的书仍在 → 搜索引擎抓 404 URL, SEO 损害). 本轮 R77-D 加 invalidate 函数,
+//      供 R77-C admin.go 在 adminBookByIDHandler PUT/DELETE + adminBooksCreate +
+//      adminChapterByIDHandler PUT/DELETE + adminChaptersCreate + adminBackupClearHandler
+//      等改动 Book/Chapter 表的入口调 (与 invalidateAllWheelLinksCache 同款 wiring 模式).
+//      性能: sync.Map 通常 <20 entries (sitemap.xml + sitemap-index.xml + sitemap-home.xml
+//      + sitemap-books-{1..N} + sitemap-chapters-{1..M}, 100k 站 = 200 sub-sitemap entry,
+//      Range + Delete 全清 <1ms, 可接受).
+//      staticcheck U1000 (unused): R77-D 加函数未调 (R77-C admin.go 范围才调),
+//      lint:ignore U1000 防 R77-D snapshot 报 unused; R77-C wiring 后可删 directive.
+//
+//lint:ignore U1000 reserved for R77-C admin.go wiring (adminBookByIDHandler/adminBooksCreate/adminChapterByIDHandler)
+func invalidateSitemapCache() {
+        sitemapCache.Range(func(k, _ interface{}) bool {
+                sitemapCache.Delete(k)
+                return true // 继续 Range
+        })
+}
 
 // sitemapURL — 单个 URL 条目 (urlset) 或子 sitemap 引用 (sitemapindex). lastmod/changefreq/
 //
@@ -5092,6 +5201,17 @@ func sitemapHomeURLs(site map[string]interface{}) []sitemapURL {
 //      priority 0.6 (书籍详情页权重中低), changefreq weekly (书籍元数据每周更新).
 //      性能: id 索引扫描 O(log N + 1000), 100k 本 = 100 页 × ~0.5ms = ~50ms 总 (5min 缓存
 //      命中后 0 DB). 比 OFFSET 10000 LIMIT 1000 (O(N) 扫 10000 行) 快 ~100×.
+//
+// R77-D BUG-155 (P3): hasMore 旧实现 `len(urls) == 1000` 在 Scan 错误时漏页. Scan
+//
+//      错误 (rows.Scan 失败 / id.String=="") 会让某些行被 continue 跳过, 但 SQL LIMIT
+//      1000 已 return 1000 行, 跳过的行仍占用 LIMIT 名额. 故 len(urls) < 1000 即使 DB
+//      还有更多行 (LIMIT 已返 1000 行, hasMore 应为 true). 修复: 用独立计数器
+//      rowsIterated 计 SQL 返回的行数 (不随 Scan 跳过递减), hasMore = rowsIterated == 1000.
+//      影响: Scan 错误场景下旧实现 hasMore=false 让 sitemapBooksHandler 越界返空 urlset,
+//      后续页面 (page+1, page+2, ...) 全部被 skip (因 caller 越界 break), 整页书索引丢失.
+//      Scan 错误极少 (id/updatedAt 均为 TEXT, Scan 进 sql.NullString 几乎不会失败);
+//      但 corrupted DB / schema migration 中途态可能触发, sitemap 应鲁棒.
 func sitemapBooksPage(site map[string]interface{}, lastID string) ([]sitemapURL, string, bool) {
         pseudoStyle := sitemapPseudoStyle(site)
         domain, _ := site["Domain"].(string)
@@ -5111,9 +5231,14 @@ func sitemapBooksPage(site map[string]interface{}, lastID string) ([]sitemapURL,
         defer rows.Close()
         urls := []sitemapURL{}
         newLast := lastID
+        // R77-D BUG-155: 独立计数器, Scan 跳过不递减 (LIMIT 已用名额).
+        rowsIterated := 0
         for rows.Next() {
+                rowsIterated++
                 var id, updatedAt sql.NullString
                 if err := rows.Scan(&id, &updatedAt); err != nil {
+                        // R77-D BUG-155: Scan 失败 log (旧实现静默 continue, 调试难).
+                        log.Printf("[R77-D] sitemapBooksPage rows.Scan failed (lastID=%s, rowNum=%d): %v - skipping row", lastID, rowsIterated, err)
                         continue
                 }
                 if id.String == "" {
@@ -5130,8 +5255,17 @@ func sitemapBooksPage(site map[string]interface{}, lastID string) ([]sitemapURL,
         if rerr := rows.Err(); rerr != nil {
                 log.Printf("[R76-A] sitemapBooksPage rows.Err() (lastID=%s): %v", lastID, rerr)
         }
-        // hasMore: 取了 1000 行说明可能还有下一页 (返回 1000 行表示边界, <1000 行说明到底).
-        hasMore := len(urls) == 1000
+        // R77-D BUG-155: hasMore = rowsIterated == 1000 (独立计数, Scan 跳过不递减);
+        //   旧实现 len(urls) == 1000 在 Scan 错误时漏页.
+        // R77-D BUG-156 (P3): BUG-155 修复引出的 infinite-loop 边界 — 若 1000 行全 Scan
+        //   失败 (e.g. id 列全 NULL, 极罕见但 corrupted DB / migration 中途态可能),
+        //   newLast 不前进 (== lastID), 下一轮 WHERE id > lastID 返同 1000 行, 死循环.
+        //   修复: rowsIterated > 0 但 newLast 未前进时强制 hasMore=false 让 caller 退出.
+        hasMore := rowsIterated == 1000
+        if rowsIterated > 0 && newLast == lastID {
+                log.Printf("[R77-D] sitemapBooksPage cursor not advancing (lastID=%s, rowsIterated=%d) - forcing hasMore=false to avoid infinite loop", lastID, rowsIterated)
+                hasMore = false
+        }
         return urls, newLast, hasMore
 }
 
@@ -5141,6 +5275,10 @@ func sitemapBooksPage(site map[string]interface{}, lastID string) ([]sitemapURL,
 //      (bookId 用于 buildChapterURL 的 dir 风格 /book/{bookID}/chapter/{chID}.html).
 //      priority 0.5 (章节页权重最低, 但仍被索引), changefreq weekly (章节内容相对稳定).
 //      性能: 同 sitemapBooksPage, id 索引扫描 O(log N + 1000).
+//
+// R77-D BUG-155 (P3): 同 sitemapBooksPage, hasMore 用 rowsIterated 而非 len(urls)
+//
+//      防 Scan 错误漏页.
 func sitemapChaptersPage(site map[string]interface{}, lastID string) ([]sitemapURL, string, bool) {
         pseudoStyle := sitemapPseudoStyle(site)
         domain, _ := site["Domain"].(string)
@@ -5160,9 +5298,14 @@ func sitemapChaptersPage(site map[string]interface{}, lastID string) ([]sitemapU
         defer rows.Close()
         urls := []sitemapURL{}
         newLast := lastID
+        // R77-D BUG-155: 独立计数器 (同 sitemapBooksPage).
+        rowsIterated := 0
         for rows.Next() {
+                rowsIterated++
                 var cid, bid, updatedAt sql.NullString
                 if err := rows.Scan(&cid, &bid, &updatedAt); err != nil {
+                        // R77-D BUG-155: Scan 失败 log.
+                        log.Printf("[R77-D] sitemapChaptersPage rows.Scan failed (lastID=%s, rowNum=%d): %v - skipping row", lastID, rowsIterated, err)
                         continue
                 }
                 if cid.String == "" {
@@ -5179,7 +5322,13 @@ func sitemapChaptersPage(site map[string]interface{}, lastID string) ([]sitemapU
         if rerr := rows.Err(); rerr != nil {
                 log.Printf("[R76-A] sitemapChaptersPage rows.Err() (lastID=%s): %v", lastID, rerr)
         }
-        hasMore := len(urls) == 1000
+        // R77-D BUG-155 + BUG-156: 同 sitemapBooksPage, hasMore 用 rowsIterated, 加 cursor
+        //   不前进时强制 false 防 infinite loop.
+        hasMore := rowsIterated == 1000
+        if rowsIterated > 0 && newLast == lastID {
+                log.Printf("[R77-D] sitemapChaptersPage cursor not advancing (lastID=%s, rowsIterated=%d) - forcing hasMore=false to avoid infinite loop", lastID, rowsIterated)
+                hasMore = false
+        }
         return urls, newLast, hasMore
 }
 
@@ -5232,12 +5381,21 @@ func sitemapHandler(w http.ResponseWriter, r *http.Request) {
 
 // sitemapIndexHandler — GET /sitemap-index.xml: sitemap 索引文件.
 //
-//      指向 sub-sitemap: sitemap-home.xml (1 个) + sitemap-books-{1..N}.xml (N 个,
-//      N = ceil(Book rows / 1000)) + sitemap-chapters-{1..M}.xml (M 个, M = ceil(Chapter
+//      指向 sub-sitemap: sitemap-home.xml (1 个) + sitemap-books/{1..N} (N 个,
+//      N = ceil(Book rows / 1000)) + sitemap-chapters/{1..M} (M 个, M = ceil(Chapter
 //      rows / 1000)). 索引文件本身不分页, 1 个索引含全部 sub-sitemap 引用 (适合任意规模
 //      站点, 因 sub-sitemap 数量 = (book_count + chapter_count) / 1000 + 1, 100k 站 = 200
 //      sub-sitemap 引用, 单索引文件 ~50KB 可接受).
 //      失败 (site==nil): 返空 sitemapindex.
+//
+// R77-D BUG-154 (P1): 旧 R76-A 实现生成的 sub-sitemap URL 形式 /sitemap-books-{n}.xml
+//
+//      与注册路由 /sitemap-books/{page} 不匹配 (R76 主控把 {page} 通配符从字面量段
+//      移到独立段避免 Go 1.22 ServeMux panic), 搜索引擎抓 sitemap-index.xml 后
+//      跟 /sitemap-books-1.xml 链接 → 404 (路由不匹配 + homeHandler 走 404.html).
+//      修复: 改生成 /sitemap-books/{n} (匹配注册路由) + /sitemap-chapters/{n}.
+//      sitemapBooksHandler/sitemapChaptersHandler r.PathValue("page") 返数字串 strconv
+//      成功, handler 正常返分页 sub-sitemap XML.
 func sitemapIndexHandler(w http.ResponseWriter, r *http.Request) {
         site := sitemapGetSite()
         if site == nil {
@@ -5253,11 +5411,12 @@ func sitemapIndexHandler(w http.ResponseWriter, r *http.Request) {
                 _ = db.QueryRow(`SELECT COUNT(*) FROM Book`).Scan(&bookCount)
                 bookPages := (bookCount + 999) / 1000
                 if bookPages == 0 {
-                        bookPages = 1 // 至少 1 个 sub-sitemap 引用 (即使 0 本书, sitemap-books-1.xml 仍返空 urlset).
+                        bookPages = 1 // 至少 1 个 sub-sitemap 引用 (即使 0 本书, sitemap-books/1 仍返空 urlset).
                 }
                 for i := int64(1); i <= bookPages; i++ {
                         subs = append(subs, sitemapURL{
-                                loc: buildAbsoluteURL(domain, fmt.Sprintf("/sitemap-books-%d.xml", i)),
+                                // R77-D BUG-154: 路由形式 /sitemap-books/{page} (非 .xml 后缀), 匹配注册路由.
+                                loc: buildAbsoluteURL(domain, fmt.Sprintf("/sitemap-books/%d", i)),
                         })
                 }
                 var chapterCount int64
@@ -5268,7 +5427,8 @@ func sitemapIndexHandler(w http.ResponseWriter, r *http.Request) {
                 }
                 for i := int64(1); i <= chapterPages; i++ {
                         subs = append(subs, sitemapURL{
-                                loc: buildAbsoluteURL(domain, fmt.Sprintf("/sitemap-chapters-%d.xml", i)),
+                                // R77-D BUG-154: 同款 /sitemap-chapters/{page} 形式.
+                                loc: buildAbsoluteURL(domain, fmt.Sprintf("/sitemap-chapters/%d", i)),
                         })
                 }
                 return sitemapBuildIndex(subs)
@@ -5290,7 +5450,11 @@ func sitemapHomeHandler(w http.ResponseWriter, r *http.Request) {
         sitemapWriteXML(w, content)
 }
 
-// sitemapBooksHandler — GET /sitemap-books-{page}.xml: 分页 sub-sitemap (1000 本/页).
+// sitemapBooksHandler — GET /sitemap-books/{page}: 分页 sub-sitemap (1000 本/页).
+//
+//      R77-D BUG-154: 路由从 /sitemap-books-{page}.xml (Go 1.22 ServeMux panic:
+//      bad wildcard segment) 改为 /sitemap-books/{page} 独立段 (R76 主控修复).
+//      sitemap-index.xml 生成 /sitemap-books/{n} URL 指向本路由 (R77-D BUG-154 fix).
 //
 //      page 从 URL 通配符提取 (r.PathValue("page")), 验证正整数 (非数字 / <1 返 404).
 //      cursor pagination: 通过 (page-1) 次 sitemapBooksPage 翻页到达 page 起点 (lastID
@@ -5328,7 +5492,11 @@ func sitemapBooksHandler(w http.ResponseWriter, r *http.Request) {
         sitemapWriteXML(w, content)
 }
 
-// sitemapChaptersHandler — GET /sitemap-chapters-{page}.xml: 分页 sub-sitemap (1000 章/页).
+// sitemapChaptersHandler — GET /sitemap-chapters/{page}: 分页 sub-sitemap (1000 章/页).
+//
+//      R77-D BUG-154: 路由从 /sitemap-chapters-{page}.xml (ServeMux panic) 改为
+//      /sitemap-chapters/{page} (R76 主控修复); sitemap-index.xml 生成 /sitemap-chapters/{n}
+//      URL 指向本路由 (R77-D BUG-154 fix).
 //
 //      与 sitemapBooksHandler 同款 cursor 翻页 + 越界返空 urlset + 5min 缓存.
 func sitemapChaptersHandler(w http.ResponseWriter, r *http.Request) {
@@ -5368,7 +5536,8 @@ func sitemapChaptersHandler(w http.ResponseWriter, r *http.Request) {
 //   Disallow: /admin/      (admin 子路径)
 //   Disallow: /api/admin/  (admin API, JSON 响应不被索引价值低 + 防 admin 操作被搜索引擎模拟)
 //   Disallow: /api/feedback (反馈提交 API, POST only, 无 GET 内容)
-//   Sitemap: {site.Domain}/sitemap.xml  (指向主 sitemap; 域名空时用 /sitemap.xml 相对路径)
+//   Sitemap: {site.Domain}/sitemap.xml  (指向主 sitemap; R77-D 目标C 后 domain 空时
+//     buildAbsoluteURL fallback "http://localhost:3000/sitemap.xml", 仍合法绝对 URL)
 //   Host: {site.Domain}    (可选, 仅 Yandex/Bing 用, Google 忽略; 域名空时省略)
 //
 // 注: /api/public/* 不 Disallow (公开 JSON API 可被索引, 部分 source 站 /api/public/books
@@ -5378,6 +5547,9 @@ func sitemapChaptersHandler(w http.ResponseWriter, r *http.Request) {
 // 缓存: 同 sitemap, 5min sync.Map 缓存 (robots.txt 内容稳定, 但 site.Domain 改动后 5min
 //      内仍返旧值; admin 改 Site.domain 时可手动清缓存, 但本轮不实现 invalidate — 5min
 //      TTL 自然过期够用).
+//
+// R77-D 目标A 协调: admin 改 Site.domain 后调 invalidateSitemapCache() 会同时清 robots.txt
+//      缓存 (robots.txt 也走 sitemapCache 同 sync.Map), 让新 domain 立即生效.
 
 // robotsTxtHandler — GET /robots.txt.
 func robotsTxtHandler(w http.ResponseWriter, r *http.Request) {
@@ -5394,10 +5566,13 @@ func robotsTxtHandler(w http.ResponseWriter, r *http.Request) {
                 b.WriteString("Disallow: /admin/\n")
                 b.WriteString("Disallow: /api/admin/\n")
                 b.WriteString("Disallow: /api/feedback\n")
-                // Sitemap 指向 (绝对 URL 优先, 域名空时相对路径).
+                // Sitemap 指向 (绝对 URL 优先; R77-D 目标C 后 domain 空时 buildAbsoluteURL
+                //   fallback "http://localhost:3000/sitemap.xml" 仍合法. 旧 R76-A fallback
+                //   分支 sitemapURL == "/sitemap.xml" 现为 dead code (buildAbsoluteURL 不再
+                //   返相对路径), 但保留防御性兜底, 防 buildAbsoluteURL 未来再改返相对路径).
                 sitemapURL := buildAbsoluteURL(domain, "/sitemap.xml")
                 if sitemapURL == "" || sitemapURL == "/sitemap.xml" {
-                        // 兜底: domain 空时 buildAbsoluteURL 返 "/sitemap.xml", 仍合法 (搜索引擎按当前 host 解析).
+                        // 兜底: buildAbsoluteURL 返 "/sitemap.xml" (相对路径) 时仍合法 (搜索引擎按当前 host 解析).
                         b.WriteString("Sitemap: /sitemap.xml\n")
                 } else {
                         b.WriteString("Sitemap: " + sitemapURL + "\n")
