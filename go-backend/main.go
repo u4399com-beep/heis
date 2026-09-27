@@ -1078,7 +1078,17 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 //   featuredBooks 时显示一周热榜 top6, 与 R70-C 前一致).
                 featured := getFeaturedBooks(siteDBID)
                 if len(featured) == 0 {
-                        featured = data["TopBooks"].([]map[string]interface{})
+                        // R80-D BUG-170 (P3): 原实现 `data["TopBooks"].([]map[string]interface{})`
+                        //   无 ok-check — TopBooks 由 line 1075 topBooks(books, topN) 设置 (始终非 nil
+                        //   slice), 但 assertion 失败会 panic (非 graceful). 改 comma-ok 防御:
+                        //   未来若 line 1075 被重构移除 / 改名 / 改返类型, 本行 panic 而非 fallback
+                        //   空 slice 是隐性 bug. ok-check 让 assertion 失败时 featured=[] 空 slice,
+                        //   模板 range 空 (区块隐藏), 不 panic.
+                        if tb, ok := data["TopBooks"].([]map[string]interface{}); ok && len(tb) > 0 {
+                                featured = tb
+                        } else {
+                                featured = []map[string]interface{}{}
+                        }
                 } else {
                         injectBookURLs(featured, pseudoStyle) // 给 featured 每本注入 URL
                 }
@@ -4695,10 +4705,9 @@ func buildWheelBookURL(target wheelSite, bookID string) string {
 //        (book 改名/删影响所有 site 的 book_intra/book_wheel 推荐, 全清更稳).
 //      - adminBooksCreate: 无需调 (新建书无旧缓存).
 //      注: 本轮 R74-A 严禁改 admin.go, R74-D 负责调用方 wiring. 本轮 R74-A 只加函数.
-//      staticcheck U1000 (unused): R74-A 加函数但未调 (R74-D admin.go 范围才调),
-//      lint:ignore U1000 防 R74-A snapshot 报 unused; R74-D wiring 后可删 directive.
-//
-//lint:ignore U1000 reserved for R74-D admin.go wiring (adminSiteByIDHandler/adminBookByIDHandler)
+//      R80-D 精简: 已被 admin.go 5+ 处调 (adminBooksCreate/adminBookByIDHandler/adminSites
+//      Create/adminSiteByIDHandler/adminBackupRestoreHandler), 删 R74-A 留下的 //lint:ignore
+//      U1000 directive (R74-D wiring 已完成, staticcheck 不再报 unused).
 func invalidateWheelLinksCache(siteID string) {
         if siteID == "" {
                 return
@@ -4722,9 +4731,8 @@ func invalidateWheelLinksCache(siteID string) {
 //      TTL 自然过期次优 (5min 内仍返旧链接). 性能: sync.Map 通常 <10 entries (siteID
 //      × pseudoStyle 组合, 站群规模 <100), Range + Delete 全清 <1ms, 可接受.
 //      调用点 (R74-D admin.go 范围): 见 invalidateWheelLinksCache docstring.
-//      staticcheck U1000 (unused): 同 invalidateWheelLinksCache, R74-A 加函数未调.
-//
-//lint:ignore U1000 reserved for R74-D admin.go wiring (adminSiteByIDHandler/adminBookByIDHandler)
+//      R80-D 精简: 删 R74-A 留下的 //lint:ignore U1000 directive (R74-D wiring 已完成,
+//      admin.go 5+ 处调本函数, staticcheck 不再报 unused).
 func invalidateAllWheelLinksCache() {
         wheelLinksCache.Range(func(k, _ interface{}) bool {
                 wheelLinksCache.Delete(k)
@@ -5027,10 +5035,10 @@ var sitemapCache sync.Map
 //      性能: sync.Map 通常 <20 entries (sitemap.xml + sitemap-index.xml + sitemap-home.xml
 //      + sitemap-books-{1..N} + sitemap-chapters-{1..M}, 100k 站 = 200 sub-sitemap entry,
 //      Range + Delete 全清 <1ms, 可接受).
-//      staticcheck U1000 (unused): R77-D 加函数未调 (R77-C admin.go 范围才调),
-//      lint:ignore U1000 防 R77-D snapshot 报 unused; R77-C wiring 后可删 directive.
-//
-//lint:ignore U1000 reserved for R77-C admin.go wiring (adminBookByIDHandler/adminBooksCreate/adminChapterByIDHandler)
+//      R80-D 精简: 删 R77-D 留下的 //lint:ignore U1000 directive (R77-C wiring 已完成,
+//      admin.go 13+ 处调本函数 — adminBooksCreate/adminBookByIDHandler/adminChapterByID
+//      Handler/adminChaptersCreate/adminBackupRestoreHandler/adminSiteByIDHandler 等, staticcheck
+//      不再报 unused).
 func invalidateSitemapCache() {
         sitemapCache.Range(func(k, _ interface{}) bool {
                 sitemapCache.Delete(k)

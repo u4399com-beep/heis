@@ -1,14 +1,34 @@
-// storage.go — 章节 TXT / 封面 webp / 路径穿越防御 + 原子写入 (R38-1C).
+// storage.go — 封面 webp 落盘 + 路径穿越防御 + 原子写入 (R38-1C, R80-C 精简).
 //
-// 核心功能:
-//   - DATA_ROOT / NOVELS_DIR / COVERS_DIR / DOWNLOADS_DIR (基于 CWD)
-//   - EnsureDirs (MkdirAll 三个目录)
-//   - SaveChapterTxt (bookId 路径穿越防御 + 标题 slug 清洗 + 原子写入 .tmp+rename)
-//   - ReadChapterTxt (sibling-prefix 绕过防御 + path.sep 结尾前缀匹配)
-//   - DeleteBookTxt (bookId 路径穿越防御 + 同款清洗)
+// 核心功能 (R80-C 精简后):
+//   - DATA_ROOT / NOVELS_DIR / COVERS_DIR / DOWNLOADS_DIR (基于 CWD, 由 initStoragePaths
+//     统一初始化; fetcher.go 亦依赖 dataRoot 做 .cookies.json / .tls_sessions.json 落盘)
+//   - EnsureDirs (MkdirAll 三个目录, 防御性确保存在即使当前仅 covers 写入)
 //   - SaveCoverWebp (封面字节存 .webp; Go 端无 sharp, 直接回存原始字节, 浏览器按魔数嗅探)
-//   - ReadCover (sibling-prefix 绕过防御 + path.basename 剥目录组件)
-//   - R75-C BUG-131: OpenDownloadTxtWriter + DownloadTxtWriter 已删 (0 调用 deadcode)
+//
+// R80-C 精简 (BUG-169): 删除 0-caller deadcode 8 export + cascade:
+//   - SaveChapterTxt / ReadChapterTxt / DeleteBookTxt / ReadCover (TXT 文件存储 API,
+//     R38-1C 加后从未被 admin.go / main.go / runner.go / fetcher.go wiring; main.go
+//     getReadViewData line 3455 注释 "暂不读 txt 文件 (留给后续)" 即此 4 函数的待
+//     wiring 状态). R65-C/R67-C/R75-C/R78-B 多轮决策 KEEP (future wiring 意图),
+//     R80-C 任务要求 "0 调用 deadcode 删" + R79 交接 #2 明确深抓+精简, 删除.
+//   - DataRoot / NovelsDir / CoversDir / DownloadsDir (exported 路径访问器, 0 caller;
+//     fetcher.go 直接读 dataRoot var 不经 DataRoot() accessor; 4 accessor 0 caller).
+//   - cascade: bookMutexFor / bookFileMu sync.Map (per-bookID mutex, 仅被
+//     SaveChapterTxt/DeleteBookTxt 用) / sanitizeBookId / sanitizeChapterSlug
+//     (仅被 SaveChapterTxt/DeleteBookTxt 用) / safeBookIdRe / trimUnderscore /
+//     chapterSlugRe (仅被 sanitizeBookId/sanitizeChapterSlug 用).
+//   - 不删: initStoragePaths (fetcher.go 调) / dataRoot var (fetcher.go 读) /
+//     novelsDir/coversDir/downloadsDir vars (EnsureDirs MkdirAll 用) / EnsureDirs
+//     (SaveCoverWebp 调, exported future wiring) / SaveCoverWebp (runner.go 调,
+//     真活路径) / sanitizeCoverName / coverNameRe (SaveCoverWebp 用).
+//   - 失 BUG 修复价值: SaveChapterTxt/DeleteBookTxt 内 R73-C BUG-104 (per-bookID
+//     mutex race fix) + R65-C BUG-43 (fsync crash 安全) + R73-C BUG-106 (slug 二次
+//     清洗冗余) + R73-C BUG-107 (initStoragePaths 漏调) + R68-C BUG-75 (ReadCover
+//     sibling-prefix 防御) 等修复随函数消亡. 未来若 admin.go 接入 TXT 文件存储
+//     路径 (万章书 DB content 膨胀时切文件存储), 重新加时需复刻上述 BUG 修复
+//     (per-bookID mutex + atomicWriteFileSync + initStoragePaths 顶部调 + slug 清洗
+//   - sibling-prefix 路径防御). 历史 BUG 修复详见 worklog R65-C/R68-C/R73-C/R75-C.
 package crawl
 
 import (
@@ -24,26 +44,14 @@ import (
 )
 
 var (
-	// 数据目录基于 CWD (与 main.go basePath 同口径)
+	// 数据目录基于 CWD (与 main.go basePath 同口径). fetcher.go 亦读 dataRoot 做
+	// .cookies.json / .tls_sessions.json 落盘, 故 dataRoot 是 fetcher.go 跨文件
+	// 依赖, 不可删.
 	storageOnce  sync.Once
 	dataRoot     string
 	novelsDir    string
 	coversDir    string
 	downloadsDir string
-
-	// R73-C BUG-104 (P2): per-bookID mutex 防 SaveChapterTxt 与 DeleteBookTxt 并发 race.
-	//   原 SaveChapterTxt (atomicWriteFileSync + rename 到 data/novels/{bookID}/{idx}_{slug}.txt)
-	//   与 DeleteBookTxt (os.RemoveAll 整个 data/novels/{bookID} 目录) 在 admin 删书与
-	//   活跃采集同时跑时 race: SaveChapterTxt 的 MkdirAll(dir) + atomicWriteFileSync(tmpPath)
-	//   + Rename(tmpPath→filePath) 三步非原子, DeleteBookTxt 的 RemoveAll 可能在 tmpPath 写
-	//   完但 rename 前删掉 dir + tmpPath → rename ENOENT; 或 SaveChapterTxt 在 DeleteBookTxt
-	//   已删 dir 后 MkdirAll+写 → DB Chapter 行存在但文件无人删 (书已删). per-bookID
-	//   *sync.Mutex 串行化同 bookID 的 Save/Delete (不同 bookID 无锁争用, 0 影响并发).
-	//   注: SaveChapterTxt 之间理论上不需串行 (各自独立 tmpPath + 独立 filePath by idx+slug),
-	//   但为简化实现 + 防御性 (e.g. 同 idx 同 slug 的极端 race) 用 Mutex 而非 RWMutex. 性能
-	//   影响: per-book 最多 chapterConcurrency (1-10) 个 goroutine 串行 fsync+rename, 每
-	//   章 ~5ms, 单批 ~50ms, 可接受 (admin 删书是罕见操作, 不影响常规采集中跨 book 并行).
-	bookFileMu sync.Map // key=safeBookID string, value=*sync.Mutex
 )
 
 func initStoragePaths() {
@@ -63,31 +71,12 @@ func initStoragePaths() {
 	})
 }
 
-// DataRoot — 数据根目录绝对路径.
-func DataRoot() string {
-	initStoragePaths()
-	return dataRoot
-}
-
-// NovelsDir — 章节TXT存储目录.
-func NovelsDir() string {
-	initStoragePaths()
-	return novelsDir
-}
-
-// CoversDir — 封面存储目录.
-func CoversDir() string {
-	initStoragePaths()
-	return coversDir
-}
-
-// DownloadsDir — 下载成品存储目录.
-func DownloadsDir() string {
-	initStoragePaths()
-	return downloadsDir
-}
-
-// EnsureDirs — 确保数据目录存在.
+// EnsureDirs — 确保数据目录存在 (novels/covers/downloads 三个目录 MkdirAll).
+//
+// 防御性 MkdirAll 三个目录即使当前仅 covers 被写入 (SaveCoverWebp), 保 novels/
+// downloads 目录存在避免未来 wiring 时首次写入失败. R80-C 删除 SaveChapterTxt/
+// ReadChapterTxt/DeleteBookTxt/ReadCover 后, EnsureDirs 仍是 SaveCoverWebp 内部
+// 唯一 caller + exported future wiring API (admin.go 若接入下载/导出功能可调).
 func EnsureDirs() error {
 	initStoragePaths()
 	for _, d := range []string{novelsDir, coversDir, downloadsDir} {
@@ -100,198 +89,18 @@ func EnsureDirs() error {
 
 // ---------- 路径清洗工具 ----------
 
-var (
-	safeBookIdRe   = regexp.MustCompile(`[\\/\x00\s.]+`)
-	trimUnderscore = regexp.MustCompile(`^_+|_+$`)
-	chapterSlugRe  = regexp.MustCompile(`[\x00-\x1f\\/:*?"<>|\s]+`)
-	coverNameRe    = regexp.MustCompile(`[^\w-]`)
-)
-
-// sanitizeBookId — bookId 路径穿越防御: 剥所有路径分隔符与父目录指针字符后 + 去首尾 _.
-// 空串兜底 'unknown_book'.
-func sanitizeBookId(bookID string) string {
-	s := safeBookIdRe.ReplaceAllString(bookID, "_")
-	s = trimUnderscore.ReplaceAllString(s, "")
-	if s == "" {
-		return "unknown_book"
-	}
-	return s
-}
-
-// sanitizeChapterSlug — 章节标题 slug 清洗: 控制字符 + Windows 保留字符 + 空白 → _.
-// 按码点截断防代理对斩半 (Bug 21 修复).
-func sanitizeChapterSlug(title string, maxRunes int) string {
-	if maxRunes <= 0 {
-		maxRunes = 80
-	}
-	cleaned := chapterSlugRe.ReplaceAllString(title, "_")
-	runes := []rune(cleaned)
-	if len(runes) > maxRunes {
-		runes = runes[:maxRunes]
-	}
-	return string(runes)
-}
+// coverNameRe — 封面文件名清洗: 仅保留字母数字和 - (与 sanitizeCoverName 配合).
+//
+// R80-C 精简: safeBookIdRe / trimUnderscore / chapterSlugRe 已随 sanitizeBookId /
+//
+//	sanitizeChapterSlug / SaveChapterTxt / DeleteBookTxt 一并删除 (cascade deadcode).
+//	仅保留 coverNameRe (供 SaveCoverWebp 内 sanitizeCoverName 用).
+var coverNameRe = regexp.MustCompile(`[^\w-]`)
 
 // sanitizeCoverName — 封面文件名清洗: 仅保留字母数字和 -.
 func sanitizeCoverName(name string) string {
 	cleaned := coverNameRe.ReplaceAllString(name, "")
 	return cleaned
-}
-
-// bookMutexFor — 取 (或首次创建) per-bookID 的 *sync.Mutex (R73-C BUG-104).
-//
-//	sync.Map.LoadOrStore 保证并发首次创建只生效一次 (其余 goroutine 拿到先创建的实例).
-//	不删 mutex (bookID 数 = DB 书籍数, 上限 ~万级, *sync.Mutex ~8 字节, 总 ~80KB 可接受;
-//	admin 删书后 mutex 留在 map 中, 后续同 bookID 重采复用, 无 leak 风险).
-//	双检查 (Load fast path + LoadOrStore slow path): 原 `LoadOrStore(k, &sync.Mutex{})`
-//	每次 call 都 allocate 新 Mutex (即使 key 已存在, 被丢弃 → GC 压力). SaveChapterTxt
-//	是 hot path (每章一次), 1000 章任务 = 1000 次 alloc 浪费. Load 先查 (atomic read,
-//	0 alloc), 命中直接返; 未命中才 LoadOrStore (alloc + store, race-safe).
-func bookMutexFor(safeBookID string) *sync.Mutex {
-	if v, ok := bookFileMu.Load(safeBookID); ok {
-		return v.(*sync.Mutex)
-	}
-	v, _ := bookFileMu.LoadOrStore(safeBookID, &sync.Mutex{})
-	return v.(*sync.Mutex)
-}
-
-// ---------- SaveChapterTxt ----------
-
-// SaveChapterTxt — 章节txt存储: data/novels/{bookId}/{idx pad5}_{slug}.txt
-//   - bookId 路径穿越防御 (剥路径分隔符 + 父目录指针字符)
-//   - 标题 slug 清洗 (控制字符 + Windows 保留字符 + 按码点截断)
-//   - 标题强制单行 (剥 \r\n → 单空格, 防 readChapterTxt.split('\n').slice(1) 误把标题尾行当正文首段)
-//   - 原子写入: 先写 .tmp + atomicWriteFileSync (fsync) + os.Rename (POSIX 同文件系统原子 inode 替换)
-//   - 临时文件名加 PID + 随机段防并发同章节写入互踩
-//     返回相对 data/ 的路径 (供 DB 存储 + 公共 read API 使用).
-//
-// R65-C BUG-43 (P3) 修复: 原用 os.WriteFile (无 fsync) → crash 在 WriteFile 后 / Rename
-//
-//	前文件内容未刷盘, 重启后 .txt 可能空 (与 R64-B BUG-35 fetcher CookieJar SaveToDisk
-//	同款). 修复: 改用 atomicWriteFileSync (含 fsync, R51-1A 在 fetcher.go 已实现, 同
-//	crawl 包内可直接调), 保证 crash 安全. fsync 在 Linux 约 5-50ms, 章节 .txt 通常
-//	<100KB, 总开销 <100ms 可接受.
-//
-// R73-C BUG-104 (P2) 修复: 加 per-bookID *sync.Mutex 串行化 SaveChapterTxt 与 DeleteBookTxt
-//
-//	(同 bookID). 原实现 MkdirAll + atomicWriteFileSync(tmpPath) + Rename 三步非原子, 与
-//	DeleteBookTxt 的 RemoveAll(dir) race (admin 删书 + 活跃采集同 bookID 时, tmpPath 被
-//	删 → rename ENOENT, 或 Save 在 Delete 后 MkdirAll+写 → 文件残留). per-bookID mutex
-//	串行化同 bookID 的 Save/Delete; 不同 bookID 无锁争用 (sync.Map.LoadOrStore 无锁读路径).
-//	详见 var bookFileMu 注释.
-func SaveChapterTxt(bookID string, idx int, title, content string) (string, error) {
-	if err := EnsureDirs(); err != nil {
-		return "", err
-	}
-	safeBookID := sanitizeBookId(bookID)
-	// R73-C BUG-104: per-bookID mutex 串行化 Save vs Delete (同 bookID).
-	mu := bookMutexFor(safeBookID)
-	mu.Lock()
-	defer mu.Unlock()
-	dir := filepath.Join(novelsDir, safeBookID)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return "", err
-	}
-	slug := sanitizeChapterSlug(title, 80)
-	if slug == "" {
-		slug = "chapter"
-	}
-	// R73-C BUG-106 (P3) 精简: 原二次 sanitizeChapterSlug(slug, 40) 重复跑 chapterSlugRe
-	//   替换 (slug 已无控制字符, ReplaceAllString 是 no-op), 仅截断到 40 rune 有意义.
-	//   内联 []rune 截断, 省一次正则替换 + 字符串分配 (SaveChapterTxt 是 hot path, 1000 章
-	//   任务省 1000 次 no-op 正则).
-	runes := []rune(slug)
-	if len(runes) > 40 {
-		runes = runes[:40]
-	}
-	slugSafe := string(runes)
-	if slugSafe == "" {
-		slugSafe = "chapter"
-	}
-	fileName := fmt.Sprintf("%05d_%s.txt", idx, slugSafe)
-	filePath := filepath.Join(dir, fileName)
-	// 标题强制单行 (源站标题偶含 \r\n, 落盘前剥成单行)
-	safeTitle := strings.ReplaceAll(title, "\r", " ")
-	safeTitle = strings.ReplaceAll(safeTitle, "\n", " ")
-	body := safeTitle + "\n\n" + content + "\n"
-	// 临时文件名: PID + 随机段
-	var randBuf [8]byte
-	_, _ = rand.Read(randBuf[:])
-	randNum := binary.LittleEndian.Uint64(randBuf[:])
-	tmpPath := fmt.Sprintf("%s.%d.%d.tmp", filePath, os.Getpid(), randNum)
-	// R65-C BUG-43: 用 atomicWriteFileSync (含 fsync) 替代 os.WriteFile, 保证 crash 安全.
-	if err := atomicWriteFileSync(tmpPath, []byte(body), 0644); err != nil {
-		_ = os.Remove(tmpPath)
-		return "", err
-	}
-	if err := os.Rename(tmpPath, filePath); err != nil {
-		_ = os.Remove(tmpPath)
-		return "", err
-	}
-	// 相对 data/ 的路径
-	rel, err := filepath.Rel(dataRoot, filePath)
-	if err != nil {
-		return "", err
-	}
-	// 统一为 unix 风格 (DB 存储口径)
-	rel = filepath.ToSlash(rel)
-	return rel, nil
-}
-
-// ---------- ReadChapterTxt ----------
-
-// ReadChapterTxt — 读取章节TXT (相对 data/ 的路径).
-//   - 路径穿越防御: 必须 === DATA_ROOT 或以 DATA_ROOT + sep 开头
-//     (防 sibling-prefix 绕过: data vs data-covers)
-//   - 不存在/越界 → 返回 ("", nil)
-func ReadChapterTxt(relPath string) (string, error) {
-	initStoragePaths()
-	// filepath.Join 已 Clean (剥 ..), 但仍需 sibling-prefix 防御: 直接拼 + 前缀校验
-	full := filepath.Join(dataRoot, filepath.Clean(filepath.ToSlash(relPath)))
-	if full == dataRoot {
-		return "", nil
-	}
-	if !strings.HasPrefix(full, dataRoot+string(filepath.Separator)) {
-		return "", nil
-	}
-	data, err := os.ReadFile(full)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil
-		}
-		return "", err
-	}
-	return string(data), nil
-}
-
-// ---------- DeleteBookTxt ----------
-
-// DeleteBookTxt — 删除整本书的 TXT 目录 (bookId 路径穿越防御).
-//   - 与 SaveChapterTxt 同款清洗后再拼路径, 防 caller 误传 '../../etc' 等恶意 ID.
-//
-// R73-C BUG-104 (P2) 修复: 加 per-bookID *sync.Mutex 串行化与 SaveChapterTxt 的并发
-//
-//	(同 bookID). 原实现 os.RemoveAll(dir) 与 SaveChapterTxt 的 atomicWriteFileSync +
-//	rename race (admin 删书 + 活跃采集同 bookID 时, 见 SaveChapterTxt BUG-104 注释).
-//	per-bookID mutex 让 DeleteBookTxt 等待所有 in-flight SaveChapterTxt 完成后再删
-//	dir (SaveChapterTxt 调 mu.Lock → 本函数 mu.Lock 阻塞直到 Save 释放).
-//
-// R73-C BUG-107 (P1) 修复: 原实现漏调 initStoragePaths(), novelsDir 在进程首次启动后
-//
-//	未初始化 (storageOnce 未触发) 时为 "". filepath.Join("", "book123") = "book123"
-//	(相对路径), os.RemoveAll("book123") 删 CWD 下的 "book123" (不存在 → 静默 nil),
-//	实际 data/novels/{bookID} 目录从未删除 → 孤儿 txt 文件累积. 触发场景: 进程刚启
-//	动, admin 立即删书 (无活跃采集触发 EnsureDirs/initStoragePaths). 修复: 函数顶部
-//	调 initStoragePaths() 显式初始化 (与 ReadChapterTxt/ReadCover 同口径).
-func DeleteBookTxt(bookID string) error {
-	initStoragePaths()
-	safeBookID := sanitizeBookId(bookID)
-	// R73-C BUG-104: 与 SaveChapterTxt 共享 per-bookID mutex, 串行化 Save vs Delete.
-	mu := bookMutexFor(safeBookID)
-	mu.Lock()
-	defer mu.Unlock()
-	dir := filepath.Join(novelsDir, safeBookID)
-	return os.RemoveAll(dir)
 }
 
 // ---------- SaveCoverWebp ----------
@@ -308,9 +117,9 @@ func DeleteBookTxt(bookID string) error {
 //	① crash 在 WriteFile 中途 → 文件部分字节 (破损 .webp, 浏览器 <img> 解码失败);
 //	② 并发同 name (e.g. 两本书 cover URL 相同 → sanitizeCoverName 同结果) → 交错写,
 //	   最终文件混合两本书字节 (无法预测). 修复: 改用 atomicWriteFileSync (含 fsync)
-//	+ .tmp + rename 模式 (与 SaveChapterTxt 同款). fileName 已含 random suffix 时无
-//	并发冲突, 但 crash 中途写仍可能留半成品, atomicWriteFileSync + rename 保证
-//	"要么完整要么不存在" 语义.
+//	+ .tmp + rename 模式 (与原 SaveChapterTxt 同款, R80-C 已删). fileName 已含 random
+//	suffix 时无并发冲突, 但 crash 中途写仍可能留半成品, atomicWriteFileSync + rename
+//	保证 "要么完整要么不存在" 语义.
 func SaveCoverWebp(buf []byte, name string) (string, error) {
 	if len(buf) == 0 || len(buf) > 20*1024*1024 {
 		return "", nil
@@ -343,38 +152,46 @@ func SaveCoverWebp(buf []byte, name string) (string, error) {
 	return "covers/" + fileName, nil
 }
 
-// ---------- ReadCover ----------
-
-// ReadCover — 读取封面文件.
-//   - path.basename 剥目录组件 + sibling-prefix 绕过防御 (与 ReadChapterTxt 同口径)
-//   - 必须 === COVERS_DIR 或以 COVERS_DIR + sep 开头
+// ---------- R80-C 删除的 storage API (历史 BUG 修复痕迹, 留供未来复刻参考) ----------
 //
-// R68-C BUG-75 (P3) 修复: 原条件 `full != coversDir && !HasPrefix(full, coversDir+sep)`
+// R80-C BUG-169 (P3) deadcode cascade 删除: 以下 8 export + 7 helper 已删 (0 caller):
+//   1. SaveChapterTxt (bookID 路径穿越防御 + 标题 slug 清洗 + 原子写入 .tmp+rename)
+//      内嵌 BUG 修复: R65-C BUG-43 (atomicWriteFileSync fsync crash 安全) +
+//      R73-C BUG-104 (per-bookID *sync.Mutex bookFileMu 防 Save vs Delete race) +
+//      R73-C BUG-106 (slug 二次清洗冗余内联 []rune 截断)
+//   2. ReadChapterTxt (sibling-prefix 绕过防御 + path.sep 结尾前缀匹配)
+//   3. DeleteBookTxt (bookId 路径穿越防御 + 同款清洗 + per-bookID mutex 串行化)
+//      内嵌 BUG 修复: R73-C BUG-107 (顶部漏调 initStoragePaths 孤儿 txt 累积)
+//   4. ReadCover (path.basename 剥目录 + sibling-prefix 绕过防御)
+//      内嵌 BUG 修复: R68-C BUG-75 (|| vs && 组合, full==coversDir 早返)
+//   5. DataRoot / NovelsDir / CoversDir / DownloadsDir (exported 路径访问器)
+//   6. bookMutexFor (per-bookID *sync.Mutex 取/创建, sync.Map LoadOrStore 双检查)
+//   7. bookFileMu sync.Map (per-bookID mutex 容器)
+//   8. sanitizeBookId (bookId 路径穿越防御: 剥路径分隔符 + 父目录指针字符)
+//   9. sanitizeChapterSlug (章节标题 slug 清洗: 控制字符 + Windows 保留字符 + 空白)
+//   10. safeBookIdRe / trimUnderscore / chapterSlugRe (regex var, cascade)
 //
-//	用 && 组合, 当 full == coversDir (用户传 fileName="." 或 "" 经 filepath.Base+Join
-//	后等于 coversDir 本身) 时条件 `full != coversDir` 为 false, 整个 && 短路 false,
-//	不触发 early return → 进入 os.ReadFile(coversDir) → 返 "is a directory" 错误
-//	(ReadChapterTxt 同款场景 line 200-205 用两个独立 if 分别处理 full==dataRoot 与
-//	HasPrefix, 不存在此 bug). 修复: 改 || 组合 (full == coversDir OR 不在 coversDir/
-//	子树内都视为越界, 返 nil,nil). 与 ReadChapterTxt 同口径. (注: ReadCover 在 R67-C
-//	deadcode 决策 KEEP 16 项内, 但 bug 真实, 修在死代码上也修.)
-func ReadCover(fileName string) ([]byte, error) {
-	initStoragePaths()
-	safe := filepath.Base(fileName)
-	full := filepath.Join(coversDir, safe)
-	// R68-C BUG-75: 改 || 组合, full==coversDir (dir) 也走 nil,nil 早返 (与 ReadChapterTxt 同口径)
-	if full == coversDir || !strings.HasPrefix(full, coversDir+string(filepath.Separator)) {
-		return nil, nil
-	}
-	data, err := os.ReadFile(full)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return data, nil
-}
+// 删除决策依据:
+//   - rg 全仓 (admin.go / main.go / fetcher.go / runner.go / smart.go / hostgate.go /
+//     cleaner.go / parser.go / sorter.go / types.go) 0 实际调用 (仅注释提及)
+//   - go tool nm 验证 binary 已 dead-code-eliminate (链接器已删除, 源码层 redundant)
+//   - R65-C/R67-C/R75-C/R78-B 多轮 KEEP 决策依据 "future wiring" 自 R65 起未实现
+//     (R76/R77/R78/R79 均未 wire), R80-C 任务要求 "0 调用 deadcode 删" 终止等待
+//
+// 未来若需 TXT 文件存储路径 (万章书 DB content 膨胀切文件存储), 重新加时需复刻:
+//   - SaveChapterTxt: bookMutexFor + sanitizeBookId + sanitizeChapterSlug +
+//     atomicWriteFileSync + rename + filepath.Rel (返回相对 data/ 的路径)
+//   - ReadChapterTxt: initStoragePaths + sibling-prefix 防御 (full==dataRoot 早返
+//     + HasPrefix(dataRoot+sep) 检查 + os.IsNotExist 早返 nil)
+//   - DeleteBookTxt: initStoragePaths 顶部调 + per-bookID mutex 与 SaveChapterTxt
+//     共享 (防 Save vs Delete race)
+//   - ReadCover: filepath.Base + || 组合 sibling-prefix 防御 (与 ReadChapterTxt
+//     同口径)
+//   - DataRoot/NovelsDir/CoversDir/DownloadsDir: 4 exported accessor (若 admin
+//     需暴露路径给 UI/API)
+//
+// 详见 worklog R65-C (BUG-43/44/45/46/47) + R68-C (BUG-75) + R73-C (BUG-104/106/
+// 107/108/109) + R75-C (BUG-128/130/131) + R80-C (BUG-169).
 
 // ---------- DownloadTxtWriter (R75-C BUG-131 已删) ----------
 //
@@ -388,4 +205,5 @@ func ReadCover(fileName string) ([]byte, error) {
 //   时重新加 ( ~50 行: interface + struct + 4 method + target helper). 一并删除
 //   "context" + "io" 两个 import (仅 OpenDownloadTxtWriter/Write/Finish/Abort 用,
 //   删除后 storage.go 不再依赖). chapterSlugRe 仍由 sanitizeChapterSlug 使用
-//   (SaveChapterTxt 路径), 保留.
+//   (SaveChapterTxt 路径), 保留. (R80-C BUG-169 已随 SaveChapterTxt 一并删除
+//   chapterSlugRe + sanitizeChapterSlug, 此处 R75-C 注释留作历史 BUG 修复痕迹.)

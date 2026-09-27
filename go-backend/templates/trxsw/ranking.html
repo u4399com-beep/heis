@@ -87,7 +87,7 @@
 <div class="pager">
 <span class="pager-total">共 {{.Total}} 部</span>
 {{if gt .Page 1}}<a href="{{.PrevPageURL}}" class="pager-prev">上一页</a>{{else}}<span class="pager-prev disabled">上一页</span>{{end}}
-{{range .PageList}}{{if eq . $.Page}}<span class="pager-current">{{.}}</span>{{else}}<a href="/?view=ranking&sort={{$.Tab}}&page={{.}}">{{.}}</a>{{end}}{{end}}
+{{range .PageList}}{{if eq .page $.Page}}<span class="pager-current">{{.page}}</span>{{else}}<a href="{{.URL}}">{{.page}}</a>{{end}}{{end}}
 {{if lt .Page .TotalPages}}<a href="{{.NextPageURL}}" class="pager-next">下一页</a>{{else}}<span class="pager-next disabled">下一页</span>{{end}}
 </div>
 {{else}}

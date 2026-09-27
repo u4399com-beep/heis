@@ -410,7 +410,13 @@ func ApplyTransform(value string, rule FieldRule) string {
 				}
 			}
 		}
-		if *rule.Index < len(parts2) {
+		// R80-C BUG-173 (P3) 修复: 原条件 `*rule.Index < len(parts2)` 漏检负数 Index.
+		//   经 sanitizeFieldRule 路径 Index 被 clampInt 钳到 [0, 999] 安全, 但
+		//   ApplyTransform 是 export, 外部 caller 可传 *rule.Index=-1 → -1 < 1
+		//   (len(parts2)=1) 命中 → parts2[-1] panic (index out of range).
+		//   修复: 加 *rule.Index >= 0 前置条件 (与 RemoveAdLines line 555
+		//   `idx >= 0 && idx < len(urls)` 同口径防御).
+		if *rule.Index >= 0 && *rule.Index < len(parts2) {
 			v = parts2[*rule.Index]
 		} else {
 			v = ""
@@ -911,8 +917,15 @@ func ExtractField(html string, doc *goquery.Document, scope *goquery.Selection, 
 	default:
 		return ""
 	}
-	v = ApplyTransform(v, rule)
-	// extractMultiple
+	// R80-C BUG-174 (P2) 修复: 原实现 `v = ApplyTransform(v, rule)` 在 multi-check
+	//   之前无条件跑, multi 路径下 ApplyTransform 结果被下方 `v = strings.Join
+	//   (multi, sep)` 覆盖, multi 值未走 ApplyTransform → stripTags/replaceFrom/
+	//   decode/index 等规则在 extractMultiple=true 时全部静默失效 (单值路径 OK,
+	//   多值路径漏). 0 rule 用 extractMultiple (rg 全仓 0 命中 JSON), 0 当前用户
+	//   受影响, 但属明显 bug, 本轮修. 修复: 把 ApplyTransform 移入 if/else 分支,
+	//   multi 路径对每个 multi 值独立 ApplyTransform 后再 join (与单值路径同口径,
+	//   transforms 对每个 multi 值生效). 行为变化: 仅 multi+transform 组合 (当前 0
+	//   rule), 单值路径行为不变.
 	if rule.ExtractMultiple && (rule.Type == FieldCSS || rule.Type == FieldRegex) {
 		var multi []string
 		switch rule.Type {
@@ -945,11 +958,21 @@ func ExtractField(html string, doc *goquery.Document, scope *goquery.Selection, 
 		case FieldRegex:
 			multi = regexExtractAll(html, rule)
 		}
+		// R80-C BUG-174: 每个 multi 值独立 ApplyTransform (per-item stripTags/
+		//   replaceFrom/decode/index), 与单值路径同口径. 原 multi 路径无此步骤.
+		transformed := make([]string, 0, len(multi))
+		for _, m := range multi {
+			transformed = append(transformed, ApplyTransform(m, rule))
+		}
 		sep := rule.MultipleSeparator
 		if sep == "" {
 			sep = "\n"
 		}
-		v = strings.Join(multi, sep)
+		v = strings.Join(transformed, sep)
+	} else {
+		// 单值路径: ApplyTransform on 单值 (FieldCSS/FieldRegex/FieldJSON/FieldConst/
+		//   FieldXPath 全走此分支, 与原 line 920 行为一致)
+		v = ApplyTransform(v, rule)
 	}
 	// defaultValue 兜底 (在所有 transform 之后应用)
 	if v == "" && rule.DefaultValue != "" {
@@ -1571,6 +1594,18 @@ type TocResult struct {
 }
 
 // findNextLink — 兜底找"下一页"链接 (常见中文站点 + HTML5 rel=next + 英文 Next/More).
+//
+// R80-C BUG-175 (P3) 诚实留痕: "Next" / "More" 用 strings.Contains 子串匹配,
+//
+//	会误命中 "More details" / "Next chapter info" 等含 Next/More 子串的链接.
+//	中文关键词 ("下一页" 等) 子串匹配风险低 (中文站短文本), 英文关键词风险高.
+//	当前 0 修复 — caller (ParseToc/ParseContent) 有 Absolutize 非 http(s) 过滤 +
+//	seen map 防重 + samePathStreak (≥5 同 path 不同 query) break + maxPages 上限
+//	四层防御, 误命中最多多抓 1 页 (≤maxPages) 即 break, 不致命. R81 评估改:
+//	  a) 英文关键词改 strings.EqualFold 精确匹配 (丢失 "Next chapter" 子串命中);
+//	  b) 加 \b 词边界 (ASCII 可用 \b, 与 cleaner.go BUG-G chapterHeadCNRe 同款);
+//	  c) 删 "More" 关键词 (5 关键词冗余, "Next" + rel=next + 加载更多 已覆盖).
+//	本轮 0 改 — 避免行为变化影响已 wired 71 Rule 的翻页链路.
 func findNextLink(doc *goquery.Document) string {
 	keywords := []string{"下一页", "下页", "下一章", "Next", "More"}
 	for _, kw := range keywords {

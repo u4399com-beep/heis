@@ -1943,8 +1943,21 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
 //   - FetchResult.CaptchaDetected → rt.IncCaptcha (R42-1B 后 captchaEncountered 字段
 //     是死字段, admin 任务监控永远显示 0)
 func CrawlChapterContent(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, myEpoch int64, q *ChapterTask) (bool, string, string) {
+        // R80-B BUG-177 (P3) 修复: defense-in-depth nil 检查.
+        //   当前 caller (runner.go phase 2 goroutine line 1270) 总是非 nil 构造 ChapterTask
+        //   (line 1177-1184 字面量, BookCtx 来自 r.BookCtx 已 nil 检查 line 1168 if r.BookCtx != nil),
+        //   但公开 API 可能被外部 caller (admin retry-failed 测试 / 未来 R81+ wiring) 误传 nil q
+        //   或 nil q.BookCtx. 原 line 1946 `q.URL` 在 q nil 时 panic; line 1972 `q.BookCtx.FetchCfg`
+        //   在 q.BookCtx nil 时 panic. 防御: 入口加 nil 检查 + 返 "no-url" sentinel (caller
+        //   按 "no-url" 处理 — 计 stats.Errors + log + 跳过该章, 不死 goroutine).
+        if q == nil {
+                return false, "no-url", "ChapterTask nil"
+        }
         if q.URL == "" {
                 return false, "no-url", ""
+        }
+        if q.BookCtx == nil {
+                return false, "no-url", "ChapterTask.BookCtx nil"
         }
         // 预算检查
         if err := rt.CheckBudget(); err != nil {
@@ -2201,31 +2214,36 @@ func truncate(s string, n int) string {
 //     (BudgetExceeded 是预算耗尽, 重试无意义; CircuitBreak 是源站熔断, 重试会
 //     加重源站压力; ctx cancel 是 caller 主动取消).
 //   - 瞬态错误 (网络层 / TLS / HTTP 5xx / 数据库暂时故障): 重试, 指数退避
-//     baseBackoffMs * 2^attempt (2s → 4s → 8s), cap 30s 防单次重试等太久.
+//     baseBackoffMs * 2^attempt (1s → 2s → 4s), cap 30s 防单次重试等太久.
 //   - maxRetries=3 (4 次总执行, 与任务要求一致). maxRetries=0 → 直接 ExecuteTask (无重试).
-//   - baseBackoffMs=2000 (默认 2s).
+//   - baseBackoffMs=1000 (默认 1s, R80-B 目标A 调整 — 任务 spec "1s/2s/4s".
+//     R79-B 原默认 2000ms 2s, R80-B 改为 1000ms 1s 与 task spec 完全匹配).
 //
 // 价值: 14 partial Rule 中, 瞬态失败经重试可成功完成 → partial → complete.
 //   14 empty Rule 中, 源站持续不可达的重试仍失败 (源站可达性是 R80 人工验证范畴,
 //   本函数仅增强瞬态失败容错).
 //
-// caller: admin.go startCrawlTask 在启动任务前调本函数 (替代直接 ExecuteTask):
-//     err := crawl.ExecuteTaskWithRetry(ctx, cfg, 3, 2000)
-//   admin.go 范围外, R79-B 仅提供 API, 不改 admin.go wiring.
+// caller: admin.go startCrawlTask 在启动任务前调本函数 (替代直接 ExecuteTask),
+//   或调 ExecuteTaskGuarded (R80-B 容错链路兜底, 内部调本函数):
+//     err := crawl.ExecuteTaskWithRetry(ctx, cfg, 3, 1000)
+//   admin.go 范围外, R79-B 仅提供 API, 不改 admin.go wiring. R80-B 加 ExecuteTaskGuarded
+//   wrapper (同 runner.go 内, 范围内) 整合 ApplySmartRuleFallback + PrecheckSourceReachable
+//   + 本函数, 供 admin.go 一次性调 ExecuteTaskGuarded 完成全容错链路.
 
 // ExecuteTaskWithRetry — 包装 ExecuteTask 加入重试逻辑 (R79-B 目标 A).
 //
 //      失败 (非 BudgetExceeded / 非 CircuitBreak / 非 ctx cancel) 自动重试 maxRetries 次,
 //      指数退避: 第 1 次重试等 baseBackoffMs, 第 2 次 2×, 第 3 次 4× (cap 30s).
 //      maxRetries=0 → 直接 ExecuteTask (无重试).
-//      baseBackoffMs<=0 → 默认 2000ms.
+//      baseBackoffMs<=0 → 默认 1000ms (R80-B: 1s 基线, 与 task spec "1s/2s/4s" 一致;
+//        R79-B 原默认 2000ms 2s, R80-B 调整为 1000ms 1s).
 //      return: 最后一次 ExecuteTask 返的 err (成功时返 nil).
 func ExecuteTaskWithRetry(ctx context.Context, cfg ExecuteTaskConfig, maxRetries int, baseBackoffMs int) error {
         if maxRetries < 0 {
                 maxRetries = 0
         }
         if baseBackoffMs <= 0 {
-                baseBackoffMs = 2000
+                baseBackoffMs = 1000
         }
         var lastErr error
         for attempt := 0; attempt <= maxRetries; attempt++ {
@@ -2276,4 +2294,101 @@ func ExecuteTaskWithRetry(ctx context.Context, cfg ExecuteTaskConfig, maxRetries
                 }
         }
         return lastErr
+}
+
+// ---------- R80-B 目标 A: 容错链路兜底 (ApplySmartRuleFallback + PrecheckSourceReachable + ExecuteTaskWithRetry 整合) ----------
+//
+// 任务 spec: "runner.go 加任务重试逻辑 + fetcher.go 加源站可达性预检 + smart.go 加智能规则适配".
+//   R79-B 已分别实现三个独立函数 (ApplySmartRuleFallback / PrecheckSourceReachable /
+//   ExecuteTaskWithRetry) 但留 0 caller (R79-B 范围内, admin.go 范围外不可改 wiring).
+//
+// R80-B 在 runner.go 内加 ExecuteTaskGuarded wrapper, 把三个函数串成完整容错链路:
+//   1. ApplySmartRuleFallback(&cfg.Rule) — Rule 字段缺失时填通用 fallback (List/Book/
+//      Toc/Content 四段). 14 empty Rule 选择器错误可走 fallback 完成基础采集.
+//   2. PrecheckSourceReachable(ctx, primaryURL, cfg.Override) — HEAD 请求测源站可达性
+//      (5s 超时, GET fallback, SSRF 守卫). 不可达返 sentinel error, caller 跳过任务 + log warn.
+//   3. ExecuteTaskWithRetry(ctx, cfg, 3, 1000) — 3 次重试 + 指数退避 1s/2s/4s (cap 30s),
+//      终态错误 (BudgetExceeded/CircuitBreak/ctx cancel) 不重试. 瞬态错误重试提升完成率.
+//
+// primaryURL 选择:
+//   - retry-failed 模式 (cfg.Override.URLs 非空): 取 URLs[0] (任务首 URL, 预检代表性最好).
+//   - list 发现模式 (cfg.Rule.List.URLTemplate 非空): 取 URLTemplate 替换 {page} 占位为 1
+//     (列表首页, 与 discoverBooks line 1485 同款占位替换).
+//   - 两者都空 (理论不可达, ExecuteTask 内部会返 "no books to crawl" 错): 跳过预检直接调
+//     ExecuteTaskWithRetry (预检无意义, 让 ExecuteTask 自身的错误返).
+//
+// 不可达返 ErrSourceUnreachable sentinel error, admin.go 可用 errors.Is 判断后跳过任务 +
+// log warn (而非 retry 走 ExecuteTaskWithRetry 4 次浪费采集预算). 但 ExecuteTaskGuarded
+// 不自己跳过任务 (返 err 让 caller 决策, admin.go 可选 "skip + log" 或 "ignore + retry").
+//
+// 价值: 14 empty Rule 中源站持续不可达 (DNS/TLS/5xx) 的快速跳过避免浪费 maxRequests
+//   预算 + 采集时间. 14 partial Rule 中瞬态失败经重试可成功完成. ApplySmartRuleFallback
+//   让选择器配置错误的 Rule 也能走通用 fallback 完成基础采集.
+//
+// 范围控制: 不改 admin.go (范围外). ExecuteTaskGuarded 是 runner.go 内的新 wrapper,
+//   admin.go startCrawlTask 可选调 (替代直接 ExecuteTask, 加全容错链路). 当前 0 caller
+//   (admin.go 范围外), R80-B 仅提供 API + lint:ignore U1000 防 staticcheck 报 unused.
+
+// ErrSourceUnreachable — PrecheckSourceReachable 不可达时 ExecuteTaskGuarded 返的 sentinel.
+//
+//      admin.go 可用 errors.Is(err, crawl.ErrSourceUnreachable) 判断后跳过任务 + log warn
+//      (而非 retry). 含原始 reason 字符串 (e.g. "HTTP 503 (源站 5xx, 不可达)").
+type ErrSourceUnreachable struct {
+        Reason string
+}
+
+func (e *ErrSourceUnreachable) Error() string {
+        return "source unreachable: " + e.Reason
+}
+
+// pickPrecheckURL — 从 ExecuteTaskConfig 选预检主 URL (R80-B ExecuteTaskGuarded 内部用).
+//
+//      返 "" 表示无可预检 URL (走 ExecuteTaskWithRetry 不预检, 让 ExecuteTask 自身错误兜底).
+//      retry-failed 模式 (cfg.Override.URLs 非空): URLs[0] (任务首 URL).
+//      list 发现模式: cfg.Rule.List.URLTemplate 替换 {page} 占位为 "1" (列表首页).
+//      注: 不剥 query (源站可达性预检用主 URL 即可, query 不影响 DNS/TLS/HTTP status).
+func pickPrecheckURL(cfg ExecuteTaskConfig) string {
+        if len(cfg.Override.URLs) > 0 {
+                return cfg.Override.URLs[0]
+        }
+        if cfg.Rule.List.URLTemplate != "" {
+                return strings.ReplaceAll(cfg.Rule.List.URLTemplate, "{page}", "1")
+        }
+        return ""
+}
+
+//lint:ignore U1000 R80-B 容错链路 wrapper (admin.go 范围外, 留作 R81+ admin wiring 点); 当前 0 caller 在 runner.go 内, 但 future admin.go startCrawlTask 调本函数替代直接 ExecuteTask
+// ExecuteTaskGuarded — R80-B 容错链路兜底 (ApplySmartRuleFallback → PrecheckSourceReachable → ExecuteTaskWithRetry).
+//
+//      步骤:
+//        1. ApplySmartRuleFallback(&cfg.Rule) — Rule 字段缺失时填通用 fallback (无副作用, 已配
+//           字段不被覆盖). 14 empty Rule 选择器配置错误的可走 fallback 完成基础采集.
+//        2. PrecheckSourceReachable(ctx, primaryURL, cfg.Override) — HEAD 请求测源站可达性
+//           (5s 超时, GET fallback). 不可达返 *ErrSourceUnreachable, caller 跳过任务 + log warn.
+//        3. ExecuteTaskWithRetry(ctx, cfg, 3, 1000) — 3 次重试 + 指数退避 1s/2s/4s (cap 30s),
+//           终态错误 (BudgetExceeded/CircuitBreak/ctx cancel) 不重试.
+//
+//      primaryURL 由 pickPrecheckURL 选: retry-failed 模式取 URLs[0], list 发现模式取
+//      URLTemplate {page}=1, 两者都空跳过预检 (返 "" 不预检).
+//
+//      价值: 14 empty Rule 源站不可达快速跳过避免浪费 maxRequests + 采集时间; 14 partial
+//      Rule 瞬态失败经重试可成功完成; ApplySmartRuleFallback 让配置错误的 Rule 走 fallback.
+//
+//      caller (admin.go startCrawlTask 范围外, R81+ wiring):
+//        err := crawl.ExecuteTaskGuarded(ctx, cfg)
+//        if errors.Is(err, crawl.ErrSourceUnreachable) { skip task + log warn }
+func ExecuteTaskGuarded(ctx context.Context, cfg ExecuteTaskConfig) error {
+        // 1. 智能 fallback: Rule 字段缺失时填通用 fallback (smart.go, R79-B 目标 A).
+        ApplySmartRuleFallback(&cfg.Rule)
+        // 2. 源站可达性预检: HEAD 请求测源站 (fetcher.go, R79-B 目标 A).
+        //      primaryURL 由 pickPrecheckURL 选 (retry-failed URLs[0] / list URLTemplate {page}=1).
+        //      不可达返 *ErrSourceUnreachable sentinel error, 让 caller 决策 (跳过 vs retry).
+        if primaryURL := pickPrecheckURL(cfg); primaryURL != "" {
+                reachable, reason := PrecheckSourceReachable(ctx, primaryURL, cfg.Override)
+                if !reachable {
+                        return &ErrSourceUnreachable{Reason: reason}
+                }
+        }
+        // 3. 任务执行 + 重试: 3 次重试 + 指数退避 1s/2s/4s (cap 30s, R80-B 调整).
+        return ExecuteTaskWithRetry(ctx, cfg, 3, 1000)
 }

@@ -3081,6 +3081,22 @@ func buildHeaders(cfg FetchConfig, ua, rawURL, referer string) http.Header {
                 if pv := extractPlatformVersion(ua); pv != "" {
                         h.Set("Sec-Ch-Ua-Platform-Version", `"`+pv+`"`)
                 }
+                // R80-B 反反爬第 101 项: Sec-Ch-Ua-Wow64 (Windows-on-Windows64 标识).
+                //   真实 Chrome 110+ 在 64-bit Windows 发 "Sec-Ch-Ua-Wow64: ?0" (Chrome 本身
+                //   是 64-bit, 不在 WOW64 模拟层下运行). 32-bit Chrome 在 64-bit OS 发 "?1"
+                //   (在 WOW64 模拟层下). 真实 Chrome 在非 Windows 平台不发本头 (无 WOW64 概念).
+                //   反爬识别 "Windows UA 无 Sec-Ch-Ua-Wow64" 是爬虫指纹 (低权重, Chrome 110+
+                //   默认发, 老爬虫库 / Go 标准库不发). 修复: UA 含 "Windows" + "Win64" / "WOW64"
+                //   标识 64-bit Chrome → 发 "?0"; UA 含 "Windows" 但无 "Win64" → 保守 32-bit
+                //   Chrome 在 64-bit OS, 发 "?1"; 其他平台不发 (与 Chrome 行为一致).
+                if strings.Contains(ua, "Windows") {
+                        if strings.Contains(ua, "Win64") || strings.Contains(ua, "WOW64") {
+                                h.Set("Sec-Ch-Ua-Wow64", "?0")
+                        } else {
+                                // 32-bit Chrome on 64-bit Windows (老 Win7 / 低内存配置场景)
+                                h.Set("Sec-Ch-Ua-Wow64", "?1")
+                        }
+                }
         }
 
         // Referer 优先级: cfg.RefererURL > per-host 记忆 > 目标站 origin
@@ -3667,12 +3683,18 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 // R66-C 反反爬第 63 项: 检测 Service Worker 注入信号. 源站可能用 SW 检测
                 //   爬虫 (真实浏览器注册 SW, 后续请求带 SW 头; 爬虫缺 SW 头被识别).
                 //   记录 per-host SW-active 状态 (admin/metrics 可识别, R67 可扩展真实 SW fetch).
+                // R80-B BUG-176: 传 headerName 让 recordServiceWorkerDetection 区分
+                //   Service-Worker (script URL) / Service-Worker-Allowed (scope) /
+                //   Service-Worker-Navigation-Mode (navMode), 防 / 前缀误识为 script URL.
+                //   原 if-else 链只记一个, 改为独立 if 让多 SW 头都记 (各入对应字段).
                 if swHdr := resp.Header.Get("Service-Worker"); swHdr != "" {
-                        recordServiceWorkerDetection(originHost(rawURL), swHdr)
-                } else if swAllowed := resp.Header.Get("Service-Worker-Allowed"); swAllowed != "" {
-                        recordServiceWorkerDetection(originHost(rawURL), swAllowed)
-                } else if swNavMode := resp.Header.Get("Service-Worker-Navigation-Mode"); swNavMode != "" {
-                        recordServiceWorkerDetection(originHost(rawURL), swNavMode)
+                        recordServiceWorkerDetection(originHost(rawURL), "Service-Worker", swHdr)
+                }
+                if swAllowed := resp.Header.Get("Service-Worker-Allowed"); swAllowed != "" {
+                        recordServiceWorkerDetection(originHost(rawURL), "Service-Worker-Allowed", swAllowed)
+                }
+                if swNavMode := resp.Header.Get("Service-Worker-Navigation-Mode"); swNavMode != "" {
+                        recordServiceWorkerDetection(originHost(rawURL), "Service-Worker-Navigation-Mode", swNavMode)
                 }
 
                 // R75-B 反反爬第 90 项: 记录 X-Frame-Options 响应头 (per-host 观测, admin 识别
@@ -3681,6 +3703,27 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 //   缺失在 admin Snapshot 中显示为无条目, 等同 "未检测".
                 if xfo := resp.Header.Get("X-Frame-Options"); xfo != "" {
                         recordFrameOptions(originHost(rawURL), xfo)
+                }
+
+                // R80-B 反反爬第 102 项: X-Content-Type-Options 响应头观测 (per-host).
+                //   真实源站发 "X-Content-Type-Options: nosniff" (RFC 6724 §3) 防浏览器
+                //   MIME sniffing 攻击 (e.g. 把上传的 .txt 当 HTML 执行). 与 X-Frame-Options
+                //   同款是安全响应头, 反爬本身不基于此检测 (客户端不发本头, 无 outbound 影响).
+                //   价值: admin 识别哪些 host 严格发 nosniff (严格安全配置的源站通常反爬也严格,
+                //     可触发桥 / cf_clearance 路径调整策略); 无 nosniff 的 host 可能有宽松配置.
+                //   真实降分价值 ≤1 分 (不在 Cloudflare Bot Score Top 50), 主要 admin 可观测性.
+                if xcto := resp.Header.Get("X-Content-Type-Options"); xcto != "" {
+                        recordContentTypeOptions(originHost(rawURL), xcto)
+                }
+
+                // R80-B 反反爬第 103 项: Origin-Isolation 响应头观测 (per-host).
+                //   Origin-Isolation 是较新响应头 (Chrome 88+ support), 与 X-Frame-Options /
+                //   COEP/COOP 同款是 security isolation 头. 源站发 "Origin-Isolation: ?1"
+                //   标识启用 origin isolation (类似 Origin-Agent-Cluster: ?1). 反爬本身不基于
+                //   此检测 (客户端不发本头). 价值: admin 识别哪些 host 用新 isolation 头
+                //   (现代安全配置源站, 可触发更严策略); 不在 Top 50 Bot Score, 观测用.
+                if oi := resp.Header.Get("Origin-Isolation"); oi != "" {
+                        recordOriginIsolation(originHost(rawURL), oi)
                 }
 
                 // Set-Cookie 处理 (autoCookie)
@@ -4397,12 +4440,17 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 serverHeader := extractHeaderFromCurlStdout(headers, "Server")
                 recordHostProtoFingerprint(domain, proto, serverHeader)
                 // R66-C 反反爬第 63 项: curl 路径 SW 检测 (与 fetchHttp 同款).
+                // R80-B BUG-176: curl 路径同 fetchHttp 改 — 独立 if + 传 headerName 区分
+                //   Service-Worker (script URL) / Service-Worker-Allowed (scope) /
+                //   Service-Worker-Navigation-Mode (navMode).
                 if swHdr := extractHeaderFromCurlStdout(headers, "Service-Worker"); swHdr != "" {
-                        recordServiceWorkerDetection(domain, swHdr)
-                } else if swAllowed := extractHeaderFromCurlStdout(headers, "Service-Worker-Allowed"); swAllowed != "" {
-                        recordServiceWorkerDetection(domain, swAllowed)
-                } else if swNavMode := extractHeaderFromCurlStdout(headers, "Service-Worker-Navigation-Mode"); swNavMode != "" {
-                        recordServiceWorkerDetection(domain, swNavMode)
+                        recordServiceWorkerDetection(domain, "Service-Worker", swHdr)
+                }
+                if swAllowed := extractHeaderFromCurlStdout(headers, "Service-Worker-Allowed"); swAllowed != "" {
+                        recordServiceWorkerDetection(domain, "Service-Worker-Allowed", swAllowed)
+                }
+                if swNavMode := extractHeaderFromCurlStdout(headers, "Service-Worker-Navigation-Mode"); swNavMode != "" {
+                        recordServiceWorkerDetection(domain, "Service-Worker-Navigation-Mode", swNavMode)
                 }
                 // R75-B 反反爬第 90 项: 记录 X-Frame-Options 响应头 (与 fetchHttp 同款).
                 if xfo := extractHeaderFromCurlStdout(headers, "X-Frame-Options"); xfo != "" {
@@ -8621,10 +8669,18 @@ func HostRetryPolicySnapshot() map[string]map[int]string {
 //      执行 SW install 流程, 让后续请求带 SW 注册的头. 本轮仅识别 + 钉扎.
 
 // hostServiceWorkerEntry — per-host SW 检测结果.
+//
+//      R80-B BUG-176 (P3) 修复: 新增 scope + navMode 字段区分三种 SW 头的语义.
+//      原 R67-B 实现把 Service-Worker-Allowed 值 (e.g. "/api/") 误识为 scriptURL
+//      (因以 "/" 开头, 误命中 scriptURL 提取条件), 导致 admin 看到 "scriptURL=/api/"
+//      误以为是 SW 脚本 URL (实则是 SW 作用域 scope). 修复: 加 scope 字段单独存,
+//      scriptURL 仅在 headerName=="Service-Worker" 时提取.
 type hostServiceWorkerEntry struct {
         detectedAt   int64  // UnixMilli, 最近检测时间
-        scriptURL    string // SW 脚本 URL (若 Service-Worker 响应头提供)
-        headerSample string // 响应头原值 (admin 展示)
+        scriptURL    string // SW 脚本 URL (仅 Service-Worker 头值, 形如 "/sw.js" / "https://...")
+        scope        string // SW 作用域 (Service-Worker-Allowed 头值, 形如 "/api/" — 非 script URL)
+        navMode      string // SW 导航模式 (Service-Worker-Navigation-Mode 头值, 形如 "force_back")
+        headerSample string // 响应头原值 (admin 展示, 任何 SW 头的原始值)
 }
 
 var hostServiceWorkerMap sync.Map // host string -> *hostServiceWorkerEntry
@@ -8639,28 +8695,62 @@ const HostServiceWorkerSweepTTLms = 7 * 24 * 60 * 60 * 1000
 
 // recordServiceWorkerDetection — 检测响应是否含 SW 注入头, 钉扎 host.
 //
-//      触发头 (任一存在即记录): Service-Worker-Allowed / Service-Worker-Navigation-Mode /
-//      Service-Worker / X-Service-Worker. 真实浏览器首次访问 SW 站时, 响应含这些头
-//      指示客户端注册 SW. 爬虫不识别, 反爬可通过后续请求缺 SW 头识别非浏览器.
-func recordServiceWorkerDetection(host, respServiceWorkerHeader string) {
+//      触发头 (任一存在即记录): Service-Worker / Service-Worker-Allowed /
+//      Service-Worker-Navigation-Mode / X-Service-Worker. 真实浏览器首次访问 SW 站时,
+//      响应含这些头指示客户端注册 SW. 爬虫不识别, 反爬可通过后续请求缺 SW 头识别非浏览器.
+//
+//      R80-B BUG-176 (P3) 修复: 加 headerName 参数区分三种 SW 头语义.
+//      - headerName="Service-Worker" / "X-Service-Worker": 值是 SW 脚本 URL → 提取 scriptURL.
+//      - headerName="Service-Worker-Allowed": 值是 SW 作用域 (非 URL) → 存 scope 字段.
+//      - headerName="Service-Worker-Navigation-Mode": 值是导航模式 (非 URL) → 存 navMode 字段.
+//      其他 headerName: 仅存 headerSample (向后兼容, 不提取 scriptURL 防 / 前缀误识).
+//
+//      Load+modify+Store pattern: 同响应可能含多种 SW 头 (各调一次本函数), 每次累加到
+//      同一 entry 不同字段 (而非 Store-replacing 覆盖). 跨 goroutine race (不同响应并发
+//      写同 host) 引入小窗口 (e.g. A 写 scope / B 写 navMode, 同 host 互不冲突字段 OK;
+//      但同字段 A 后写覆盖 B 先写 — last-write-wins, 与原 Store-replacing 同口径, 观测用
+//      tracker 容忍此 race). 单响应内 (同 goroutine 内连续 3 次调) 严格顺序, 无 race.
+func recordServiceWorkerDetection(host, headerName, headerValue string) {
         if host == "" {
                 return
         }
         host = strings.ToLower(host)
-        // 提取 scriptURL (若响应头是 "Service-Worker: <url>" 格式)
-        scriptURL := ""
-        if respServiceWorkerHeader != "" {
-                // 简单提取: 头值若是 URL 形如 "/sw.js" 或 "https://...", 视为 scriptURL
-                if strings.HasPrefix(respServiceWorkerHeader, "/") ||
-                        strings.HasPrefix(respServiceWorkerHeader, "http://") ||
-                        strings.HasPrefix(respServiceWorkerHeader, "https://") {
-                        scriptURL = strings.TrimSpace(respServiceWorkerHeader)
+        // Load 现有 entry (若存在) 用于 merge 字段; 不存在则新建.
+        var e *hostServiceWorkerEntry
+        if v, ok := hostServiceWorkerMap.Load(host); ok {
+                e = v.(*hostServiceWorkerEntry)
+                // 复制现有 entry (不直接 mutate, 防 Range 中读到的 entry 被改).
+                e = &hostServiceWorkerEntry{
+                        detectedAt:   e.detectedAt,
+                        scriptURL:    e.scriptURL,
+                        scope:        e.scope,
+                        navMode:      e.navMode,
+                        headerSample: e.headerSample,
                 }
+        } else {
+                e = &hostServiceWorkerEntry{}
         }
-        e := &hostServiceWorkerEntry{
-                detectedAt:   time.Now().UnixMilli(),
-                scriptURL:    scriptURL,
-                headerSample: respServiceWorkerHeader,
+        e.detectedAt = time.Now().UnixMilli()
+        e.headerSample = headerValue
+        // R80-B BUG-176: 仅在 header 是 Service-Worker / X-Service-Worker 时提取 scriptURL
+        //   (其他头值可能以 "/" 开头但不是 script URL, e.g. Service-Worker-Allowed: "/api/"
+        //   是 scope 不是 script).
+        if headerValue != "" {
+                hName := strings.ToLower(headerName)
+                if hName == "service-worker" || hName == "x-service-worker" {
+                        if strings.HasPrefix(headerValue, "/") ||
+                                strings.HasPrefix(headerValue, "http://") ||
+                                strings.HasPrefix(headerValue, "https://") {
+                                e.scriptURL = strings.TrimSpace(headerValue)
+                        }
+                } else if hName == "service-worker-allowed" {
+                        // scope (RFC 6454) — 不是 script URL, 单独存.
+                        e.scope = strings.TrimSpace(headerValue)
+                } else if hName == "service-worker-navigation-mode" {
+                        // navMode (e.g. "force_back") — 不是 URL, 单独存.
+                        e.navMode = strings.TrimSpace(headerValue)
+                }
+                // 其他 headerName: 仅 headerSample, 不提取 (向后兼容).
         }
         hostServiceWorkerMap.Store(host, e)
         // R67-B BUG-57 (P3) 修复: 惰性 sweep (每 1000 次 Store 触发, 删 7 天未更新条目).
@@ -8681,6 +8771,8 @@ func recordServiceWorkerDetection(host, respServiceWorkerHeader string) {
 }
 
 // ServiceWorkerHostSnapshot — admin / metrics 查询用: 返回 SW-active host 列表.
+//
+//      R80-B BUG-176: 新增 scope / navMode 字段 (admin 可区分 SW 头类型).
 func ServiceWorkerHostSnapshot() map[string]map[string]string {
         out := map[string]map[string]string{}
         hostServiceWorkerMap.Range(func(k, v any) bool {
@@ -8688,6 +8780,8 @@ func ServiceWorkerHostSnapshot() map[string]map[string]string {
                 out[k.(string)] = map[string]string{
                         "detectedAt":   fmt.Sprintf("%d", e.detectedAt),
                         "scriptURL":    e.scriptURL,
+                        "scope":         e.scope,
+                        "navMode":       e.navMode,
                         "headerSample": e.headerSample,
                 }
                 return true
@@ -9070,6 +9164,173 @@ func ClearHostFrameOptions(host string) {
         hostFrameOptionsMap.Delete(strings.ToLower(host))
 }
 
+// ---------- R80-B 反反爬第 102 项: X-Content-Type-Options 响应头观测 ----------
+//
+// 任务要求: "R79-B 96-100 已完成 5 项, R80-B 加新反反爬项 (101+)". R80-B 选
+//   X-Content-Type-Options 作为第 102 项, 与 R75-B 第 90 项 X-Frame-Options 同款
+//   是响应头观测 tracker (per-host sync.Map + sweep TTL 7d).
+//
+// 真实浏览器行为 (RFC 6724 §3):
+//   - 源站发 "X-Content-Type-Options: nosniff" 防浏览器 MIME sniffing 攻击.
+//   - 客户端不发本头 (是响应头, 非请求头). 对 Go 爬虫无 outbound 影响.
+//   - 反爬本身不基于此检测 (源站无法从 client 请求识别是否识别 nosniff).
+//   - 价值: admin 识别哪些 host 严格发 nosniff (严格安全配置的源站通常反爬也严格,
+//     可触发桥 / cf_clearance 路径调整策略); 无 nosniff 的 host 可能有宽松配置.
+//
+// 诚实留痕: 真实降分价值 ≤1 分 (不在 Cloudflare Bot Score Top 50), 主要 admin
+//   可观测性. 与 X-Frame-Options tracker (R75-B 第 90 项) 同款 pattern, 复用
+//   sync.Map + 7d TTL sweep + CompareAndDelete race-free 模式.
+
+// hostContentTypeOptionsEntry — per-host X-Content-Type-Options 观测条目 (R80-B 第 102 项).
+//
+//      与 hostFrameOptionsEntry 同款 (Store-replacing, sweep 用 CompareAndDelete race-free).
+type hostContentTypeOptionsEntry struct {
+        xctoValue   string // 响应头原值 (nosniff / "" — 通常只有 nosniff 一个合法值)
+        detectedAt int64  // UnixMilli, 最近检测时间
+}
+
+// hostContentTypeOptionsMap — host string -> *hostContentTypeOptionsEntry (R80-B 第 102 项).
+var hostContentTypeOptionsMap sync.Map
+
+// hostContentTypeOptionsSweepCounter — sweep 触发累加 (R80-B 第 102 项).
+var hostContentTypeOptionsSweepCounter atomic.Int64
+
+// HostContentTypeOptionsSweepTTLms — per-host X-Content-Type-Options 条目 7 天 TTL.
+//
+//      与 HostFrameOptionsSweepTTLms 同口径 (7d).
+const HostContentTypeOptionsSweepTTLms = 7 * 24 * 60 * 60 * 1000
+
+// recordContentTypeOptions — 记录 host 的 X-Content-Type-Options 响应头 (R80-B 第 102 项).
+//
+//      每次响应 (fetchHttp) 调本函数 (caller 仅在响应头存在时调, 与 recordFrameOptions 同口径).
+//      Store-replacing + sweep 用 CompareAndDelete race-free (与 recordFrameOptions 同款 pattern).
+func recordContentTypeOptions(host, xctoHeader string) {
+        if host == "" {
+                return
+        }
+        e := &hostContentTypeOptionsEntry{
+                xctoValue:   xctoHeader,
+                detectedAt: time.Now().UnixMilli(),
+        }
+        hostContentTypeOptionsMap.Store(strings.ToLower(host), e)
+        // R80-B: 惰性 sweep (每 1000 次 Store 触发, 删 7 天未更新条目). 与 recordFrameOptions
+        //   同款, 用 CompareAndDelete race-free (Go 1.20+ 原子 CAS-Delete).
+        if hostContentTypeOptionsSweepCounter.Add(1)%1000 == 0 {
+                now := time.Now().UnixMilli()
+                hostContentTypeOptionsMap.Range(func(k, v any) bool {
+                        ent := v.(*hostContentTypeOptionsEntry)
+                        if now-ent.detectedAt > HostContentTypeOptionsSweepTTLms {
+                                hostContentTypeOptionsMap.CompareAndDelete(k, ent)
+                        }
+                        return true
+                })
+        }
+}
+
+// HostContentTypeOptionsSnapshot — admin / metrics 查询用: 返回 per-host X-Content-Type-Options 状态.
+func HostContentTypeOptionsSnapshot() map[string]map[string]string {
+        out := map[string]map[string]string{}
+        hostContentTypeOptionsMap.Range(func(k, v any) bool {
+                e := v.(*hostContentTypeOptionsEntry)
+                out[k.(string)] = map[string]string{
+                        "xctoValue":   e.xctoValue,
+                        "detectedAt": fmt.Sprintf("%d", e.detectedAt),
+                }
+                return true
+        })
+        return out
+}
+
+// ClearHostContentTypeOptions — 清除 host 的 X-Content-Type-Options 观测 (失败排查 / 测试用).
+func ClearHostContentTypeOptions(host string) {
+        if host == "" {
+                return
+        }
+        hostContentTypeOptionsMap.Delete(strings.ToLower(host))
+}
+
+// ---------- R80-B 反反爬第 103 项: Origin-Isolation 响应头观测 ----------
+//
+// 任务要求: "R79-B 96-100 已完成 5 项, R80-B 加新反反爬项 (101+)". R80-B 选
+//   Origin-Isolation 作为第 103 项, 与 X-Frame-Options / X-Content-Type-Options
+//   同款是响应头观测 tracker (per-host sync.Map + sweep TTL 7d).
+//
+// 真实浏览器行为 (Chrome 88+ support):
+//   - 源站发 "Origin-Isolation: ?1" 标识启用 origin isolation (类似
+//     Origin-Agent-Cluster: ?1, 用于 process isolation 策略).
+//   - 客户端不发本头 (是响应头). 对 Go 爬虫无 outbound 影响.
+//   - 反爬本身不基于此检测. 价值: admin 识别哪些 host 用新 isolation 头
+//     (现代安全配置源站, 可触发更严策略); 不在 Top 50 Bot Score, 观测用.
+//
+// 诚实留痕: 真实降分价值 ≤1 分, 主要 admin 可观测性. 与 X-Frame-Options tracker
+//   (R75-B 第 90 项) + X-Content-Type-Options (R80-B 第 102 项) 同款 pattern.
+
+// hostOriginIsolationEntry — per-host Origin-Isolation 观测条目 (R80-B 第 103 项).
+//
+//      与 hostFrameOptionsEntry / hostContentTypeOptionsEntry 同款 pattern.
+type hostOriginIsolationEntry struct {
+        oiValue     string // 响应头原值 (?1 / ?0 / 其他)
+        detectedAt int64  // UnixMilli, 最近检测时间
+}
+
+// hostOriginIsolationMap — host string -> *hostOriginIsolationEntry (R80-B 第 103 项).
+var hostOriginIsolationMap sync.Map
+
+// hostOriginIsolationSweepCounter — sweep 触发累加 (R80-B 第 103 项).
+var hostOriginIsolationSweepCounter atomic.Int64
+
+// HostOriginIsolationSweepTTLms — per-host Origin-Isolation 条目 7 天 TTL.
+//
+//      与 HostFrameOptionsSweepTTLms / HostContentTypeOptionsSweepTTLms 同口径 (7d).
+const HostOriginIsolationSweepTTLms = 7 * 24 * 60 * 60 * 1000
+
+// recordOriginIsolation — 记录 host 的 Origin-Isolation 响应头 (R80-B 第 103 项).
+//
+//      每次响应 (fetchHttp) 调本函数 (caller 仅在响应头存在时调, 与 recordFrameOptions
+//      / recordContentTypeOptions 同口径). Store-replacing + sweep CompareAndDelete.
+func recordOriginIsolation(host, oiHeader string) {
+        if host == "" {
+                return
+        }
+        e := &hostOriginIsolationEntry{
+                oiValue:     oiHeader,
+                detectedAt: time.Now().UnixMilli(),
+        }
+        hostOriginIsolationMap.Store(strings.ToLower(host), e)
+        if hostOriginIsolationSweepCounter.Add(1)%1000 == 0 {
+                now := time.Now().UnixMilli()
+                hostOriginIsolationMap.Range(func(k, v any) bool {
+                        ent := v.(*hostOriginIsolationEntry)
+                        if now-ent.detectedAt > HostOriginIsolationSweepTTLms {
+                                hostOriginIsolationMap.CompareAndDelete(k, ent)
+                        }
+                        return true
+                })
+        }
+}
+
+// HostOriginIsolationSnapshot — admin / metrics 查询用: 返回 per-host Origin-Isolation 状态.
+func HostOriginIsolationSnapshot() map[string]map[string]string {
+        out := map[string]map[string]string{}
+        hostOriginIsolationMap.Range(func(k, v any) bool {
+                e := v.(*hostOriginIsolationEntry)
+                out[k.(string)] = map[string]string{
+                        "oiValue":     e.oiValue,
+                        "detectedAt": fmt.Sprintf("%d", e.detectedAt),
+                }
+                return true
+        })
+        return out
+}
+
+// ClearHostOriginIsolation — 清除 host 的 Origin-Isolation 观测 (失败排查 / 测试用).
+func ClearHostOriginIsolation(host string) {
+        if host == "" {
+                return
+        }
+        hostOriginIsolationMap.Delete(strings.ToLower(host))
+}
+
 // ---------- R77-B 反反爬第 95 项: Origin 带路径 自适应 ----------
 //
 // 任务要求: "部分源站按 Origin 带路径检测, fetcher 加自适应".
@@ -9248,12 +9509,24 @@ var hostH2WindowUpdateMap sync.Map // host string -> int64 (UnixMilli 首次观�
 //
 //      caller: fetchHttp 在 resp.Proto == "HTTP/2.0" 时调. 仅观测, 不修改 transport 行为
 //      (transport 全局共享, 改 INITIAL_WINDOW_SIZE 影响所有 host).
+//
+//      R80-B BUG-178 (P3) 修复: 原实现 hostH2WindowUpdateMap.Store(host, time.Now().UnixMilli())
+//      每次 Store 覆盖, 实际存的是 "最近观测时间" 而非注释声称的 "首次观测时间".
+//      admin Snapshot 看到的 timestamp 是最后一次 H2 响应时间 (越近越活跃), 不是
+//      host 第一次被观测到走 H2 的时间. 这对 admin 识别 "新 H2 host" 无意义 (无法
+//      区分 "刚切到 H2" vs "持续走 H2"). 修复: 用 LoadOrStore 保留首次观测时间,
+//      后续调用不覆盖 (与 hostTls13PskEntry.firstObservedAt / hostCookieHttpOnlyEntry
+//      的 firstObserved 语义一致, admin 可识别 "新 H2 host" vs "稳定 H2 host").
 func RecordH2FlowControlObserved(host string) {
         if host == "" {
                 return
         }
         if fp := hostProtoFingerprintFor(host); fp != nil && fp.Proto == "HTTP/2" {
-                hostH2WindowUpdateMap.Store(strings.ToLower(host), time.Now().UnixMilli())
+                now := time.Now().UnixMilli()
+                // R80-B BUG-178: LoadOrStore 保留首次观测时间, 后续调用不覆盖.
+                //   若 host 已有条目, LoadOrStore 返 (existing, false), 不改 firstObservedAt.
+                //   若 host 无条目, LoadOrStore 存入 now 作 firstObservedAt.
+                hostH2WindowUpdateMap.LoadOrStore(strings.ToLower(host), now)
         }
 }
 

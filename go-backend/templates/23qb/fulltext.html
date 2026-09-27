@@ -87,7 +87,7 @@
 {{if gt .TotalPages 1}}
 <div id="page">
 {{if gt .Page 1}}<a class="page-previous" href="{{.PrevPageURL}}">上一页</a>{{end}}
-{{range .PageList}}{{if eq . $.Page}}<strong>{{.}}</strong>{{else}}<a href="/?view=fulltext&page={{.}}">{{.}}</a>{{end}}{{end}}
+{{range .PageList}}{{if eq .page $.Page}}<strong>{{.page}}</strong>{{else}}<a href="{{.URL}}">{{.page}}</a>{{end}}{{end}}
 {{if lt .Page .TotalPages}}<a class="page-next" href="{{.NextPageURL}}">下一页</a>{{end}}
 </div>
 {{end}}

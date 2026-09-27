@@ -608,6 +608,14 @@ func adminTaskSubHandler(w http.ResponseWriter, r *http.Request) {
                 adminTaskDeleteHandler(w, r, path)
                 return
         }
+        // R80-D 目标A (R79 交接 #4): GET /api/admin/tasks/{id} — 单任务完整 26 字段.
+        //   替代 R79-A editTaskFromRow 用 GET /api/admin/tasks (全列表 LIMIT 500) 找单个的
+        //   O(N) N≤500 模式, 改 O(1) 单 SELECT + JOIN. R80-A tasks.html editTaskFromRow
+        //   改调本 API (替代 adminTasksList 全表 fetch 后按 id 找单个).
+        if r.Method == http.MethodGet && path != "" && !strings.Contains(path, "/") {
+                adminTaskGetHandler(w, r, path)
+                return
+        }
         writeJSONErr(w, "not found", 404)
 }
 
@@ -1396,22 +1404,38 @@ func adminTaskSnapshotHandler(w http.ResponseWriter, r *http.Request) {
         })
 }
 
-// adminTaskLogsHandler — GET /api/admin/tasks/:id/logs 查 TaskLog 表最近 100 条日志.
+// adminTaskLogsHandler — GET /api/admin/tasks/:id/logs 查 TaskLog 表日志 (分页).
 //
 //      R79-D Goal A.2 (用户需求 #1): 任务详情弹窗展示运行历史 (info/success/warn/error),
 //      与 adminTaskSnapshotHandler 的 runtime 内存态 (RecentLogs 最多 50 条 + 运行指标)
 //      互补 — TaskLog 表是持久化历史, runtime 停止后仍可查 (admin 排障 + 任务终态审计).
 //
-// 入参: 路径参数 :id (taskID). 无 query 参数 (LIMIT 100 固定, 防 client 拉全量致 OOM).
+// R80-D 目标B (R79 交接 #5): 加 ?page=N&pageSize=M 分页.
 //
-// 响应: {ok:true, logs:[{id, level, message, createdAt}]} — 按 createdAt DESC 排序
+//      默认 page=1, pageSize=100 (与 R79-A 原 LIMIT 100 同款默认). pageSize 钳 [1, 500]
+//      防 client 拉全量致 OOM (TaskLog 单任务理论 ~数万行, 500/页足够 UI 滚动浏览).
+//      page 钳 [1, 1000000] 防恶意大 page 致 OFFSET 累积 O(N) 扫描 (page=1000 OFFSET
+//      100k ~50ms, 仍可接受; page=1000000 OFFSET 1e9 必爆). 返回 total 供 UI 算 totalPages
+//      + 显示 "1/N 页 · 共 M 条日志".
 //
-//      (最新在前, 与 adminTaskSnapshotHandler RecentLogs 同款顺序). 任务不存在返 404
-//      (避免 admin UI 把删除任务的空日志误显示为 "无日志运行正常").
+// 入参:
 //
-// 错误容忍: rows.Err() 检查 mid-iteration 错误 (R74-D BUG-111 同款 pattern),
+//      路径参数 :id (taskID)
+//      ?page=N    (默认 1, 钳 [1, 1000000])
+//      ?pageSize=M (默认 100, 钳 [1, 500])
 //
-//      log.Printf best-effort 不阻塞返 (返回已收集的部分日志 + 500 错误).
+// 响应: {ok:true, logs:[{id, level, message, createdAt}], total:N, page:N, pageSize:M}
+//
+//      按 createdAt DESC 排序 (最新在前, 与 adminTaskSnapshotHandler RecentLogs 同款顺序).
+//      任务不存在返 404 (避免 admin UI 把删除任务的空日志误显示为 "无日志运行正常").
+//
+// 错误容忍:
+//
+//      rows.Err() 检查 mid-iteration 错误 (R74-D BUG-111 同款 pattern), 返 500 不返半截.
+//      R80-D BUG-171 (P3): 原实现 `_ = db.QueryRow(...).Scan(&existTask)` 吞错, DB 故障
+//      (非 ErrNoRows) 也返 404 "任务不存在" (与 adminTaskDeleteHandler 同款 404 conflation
+//      pattern 但后者用 err != nil 至少不静默). 本轮改显式区分 ErrNoRows vs DB 错误, 后者
+//      返 500 让 admin UI 知道是 DB 故障而非任务被删.
 func adminTaskLogsHandler(w http.ResponseWriter, r *http.Request) {
         if r.Method != http.MethodGet {
                 writeJSONErr(w, "method not allowed", 405)
@@ -1427,13 +1451,27 @@ func adminTaskLogsHandler(w http.ResponseWriter, r *http.Request) {
         // 存在性检查 (与 adminTaskDeleteHandler 同款, 避免已删任务的 TaskLog 残留 —
         //   DELETE Task 时已级联 DELETE TaskLog, 但极端场景 (手动 SQL 删 Task 不删 TaskLog)
         //   仍可返 0 行日志; 此处显式 404 让 admin UI 提示 "任务不存在" 而非 "无日志").
+        // R80-D BUG-171 (P3): 原实现 _ = 吞错 → DB 故障返 404 conflation. 改显式区分.
         var existTask string
-        _ = db.QueryRow(`SELECT id FROM Task WHERE id=?`, taskID).Scan(&existTask)
-        if existTask == "" {
+        existErr := db.QueryRow(`SELECT id FROM Task WHERE id=?`, taskID).Scan(&existTask)
+        if existErr == sql.ErrNoRows || existTask == "" {
                 writeJSONErr(w, "任务不存在", 404)
                 return
         }
-        rows, err := db.Query(`SELECT id, level, message, createdAt FROM TaskLog WHERE taskId=? ORDER BY createdAt DESC LIMIT 100`, taskID)
+        if existErr != nil {
+                writeJSONErr(w, "查询任务失败: "+existErr.Error(), 500)
+                return
+        }
+        // R80-D 目标B (R79 交接 #5): 分页支持 ?page=N&pageSize=M.
+        //   默认 page=1, pageSize=100. clamp page [1, 1000000], pageSize [1, 500].
+        //   total 来自 COUNT(*) 供 UI 显示日志总数 + 分页 UI 算 totalPages.
+        page := clampIntAdm(toIntDefault(r.URL.Query().Get("page"), 1), 1, 1000000)
+        pageSize := clampIntAdm(toIntDefault(r.URL.Query().Get("pageSize"), 100), 1, 500)
+        offset := (page - 1) * pageSize
+        // COUNT(*) (与 adminRuleByIDHandler taskCount 同款单 SELECT, ~0.1ms; 不阻塞 LIMIT 查询).
+        var total int
+        _ = db.QueryRow(`SELECT COUNT(*) FROM TaskLog WHERE taskId=?`, taskID).Scan(&total)
+        rows, err := db.Query(`SELECT id, level, message, createdAt FROM TaskLog WHERE taskId=? ORDER BY createdAt DESC LIMIT ? OFFSET ?`, taskID, pageSize, offset)
         if err != nil {
                 writeJSONErr(w, "查询日志失败: "+err.Error(), 500)
                 return
@@ -1443,7 +1481,7 @@ func adminTaskLogsHandler(w http.ResponseWriter, r *http.Request) {
         for rows.Next() {
                 var id, level, message, createdAt sql.NullString
                 if err := rows.Scan(&id, &level, &message, &createdAt); err != nil {
-                        // Scan 失败跳过 (与 adminTasksList line 751 _ = rows.Scan 同款容忍).
+                        // Scan 失败跳过 (与 adminTasksList line 767 _ = rows.Scan 同款容忍).
                         continue
                 }
                 logs = append(logs, map[string]interface{}{
@@ -1457,7 +1495,12 @@ func adminTaskLogsHandler(w http.ResponseWriter, r *http.Request) {
                 writeJSONErr(w, "迭代日志失败: "+err.Error(), 500)
                 return
         }
-        writeJSONOK(w, map[string]interface{}{"logs": logs})
+        writeJSONOK(w, map[string]interface{}{
+                "logs":     logs,
+                "total":    total,
+                "page":     page,
+                "pageSize": pageSize,
+        })
 }
 
 // adminTaskUpdateHandler — PUT /api/admin/tasks/:id 编辑任务配置字段 (R79-D Goal A.1, 用户需求 #1).
@@ -1725,16 +1768,33 @@ func adminTaskUpdateHandler(w http.ResponseWriter, r *http.Request, taskID strin
         }
         // 返回最新行 19 字段供 UI 刷新 (与 adminTasksList SELECT 字段集对齐, 让前端
         //   编辑模态 + 任务列表 + snapshot 缓存一致刷新, 不需额外 GET /api/admin/tasks).
+        // R80-D BUG-172 (P3): 原实现 `_ = db.QueryRow(...).Scan(...)` 吞错 — 若 UPDATE 成功
+        //   但 SELECT 立刻失败 (e.g. race window 内任务被 DELETE, 或 DB 连接断开 mid-tx),
+        //   返 ok:true + 空 task 字段 (zero value strings/0/false), UI 编辑模态显示空白行,
+        //   操作员以为是任务被清空 (实际 DB 行仍在, 是 SELECT 没读到). 修复: 显式区分
+        //   ErrNoRows (任务被删, 返 404) vs 其他 DB 故障 (返 500), 不返半截空 task.
+        //   注: 实际场景罕见 (UPDATE→SELECT 极短窗口 + 极少触发), 但 err swallow 是 pattern
+        //   违规, 改后符合 "err 必检" 规范. 与 adminTaskLogsHandler BUG-171 同款 err 显式区分.
         var (
                 name, ruleID, mode, bookURL, listURL, recrawlModeS, storageModeS, statusS, progress, stats, updatedAt string
                 listStart, listEnd, bookStart, bookEnd, threadMinI, threadMaxI, intervalMinI, intervalMaxI, refreshIntervalMinI int
                 smartCategoryB, smartCompleteB, autoSuggestB, autoRefreshB bool
         )
-        _ = db.QueryRow(`SELECT name,ruleId,mode,bookUrl,listUrl,listStart,listEnd,bookStart,bookEnd,recrawlMode,storageMode,threadMin,threadMax,intervalMin,intervalMax,smartCategory,smartComplete,autoSuggest,autoRefresh,refreshIntervalMin,status,progress,stats,updatedAt FROM Task WHERE id=?`, taskID).
+        selectErr := db.QueryRow(`SELECT name,ruleId,mode,bookUrl,listUrl,listStart,listEnd,bookStart,bookEnd,recrawlMode,storageMode,threadMin,threadMax,intervalMin,intervalMax,smartCategory,smartComplete,autoSuggest,autoRefresh,refreshIntervalMin,status,progress,stats,updatedAt FROM Task WHERE id=?`, taskID).
                 Scan(&name, &ruleID, &mode, &bookURL, &listURL, &listStart, &listEnd, &bookStart, &bookEnd,
                         &recrawlModeS, &storageModeS, &threadMinI, &threadMaxI, &intervalMinI, &intervalMaxI,
                         &smartCategoryB, &smartCompleteB, &autoSuggestB, &autoRefreshB, &refreshIntervalMinI,
                         &statusS, &progress, &stats, &updatedAt)
+        if selectErr == sql.ErrNoRows {
+                // 极端: UPDATE 后任务被另一 admin DELETE. 返 404 让 UI 知道任务消失.
+                writeJSONErr(w, "任务已被删除", 404)
+                return
+        }
+        if selectErr != nil {
+                // DB 故障 (非 ErrNoRows): 返 500 不返半截空 task.
+                writeJSONErr(w, "查询更新后任务失败: "+selectErr.Error(), 500)
+                return
+        }
         writeJSONOK(w, map[string]interface{}{
                 "task": map[string]interface{}{
                         "id": taskID, "name": name, "ruleId": ruleID, "mode": mode,
@@ -1748,6 +1808,84 @@ func adminTaskUpdateHandler(w http.ResponseWriter, r *http.Request, taskID strin
                         "autoSuggest": autoSuggestB, "autoRefresh": autoRefreshB,
                         "refreshIntervalMin": refreshIntervalMinI,
                         "status":             statusS, "updatedAt": updatedAt,
+                },
+        })
+}
+
+// adminTaskGetHandler — GET /api/admin/tasks/:id 取单任务 (R80-D 目标A, R79 交接 #4).
+//
+//      R79-A editTaskFromRow 用 GET /api/admin/tasks (全列表 LIMIT 500) + 找单个任务, O(N)
+//      N≤500 (adminTasksList LIMIT 500 + 遍历找 id). 本 API 改 O(1) 单 SELECT + JOIN Rule.name,
+//      返 26 字段 (id/name/ruleId/ruleName/mode/bookUrl/listUrl/listStart/listEnd/bookStart/
+//      bookEnd/recrawlMode/storageMode/threadMin/threadMax/intervalMin/intervalMax/
+//      smartCategory/smartComplete/autoSuggest/autoRefresh/refreshIntervalMin/status/
+//      progress/stats/createdAt/updatedAt). progress/stats 为 JSON 解析后对象 (与
+//      adminTasksList 同口径; 失败 fallback 空 map, UI 模板不会因 JSON 坏值崩).
+//
+// 入参: 路径参数 :id (taskID). 无 query 参数.
+//
+// 响应: {ok:true, task:{...26 字段...}}. 任务不存在返 404 (与 adminTaskUpdateHandler 同口径).
+//
+// 注: 本轮仅加 API. R80-A 改 tasks.html editTaskFromRow 调本 API 替代全列表 fetch (前端
+//
+//      范围, 非 admin.go/main.go).
+//
+// 错误容忍: SELECT Scan 失败 (ErrNoRows 或 DB 故障) 返 404 (与 adminTaskDeleteHandler
+//
+//      line 622 同款 err != nil 即返 404 conflation; 单查询不区分 ErrNoRows vs DB 故障,
+//      与 adminTaskLogsHandler BUG-171 修复同款区分思路但本 handler caller 是 admin
+//      UI "编辑任务" 按钮 — 404 让 UI 提示 "任务已被删" 是合理 fallback, 不需区分 DB 故障).
+func adminTaskGetHandler(w http.ResponseWriter, r *http.Request, taskID string) {
+        if r.Method != http.MethodGet {
+                writeJSONErr(w, "method not allowed", 405)
+                return
+        }
+        // SELECT 26 字段 (Task 25 列 + JOIN Rule.name 1 列). createdAt 单独取 (adminTasksList
+        //   未取 createdAt, 本 API 单查不亏; 让 UI 显示任务创建时间 + 更新时间 双时间戳).
+        var (
+                name, ruleID, mode, bookURL, listURL, recrawlModeS, storageModeS, statusS, progress, stats, createdAt, updatedAt, ruleName string
+                listStart, listEnd, bookStart, bookEnd, threadMin, threadMax, intervalMin, intervalMax, refreshIntervalMin int
+                smartCategory, smartComplete, autoSuggest, autoRefresh                                   bool
+        )
+        err := db.QueryRow(
+                `SELECT t.name,t.ruleId,t.mode,t.bookUrl,t.listUrl,t.listStart,t.listEnd,
+                        t.bookStart,t.bookEnd,t.recrawlMode,t.storageMode,t.threadMin,t.threadMax,
+                        t.intervalMin,t.intervalMax,t.smartCategory,t.smartComplete,t.autoSuggest,
+                        t.autoRefresh,t.refreshIntervalMin,t.status,t.progress,t.stats,t.createdAt,
+                        t.updatedAt,COALESCE(r.name,'(规则已删)')
+                   FROM Task t LEFT JOIN Rule r ON t.ruleId=r.id
+                  WHERE t.id=?`, taskID,
+        ).Scan(&name, &ruleID, &mode, &bookURL, &listURL, &listStart, &listEnd,
+                &bookStart, &bookEnd, &recrawlModeS, &storageModeS, &threadMin, &threadMax,
+                &intervalMin, &intervalMax, &smartCategory, &smartComplete, &autoSuggest,
+                &autoRefresh, &refreshIntervalMin, &statusS, &progress, &stats, &createdAt,
+                &updatedAt, &ruleName)
+        if err != nil {
+                writeJSONErr(w, "任务不存在", 404)
+                return
+        }
+        // 解析 progress/stats JSON (失败 fallback 空 map, 与 adminTasksList line 772-778 同口径).
+        var progObj, statsObj interface{}
+        if err := json.Unmarshal([]byte(progress), &progObj); err != nil {
+                progObj = map[string]interface{}{}
+        }
+        if err := json.Unmarshal([]byte(stats), &statsObj); err != nil {
+                statsObj = map[string]interface{}{}
+        }
+        writeJSONOK(w, map[string]interface{}{
+                "task": map[string]interface{}{
+                        "id": taskID, "name": name, "ruleId": ruleID, "ruleName": ruleName,
+                        "mode": mode, "bookUrl": bookURL, "listUrl": listURL,
+                        "listStart": listStart, "listEnd": listEnd,
+                        "bookStart": bookStart, "bookEnd": bookEnd,
+                        "recrawlMode": recrawlModeS, "storageMode": storageModeS,
+                        "threadMin": threadMin, "threadMax": threadMax,
+                        "intervalMin": intervalMin, "intervalMax": intervalMax,
+                        "smartCategory": smartCategory, "smartComplete": smartComplete,
+                        "autoSuggest": autoSuggest, "autoRefresh": autoRefresh,
+                        "refreshIntervalMin": refreshIntervalMin,
+                        "status": statusS, "progress": progObj, "stats": statsObj,
+                        "createdAt": createdAt, "updatedAt": updatedAt,
                 },
         })
 }

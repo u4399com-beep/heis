@@ -124,7 +124,7 @@
 <a class="pgroup" href="/?view=ranking&sort={{.Tab}}&page=1">&lt;&lt;</a>
 <a class="prev" href="{{.PrevPageURL}}">&lt;</a>
 {{end}}
-{{range .PageList}}{{if eq . $.Page}}<strong>{{.}}</strong>{{else}}<a href="/?view=ranking&sort={{$.Tab}}&page={{.}}">{{.}}</a>{{end}}{{end}}
+{{range .PageList}}{{if eq .page $.Page}}<strong>{{.page}}</strong>{{else}}<a href="{{.URL}}">{{.page}}</a>{{end}}{{end}}
 {{if lt .Page .TotalPages}}
 <a class="next" href="{{.NextPageURL}}">&gt;</a>
 <a class="ngroup" href="/?view=ranking&sort={{.Tab}}&page={{.TotalPages}}">&gt;&gt;</a>
