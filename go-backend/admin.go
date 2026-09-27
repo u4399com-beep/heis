@@ -2052,7 +2052,15 @@ func adminBookByIDHandler(w http.ResponseWriter, r *http.Request) {
 				jobIDsToClean = append(jobIDsToClean, jid)
 			}
 		}
+		// R75-D BUG-142 (P3): jrows.Err() 检查 — mid-iteration 错误静默吞,
+		//   jobIDsToClean 截断 → 部分 downloadFiles 缓存 entry 不清 (goroutine
+		//   持锁 SELECT status='running' 后写入 entry, 此处 map-clean 漏掉 → orphan
+		//   entry 留 2h TTL). best-effort 不阻塞 delete (后续 DB DELETE 已清 row,
+		//   orphan entry 仅占内存, TTL 兜底), log.Printf 提示运维.
 		if jrows != nil {
+			if jerr := jrows.Err(); jerr != nil {
+				log.Printf("[adminBookByIDHandler] jrows.Err: %v (bookID=%s, jobIDs=%d)", jerr, bookID, len(jobIDsToClean))
+			}
 			jrows.Close()
 		}
 		// 级联清理: Chapter + BookTag + DownloadJob + Book (无外键约束, 手动清).
@@ -2274,6 +2282,12 @@ func fillDashboardData(data map[string]interface{}) {
 				"updatedAtShort": shortTime(updatedAt),
 			})
 		}
+		// R75-D BUG-128 (P3, R74 交接 #6): rows.Err() 检查 — mid-iteration
+		//   错误静默吞, recentTasks 截断 → 仪表盘少任务用户不知. best-effort
+		//   (SSR 页面), log.Printf 提示运维而不中断渲染.
+		if err := rows.Err(); err != nil {
+			log.Printf("[fillDashboardData] recentTasks rows.Err: %v (count=%d)", err, len(recentTasks))
+		}
 	}
 	data["RecentTasks"] = recentTasks
 
@@ -2294,6 +2308,13 @@ func fillDashboardData(data map[string]interface{}) {
 				"status":    status,
 				"updatedAt": updatedAt,
 			})
+		}
+		// R75-D BUG-128 (P3, R74 交接 #6): rows2.Err() 检查 — mid-iteration
+		//   错误静默吞, recentBooks 截断 → 仪表盘少书用户不知. best-effort
+		//   (SSR 页面), log.Printf 提示运维而不中断渲染 (与 BUG-124
+		//   generateSiteTDK crows.Err() 同款 pattern).
+		if err := rows2.Err(); err != nil {
+			log.Printf("[fillDashboardData] recentBooks rows2.Err: %v (count=%d)", err, len(recentBooks))
 		}
 	}
 	data["RecentBooks"] = recentBooks
@@ -2369,6 +2390,12 @@ func fillTasksPageData(data map[string]interface{}, r *http.Request) {
 				"updatedAtShort": shortTime(updatedAt),
 			})
 		}
+		// R75-D BUG-129 (P3, R74 交接 #6): rows.Err() 检查 — mid-iteration
+		//   错误静默吞, tasks 截断 → 任务页少任务用户不知. best-effort
+		//   (SSR 页面), log.Printf 提示运维.
+		if rerr := rows.Err(); rerr != nil {
+			log.Printf("[fillTasksPageData] tasks rows.Err: %v (count=%d)", rerr, len(tasks))
+		}
 	}
 	data["Tasks"] = tasks
 	data["Total"] = len(tasks)
@@ -2385,6 +2412,11 @@ func fillTasksPageData(data map[string]interface{}, r *http.Request) {
 			rules = append(rules, map[string]interface{}{
 				"id": id, "name": name, "enabled": enabled,
 			})
+		}
+		// R75-D BUG-129 (P3, R74 交接 #6): rulesRows.Err() 检查 — 同 tasks,
+		//   mid-iteration 错误静默吞, rules 截断 → 任务页"新建任务 modal"少规则.
+		if rerr := rulesRows.Err(); rerr != nil {
+			log.Printf("[fillTasksPageData] rules rows.Err: %v (count=%d)", rerr, len(rules))
 		}
 	}
 	data["Rules"] = rules
@@ -2485,6 +2517,12 @@ func fillBooksPageData(data map[string]interface{}, r *http.Request) {
 				"updatedAt":    updatedAt,
 			})
 		}
+		// R75-D BUG-130 (P3, R74 交接 #6): rows.Err() 检查 — mid-iteration
+		//   错误静默吞, books 截断 → 书籍页少书用户不知. best-effort
+		//   (SSR 页面), log.Printf 提示运维.
+		if rerr := rows.Err(); rerr != nil {
+			log.Printf("[fillBooksPageData] books rows.Err: %v (count=%d)", rerr, len(books))
+		}
 	}
 	data["Books"] = books
 	data["Total"] = total
@@ -2514,6 +2552,12 @@ func fillRulesPageData(data map[string]interface{}) {
 			var rr ruleRow
 			_ = rows.Scan(&rr.ID, &rr.Name, &rr.Description, &rr.Config, &rr.Enabled, &rr.UpdatedAt)
 			ruleRows = append(ruleRows, rr)
+		}
+		// R75-D BUG-131 (P3, R74 交接 #6): rows.Err() 检查 — mid-iteration
+		//   错误静默吞, ruleRows 截断 → 规则页少规则用户不知. best-effort
+		//   (SSR 页面), log.Printf 提示运维.
+		if rerr := rows.Err(); rerr != nil {
+			log.Printf("[fillRulesPageData] rules rows.Err: %v (count=%d)", rerr, len(ruleRows))
 		}
 		rows.Close()
 		for _, rr := range ruleRows {
@@ -2615,6 +2659,12 @@ func fillSitesPageData(data map[string]interface{}) {
 			if isDefault {
 				defaultName = name
 			}
+		}
+		// R75-D BUG-132 (P3, R74 交接 #6): rows.Err() 检查 — mid-iteration
+		//   错误静默吞, sites 截断 → 站点页少站用户不知. best-effort
+		//   (SSR 页面), log.Printf 提示运维.
+		if rerr := rows.Err(); rerr != nil {
+			log.Printf("[fillSitesPageData] sites rows.Err: %v (count=%d)", rerr, len(sites))
 		}
 	}
 	data["Sites"] = sites
@@ -3248,6 +3298,23 @@ func adminDownloadsCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	downloadInFlight++
 	downloadInFlightMu.Unlock()
+	// R75-D BUG-140 (P2, R74 交接 #7): inFlight decrement 重构为 defer 模式.
+	//   原实现 inFlight-- 分散 3 处 (siteUrl 验证失败 / obfuscateMode 验证
+	//   失败 / INSERT DownloadJob 失败), 易漏: 任一新增 validation 路径漏
+	//   decrement → inFlight 永不减 → 并发槽永不归零 → maxConcurrentDownloadJobs
+	//   达上限后所有新下载任务返 429 永久阻塞 (用户无法生成新下载). 改 defer
+	//   模式: goroutineLaunched flag 区分 "已交 goroutine 持有 slot" vs
+	//   "validation/INSERT 失败需 decrement". goroutine 内 defer 保留 (异步,
+	//   不在 handler defer 范围). goroutineLaunched=true 时 handler defer 跳过
+	//   decrement (否则双重 decrement → inFlight 永负 → 仍可生成但语义错).
+	goroutineLaunched := false
+	defer func() {
+		if !goroutineLaunched {
+			downloadInFlightMu.Lock()
+			downloadInFlight--
+			downloadInFlightMu.Unlock()
+		}
+	}()
 
 	options := map[string]interface{}{}
 	if v, ok := body["siteInfo"]; ok && v != nil {
@@ -3256,12 +3323,17 @@ func adminDownloadsCreate(w http.ResponseWriter, r *http.Request) {
 	if v, ok := body["siteName"]; ok && v != nil {
 		options["siteName"] = strField(body, "siteName", 100)
 	}
+	// R75-D BUG-141 (P3, R74 交接 #8): siteUrl strField 缓存到 local var.
+	//   原实现 strField(body, "siteUrl", 2000) 调 2 次 (line 内 httpURL 入参
+	//   + if 条件判空), strField 内部 TrimSpace + []rune 截断 (中文多字节) 都
+	//   重新执行. 改 local var 缓存后 1 次调用, 与 adminBooksCreate 的
+	//   sourceURL `su := strField(...)` 同款方法论.
 	if v, ok := body["siteUrl"]; ok && v != nil {
-		u := httpURL(strField(body, "siteUrl", 2000))
-		if strField(body, "siteUrl", 2000) != "" && u == "" {
-			downloadInFlightMu.Lock()
-			downloadInFlight--
-			downloadInFlightMu.Unlock()
+		siteURL := strField(body, "siteUrl", 2000)
+		u := httpURL(siteURL)
+		if siteURL != "" && u == "" {
+			// R75-D BUG-140: defer 接住 inFlight decrement, 不再手动
+			//   downloadInFlight-- (原实现 line 3263-3265).
 			writeJSONErr(w, "站点URL格式非法(需 http/https)", 400)
 			return
 		}
@@ -3301,9 +3373,8 @@ func adminDownloadsCreate(w http.ResponseWriter, r *http.Request) {
 		mode := strField(body, "obfuscateMode", 20)
 		valid := map[string]bool{"zero-width": true, "homoglyph": true, "punctuation": true, "mixed": true}
 		if !valid[mode] {
-			downloadInFlightMu.Lock()
-			downloadInFlight--
-			downloadInFlightMu.Unlock()
+			// R75-D BUG-140: defer 接住 inFlight decrement, 不再手动
+			//   downloadInFlight-- (原实现 line 3304-3306).
 			writeJSONErr(w, "无效的混淆模式", 400)
 			return
 		}
@@ -3327,12 +3398,18 @@ func adminDownloadsCreate(w http.ResponseWriter, r *http.Request) {
 	_, err = db.Exec(`INSERT INTO DownloadJob (id, bookId, options, status, size, createdAt) VALUES (?,?,?,'pending',0,datetime('now'))`,
 		jobID, bookID, string(optionsJSON))
 	if err != nil {
-		downloadInFlightMu.Lock()
-		downloadInFlight--
-		downloadInFlightMu.Unlock()
+		// R75-D BUG-140: defer 接住 inFlight decrement, 不再手动
+		//   downloadInFlight-- (原实现 line 3331-3333).
 		writeJSONErr(w, "创建失败: "+err.Error(), 500)
 		return
 	}
+
+	// R75-D BUG-140: INSERT DownloadJob 成功 → 标 goroutineLaunched 让 handler
+	//   defer 跳过 decrement (slot 已交 goroutine 持有, 由 goroutine 内 defer
+	//   在 status='done'/'error' 后递减). 必须在 `go func(...)` 之前 set flag
+	//   (goroutine 启动顺序与 flag 读写无 race: handler 在 goroutine 启动后立即
+	//   return, defer 在 return 时读 flag, 此时 flag 已 set).
+	goroutineLaunched = true
 
 	// 异步生成 TXT (Go 端简化版: 章节序号+标题+正文 拼接, 不混淆)
 	go func(jid, bid, bname string) {
@@ -3944,6 +4021,11 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
 	_ = db.QueryRow(`SELECT COUNT(*) FROM Book`).Scan(&bookCount)
 	_ = db.QueryRow(`SELECT COUNT(*) FROM Chapter`).Scan(&chapterCount)
 	bigBooks := bookCount > backupBigBooksThreshold
+	// R75-D BUG-145 (P3, R74-D 未决项 #2): backup best-effort 警告集合 (settings/
+	//   categories/sites/friendLinks/rules/tasks/downloadJobs/chapters 任一迭代
+	//   中途错误 → 加 warning 提示用户重备). 原 R74-D BUG-125 章节超 5000 也用
+	//   同 slice, 末尾 append 到 warnings 数组随 backup JSON 一起返回.
+	chapterTruncations := []string{}
 
 	// settings
 	type kv struct{ key, value string }
@@ -3953,6 +4035,14 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
 			var k, v string
 			_ = rows.Scan(&k, &v)
 			settings = append(settings, kv{k, v})
+		}
+		// R75-D BUG-145 (P3, R74-D 未决项 #2): non-chapters 7 queries crows.Err()
+		//   检查 — mid-iteration 错误静默吞, settings 截断 → backup 漏部分 key.
+		//   backup best-effort 语义 (部分数据比全失败更可取), log.Printf 提示
+		//   运维而不阻断 (与 R74-D BUG-127 chapters crows.Err 同款 "log + warning" 模式).
+		if rerr := rows.Err(); rerr != nil {
+			chapterTruncations = append(chapterTruncations,
+				fmt.Sprintf("settings 迭代错误: %s, 已导出 %d 条 (可能不完整)", rerr.Error(), len(settings)))
 		}
 		rows.Close()
 	}
@@ -3964,6 +4054,11 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
 			var so int
 			_ = rows.Scan(&id, &name, &so, &createdAt)
 			categories = append(categories, map[string]interface{}{"id": id, "name": name, "sortOrder": so, "createdAt": createdAt})
+		}
+		// R75-D BUG-145: categories crows.Err() 检查.
+		if rerr := rows.Err(); rerr != nil {
+			chapterTruncations = append(chapterTruncations,
+				fmt.Sprintf("categories 迭代错误: %s, 已导出 %d 条 (可能不完整)", rerr.Error(), len(categories)))
 		}
 		rows.Close()
 	}
@@ -4005,6 +4100,11 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
 				"createdAt": createdAt, "updatedAt": updatedAt,
 			})
 		}
+		// R75-D BUG-145: sites crows.Err() 检查.
+		if rerr := rows.Err(); rerr != nil {
+			chapterTruncations = append(chapterTruncations,
+				fmt.Sprintf("sites 迭代错误: %s, 已导出 %d 条 (可能不完整)", rerr.Error(), len(sites)))
+		}
 		rows.Close()
 	}
 	// friendLinks
@@ -4020,6 +4120,11 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
 				"sortOrder": so, "enabled": en, "createdAt": createdAt, "updatedAt": updatedAt,
 			})
 		}
+		// R75-D BUG-145: friendLinks crows.Err() 检查.
+		if rerr := rows.Err(); rerr != nil {
+			chapterTruncations = append(chapterTruncations,
+				fmt.Sprintf("friendLinks 迭代错误: %s, 已导出 %d 条 (可能不完整)", rerr.Error(), len(friendLinks)))
+		}
 		rows.Close()
 	}
 	// rules
@@ -4033,6 +4138,11 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
 				"id": id, "name": name, "description": desc, "config": cfg,
 				"enabled": en, "createdAt": createdAt, "updatedAt": updatedAt,
 			})
+		}
+		// R75-D BUG-145: rules crows.Err() 检查.
+		if rerr := rows.Err(); rerr != nil {
+			chapterTruncations = append(chapterTruncations,
+				fmt.Sprintf("rules 迭代错误: %s, 已导出 %d 条 (可能不完整)", rerr.Error(), len(rules)))
 		}
 		rows.Close()
 	}
@@ -4060,6 +4170,11 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
 				"createdAt": t.createdAt, "updatedAt": t.updatedAt,
 			})
 		}
+		// R75-D BUG-145: tasks crows.Err() 检查.
+		if rerr := rows.Err(); rerr != nil {
+			chapterTruncations = append(chapterTruncations,
+				fmt.Sprintf("tasks 迭代错误: %s, 已导出 %d 条 (可能不完整)", rerr.Error(), len(tasks)))
+		}
 		rows.Close()
 	}
 	// downloadJobs
@@ -4074,12 +4189,15 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
 				"filePath": filePath, "error": errMsg, "size": size, "createdAt": createdAt,
 			})
 		}
+		// R75-D BUG-145: downloadJobs crows.Err() 检查.
+		if rerr := rows.Err(); rerr != nil {
+			chapterTruncations = append(chapterTruncations,
+				fmt.Sprintf("downloadJobs 迭代错误: %s, 已导出 %d 条 (可能不完整)", rerr.Error(), len(downloadJobs)))
+		}
 		rows.Close()
 	}
 	// books (+chapters if !bigBooks)
 	books := []map[string]interface{}{}
-	// R74-D BUG-125 (R73 交接 #9): 章节超 5000 的书集合, 用于末尾加 warning.
-	chapterTruncations := []string{}
 	bookQuery := `SELECT id, name, author, COALESCE(categoryId,''), intro, cover, status, keywords, latestChapter, wordCount, sourceUrl, COALESCE(sourceRuleId,''), storageMode, COALESCE(collectedAt,''), createdAt, updatedAt FROM Book`
 	// R64-C BUG-42 (P0): 原实现外层 rows 持锁期间 for rows.Next() 内部逐 book 调
 	//   db.Query(crows) + db.Query(trows) → modernc.org/sqlite 连接池
@@ -4170,6 +4288,11 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
 						tags = append(tags, map[string]interface{}{
 							"id": t.id, "bookId": t.bookID, "tag": t.tag, "source": t.source, "hits": t.hits,
 						})
+					}
+					// R75-D BUG-145: tags (BookTag) crows.Err() 检查.
+					if terr := trows.Err(); terr != nil {
+						chapterTruncations = append(chapterTruncations,
+							fmt.Sprintf("书 %s (id=%s) tags 迭代错误: %s, 已导出 %d 个 (可能不完整)", b.name, b.id, terr.Error(), len(tags)))
 					}
 					trows.Close()
 				}
@@ -5039,7 +5162,20 @@ func adminSiteByIDHandler(w http.ResponseWriter, r *http.Request) {
 //	  chapterPaginationPages/chapterSeoAuto/chapterSeoTitleTemplate/chapterSeoDescTemplate/
 //	  chapterSeoKeywordsTemplate).
 func adminSitesList(w http.ResponseWriter, r *http.Request) {
-	rows, err := db.Query(`SELECT id,name,domain,themeId,isDefault,title,description,keywords,icbm,geoRegion,geoPlacename,offset,status,inLinkWheel,pseudoStaticStyle,footerText,footerCopyright,footerIcp,footerStats,navCategoryCount,homeModuleLimit,chapterPaginationMode,chapterPaginationWords,chapterPaginationPages,chapterSeoAuto,chapterSeoTitleTemplate,chapterSeoDescTemplate,chapterSeoKeywordsTemplate,createdAt,updatedAt FROM Site ORDER BY isDefault DESC, name ASC LIMIT 500`)
+	// R75-D BUG-146 (P2, R67-D BUG-55 同款 pattern): SELECT 加 COALESCE 兜底 14
+	//   个 nullable Site 列 (title/description/keywords/icbm/geoRegion/geoPlacename/
+	//   pseudoStaticStyle/footerText/footerCopyright/footerIcp/chapterPaginationMode/
+	//   chapterSeoTitleTemplate/chapterSeoDescTemplate/chapterSeoKeywordsTemplate).
+	//   原实现 raw 列名 Scan 进 plain string, DB 任一列 NULL → Scan 报 "converting
+	//   NULL to string is unsupported" 在该列停下, 其后 footerStats/navCategoryCount/
+	//   homeModuleLimit/chapterPaginationWords/chapterPaginationPages/chapterSeoAuto/
+	//   createdAt/updatedAt 列均不读 → site entry 含半空字段 (footerStats 恒 false /
+	//   navCategoryCount 恒 0 / homeModuleLimit 恒 0 / chapterSeoAuto 恒 false /
+	//   createdAt/updatedAt 空). 用户看不到 createdAt/updatedAt 显示 "无" / 高级
+	//   SEO 字段乱码. 与 fillSitesPageData line 2556-2562 / adminBackupHandler
+	//   line 4057 / adminSeoAuditHandler line 4623 / fillSeoAuditPageData line 6486
+	//   已加 COALESCE 的同款 SELECT 字段集对齐.
+	rows, err := db.Query(`SELECT id,name,domain,themeId,isDefault,COALESCE(title,''),COALESCE(description,''),COALESCE(keywords,''),COALESCE(icbm,''),COALESCE(geoRegion,''),COALESCE(geoPlacename,''),offset,status,inLinkWheel,COALESCE(pseudoStaticStyle,'query'),COALESCE(footerText,''),COALESCE(footerCopyright,''),COALESCE(footerIcp,''),COALESCE(footerStats,1),COALESCE(navCategoryCount,16),COALESCE(homeModuleLimit,20),COALESCE(chapterPaginationMode,'off'),COALESCE(chapterPaginationWords,3000),COALESCE(chapterPaginationPages,3),COALESCE(chapterSeoAuto,1),COALESCE(chapterSeoTitleTemplate,''),COALESCE(chapterSeoDescTemplate,''),COALESCE(chapterSeoKeywordsTemplate,''),createdAt,updatedAt FROM Site ORDER BY isDefault DESC, name ASC LIMIT 500`)
 	if err != nil {
 		writeJSONErr(w, "查询失败: "+err.Error(), 500)
 		return
@@ -5798,6 +5934,16 @@ func adminSitesBatchGenerateTDK(w http.ResponseWriter, r *http.Request, body map
 			metas = append(metas, siteMeta{ID: id, IsDefault: isDefault})
 		}
 	}
+	// R75-D BUG-144 (P3): rows.Err() 检查 — mid-iteration 错误静默吞, metas
+	//   截断 → 部分 status=1 站点未生成 TDK. 与 adminTasksList BUG-111 /
+	//   fillSitesPageData BUG-132 同款 pattern. 不阻塞批量流程 (已 collected
+	//   metas 仍走 generateSiteTDK, 漏的站下次再调), writeJSONErr 返 500
+	//   让 admin UI 知道批量未完成 (而非静默返 partial 数据).
+	if rerr := rows.Err(); rerr != nil {
+		rows.Close()
+		writeJSONErr(w, "迭代站点列表失败: "+rerr.Error(), 500)
+		return
+	}
 	rows.Close() // 显式释放连接, 后续 generateSiteTDK 的 Query/Exec 不再阻塞
 	type siteTDK struct {
 		ID, Title, Desc, Kw string
@@ -6013,7 +6159,16 @@ func adminBackupClearHandler(w http.ResponseWriter, r *http.Request) {
 			runningTasks = append(runningTasks, runningTask{id: tid})
 		}
 	}
+	// R75-D BUG-143 (P3): runRows.Err() 检查 — mid-iteration 错误静默吞,
+	//   runningTasks 截断 → 部分 running task 的 runtime 未 MarkStopped → 后台
+	//   goroutine 继续往已删 Task 表写 UpdateTaskStatus/UpdateTaskProgress 全失败
+	//   (日志噪声) 且持 ctx, 任务可能在 goroutine 内 panic. best-effort 不阻塞
+	//   clear (已 collected 的 runningTasks 仍 MarkStopped, 漏的 task 行后续 DELETE
+	//   FROM Task 后 goroutine 写 DB 失败即静默 exit), log.Printf 提示运维.
 	if runRows != nil {
+		if rerr := runRows.Err(); rerr != nil {
+			log.Printf("[adminBackupClearHandler] runRows.Err: %v (runningTasks=%d)", rerr, len(runningTasks))
+		}
 		runRows.Close()
 	}
 	// 先停止所有运行中 task 的 runtime (避免 goroutine 往已删 DB 行写)
@@ -6091,6 +6246,12 @@ func fillCategoriesPageData(data map[string]interface{}) {
 			_ = rows.Scan(&cr.ID, &cr.Name, &cr.SortOrder, &cr.CreatedAt)
 			catRows = append(catRows, cr)
 		}
+		// R75-D BUG-133 (P3, R74 交接 #6): rows.Err() 检查 — mid-iteration
+		//   错误静默吞, catRows 截断 → 分类页少分类用户不知. best-effort
+		//   (SSR 页面), log.Printf 提示运维.
+		if rerr := rows.Err(); rerr != nil {
+			log.Printf("[fillCategoriesPageData] rows.Err: %v (count=%d)", rerr, len(catRows))
+		}
 		rows.Close()
 		for _, cr := range catRows {
 			var bookCount int
@@ -6124,6 +6285,12 @@ func fillLinksPageData(data map[string]interface{}) {
 			if enabled {
 				enabledCount++
 			}
+		}
+		// R75-D BUG-134 (P3, R74 交接 #6): rows.Err() 检查 — mid-iteration
+		//   错误静默吞, links 截断 → 友链页少链用户不知. best-effort (SSR 页面),
+		//   log.Printf 提示运维.
+		if rerr := rows.Err(); rerr != nil {
+			log.Printf("[fillLinksPageData] rows.Err: %v (count=%d)", rerr, len(links))
 		}
 	}
 	data["Links"] = links
@@ -6172,6 +6339,12 @@ func fillThemesPageData(data map[string]interface{}) {
 			_ = rows.Scan(&themeID, &n)
 			counts[themeID] = n
 		}
+		// R75-D BUG-135 (P3, R74 交接 #6): rows.Err() 检查 — mid-iteration
+		//   错误静默吞, counts 部分缺失 → 主题页 siteCount 错误. best-effort
+		//   (SSR 页面), log.Printf 提示运维.
+		if rerr := rows.Err(); rerr != nil {
+			log.Printf("[fillThemesPageData] counts rows.Err: %v", rerr)
+		}
 	}
 	themes := []map[string]interface{}{}
 	totalSites := 0
@@ -6206,6 +6379,12 @@ func fillThemesPageData(data map[string]interface{}) {
 				"id": id, "name": name, "domain": domain, "themeId": themeID,
 			})
 		}
+		// R75-D BUG-135 (P3, R74 交接 #6): srows.Err() 检查 — mid-iteration
+		//   错误静默吞, sites 截断 → 主题页少站用户不知. best-effort (SSR 页面),
+		//   log.Printf 提示运维.
+		if rerr := srows.Err(); rerr != nil {
+			log.Printf("[fillThemesPageData] sites srows.Err: %v (count=%d)", rerr, len(sites))
+		}
 	}
 	data["Sites"] = sites
 }
@@ -6233,6 +6412,12 @@ func fillDownloadsPageData(data map[string]interface{}) {
 			case "error":
 				errCount++
 			}
+		}
+		// R75-D BUG-136 (P3, R74 交接 #6): rows.Err() 检查 — mid-iteration
+		//   错误静默吞, dls 截断 → 下载页少任务用户不知. best-effort (SSR 页面),
+		//   log.Printf 提示运维.
+		if rerr := rows.Err(); rerr != nil {
+			log.Printf("[fillDownloadsPageData] rows.Err: %v (count=%d)", rerr, len(dls))
 		}
 	}
 	data["Downloads"] = dls
@@ -6273,6 +6458,12 @@ func fillSettingsPageData(data map[string]interface{}) {
 				"updatedAt": "-", "desc": desc, "defaultValue": defVal,
 				"category": cat, "isFeedback": isFb,
 			})
+		}
+		// R75-D BUG-137 (P3, R74 交接 #6): rows.Err() 检查 — mid-iteration
+		//   错误静默吞, settings 截断 → 设置页少 key 用户不知. best-effort
+		//   (SSR 页面), log.Printf 提示运维.
+		if rerr := rows.Err(); rerr != nil {
+			log.Printf("[fillSettingsPageData] rows.Err: %v (count=%d)", rerr, len(settings))
 		}
 	}
 	data["Settings"] = settings
@@ -6347,6 +6538,12 @@ func fillFeedbackPageData(data map[string]interface{}, r *http.Request) {
 				"adminNote": adminNote, "createdAt": createdAt,
 			})
 		}
+		// R75-D BUG-138 (P3, R74 交接 #6): rows.Err() 检查 — mid-iteration
+		//   错误静默吞, rowsList 截断 → 反馈页少条目用户不知. best-effort
+		//   (SSR 页面), log.Printf 提示运维.
+		if rerr := rows.Err(); rerr != nil {
+			log.Printf("[fillFeedbackPageData] rows.Err: %v (count=%d)", rerr, len(rowsList))
+		}
 	}
 	data["Rows"] = rowsList
 	data["Total"] = total
@@ -6415,6 +6612,12 @@ func fillSeoAuditPageData(data map[string]interface{}, r *http.Request) {
 				"offset": strconv.Itoa(offset),
 			})
 			siteOptions = append(siteOptions, map[string]interface{}{"id": id, "name": name})
+		}
+		// R75-D BUG-139 (P3, R74 交接 #6): rows.Err() 检查 — mid-iteration
+		//   错误静默吞, sites 截断 → SEO 审计页少站用户不知. best-effort
+		//   (SSR 页面), log.Printf 提示运维.
+		if rerr := rows.Err(); rerr != nil {
+			log.Printf("[fillSeoAuditPageData] rows.Err: %v (count=%d)", rerr, len(sites))
 		}
 	}
 	data["SiteOptions"] = siteOptions

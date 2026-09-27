@@ -357,8 +357,12 @@ function ensureBinaryBuilt() {
     return false;
   }
   // Bun.spawnSync 同步执行 go build; stdout/stderr 路由到 writeLog (统一日志)
+  // R75 主控修复: -o 用 path.basename(HEIS_BIN) ('heis-backend') 而非 HEIS_BIN ('./go-backend/heis-backend'),
+  //   因 go build 的 -o 路径相对 cwd=GO_DIR 解析, HEIS_BIN 含 './go-backend/' 前缀会在 GO_DIR 下嵌套
+  //   产生 ./go-backend/go-backend/heis-backend, spawn 找 HEIS_BIN 找不到 → ENOENT 死循环.
+  //   用 basename 在 GO_DIR cwd 下输出 ./heis-backend = /home/z/my-project/go-backend/heis-backend, 与 HEIS_BIN spawn 路径一致.
   const r = Bun.spawnSync({
-    cmd: [goBin, 'build', '-o', HEIS_BIN, '.'],
+    cmd: [goBin, 'build', '-o', path.basename(HEIS_BIN), '.'],
     cwd: GO_DIR,
     stdout: 'pipe',
     stderr: 'pipe',

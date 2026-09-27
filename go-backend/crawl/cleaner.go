@@ -327,6 +327,15 @@ var (
 	//   识别. Go RE2 支持任意 Unicode 码点匹配, PUA 字符作字面字节匹配无问题.
 	urlPlaceholderRe = regexp.MustCompile("\uE000(\\d+)\uE001")
 
+	// R75-C BUG-128 (P3) 性能优化: 把 RemoveAdLines hot path 内的
+	//   strings.NewReplacer("\x00", "", "\uE000", "", "\uE001", "") 提为包级 var
+	//   一次初始化, 避免每章节 2 次 RemoveAdLines 调用各分配一个新 Replacer
+	//   (1000 章任务 = 2000 次 alloc, ~400KB GC 压力). strings.Replacer 内部
+	//   是 read-only 表 (Replace 不修改 Replacer 状态), goroutine-safe, 包级
+	//   var 共享安全. 与 R65-C BUG-42 (extraAdPatternsCompiled 包级预编译) +
+	//   R47-1A (regexp 提为包级) 同口径优化.
+	urlPlaceholderCleanReplacer = strings.NewReplacer("\x00", "", "\uE000", "", "\uE001", "")
+
 	// R47-1A: 预编译 cleaner.go 内 hot path 用的 regexp (原每次调用 cleanContentHtmlSync
 	//   / NormalizeParagraphs 都重编译, 高频路径 GC 压力大. R45-1C 已对 smart.go 同款优化).
 
@@ -496,10 +505,10 @@ func RemoveAdLines(text string, patterns []string) string {
 	}
 	// R73-C BUG-109 + R74-C BUG-117: 源文本含字面 \x00 或 PUA (\uE000/\uE001) 时
 	//   先剥离, 防 urlPlaceholderRe 误识别. \x00 + PUA 不出现在正常 HTML 文本中
-	//   (HTTP 层一般已剥), 剥之无副作用. strings.NewReplacer 单遍替换 3 字符,
-	//   比 3 次 ReplaceAll 高效 (1 次分配 vs 3 次).
+	//   (HTTP 层一般已剥), 剥之无副作用. R75-C BUG-128: 用包级 urlPlaceholderCleanReplacer
+	//   替代每调用 strings.NewReplacer (hot path 0 alloc).
 	if strings.ContainsAny(text, "\x00\uE000\uE001") {
-		text = strings.NewReplacer("\x00", "", "\uE000", "", "\uE001", "").Replace(text)
+		text = urlPlaceholderCleanReplacer.Replace(text)
 	}
 	urls := []string{}
 	out := urlProtectRe.ReplaceAllStringFunc(text, func(m string) string {
@@ -542,7 +551,8 @@ func RemoveAdLines(text string, patterns []string) string {
 	})
 	// R74-C BUG-117: 清残留 \x00 + PUA (\uE000/\uE001) — defense in depth
 	//   (URL 还原失败的占位符残留, 或源文本含字面 PUA 经 cleaner 链后残留).
-	out = strings.NewReplacer("\x00", "", "\uE000", "", "\uE001", "").Replace(out)
+	//   R75-C BUG-128: 用包级 urlPlaceholderCleanReplacer (0 alloc).
+	out = urlPlaceholderCleanReplacer.Replace(out)
 	return out
 }
 

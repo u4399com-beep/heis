@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -21,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -75,6 +77,13 @@ func main() {
 	if _, perr := db.Exec(`PRAGMA synchronous=NORMAL;`); perr != nil {
 		log.Printf("[db] PRAGMA synchronous=NORMAL 失败: %v", perr)
 	}
+
+	// R75-A 目标A2 (autoResumeTasks 容错): 启动时清理 orphaned running tasks
+	//   (进程 crash / kill -9 后 Task 表残留 status='running' 行, admin 看到 "卡住"
+	//   几小时不知道挂了; adminBackupClearHandler 手动清需 admin 主动触发, 启动时
+	//   不会跑). 本函数查 running tasks → 标 stopped (admin 可手动重启) → log 计数.
+	//   容错: 任何 DB 错误 / panic 都不阻断 HTTP server (defer recover + 错误早返).
+	autoResumeTasksCleanup()
 
 	// 解析模板 + FuncMap (templates/*.html + templates/*/*.html 递归)
 	tmpls = template.New("").Funcs(template.FuncMap{
@@ -428,11 +437,60 @@ func main() {
 	//   原 R48-1A/R50-1A 仅在 Put 时 60s 节流触发异步 flush, 长时间无活跃握手时
 	//   dirty 数据持续留内存, 进程 crash 期间丢失. 后台 flusher 每 5min 调
 	//   SaveToDisk, 无新数据时早返不浪费 IO. ctx 在 graceful shutdown 时取消.
+	//
+	// R75-A 目标B (R74 交接 #6 + R72 交接 #2) TLS Server Ticket 标准持久化评估:
+	//   背景: R48-1A/R50-1A 已持久化 ClientSessionState (TLS 1.2 session ticket /
+	//   1.3 session PSK + ECDHE state) 到 data/tls-sessions.json. 但 ServerTicket
+	//   (server-side session ticket encryption key, 用于 server 解密 client 提交的
+	//   session ticket) 由 Go crypto/tls 内部随机生成 + 不暴露导出 API, 进程重启
+	//   后 server 用新 key, client 旧 ticket 解密失败 → 客户端需重新握手 (降级
+	//   TLS 1.3 0-RTT 优化). R72 交接 #2 评估 "fork crypto/tls" 持久化 server key.
+	//   评估结论 (诚实留痕, 不实现):
+	//   1. fork crypto/tls: 风险极高, 不推荐.
+	//      - crypto/tls 是 Go 标准库核心 (~10K 行), 与 net/http / crypto/x509 /
+	//        crypto/ecdsa 等深度耦合; fork 后需跟随 Go 版本升级 (每 6 个月)
+	//        合并上游 fix (安全补丁必须及时, 否则 TLS vuln 风险).
+	//      - ServerTicket key 持久化需暴露 tls.Config.sessionTicketKey 字段 +
+	//        修改 internal/conn.go sessionTicket 销毁逻辑, 涉及 internal package
+	//        (Go 内部包不暴露), 实际 fork 需重写 not just patch.
+	//      - 替代: 用 tls.Config.SetSessionTicketKeys(keys [][32]byte) 在启动时
+	//        加载持久化 key, 但 Go 限制 key 轮换 (最多 2 个, 老的 24h 后过期),
+	//        且 SetSessionTicketKeys 是 stdlib 公开 API, 不需 fork. 但 key 仍
+	//        random per process restart (除非自己生成 + 持久化 32 字节 key).
+	//   2. utls ClientSessionState + 自定义持久化: utls 是 github.com/refraction-networking/utls
+	//      库 (Go 模块, fork crypto/tls 加指纹模拟), 提供 ClientSessionState 但
+	//      ServerTicket 仍走 Go stdlib (utls 不重写 server side). utls 主要用途是
+	//      client 指纹模拟 (ClientHello / GREASE / extension order), 不解决 server
+	//      ticket 持久化. 故 utls 非替代方案.
+	//   3. 实际可行方案 (R76+ 评估, 不在 R75 范围):
+	//      - 启动时生成 32 字节 server key → 写 data/tls-server-key.json 持久化.
+	//      - 启动时 LoadServerKey() → tls.Config.SetSessionTicketKeys([:1]).
+	//      - key 24h 轮换 (与 Go 内置 2-key rotation 对齐): 后台 goroutine 每
+	//        24h 生成新 key + 写盘 + SetSessionTicketKeys 新老 key 各 1.
+	//      - 优点: 无 fork, 用 stdlib 公开 API, server ticket 持久化跨重启.
+	//      - 风险: key 文件泄露 = 中间人解密所有 client session (但仅 TLS 1.2
+	//        session resumption 场景, 1.3 PSK 不受影响; key 文件 chmod 600 防护).
+	//   结论: R75-A 标记为技术限制 (不实现), R76+ 评估方案 3 (SetSessionTicketKeys
+	//   + 持久化 key 文件). 当前实现: client session 持久化已 OK (R48/R50), server
+	//   ticket 跨重启失效 (client 重新握手, 不致命但降级 0-RTT 优化).
 	flusherCtx, flusherCancel := context.WithCancel(context.Background())
 	defer flusherCancel()
-	crawl.StartTlsSessionBackgroundFlusher(flusherCtx)
+	// R75-A 目标A3 (goroutine 泄漏防护): wrap 启动 goroutine 的调用方 with defer
+	//   recover, 防 sync panic 杀进程. 实际后台 goroutine (在 fetcher.go 内部 spawn)
+	//   的 panic 需在 fetcher.go 内部加 recover (R75-B/R76 范围, 不动 fetcher.go).
+	//   本轮 main.go 调用方 recover 防 sync panic (e.g. nil ctx / 未初始化变量 等).
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[R75-A] StartTlsSessionBackgroundFlusher sync panic: %v", r)
+			}
+		}()
+		crawl.StartTlsSessionBackgroundFlusher(flusherCtx)
+	}()
 	// R71-A: CSS 文件 watcher goroutine (60s mtime 轮询; 与 flusher 共用 ctx,
 	//   main 退出时 cancel → goroutine 早返, 无泄露).
+	//   R75-A 目标A3: startExternalCSSWatcher 内部 goroutine 加 defer recover
+	//   (见函数体 line ~1256), panic 不杀进程.
 	startExternalCSSWatcher(flusherCtx)
 
 	// R73-A 目标A (R72 交接 #1): CookieJar + ProxyHealthProber wiring.
@@ -452,7 +510,16 @@ func main() {
 	//   ctx 共用 flusherCtx: 与 TLS flusher + CSS watcher 同 ctx, graceful shutdown 时
 	//     全部停 (无泄露). CookieJar / ProxyHealthProber 各自 atomic.Bool 防多启动, 与
 	//     flusherCtx 是否共享无关.
-	crawl.StartCookieJarBackgroundFlusher(flusherCtx)
+	//   R75-A 目标A3: 同 StartTlsSessionBackgroundFlusher, 调用方 defer recover 防 sync
+	//   panic. 后台 goroutine 内部 panic 需在 fetcher.go 内部加 recover (R75-B/R76 范围).
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[R75-A] StartCookieJarBackgroundFlusher sync panic: %v", r)
+			}
+		}()
+		crawl.StartCookieJarBackgroundFlusher(flusherCtx)
+	}()
 	// R74-A 目标A (R73 交接 #2): ProxyHealthProber singleton 防多启动.
 	//   R73-A 报告 main() 调用方未防多启动 (crawl.StartProxyHealthProber 内部有
 	//   atomic.Bool + CompareAndSwap 二次防御, 但调用方仍每次构造 startupPool + log).
@@ -462,10 +529,18 @@ func main() {
 	//   返 true 表示本调用首次启动 prober; 返 false 表示已启动, 跳过.
 	//   注: CookieJar flusher 不加同等标志 (其内部 atomic.Bool 已足够, 且 CookieJar
 	//   无 collectStartupProxyPool 重操作; R74+ 可补).
+	//   R75-A 目标A3: 调用方 defer recover 防 sync panic (与 CookieJar/TLS flusher 同款).
 	if proxyHealthProberStarted.CompareAndSwap(false, true) {
-		startupPool := collectStartupProxyPool()
-		crawl.StartProxyHealthProber(flusherCtx, startupPool, "https://www.baidu.com", 300000)
-		log.Printf("[R74-A] ProxyHealthProber started (CAS): pool=%d (target=https://www.baidu.com, 5min)", len(startupPool))
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[R75-A] StartProxyHealthProber sync panic: %v", r)
+				}
+			}()
+			startupPool := collectStartupProxyPool()
+			crawl.StartProxyHealthProber(flusherCtx, startupPool, "https://www.baidu.com", 300000)
+			log.Printf("[R74-A] ProxyHealthProber started (CAS): pool=%d (target=https://www.baidu.com, 5min)", len(startupPool))
+		}()
 	} else {
 		log.Printf("[R74-A] ProxyHealthProber already started (CAS skip): collectStartupProxyPool + StartProxyHealthProber skipped")
 	}
@@ -483,9 +558,40 @@ func main() {
 		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
-	if err := srv.ListenAndServe(); err != nil {
-		log.Fatal(err)
+	// R75-A 目标A4 (HTTP server 优雅关闭): 替换原 srv.ListenAndServe() + log.Fatal 模式.
+	//   原实现 SIGINT/SIGTERM 时进程立即退出 (DefaultServeMux active requests 被切断,
+	//   DB 连接未关闭, 日志 buffer 未 flush → 数据丢失). 用户反复报告 "预览挂掉" 部分
+	//   场景为部署 / 重启时未优雅关闭 (admin 改 Site/Setting 后 wrapper 重启, 正在跑的
+	//   homeHandler 渲染被切断 → 用户看到 502/connection reset).
+	//   修复: 启 srv 在 goroutine, signal.Notify SIGINT/SIGTERM → srv.Shutdown(30s ctx)
+	//   等活跃请求结束 + flusherCtx cancel 停后台 goroutine + db.Close 显式关 DB.
+	//   注: srv.Shutdown 默认不等 Idle conns (keep-alive); 30s 内未结束强制返超时.
+	//   注: defer db.Close() (line 64) 仍存在; 本轮显式调 db.Close 确保 Shutdown 后
+	//   才关 (defer 在 main return 时跑, 与 Shutdown 顺序无冲突).
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("[R75-A] ListenAndServe fatal: %v", err)
+		}
+	}()
+	// 等待 SIGINT (Ctrl-C) / SIGTERM (systemd stop / kill $PID).
+	sigCh := make(chan os.Signal, 2)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	sig := <-sigCh
+	log.Printf("[R75-A] received signal %v, graceful shutdown ...", sig)
+	// 1) 取消后台 goroutine (TLS flusher / CSS watcher / CookieJar / ProxyHealthProber).
+	flusherCancel()
+	// 2) 30s 超时 ctx 等 active HTTP requests 结束 (homeHandler 渲染 ~1s, 30s 富裕).
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("[R75-A] srv.Shutdown error: %v (continuing to db.Close)", err)
 	}
+	// 3) 显式关 DB (modernc.org/sqlite WAL checkpoint + close; defer db.Close 也跑但
+	//   显式调确保 Shutdown 完成后才关, 避免 active query 中途断).
+	if err := db.Close(); err != nil {
+		log.Printf("[R75-A] db.Close error: %v", err)
+	}
+	log.Printf("[R75-A] graceful shutdown complete, exit.")
 }
 
 // homeHandler 首页 + 视图路由 (/?view=home|book|read|category|ranking|fulltext|search|keyword)
@@ -1245,6 +1351,18 @@ func reloadExternalCSSCache() {
 //	ctx 用于 graceful shutdown (main 退出时取消 ctx, goroutine 早返).
 func startExternalCSSWatcher(ctx context.Context) {
 	go func() {
+		// R75-A 目标A3 (goroutine 泄漏防护): defer recover 防 panic 杀进程.
+		//   checkExternalCSSMtime 内部调 reloadExternalCSSCache → os.ReadFile +
+		//   filepath.Glob + os.Stat + externalCSSMu.Lock, 任一环节 panic (e.g. nil map
+		//   写 / 文件路径越界) 会杀进程. recover 让 goroutine 退出但 main 继续跑
+		//   (CSS 缓存 stale 但 homeHandler 仍能渲染, inlineExternalCSS 降级保留 <link>).
+		//   注: panic 后 goroutine 退出, CSS watcher 停 (60s ticker 不再跑); admin 改
+		//   CSS 后无热重载, 需重启进程. 与 R74-B/C/D 各 handler panic-safe 同款模式.
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[R75-A] startExternalCSSWatcher panic (goroutine exit): %v", r)
+			}
+		}()
 		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -1324,7 +1442,79 @@ func collectStartupProxyPool() []string {
 			pool = append(pool, p)
 		}
 	}
+	// R75-A 目标C4 (fill*-style crows.Err): rows 迭代后检查 rows.Err().
+	if rerr := rows.Err(); rerr != nil {
+		log.Printf("[R75-A] collectStartupProxyPool rows.Err(): %v", rerr)
+	}
 	return pool
+}
+
+// R75-A 目标A2 (autoResumeTasks 容错): autoResumeTasksCleanup — 启动时清理 orphaned
+//
+//	running tasks. 进程 crash / kill -9 / OOM 后 Task 表残留 status='running' 行
+//	(实际 goroutine 已死, 但 DB 行未更新). admin 看到 "X 个任务运行中" 不知道挂了,
+//	且 adminTasksList 按 status='running' 过滤会列 ghost 任务 (admin 误以为在跑).
+//	adminBackupClearHandler 内部有同款清理逻辑 (line ~6005), 但只在 admin 主动触发
+//	清空时跑, 启动时不跑. 本函数启动时自动跑一次: 查 running tasks → 标 stopped →
+//	log 计数 (admin 看到 "[autoResumeTasks] cleaned N orphaned running tasks" 知道
+//	是进程重启导致, 可手动重启需要的任务).
+//	容错 (用户需求 #1 预览稳定性): 任何 DB 错误 / panic 都不阻断 HTTP server.
+//	  - DB 错误 (db.Query / db.Exec 返 err): log + return (server 仍启动, admin 看
+//	    log 知道清理失败; tasks 表残留 running, admin 手动清).
+//	  - panic (理论不会发生, 但防御性编程): defer recover → log + return.
+//	设计选择 (标 stopped 而非 error/pending):
+//	  - error: admin 看到 "X 个任务失败" 误以为采集失败 (实为进程重启残留), 误导.
+//	  - pending: admin 看到 "X 个任务待启动" 可能误启全部 (实为重启残留, 部分可能
+//	    已采完不需重启).
+//	  - stopped: 中性状态, admin 看到 "X 个任务已停止" 知道需手动决定是否重启,
+//	    与 adminTaskControlHandler MarkStopped 同款语义 (用户主动停).
+//	调用点: main() line ~86 (db 初始化后, 模板加载前; 不依赖模板 / tmpls var).
+func autoResumeTasksCleanup() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[R75-A] autoResumeTasks panic (cleanup skipped): %v", r)
+		}
+	}()
+	rows, err := db.Query(`SELECT id, name FROM Task WHERE status='running' ORDER BY updatedAt DESC LIMIT 100`)
+	if err != nil {
+		log.Printf("[R75-A] autoResumeTasks: SELECT running tasks failed (cleanup skipped, HTTP server continues): %v", err)
+		return
+	}
+	orphanedIDs := []string{}
+	orphanedNames := []string{}
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			continue
+		}
+		if id != "" {
+			orphanedIDs = append(orphanedIDs, id)
+			orphanedNames = append(orphanedNames, name)
+		}
+	}
+	// R75-A 目标C4 (fill*-style crows.Err): rows 迭代后检查 rows.Err().
+	if err := rows.Err(); err != nil {
+		log.Printf("[R75-A] autoResumeTasks: rows.Err() during running-task scan: %v", err)
+	}
+	rows.Close()
+	if len(orphanedIDs) == 0 {
+		log.Printf("[R75-A] autoResumeTasks: no orphaned running tasks (clean startup)")
+		return
+	}
+	// 批量 UPDATE 标 stopped (单 SQL, 避免 N 次 round-trip).
+	//   注: 用 `status='running'` WHERE 条件而非 `id IN (...)`, 因可能并发 (admin
+	//   刚启动新任务标 running); 只清旧的 (UPDATE 时新任务已不在 status='running'
+	//   的"启动时间窗口"... 实际 SQLite 单写串行, 无 race; 但保守用 WHERE status=
+	//   'running' 兜底: 若 admin 在 SELECT 与 UPDATE 之间启动新 task, 该新 task 也
+	//   会被标 stopped — 但启动新 task 是 admin POST /api/admin/tasks 异步触发,
+	//   启动期 ~1s 内 admin 不会同时启 task, 实际不会发生).
+	res, err := db.Exec(`UPDATE Task SET status='stopped', updatedAt=datetime('now') WHERE status='running'`)
+	if err != nil {
+		log.Printf("[R75-A] autoResumeTasks: UPDATE Task stopped failed (orphaned running tasks may stay 'running', HTTP server continues): %v", err)
+		return
+	}
+	affected, _ := res.RowsAffected()
+	log.Printf("[R75-A] autoResumeTasks: cleaned %d orphaned running tasks (marked 'stopped'): %v", affected, orphanedNames)
 }
 
 // R71-A: checkExternalCSSMtime — 单次 mtime 对比 (从 watcher goroutine 调).
@@ -2073,6 +2263,10 @@ func sitesHandler(w http.ResponseWriter, r *http.Request) {
 		rows.Scan(&id, &name, &domain, &themeID, &isDefault, &title, &desc, &kw)
 		sites = append(sites, map[string]interface{}{"id": id, "name": name, "domain": domain, "themeId": themeID, "isDefault": isDefault, "title": title, "description": desc, "keywords": kw})
 	}
+	// R75-A 目标C4 (fill*-style crows.Err): rows 迭代后检查 rows.Err().
+	if rerr := rows.Err(); rerr != nil {
+		log.Printf("[R75-A] sitesHandler rows.Err(): %v", rerr)
+	}
 	writeJSON(w, map[string]interface{}{"ok": true, "data": sites})
 }
 
@@ -2151,13 +2345,33 @@ func getSite(siteID string) (map[string]interface{}, error) {
 	q := `SELECT id,name,domain,themeId,isDefault,title,description,keywords,offset,chapterSeoAuto,chapterSeoTitleTemplate,chapterSeoDescTemplate,chapterSeoKeywordsTemplate,pseudoStaticStyle FROM Site WHERE status=1`
 	var rows *sql.Rows
 	var err error
+	// R75-A 目标A1 (DB 连接池健康检查): 记录 db.Query 起始时间, 完成后检测耗时.
+	//   若 >5s, log + skip Setting 子查询 (防 composite latency 雪上加霜), 返 fallback
+	//   最小 site map (保 homeHandler 不 404; 用户看到 site 但无 obfuscateHTML/keywordTranscode
+	//   配置, 默认 false/off 安全). modernc.org/sqlite 不完美支持 context.WithCancel
+	//   撤销 in-flight query (底层 C library 不响应 ctx), 故用 timing 检测 + 后续降级.
+	//   阈值 5s 与 busy_timeout=5000 对齐 (busy_timeout 5s 内重试, >5s 视为 hang).
+	queryStart := time.Now()
 	if siteID != "" {
 		rows, err = db.Query(q+` AND id=?`, siteID)
 	} else {
 		rows, err = db.Query(q + ` AND isDefault=1`)
 	}
+	queryDuration := time.Since(queryStart)
+	if queryDuration > 5*time.Second {
+		// 慢查询: log + 降级路径 (skip Setting 子查, 用空值), 不让 homeHandler 卡 5s+.
+		//   注: 即使 rows != nil (返了结果), 也跳过 Setting 子查避免雪上加霜.
+		log.Printf("[R75-A] getSite SLOW QUERY: db.Query took %v (>5s threshold, siteID=%q) - skipping Setting sub-queries", queryDuration, siteID)
+	}
 	if err != nil {
-		return nil, err
+		// R75-A 目标A1: 查询失败时 log + 返 fallback site map (保 homeHandler 不 404).
+		//   原 return nil, err 让 homeHandler 走 http.NotFound / http.Error → 预览挂掉.
+		//   现返最小 fallback map: ID="" 触发 homeHandler 内 site["ID"]=nil, 渲染用空
+		//   Site 字段 (Title="" 等), 模板 fallback 显示; 用户看到 "无站点配置" 而非 502.
+		//   与 R64-D render404 fallback 同款 (site==nil → http.NotFound, 但 homeHandler
+		//   主流程对 site map 非 nil 仍渲染).
+		log.Printf("[R75-A] getSite db.Query failed (siteID=%q, took=%v): %v - returning fallback site map", siteID, queryDuration, err)
+		return map[string]interface{}{"ID": "", "Name": "fallback", "Domain": "", "ThemeID": "", "IsDefault": false, "Title": "", "Description": "", "Keywords": "", "Offset": 0, "ChapterSeoAuto": false, "ChapterSeoTitleTemplate": "", "ChapterSeoDescTemplate": "", "ChapterSeoKeywordsTemplate": "", "PseudoStaticStyle": "query", "ObfuscateHTML": false, "KeywordTranscode": "off"}, nil
 	}
 	// R70 主控修复: rows 持锁期间调 getSiteObfuscateHTML/getSiteKeywordTranscodeMode
 	//   (内部 db.QueryRow 查 Setting) → SQLite 连接池等待 rows 释放 → 死锁 hang (与 R63 批量 TDK 同款).
@@ -2171,10 +2385,18 @@ func getSite(siteID string) (map[string]interface{}, error) {
 		rows.Scan(&id, &name, &domain, &themeID, &isDefault, &title, &desc, &kw, &offset, &seoAuto, &seoTmplT, &seoTmplD, &seoTmplK, &pseudoStaticStyle)
 		found = true
 	}
+	// R75-A 目标C4 (fill*-style crows.Err): rows 迭代后检查 rows.Err().
+	if rerr := rows.Err(); rerr != nil {
+		log.Printf("[R75-A] getSite rows.Err() during primary scan (siteID=%q): %v", siteID, rerr)
+	}
 	rows.Close() // 显式释放连接, 后续 Setting 查询不再阻塞
 	if found {
 		if pseudoStaticStyle == "" {
 			pseudoStaticStyle = "query"
+		}
+		// R75-A 目标A1: 慢查询时 skip Setting 子查 (用 false/off 默认值).
+		if queryDuration > 5*time.Second {
+			return map[string]interface{}{"ID": id, "Name": name, "Domain": domain, "ThemeID": themeID, "IsDefault": isDefault, "Title": title, "Description": desc, "Keywords": kw, "Offset": offset, "ChapterSeoAuto": seoAuto, "ChapterSeoTitleTemplate": seoTmplT, "ChapterSeoDescTemplate": seoTmplD, "ChapterSeoKeywordsTemplate": seoTmplK, "PseudoStaticStyle": pseudoStaticStyle, "ObfuscateHTML": false, "KeywordTranscode": "off"}, nil
 		}
 		return map[string]interface{}{"ID": id, "Name": name, "Domain": domain, "ThemeID": themeID, "IsDefault": isDefault, "Title": title, "Description": desc, "Keywords": kw, "Offset": offset, "ChapterSeoAuto": seoAuto, "ChapterSeoTitleTemplate": seoTmplT, "ChapterSeoDescTemplate": seoTmplD, "ChapterSeoKeywordsTemplate": seoTmplK, "PseudoStaticStyle": pseudoStaticStyle, "ObfuscateHTML": getSiteObfuscateHTML(id), "KeywordTranscode": getSiteKeywordTranscodeMode(id)}, nil
 	}
@@ -2182,7 +2404,9 @@ func getSite(siteID string) (map[string]interface{}, error) {
 	//                  若 db.Query 失败 rows2 为 nil, defer rows2.Close() 在 nil 上调用 panic)
 	rows2, qErr := db.Query(q + ` LIMIT 1`)
 	if qErr != nil {
-		return nil, qErr
+		// R75-A 目标A1: fallback 查询失败 log + 返 fallback site map (保 homeHandler 不 404).
+		log.Printf("[R75-A] getSite fallback db.Query failed (siteID=%q): %v - returning fallback site map", siteID, qErr)
+		return map[string]interface{}{"ID": "", "Name": "fallback", "Domain": "", "ThemeID": "", "IsDefault": false, "Title": "", "Description": "", "Keywords": "", "Offset": 0, "ChapterSeoAuto": false, "ChapterSeoTitleTemplate": "", "ChapterSeoDescTemplate": "", "ChapterSeoKeywordsTemplate": "", "PseudoStaticStyle": "query", "ObfuscateHTML": false, "KeywordTranscode": "off"}, nil
 	}
 	// R70 主控修复: 同上, rows2 持锁期间调 Setting 查询会死锁.
 	var id2, name2, domain2, themeID2, title2, desc2, kw2, seoTmplT2, seoTmplD2, seoTmplK2, pseudoStaticStyle2 string
@@ -2194,10 +2418,18 @@ func getSite(siteID string) (map[string]interface{}, error) {
 		rows2.Scan(&id2, &name2, &domain2, &themeID2, &isDefault2, &title2, &desc2, &kw2, &offset2, &seoAuto2, &seoTmplT2, &seoTmplD2, &seoTmplK2, &pseudoStaticStyle2)
 		found2 = true
 	}
+	// R75-A 目标C4: rows2 迭代后检查 rows2.Err().
+	if rerr := rows2.Err(); rerr != nil {
+		log.Printf("[R75-A] getSite rows2.Err() during fallback scan (siteID=%q): %v", siteID, rerr)
+	}
 	rows2.Close() // 显式释放连接
 	if found2 {
 		if pseudoStaticStyle2 == "" {
 			pseudoStaticStyle2 = "query"
+		}
+		// R75-A 目标A1: 慢查询时 skip Setting 子查.
+		if queryDuration > 5*time.Second {
+			return map[string]interface{}{"ID": id2, "Name": name2, "Domain": domain2, "ThemeID": themeID2, "IsDefault": isDefault2, "Title": title2, "Description": desc2, "Keywords": kw2, "Offset": offset2, "ChapterSeoAuto": seoAuto2, "ChapterSeoTitleTemplate": seoTmplT2, "ChapterSeoDescTemplate": seoTmplD2, "ChapterSeoKeywordsTemplate": seoTmplK2, "PseudoStaticStyle": pseudoStaticStyle2, "ObfuscateHTML": false, "KeywordTranscode": "off"}, nil
 		}
 		return map[string]interface{}{"ID": id2, "Name": name2, "Domain": domain2, "ThemeID": themeID2, "IsDefault": isDefault2, "Title": title2, "Description": desc2, "Keywords": kw2, "Offset": offset2, "ChapterSeoAuto": seoAuto2, "ChapterSeoTitleTemplate": seoTmplT2, "ChapterSeoDescTemplate": seoTmplD2, "ChapterSeoKeywordsTemplate": seoTmplK2, "PseudoStaticStyle": pseudoStaticStyle2, "ObfuscateHTML": getSiteObfuscateHTML(id2), "KeywordTranscode": getSiteKeywordTranscodeMode(id2)}, nil
 	}
@@ -2554,6 +2786,10 @@ func getCategories() ([]map[string]interface{}, error) {
 		rows.Scan(&id, &name)
 		cats = append(cats, map[string]interface{}{"id": id, "name": name})
 	}
+	// R75-A 目标C4 (fill*-style crows.Err): rows 迭代后检查 rows.Err().
+	if rerr := rows.Err(); rerr != nil {
+		log.Printf("[R75-A] getCategories rows.Err(): %v", rerr)
+	}
 	return cats, nil
 }
 
@@ -2575,6 +2811,10 @@ func getBooks(limit int) ([]map[string]interface{}, error) {
 			"status": status.String, "wordCount": wordCount, "latestChapter": latestChapter.String,
 			"category": category.String, "categoryId": categoryID.String, "updatedAt": formatUpdatedAt(updatedAt),
 		})
+	}
+	// R75-A 目标C4 (fill*-style crows.Err): rows 迭代后检查 rows.Err().
+	if rerr := rows.Err(); rerr != nil {
+		log.Printf("[R75-A] getBooks rows.Err() (limit=%d): %v", limit, rerr)
 	}
 	return books, nil
 }
@@ -2995,6 +3235,19 @@ func getBookViewData(id string) (map[string]interface{}, []map[string]interface{
 	if err != nil {
 		return nil, nil, nil, nil, "", false
 	}
+	// R75-A 目标C3 (R74 交接 #5 ParsedWordCount DB 聚合): Book.wordCount==0 时
+	//   fallback SUM(Chapter.wordCount) FROM Chapter WHERE bookId=?. 修复 incremental
+	//   recrawl 场景 ParsedWordCount 仅含本轮新采章节字数 (R74-C 未决项 #5). 性能:
+	//   单次 SELECT SUM ~1ms (Chapter 表 bookId 索引, 200 章以内); 仅 wordCount==0
+	//   时触发, 正常态 Book.wordCount 已正确不需聚合.
+	if wordCount == 0 {
+		var aggWC sql.NullInt64
+		if qerr := db.QueryRow(`SELECT COALESCE(SUM(wordCount), 0) FROM Chapter WHERE bookId=?`, id).Scan(&aggWC); qerr == nil && aggWC.Valid && aggWC.Int64 > 0 {
+			wordCount = aggWC.Int64
+		} else if qerr != nil && qerr != sql.ErrNoRows {
+			log.Printf("[R75-A] getBookViewData SUM(Chapter.wordCount) failed (bookID=%s): %v", id, qerr)
+		}
+	}
 	book := map[string]interface{}{
 		"id": bid.String, "name": name.String, "author": author.String,
 		"intro": intro.String, "cover": coverURL(cover.String), "status": status.String,
@@ -3025,6 +3278,10 @@ func getBookViewData(id string) (map[string]interface{}, []map[string]interface{
 				firstChID = cid.String
 			}
 		}
+		// R75-A 目标C4 (fill*-style crows.Err): rows 迭代后检查 rows.Err().
+		if rerr := rows.Err(); rerr != nil {
+			log.Printf("[R75-A] getBookViewData chapters rows.Err() (bookID=%s): %v", id, rerr)
+		}
 	}
 
 	// 3. 最近章节 (按 idx desc 取 12, 然后反转顺序让其显示为最新→次新)
@@ -3036,6 +3293,10 @@ func getBookViewData(id string) (map[string]interface{}, []map[string]interface{
 			var cid, title sql.NullString
 			rows2.Scan(&cid, &title)
 			tmp = append(tmp, map[string]interface{}{"id": cid.String, "title": title.String})
+		}
+		// R75-A 目标C4: rows2 迭代后检查 rows2.Err().
+		if rerr := rows2.Err(); rerr != nil {
+			log.Printf("[R75-A] getBookViewData recent rows.Err() (bookID=%s): %v", id, rerr)
 		}
 		// 反转
 		for i := len(tmp) - 1; i >= 0; i-- {
@@ -3054,6 +3315,10 @@ func getBookViewData(id string) (map[string]interface{}, []map[string]interface{
 				var updatedAt2 string
 				rows3.Scan(&bid2, &name2, &author2, &intro2, &cover2, &status2, &wordCount2, &latestChapter2, &category2, &categoryID2, &updatedAt2)
 				related = append(related, bookRowFromScan(bid2, name2, author2, intro2, cover2, status2, latestChapter2, category2, categoryID2, wordCount2, updatedAt2))
+			}
+			// R75-A 目标C4: rows3 迭代后检查 rows3.Err().
+			if rerr := rows3.Err(); rerr != nil {
+				log.Printf("[R75-A] getBookViewData related rows.Err() (bookID=%s catID=%s): %v", id, categoryID.String, rerr)
 			}
 		}
 	}
@@ -3108,10 +3373,17 @@ func getReadViewData(chID string, site map[string]interface{}) (map[string]inter
 
 	// 2. 查 book (id, name, author, status, category, intro)
 	var bid, bname, bauthor, bstatus, bcategory, bintro sql.NullString
-	if err := db.QueryRow(`SELECT b.id,b.name,b.author,b.status,COALESCE(c.name,'未分类'),b.intro FROM Book b LEFT JOIN Category c ON b.categoryId=c.id WHERE b.id=?`, bookID.String).Scan(
-		&bid, &bname, &bauthor, &bstatus, &bcategory, &bintro); err != nil {
+	// R75-A 目标C3 (R74 交接 #5 ParsedWordCount DB 聚合): 同时取 Book.wordCount,
+	//   若 ==0 fallback SUM(Chapter.wordCount) FROM Chapter WHERE bookId=?.
+	//   原 SQL 不查 wordCount, read view 模板用 .Chapter.wordCount (单章) 不用
+	//   Book.wordCount, 但 SEO TDK + 上下章导航 + 后续 R76+ 模板字段对齐需 Book
+	//   总字数 (e.g. 面包屑 "本书 100 万字"). 加 wordCount 字段到 SELECT, 与
+	//   getBookViewData 同款 fallback 聚合.
+	var bwc int64
+	if err := db.QueryRow(`SELECT b.id,b.name,b.author,b.status,COALESCE(c.name,'未分类'),b.intro,b.wordCount FROM Book b LEFT JOIN Category c ON b.categoryId=c.id WHERE b.id=?`, bookID.String).Scan(
+		&bid, &bname, &bauthor, &bstatus, &bcategory, &bintro, &bwc); err != nil {
 		// book 查不到也允许渲染
-		bookMap := map[string]interface{}{"id": bookID.String, "name": "", "author": "", "status": "", "category": "", "intro": ""}
+		bookMap := map[string]interface{}{"id": bookID.String, "name": "", "author": "", "status": "", "category": "", "intro": "", "wordCount": int64(0)}
 		// R57-1B: 即使 book 查不到, 也填入 SEO TDK (用空 bookName/author/intro + chapterTitle)
 		if site != nil {
 			seoT, seoD, seoK := computeChapterSeo(site, title.String, "", "", "")
@@ -3121,9 +3393,19 @@ func getReadViewData(chID string, site map[string]interface{}) (map[string]inter
 		}
 		return chapter, bookMap, nil, nil, true
 	}
+	// R75-A 目标C3: Book.wordCount==0 时 fallback SUM(Chapter.wordCount) (与 getBookViewData 同款).
+	if bwc == 0 {
+		var aggWC sql.NullInt64
+		if qerr := db.QueryRow(`SELECT COALESCE(SUM(wordCount), 0) FROM Chapter WHERE bookId=?`, bookID.String).Scan(&aggWC); qerr == nil && aggWC.Valid && aggWC.Int64 > 0 {
+			bwc = aggWC.Int64
+		} else if qerr != nil && qerr != sql.ErrNoRows {
+			log.Printf("[R75-A] getReadViewData SUM(Chapter.wordCount) failed (bookID=%s): %v", bookID.String, qerr)
+		}
+	}
 	bookMap := map[string]interface{}{
 		"id": bid.String, "name": bname.String, "author": bauthor.String,
 		"status": bstatus.String, "category": bcategory.String, "intro": bintro.String,
+		"wordCount": bwc,
 	}
 	// R57-1B 接入智能 TDK: 调 computeChapterSeo 算 SEO TDK 写入 chapter map.
 	//   chapterSeoAuto=true (默认): 用默认模板, 与原模板硬编码 `{{.Chapter.title}} - {{.Book.name}} - {{.Site.Title}}`
@@ -3144,6 +3426,10 @@ func getReadViewData(chID string, site map[string]interface{}) (map[string]inter
 			prow.Scan(&pid, &ptitle)
 			prev = map[string]interface{}{"id": pid.String, "title": ptitle.String}
 		}
+		// R75-A 目标C4 (fill*-style crows.Err): prow 迭代后检查 prow.Err().
+		if rerr := prow.Err(); rerr != nil {
+			log.Printf("[R75-A] getReadViewData prev prow.Err() (chID=%s): %v", chID, rerr)
+		}
 		prow.Close()
 	}
 	if nrow, err := db.Query(`SELECT id, title FROM Chapter WHERE bookId=? AND idx>? ORDER BY idx ASC LIMIT 1`, bookID.String, idx); err == nil {
@@ -3151,6 +3437,10 @@ func getReadViewData(chID string, site map[string]interface{}) (map[string]inter
 			var nid, ntitle sql.NullString
 			nrow.Scan(&nid, &ntitle)
 			next = map[string]interface{}{"id": nid.String, "title": ntitle.String}
+		}
+		// R75-A 目标C4: nrow 迭代后检查 nrow.Err().
+		if rerr := nrow.Err(); rerr != nil {
+			log.Printf("[R75-A] getReadViewData next nrow.Err() (chID=%s): %v", chID, rerr)
 		}
 		nrow.Close()
 	}
@@ -3201,6 +3491,10 @@ func getCategoryViewData(catID string, page, size int) (string, []map[string]int
 		rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryID, &updatedAt)
 		books = append(books, bookRowFromScan(id, name, author, intro, cover, status, latestChapter, category, categoryID, wordCount, updatedAt))
 	}
+	// R75-A 目标C4 (fill*-style crows.Err): rows 迭代后检查 rows.Err().
+	if rerr := rows.Err(); rerr != nil {
+		log.Printf("[R75-A] getCategoryViewData rows.Err() (catID=%s page=%d): %v", catID, page, rerr)
+	}
 	return label, books, total
 }
 
@@ -3233,6 +3527,10 @@ func getRankingViewData(tab string, page, size int) ([]map[string]interface{}, i
 		rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryID, &updatedAt)
 		books = append(books, bookRowFromScan(id, name, author, intro, cover, status, latestChapter, category, categoryID, wordCount, updatedAt))
 	}
+	// R75-A 目标C4 (fill*-style crows.Err): rows 迭代后检查 rows.Err().
+	if rerr := rows.Err(); rerr != nil {
+		log.Printf("[R75-A] getRankingViewData rows.Err() (tab=%s page=%d): %v", tab, page, rerr)
+	}
 	return books, total
 }
 
@@ -3256,6 +3554,10 @@ func getFulltextViewData(page, size int) ([]map[string]interface{}, int) {
 		var updatedAt string
 		rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryID, &updatedAt)
 		books = append(books, bookRowFromScan(id, name, author, intro, cover, status, latestChapter, category, categoryID, wordCount, updatedAt))
+	}
+	// R75-A 目标C4 (fill*-style crows.Err): rows 迭代后检查 rows.Err().
+	if rerr := rows.Err(); rerr != nil {
+		log.Printf("[R75-A] getFulltextViewData rows.Err() (page=%d): %v", page, rerr)
 	}
 	return books, total
 }
@@ -3283,6 +3585,10 @@ func getSearchViewData(q string, limit int) []map[string]interface{} {
 		m["intro"] = truncate(intro.String, 150)
 		books = append(books, m)
 	}
+	// R75-A 目标C4 (fill*-style crows.Err): rows 迭代后检查 rows.Err().
+	if rerr := rows.Err(); rerr != nil {
+		log.Printf("[R75-A] getSearchViewData rows.Err() (q=%q): %v", q, rerr)
+	}
 	return books
 }
 
@@ -3307,6 +3613,10 @@ func getKeywordViewData(tag string, limit int) ([]map[string]interface{}, []stri
 		m["intro"] = truncate(intro.String, 200)
 		books = append(books, m)
 	}
+	// R75-A 目标C4 (fill*-style crows.Err): rows 迭代后检查 rows.Err().
+	if rerr := rows.Err(); rerr != nil {
+		log.Printf("[R75-A] getKeywordViewData rows.Err() (tag=%q): %v", tag, rerr)
+	}
 	// 2. 相关标签: 第一本书的其他 tag, 排除当前 tag, 取 12
 	relatedTags := []string{}
 	if len(books) > 0 {
@@ -3320,6 +3630,10 @@ func getKeywordViewData(tag string, limit int) ([]map[string]interface{}, []stri
 					if t.String != "" {
 						relatedTags = append(relatedTags, t.String)
 					}
+				}
+				// R75-A 目标C4: rows2 迭代后检查 rows2.Err().
+				if rerr := rows2.Err(); rerr != nil {
+					log.Printf("[R75-A] getKeywordViewData relatedTags rows2.Err() (tag=%q bookID=%s): %v", tag, firstBookID, rerr)
 				}
 			}
 		}
@@ -4026,6 +4340,10 @@ func findEntityByEncodedToken(token, viewType string, encodeFunc func(string) st
 			return id
 		}
 	}
+	// R75-A 目标C4 (fill*-style crows.Err): rows 迭代后检查 rows.Err().
+	if rerr := rows.Err(); rerr != nil {
+		log.Printf("[R75-A] findEntityByEncodedToken rows.Err() (table=%s token=%q): %v", table, token, rerr)
+	}
 	return ""
 }
 
@@ -4148,6 +4466,10 @@ func queryRandomWheelSites(n int, excludeID string) []wheelSite {
 		if sid.Valid && sdomain.String != "" {
 			out = append(out, wheelSite{id: sid.String, name: sname.String, domain: sdomain.String})
 		}
+	}
+	// R75-A 目标C4 (fill*-style crows.Err): rows 迭代后检查 rows.Err().
+	if rerr := rows.Err(); rerr != nil {
+		log.Printf("[R75-A] queryRandomWheelSites rows.Err() (n=%d excludeID=%s): %v", n, excludeID, rerr)
 	}
 	return out
 }

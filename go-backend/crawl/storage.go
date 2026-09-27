@@ -8,15 +8,13 @@
 //   - DeleteBookTxt (bookId 路径穿越防御 + 同款清洗)
 //   - SaveCoverWebp (封面字节存 .webp; Go 端无 sharp, 直接回存原始字节, 浏览器按魔数嗅探)
 //   - ReadCover (sibling-prefix 绕过防御 + path.basename 剥目录组件)
-//   - OpenDownloadTxtWriter (流式写入器, 万章书不 OOM)
+//   - R75-C BUG-131: OpenDownloadTxtWriter + DownloadTxtWriter 已删 (0 调用 deadcode)
 package crawl
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -378,95 +376,16 @@ func ReadCover(fileName string) ([]byte, error) {
 	return data, nil
 }
 
-// ---------- DownloadTxtWriter ----------
-
-// DownloadTxtWriter — 流式写入器 (万章书不 OOM).
-//   - Open: 打开 filePath ('w' 模式, 截断)
-//   - Write: 逐段 append
-//   - Finish: close + stat, 返回 {rel, size}
-//   - Abort: close + 删除半成品 (失败即无文件卫生语义)
-type DownloadTxtWriter interface {
-	Rel() string
-	Write(ctx context.Context, chunk string) error
-	Finish(ctx context.Context) (rel string, size int64, err error)
-	Abort(ctx context.Context) error
-}
-
-type downloadTxtWriter struct {
-	file     *os.File
-	filePath string
-	rel      string
-}
-
-// downloadTxtTarget — 下载成品文件名计算 (清洗控制字符 + 按码点截断防超长).
-// R65-C BUG-46 (P3) 修复: 原实现做两次 []rune 转换 + 两次截断 (100 → 80), 第二次
+// ---------- DownloadTxtWriter (R75-C BUG-131 已删) ----------
 //
-//	截断在已 cap 到 100 的切片上做, 实际等价于直接 cap 到 80. 删除冗余转换 + 截断,
-//	单次 []rune + cap 80, 语义等价, 省一次 []rune 分配 (大文件名场景).
-func downloadTxtTarget(name string) (filePath, rel, fileName string) {
-	cleaned := chapterSlugRe.ReplaceAllString(name, "_")
-	runes := []rune(cleaned)
-	if len(runes) > 80 {
-		runes = runes[:80]
-	}
-	fileName = string(runes) + ".txt"
-	filePath = filepath.Join(downloadsDir, fileName)
-	rel = "downloads/" + fileName
-	return
-}
-
-// OpenDownloadTxtWriter — 打开下载成品流式写入器.
-func OpenDownloadTxtWriter(name string) (DownloadTxtWriter, error) {
-	if err := EnsureDirs(); err != nil {
-		return nil, err
-	}
-	fp, rel, _ := downloadTxtTarget(name)
-	f, err := os.OpenFile(fp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
-	if err != nil {
-		return nil, err
-	}
-	return &downloadTxtWriter{file: f, filePath: fp, rel: rel}, nil
-}
-
-func (w *downloadTxtWriter) Rel() string { return w.rel }
-
-func (w *downloadTxtWriter) Write(ctx context.Context, chunk string) error {
-	if chunk == "" {
-		return nil
-	}
-	// ctx 取消检查 (写盘是阻塞 IO, 写入前检查)
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-	}
-	_, err := io.WriteString(w.file, chunk)
-	return err
-}
-
-func (w *downloadTxtWriter) Finish(ctx context.Context) (string, int64, error) {
-	// R67-C BUG-57 (P3) 修复: 原实现直接 Close (无 fsync), crash 在 Close 后
-	//   但 OS page cache 未刷盘前, 文件可能 partial (万章书拼接中途 crash
-	//   → 用户下载到半截 .txt). 修复: Close 前 Sync (fsync) 保证数据物理落盘.
-	//   与 R65-C BUG-43 (SaveChapterTxt atomicWriteFileSync) + BUG-44 (SaveCoverWebp
-	//   同款) 同口径, 仅 fsync 不需 .tmp+rename (download 路径无需原子替换,
-	//   最终路径即写入路径, 中途 crash 留 partial 可被 Abort 删).
-	if err := w.file.Sync(); err != nil {
-		_ = w.file.Close()
-		return "", 0, err
-	}
-	if err := w.file.Close(); err != nil {
-		return "", 0, err
-	}
-	info, err := os.Stat(w.filePath)
-	if err != nil {
-		return "", 0, err
-	}
-	return w.rel, info.Size(), nil
-}
-
-func (w *downloadTxtWriter) Abort(ctx context.Context) error {
-	// Best-effort close; Abort 的目标是删除文件, Close 出错 (如已关闭) 不应阻塞清理.
-	_ = w.file.Close()
-	return os.Remove(w.filePath)
-}
+// R75-C BUG-131 (P3) deadcode 清理: 删除 OpenDownloadTxtWriter + DownloadTxtWriter
+//   接口 + downloadTxtWriter struct + downloadTxtTarget (4 个 export + 4 个 method +
+//   1 个 helper). rg 全仓 0 调用 (main.go / admin.go / fetcher.go / runner.go 全 0
+//   命中), R38-1C 加后从未 wiring. R65-C BUG-46 / R67-C BUG-57 修复也修在死代码上
+//   (BUG-46 精简 downloadTxtTarget 两次 []rune 转换 / BUG-57 加 Finish fsync), 删除
+//   后这些修复随函数一起消亡 (与 R73-C BUG-108 bookLastChapters + R74-C BUG-112
+//   circuitTrippedAt 同款 cascade deadcode 清理). 未来需 "万章书下载流式写入器"
+//   时重新加 ( ~50 行: interface + struct + 4 method + target helper). 一并删除
+//   "context" + "io" 两个 import (仅 OpenDownloadTxtWriter/Write/Finish/Abort 用,
+//   删除后 storage.go 不再依赖). chapterSlugRe 仍由 sanitizeChapterSlug 使用
+//   (SaveChapterTxt 路径), 保留.

@@ -1105,8 +1105,14 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) (retErr error) {
 		// R67-C BUG-60 (P3) 修复: 累计 stats.BooksCreated/BooksUpdated/CoversSaved
 		//   (原实现三字段始终 0, 任务完成日志 "新书0 更新0 | 封面0" 失真).
 		//   数据来自 BookMetaResult.IsNewBook + CoverSaved (CrawlBookMeta 设置).
+		// R75-C BUG-130 (P3) 修复: BookMetaStatusOK (completed 跳过, line 1069-1075
+		//   IsCompleted 路径) 漏计 progress.BooksDone. 原实现只计 Blocked/EmptyToc/
+		//   Error 三种终态, OKMeta 在 phase 3 FinalizeBook line 2128 计, OK (completed
+		//   skip) 不在 phase 2/3 流程内 → 永不计 BooksDone. admin UI 看到 "5/10 books
+		//   done" 但实际 5 处理 + 5 跳过 = 10 本已完成, 进度显示失真. 修复: OK 也计入
+		//   BooksDone (与 Blocked/EmptyToc/Error 同款 "phase 1 终态" 语义).
 		for _, r := range results {
-			if r.Status == BookMetaStatusBlocked || r.Status == BookMetaStatusEmptyToc || r.Status == BookMetaStatusError {
+			if r.Status == BookMetaStatusBlocked || r.Status == BookMetaStatusEmptyToc || r.Status == BookMetaStatusError || r.Status == BookMetaStatusOK {
 				progress.BooksDone++
 			}
 			if r.Status == BookMetaStatusOKMeta {
@@ -1854,6 +1860,20 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
 	// R67-C BUG-60: coverSaved 跟踪封面是否落盘成功 (供 stats.CoversSaved 累计)
 	coverSaved := false
 	if parsed.Cover != "" && cfg.DB != nil {
+		// R75-C BUG-129 (P3) 修复 (R74-C 交接 #2): cover fetch 漏 rt.CheckBudget +
+		//   rt.IncRequest. 原实现 cover FetchPage 直调无预算追踪 (与 R74-C BUG-114 修
+		//   复的 toc fetch 同款问题, R74-C 修了 toc 漏 cover). admin 设 maxRequests=100
+		//   + 50 本书各 1 cover = 50 隐藏请求, 实际消耗 100 book + 50 cover = 150, 预
+		//   算永不触发. 修复: 入口加 CheckBudget (超限返 err 让 phase 1 goroutine 走
+		//   AddToFailed 路径, 与 book fetch line 1518 同款) + IncRequest (预算计数 +1,
+		//   admin Snapshot.RequestCount 准确反映实际请求量). 注: 不加 hostGate (ab-b
+		//   注释: cover 多在 external CDN, 不同 host; 若同 host 则同 host 二次请求未受
+		//   hostGate 速率限制, 但加 hostGate 需 Acquire/Release wiring + cover fetch
+		//   失败时的回退路径, 设计复杂度高于收益, R76+ 评估).
+		if err := rt.CheckBudget(); err != nil {
+			return nil, err
+		}
+		rt.IncRequest()
 		// ab-b 注: 封面 fetchBinary 直连外部 CDN, 不经 gateFetch
 		coverRes, err := FetchPage(ctx, parsed.Cover, FetchConfig{
 			Engine:     "http",
