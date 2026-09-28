@@ -5665,26 +5665,10 @@ func adminSeoAuditHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		rows.Close()
 	}
-	themeIDs := map[string]bool{}
-	for _, t := range adminThemes {
-		themeIDs[t.ID] = true
-	}
-	var linkWheelCount int
-	_ = db.QueryRow(`SELECT COUNT(*) FROM FriendLink WHERE enabled=1 AND url LIKE '%http%'`).Scan(&linkWheelCount)
-	var totalBooks int
-	_ = db.QueryRow(`SELECT COUNT(*) FROM Book`).Scan(&totalBooks)
-
-	reports := []map[string]interface{}{}
-	for _, s := range sites {
-		if siteFilter != "" && s["id"] != siteFilter {
-			continue
-		}
-		offset, _ := strconv.Atoi(s["offset"])
-		r := auditSite(s["id"], s["name"], s["domain"], s["themeId"], s["title"], s["description"], s["keywords"], s["icbm"], s["geoRegion"], s["geoPlacename"], offset, totalBooks, linkWheelCount, themeIDs)
-		reports = append(reports, r)
-	}
-	sortAuditReports(reports)
-	// R86-C 精简: 17 行汇总计算提为 seoAuditSummary (与 fillSeoAuditPageData 共用).
+	// R87-C 精简: 17 行审计管道 (themeIDs 构建 + 2 计数预查 + auditSite 循环 +
+	//   sortAuditReports) 提为 runSiteAuditReports (与 fillSeoAuditPageData 共用,
+	//   续 R86-C seoAuditSummary 提取后剩 copy-paste).
+	reports := runSiteAuditReports(sites, siteFilter)
 	totalIssues, totalErrors, avgScore := seoAuditSummary(reports)
 	writeJSONOK(w, map[string]interface{}{
 		"sites": reports,
@@ -5719,6 +5703,34 @@ func seoAuditSummary(reports []map[string]interface{}) (totalIssues, totalErrors
 		avgScore = scoreSum / len(reports)
 	}
 	return
+}
+
+// runSiteAuditReports 计算站点 SEO 审计报告管道: themeIDs 构建 + linkWheelCount/
+// totalBooks 计数预查 + auditSite 循环 (按 siteFilter 过滤) + sortAuditReports 排序.
+//
+//	adminSeoAuditHandler (API) + fillSeoAuditPageData (SSR) 共用 — R86-C 提取
+//	seoAuditSummary 后, 仍有 17 行审计管道在两处 copy-paste; R87-C 提为单一真源,
+//	各 call site -17 行 +1 行 call. best-effort: 2 计数查询失败按 0 兜底 (与原
+//	2 处 best-effort 同款, 不阻塞 SSR 渲染, 不阻塞 API 返审计结果).
+func runSiteAuditReports(sites []map[string]string, siteFilter string) []map[string]interface{} {
+	themeIDs := map[string]bool{}
+	for _, t := range adminThemes {
+		themeIDs[t.ID] = true
+	}
+	var linkWheelCount int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM FriendLink WHERE enabled=1 AND url LIKE '%http%'`).Scan(&linkWheelCount)
+	var totalBooks int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM Book`).Scan(&totalBooks)
+	reports := []map[string]interface{}{}
+	for _, s := range sites {
+		if siteFilter != "" && s["id"] != siteFilter {
+			continue
+		}
+		offset, _ := strconv.Atoi(s["offset"])
+		reports = append(reports, auditSite(s["id"], s["name"], s["domain"], s["themeId"], s["title"], s["description"], s["keywords"], s["icbm"], s["geoRegion"], s["geoPlacename"], offset, totalBooks, linkWheelCount, themeIDs))
+	}
+	sortAuditReports(reports)
+	return reports
 }
 
 // sortAuditReports 排序: error 多的在前, 同错按 score 升序.
@@ -6542,9 +6554,18 @@ func adminFeaturedBooksList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var exist string
-	_ = db.QueryRow(`SELECT id FROM Site WHERE id=?`, siteID).Scan(&exist)
-	if exist == "" {
+	// R87-C BUG-228 (P3, R86-C 未决项 #6 / R80-D BUG-171 同款 conflation):
+	//   显式区分 (详见 BUG-219 rationale). R86-C BUG-220~224 未覆盖 featuredBooks
+	//   handler 2 处 siteId 存在性检查 (List+Update 同款 pattern). (R87-B crawl
+	//   scope 已用 BUG-227 cleaner.go style whitespace; 本 admin.go scope 从 228
+	//   起顺延 global 序列, 与 R86-C BUG-224 衔接.)
+	siteExistErr := db.QueryRow(`SELECT id FROM Site WHERE id=?`, siteID).Scan(&exist)
+	if siteExistErr == sql.ErrNoRows || exist == "" {
 		writeJSONErr(w, "站点不存在", 404)
+		return
+	}
+	if siteExistErr != nil {
+		writeJSONErr(w, "查询站点失败: "+siteExistErr.Error(), 500)
 		return
 	}
 	var raw string
@@ -6592,9 +6613,16 @@ func adminFeaturedBooksUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var exist string
-	_ = db.QueryRow(`SELECT id FROM Site WHERE id=?`, siteID).Scan(&exist)
-	if exist == "" {
+	// R87-C BUG-229 (P3, R86-C 未决项 #6 / R80-D BUG-171 同款 conflation):
+	//   显式区分 (详见 BUG-219 rationale). 与 BUG-228 同 handler 不同 method,
+	//   应同口径.
+	siteExistErr := db.QueryRow(`SELECT id FROM Site WHERE id=?`, siteID).Scan(&exist)
+	if siteExistErr == sql.ErrNoRows || exist == "" {
 		writeJSONErr(w, "站点不存在", 404)
+		return
+	}
+	if siteExistErr != nil {
+		writeJSONErr(w, "查询站点失败: "+siteExistErr.Error(), 500)
 		return
 	}
 	bookIDs := []string{}
@@ -6810,11 +6838,26 @@ func adminSiteGenerateTDK(w http.ResponseWriter, r *http.Request, siteID string)
 		writeJSONErr(w, "method not allowed", 405)
 		return
 	}
-	var exist string
+	var exist, status string
 	var isDefault bool
-	_ = db.QueryRow(`SELECT id, isDefault FROM Site WHERE id=? AND status=1`, siteID).Scan(&exist, &isDefault)
-	if exist == "" {
-		writeJSONErr(w, "站点不存在或已下线", 404)
+	// R87-C BUG-230 (P3, R86-C 未决项 #6 / R80-D BUG-171 同款 conflation + 语义模糊):
+	//   原实现 WHERE id=? AND status=1 双条件 Scan, ErrNoRows 不区分 "行不存在"
+	//   vs "行存在但 status=0 已下线", 全返 404 "站点不存在或已下线" 语义模糊 (详见
+	//   BUG-219 rationale). 改: 单查 SELECT id, CASE WHEN status=1 THEN '1' ELSE
+	//   '0' END, isDefault FROM Site WHERE id=? (无 status 过滤) — ErrNoRows →
+	//   404 "站点不存在" (typo siteId); 存在但 status!='1' → 410 "站点已下线"
+	//   (与 line 7041 downloadFile expired 410 语义一致, RESTful Gone).
+	tdkExistErr := db.QueryRow(`SELECT id, CASE WHEN status=1 THEN '1' ELSE '0' END, isDefault FROM Site WHERE id=?`, siteID).Scan(&exist, &status, &isDefault)
+	if tdkExistErr == sql.ErrNoRows || exist == "" {
+		writeJSONErr(w, "站点不存在", 404)
+		return
+	}
+	if tdkExistErr != nil {
+		writeJSONErr(w, "查询站点失败: "+tdkExistErr.Error(), 500)
+		return
+	}
+	if status != "1" {
+		writeJSONErr(w, "站点已下线", 410)
 		return
 	}
 	title, desc, kw, err := generateSiteTDK(siteID)
@@ -7593,25 +7636,10 @@ func fillSeoAuditPageData(data map[string]interface{}, r *http.Request) {
 		}
 	}
 	data["SiteOptions"] = siteOptions
-	themeIDs := map[string]bool{}
-	for _, t := range adminThemes {
-		themeIDs[t.ID] = true
-	}
-	var linkWheelCount int
-	_ = db.QueryRow(`SELECT COUNT(*) FROM FriendLink WHERE enabled=1 AND url LIKE '%http%'`).Scan(&linkWheelCount)
-	var totalBooks int
-	_ = db.QueryRow(`SELECT COUNT(*) FROM Book`).Scan(&totalBooks)
-	reports := []map[string]interface{}{}
-	for _, s := range sites {
-		if siteFilter != "" && s["id"] != siteFilter {
-			continue
-		}
-		offset, _ := strconv.Atoi(s["offset"])
-		reports = append(reports, auditSite(s["id"], s["name"], s["domain"], s["themeId"], s["title"], s["description"], s["keywords"], s["icbm"], s["geoRegion"], s["geoPlacename"], offset, totalBooks, linkWheelCount, themeIDs))
-	}
-	sortAuditReports(reports)
+	// R87-C 精简: 17 行审计管道提为 runSiteAuditReports (与 adminSeoAuditHandler
+	//   共用, 续 R86-C seoAuditSummary 提取后剩 copy-paste).
+	reports := runSiteAuditReports(sites, siteFilter)
 	data["Reports"] = reports
-	// R86-C 精简: 17 行汇总计算提为 seoAuditSummary (与 adminSeoAuditHandler 共用).
 	totalIssues, totalErrors, avgScore := seoAuditSummary(reports)
 	data["Summary"] = map[string]interface{}{
 		"totalSites": len(reports), "avgScore": avgScore,

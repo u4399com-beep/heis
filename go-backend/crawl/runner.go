@@ -1932,6 +1932,16 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                         return "", err
                 }
                 rt.IncRequest()
+                // R87-A BUG-230 (P3) 修复 (R86-A BUG-219 discoverBooks 成功路径同款遗漏):
+                //   pageFetcher 成功路径原仅 return res.HTML, 漏调 hostGate/health 4 调用
+                //   (recordLatency + AdjustMinGap + recordSuccess + ReportSuccess), 与
+                //   CrawlBookMeta 外层 book fetch (line ~1684-1700) + R86-A BUG-220 err
+                //   路径不对称. 多页 TOC 第 2+ 页成功不计 → healthTracker successRate
+                //   低估 → AdjustConcurrency 降并发; hostGate failStreak 在间歇页失败时
+                //   只增不减 (err 页增, 成功页不重置) → derate 误触发. 补 timing + 4 调用
+                //   (latency/Adjust 放 Blocked 检查前 — HTTP 响应延迟有效无论是否 Blocked;
+                //   success/Report 放 Blocked 检查后 — 仅真实成功才计, 与外层同款).
+                pageFetchStart := time.Now()
                 res, err := FetchPage(ctx, u, mergeFetchConfig(cfg.Override, FetchConfig{
                         RefererChain:    cfg.Override.RefererChain,
                         RefererURL:      refererURL,
@@ -1956,6 +1966,20 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                                 getHealthTracker().recordFailure(pageHost)
                         }
                         return "", err
+                }
+                // R87-A BUG-230: 成功路径补 hostGate/health 报告 (与外层 book fetch 对称).
+                pageHost := HostGateKeyOf(u)
+                pageLatencyMs := time.Since(pageFetchStart).Milliseconds()
+                getHealthTracker().recordLatency(pageHost, pageLatencyMs)
+                GetHostGate().AdjustMinGap(pageHost, pageLatencyMs)
+                if res.Blocked {
+                        // Blocked 页仍返 res.HTML (ParseToc 解析, 与原行为一致 — Blocked
+                        //   propagation 是 R86-A 未决项 #4 defer); 此处仅补 hostGate 报告.
+                        GetHostGate().ReportFailure(pageHost)
+                        getHealthTracker().recordFailure(pageHost)
+                } else {
+                        getHealthTracker().recordSuccess(pageHost)
+                        GetHostGate().ReportSuccess(pageHost)
                 }
                 return res.HTML, nil
         }
@@ -2171,6 +2195,14 @@ func CrawlChapterContent(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRun
                         return "", err
                 }
                 rt.IncRequest()
+                // R87-A BUG-230 (P3) 修复 (与 CrawlBookMeta pageFetcher 同款): 章节正文
+                //   翻页成功路径原仅 return pageRes.HTML, 漏调 hostGate/health 4 调用,
+                //   与外层 chapter fetch (line ~2144-2161) + R86-A BUG-220 err 路径不对称.
+                //   多页章节第 2+ 页成功不计 → healthTracker successRate 低估 → 降并发;
+                //   hostGate failStreak 间歇页失败只增不减 → derate 误触发. 补 timing +
+                //   4 调用 (hostGate 变量在 line ~2100 外层已声明, 此 closure 共享, 与
+                //   err 路径同款用 hostGate 而非 GetHostGate()).
+                pageFetchStart := time.Now()
                 pageRes, err := FetchPage(ctx, u, mergeFetchConfig(q.BookCtx.FetchCfg, FetchConfig{
                         RefererChain:    q.BookCtx.FetchCfg.RefererChain,
                         RefererURL:      refererURL,
@@ -2198,6 +2230,20 @@ func CrawlChapterContent(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRun
                                 getHealthTracker().recordFailure(pageHost)
                         }
                         return "", err
+                }
+                // R87-A BUG-230: 成功路径补 hostGate/health 报告 (与外层 chapter fetch 对称).
+                pageHost := HostGateKeyOf(u)
+                pageLatencyMs := time.Since(pageFetchStart).Milliseconds()
+                getHealthTracker().recordLatency(pageHost, pageLatencyMs)
+                hostGate.AdjustMinGap(pageHost, pageLatencyMs)
+                if pageRes.Blocked {
+                        // Blocked 页仍返 pageRes.HTML (ParseContent 解析, 与原行为一致 —
+                        //   Blocked propagation 是 R86-A 未决项 #4 defer); 此处仅补 hostGate.
+                        hostGate.ReportFailure(pageHost)
+                        getHealthTracker().recordFailure(pageHost)
+                } else {
+                        getHealthTracker().recordSuccess(pageHost)
+                        hostGate.ReportSuccess(pageHost)
                 }
                 return pageRes.HTML, nil
         }

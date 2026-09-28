@@ -430,6 +430,22 @@ var (
 	//   原 \s+ 仅匹配 ASCII whitespace, 漏 U+00A0/U+1680/U+2000-U+200A/U+202F/U+205F/U+3000.
 	unicodeWsRe = regexp.MustCompile(`[\x{00A0}\x{1680}\x{2000}-\x{200A}\x{202F}\x{205F}\x{3000}]`)
 
+	// R87-B BUG-227 (P3) 修复: cleanContentHtmlSync HTML 分支隐藏元素检测
+	//   style 属性值剥空白. 原 strings.ReplaceAll(style, " ", "") 仅剥 ASCII
+	//   space (U+0020), 漏 CSS 合法空白 \t \n \r \f \v + Unicode 空白 NBSP
+	//   (U+00A0) / 全角空格 (U+3000) 等 (R86-B 未决项 #6 候选). 源站偶发
+	//   inline style 含 \n\t (CSS minify 反弹) / NBSP (admin 复制粘贴论坛)
+	//   → "display:\n\tnone" / "display:\u00A0none" 不被剥 → styleNoSpace
+	//   仍含空白 → displayNoneRe "display:none(?:[;}]|!|$)" 不匹配 → 元素
+	//   未删 (false negative, 暗 SEO/广告残留). 修复: 预编译正则剥全部 CSS
+	//   空白 (与 unicodeWsRe 同口径 + 补 ASCII \t\n\v\f\r 与 U+0085 NEL).
+	//   注: U+0085 NEL 不在 unicodeWsRe (NormalizeParagraphs 语境, 不剥
+	//   NEL 因 HtmlRender 已转 \n), 但 inline style 语境 NEL 仍是 CSS 空白
+	//   (浏览器 CSS tokenizer 视 NEL 为 whitespace token), 一并剥防漏.
+	//   latent 自 R49-1B (隐藏元素检测加, 38 轮未发现因源站 inline style
+	//   极少含 \n\t/NBSP, 多为 ASCII space).
+	cssWhitespaceRe = regexp.MustCompile(`[\t\n\v\f\r \x{0085}\x{00A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}]`)
+
 	// R47-1A: CleanTextField / CleanIntro / stripTrailingPromo / stripLeadingMetadata
 	//   内联 regexp 提为包级 (原每书/每章节都重编译, hot path GC 压力大)
 	// R79-C 精简: cleanTextFieldTagStripRe / cleanIntroBrRe / cleanIntroTagStripRe
@@ -750,7 +766,11 @@ func cleanContentHtmlSync(raw string, cfg CleanConfig) string {
 			return
 		}
 		style := strings.ToLower(s.AttrOr("style", ""))
-		styleNoSpace := strings.ReplaceAll(style, " ", "")
+		// R87-B BUG-227 (P3): 改用 cssWhitespaceRe (剥全部 CSS 空白) 替代
+		//   strings.ReplaceAll(style, " ", "") (仅剥 ASCII space). 否则
+		//   "display:\n\tnone" / "display:\u00A0none" 仍含空白 → 不匹配
+		//   displayNoneRe → false negative (元素未删, 暗 SEO/广告残留).
+		styleNoSpace := cssWhitespaceRe.ReplaceAllString(style, "")
 		// R86-B BUG-219 (P3): 改用 displayNoneRe / visibilityHiddenRe 正则
 		//   (终结符 [;}]|!|$), 防 "display:none-flex" 等无效 CSS 值误命中.
 		//   原 strings.Contains 子串匹配漏此 case → 误删可见元素.

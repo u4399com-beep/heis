@@ -3957,6 +3957,24 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 if coop := resp.Header.Get("Cross-Origin-Opener-Policy"); coop != "" {
                         recordSecurityHeader(originHost(rawURL), "Cross-Origin-Opener-Policy", coop)
                 }
+                // R87-A 反反爬第 129-133 项: 跨域 / 资源策略 / CSP 报告响应头观测 (COEP / CORP /
+                //   X-Permitted-Cross-Domain-Policies / X-DNS-Prefetch-Control / CSP-Report-Only,
+                //   per-host 合并 tracker 第 6-10 字段, 与 124-128 同款).
+                if coep := resp.Header.Get("Cross-Origin-Embedder-Policy"); coep != "" {
+                        recordSecurityHeader(originHost(rawURL), "Cross-Origin-Embedder-Policy", coep)
+                }
+                if corp := resp.Header.Get("Cross-Origin-Resource-Policy"); corp != "" {
+                        recordSecurityHeader(originHost(rawURL), "Cross-Origin-Resource-Policy", corp)
+                }
+                if xpcdp := resp.Header.Get("X-Permitted-Cross-Domain-Policies"); xpcdp != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Permitted-Cross-Domain-Policies", xpcdp)
+                }
+                if xdns := resp.Header.Get("X-DNS-Prefetch-Control"); xdns != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-DNS-Prefetch-Control", xdns)
+                }
+                if cspro := resp.Header.Get("Content-Security-Policy-Report-Only"); cspro != "" {
+                        recordSecurityHeader(originHost(rawURL), "Content-Security-Policy-Report-Only", cspro)
+                }
 
                 // Set-Cookie 处理 (autoCookie)
                 if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
@@ -4813,6 +4831,23 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 if coop := extractHeaderFromCurlStdout(headers, "Cross-Origin-Opener-Policy"); coop != "" {
                         recordSecurityHeader(domain, "Cross-Origin-Opener-Policy", coop)
                 }
+                // R87-A 反反爬第 129-133 项: 跨域 / 资源策略 / CSP 报告响应头观测 (与 fetchHttp
+                //   同款, curl -D - dump headers 路径; fetchBinaryViaCurl 不 dump 故不调).
+                if coep := extractHeaderFromCurlStdout(headers, "Cross-Origin-Embedder-Policy"); coep != "" {
+                        recordSecurityHeader(domain, "Cross-Origin-Embedder-Policy", coep)
+                }
+                if corp := extractHeaderFromCurlStdout(headers, "Cross-Origin-Resource-Policy"); corp != "" {
+                        recordSecurityHeader(domain, "Cross-Origin-Resource-Policy", corp)
+                }
+                if xpcdp := extractHeaderFromCurlStdout(headers, "X-Permitted-Cross-Domain-Policies"); xpcdp != "" {
+                        recordSecurityHeader(domain, "X-Permitted-Cross-Domain-Policies", xpcdp)
+                }
+                if xdns := extractHeaderFromCurlStdout(headers, "X-DNS-Prefetch-Control"); xdns != "" {
+                        recordSecurityHeader(domain, "X-DNS-Prefetch-Control", xdns)
+                }
+                if cspro := extractHeaderFromCurlStdout(headers, "Content-Security-Policy-Report-Only"); cspro != "" {
+                        recordSecurityHeader(domain, "Content-Security-Policy-Report-Only", cspro)
+                }
                 if status >= 300 {
                         // R66-C BUG-52 (P3): curl 4xx/5xx 也记 latency + fail (与 fetchHttp
                         //   同款, 防 60s 窗口 stats 低估失败率).
@@ -4832,7 +4867,31 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                         if cfg.AutoCookie && len(setCookies) > 0 {
                                 GetCookieJar().Store(domain, setCookies)
                         }
-                        return "", &HTTPError{StatusCode: status, Body: body, SetCookies: setCookies}
+                        // R87-A BUG-227 (P3) 修复 (R86-A 未决项 #6 三路径对称): curl 4xx/5xx
+                        //   HTTPError 原仅填 StatusCode/Body/SetCookies, 漏 RetryAfterMs +
+                        //   ServerHeader/CfRay/CfMitigated (fetchHttp line ~3985-3994 +
+                        //   fetchBinaryHttp line ~6431-6441 都填). 后果: runner.go 6 处
+                        //   hostGate.ReportRateLimited 调用 (discoverBooks/CrawlBookMeta/
+                        //   CrawlChapterContent + 2 pageFetcher err 路径) 全部以
+                        //   `he.RetryAfterMs > 0` 守卫 → curl fallback 429/503+Retry-After
+                        //   返 RetryAfterMs=0 → ReportRateLimited 不触发 → hostGate 不节流
+                        //   → 后续同 host 仍按原间隔发, 持续 429 频控 (Cloudflare 升级 IP
+                        //   封禁). Server/CfRay/CfMitigated 缺失让 admin 丢失 Cloudflare
+                        //   检测上下文. 修复: 与 fetchHttp 同款从 curl dump headers 提取 4 头
+                        //   (extractHeaderFromCurlStdout 已对 Retry-After/Server/Cf-Ray/
+                        //   Cf-Mitigated 大小写不敏感提取) + parseRetryAfterMs 封顶解析.
+                        herr := &HTTPError{
+                                StatusCode:   status,
+                                Body:         body,
+                                ServerHeader: extractHeaderFromCurlStdout(headers, "Server"),
+                                CfRay:        extractHeaderFromCurlStdout(headers, "Cf-Ray"),
+                                CfMitigated:  extractHeaderFromCurlStdout(headers, "Cf-Mitigated"),
+                                SetCookies:   setCookies,
+                        }
+                        if ra := extractHeaderFromCurlStdout(headers, "Retry-After"); ra != "" {
+                                herr.RetryAfterMs = parseRetryAfterMs(ra)
+                        }
+                        return "", herr
                 }
                 // Set-Cookie 处理 (200 + Set-Cookie)
                 if cfg.AutoCookie {
@@ -4853,6 +4912,16 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
         latencyMs := time.Since(attemptStart).Milliseconds()
         recordCollectAttempt(domain, true, latencyMs)
         SetHostReferer(rawURL)
+        // R87-A BUG-229 (P4) 修复 (R86-A 未决项 #6 三路径对称): fetchViaCurl 成功路径
+        //   原不调 RecordH2FlowControlObserved (fetchHttp line ~4043 调). 后果: 当
+        //   native fetchHttp 失败 (TLS 指纹识别等) 走 curl fallback 成功时, 该 host
+        //   的 HTTP/2 状态经 recordHostProtoFingerprint 已记录 (line ~4792), 但 H2
+        //   flow control 观测未触发 → admin H2WindowUpdateSnapshot 漏计 curl-only H2
+        //   host (这类 host 多为反爬严格源站, 正是 admin 需观测的对象). 修复: 与
+        //   fetchHttp 同款在成功路径调 (recordHostProtoFingerprint 已先记 proto,
+        //   本函数内部 hostProtoFingerprintFor 查到后判 HTTP/2 变体, BUG-228 修复后
+        //   "HTTP/2" curl 变体也命中). 仅观测, 不改 transport 行为 (与 fetchHttp 同款).
+        RecordH2FlowControlObserved(domain)
         return body, nil
 }
 
@@ -10076,7 +10145,17 @@ func RecordH2FlowControlObserved(host string) {
         if host == "" {
                 return
         }
-        if fp := hostProtoFingerprintFor(host); fp != nil && fp.Proto == "HTTP/2" {
+        // R87-A BUG-228 (P3) 修复 (R86-A 未决项 #6 三路径对称 + 深抓): 原检查
+        //   `fp.Proto == "HTTP/2"` 永不命中 — fetchHttp 经 recordHostProtoFingerprint
+        //   存入 resp.Proto, Go stdlib 对 HTTP/2 响应返 "HTTP/2.0" (非 "HTTP/2"); 而
+        //   fetchViaCurl 从 curl 状态行提取 "HTTP/2" (curl 不带 .0 后缀). 两路径 proto
+        //   字符串不一致, 本检查仅匹配 curl 变体 "HTTP/2" → fetchHttp H2 host 永不
+        //   记录 → hostH2WindowUpdateMap 恒空 → admin H2WindowUpdateSnapshot 永远
+        //   无数据 (R79-B 第 96 项观测价值失效). 修复: 与 line ~3548 shouldEmitPriority
+        //   Header 调用方 (e.Proto == "HTTP/2.0" || e.Proto == "HTTP/2") 同款两变体
+        //   都接受, 让 fetchHttp ("HTTP/2.0") + fetchViaCurl ("HTTP/2") 两路径 H2
+        //   host 都被记录. (注: fetchViaCurl 当前未调本函数, R87-A BUG-229 补对称.)
+        if fp := hostProtoFingerprintFor(host); fp != nil && (fp.Proto == "HTTP/2.0" || fp.Proto == "HTTP/2") {
                 now := time.Now().UnixMilli()
                 // R80-B BUG-178: LoadOrStore 保留首次观测时间, 后续调用不覆盖.
                 //   若 host 已有条目, LoadOrStore 返 (existing, false), 不改 firstObservedAt.
@@ -10956,7 +11035,7 @@ func ClearHostAcceptRanges(host string) {
         hostAcceptRangesMap.Delete(strings.ToLower(host))
 }
 
-// ---------- R86-A 反反爬第 124-128 项: 安全策略响应头观测 (合并 tracker) ----------
+// ---------- R86-A 反反爬第 124-128 项 + R87-A 第 129-133 项: 安全策略响应头观测 (合并 tracker) ----------
 //
 // 与第 117/118/122/123 项 (Via / Cache-Status / Content-Language / Accept-Ranges) 同款
 // 响应头观测 tracker, 但合并 5 个安全策略响应头到单一 per-host entry (5 头常同时出现
@@ -10969,22 +11048,43 @@ func ClearHostAcceptRanges(host string) {
 //   第 126 项 Permissions-Policy (RFC 8917, 前身 Feature-Policy) — camera/geolocation 等.
 //   第 127 项 Referrer-Policy (W3C Referrer Policy) — no-referrer/strict-origin 等.
 //   第 128 项 Cross-Origin-Opener-Policy (COOP, HTML §COOP) — same-origin 等 opener 隔离.
+//
+// R87-A 反反爬第 129-133 项: 续 5 个跨域 / 资源策略 / CSP 报告响应头 (合并到同一 entry
+// 第 6-10 字段, 与第 124-128 项同口径 fetchHttp + fetchViaCurl 两路径对称; fetchBinary
+// ViaCurl 不 dump headers 故不调, 与 124-128 同款限制). 全为 "security/cross-origin
+// policy response header" 同类, 合并语义自洽; 反爬本身不基于此检测 (客户端不发), 降分
+// 价值 ≤1 分, 主要 admin 可观测性 (识别 host 跨域隔离 / 资源策略 / 报告模式严格度).
+//
+//   第 129 项 Cross-Origin-Embedder-Policy (COEP, HTML §COEP) — require-corp/credentialless
+//     跨域嵌入隔离, 与 COOP (第 128 项) 配对实现 cross-origin isolation.
+//   第 130 项 Cross-Origin-Resource-Policy (CORP, Fetch §CORP) — same-origin/same-site
+//     标识 host 跨域资源加载策略.
+//   第 131 项 X-Permitted-Cross-Domain-Policies (Adobe) — none/master-domain/all 标识
+//     Flash/Acrobat 跨域策略 (legacy, 仍偶发).
+//   第 132 项 X-DNS-Prefetch-Control (HTML §DNS-prefetch) — on/off 标识 host DNS 预取控制.
+//   第 133 项 Content-Security-Policy-Report-Only (W3C CSP) — CSP 报告变体 (仅报告不阻断).
 
-// hostSecurityHeadersEntry — per-host 安全策略响应头观测条目 (R86-A 第 124-128 项).
-//   entry 是 pointer: recordSecurityHeader LoadOrStore canonical 指针 + 单字段 update-in-place
-//   (非 store-replace, 保留其他 4 头旧值). 同字段并发写 last-write-wins; sweep
-//   CompareAndDelete 后下次 record 重建 entry (与 recordVia store-replace 不一样, 这里需
-//   保留其他 4 头故用 update-in-place).
+// hostSecurityHeadersEntry — per-host 安全策略响应头观测条目 (R86-A 第 124-128 项 +
+//   R87-A 第 129-133 项, 合并 10 字段). entry 是 pointer: recordSecurityHeader LoadOrStore
+//   canonical 指针 + 单字段 update-in-place (非 store-replace, 保留其他 9 头旧值). 同字段
+//   并发写 last-write-wins; sweep CompareAndDelete 后下次 record 重建 entry (与 recordVia
+//   store-replace 不一样, 这里需保留其他 9 头故用 update-in-place).
 type hostSecurityHeadersEntry struct {
         hstsValue         string // Strict-Transport-Security (第 124 项)
         cspValue          string // Content-Security-Policy (第 125 项)
         permissionsPolicy string // Permissions-Policy (第 126 项)
         referrerPolicy    string // Referrer-Policy (第 127 项)
         coopValue         string // Cross-Origin-Opener-Policy (第 128 项)
+        coepValue         string // Cross-Origin-Embedder-Policy (第 129 项, R87-A)
+        corpValue         string // Cross-Origin-Resource-Policy (第 130 项, R87-A)
+        xpcdpValue       string // X-Permitted-Cross-Domain-Policies (第 131 项, R87-A)
+        xdnsPrefetch     string // X-DNS-Prefetch-Control (第 132 项, R87-A)
+        cspReportOnly    string // Content-Security-Policy-Report-Only (第 133 项, R87-A)
         detectedAt        int64  // UnixMilli
 }
 
-// hostSecurityHeadersMap — host string -> *hostSecurityHeadersEntry (R86-A 第 124-128 项).
+// hostSecurityHeadersMap — host string -> *hostSecurityHeadersEntry (R86-A 第 124-128 项 +
+//   R87-A 第 129-133 项).
 var hostSecurityHeadersMap sync.Map
 
 // hostSecurityHeadersSweepCounter — sweep 触发累加 (与 hostViaSweepCounter 同口径).
@@ -10993,9 +11093,10 @@ var hostSecurityHeadersSweepCounter atomic.Int64
 // HostSecurityHeadersSweepTTLms — per-host 条目 7 天 TTL (与 HostViaSweepTTLms 同口径).
 const HostSecurityHeadersSweepTTLms = 7 * 24 * 60 * 60 * 1000
 
-// recordSecurityHeader — 记录 host 的单个安全策略响应头 (R86-A 第 124-128 项).
-//   headerName 区分 5 头 (大小写不敏感). 与 recordVia 同款 Store + 惰性 sweep, 但保留
-//   其他 4 头旧值 (LoadOrStore canonical 指针 + 单字段 update-in-place).
+// recordSecurityHeader — 记录 host 的单个安全策略响应头 (R86-A 第 124-128 项 +
+//   R87-A 第 129-133 项). headerName 区分 10 头 (大小写不敏感). 与 recordVia 同款 Store
+//   + 惰性 sweep, 但保留其他 9 头旧值 (LoadOrStore canonical 指针 + 单字段
+//   update-in-place).
 func recordSecurityHeader(host, headerName, value string) {
         if host == "" || value == "" {
                 return
@@ -11013,6 +11114,16 @@ func recordSecurityHeader(host, headerName, value string) {
                 ent.referrerPolicy = value
         case "cross-origin-opener-policy":
                 ent.coopValue = value
+        case "cross-origin-embedder-policy":
+                ent.coepValue = value
+        case "cross-origin-resource-policy":
+                ent.corpValue = value
+        case "x-permitted-cross-domain-policies":
+                ent.xpcdpValue = value
+        case "x-dns-prefetch-control":
+                ent.xdnsPrefetch = value
+        case "content-security-policy-report-only":
+                ent.cspReportOnly = value
         default:
                 return
         }
@@ -11040,6 +11151,11 @@ func HostSecurityHeadersSnapshot() map[string]map[string]string {
                         "permissionsPolicy": e.permissionsPolicy,
                         "referrerPolicy":    e.referrerPolicy,
                         "coopValue":         e.coopValue,
+                        "coepValue":         e.coepValue,
+                        "corpValue":         e.corpValue,
+                        "xpcdpValue":        e.xpcdpValue,
+                        "xdnsPrefetch":      e.xdnsPrefetch,
+                        "cspReportOnly":     e.cspReportOnly,
                         "detectedAt":        fmt.Sprintf("%d", e.detectedAt),
                 }
                 return true

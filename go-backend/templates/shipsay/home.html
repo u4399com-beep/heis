@@ -88,14 +88,14 @@
      88 本 = 704 entries, 实际只 88 本唯一书). R70-C 修 aijjxs/home.html 同款
      bug 但漏修 shipsay/home.html. 改: 按 categoryId 过滤 (与 aijjxs 同款
      pattern, 详见 aijjxs/home.html line 94-118), 跳过空分类 ($count=0 时
-     {{if gt $count 0}} 守护跳过), 每卡最多 6 本 (与 aijjxs HomeCategoryBooks
-     默认值 6 一致, 不依赖 $.HomeCategoryBooks 字段 — shipsay/home 作 secondary
-     fallback 时 data["HomeCategoryBooks"] 未设, 硬编码 6 让 fallback 路径
-     也能正常渲染; fallback 路径 $.Books 通常为 nil, 内 range 0 次 $count=0
-     跳过卡, section 空渲染 graceful). 0 改 aijjxs/23qb/101kks/trxsw/ggd66/
-     pilishuwu/huangjinwu/ddyueshu/x2552 home.html (各自已用 {{range .Books}}
-     顶层非嵌套, 0 此 bug). 编号 BUG-225 避开 R86-C admin.go BUG-219~224
-     (并行 agent 编号不冲突, 不同文件范围). */}}
+     {{if gt $count 0}} 守护跳过), 每卡最多 N 本 (R87-D BUG-232: N =
+     $.HomeCategoryBooks, admin 可配 2-12, 默认 6; homeHandler base data
+     line 714+ 注入默认 8/6/12/12 兜底非 home view fallback 路径. 原 R86-D 硬编码
+     6 让 admin 配置失效 (e.g. admin 设 HomeCategoryBooks=10 仍只显 6 本).
+     0 改 aijjxs/23qb/101kks/trxsw/ggd66/pilishuwu/huangjinwu/ddyueshu/x2552
+     home.html (各自已用 {{range .Books}} 顶层非嵌套, 0 此 bug). 编号
+     BUG-225 避开 R86-C admin.go BUG-219~224 (并行 agent 编号不冲突, 不同文件
+     范围). */}}
 {{range $c := .NavCats}}
 {{$count := 0}}{{range $b := $.Books}}{{if eq $b.categoryId $c.id}}{{$count = add $count 1}}{{end}}{{end}}
 {{if gt $count 0}}
@@ -103,7 +103,7 @@
 <a href="{{$c.URL}}">{{$c.name}}</a>
 <ul>
 {{$perCard := 0}}
-{{range $b := $.Books}}{{if and (eq $b.categoryId $c.id) (lt $perCard 6)}}
+{{range $b := $.Books}}{{if and (eq $b.categoryId $c.id) (lt $perCard $.HomeCategoryBooks)}}
 <li>
 <a href="{{$b.URL}}">
 {{if $b.cover}}<img src="{{$b.cover}}" title="{{$b.name}}" width="120" height="160">{{end}}

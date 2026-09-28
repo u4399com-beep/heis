@@ -711,17 +711,52 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
         // 基础 data (所有页型都用到)
         //   R63-A: data["PseudoStyle"] 供模板层使用 (R63-B 将接入模板); data["HomeURL"] 提供
         //   首页 URL builder 输出 (各风格一致为 "/").
+        //   R87-D BUG-232 (P3, 顺延 R87-C BUG-228~230 admin.go scope; 本
+        //   main+templates scope 从 231 起避免与 R87-B BUG-227 crawl + R87-C
+        //   BUG-228~230 admin.go 撞号): 加 HomeLayout 4 字段默认值 (8/6/12/12)
+        //   兜底. 原 R71-A
+        //   仅 case "home" default 调 getHomeLayoutSetting 注入此 4 字段, 其它 view
+        //   (search/keyword/category/ranking/fulltext/history/book/read) 不注入 →
+        //   若 view 模板缺失 fallback shipsay/home 时, BUG-225 修复用 hardcoded 6 不
+        //   依赖; 但若 R87+ 想让模板用 $.HomeCategoryBooks/.HomeCategoryCount 等配置
+        //   值 (admin 可调 4-20/2-12), 需 base data 注入默认. R86-D 未决项 #8 候选
+        //   "homeHandler history fallback path data["HomeCategoryCount"]/["HomeCategoryBooks"]
+        //   未设" 提示此处加默认. 默认 8/6/12/12 与 homeLayoutDefaults (admin.go line
+        //   6384-6387) 一致; case "home" default 仍会覆盖此默认 (getHomeLayoutSetting
+        //   返 clamp 后的 admin 值, 与默认可能不同但不会比默认更差 — admin 配置可
+        //   小到 4/2 但仍合法). 0 caller 依赖此 4 字段在非 home view 缺失 (BUG-225
+        //   用 hardcoded 6, shipsay/history 0 用此 4 字段, aijjxs/home 用但仅 case
+        //   "home" 渲染, fallback shipsay/home 时此默认值替代 nil).
         data := map[string]interface{}{
-                "Site":        site,
-                "Categories":  cats,
-                "NavCats":     navCats,
-                "PseudoStyle": pseudoStyle,
-                "HomeURL":     buildHomeURL(pseudoStyle),
+                "Site":               site,
+                "Categories":         cats,
+                "NavCats":            navCats,
+                "PseudoStyle":        pseudoStyle,
+                "HomeURL":            buildHomeURL(pseudoStyle),
+                "HomeCategoryCount":  8,
+                "HomeCategoryBooks":  6,
+                "HomeLatestBooks":    12,
+                "HomeHotBooks":       12,
         }
 
         // R72-A 目标B: 注入链轮链接供前台友情链接模块渲染 (用户需求 #1).
         //   组合 1 站内随机书 + 2 站群首页 + 2 站群书 = 5 个链接, per-request random.
-        //   模板用 {{range .WheelLinks}}<a href="{{.url}}">{{.name}}</a>{{end}} 渲染 (R72-B 模板范围).
+        //   模板用 {{range .WheelLinks}}<a href="{{.URL}}">{{.Name}}</a>{{end}} 渲染 (R72-B 模板范围).
+        //   R87-D BUG-231 (P2, main+templates scope, 顺延 R87-B BUG-227 crawl
+        //   + R87-C BUG-228~230 admin.go; 本 scope 从 231 起):
+        //   R72-A 起 getWheelLinks map keys 用 lowercase
+        //   ("url"/"name"/"type") 但 R72-B 模板用 uppercase ({{.URL}}/{{.Name}}/
+        //   {{.Type}}) → html/template map lookup case-sensitive → 渲染空 href +
+        //   空文本 (10 主题 home.html + shipsay/history.html 共 11 模板 × 3 type
+        //   × 1 链接 = 33 处 {{.URL}}/{{.Name}}/{{.Type}} 全返 nil/empty), "随机推荐"
+        //   footer 区显示 3 个空 <a></a> (DOM 中存在但视觉不可见, href="" 点击无
+        //   跳转, rel=nofollow 仍写但无 SEO 信号). 改 getWheelLinks keys 全
+        //   uppercase (URL/Name/Type/SiteName), 与模板对齐. randomLinkHandler
+        //   JSON API 仍用 lowercase (JSON 习惯, JS 客户端期望) — 本 fix 仅
+        //   改 getWheelLinks 不改 randomLinkHandler (两路径互不依赖, JSON 序列化
+        //   不过 template engine, 无 case-sensitivity 问题). 缓存 wheelLinksCache
+        //   存的 links map 全键 uppercase, 首请求后 cache 填充, 后续请求读 cache
+        //   返 uppercase, 模板渲染正确.
         //   site["ID"] 为本站 cuid; 排除当前站防 self-link; pseudoStyle 用当前站编 book_intra URL.
         siteDBID, _ := site["ID"].(string)
         data["WheelLinks"] = getWheelLinks(siteDBID, pseudoStyle)
@@ -5089,9 +5124,9 @@ func getWheelLinks(currentSiteID, currentPseudoStyle string) []map[string]interf
         // 1. book_intra: 站内随机 1 书
         if bid, bname, ok := queryRandomBook(); ok {
                 out = append(out, map[string]interface{}{
-                        "url":  buildBookURL(currentPseudoStyle, bid),
-                        "name": bname,
-                        "type": "book_intra",
+                        "URL":  buildBookURL(currentPseudoStyle, bid),
+                        "Name": bname,
+                        "Type": "book_intra",
                 })
         }
         // 2-5. home_wheel + book_wheel: 查 2 个 distinct wheel sites (排除当前 site)
@@ -5099,17 +5134,17 @@ func getWheelLinks(currentSiteID, currentPseudoStyle string) []map[string]interf
         for _, s := range sites {
                 // home_wheel: 协议相对跨站首页
                 out = append(out, map[string]interface{}{
-                        "url":  "//" + s.domain + "/",
-                        "name": s.name,
-                        "type": "home_wheel",
+                        "URL":  "//" + s.domain + "/",
+                        "Name": s.name,
+                        "Type": "home_wheel",
                 })
                 // book_wheel: 同站 + 随机 1 书 (R74-A 目标E: 用目标站 pseudoStyle 编 URL)
                 if bid, bname, ok := queryRandomBook(); ok {
                         out = append(out, map[string]interface{}{
-                                "url":      buildWheelBookURL(s, bid),
-                                "name":     bname,
-                                "type":     "book_wheel",
-                                "siteName": s.name,
+                                "URL":      buildWheelBookURL(s, bid),
+                                "Name":     bname,
+                                "Type":     "book_wheel",
+                                "SiteName": s.name,
                         })
                 }
         }

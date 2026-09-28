@@ -692,6 +692,27 @@ func jsonGetByPath(root any, path string) any {
 		case tokenKey:
 			m, ok := cur.(map[string]any)
 			if !ok {
+				// R87-B BUG-216 (P3) 续修: dot-notation array index
+				//   "$.items.0.name" 原返 nil (tokenKey "0" 不识别
+				//   为数组下标, 需 [0] bracket notation). R85-B 仅
+				//   修了 "$." 前缀, dot-notation array 下标仍留作
+				//   未决项 #5. 修复: cur 是 []any 且 tk.key 是纯数
+				//   字 → 走 tokenIndex 路径 (与 [0] bracket 同口径).
+				//   安全: 仅当 cur 是 array 时转 (cur 是 map 时仍走
+				//   map path, {"0":"val"} 数字字符串 key 的 map 不被
+				//   误转, 因 m, ok := cur.(map[string]any) 在上面已
+				//   返 ok=true 走 m[tk.key]). tk.key 解析失败 / 越
+				//   界 → 返 nil (与原 []any + tokenKey 行为一致).
+				//   latent 自 R38 TS→Go 迁移 (47 轮未发现因 71 Rule
+				//   0 用 "items.0.title" 直连, 多用 "items[0].title"
+				//   或 "$..title" recursive descent).
+				if arr, ok2 := cur.([]any); ok2 {
+					if n, err := strconv.Atoi(tk.key); err == nil && n >= 0 && n < len(arr) {
+						cur = arr[n]
+						continue
+					}
+					return nil
+				}
 				return nil
 			}
 			cur = m[tk.key]
