@@ -626,9 +626,23 @@ func JsonGet(root any, path string) any {
 	if strings.Contains(path, "||") {
 		for _, p := range strings.Split(path, "||") {
 			p = strings.TrimSpace(p)
-			if v := JsonGet(root, p); v != nil {
-				return v
+			v := JsonGet(root, p)
+			if v == nil {
+				continue
 			}
+			// R88-B BUG-233 (P3) 修复: || fallback 应取首个非空 (注释 line 618
+			//   "取首个非空"), 非首个非 nil. 原 `if v != nil` 让 {"title": "",
+			//   "name": "x"} 配 path "title||name" 返 "" (empty title 不 fall
+			//   back 到 name), 与注释不符 → 字段提取返空值. 修复: 也 skip empty
+			//   string value ("" 是合法 JSON 字符串值, 但语义上属"空"应触发
+			//   fallback; 其他类型 number/array/map 不 skip, 0 / [] / {} 各
+			//   自有语义不视作空). latent 自 R38 TS→Go 迁移 (47 轮未发现因
+			//   71 Rule 0 用 "||" 形态 path, 多用单字段 path 或 fallback 由
+			//   ApplyTransform defaultValue 接管).
+			if s, ok := v.(string); ok && s == "" {
+				continue
+			}
+			return v
 		}
 		return nil
 	}

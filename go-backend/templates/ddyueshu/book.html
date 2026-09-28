@@ -47,7 +47,7 @@
 <div class="con_top">
 <a href="/">{{.Book.category}}</a>
 &nbsp;&gt;&nbsp;
-{{if .Book.categoryId}}<a href="/?view=category&cat={{.Book.categoryId}}">{{.Book.category}}</a>{{else}}<a href="/">{{.Book.category}}</a>{{end}}
+{{if .Book.categoryId}}<a href="/?view=category&cat={{.Book.categoryId | urlquery}}">{{.Book.category}}</a>{{else}}<a href="/">{{.Book.category}}</a>{{end}}
 &nbsp;&gt;&nbsp;
 <a href="{{.BookURL}}">{{.Book.name}}</a>
 </div>
@@ -60,8 +60,8 @@
 
 <div id="info">
 <h1>{{.Book.name}}</h1>
-<p>作者：<a href="/?view=search&q={{.Book.author}}">{{.Book.author}}</a></p>
-{{if .Book.categoryId}}<p>分类：<a href="/?view=category&cat={{.Book.categoryId}}">{{.Book.category}}</a></p>{{else}}<p>分类：{{.Book.category}}</p>{{end}}
+<p>作者：<a href="/?view=search&q={{.Book.author | urlquery}}">{{.Book.author}}</a></p>
+{{if .Book.categoryId}}<p>分类：<a href="/?view=category&cat={{.Book.categoryId | urlquery}}">{{.Book.category}}</a></p>{{else}}<p>分类：{{.Book.category}}</p>{{end}}
 <p>字数：{{wordCount .Book.wordCount}}</p>
 <p>状态：{{statusLabel .Book.status}}</p>
 <p>更新：{{fmtDate .Book.updatedAt}}</p>

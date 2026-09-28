@@ -60,7 +60,7 @@
 <span><i class="fa fa-bookmark">&nbsp;{{.rank}}</i></span>
 <a href="{{.URL}}">{{.name}}</a>
 <a class="gray" href="{{.URL}}">{{if .latestChapter}}{{.latestChapter}}{{else}}—{{end}}</a>
-<span><a class="gray" href="/?view=search&q={{.author}}">{{.author}}</a>&nbsp;&nbsp;{{fmtDateShort .updatedAt}}</span>
+<span><a class="gray" href="/?view=search&q={{.author | urlquery}}">{{.author}}</a>&nbsp;&nbsp;{{fmtDateShort .updatedAt}}</span>
 </li>
 {{end}}
 </ul>
@@ -75,7 +75,7 @@
 {{if gt .Page 1}}<a href="{{.PrevPageURL}}">上一页</a>{{end}}
 {{range .PageList}}{{if eq .page $.Page}}<strong>{{.page}}</strong>{{else}}<a href="{{.URL}}">{{.page}}</a>{{end}}{{end}}
 {{if lt .Page .TotalPages}}<a href="{{.NextPageURL}}">下一页</a>{{end}}
-{{if lt .Page .TotalPages}}<a href="/?view=ranking&sort={{.Tab}}&page={{.TotalPages}}">尾页</a>{{end}}
+{{if lt .Page .TotalPages}}<a href="/?view=ranking&sort={{.Tab | urlquery}}&page={{.TotalPages}}">尾页</a>{{end}}
 </div>
 {{end}}
 </div>
@@ -88,7 +88,7 @@
 {{range .HotBooks}}
 <li>
 <a href="{{.URL}}">{{.name}}</a>
-<a class="gray" href="/?view=search&q={{.author}}">{{.author}}</a>
+<a class="gray" href="/?view=search&q={{.author | urlquery}}">{{.author}}</a>
 </li>
 {{end}}
 </ul>

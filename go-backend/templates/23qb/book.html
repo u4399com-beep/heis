@@ -80,12 +80,12 @@
 <div class="novel-info-main">
 <div class="novel-info-items">
 <div class="novel-info-itemtitle">作者</div>
-<div class="novel-info-actor"><a href="/?view=search&q={{.Book.author}}" title="{{.Book.author}}">{{.Book.author}}</a></div>
+<div class="novel-info-actor"><a href="/?view=search&q={{.Book.author | urlquery}}" title="{{.Book.author}}">{{.Book.author}}</a></div>
 </div>
 <div class="novel-info-items">
 <div class="novel-info-itemtitle">分类</div>
 <div class="novel-info-actor">
-{{if .Book.categoryId}}<a href="/?view=category&cat={{.Book.categoryId}}" title="{{.Book.category}}">{{.Book.category}}{{else}}{{.Book.category}}{{end}}</a>
+{{if .Book.categoryId}}<a href="/?view=category&cat={{.Book.categoryId | urlquery}}" title="{{.Book.category}}">{{.Book.category}}{{else}}{{.Book.category}}{{end}}</a>
 </div>
 </div>
 <div class="novel-info-items">

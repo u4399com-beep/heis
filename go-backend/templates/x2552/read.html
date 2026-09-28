@@ -76,7 +76,7 @@
 <span style="margin:0 12px;color:#eee;">|</span>
 <a href="javascript:void(0)" title="回顶部" onclick="window.scrollTo({top:0,behavior:'smooth'});" style="color:#2f468f;text-decoration:none;">回顶部</a>
 <span style="margin:0 12px;color:#eee;">|</span>
-<a href="/?view=book&id={{.Book.id}}" title="返回书页" style="color:#2f468f;text-decoration:none;">返回书页</a>
+<a href="{{.BookURL}}" title="返回书页" style="color:#2f468f;text-decoration:none;">返回书页</a>
 </div>
 
 <h1>{{.Chapter.title}}</h1>
@@ -86,18 +86,23 @@
 </div>
 
 <div class="btnlinks" style="text-align:center;margin-top:24px;">
-{{if .Prev}}<a class="read" href="/?view=read&chapter={{.Prev.id}}" title="上一章">« 上一章</a>{{end}}
+{{/* R88-D BUG-240 (template streamline, BUG-238 同款 prev/next 不对称): x2552/read.html 原 /?view=read&chapter={{.Prev.id}} 裸拼 Prev.id 入 query value, homeHandler line 890 已调 buildChapterURL(pseudoStyle, pid, bookIDFromMap(book)) 设 prev["URL"]. 用 {{.Prev.URL}} 替裸 id 让 admin 配置的 pseudoStyle (dir / slug / hashid 等) 生效, 不再强制 query 风格. BUG-195 nil-guard 保证 prev!=nil 时 prev["URL"] 已设. */}}
+{{if .Prev}}<a class="read" href="{{.Prev.URL}}" title="上一章">« 上一章</a>{{end}}
 <a href="javascript:void(0)" onclick="window.scrollTo({top:0,behavior:'smooth'});" title="回顶部">返回顶部</a>
-{{if .Next}}<a class="read" href="/?view=read&chapter={{.Next.id}}" title="下一章">下一章 »</a>{{end}}
+{{/* R88-D BUG-240: 同款 next 路径, homeHandler line 897 已设 next["URL"]. */}}
+{{if .Next}}<a class="read" href="{{.Next.URL}}" title="下一章">下一章 »</a>{{end}}
 </div>
 </div>
 
 <div id="a_footer">
-{{if .Prev}}<a href="/?view=read&chapter={{.Prev.id}}" style="color:#2f468f;text-decoration:none;margin-right:16px;">« 上一章</a>{{end}}
+{{/* R88-D BUG-240: footer 区同款 prev 链接. */}}
+{{if .Prev}}<a href="{{.Prev.URL}}" style="color:#2f468f;text-decoration:none;margin-right:16px;">« 上一章</a>{{end}}
 |
-<a href="/?view=book&id={{.Book.id}}" style="color:#2f468f;text-decoration:none;margin:0 16px;">返回书页</a>
+{{/* R88-D BUG-240: 同款 BookURL, homeHandler line 878 已调 buildBookURL(pseudoStyle, bid) 设 data["BookURL"] (read view case). */}}
+<a href="{{.BookURL}}" style="color:#2f468f;text-decoration:none;margin:0 16px;">返回书页</a>
 |
-{{if .Next}}<a href="/?view=read&chapter={{.Next.id}}" style="color:#2f468f;text-decoration:none;margin-left:16px;">下一章 »</a>{{end}}
+{{/* R88-D BUG-240: footer 区同款 next 链接. */}}
+{{if .Next}}<a href="{{.Next.URL}}" style="color:#2f468f;text-decoration:none;margin-left:16px;">下一章 »</a>{{end}}
 </div>
 
 <div class="cl" style="height:8px;"></div>

@@ -35,7 +35,7 @@
 <ul>
 <li class="m_ml"></li>
 <li><a href="/">吾爱首页</a></li>
-{{range .NavCats}}<li {{if eq .name $.Label}}class="current"{{end}}><a href="/?view=category&cat={{.id}}">{{.name}}</a></li>{{end}}
+{{range .NavCats}}<li {{if eq .name $.Label}}class="current"{{end}}><a href="/?view=category&cat={{.id | urlquery}}">{{.name}}</a></li>{{end}}
 <li><a href="/?view=fulltext">全本</a></li>
 <li><a href="/?view=history">阅读记录</a></li>
 <li class="m_bc"><a rel="nofollow" href="/?view=category"></a></li>
@@ -67,7 +67,7 @@
 <tbody>
 {{range .Books}}
 <tr>
-<td><a href="/?view=category&cat={{.categoryId}}">[{{.category}}]</a></td>
+<td><a href="/?view=category&cat={{.categoryId | urlquery}}">[{{.category}}]</a></td>
 <td><a href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a></td>
 <td><a href="/?view=book&id={{.id}}" target="_blank">{{if .latestChapter}}{{.latestChapter}}{{else}}查看最新章节{{end}}</a></td>
 <td>{{.author}}</td>
@@ -87,9 +87,11 @@
 
 {{if gt .TotalPages 1}}
 <div class="pagelink">
-{{if gt .Page 1}}<a href="/?view=category&cat={{.CatID}}&page={{sub .Page 1}}">上一页</a>{{else}}<a href="javascript:alert('已经是第一页了');">第一页</a>{{end}}
+{{/* R88-D BUG-238 (template streamline, BUG-237 同款 catID 不对称防护): 替裸 prev URL 为 {{.PrevPageURL}} (homeHandler line 986 buildCategoryURL + BUG-237 url.QueryEscape(catID) 已编码). 原 /?view=category&cat={{.CatID}}&page={{sub .Page 1}} 让 catID 裸入 query value, 用户输入 cat="foo&bar" 翻页时 server 解析 cat=foo+多余 bar 参数, 翻页与首页不一致. */}}
+{{if gt .Page 1}}<a href="{{.PrevPageURL}}">上一页</a>{{else}}<a href="javascript:alert('已经是第一页了');">第一页</a>{{end}}
 {{range .PageList}}{{if eq .page $.Page}}<strong>{{.page}}</strong>{{else}}<a href="{{.URL}}">{{.page}}</a>{{end}}{{end}}
-{{if lt .Page .TotalPages}}<a href="/?view=category&cat={{.CatID}}&page={{add .Page 1}}">下一页</a>{{else}}<a href="javascript:alert('已经是最后一页了');">最后页</a>{{end}}
+{{/* R88-D BUG-238: 同款裸 next URL 替为 {{.NextPageURL}} (homeHandler line 989 buildCategoryURL + BUG-237 url.QueryEscape(catID) 已编码). */}}
+{{if lt .Page .TotalPages}}<a href="{{.NextPageURL}}">下一页</a>{{else}}<a href="javascript:alert('已经是最后一页了');">最后页</a>{{end}}
 </div>
 {{end}}
 </div>

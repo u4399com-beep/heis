@@ -35,7 +35,7 @@
 <ul>
 <li class="m_ml"></li>
 <li><a href="/">吾爱首页</a></li>
-{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}">{{.name}}</a></li>{{end}}
+{{range .NavCats}}<li><a href="/?view=category&cat={{.id | urlquery}}">{{.name}}</a></li>{{end}}
 <li><a href="/?view=fulltext">全本</a></li>
 <li><a href="/?view=history">阅读记录</a></li>
 <li class="m_bc"><a rel="nofollow" href="/?view=category"></a></li>
@@ -68,7 +68,7 @@
 <ul class="update">
 {{range .Books}}
 <li>
-<p class="ul1"><a href="/?view=category&cat={{.categoryId}}">[{{.category}}]</a>《<a class="poptext" href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a>》</p>
+<p class="ul1"><a href="/?view=category&cat={{.categoryId | urlquery}}">[{{.category}}]</a>《<a class="poptext" href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a>》</p>
 <p class="ul2"><a href="/?view=book&id={{.id}}" target="_blank">{{if .latestChapter}}{{.latestChapter}}{{else}}查看最新章节{{end}}</a></p>
 <p>{{.author}}</p>{{fmtDateMD .updatedAt}}
 </li>

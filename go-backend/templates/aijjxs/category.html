@@ -73,7 +73,7 @@
 <div style="padding:0 19px">{{if .intro}}{{.intro}}{{else}}暂无简介{{end}}</div>
 <div style="padding:0 19px">
 <span class="mainGreen">
-<small>书籍作者：</small><a href="/?view=search&q={{.author}}" title="{{.author}}">{{.author}}</a>
+<small>书籍作者：</small><a href="/?view=search&q={{.author | urlquery}}" title="{{.author}}">{{.author}}</a>
 <small>文件大小：</small>{{wordCount .wordCount}}
 <small>写作进度：</small>{{statusLabel .status}}
 <small>下载方式：</small>全本免费
@@ -93,7 +93,7 @@
 {{if gt .Page 1}}<a href="{{.PrevPageURL}}">上一页</a>{{end}}
 {{range .PageList}}{{if eq .page $.Page}}<b>{{.page}}</b>{{else}}<a href="{{.URL}}">{{.page}}</a>{{end}}{{end}}
 {{if lt .Page .TotalPages}}<a href="{{.NextPageURL}}">下一页</a>{{end}}
-{{if lt .Page .TotalPages}}<a href="/?view=category{{if .CatID}}&cat={{.CatID}}{{end}}&page={{.TotalPages}}">尾页</a>{{end}}
+{{if lt .Page .TotalPages}}<a href="/?view=category{{if .CatID}}&cat={{.CatID | urlquery}}{{end}}&page={{.TotalPages}}">尾页</a>{{end}}
 </div>
 {{end}}
 </div>
@@ -121,7 +121,7 @@
 <article class="panel" style="margin-top:14px;">
 <h3>热门作者</h3>
 <div class="body tags">
-{{range .TopAuthors}}<a href="/?view=search&q={{.}}" title="{{.}}">{{.}}</a>{{end}}
+{{range .TopAuthors}}<a href="/?view=search&q={{. | urlquery}}" title="{{.}}">{{.}}</a>{{end}}
 </div>
 </article>
 {{end}}

@@ -35,7 +35,7 @@
 <ul>
 <li class="m_ml"></li>
 <li><a href="/">吾爱首页</a></li>
-{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}">{{.name}}</a></li>{{end}}
+{{range .NavCats}}<li><a href="/?view=category&cat={{.id | urlquery}}">{{.name}}</a></li>{{end}}
 <li class="current"><a href="/?view=fulltext">全本</a></li>
 <li class="m_bc"><a rel="nofollow" href="/?view=category"></a></li>
 <li class="m_mr"></li>
@@ -66,7 +66,7 @@
 <tbody>
 {{range .Books}}
 <tr>
-<td><a href="/?view=category&cat={{.categoryId}}">[{{.category}}]</a></td>
+<td><a href="/?view=category&cat={{.categoryId | urlquery}}">[{{.category}}]</a></td>
 <td><a href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a></td>
 <td><a href="/?view=book&id={{.id}}" target="_blank">{{if .latestChapter}}{{.latestChapter}}{{else}}已完结{{end}}</a></td>
 <td>{{.author}}</td>
@@ -86,9 +86,11 @@
 
 {{if gt .TotalPages 1}}
 <div class="pagelink">
-{{if gt .Page 1}}<a href="/?view=fulltext&page={{sub .Page 1}}">上一页</a>{{else}}<a href="javascript:alert('已经是第一页了');">第一页</a>{{end}}
+{{/* R88-D BUG-238 (template streamline): fulltext 无 id 参数 (无 catID/Tab 不对称问题), 但仍替裸 prev URL 为 {{.PrevPageURL}} (homeHandler line 1069 buildPagerURL) 保持模板与 Go-side builder 一致, 防 future 加 id 参数时漏调. */}}
+{{if gt .Page 1}}<a href="{{.PrevPageURL}}">上一页</a>{{else}}<a href="javascript:alert('已经是第一页了');">第一页</a>{{end}}
 {{range .PageList}}{{if eq .page $.Page}}<strong>{{.page}}</strong>{{else}}<a href="{{.URL}}">{{.page}}</a>{{end}}{{end}}
-{{if lt .Page .TotalPages}}<a href="/?view=fulltext&page={{add .Page 1}}">下一页</a>{{else}}<a href="javascript:alert('已经是最后一页了');">最后页</a>{{end}}
+{{/* R88-D BUG-238: 同款裸 next URL 替为 {{.NextPageURL}} (homeHandler line 1072 buildPagerURL). */}}
+{{if lt .Page .TotalPages}}<a href="{{.NextPageURL}}">下一页</a>{{else}}<a href="javascript:alert('已经是最后一页了');">最后页</a>{{end}}
 </div>
 {{end}}
 </div>

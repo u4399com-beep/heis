@@ -60,7 +60,7 @@
 <a href="{{.URL}}"><h2>{{.name}}</h2></a>
 <p class="indent">{{.intro}}</p>
 <div class="li_bottom">
-<a href="/?view=search&q={{.author}}"><i class="fa fa-user-circle-o">&nbsp;{{.author}}</i></a>
+<a href="/?view=search&q={{.author | urlquery}}"><i class="fa fa-user-circle-o">&nbsp;{{.author}}</i></a>
 <div>
 <em class="orange">{{wordCount .wordCount}}</em>
 <em class="blue">{{fmtDate .updatedAt}}</em>
@@ -101,7 +101,7 @@
 <div>
 <div class="store_title">热门作者</div>
 {{range .TopAuthors}}
-<a href="/?view=search&q={{.}}">{{.}}</a>
+<a href="/?view=search&q={{. | urlquery}}">{{.}}</a>
 {{end}}
 </div>
 </div>

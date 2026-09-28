@@ -4474,12 +4474,30 @@ func buildCategoryURL(style, catID string, page int) string {
         if page < 1 {
                 page = 1
         }
+        // R88-D BUG-237 (P3, main+templates scope, 顺延 R87-D BUG-231/232;
+        //   顺延 R87-B BUG-227 crawl + R87-C BUG-228~230 admin.go; 本 scope 从
+        //   231 起): buildCategoryURL query 风格 catID 未 URL-encode, 与 BUG-32
+        //   buildPagerURL 不对称 (R64-D 修 buildPagerURL sort/q/tag 已 url.QueryEscape
+        //   id, 但 buildCategoryURL catID 直接拼接到 query value). catID 源自
+        //   homeHandler case "category" r.URL.Query().Get("cat") (用户输入), 即使
+        //   getCategoryViewData SQL 不命中 (label fallback "全本小说", 全表 books
+        //   渲染), catID 仍透传到 data["CatID"] + PrevPageURL/NextPageURL/CategoryURL
+        //   + PageList[].URL. 用户输入 cat="foo&bar" → 渲染链接
+        //   /?view=category&cat=foo&bar&page=2 → 翻页时 server 解析 cat="foo" + 多余
+        //   bar 参数, 翻页结果与首页不一致 (BUG-32 同款问题但 category 路径). 修复:
+        //   query 风格 + fallback 用 url.QueryEscape(catID) 替代裸 catID. 非 query 风格
+        //   catID 经 hashidEncode/base62Encode/numericHash/first6Digits 转换为纯字母
+        //   数字 (numericHash 用 fmt.Sprintf %010d, hashidEncode 用 base62EncodeUint,
+        //   first6Digits 取数字字符 + 补 0), slug/short/classic/dir/segmented 用裸
+        //   catID 但 parsePseudoStaticPath regex `[A-Za-z0-9]+` 限制, 特殊字符 catID
+        //   无法匹配 regex → 404, 无 URL 分裂风险. 故仅 query 风格 + fallback 需 encode.
+        encodedCat := url.QueryEscape(catID)
         switch style {
         case "", "query":
                 if page > 1 {
-                        return "/?view=category&cat=" + catID + "&page=" + strconv.Itoa(page)
+                        return "/?view=category&cat=" + encodedCat + "&page=" + strconv.Itoa(page)
                 }
-                return "/?view=category&cat=" + catID
+                return "/?view=category&cat=" + encodedCat
         case "numeric":
                 base := "/category/" + numericHash(catID)
                 if page > 1 {
@@ -4547,9 +4565,9 @@ func buildCategoryURL(style, catID string, page int) string {
                 return base + ".html"
         }
         if page > 1 {
-                return "/?view=category&cat=" + catID + "&page=" + strconv.Itoa(page)
+                return "/?view=category&cat=" + encodedCat + "&page=" + strconv.Itoa(page)
         }
-        return "/?view=category&cat=" + catID
+        return "/?view=category&cat=" + encodedCat
 }
 
 // buildPagerURL — 无实体 ID 的列表视图分页 URL (ranking/fulltext/search/keyword) (R63-A).

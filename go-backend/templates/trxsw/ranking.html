@@ -63,7 +63,7 @@
 </a>
 <div class="rank-info">
 <a class="rank-title" href="{{.URL}}" title="{{.name}}">{{.name}}</a>
-<div class="rank-author">作者：<a href="/?view=search&q={{.author}}" title="{{.author}}">{{.author}}</a></div>
+<div class="rank-author">作者：<a href="/?view=search&q={{.author | urlquery}}" title="{{.author}}">{{.author}}</a></div>
 <div class="rank-meta">
 <span>分类：{{.category}}</span>
 <span>状态：{{statusLabel .status}}</span>

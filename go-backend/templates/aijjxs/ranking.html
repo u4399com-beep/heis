@@ -72,7 +72,7 @@
 {{if gt .Page 1}}<a href="{{.PrevPageURL}}">上一页</a>{{end}}
 {{range .PageList}}{{if eq .page $.Page}}<b>{{.page}}</b>{{else}}<a href="{{.URL}}">{{.page}}</a>{{end}}{{end}}
 {{if lt .Page .TotalPages}}<a href="{{.NextPageURL}}">下一页</a>{{end}}
-{{if lt .Page .TotalPages}}<a href="/?view=ranking&sort={{.Tab}}&page={{.TotalPages}}">尾页</a>{{end}}
+{{if lt .Page .TotalPages}}<a href="/?view=ranking&sort={{.Tab | urlquery}}&page={{.TotalPages}}">尾页</a>{{end}}
 </div>
 {{end}}
 </div>
@@ -83,7 +83,7 @@
 <article class="panel">
 <h3>热门作者</h3>
 <div class="body tags">
-{{range .TopAuthors}}<a href="/?view=search&q={{.}}" title="{{.}}">{{.}}</a>{{end}}
+{{range .TopAuthors}}<a href="/?view=search&q={{. | urlquery}}" title="{{.}}">{{.}}</a>{{end}}
 </div>
 </article>
 {{end}}

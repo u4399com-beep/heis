@@ -87,7 +87,7 @@
 <h3 class="mytitle shuye">
 <div class="bread">
 <a href="{{.HomeURL}}">首頁</a> &gt;
-{{if .Book.categoryId}}<a href="/?view=category&cat={{.Book.categoryId}}">{{.Book.category}}</a>{{else}}<a href="/?view=category">{{.Book.category}}</a>{{end}} &gt;
+{{if .Book.categoryId}}<a href="/?view=category&cat={{.Book.categoryId | urlquery}}">{{.Book.category}}</a>{{else}}<a href="/?view=category">{{.Book.category}}</a>{{end}} &gt;
 <a href="{{.BookURL}}">{{.Book.name}}</a>
 </div>
 </h3>
@@ -102,8 +102,8 @@
 
 <div class="booknav2">
 <h1><a href="{{.BookURL}}">{{.Book.name}}</a></h1>
-<p>作者：<a href="/?view=search&q={{.Book.author}}" title="{{.Book.author}}">{{.Book.author}}</a></p>
-{{if .Book.categoryId}}<p>分類：<a href="/?view=category&cat={{.Book.categoryId}}" title="{{.Book.category}}">{{.Book.category}}</a></p>{{else}}<p>分類：{{.Book.category}}</p>{{end}}
+<p>作者：<a href="/?view=search&q={{.Book.author | urlquery}}" title="{{.Book.author}}">{{.Book.author}}</a></p>
+{{if .Book.categoryId}}<p>分類：<a href="/?view=category&cat={{.Book.categoryId | urlquery}}" title="{{.Book.category}}">{{.Book.category}}</a></p>{{else}}<p>分類：{{.Book.category}}</p>{{end}}
 <p>{{wordCount .Book.wordCount}} | {{statusLabel .Book.status}}</p>
 <p>更新：{{fmtDate .Book.updatedAt}}</p>
 <div class="sharebtn"></div>

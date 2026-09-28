@@ -57,8 +57,8 @@
 <a class="copy-btn" href="javascript:;">加入收藏</a>
 </div>
 <div class="kv">
-<p><strong>书籍作者：</strong><a href="/?view=search&q={{.Book.author}}" title="{{.Book.author}}">{{.Book.author}}</a></p>
-<p><strong>书籍分类：</strong>{{if .Book.categoryId}}<a href="/?view=category&cat={{.Book.categoryId}}" title="{{.Book.category}}">{{.Book.category}}{{end}}</a></p>
+<p><strong>书籍作者：</strong><a href="/?view=search&q={{.Book.author | urlquery}}" title="{{.Book.author}}">{{.Book.author}}</a></p>
+<p><strong>书籍分类：</strong>{{if .Book.categoryId}}<a href="/?view=category&cat={{.Book.categoryId | urlquery}}" title="{{.Book.category}}">{{.Book.category}}{{end}}</a></p>
 <p><strong>书籍大小：</strong>{{wordCount .Book.wordCount}}</p>
 <p><strong>写作进度：</strong><span class="sfwj">{{statusLabel .Book.status}}</span></p>
 <p><strong>上传时间：</strong>{{fmtDate .Book.updatedAt}}</p>
@@ -142,7 +142,7 @@
 <h3>上下部翻页</h3>
 <div class="body">
 <ul class="lines">
-<li><a href="/?view=category{{if .Book.categoryId}}&cat={{.Book.categoryId}}{{end}}">返回列表</a></li>
+<li><a href="/?view=category{{if .Book.categoryId}}&cat={{.Book.categoryId | urlquery}}{{end}}">返回列表</a></li>
 {{if .HasChapters}}<li><a href="#chapter_list">查看目录</a></li>{{end}}
 </ul>
 </div>

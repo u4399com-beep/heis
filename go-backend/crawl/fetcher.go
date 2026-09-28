@@ -2665,6 +2665,14 @@ const (
 //
 //      captcha widget 都在 <head> 或 <body> 起始处, 真实正文不会出现 g-recaptcha /
 //      h-captcha / cf-turnstile / geetest 字面量. 仅扫首 64KB 节省 CPU.
+// R88-A BUG-234 (P4) 修复 (R87-A 未决项 #6 三路径对称续抓 + captcha 深抓): 原实现用
+//      strings.Contains (case-sensitive), 但 captchaRe (line ~2598) 用 (?i) 大小写不
+//      敏感. 后果: 403 error body 含大写 widget (e.g. `<DIV CLASS="G-RECAPTCHA">` 或
+//      CDN 错误页 uppercase 转 widget) → LooksBlocked 返 true (captchaRe (?i) 命中) 但
+//      LooksLikeCaptcha 返 "" → caller (line ~6191) 不调 2captcha → captcha 不解 →
+//      章节持续 blocked. 修复: scanLower = strings.ToLower(scan) 一次性 lower 后所有
+//      Contains 用 lower 形态匹配 (与 captchaRe (?i) 同款大小写不敏感, 跨函数对称).
+//      仅扫首 64KB ToLower 成本 O(64KB), 与原 Contains 扫描同量级, 无 perf 回退.
 func LooksLikeCaptcha(html string) CaptchaType {
         if html == "" {
                 return ""
@@ -2673,20 +2681,21 @@ func LooksLikeCaptcha(html string) CaptchaType {
         if len(scan) > 65536 {
                 scan = scan[:65536]
         }
-        if strings.Contains(scan, "g-recaptcha") || strings.Contains(scan, "recaptcha/api") {
+        scanLower := strings.ToLower(scan)
+        if strings.Contains(scanLower, "g-recaptcha") || strings.Contains(scanLower, "recaptcha/api") {
                 return CaptchaRecaptcha
         }
-        if strings.Contains(scan, "h-captcha") || strings.Contains(scan, "hcaptcha") {
+        if strings.Contains(scanLower, "h-captcha") || strings.Contains(scanLower, "hcaptcha") {
                 return CaptchaHCaptcha
         }
-        if strings.Contains(scan, "cf-turnstile") {
+        if strings.Contains(scanLower, "cf-turnstile") {
                 return CaptchaTurnstile
         }
-        if strings.Contains(scan, "geetest") {
+        if strings.Contains(scanLower, "geetest") {
                 return CaptchaGeetest
         }
         // 短页 + captcha_container / 一般 captcha
-        if strings.Contains(scan, "captcha") && len(html) < 5000 {
+        if strings.Contains(scanLower, "captcha") && len(html) < 5000 {
                 return CaptchaUnknown
         }
         return ""
@@ -3975,6 +3984,24 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 if cspro := resp.Header.Get("Content-Security-Policy-Report-Only"); cspro != "" {
                         recordSecurityHeader(originHost(rawURL), "Content-Security-Policy-Report-Only", cspro)
                 }
+                // R88-A 反反爬第 134-138 项: 跨域报告 / 网络日志 / legacy 安全响应头观测
+                //   (COOP-Report-Only / COEP-Report-Only / Reporting-Endpoints / NEL / X-Download-Options,
+                //   per-host 合并 tracker 第 11-15 字段, 与 124-133 同款).
+                if coopro := resp.Header.Get("Cross-Origin-Opener-Policy-Report-Only"); coopro != "" {
+                        recordSecurityHeader(originHost(rawURL), "Cross-Origin-Opener-Policy-Report-Only", coopro)
+                }
+                if coepro := resp.Header.Get("Cross-Origin-Embedder-Policy-Report-Only"); coepro != "" {
+                        recordSecurityHeader(originHost(rawURL), "Cross-Origin-Embedder-Policy-Report-Only", coepro)
+                }
+                if re := resp.Header.Get("Reporting-Endpoints"); re != "" {
+                        recordSecurityHeader(originHost(rawURL), "Reporting-Endpoints", re)
+                }
+                if nel := resp.Header.Get("NEL"); nel != "" {
+                        recordSecurityHeader(originHost(rawURL), "NEL", nel)
+                }
+                if xdo := resp.Header.Get("X-Download-Options"); xdo != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Download-Options", xdo)
+                }
 
                 // Set-Cookie 处理 (autoCookie)
                 if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
@@ -4847,6 +4874,24 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 }
                 if cspro := extractHeaderFromCurlStdout(headers, "Content-Security-Policy-Report-Only"); cspro != "" {
                         recordSecurityHeader(domain, "Content-Security-Policy-Report-Only", cspro)
+                }
+                // R88-A 反反爬第 134-138 项: 跨域报告 / 网络日志 / legacy 安全响应头观测
+                //   (与 fetchHttp 同款, curl -D - dump headers 路径; fetchBinaryViaCurl
+                //   不 dump 故不调, 与 124-133 同款限制).
+                if coopro := extractHeaderFromCurlStdout(headers, "Cross-Origin-Opener-Policy-Report-Only"); coopro != "" {
+                        recordSecurityHeader(domain, "Cross-Origin-Opener-Policy-Report-Only", coopro)
+                }
+                if coepro := extractHeaderFromCurlStdout(headers, "Cross-Origin-Embedder-Policy-Report-Only"); coepro != "" {
+                        recordSecurityHeader(domain, "Cross-Origin-Embedder-Policy-Report-Only", coepro)
+                }
+                if re := extractHeaderFromCurlStdout(headers, "Reporting-Endpoints"); re != "" {
+                        recordSecurityHeader(domain, "Reporting-Endpoints", re)
+                }
+                if nel := extractHeaderFromCurlStdout(headers, "NEL"); nel != "" {
+                        recordSecurityHeader(domain, "NEL", nel)
+                }
+                if xdo := extractHeaderFromCurlStdout(headers, "X-Download-Options"); xdo != "" {
+                        recordSecurityHeader(domain, "X-Download-Options", xdo)
                 }
                 if status >= 300 {
                         // R66-C BUG-52 (P3): curl 4xx/5xx 也记 latency + fail (与 fetchHttp
@@ -6372,7 +6417,11 @@ func FetchRawBytes(ctx context.Context, rawURL string, cfgOverride FetchConfig) 
 //      R65-B 反反爬第 59 项 retry budget: 与 fetchHttp 同款调 acquireRetryBudget
 //      (attempt > 0 时检查, 防高频重试被识别为爬虫指纹).
 //      不调 SetHostReferer / recordCollectAttempt / recordHostErrorClass (HTML fetcher
-//      专用 stats, cover fetch 不污染这些 stats).
+//      专用 stats, cover fetch 不污染这些 stats). R88-A BUG-233 修复: 补 recordHostProto
+//      Fingerprint + RecordH2FlowControlObserved + RecordTls13PskObserved (与 fetchHttp
+//      同款 transport-level 观测, 非 HTML 专用 — cover host 的 HTTP/2 / TLS 1.3 PSK
+//      状态真实反映 host 能力, 不污染 HTML stats; 原 fetchHttp 调 3 调用 / fetchBinaryHttp
+//      漏 0, 跨路径不对称 → admin hostProto/H2Window/Tls13Psk snapshot 漏计 cover host).
 func fetchBinaryHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy string, transport *http.Transport) ([]byte, error) {
         // 请求前 jitter (反频控, 与 fetchHttp 同款)
         jitterSleep(ctx, cfg.JitterMs)
@@ -6495,6 +6544,15 @@ func fetchBinaryHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, pr
                         //   attemptCancel 已在 body 读取后调过, Go context cancel 幂等, 不重复.
                         return nil, &HTTPError{Err: errors.New("brotli encoding not supported in binary mode (curl fallback will handle)")}
                 }
+                // R88-A BUG-233 (P3) 修复 (R87-A 未决项 #6 三路径对称续抓): fetchBinaryHttp
+                //   原不调 recordHostProtoFingerprint (fetchHttp line ~3870 调). 后果: cover
+                //   host 走 native HTTP/2 时不被 hostProtoFingerprintMap 记录 → 该 host
+                //   的 H2 状态在 admin snapshot 漏计 (cover 多为 CDN 子域, 与 HTML 同域时
+                //   该 host 仍漏计 cover 路径的 proto 判定); BUG-228 修复后 RecordH2FlowControl
+                //   Observed 依赖本调用先记 proto 才能判定 H2 变体. 修复: 与 fetchHttp 同款在
+                //   brotli 检查后 / 3xx 检查前调 (success + err 两路径都记 proto, 与 fetchHttp
+                //   line ~3870 同口径). 仅观测, 不改 transport 行为.
+                recordHostProtoFingerprint(originHost(rawURL), resp.Proto, resp.Header.Get("Server"))
                 // 3xx / 4xx / 5xx 视为失败 (与 fetchHttp 同款, 不重试 3xx)
                 if resp.StatusCode >= 300 {
                         herr := &HTTPError{
@@ -6526,6 +6584,16 @@ func fetchBinaryHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, pr
                                 continue
                         }
                         return nil, herr
+                }
+                // R88-A BUG-233 (P3) 续: fetchBinaryHttp 成功路径补 H2 flow control + TLS 1.3
+                //   PSK 观测 (与 fetchHttp line ~4079-4085 同款). fetchBinaryHttp 同样走 Go
+                //   native transport (resp.Proto / resp.TLS 可读), 不调属跨路径遗漏.
+                //   RecordH2FlowControlObserved 内部依赖 line 6546 recordHostProtoFingerprint
+                //   已记 proto 才能判定 H2 变体 (BUG-228 修复后两变体都接受). 仅观测, 不改
+                //   transport 行为 (与 fetchHttp 同款).
+                RecordH2FlowControlObserved(originHost(rawURL))
+                if resp.TLS != nil && resp.TLS.Version == tls.VersionTLS13 {
+                        RecordTls13PskObserved(originHost(rawURL), resp.TLS.DidResume)
                 }
                 return bodyBytes, nil
         }
@@ -11063,12 +11131,31 @@ func ClearHostAcceptRanges(host string) {
 //     Flash/Acrobat 跨域策略 (legacy, 仍偶发).
 //   第 132 项 X-DNS-Prefetch-Control (HTML §DNS-prefetch) — on/off 标识 host DNS 预取控制.
 //   第 133 项 Content-Security-Policy-Report-Only (W3C CSP) — CSP 报告变体 (仅报告不阻断).
+//
+// R88-A 反反爬第 134-138 项: 续 5 个跨域报告 / 网络日志 / legacy 安全响应头 (合并到同一
+// entry 第 11-15 字段, 与第 124-133 项同口径 fetchHttp + fetchViaCurl 两路径对称;
+// fetchBinaryViaCurl 不 dump headers 故不调, 与 124-133 同款限制). 全为 "security/cross-
+// origin policy response header" 同类, 合并语义自洽; 反爬本身不基于此检测 (客户端不发),
+// 降分价值 ≤1 分, 主要 admin 可观测性 (识别 host 跨域报告模式 / 网络日志配置 / legacy 安全
+// 配置严格度).
+//
+//   第 134 项 Cross-Origin-Opener-Policy-Report-Only (COOP-Report-Only, HTML §COOP) —
+//     COOP 报告变体 (仅报告不阻断, 与 CSP-Report-Only 第 133 项同款语义).
+//   第 135 项 Cross-Origin-Embedder-Policy-Report-Only (COEP-Report-Only, HTML §COEP) —
+//     COEP 报告变体 (与第 134 项同款报告模式).
+//   第 136 项 Reporting-Endpoints (Reporting API, W3C) — host 配置的 report endpoint
+//     (用于 CSP/CSP-Report-Only/COEP-Report-Only/COOP-Report-Only/NEL 报告上送).
+//   第 137 项 NEL (Network Error Logging, W3C) — host 配置的网络错误日志上报策略
+//     ({report_to, max_age, include_subdomains, success_fraction, failure_fraction}).
+//   第 138 项 X-Download-Options (IE legacy, MSIE) — noopen 标识防 IE 自动打开下载文件
+//     (legacy, 与第 131 项 X-Permitted-Cross-Domain-Policies 同款 legacy 安全头).
 
 // hostSecurityHeadersEntry — per-host 安全策略响应头观测条目 (R86-A 第 124-128 项 +
-//   R87-A 第 129-133 项, 合并 10 字段). entry 是 pointer: recordSecurityHeader LoadOrStore
-//   canonical 指针 + 单字段 update-in-place (非 store-replace, 保留其他 9 头旧值). 同字段
-//   并发写 last-write-wins; sweep CompareAndDelete 后下次 record 重建 entry (与 recordVia
-//   store-replace 不一样, 这里需保留其他 9 头故用 update-in-place).
+//   R87-A 第 129-133 项 + R88-A 第 134-138 项, 合并 15 字段). entry 是 pointer:
+//   recordSecurityHeader LoadOrStore canonical 指针 + 单字段 update-in-place (非
+//   store-replace, 保留其他 14 头旧值). 同字段并发写 last-write-wins; sweep
+//   CompareAndDelete 后下次 record 重建 entry (与 recordVia store-replace 不一样, 这里需
+//   保留其他 14 头故用 update-in-place).
 type hostSecurityHeadersEntry struct {
         hstsValue         string // Strict-Transport-Security (第 124 项)
         cspValue          string // Content-Security-Policy (第 125 项)
@@ -11080,11 +11167,16 @@ type hostSecurityHeadersEntry struct {
         xpcdpValue       string // X-Permitted-Cross-Domain-Policies (第 131 项, R87-A)
         xdnsPrefetch     string // X-DNS-Prefetch-Control (第 132 项, R87-A)
         cspReportOnly    string // Content-Security-Policy-Report-Only (第 133 项, R87-A)
+        coopReportOnly   string // Cross-Origin-Opener-Policy-Report-Only (第 134 项, R88-A)
+        coepReportOnly   string // Cross-Origin-Embedder-Policy-Report-Only (第 135 项, R88-A)
+        reportingEndpoints string // Reporting-Endpoints (第 136 项, R88-A)
+        nel              string // NEL (Network Error Logging, 第 137 项, R88-A)
+        xDownloadOptions  string // X-Download-Options (第 138 项, R88-A)
         detectedAt        int64  // UnixMilli
 }
 
 // hostSecurityHeadersMap — host string -> *hostSecurityHeadersEntry (R86-A 第 124-128 项 +
-//   R87-A 第 129-133 项).
+//   R87-A 第 129-133 项 + R88-A 第 134-138 项).
 var hostSecurityHeadersMap sync.Map
 
 // hostSecurityHeadersSweepCounter — sweep 触发累加 (与 hostViaSweepCounter 同口径).
@@ -11094,9 +11186,9 @@ var hostSecurityHeadersSweepCounter atomic.Int64
 const HostSecurityHeadersSweepTTLms = 7 * 24 * 60 * 60 * 1000
 
 // recordSecurityHeader — 记录 host 的单个安全策略响应头 (R86-A 第 124-128 项 +
-//   R87-A 第 129-133 项). headerName 区分 10 头 (大小写不敏感). 与 recordVia 同款 Store
-//   + 惰性 sweep, 但保留其他 9 头旧值 (LoadOrStore canonical 指针 + 单字段
-//   update-in-place).
+//   R87-A 第 129-133 项 + R88-A 第 134-138 项). headerName 区分 15 头 (大小写不敏感).
+//   与 recordVia 同款 Store + 惰性 sweep, 但保留其他 14 头旧值 (LoadOrStore canonical
+//   指针 + 单字段 update-in-place).
 func recordSecurityHeader(host, headerName, value string) {
         if host == "" || value == "" {
                 return
@@ -11124,6 +11216,16 @@ func recordSecurityHeader(host, headerName, value string) {
                 ent.xdnsPrefetch = value
         case "content-security-policy-report-only":
                 ent.cspReportOnly = value
+        case "cross-origin-opener-policy-report-only":
+                ent.coopReportOnly = value
+        case "cross-origin-embedder-policy-report-only":
+                ent.coepReportOnly = value
+        case "reporting-endpoints":
+                ent.reportingEndpoints = value
+        case "nel":
+                ent.nel = value
+        case "x-download-options":
+                ent.xDownloadOptions = value
         default:
                 return
         }
@@ -11156,6 +11258,11 @@ func HostSecurityHeadersSnapshot() map[string]map[string]string {
                         "xpcdpValue":        e.xpcdpValue,
                         "xdnsPrefetch":      e.xdnsPrefetch,
                         "cspReportOnly":     e.cspReportOnly,
+                        "coopReportOnly":    e.coopReportOnly,
+                        "coepReportOnly":    e.coepReportOnly,
+                        "reportingEndpoints": e.reportingEndpoints,
+                        "nel":               e.nel,
+                        "xDownloadOptions":  e.xDownloadOptions,
                         "detectedAt":        fmt.Sprintf("%d", e.detectedAt),
                 }
                 return true

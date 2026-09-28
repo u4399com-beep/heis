@@ -167,7 +167,7 @@
 <article class="panel" style="margin-top:14px;">
 <h3>热门作者</h3>
 <div class="body tags">
-{{range .Books}}<a href="/?view=search&q={{.author}}" title="{{.author}}" target="_blank">{{.author}}</a>{{end}}
+{{range .Books}}<a href="/?view=search&q={{.author | urlquery}}" title="{{.author}}" target="_blank">{{.author}}</a>{{end}}
 </div>
 </article>
 </aside>

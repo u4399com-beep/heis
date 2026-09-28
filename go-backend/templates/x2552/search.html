@@ -35,7 +35,7 @@
 <ul>
 <li class="m_ml"></li>
 <li><a href="/">吾爱首页</a></li>
-{{range .NavCats}}<li><a href="/?view=category&cat={{.id}}">{{.name}}</a></li>{{end}}
+{{range .NavCats}}<li><a href="/?view=category&cat={{.id | urlquery}}">{{.name}}</a></li>{{end}}
 <li><a href="/?view=fulltext">全本</a></li>
 <li class="m_bc"><a rel="nofollow" href="/?view=category"></a></li>
 <li class="m_mr"></li>
@@ -69,7 +69,7 @@
 <tbody>
 {{range .Books}}
 <tr>
-<td><a href="/?view=category&cat={{.categoryId}}">[{{.category}}]</a></td>
+<td><a href="/?view=category&cat={{.categoryId | urlquery}}">[{{.category}}]</a></td>
 <td><a href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a></td>
 <td><a href="/?view=book&id={{.id}}" target="_blank">{{if .latestChapter}}{{.latestChapter}}{{else}}最新章节{{end}}</a></td>
 <td>{{.author}}</td>

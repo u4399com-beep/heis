@@ -121,13 +121,13 @@
 <div class="pages">
 <div class="pagelink" id="pagelink">
 {{if gt .Page 1}}
-<a class="pgroup" href="/?view=ranking&sort={{.Tab}}&page=1">&lt;&lt;</a>
+<a class="pgroup" href="/?view=ranking&sort={{.Tab | urlquery}}&page=1">&lt;&lt;</a>
 <a class="prev" href="{{.PrevPageURL}}">&lt;</a>
 {{end}}
 {{range .PageList}}{{if eq .page $.Page}}<strong>{{.page}}</strong>{{else}}<a href="{{.URL}}">{{.page}}</a>{{end}}{{end}}
 {{if lt .Page .TotalPages}}
 <a class="next" href="{{.NextPageURL}}">&gt;</a>
-<a class="ngroup" href="/?view=ranking&sort={{.Tab}}&page={{.TotalPages}}">&gt;&gt;</a>
+<a class="ngroup" href="/?view=ranking&sort={{.Tab | urlquery}}&page={{.TotalPages}}">&gt;&gt;</a>
 {{end}}
 </div>
 </div>

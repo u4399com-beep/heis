@@ -79,7 +79,7 @@
 {{range .HotBooks}}
 <li>
 <a href="{{.URL}}">{{.name}}</a>
-<a class="gray" href="/?view=search&q={{.author}}">{{.author}}</a>
+<a class="gray" href="/?view=search&q={{.author | urlquery}}">{{.author}}</a>
 </li>
 {{end}}
 </ul>
