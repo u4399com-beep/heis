@@ -351,7 +351,7 @@ var (
 	plainTextScriptStyleRe     = regexp.MustCompile(`(?is)<(?:script|style|noscript|iframe|object|embed)\b[^>]*>.*?</(?:script|style|noscript|iframe|object|embed)\s*>`)
 	plainTextScriptStyleSelfRe = regexp.MustCompile(`(?is)<(?:script|style|noscript|iframe|object|embed)\b[^>]*/>`)
 	plainTextScriptStyleTailRe = regexp.MustCompile(`(?is)<(?:script|style|noscript|iframe|object|embed)\b[^>]*>.*`)
-	plainTextBrRe              = regexp.MustCompile(`(?i)<\s*br\s*/?\s*>`)
+	plainTextBrRe              = regexp.MustCompile(`(?i)<\s*br\b[^>]*>`)
 	plainTextBlockEndRe        = regexp.MustCompile(`(?i)</(p|div|h[1-6]|li)>`)
 	// R49-1B: </a> 段间分隔 (小说章节 <a> 多为独立导航链接, 非内联;
 	//   让 <a>text</a> 独立成段, stripPlainTextPromoSegments 段级命中 navLinkRe 整段剥)
@@ -387,8 +387,26 @@ var (
 	chapterTailRe   = regexp.MustCompile(`本章(?:未完|未完待续|继续阅读)|点击下一(?:页|章)|敬请(?:期待|关注)|加入书签|为了方便下次阅读`)
 
 	// 4. 规范化 (空段落合并 + <br><br> → </p><p>)
-	normBrDoubleRe = regexp.MustCompile(`(?i)<\s*br\s*/?\s*>\s*<\s*br\s*/?\s*>`)
-	normEmptyPRe   = regexp.MustCompile(`(?i)<p>(?:\s|&nbsp;|<br\s*/?\s*>)*</p>`)
+	// R85-B BUG-218 (P3) 修复: plainTextBrRe / normBrDoubleRe / normEmptyPRe
+	//   原 `<\s*br\s*/?\s*>` 不匹配带属性的 <br> (e.g. <br class="x"> /
+	//   <br style="clear:both"> / <br data-line="1">). 源站偶发带属性变体
+	//   (广告清理 br / 样式 br / SEO br), 原 regex 漏匹配:
+	//   - plainText 分支 line 667 <br> 未转 \n → tagStripRe 直接删 → 行合并
+	//     (lost line break, 段合并);
+	//   - HTML 分支 line 830 per-<p> 段内 <br> 未转空格 → 残留 <br> → 渲染
+	//     仍 line break (consolidation 失效);
+	//   - normBrDoubleRe line 804 <br><br> 双连检测漏 → 不转 </p><p> (段间
+	//     分隔失效);
+	//   - normEmptyPRe line 805 <p><br></p> 空段检测漏 → 不删空段 (空段
+	//     残留).
+	//   修复: `<\s*br\b[^>]*>` 匹配 <br> + 可选属性 (word boundary 防
+	//   <brcustom> 误匹配, [^>]* 吃属性). normBrDoubleRe 双连同步, normEmptyPRe
+	//   内联 <br> 同步. 影响 cleanContentHtmlSync plainText + HTML 分支 +
+	//   CleanIntro (3 处用 plainTextBrRe + 1 处 normBrDoubleRe + 1 处
+	//   normEmptyPRe). latent 自 R47-1A (regex 提为包级, 38 轮未发现因
+	//   源站 <br> 多无属性, 带属性变体罕见).
+	normBrDoubleRe = regexp.MustCompile(`(?i)<\s*br\b[^>]*>\s*<\s*br\b[^>]*>`)
+	normEmptyPRe   = regexp.MustCompile(`(?i)<p>(?:\s|&nbsp;|<\s*br\b[^>]*>)*</p>`)
 	normPOpenRe    = regexp.MustCompile(`(?i)<p>\s+`)
 	normPCloseRe   = regexp.MustCompile(`(?i)\s+</p>`)
 	// 5. 无 p 标签的检测
@@ -406,9 +424,22 @@ var (
 	//   删除 (与 parser.go tagStripRe + 同文件 plainTextBrRe 重复). CleanTextField /
 	//   CleanIntro 改用 tagStripRe / plainTextBrRe (同款跨/同文件引用, 与 plainText
 	//   分支 line 674 同款).
-	cleanTextFieldWsRe        = regexp.MustCompile(`[\r\n\t]+`)
-	cleanTextFieldWs2Re       = regexp.MustCompile(`\s{2,}`)
-	cleanTextFieldWatermarkRe = regexp.MustCompile(`^(?:本书首发于|转载请注明出处|本书来源于|本书首发自)[^，。；]*[，。；]?`)
+	cleanTextFieldWsRe  = regexp.MustCompile(`[\r\n\t]+`)
+	cleanTextFieldWs2Re = regexp.MustCompile(`\s{2,}`)
+	// R85-B BUG-217 (P3) 修复: cleanTextFieldWatermarkRe `[^，。；]*` 贪婪匹配
+	//   跨空白. cleanTextFieldWsRe (line 980) 已把 \r\n\t 转 space,
+	//   cleanTextFieldWs2Re (line 981) 塌 ASCII whitespace 多串为单 space,
+	//   但 space 仍被 `[^，。；]*` 匹配 → "本书首发于起点中文网 正文" (watermark
+	//   + space + content) 整串被匹配 → ReplaceAllString(v, " ") → " " →
+	//   TrimSpace → "" (整字段被清空, 非 watermark 内容也被剥). 修复:
+	//   `[^，。；\s\x{00A0}\x{3000}]*` 排除 ASCII 空白 + NBSP + 全角空格,
+	//   让 regex 在首个空白处停 (watermark 是连续 CJK 串不含空白, 停在空白
+	//   处正确隔离 watermark vs content). 影响 CleanTextField (book name/author
+	//   等短字段), 0 调用 CleanIntro (用 RemoveAdLines + NormalizeParagraphs,
+	//   不走此 regex). latent 自 R47-1A (regex 提为包级, 38 轮未发现因
+	//   watermark 短字段罕见 + 内容紧跟 watermark 用 terminator 而非 space
+	//   分隔的 case 占多数).
+	cleanTextFieldWatermarkRe = regexp.MustCompile(`^(?:本书首发于|转载请注明出处|本书来源于|本书首发自)[^，。；\s\x{00A0}\x{3000}]*[，。；]?`)
 
 	cleanIntroBlockEndRe = regexp.MustCompile(`(?i)</(p|div)>`)
 

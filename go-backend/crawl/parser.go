@@ -617,6 +617,7 @@ func ParseJsonBody(html string) any {
 //   - "[]" 装饰可剔
 //   - "field1||field2" → 取首个非空
 //   - "$..field" / "..field" → 递归下降
+//   - "$.field" / "$" → JSONPath 根引用 (R85-B BUG-216)
 func JsonGet(root any, path string) any {
 	if root == nil || path == "" {
 		return nil
@@ -635,6 +636,21 @@ func JsonGet(root any, path string) any {
 	if strings.HasPrefix(path, "$..") || strings.HasPrefix(path, "..") {
 		key := strings.TrimPrefix(strings.TrimPrefix(path, "$"), "..")
 		return recursiveCollect(root, key)
+	}
+	// R85-B BUG-216 (P3) 修复: JsonGet 未处理 "$." JSONPath 根引用前缀.
+	//   原实现跳过此处直接走 jsonGetByPath, tokenizeJsonPath 把 "$" 当
+	//   普通 key 查 m["$"] → nil → 整条路径返 nil. admin 配置 JSON 规则
+	//   用 "$.title" (JSONPath 标准) 时字段全空 (与 "title" 直连路径行
+	//   为不一致, latent 自 R38 TS→Go 迁移, 47 轮未发现因 ParseBook pick
+	//   顺序 fallback 到 JSON-LD / meta tag 部分字段被接住). 修复: "$.key"
+	//   等价 "key", "$.a.b" 等价 "a.b", "$" alone 返 root. 不影响 "$..key"
+	//   (recursive descent 已上面接管) 与无前缀 "a.b.c" (HasPrefix 假, 不
+	//   strip, 原行为不变).
+	if path == "$" {
+		return root
+	}
+	if strings.HasPrefix(path, "$.") {
+		path = path[2:]
 	}
 	// 标准点路径
 	// [] 装饰可剔, [n] 下标, [k=v] 过滤

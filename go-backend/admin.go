@@ -628,9 +628,18 @@ func adminTaskSubHandler(w http.ResponseWriter, r *http.Request) {
 func adminTaskDeleteHandler(w http.ResponseWriter, r *http.Request, taskID string) {
 	// 查任务状态
 	var status string
+	// R85-C BUG-204 (P3, R80-D BUG-171 同款 conflation): 原实现 `err != nil` 不分
+	//   sql.ErrNoRows (行不存在 → 404) vs 其他 DB 故障 (连接断/磁盘满 → 500), 全返 404
+	//   让操作员误以为行被删 (实际 DB 故障, 行仍在). 改显式区分. 同款 pattern 在
+	//   admin.go 另 11 处 (BUG-205~215: Pattern B 全行 Scan 5 处 + Pattern C
+	//   `_ = ...Scan(&exist)` 6 处), 本轮一并修.
 	err := db.QueryRow(`SELECT status FROM Task WHERE id=?`, taskID).Scan(&status)
-	if err != nil {
+	if err == sql.ErrNoRows {
 		writeJSONErr(w, "任务不存在", 404)
+		return
+	}
+	if err != nil {
+		writeJSONErr(w, "查询任务失败: "+err.Error(), 500)
 		return
 	}
 	// 运行中需先 stop (避免 goroutine 残留)
@@ -1318,8 +1327,13 @@ func adminTaskControlHandler(w http.ResponseWriter, r *http.Request) {
 	).Scan(&name, &ruleID, &mode, &bookURL, &listURL, &fetchConfigStr, &recrawlMode,
 		&threadMin, &threadMax, &intervalMin, &intervalMax, &status,
 		&smartCategory, &smartComplete, &autoSuggest, &ruleConfig)
-	if err != nil {
+	// R85-C BUG-205 (P3, R80-D BUG-171 同款 conflation, 详见 BUG-204 rationale): 显式区分.
+	if err == sql.ErrNoRows {
 		writeJSONErr(w, "任务不存在", 404)
+		return
+	}
+	if err != nil {
+		writeJSONErr(w, "查询任务失败: "+err.Error(), 500)
 		return
 	}
 
@@ -1876,8 +1890,13 @@ func adminTaskGetHandler(w http.ResponseWriter, r *http.Request, taskID string) 
 		&intervalMin, &intervalMax, &smartCategory, &smartComplete, &autoSuggest,
 		&autoRefresh, &refreshIntervalMin, &statusS, &progress, &stats, &createdAt,
 		&updatedAt, &ruleName)
-	if err != nil {
+	// R85-C BUG-206 (P3, R80-D BUG-171 同款 conflation, 详见 BUG-204 rationale): 显式区分.
+	if err == sql.ErrNoRows {
 		writeJSONErr(w, "任务不存在", 404)
+		return
+	}
+	if err != nil {
+		writeJSONErr(w, "查询任务失败: "+err.Error(), 500)
 		return
 	}
 	// 解析 progress/stats JSON (失败 fallback 空 map, 与 adminTasksList line 772-778 同口径).
@@ -2358,9 +2377,14 @@ func adminRuleByIDHandler(w http.ResponseWriter, r *http.Request) {
 		//   与 adminBookByIDHandler PUT (line 1685) / adminSiteByIDHandler PUT (line 4332)
 		//   同款存在性检查. DELETE 路径已用 COUNT(*) FROM Task 间接验存在, 故只在 PUT 加.
 		var existRule string
-		_ = db.QueryRow(`SELECT id FROM Rule WHERE id=?`, ruleID).Scan(&existRule)
-		if existRule == "" {
+		// R85-C BUG-210 (P3, R80-D BUG-171 同款 conflation, 详见 BUG-204 rationale): 显式区分.
+		ruleExistErr := db.QueryRow(`SELECT id FROM Rule WHERE id=?`, ruleID).Scan(&existRule)
+		if ruleExistErr == sql.ErrNoRows || existRule == "" {
 			writeJSONErr(w, "规则不存在", 404)
+			return
+		}
+		if ruleExistErr != nil {
+			writeJSONErr(w, "查询规则失败: "+ruleExistErr.Error(), 500)
 			return
 		}
 		// 按字段增量更新 (enabled / name / description / config)
@@ -2751,9 +2775,14 @@ func adminBookByIDHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSONOK(w, map[string]interface{}{"id": bookID, "updated": true})
 	case http.MethodDelete:
 		var exist string
-		_ = db.QueryRow(`SELECT id FROM Book WHERE id=?`, bookID).Scan(&exist)
-		if exist == "" {
+		// R85-C BUG-211 (P3, R80-D BUG-171 同款 conflation, 详见 BUG-204 rationale): 显式区分.
+		bookExistErr := db.QueryRow(`SELECT id FROM Book WHERE id=?`, bookID).Scan(&exist)
+		if bookExistErr == sql.ErrNoRows || exist == "" {
 			writeJSONErr(w, "书籍不存在", 404)
+			return
+		}
+		if bookExistErr != nil {
+			writeJSONErr(w, "查询书籍失败: "+bookExistErr.Error(), 500)
 			return
 		}
 		// R55-1B 修复 BUG-1 (P1): 原实现先 DELETE DownloadJob 行, 再循环查
@@ -3895,9 +3924,14 @@ func updateLinkFromBody(w http.ResponseWriter, body map[string]interface{}) {
 		return
 	}
 	var exist string
-	_ = db.QueryRow(`SELECT id FROM FriendLink WHERE id=?`, id).Scan(&exist)
-	if exist == "" {
+	// R85-C BUG-212 (P3, R80-D BUG-171 同款 conflation, 详见 BUG-204 rationale): 显式区分.
+	linkExistErr := db.QueryRow(`SELECT id FROM FriendLink WHERE id=?`, id).Scan(&exist)
+	if linkExistErr == sql.ErrNoRows || exist == "" {
 		writeJSONErr(w, "友链不存在", 404)
+		return
+	}
+	if linkExistErr != nil {
+		writeJSONErr(w, "查询友链失败: "+linkExistErr.Error(), 500)
 		return
 	}
 	sets := []string{}
@@ -4079,9 +4113,14 @@ func adminDownloadsCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	var bookName string
 	var chapterCount int
+	// R85-C BUG-207 (P3, R80-D BUG-171 同款 conflation, 详见 BUG-204 rationale): 显式区分.
 	err := db.QueryRow(`SELECT name, (SELECT COUNT(*) FROM Chapter WHERE bookId=?) FROM Book WHERE id=?`, bookID, bookID).Scan(&bookName, &chapterCount)
-	if err != nil {
+	if err == sql.ErrNoRows {
 		writeJSONErr(w, "书籍不存在", 404)
+		return
+	}
+	if err != nil {
+		writeJSONErr(w, "查询书籍失败: "+err.Error(), 500)
 		return
 	}
 	if chapterCount == 0 {
@@ -4615,10 +4654,15 @@ func adminFeedbackByIDHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		var idV, typ, contact, content, urlV, siteID, status, ip, ua, adminNote, createdAt, updatedAt string
+		// R85-C BUG-208 (P3, R80-D BUG-171 同款 conflation, 详见 BUG-204 rationale): 显式区分.
 		err := db.QueryRow(`SELECT id, type, COALESCE(contact,''), content, COALESCE(url,''), COALESCE(siteId,''), status, COALESCE(ip,''), COALESCE(userAgent,''), COALESCE(adminNote,''), createdAt, updatedAt FROM Feedback WHERE id=?`, id).
 			Scan(&idV, &typ, &contact, &content, &urlV, &siteID, &status, &ip, &ua, &adminNote, &createdAt, &updatedAt)
-		if err != nil {
+		if err == sql.ErrNoRows {
 			writeJSONErr(w, "反馈不存在", 404)
+			return
+		}
+		if err != nil {
+			writeJSONErr(w, "查询反馈失败: "+err.Error(), 500)
 			return
 		}
 		writeJSONOK(w, map[string]interface{}{
@@ -4630,9 +4674,14 @@ func adminFeedbackByIDHandler(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPatch:
 		// 检查存在性
 		var exist string
-		_ = db.QueryRow(`SELECT id FROM Feedback WHERE id=?`, id).Scan(&exist)
-		if exist == "" {
+		// R85-C BUG-213 (P3, R80-D BUG-171 同款 conflation, 详见 BUG-204 rationale): 显式区分.
+		fbExistErr := db.QueryRow(`SELECT id FROM Feedback WHERE id=?`, id).Scan(&exist)
+		if fbExistErr == sql.ErrNoRows || exist == "" {
 			writeJSONErr(w, "反馈不存在", 404)
+			return
+		}
+		if fbExistErr != nil {
+			writeJSONErr(w, "查询反馈失败: "+fbExistErr.Error(), 500)
 			return
 		}
 		body := readJSONBody(r)
@@ -4680,9 +4729,14 @@ func adminFeedbackByIDHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSONOK(w, map[string]interface{}{"id": id, "updated": true})
 	case http.MethodDelete:
 		var exist string
-		_ = db.QueryRow(`SELECT id FROM Feedback WHERE id=?`, id).Scan(&exist)
-		if exist == "" {
+		// R85-C BUG-214 (P3, R80-D BUG-171 同款 conflation, 详见 BUG-204 rationale): 显式区分.
+		fbExistErr := db.QueryRow(`SELECT id FROM Feedback WHERE id=?`, id).Scan(&exist)
+		if fbExistErr == sql.ErrNoRows || exist == "" {
 			writeJSONErr(w, "反馈不存在", 404)
+			return
+		}
+		if fbExistErr != nil {
+			writeJSONErr(w, "查询反馈失败: "+fbExistErr.Error(), 500)
 			return
 		}
 		_, err := db.Exec(`DELETE FROM Feedback WHERE id=?`, id)
@@ -5957,9 +6011,14 @@ func adminSiteByIDHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSONOK(w, map[string]interface{}{"id": id, "updated": true})
 	case http.MethodDelete:
 		var exist, isDefault string
-		_ = db.QueryRow(`SELECT id, CASE WHEN isDefault THEN '1' ELSE '0' END FROM Site WHERE id=?`, id).Scan(&exist, &isDefault)
-		if exist == "" {
+		// R85-C BUG-215 (P3, R80-D BUG-171 同款 conflation, 详见 BUG-204 rationale): 显式区分.
+		siteExistErr := db.QueryRow(`SELECT id, CASE WHEN isDefault THEN '1' ELSE '0' END FROM Site WHERE id=?`, id).Scan(&exist, &isDefault)
+		if siteExistErr == sql.ErrNoRows || exist == "" {
 			writeJSONErr(w, "站点不存在", 404)
+			return
+		}
+		if siteExistErr != nil {
+			writeJSONErr(w, "查询站点失败: "+siteExistErr.Error(), 500)
 			return
 		}
 		if isDefault == "1" {
@@ -6909,9 +6968,14 @@ func adminDownloadsDelete(w http.ResponseWriter, r *http.Request, jobID string) 
 //	从原 handler 抽出, 让 adminDownloadsSubHandler 调用.
 func adminDownloadFileHandlerImpl(w http.ResponseWriter, r *http.Request, jobID string) {
 	var status, bookName string
+	// R85-C BUG-209 (P3, R80-D BUG-171 同款 conflation, 详见 BUG-204 rationale): 显式区分.
 	err := db.QueryRow(`SELECT d.status, COALESCE(b.name,'book') FROM DownloadJob d LEFT JOIN Book b ON d.bookId=b.id WHERE d.id=?`, jobID).Scan(&status, &bookName)
-	if err != nil {
+	if err == sql.ErrNoRows {
 		writeJSONErr(w, "任务不存在", 404)
+		return
+	}
+	if err != nil {
+		writeJSONErr(w, "查询任务失败: "+err.Error(), 500)
 		return
 	}
 	if status != "done" {

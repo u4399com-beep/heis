@@ -1054,19 +1054,28 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
 	case "history":
 		// R82-D 目标A (R81 交接 #8 + R77-D 未决项 #10): history view — 从客户端
 		//   `bookHistory` cookie (JSON `{"ids":["cuid1",...]}` 或 bare array) 读浏览
-		//   历史, 查 Book 表返 books list 保序. JS 在 book view 模板 (future template
-		//   work, 不在 main.go 范围) localStorage 累积最近浏览 book id → 在用户访问
-		//   /?view=history 前 setCookie 序列化 JSON. 隐私: 客户端 cookie (无 userID/
-		//   IP/session 跟踪, 不写 Setting 表).
-		//   Cookie 有真实 history → 替换 Books/TopBooks/Popular 让 shipsay/home 模板
-		//   (用 .Books 主网格) 显示真实浏览历史而非 latest 48 books; 同时注入
-		//   HistoryBooks 供未来 history.html 模板用 {{range .HistoryBooks}} (避免
-		//   shipsay/home 的 navCats × Books 8× 重复渲染, shipsay/home 范围外的模板
-		//   bug).
-		//   Cookie 缺失/空/全删 → fallback latest 48 books 占位 + HistoryBooks=[] 空
-		//   slice (非 nil) 让模板 {{if .HistoryBooks}} 守护跳过渲染空区块.
-		//   Title="浏览足迹" 注入供未来 history.html 写者用 {{.Title}}; shipsay/home
-		//   用 {{.Site.Title}} 不读 .Title, 当前 fallback 路径渲染无影响.
+		//   历史, 查 Book 表返 books list 保序. JS 在 bookHistoryTrackerHTML (line
+		//   ~2444) localStorage 累积最近浏览 book id → 用户访问 /?view=history 前
+		//   setCookie 序列化 JSON (R85-D BUG-204 修 URL-decode 后端读). 隐私: 客户端
+		//   cookie (无 userID/IP/session 跟踪, 不写 Setting 表).
+		//   Cookie 有真实 history → HistoryBooks 注入供 shipsay/history 模板
+		//   {{range .HistoryBooks}} 渲染; Books 同源 (shipsay/history else 分支
+		//   用 {{range .Books}} 兜底空 cookie 占位). Cookie 缺失/空/全删 → fallback
+		//   latest 48 books 占位 + HistoryBooks=[] 空 slice (非 nil) 让模板
+		//   {{if .HistoryBooks}} 守护跳过渲染空区块. Title="浏览足迹" 注入供
+		//   shipsay/history {{.Title}} 用.
+		//   R85-D BUG-206 (精简, R84-D 未决项 #6): 删 data["TopBooks"]/["Popular"].
+		//     shipsay/history 模板 (R83-D 建, line ~1-107) 0 消费此二字段 (仅用
+		//     .HistoryBooks + .Books + .Title + .Site/NavCats/HomeURL/WheelLinks).
+		//     R84-D 留此二字段为 homeHandler 二级 fallback shipsay/home (template
+		//     render fail 时) 消费, 但 shipsay/history parse 稳定 (启动时 glob
+		//     parse, 失败 server 不启; runtime 仅 wordCount/eq/range/if 全 nil-safe
+		//     template func, 0 panic surface) → 二级 fallback 极罕见触发. 删后省
+		//     topBooks O(n²) bubble sort (48 items = 2304 cmp) + takeBooks make+copy
+		//     (12 items) per history req, 主路径 99.9% 省 CPU. 二级 fallback (若触
+		//     发) shipsay/home 的 TopBooks/Popular 区块空渲染 (range nil → skip),
+		//     Books=historyBooks 的 NavCats × Books 8× 重复 (BUG-205 未决项) 仍在.
+		//     权衡: 主路径省 CPU > 罕见二级 fallback 2 区块空 (用户可接受).
 		var historyBooks []map[string]interface{}
 		if c, cErr := r.Cookie("bookHistory"); cErr == nil {
 			historyBooks = getHistoryViewData(c.Value)
@@ -1075,14 +1084,10 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
 			injectBookURLs(historyBooks, pseudoStyle)
 			data["HistoryBooks"] = historyBooks
 			data["Books"] = historyBooks
-			data["TopBooks"] = topBooks(historyBooks, 6)
-			data["Popular"] = takeBooks(historyBooks, 12)
 		} else {
 			books, _ := getBooks(48)
 			injectBookURLs(books, pseudoStyle)
 			data["Books"] = books
-			data["TopBooks"] = topBooks(books, 6)
-			data["Popular"] = takeBooks(books, 12)
 			data["HistoryBooks"] = []map[string]interface{}{}
 		}
 		data["Title"] = "浏览足迹"
@@ -3171,6 +3176,24 @@ func getHistoryViewData(cookieValue string) []map[string]interface{} {
 	if len(cookieValue) > 8192 {
 		log.Printf("[R82-D] getHistoryViewData: cookie too large (%d bytes, capping to first 8KB)", len(cookieValue))
 		cookieValue = cookieValue[:8192]
+	}
+	// R85-D BUG-204 (P1 correctness): JS 端 bookHistoryTrackerHTML 用
+	//   encodeURIComponent(JSON.stringify({ids:arr})) 包 cookie 值 (防 "; " /
+	//   "," 分隔符破 cookie header). 但 Go net/http readCookies 只 strip
+	//   外层双引号, 不 URL-decode (RFC 6265 cookie-octet 不规范 % 转义).
+	//   故 c.Value 是 raw URL-encoded 串 (e.g. "%7B%22ids%22%3A...").
+	//   原 json.Unmarshal 直接吃 "%7B..." → "invalid character '%'" err
+	//   → 返 nil → homeHandler case "history" 永远 fallback latest 48
+	//   (用户看到最新上传而非自己浏览足迹, 功能完全失效). 实测复现:
+	//   /tmp/bug204_test_r85d.go 6 case 全 OLD=[]/NEW=正确.
+	//   修复: URL-decode 后再 parse. 兼容: 未编码 cookie (e.g. 直接 JSON)
+	//   QueryUnescape 对无 % 串 no-op, 仍合法. 安全: 仅 url.QueryUnescape
+	//   (反 QueryEscape), 不执行 HTML/JS 解码 (no XSS surface). 坏 % 序列
+	//   (e.g. "%ZZ") → QueryUnescape err → 返 nil (caller fallback latest 48).
+	if decoded, derr := url.QueryUnescape(cookieValue); derr == nil {
+		cookieValue = decoded
+	} else {
+		return nil
 	}
 	// Parse JSON. 先试 {"ids":[...]} wrapper, 失败再试 bare array.
 	var ids []string
