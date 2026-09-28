@@ -4178,6 +4178,43 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 if xc := resp.Header.Get("X-Cache"); xc != "" {
                         recordSecurityHeader(originHost(rawURL), "X-Cache", xc)
                 }
+                // R96-A 反反爬第 174-178 项: byte-range / method allowlist / alt URI /
+                //   chunked trailer / legacy privacy policy 响应头观测 (per-host
+                //   合并 tracker 第 51-55 字段, 与 124-173 同款).
+                //   第 174 项 Accept-Ranges (RFC 7233 §4.3) — `bytes` / `none`,
+                //     反爬关联: byte-range support = host 允许 partial content
+                //     negotiation, 与第 160 ETag + 161 Last-Modified + 149 Cache-
+                //     Control 缓存策略 family 续 (range request 走 cache validator).
+                //   第 175 项 Allow (RFC 7231 §7.4.1) — `GET, HEAD, POST` 等允许
+                //     方法列表, 反爬关联: method allowlist = 反爬 host 限制 OPTIONS/
+                //     PUT/DELETE 等, 与第 142 Clear-Site-Data aggressive session
+                //     mature anti-bot stack posture 同款 family.
+                //   第 176 项 Content-Location (RFC 7231 §3.4) — 同款资源的 alt
+                //     URI, 反爬关联: alt URI = host 提供 canonical/variant 资源
+                //     pointer, 与第 172 Via + 173 X-Cache proxy/cache family 续.
+                //   第 177 项 Trailer (RFC 7234 §4.4) — chunked transfer trailing
+                //     header fields, 反爬关联: trailing headers = host 用 chunked
+                //     encoding + trailing metadata (老 HTTP/1.1 栈 fingerprint),
+                //     与第 171 Warning deprecated 同款 legacy stack family.
+                //   第 178 项 P3P (W3C deprecated) — Platform Privacy Preferences
+                //     header, 反爬关联: P3P = 2000s 老 IE privacy 栈 fingerprint,
+                //     与第 154 X-XSS-Protection / 155 HPKP / 156 Expect-CT / 171
+                //     Warning legacy deprecated family 续.
+                if ar := resp.Header.Get("Accept-Ranges"); ar != "" {
+                        recordSecurityHeader(originHost(rawURL), "Accept-Ranges", ar)
+                }
+                if al := resp.Header.Get("Allow"); al != "" {
+                        recordSecurityHeader(originHost(rawURL), "Allow", al)
+                }
+                if cl := resp.Header.Get("Content-Location"); cl != "" {
+                        recordSecurityHeader(originHost(rawURL), "Content-Location", cl)
+                }
+                if tr := resp.Header.Get("Trailer"); tr != "" {
+                        recordSecurityHeader(originHost(rawURL), "Trailer", tr)
+                }
+                if pp := resp.Header.Get("P3P"); pp != "" {
+                        recordSecurityHeader(originHost(rawURL), "P3P", pp)
+                }
 
                 // Set-Cookie 处理 (autoCookie)
                 if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
@@ -5208,6 +5245,25 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 }
                 if xc := extractHeaderFromCurlStdout(headers, "X-Cache"); xc != "" {
                         recordSecurityHeader(domain, "X-Cache", xc)
+                }
+                // R96-A 反反爬第 174-178 项: byte-range / method allowlist / alt URI /
+                //   chunked trailer / legacy privacy policy 响应头观测 (与 fetchHttp
+                //   同款, curl -D - dump headers 路径; fetchBinaryViaCurl 不 dump 故
+                //   不调, 与 124-173 同款限制. 详见 fetchHttp line ~4181 rationale).
+                if ar := extractHeaderFromCurlStdout(headers, "Accept-Ranges"); ar != "" {
+                        recordSecurityHeader(domain, "Accept-Ranges", ar)
+                }
+                if al := extractHeaderFromCurlStdout(headers, "Allow"); al != "" {
+                        recordSecurityHeader(domain, "Allow", al)
+                }
+                if cl := extractHeaderFromCurlStdout(headers, "Content-Location"); cl != "" {
+                        recordSecurityHeader(domain, "Content-Location", cl)
+                }
+                if tr := extractHeaderFromCurlStdout(headers, "Trailer"); tr != "" {
+                        recordSecurityHeader(domain, "Trailer", tr)
+                }
+                if pp := extractHeaderFromCurlStdout(headers, "P3P"); pp != "" {
+                        recordSecurityHeader(domain, "P3P", pp)
                 }
                 if status >= 300 {
                         // R66-C BUG-52 (P3): curl 4xx/5xx 也记 latency + fail (与 fetchHttp
@@ -6657,13 +6713,31 @@ func fetchPageOnce(ctx context.Context, rawURL string, cfg FetchConfig) (*FetchR
                         //   (残留 widget → 落 2captcha 块) + LooksBlocked (still "just a
                         //   moment" → 落 tryBridges). 不直接返, 让 captcha 块 + bridge 块
                         //   走完 (与 success-path BUG-242 re-check 同款收口路径).
+                        // R96-A BUG-273 (P3) 修复 (R95-A 未决项 #1 fetcher scope 续抓):
+                        //   原 2captcha block 用 he.Body 而非 post-token-solve html.
+                        //   与 success-path 不对称 — success-path token solve 后 `html =
+                        //   solved` (line ~6516) 更新 html, 下游 captcha detection
+                        //   (LooksLikeCaptcha(html) line ~6527) 用 updated html. err-path
+                        //   token solve 仅 re-check LooksLikeCaptcha(solved) +
+                        //   LooksBlocked(solved), 不更新 he.Body → 下游 2captcha block
+                        //   用 he.Body 提取 sitekey + captcha type detection. 后果: token
+                        //   solve 部分清 (移 token challenge 层但留 captcha widget),
+                        //   solved 的 captcha type 可能与 he.Body 不同 (token solve 改
+                        //   page DOM, e.g. solved 含 Turnstile widget 但 he.Body 含
+                        //   recaptcha) → 2captcha 用 stale he.Body sitekey → 源站 reject
+                        //   → solve fail (与 success-path 不对称, success-path 用 updated
+                        //   html 提取正确 sitekey). 修复: 引入 postTokenHTML 局部 var,
+                        //   token solve 成功后更新为 solved, 2captcha block (BUG-251)
+                        //   + Turnstile block (BUG-272) 用 postTokenHTML 替 he.Body.
+                        postTokenHTML := he.Body
                         if solved, _ := TrySolveTokenChallenge(ctx, rawURL, he.Body, cfg, ua); solved != "" {
                                 if LooksLikeCaptcha(solved) == "" && !LooksBlocked(solved, nil) {
                                         return &FetchResult{HTML: solved, Engine: "http", Blocked: false}, nil
                                 }
+                                postTokenHTML = solved
                         }
                         // R43-1B: 错误路径也尝试 2captcha 求解 (h-captcha / reCAPTCHA 返 403)
-                        if ct := LooksLikeCaptcha(he.Body); ct == CaptchaHCaptcha || ct == CaptchaRecaptcha {
+                        if ct := LooksLikeCaptcha(postTokenHTML); ct == CaptchaHCaptcha || ct == CaptchaRecaptcha {
                                 // R91-A BUG-251 (P3) 修复 (R90-A 未决项 #6 候选 #5 续抓):
                                 //   原实现 2captcha 求解成功后立即 return Blocked: false, 不
                                 //   re-check LooksLikeCaptcha. 与 Turnstile 路径 (line ~6333+
@@ -6675,12 +6749,38 @@ func fetchPageOnce(ctx context.Context, rawURL string, cfg FetchConfig) (*FetchR
                                 //   修复: mirror Turnstile 路径 — 加 `LooksLikeCaptcha
                                 //   (solved) == ""` 二次确认, verify 失败 fall-through 到
                                 //   tryBridges (与 Turnstile 路径 line ~6337 fall-through 同款).
-                                if solved := trySolveCaptchaWith2Captcha(ctx, rawURL, cfg, ct, he.Body); solved != "" {
+                                if solved := trySolveCaptchaWith2Captcha(ctx, rawURL, cfg, ct, postTokenHTML); solved != "" {
                                         if LooksLikeCaptcha(solved) == "" {
                                                 // R93-A BUG-260 (P3): Engine "http" 非 "browser"
                                                 //   (与 success-path line ~6445 同款; 详见该处
                                                 //   rationale).
                                                 return &FetchResult{HTML: solved, Engine: "http", Blocked: false}, nil
+                                        }
+                                }
+                        }
+                        // R96-A BUG-272 (P3) 修复 (R95-A 未决项 #1 候选 #7 续抓):
+                        //   err-path first block (he.Body LooksBlocked) 原 2captcha only
+                        //   (hcaptcha/recaptcha), 缺 Turnstile direct call. 与 success-
+                        //   path BUG-270 不对称 — success-path 当 html 的 captcha type
+                        //   是 Turnstile 时直接调 trySolveTurnstile (line ~6567), err-
+                        //   path 跳到 tryBridges block (line ~6747) 才在 bridged captcha
+                        //   type 是 Turnstile 时调 trySolveTurnstile. trySolveTurnstile
+                        //   用 rawURL re-fetch via Obscura (不取 html 输入), 故 callsite
+                        //   仅用 LooksLikeCaptcha(postTokenHTML) 判定是否调. 后果: 若
+                        //   he.Body 直接含 Turnstile (403 + Turnstile widget page),
+                        //   err-path 多走一次 tryBridges round-trip 才调 trySolveTurnstile,
+                        //   浪费 1 轮桥调用 (Obscura tier=default vs trySolveTurnstile
+                        //   的 tier=maximum). 修复: mirror success-path BUG-270 — 当
+                        //   postTokenHTML 是 CaptchaTurnstile 时直接调 trySolveTurnstile,
+                        //   成功 return, 失败 fall-through 到 tryBridges block (与
+                        //   success-path BUG-270 tryBridges fallback 对称, 由 tryBridges
+                        //   block 接管). 注: success-path BUG-270 还含 `engine == "http"`
+                        //   gate 防 bridge 已调后再 tryBridges 死循环; err-path first
+                        //   block 内未调 tryBridges 故无 gate, tryBridges block 是 fallback.
+                        if ct := LooksLikeCaptcha(postTokenHTML); ct == CaptchaTurnstile {
+                                if solved := trySolveTurnstile(ctx, rawURL, cfg, ua); solved != "" {
+                                        if LooksLikeCaptcha(solved) == "" {
+                                                return &FetchResult{HTML: solved, Engine: "browser", Blocked: false}, nil
                                         }
                                 }
                         }
@@ -7270,6 +7370,27 @@ func fetchBinaryHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, pr
                 }
                 if xc := resp.Header.Get("X-Cache"); xc != "" {
                         recordSecurityHeader(originHost(rawURL), "X-Cache", xc)
+                }
+                // R96-A 反反爬第 174-178 项: byte-range / method allowlist / alt URI /
+                //   chunked trailer / legacy privacy policy 响应头观测 (与 fetchHttp
+                //   同款, fetchBinaryHttp success + 4xx/5xx 两路径都记, BUG-241
+                //   修复后 fetchBinaryHttp 已补对称; fetchBinaryViaCurl 不 dump
+                //   headers 故不调, 与 124-173 同款限制. 详见 fetchHttp line ~4181
+                //   rationale).
+                if ar := resp.Header.Get("Accept-Ranges"); ar != "" {
+                        recordSecurityHeader(originHost(rawURL), "Accept-Ranges", ar)
+                }
+                if al := resp.Header.Get("Allow"); al != "" {
+                        recordSecurityHeader(originHost(rawURL), "Allow", al)
+                }
+                if cl := resp.Header.Get("Content-Location"); cl != "" {
+                        recordSecurityHeader(originHost(rawURL), "Content-Location", cl)
+                }
+                if tr := resp.Header.Get("Trailer"); tr != "" {
+                        recordSecurityHeader(originHost(rawURL), "Trailer", tr)
+                }
+                if pp := resp.Header.Get("P3P"); pp != "" {
+                        recordSecurityHeader(originHost(rawURL), "P3P", pp)
                 }
                 // 3xx / 4xx / 5xx 视为失败 (与 fetchHttp 同款, 不重试 3xx)
                 if resp.StatusCode >= 300 {
@@ -12033,13 +12154,21 @@ type hostSecurityHeadersEntry struct {
         warningValue            string // Warning (第 171 项, R95-A)
         viaValue                string // Via (第 172 项, R95-A)
         xCacheValue             string // X-Cache (第 173 项, R95-A)
+        // R96-A 反反爬第 174-178 项: byte-range / method allowlist / alt URI /
+        //   chunked trailer / legacy privacy policy 响应头观测 (与 124-173 同款
+        //   family, 单值 last-write-wins per-host 合并 tracker).
+        acceptRangesValue     string // Accept-Ranges (第 174 项, R96-A)
+        allowValue             string // Allow (第 175 项, R96-A)
+        contentLocationValue   string // Content-Location (第 176 项, R96-A)
+        trailerValue           string // Trailer (第 177 项, R96-A)
+        p3pValue                string // P3P (第 178 项, R96-A)
         detectedAt              int64  // UnixMilli
 }
 
 // hostSecurityHeadersMap — host string -> *hostSecurityHeadersEntry (R86-A 第 124-128 项 +
 //   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项 + R90-A 第 144-148 项
 //   + R91-A 第 149-153 项 + R92-A 第 154-158 项 + R93-A 第 159-163 项 + R94-A 第
-//   164-168 项 + R95-A 第 169-173 项).
+//   164-168 项 + R95-A 第 169-173 项 + R96-A 第 174-178 项).
 var hostSecurityHeadersMap sync.Map
 
 // hostSecurityHeadersSweepCounter — sweep 触发累加 (与 hostViaSweepCounter 同口径).
@@ -12091,9 +12220,9 @@ func extractSetCookieAttr(cookies []string, attr string) string {
 // recordSecurityHeader — 记录 host 的单个安全策略响应头 (R86-A 第 124-128 项 +
 //   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项 + R90-A 第 144-148
 //   项 + R91-A 第 149-153 项 + R92-A 第 154-158 项 + R93-A 第 159-163 项 + R94-A 第
-//   164-168 项 + R95-A 第 169-173 项). headerName 区分 50 头 (大小写不敏感). 与
-//   recordVia 同款 Store + 惰性 sweep, 但保留其他 49 头旧值 (LoadOrStore canonical
-//   指针 + 单字段 update-in-place).
+//   164-168 项 + R95-A 第 169-173 项 + R96-A 第 174-178 项). headerName 区分 55 头
+//   (大小写不敏感). 与 recordVia 同款 Store + 惰性 sweep, 但保留其他 54 头旧值
+//   (LoadOrStore canonical 指针 + 单字段 update-in-place).
 func recordSecurityHeader(host, headerName, value string) {
         if host == "" || value == "" {
                 return
@@ -12210,6 +12339,19 @@ func recordSecurityHeader(host, headerName, value string) {
                 ent.viaValue = value
         case "x-cache":
                 ent.xCacheValue = value
+        // R96-A 反反爬第 174-178 项: byte-range / method allowlist / alt URI /
+        //   chunked trailer / legacy privacy policy 响应头观测 (与 124-173 同款
+        //   family, 单值 last-write-wins per-host 合并 tracker).
+        case "accept-ranges":
+                ent.acceptRangesValue = value
+        case "allow":
+                ent.allowValue = value
+        case "content-location":
+                ent.contentLocationValue = value
+        case "trailer":
+                ent.trailerValue = value
+        case "p3p":
+                ent.p3pValue = value
         default:
                 return
         }
@@ -12282,6 +12424,11 @@ func HostSecurityHeadersSnapshot() map[string]map[string]string {
                         "warningValue":           e.warningValue,
                         "viaValue":               e.viaValue,
                         "xCacheValue":            e.xCacheValue,
+                        "acceptRangesValue":     e.acceptRangesValue,
+                        "allowValue":             e.allowValue,
+                        "contentLocationValue":  e.contentLocationValue,
+                        "trailerValue":          e.trailerValue,
+                        "p3pValue":                e.p3pValue,
                         "detectedAt":        fmt.Sprintf("%d", e.detectedAt),
                 }
                 return true

@@ -702,6 +702,34 @@ func JsonGet(root any, path string) any {
         // 递归下降
         if strings.HasPrefix(path, "$..") || strings.HasPrefix(path, "..") {
                 key := strings.TrimPrefix(strings.TrimPrefix(path, "$"), "..")
+                // R96-B BUG-273 (P4) 修复 (R85-B BUG-216 续): 原实现把整个 key
+                //   (e.g. "$..a.b" 剥前缀后 "a.b") 当 literal key 传给
+                //   recursiveCollect, recursiveCollect 走 m[key] 精确匹配 → JSON
+                //   标准无 "a.b" 字面 key (dot 不是合法 JSON key 字符除非 quoted)
+                //   → 永远返 []. 标准 JSONPath $..a.b 语义: 递归找所有 "a" key,
+                //   对每个 "a" 值 navigate "b" (a 值是 map 时取 m["b"]). 与
+                //   BUG-216 ($.field 单级 root 引用) 同款 "JSONPath 标准未对齐"
+                //   family. 修复: 拆首段 key + 剩余 path, recursiveCollect 首段
+                //   后对每个值递归 JsonGet(remaining) (JsonGet 内部递归处理
+                //   ||/$../bracket/index 全语法, multi-level 链式 a.b.c →
+                //   JsonGet(v, "b.c") → jsonGetByPath 导航). 71 Rule 0 用
+                //   $..a.b 形态 (多用 $..field 单级或 a.b.c 直连); 0 用户受影响,
+                //   未来 admin 配置后受益. latent 自 R38 TS→Go 迁移 (47 轮未
+                //   发现). 注: 首段含特殊语法 (e.g. "$..a[0]" / "$..a||b") 走
+                //   原 recursiveCollect (literal key 查找, 仍返 [], 维持 defer
+                //   — 多语法混合需更深 grammar 解析, 超本轮 budget).
+                if dot := strings.Index(key, "."); dot > 0 {
+                        firstKey := key[:dot]
+                        remaining := key[dot+1:]
+                        collected := recursiveCollect(root, firstKey)
+                        out := []any{}
+                        for _, v := range collected {
+                                if next := JsonGet(v, remaining); next != nil {
+                                        out = append(out, next)
+                                }
+                        }
+                        return out
+                }
                 return recursiveCollect(root, key)
         }
         // R85-B BUG-216 (P3) 修复: JsonGet 未处理 "$." JSONPath 根引用前缀.
@@ -1307,13 +1335,33 @@ func applyConstTemplate(tmpl string, vars map[string]string) string {
                 //   → const 模板破损 (e.g. yueyouxs tocLink ".../c/{q.bookId}.html" →
                 //   URL 破损 ".../c/.html"). 修复: key 以 "q." 前缀时直接查 vars[key[2:]]
                 //   (与 URLVars 输出键对齐). 0 用户受负面影响 (原 {q.param} 全破损, 修后
-                //   正确; 多级 {q.a.b} 仍返空, 与 multi-level dotted 同款 defer). latent
-                //   自 R38 TS→Go 迁移 (47 轮未发现因 runner.go line 1859 tocLink 调
-                //   ExtractField 传 nil ctx → FieldConst 分支跳过 applyConstTemplate,
-                //   3/4 callsite (ParseList/ParseToc/ParseContent) 传 ctx 已生效).
+                //   正确). latent 自 R38 TS→Go 迁移 (47 轮未发现因 runner.go line 1859
+                //   tocLink 调 ExtractField 传 nil ctx → FieldConst 分支跳过
+                //   applyConstTemplate, 3/4 callsite (ParseList/ParseToc/ParseContent)
+                //   传 ctx 已生效).
+                //
+                //   R96-B BUG-274 (P4) 续修 BUG-265 (原 "多级 {q.a.b} 仍返空, 与
+                //   multi-level dotted 同款 defer"): q. 分支内嵌 dotted key 解析.
+                //   场景: admin 配 "{q.path.3}" (引用 URL 第 3 段, URLVars path
+                //   段 kv string "0=seg0\n1=seg1\n2=seg2\n3=seg3" 内 m["3"]="seg3")
+                //   → 原仅查 vars["path.3"] (literal miss) → 返空 → URL 破损. 修复:
+                //   rest 含 dot 时拆 prefix+suffix, vars[prefix] 命中则 resolveKVPath
+                //   (递归 kv string 解析, 与下方 line ~1354 非-q. 多级 BUG-266 同款).
+                //   与 BUG-266 (multi-level dotted 非-q.) + BUG-268 (URLVars path
+                //   段) 协同闭环. 71 Rule 0 用多级 q. 形态 (0 配 {q.path.N}, 多用
+                //   单级 {q.param}); 0 用户受影响, 未来 admin 配置后受益. latent
+                //   自 R94-B BUG-265 修复时 defer (2 轮未补).
                 if strings.HasPrefix(key, "q.") {
-                        if v, ok := vars[key[2:]]; ok {
+                        rest := key[2:]
+                        if v, ok := vars[rest]; ok {
                                 return v
+                        }
+                        if dot := strings.Index(rest, "."); dot > 0 {
+                                prefix := rest[:dot]
+                                suffix := rest[dot+1:]
+                                if v, ok := vars[prefix]; ok {
+                                        return resolveKVPath(v, suffix)
+                                }
                         }
                         return ""
                 }

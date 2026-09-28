@@ -44057,3 +44057,644 @@ tokenizeJsonPath 字段提取 family)
    crawl-others scope). 主控统一编译应 0 errors (各 agent 独立 scope, 0 文件冲突).
 
 ==============================================================================
+
+# R96-A fetcher+runner 深抓 (反反爬 174-178 + BUG-272/273)
+
+- 范围: 仅改 crawl/fetcher.go (1 文件; runner.go 无需改 — BUG-272/273 都在
+  fetchPageOnce err-path first block 内, hostGate wiring / pageFetcher 未触).
+  与 R95-B/C/D 范围不重叠 (fetcher/runner scope vs admin/main+templates/
+  crawl-others scope, 与 R95-A 同款 scope 隔离).
+- 编译: `go build ./...` 0 errors. `go vet ./...` 0 errors.
+- gofmt -l: fetcher.go + runner.go 仍 non-compliant (pre-existing R92-B 8-space
+  indent, 本轮未引入新 gofmt issue — 8-space 与文件其他函数一致, gofmt 想要
+  TAB 是历史遗留). 与 R93-A/R94-B/R95-A 单一 commit 不冲突, 维持 defer 至
+  批量 gofmt -w (R95-A 未决项 #3 建议沿用).
+- +153 / -6 行 (fetcher.go). 200 行 budget 内 (主控 R96-A budget = +200).
+
+## 反反爬第 174-178 项 (fetcher/runner scope)
+
+per-host 合并 tracker 第 51-55 字段 (与 124-173 同款 family, 单值 last-write-wins).
+6 callsite 对称补: fetchHttp (resp.Header.Get) + fetchViaCurl
+(extractHeaderFromCurlStdout) + fetchBinaryHttp (resp.Header.Get) +
+hostSecurityHeadersEntry struct + recordSecurityHeader switch +
+HostSecurityHeadersSnapshot map (admin/metrics 输出 5 新字段:
+acceptRangesValue / allowValue / contentLocationValue / trailerValue / p3pValue).
+
+- 第 174 项 Accept-Ranges (RFC 7233 §4.3) — `bytes` / `none`, 反爬关联:
+  byte-range support = host 允许 partial content negotiation, 与 160 ETag +
+  161 Last-Modified + 149 Cache-Control 缓存策略 family 续.
+- 第 175 项 Allow (RFC 7231 §7.4.1) — `GET, HEAD, POST` 方法 allowlist, 反爬
+  关联: method restriction = 反爬 host 限制 OPTIONS/PUT/DELETE 等, 与 142
+  Clear-Site-Data aggressive session mature anti-bot stack posture 同款 family.
+- 第 176 项 Content-Location (RFC 7231 §3.4) — 同款资源 alt URI, 反爬关联:
+  alt URI = host 提供 canonical/variant 资源 pointer, 与 172 Via + 173 X-Cache
+  proxy/cache family 续.
+- 第 177 项 Trailer (RFC 7234 §4.4) — chunked transfer trailing header fields,
+  反爬关联: trailing headers = host 用 chunked encoding + trailing metadata
+  (老 HTTP/1.1 栈 fingerprint), 与 171 Warning deprecated 同款 legacy stack family.
+- 第 178 项 P3P (W3C deprecated) — Platform Privacy Preferences header, 反爬
+  关联: P3P = 2000s 老 IE privacy 栈 fingerprint, 与 154 X-XSS-Protection /
+  155 HPKP / 156 Expect-CT / 171 Warning legacy deprecated family 续.
+
+## BUG 编号 fetcher/runner scope
+
+- BUG-272 (P3): err-path first block (he.Body LooksBlocked) 缺 Turnstile direct
+  call. R95-A 未决项 #1 候选 #7 续抓. 与 success-path BUG-270 不对称 —
+  success-path 当 html 的 captcha type 是 Turnstile 时直接调 trySolveTurnstile
+  (fetcher.go line ~6567), err-path 跳到 tryBridges block (line ~6790) 才在
+  bridged captcha type 是 Turnstile 时调 trySolveTurnstile. trySolveTurnstile
+  用 rawURL re-fetch via Obscura (不取 html 输入), 故 callsite 仅用
+  LooksLikeCaptcha(postTokenHTML) 判定是否调. 后果: 若 he.Body 直接含
+  Turnstile (403 + Turnstile widget page), err-path 多走一次 tryBridges
+  round-trip 才调 trySolveTurnstile, 浪费 1 轮桥调用 (Obscura tier=default vs
+  trySolveTurnstile 的 tier=maximum). 修复: mirror success-path BUG-270 — 当
+  postTokenHTML 是 CaptchaTurnstile 时直接调 trySolveTurnstile, 成功 return,
+  失败 fall-through 到 tryBridges block (与 success-path BUG-270 tryBridges
+  fallback 对称, 由 tryBridges block 接管). 注: success-path BUG-270 还含
+  `engine == "http"` gate 防 bridge 已调后再 tryBridges 死循环; err-path first
+  block 内未调 tryBridges 故无 gate, tryBridges block 是 fallback.
+
+- BUG-273 (P3): err-path first block 2captcha 用 he.Body 而非 post-token-solve
+  html. R95-A 未决项 #1 fetcher scope 续抓. 与 success-path 不对称 —
+  success-path token solve 后 `html = solved` (line ~6516) 更新 html, 下游
+  captcha detection (LooksLikeCaptcha(html) line ~6527) 用 updated html.
+  err-path token solve 仅 re-check LooksLikeCaptcha(solved) + LooksBlocked
+  (solved), 不更新 he.Body → 下游 2captcha block 用 he.Body 提取 sitekey +
+  captcha type detection. 后果: token solve 部分清 (移 token challenge 层但
+  留 captcha widget), solved 的 captcha type 可能与 he.Body 不同 (token solve
+  改 page DOM, e.g. solved 含 Turnstile widget 但 he.Body 含 recaptcha) →
+  2captcha 用 stale he.Body sitekey → 源站 reject → solve fail. 修复: 引入
+  postTokenHTML 局部 var, token solve 成功后更新为 solved, 2captcha block
+  (BUG-251) + Turnstile block (BUG-272) 用 postTokenHTML 替 he.Body. 与
+  success-path html=solved 同款行为, BUG-272 + BUG-273 共用 postTokenHTML
+  让 partial-token-solve 的 captcha type detection 准确.
+
+## 重复使用现有 API (无新增 import / 函数)
+
+- recordSecurityHeader / resp.Header.Get / extractHeaderFromCurlStdout /
+  LooksLikeCaptcha / trySolveTurnstile / TrySolveTokenChallenge /
+  trySolveCaptchaWith2Captcha / CaptchaTurnstile / CaptchaHCaptcha /
+  CaptchaRecaptcha 全已在 2 文件用, 无新增 (BUG-272/273 仅用现有 captcha
+  detection + solver API).
+- 0 emoji (rg 检查 0 新 emoji; pre-existing 🔴/⚙ 在 runner.go line 969/1123/
+  1304/1319/1405/1428/1439/1512 非本轮引入, 与 R95-A 同款 pre-existing).
+
+## BUG 编号 scope-local
+
+- BUG-272/273 属 fetcher.go scope (fetchPageOnce err-path first block +
+  postTokenHTML + Turnstile direct call), 顺延 R95-A fetcher/runner scope
+  BUG-268/269/270. 与 R95-D/R96-D main+templates scope BUG-272+ 跨 scope 同号
+  (worklog 接受, R91~R95 convention; 主控去重 fetcher.go scope = unique 2 bug
+  — BUG-272 fetcher/runner=err-path Turnstile direct call vs (main+templates
+  若有) 同号不同 scope; BUG-273 fetcher/runner=err-path 2captcha postTokenHTML
+  vs main+templates=同号不同 scope).
+- 注: fetcher scope BUG-271 reserve (R95-A 未决项 #1 候选 #8 partial solve
+  "2captcha 清 recaptcha 后 Turnstile remained, 下游 ct 不更新" — R95-A 标
+  "需重 dispatch 全 captcha block (switch/for-loop 重构, 范围超 +200 budget,
+  defer 至 R96+ 评估" — 本轮 R96-A BUG-273 修 partial-token-solve
+  postTokenHTML 变种, 但 success-path captcha block 内 partial-2captcha-solve
+  (solved != "" 但 LooksLikeCaptcha(solved) != "" 且不同 type) 仍需重 dispatch
+  重构, 维持 defer 至 R97+; fetcher scope BUG-271 reserve 留作 R97+ partial-
+  2captcha-solve 重 dispatch 评估). BUG-272/273 起号避免与 R96-D main+templates
+  scope BUG-272+ 跨 scope 同号混淆 — 实际 worklog 接受跨 scope 同号, 但 272+
+  起号让 fetcher scope 与 main+templates scope 在 BUG-272~275 区间同号是已
+  接受 convention, 各 scope 修复内容不同无需去重.
+
+## 未决项 (交接 R97+)
+
+1. **BUG-271+ fetcher/runner 深抓续**: 本轮 BUG-272/273 共 2 项 (err-path
+   first block Turnstile direct call + postTokenHTML for 2captcha/Turnstile).
+   R97+ 续抓 (潜在候选: (1) R95-A 候选 #8 partial-2captcha-solve 重 dispatch
+   (success-path captcha block 内 2captcha 清 recaptcha 后 Turnstile remained,
+   ct 仍是 CaptchaRecaptcha 不匹配 Turnstile block → 跳过; 修复需 for-loop
+   重 dispatch 全 captcha block, 范围超 +200 budget, defer 至 R97+ 评估);
+   (2) R94-A 候选 #1 CaptchaUnknown bridge 返仍 captcha/blocked 时是否更新
+   html=bridged + engine="browser" (设计 trade-off, R97+ 维持 defer — fallback
+   失败报原源更合理); (3) R94-A 候选 #2 fetchBinaryViaCurl -D - dump headers
+   (大改 defer); (4) R94-A 候选 #3 pageFetcher Blocked propagation (跨 3 文件
+   scope defer); (5) R94-A 候选 #4 fetchBinaryHttp 4xx/5xx 选择性 observer
+   (设计 trade-off defer); (6) R94-A 候选 #5 runner.go cover fetch hostGate
+   wiring (设计 trade-off defer); (7) R94-A 候选 #6 FetchBinaryPage curl
+   fallback Engine convention (设计 trade-off defer); (8) R94-A 候选 #7 err-
+   path Turnstile asymmetry — 本轮 BUG-272 已修 first block direct call,
+   err-path tryBridges block 内 captcha dispatch 已存在 (line ~6790+), 评估
+   是否补 BUG-270 同款 "engine==http" gate (err-path 无 engine var, gate 不
+   适用, defer 至 R97+ 评估). fetcher/runner scope P3+ bug 趋向耗尽, R97+
+   转向 perf/边缘 case 或跨 scope 协同).
+2. **反反爬 179+ fetcher/runner 深抓**: 本轮 174-178 共 5 项 (Accept-Ranges +
+   Allow + Content-Location + Trailer + P3P). R97+ 续抓 (潜在候选真实趋向耗尽
+   — 主要为罕见头: X-Request-ID (request tracing info-disclosure, 与 166
+   CF-Ray 同款 family 但 caller-set 维度不对称) / X-Served-By + X-Cache-Hits
+   (Fastly-specific CDN cache status, 与 173 X-Cache 同款 family 重复) /
+   X-Forwarded-For (caller-set, 与 response header 维度不对称) / Accept-Patch
+   (RFC 7231 §3.4 partial patch method hint) / Server-Timing (server processing
+   breakdown, 性能 metric 非反爬 posture). 真实新候选几乎耗尽, R97+ 评估
+   是否第 179+ 项转入 request header 观测维度 (UA / Sec-CH-UA / Sec-Fetch-* /
+   Accept-Language / Accept-Encoding — 但 request header 是 caller 发送, 与
+   response header host posture tracker 语义不对称, 不同 tracker). 维持 defer
+   至 R97+ 评估前提: 若 response header 真实耗尽再 pivot).
+3. **fetcher.go + runner.go 8-space indent (pre-existing R92-B)**: gofmt -l 仍报
+   4 文件 (fetcher/hostgate/parser/runner) non-compliant. R97+ 评估批量
+   gofmt -w (与 R93-A/R94-B/R95-A/R96-A 单一 commit 不冲突, 独立 commit 避免
+   逻辑改动混淆 — R93-A 未决项 #2 + R94-B 未决项 #2 + R95-A 未决项 #3 +
+   R96-A 未决项 #3 建议沿用).
+4. **R96-B/C/D 并行 agent 修改**: 本轮 R96-A 仅改 crawl/fetcher.go 1 文件
+  (BUG-272/273 + 反反爬 174-178 都在 fetcher.go, runner.go 无需改), 与 R96-B/C/D
+  范围不重叠 (fetcher scope vs admin/main+templates/crawl-others scope). 主控
+  统一编译应 0 errors (各 agent 独立 scope, 0 文件冲突).
+
+==============================================================================
+== R96-C: admin深抓 BUG-272~274 (fire-and-forget Exec visibility family —
+   `_, _ = db.Exec` 吞错 15 处, execLogged helper DRY 收口)
+
+**日期**: 2025-09-30
+**文件**: 1 文件 (go-backend/admin.go; 8039→8071 行, +32 行净, budget +150
+  内 21% 使用)
+**BUG 数**: 3 项 (BUG-272 P3 adminTaskControlHandler 5 处 status UPDATE +
+  BUG-273 P4 startCrawlTask goroutine 5 处 + BUG-274 P4 adminDownloadsCreate
+  goroutine 5 处, fire-and-forget Exec family 续抓 — 与 R94-C BUG-266 Pattern C
+  `_ = ...Scan` 吞错 log-on-fail 并行的 `_, _ = db.Exec` 吞错 family)
+**编译**: 0 errors + 0 warnings (go build ./... = 0 errors + go vet ./... =
+  0 warnings; admin.go gofmt -l 仍 non-compliant pre-existing R92-B 8-space
+  indent, 本轮未引入新 gofmt issue — 8-space 与文件其他函数一致)
+**纪律**: 0 启动/重启/杀死进程 (wrapper + heis-backend PID 未触, 仅 admin.go
+  文本改) / 0 写 DB (db/custom.db 未触) / 0 prisma / 0 新依赖 (0 新 import —
+  log/db 已在上文用) / 0 emoji (rg 检查 0 新 emoji; pre-existing ✓ 在
+  admin.go line 2574 非本轮引入) / 0 改非 admin.go 文件 (main.go / start.sh /
+  start-go.js / crawl/* 0 改).
+
+### 精简: execLogged helper (DRY 收口)
+
+R95-C 未决项 #2 标记 "adminTaskControlHandler 6 处 status UPDATE fire-and-
+forget, UX trade-off, R95-D+ 维持现状". 本轮 R96-C 重评: fire-and-forget
+Exec 吞错与 Pattern C Scan 吞错是并行 family (R80-D BUG-171 起 Pattern C
+修 `_ = ...Scan(&v)` 吞错, 本轮修 `_, _ = db.Exec(...)` 吞错), 语义不同
+但 visibility 缺失同款 (DB 故障时 status 不刷新, 用户/admin 看到旧 status).
+本轮采 log-on-fail (与 R94-C BUG-266 `switch selErr ... default: log.Printf`
+同款 visibility-only, 不改 caller 返回语义 — runtime 已 MarkStopped/
+MarkPaused/MarkResumed 是事实, 返 500 反让用户误判操作失败而重试触发重复
+goroutine).
+
+DRY: 15 处 fire-and-forget Exec 语义同质 (Exec + discard RowsAffected + log
+on err), 提 `execLogged(label, query, args...)` helper (~10 行, line 463)
+收口. 各 callsite `_, _ = db.Exec(query, args...)` (1 行) → `execLogged(
+label, query, args...)` (1 行), 净 0 行/callsite. helper 内 log.Printf
+含 label 区分 caller (adminTaskControlHandler / startCrawlTask /
+adminDownloadsCreate). 与 R95-C "0 额外 DRY 机会" (Pattern C 3 处 caller
+语义不同无 helper) 不同 — fire-and-forget Exec 15 处全同质, helper 是真实
+DRY 机会 (本轮 "精简" 要点).
+
+### 3 项 BUG 修复
+
+1. **BUG-272 (P3)** — `adminTaskControlHandler` 5 处 status UPDATE (line
+   1462/1472/1488/1494/1499, start/pause/stop 三 action): 原实现 `_, _ =
+   db.Exec(UPDATE Task SET status=...)` 吞错 — DB 故障 (SQLite busy lock /
+   连接闪断) 时 runtime 已 MarkStopped/MarkPaused/MarkResumed 但 DB status
+   未刷新 → handler 返 200 {action:...} 但 admin UI 下次 adminTasksList 看到
+   旧 status (如用户点 stop 后仍显示 running, 误以为 stop 没生效重复点击
+   → controlHandler 第二次 stop 走 rt==nil 幂等分支返 200, 但 DB 仍 running
+   → 用户困惑). 改 execLogged log-on-fail: Exec 失败时 log.Printf 提示运维
+   (label="adminTaskControlHandler"), 不改 200 返回 (runtime 已改是事实,
+   返 500 会让用户误以为操作失败而重试触发 start 重复 goroutine — start
+   分支 line 1462 已 `go startCrawlTask(...)`, 若改 500 用户重试 → 第二次
+   `go startCrawlTask` → 双 goroutine 同 taskID 并发采集, race). 5 处全改
+   (2× running + 1× paused + 2× stopped). P3 (DB 故障窗口罕见 + 影响 admin
+   UI status 显示层, 不影响采集正确性 — runtime 内存态已正确, 仅 DB 持久
+   化层滞后; 用户重启 wrapper 或下次 control 操作自然刷正).
+
+2. **BUG-273 (P4)** — `startCrawlTask` goroutine 5 处 status UPDATE (line
+   1262 defer-recover panic + 1267 initial running + 1343 unreachable +
+   1347 general error + 1371 done 兜底): 原实现 `_, _ = db.Exec(UPDATE Task
+   SET status=...)` 吞错 — DB 故障时 status 未刷新 (running/error/done 任
+   一), 任务卡 running 用户无感 (goroutine 已 exit 但 DB 仍 running → admin
+   list 永远显示 running 直到 adminBackupClear 或手动 control stop). 改
+   execLogged log-on-fail (label="startCrawlTask"). P4 (goroutine 无
+   ResponseWriter, 仅 log 不返 err; 与 R75-D BUG-143 adminBackupClear
+   runRows.Err log-only best-effort 同款 goroutine 无 ResponseWriter 语义).
+   注: BUG-87 (R70-D P1) 已注 defer recover 的 panic-safety, 本轮 BUG-273
+   仅补 defer recover 内 UPDATE 的 log-on-fail visibility (panic 已 log,
+   UPDATE 失败再 log 提示运维 status 可能未写 error → 任务卡 running 需人
+   工核查). 与 R94-C BUG-266 (post-crawl SELECT log-on-fail) 同函数不同
+   family (BUG-266=Scan swallow, BUG-273=Exec swallow).
+
+3. **BUG-274 (P4)** — `adminDownloadsCreate` 后台 goroutine 5 处 status
+   UPDATE (line 4580 panic + 4587 running + 4605 query-fail + 4619 iter-fail
+   + 4690 done): 原实现 `_, _ = db.Exec(UPDATE DownloadJob SET status=...)`
+   吞错 — DB 故障时 status 未刷新 (running/error/done 任一), 用户看到旧
+   status 以为任务卡住 (adminDownloadsList 显示 running 永不 done/error →
+   用户重复点生成 → maxConcurrentDownloadJobs 占位检查 dbActive 计入 stale
+   running → 429 阻塞新下载). 改 execLogged log-on-fail (label=
+   "adminDownloadsCreate"). P4 (goroutine 无 ResponseWriter; 与 BUG-273
+   同款 downloads goroutine 变种). 注: BUG-45 (R64-C P2) 已注 goroutine
+   panic 兜底 + BUG-83 (R69-D P1) 已注 adminDownloadsDelete race, 本轮
+   BUG-274 仅补 5 处 UPDATE 的 log-on-fail visibility.
+
+### BUG 编号 scope-local
+
+- BUG-272~274 属 admin.go scope, 顺延 R95-C admin scope BUG-268~270. 与
+  R96-A fetcher scope BUG-272/273 跨 scope 同号 (worklog 接受, R91~R95
+  convention; 主控去重 admin scope = unique 3 bug — BUG-272 admin=
+  adminTaskControlHandler fire-and-forget vs fetcher=fetchPageOnce err-path
+  first block; BUG-273 admin=startCrawlTask goroutine vs fetcher=partial-
+  token-solve; BUG-274 admin=adminDownloadsCreate goroutine fetcher scope
+  无对应). 跨 scope 同号各 scope 修复内容不同无需去重.
+
+### 未决项 (交接 R96-D / R97+)
+
+1. **startCrawlTask post-crawl SELECT 完整修复** (line 1353 BUG-266 +
+   BUG-273 visibility): double-fault (ExecuteTask 漏写 done + SELECT 失败 +
+   兜底 UPDATE 失败) 时任务仍卡 running. 完整修复需 crawl 引擎写终态语义
+   (R93-C 未决项 #1 + R94-C 未决项 #1 续). R97+ 评估 (前提: crawl scope
+   改 ExecuteTask 终态写语义).
+2. **adminTaskControlHandler fire-and-forget 返 500 vs 200** (BUG-272): 本轮
+   log-on-fail 不改 200 返回 (runtime 已改是事实, 返 500 触发重复 goroutine
+   风险). R97+ 评估是否 start 分支单独返 500 (start 分支 goroutine 在
+   UPDATE 后 launch, UPDATE 失败时 goroutine 未 launch → 返 500 安全; 但
+   pause/stop 分支 runtime 已 MarkPaused/MarkStopped → 返 500 仍 misleading).
+   trade-off defer.
+3. **admin dashboard COUNT 批量** (line 3198~3208 ~10 处): display-only
+   best-effort, COUNT(*) 恒返 1 行无 ErrNoRows 分支. R97+ 维持现状.
+4. **fill*PageData SSR best-effort** (~10 处): SSR best-effort, log.Printf
+   已覆盖. R97+ 维持现状.
+5. **BUG-275+ admin 深抓**: 本轮 BUG-272~274 共 3 项 (fire-and-forget Exec
+   visibility family). R97+ 续抓 (潜在候选已趋耗尽: (1) startCrawlTask
+   post-crawl 完整修复 (上未决项 #1, 跨 scope defer); (2)
+   adminTaskControlHandler 返 500 vs 200 (上未决项 #2, trade-off defer);
+   (3) admin dashboard COUNT (上未决项 #3, display-only defer); (4)
+   fill*PageData SSR (上未决项 #4, defer); (5) adminFeaturedBooksList
+   readback continue (R95-C 未决项 #5, defer); (6) adminRuleByIDHandler
+   display COUNT (R95-C 未决项 #6, defer); (7) adminTaskLogsHandler COUNT
+   pagination (R95-C 未决项 #7, defer); (8) FindCategoryIDByName signature
+   升级 (R95-C 未决项 #8, 跨 scope defer); (9) 非 status family 的 fire-
+   and-forget Exec: adminTaskDeleteHandler DELETE TaskLog (line 711, cleanup
+   非状态写入语义不同 defer) / adminDownloadsCreate stale-job sweep (line
+   4423, batch UPDATE 非单任务 status defer) / seedDefaultSettings INSERT
+   OR IGNORE (line 4756, seed 语义 defer) / adminBackupHandler lastBackupAt
+   INSERT (line 5527, timestamp best-effort defer) — 4 处非 status family,
+   语义不同 (cleanup/batch/seed/timestamp) 无 execLogged 收口语义, 维持
+   fire-and-forget). admin scope P3+ bug 真实耗尽 (Pattern C Scan swallow
+   R80-D~R95-C 已收口 + fire-and-forget Exec swallow 本轮 R96-C 收口),
+   R97+ 转向 perf/边缘 case 或跨 scope 协同).
+6. **R96-B/C/D 并行 agent 修改**: 本轮 R96-C 仅改 admin.go 1 文件, 与
+   R96-A fetcher / R96-B crawl-others / R96-D main+templates 范围不重叠
+   (admin scope vs fetcher/crawl/main+templates scope). 主控统一编译应 0
+   errors (各 agent 独立 scope, 0 文件冲突).
+
+==============================================================================
+
+## R96-B: crawl 7 文件深抓 BUG-272~274 (MatchCategoryByText empty + JsonGet multi-level $.. + applyConstTemplate multi-level q.)
+
+**日期**: 2025-09-29
+**文件**: 2 文件 (go-backend/crawl/smart.go 727→743 +16 行净; go-backend/crawl/
+  parser.go 2160→2218 +58 行净; 总 +74 行净, budget +150 内 49% 使用)
+**BUG 数**: 3 项 (BUG-272 P4 smart.go MatchCategoryByText empty-string Contains
+  + BUG-273 P4 parser.go JsonGet multi-level recursive descent $..a.b + BUG-274 P4
+  parser.go applyConstTemplate multi-level q.a.b, 全 applyConstTemplate/JsonGet
+  JSONPath family 续抓 — BUG-265 (R94-B {q.param} prefix) + BUG-266 (R94-B
+  multi-level dotted) + BUG-216 (R85-B $.field root) + BUG-268 (R95-B URLVars
+  path 段) 协同闭环)
+**编译**: 0 errors + 0 warnings (go build ./... + go vet ./... 全 clean)
+**gofmt**: gofmt -l 仍报 4 文件 (fetcher/hostgate/parser/runner) non-compliant 自
+  R92-B 8-space indent (pre-existing, 非本轮引入; smart.go 本轮编辑保 tab, 0 新
+  non-compliant).
+**二进制**: ~26MB (R95-A 26,024,234 → +~2KB: BUG-272 +16 行净 + BUG-273/274 +58
+  行净 × ~28 bytes/行 含注释; R96-B 2 文件改动).
+
+## 任务
+
+- 任务 ID: R96-B
+- 范围: crawl/{hostgate,smart,cleaner,storage,types,parser,sorter}.go (7 文件,
+  本轮改 smart.go + parser.go 2 文件, 余 5 文件 0 改 — hostgate/cleaner/storage/
+  types/sorter 审计后 0 残余 bug, 维持现状)
+- 目标: 深抓 BUG-272++, +150 行内, 编译 0, worklog 追加
+- 严禁: 改非 7 文件 / 启动 / 新依赖 / emoji
+
+## 侦察
+
+- worklog 末尾 5KB 读: R95 全完成 (R95-A fetcher/runner 反反爬 169-173 + BUG-268~270
+  tocLink ctx + captcha solver LooksBlocked 双重收口 + success-path Turnstile
+  tryBridges fallback / R95-B crawl/parser.go BUG-267~269 tokenizeJsonPath quoted `]`
+  + JsonArrayAt comma quote-aware + JsonGet || quote-aware + URLVars path 段 / R95-C
+  admin Pattern C fire-and-forget Exec swallow family 收口). R95-A 未决项 #1 列
+  BUG-271+ fetcher/runner 候选 8 项 (顺延 R94-A #6), fetcher/runner scope P3+ bug
+  趋向耗尽; R95-B 未决项 (applyConstTemplate multi-level q. defer / JsonGet
+  multi-level $.. defer / tokenizeJsonPath multi-grammar defer). R96-B crawl-others
+  scope (hostgate/smart/cleaner/storage/types/parser/sorter 7 文件) 续抓.
+- 环境: go 1.26.8 linux/amd64. crawl 7 文件行数 (hostgate 616 / smart 727 / cleaner
+  1543 / storage 223 / types 840 / parser 2160 / sorter 233 = 6342 行). gofmt -l 4
+  文件 (fetcher/hostgate/parser/runner) non-compliant 自 R92-B 8-space indent
+  (pre-existing, 非本轮引入).
+- BUG 候选审计 (R95-B 未决项续 + crawl 7 文件深扫):
+  - **smart.go MatchCategoryByText empty-string Contains** (R95-B 未决项 #1 候选
+    #4 "smart.go MatchCategoryByText perf (P4 nit)" 重评为真 bug): line 203-207
+    `for _, c := range normalized { if strings.Contains(text, c) { return c } }`
+    在 c 为空串时 Go strings.Contains(s, "") 恒返 true → 提前 return "" 跳过关键词
+    评分路径. 当前唯一 live caller runner.go line 1737 走 cfg.DB.ListCategoryNames()
+    已 filter 空 (admin.go line 387 `n != ""`), 0 生产命中; 但 MatchCategoryByText
+    是 export, 防御性修复. latent 自 R38 TS→Go 迁移 (47 轮未发现).
+  - **parser.go JsonGet multi-level recursive descent $..a.b** (R95-B 未决项
+    defer 续): line 703-706 `key := strings.TrimPrefix(strings.TrimPrefix(path,
+    "$"), ".."); return recursiveCollect(root, key)`. 原 $..a.b 剥前缀后 key="a.b"
+    当 literal key 传 recursiveCollect, recursiveCollect 走 m[key] 精确匹配 →
+    JSON 标准无 "a.b" 字面 key → 永远返 []. 标准 JSONPath $..a.b 语义: 递归找所有
+    "a" key, 对每个 "a" 值 navigate "b". 与 BUG-216 ($.field 单级 root 引用)
+    同款 "JSONPath 标准未对齐" family. 71 Rule 0 用 $..a.b 形态 (多用 $..field
+    单级或 a.b.c 直连), 0 用户受影响. latent 自 R38 TS→Go 迁移 (47 轮未发现).
+  - **parser.go applyConstTemplate multi-level q.a.b** (R95-B 未决项 defer 续,
+    R94-B BUG-265 修复时 "多级 {q.a.b} 仍返空" 维持): line 1342-1347 `if
+    strings.HasPrefix(key, "q.") { if v, ok := vars[key[2:]]; ok { return v }
+    return "" }`. q.param.sub 配置后仅查 vars["param.sub"] (literal miss) → 返空.
+    场景: admin 配 "{q.path.3}" (引用 URL 第 3 段, URLVars path 段 kv string
+    "0=seg0\n1=seg1\n2=seg2\n3=seg3" 内 m["3"]="seg3") → URL 破损. 与 BUG-266
+    (multi-level dotted 非-q.) + BUG-268 (URLVars path 段) 协同闭环. 71 Rule
+    0 用多级 q. 形态 (0 配 {q.path.N}, 多用单级 {q.param}), 0 用户受影响. latent
+    自 R94-B BUG-265 修复时 defer (2 轮未补).
+  - SKIP 候选 (R95-B 未决项重评维持): (1) sorter.go extractChapterNumber 中文数字
+    (设计选择, 不支持 一二三 → int 转换复杂); (2) hostgate.go failStreak penalty
+    过期不重置 (设计正确, derate 60s cooldown 独立于 rate limit); (3) cleaner.go
+    cleanContentHtmlSync goquery raw (0 实际差异); (4) cleaner.go cleanContentHtmlSync
+    [style] nil Parent (无法复现); (5) types.go safeStr C1 控制字符 (R86-B BUG-220
+    已对齐 ZWStripOnlyRe 全集, 0 残余); (6) storage.go SaveCoverWebp tmpPath
+    os.Getpid() int (设计正确, %d 接受 int + uint64); (7) hostgate.go pump
+    lastAdmitAt=0 初始 (now-0=now 巨大, 0 首次 throttle, 设计正确); (8) parser.go
+    ParseToc HTML mode FieldConst ctx nil (跨 R95-A tocLink ctx scope, 维持 defer
+    至 R97+ 评估 — 71 Rule 0 用 FieldConst in HTML toc/list, 0 生产命中, 修复需
+    加 URLVars + index ctx, scope 超 +150 budget).
+  - crawl 7 文件 P3+ bug 趋向耗尽, R97+ 转向 perf/边缘 case 或跨 scope 协同.
+
+## 修复
+
+### BUG-272 (P4) smart.go MatchCategoryByText empty-string Contains
+
+**位置**: crawl/smart.go line 203-221 (MatchCategoryByText 第 1 步 "直接命中已有
+分类名" 循环).
+
+**原实现**:
+```go
+for _, c := range normalized {
+    if strings.Contains(text, c) {
+        return c
+    }
+}
+```
+
+**问题**: c 为空串时 Go `strings.Contains(text, "")` 恒返 true (Go 标准库语义:
+empty substring is contained in any string) → 首轮 c="" 命中 → return "" →
+MatchCategoryByText 返空 → SmartCategory 第 2 步 keyword 路径不执行 (line 261
+`kw := MatchCategoryByText(...)` 拿到 kw="" 不进 if 分支) → 落到 LLM 兜底
+method="none". NormalizeCategory("") 返 "" (line 144-146), 故 normalized 切片
+含空串的来源是 existingCategories 含空串. 当前唯一 live caller runner.go line
+1737 走 cfg.DB.ListCategoryNames() 已 filter 空 (admin.go line 387 `n != ""`),
+0 生产命中; 但 MatchCategoryByText 是 export, 未来 caller (admin API / 测试)
+传含空串的 existingCategories 会触发.
+
+**修复**: `if c != "" && strings.Contains(text, c)` 前置 c != "" 条件 skip 空
+normalized 项 (与 NormalizeCategory 返 "" 同口径, "" 视作 "无分类" 不参与匹配).
+
+**验证**: `MatchCategoryByText("玄幻奇幻 武侠江湖", ["", "玄幻奇幻"])` 修前返 "" (空
+串首轮命中), 修后返 "玄幻奇幻" (跳过空, 命中第二项). +1 行逻辑 + 14 行注释.
+
+### BUG-273 (P4) parser.go JsonGet multi-level recursive descent $..a.b
+
+**位置**: crawl/parser.go line 703-733 (JsonGet "递归下降" 分支).
+
+**原实现**:
+```go
+if strings.HasPrefix(path, "$..") || strings.HasPrefix(path, "..") {
+    key := strings.TrimPrefix(strings.TrimPrefix(path, "$"), "..")
+    return recursiveCollect(root, key)
+}
+```
+
+**问题**: $..a.b 剥前缀后 key="a.b" 当 literal key 传 recursiveCollect,
+recursiveCollect 走 m[key] 精确匹配 (line 733 `if val, ok := v[key]; ok`) →
+JSON 标准无 "a.b" 字面 key (dot 不是合法 JSON key 字符除非 quoted) → 永远返
+[]. 标准 JSONPath $..a.b 语义: 递归找所有 "a" key, 对每个 "a" 值 navigate "b"
+(a 值是 map 时取 m["b"]). 与 BUG-216 ($.field 单级 root 引用, R85-B 修) 同款
+"JSONPath 标准未对齐" family. R85-B 修了 `$.field` (单级 root), 但 `$..a.b`
+(多级 recursive descent) 仍 broken.
+
+**修复**: 拆首段 key + 剩余 path. key 含 dot 时 (e.g. "a.b"):
+- firstKey = "a", remaining = "b".
+- collected = recursiveCollect(root, firstKey) — 递归找所有 "a" key 的值.
+- 对每个 v in collected: `JsonGet(v, remaining)` — 递归调用 JsonGet 处理剩余
+  path (JsonGet 内部递归处理 ||/$../bracket/index 全语法, multi-level 链式
+  a.b.c → JsonGet(v, "b.c") → jsonGetByPath 导航).
+- 收集非 nil 结果返 []any.
+key 无 dot (e.g. "a", 单级) 走原 recursiveCollect (literal key 查找).
+
+**验证**: `JsonGet({"items":[{"a":{"b":1}},{"a":{"b":2}}],"a":{"b":99}}, "$..a.b")`
+修前返 [] (literal "a.b" key miss), 修后返 [99 1 2] (top-level a.b=99 +
+items[0].a.b=1 + items[1].a.b=2). `JsonGet(json, "$..a")` 单级仍返非空 (无
+回归). +25 行逻辑 + 22 行注释.
+
+**注**: 首段含特殊语法 (e.g. "$..a[0]" / "$..a||b") 走原 recursiveCollect
+(literal key 查找, 仍返 [], 维持 defer — 多语法混合需更深 grammar 解析,
+超本轮 budget).
+
+### BUG-274 (P4) parser.go applyConstTemplate multi-level q.a.b (BUG-265 deferred 续)
+
+**位置**: crawl/parser.go line 1354-1367 (applyConstTemplate "q. 前缀" 分支).
+
+**原实现** (R94-B BUG-265 修复时):
+```go
+if strings.HasPrefix(key, "q.") {
+    if v, ok := vars[key[2:]]; ok {
+        return v
+    }
+    return ""  // 多级 {q.a.b} 仍返空, 与 multi-level dotted 同款 defer
+}
+```
+
+**问题**: q.path.3 配置后 strip "q." → "path.3", 仅查 vars["path.3"] (literal
+miss, URLVars 设 vars["path"]="0=seg0\n1=seg1\n2=seg2\n3=seg3" 非 vars["path.3"])
+→ 返空 → const 模板破损. 场景: admin 配 "{q.path.3}" (引用 URL 第 3 段) → URL
+破损. R94-B BUG-265 修复时显式 defer "多级 {q.a.b} 仍返空, 与 multi-level
+dotted 同款 defer". R95-B 未补, R96-B 续修.
+
+**修复**: q. 分支内嵌 dotted key 解析 (与下方 line 1368 非-q. 多级 BUG-266 同款
+resolveKVPath):
+- rest = key[2:] (strip "q.").
+- vars[rest] 直查 (literal, 罕见但保留 — admin 显式配 vars["a.b"]="val" 时
+  literal 命中优先).
+- rest 含 dot 时拆 prefix+suffix, vars[prefix] 命中则 resolveKVPath(vars[prefix],
+  suffix) — 递归 kv string 解析 (parseKVString 取 m[suffix], 若仍是 kv string
+  再解析).
+- 与 BUG-266 (multi-level dotted 非-q.) + BUG-268 (URLVars path 段) 协同闭环:
+  {q.path.3} → vars["path"] kv → resolveKVPath 取 m["3"]="seg3".
+
+**验证**: `ExtractField(const "seg={q.path.2}", ctx={Vars: URLVars("https://x/foo
+/bar/baz")})` 修前返 "seg=" (vars["path.2"] literal miss), 修后返 "seg=baz"
+(vars["path"] kv "0=foo\n1=bar\n2=baz", resolveKVPath 取 m["2"]="baz"). +7 行
+逻辑 + 17 行注释.
+
+## 编译 + 验证
+
+- `go build ./...` 0 errors 0 warnings (go 1.26.8 linux/amd64).
+- `go vet ./crawl/` 0 issues.
+- `gofmt -l crawl/` 报 4 文件 (fetcher/hostgate/parser/runner) non-compliant 自
+  R92-B 8-space indent (pre-existing, 非本轮引入; smart.go 本轮编辑用 python
+  脚本保 tab, 0 新 non-compliant; parser.go 本轮编辑保 8-space 与原文件一致,
+  gofmt -l 仍报 non-compliant 但 0 新增 issue).
+- 运行时验证 (临时 /tmp 测试模块, 验证后删): BUG-272 `MatchCategoryByText("玄幻
+  奇幻 武侠江湖", ["", "玄幻奇幻"])` = "玄幻奇幻" (修前 ""); BUG-273
+  `JsonGet({"items":[{"a":{"b":1}},{"a":{"b":2}}],"a":{"b":99}}, "$..a.b")` =
+  [99 1 2] (修前 []); BUG-274 `ExtractField(const "seg={q.path.2}", URLVars(
+  "https://x/foo/bar/baz"))` = "seg=baz" (修前 "seg="). 3 修复全验证通过.
+
+## 文件改动
+
+- 2 文件 (smart.go 727→743 +16 行净 BUG-272 / parser.go 2160→2218 +58 行净
+  BUG-273+274; 5 文件 0 改 — hostgate/cleaner/storage/types/sorter 审计后
+  0 残余 bug, 维持现状).
+- 净 +74 行 (BUG-272 +16 含 14 行注释 / BUG-273 +47 含 22 行注释 / BUG-274
+  +24 含 17 行注释), budget +150 内 49% 使用.
+- 0 改非 7 文件 / 0 启动 (main.go / start.sh / start-go.js 0 改) / 0 新依赖
+  (0 新 import — smart.go strings 已用; parser.go strings 已用) / 0 emoji
+  (rg 检查 0 新 emoji; pre-existing red-circle/gear emoji 在 runner.go line
+  969/1123/1304/1319/1405 非本轮引入, R95-A worklog line 43996 同款提及).
+
+## BUG 编号 scope-local
+
+- BUG-272~274 属 crawl-others scope (smart.go + parser.go), 顺延 R95-B crawl
+  scope BUG-267~269. 与 R95-A fetcher/runner scope BUG-268~270 + R94-D main+
+  templates scope BUG-268~271 + R95-C admin scope BUG-268~270 跨 scope 同号
+  (worklog 接受, R91~R95 convention; 主控去重 crawl-others scope = unique 3
+  bug — BUG-272 crawl-others=MatchCategoryByText empty Contains vs (fetcher/
+  runner 若有) 同号不同 scope; BUG-273 crawl-others=JsonGet multi-level $..
+  vs (admin 若有) 同号不同 scope; BUG-274 crawl-others=applyConstTemplate
+  multi-level q. (BUG-265 续) vs (main+templates 若有) 同号不同 scope).
+- 注: BUG-271 为 R94-D main+templates scope (HTML5 id 唯一性 family), 271+
+  起号让 crawl-others scope 与 fetcher/runner/admin/main+templates scope 在
+  BUG-272+ 区间无重叠 (主控 convention: 跨 scope 同号接受, 但 272+ 起号让
+  crawl-others scope 独占 272~274 3 bug).
+
+## 未决项 (交接 R97+)
+
+1. **BUG-275+ crawl-others 深抓**: 本轮 BUG-272~274 共 3 项 (MatchCategoryByText
+   empty + JsonGet multi-level $.. + applyConstTemplate multi-level q.). R97+
+   续抓 (潜在候选: (1) parser.go ParseToc HTML mode FieldConst ctx nil (本轮
+   SKIP 候选 #8, 跨 R95-A tocLink ctx scope, 修复需加 URLVars + index ctx,
+   71 Rule 0 用 FieldConst in HTML toc/list, 0 生产命中, defer 至 R97+ 评估
+   前提: 确认 71 Rule 中是否真有 FieldConst in HTML toc/list 配置); (2)
+   parser.go ParseList HTML mode FieldConst ctx nil (与 (1) 同款, ParseList
+   HTML 模式无 URLVars + index ctx, FieldConst 返空, defer); (3) parser.go
+   JsonGet multi-grammar recursive descent $..a[0] / $..a||b (本轮 BUG-273 注
+   defer, 多语法混合需更深 grammar 解析); (4) parser.go parseKVString 段含
+   \n latent (R95-B BUG-268 已 defer, 与段含 = 同款, 维持 defer); (5) cleaner.go
+   mapToSortedKV string value 含 \n (latent, kv string 格式不支持 newline in
+   value, 维持 defer); (6) sorter.go NormalizeTocOrder 同编号并列项 ratio 边界
+   (设计正确, 0 bug); (7) smart.go MatchCategoryByText keyword TrimSpace +
+   `\b` regex 与原 ` urb ` (含空格) substring 语义差异 (设计等价, 0 bug);
+   (8) hostgate.go AdjustConcurrency bump 不立即 raise st.limit (设计选择,
+   ReportSuccess 渐进恢复, 0 bug). crawl-others scope P3+ bug 真实耗尽, R97+
+   转向 perf/边缘 case 或跨 scope 协同).
+2. **hostgate.go + parser.go 8-space indent (pre-existing R92-B)**: gofmt -l 仍报
+   4 文件 (fetcher/hostgate/parser/runner) non-compliant. R97+ 评估批量 gofmt -w
+   (与 R93-A/R94-B/R95-A/R96-B 单一 commit 不冲突, 独立 commit 避免逻辑改动混淆
+   — R93-B 未决项 #2 + R94-B 未决项 #2 + R95-A 未决项 #3 + R96-B 未决项 #2 建议
+   沿用). 注: 本轮 smart.go 编辑用 python 脚本保 tab (非 Edit tool 默认 8-space),
+   0 新 non-compliant; R97+ gofmt -w 批量修 hostgate/parser 时 smart.go 已合规
+   无需重修.
+3. **R96-A/C/D 并行 agent 修改**: 本轮 R96-B 仅改 crawl/smart.go + crawl/parser.go
+   2 文件, 与 R96-A fetcher/runner / R96-C admin / R96-D main+templates 范围
+   不重叠 (crawl-others scope vs fetcher/admin/main+templates scope). 主控统一
+   编译应 0 errors (各 agent 独立 scope, 0 文件冲突).
+
+==============================================================================
+
+Task ID: R96-D
+Agent: R96-D agent (main.go 深抓 BUG-272 + 精简)
+Task: go-backend/main.go 范围 — 深抓 BUG-272 (main+templates scope) + 精简 scan 块
+dedup. +200 行内, 编译 0, worklog 追加. 严禁改非 main+templates/启动/新依赖/emoji.
+
+Work Log:
+- 侦察: 读 worklog 末尾 5KB (R96-A fetcher BUG-272/273 + 反反爬 174-178 / R96-B
+  crawl-others / R96-C admin BUG-272~274 fire-and-forget Exec family). R96-A 明示
+  "BUG-272 fetcher/runner vs (main+templates 若有) 同号不同 scope" — worklog 接受
+  跨 scope 同号 (R91~R95 convention), 各 scope 修复内容不同无需去重. 故本轮
+  main+templates scope 用 BUG-272 (与 fetcher/admin scope 同号不同内容, 符合 convention).
+  读 main.go 全文 (6077 行 baseline): R82-D 候选 "history view 非功能" 已被 R83-D
+  bookHistoryTrackerHTML (line 2557) + R85-D BUG-204 URL-decode 修复, 非本轮 bug;
+  shipsay/home.html 8× Books 重复已被 R86-D BUG-225 categoryId 过滤修复, 非本轮 bug.
+  逐行深抓发现真实 latent bug + 精简机会.
+
+- 目标A BUG-272 (main+templates scope, 顺延 R84-D BUG-194 takeBooks n==0 guard
+  对称遗漏): takeN/topBooks/takeBooks 三个 slice helper 仅 clamp `n > len` 漏 clamp
+  `n < 0`. takeN line 3194 `cats[:n]` / topBooks line 3242 `sorted[:n]` / takeBooks
+  line 3248 `make([]T, n)` + `books[:n]` — n<0 时双 panic (slice bounds out of
+  range / makeslice: len out of range) → 500. R84-D BUG-194 仅补 takeBooks n==0
+  guard + make+copy 隔离底层数组, 但 n<0 未覆盖; takeN/topBooks 完全无 guard.
+  全 caller 现传正 (clampPage ≥1 / getHomeLayoutSetting clamp [4,30] / 字面量
+  6/8/12), 但 sub 模板 func (toInt(a)-toInt(b) 可负 if 输入异常) + 未来 caller
+  refactor 可能传负 → latent panic. 修复: 三函数均加 `if n < 0 { n = 0 }` clamp
+  (与 R84-D BUG-194 n==0 guard 同款防御, takeBooks n<0→n=0 后 n==0 guard 接管返
+  empty slice). 0 行为变化 (现 caller 全正), 0 perf 影响 (1 int 比较), 纯 latent
+  panic 收口. 诚实留痕: 非 P1/P2 hot-path bug (无现网触发路径), 属 P3 latent
+  defensive (与 R81-D BUG-179 per-row Scan err / R82-B BUG-182 goroutine recover
+  同款 "防御性深抓" 类别).
+
+- 目标B 精简 (R96-D 精简): scanBookRow helper dedup. R81-D 起 8 个 view-data 函数
+  (getBooks / getHistoryViewData / getBookViewData related / getCategoryViewData /
+  getRankingViewData / getFulltextViewData / getSearchViewData / getKeywordViewData)
+  逐字复制 ~8 行 scan 块 (var 11 NullString/int64/string + rows.Scan(11 dest) +
+  bookRowFromScan(...) append). 复制块 latent 风险: 未来改 11-列 SELECT (e.g.
+  加 b.sourceUrl 列) 需同步改 8 处, 漏改一处致 Scan 列数不匹配 → 该 view 全行
+  Scan err skip → 空页 (与 R79-D BUG-161 漏 b.cover 列同款 class). 提取 scanBookRow
+  (rows *sql.Rows) → (map, rawIntro, err) helper (line 3749, +14 行含注释), 8 处
+  调用点改 `m, _, serr := scanBookRow(rows); if serr != nil { log; continue };
+  append(books, m)` (各 -3~-5 行). getSearchViewData/getKeywordViewData 用
+  rawIntro 二次截断 (150/200 字, scanBookRow 默认截 120, 覆写保行为一致).
+  getHistoryViewData byID 用 `m["id"].(string)` comma-ok (bookRowFromScan 保证
+  "id" 为 string, 防御). 净 +70/-65 = +5 行 (helper +14 / 8 处 -48 / BUG-272
+  guard +12 / 注释). 行为 0 变化 (bookRowFromScan 字段集不变, Scan dest 不变,
+  per-row err log+skip pattern 不变).
+
+- 模板核实: shipsay/home.html BUG-225 categoryId 过滤 (line 85-122) + shipsay/
+  history.html (R83-D 建) + shipsay/book.html 最新章节→FirstChapterURL (全 9 主题
+  一致设计, 非 bug) 全 intact. templates/ 0 改动 (BUG-272 + 精简全在 main.go,
+  模板无需改). admin PageList eq . $.Page (R80-A/R82-A 已修) + 8 主题 fulltext/
+  ranking eq .page $.Page 全 intact (grep 确认).
+
+- 主控统一编译: go build -o heis-backend . = 0 errors + go vet ./... = 0 warnings,
+  二进制 26,015,768 bytes (R96 baseline 26,025,554 → -9,786: scanBookRow dedup
+  -48 行 + BUG-272 guard +12 行, 净 -5 行源 + 编译器内联微调). main.go 6077→6082 行.
+
+Stage Summary:
+- 用户需求完成:
+  · 深抓 BUG-272 (main+templates scope): takeN/topBooks/takeBooks n<0 panic guard
+    (顺延 R84-D BUG-194 n==0 guard 对称遗漏, latent defensive P3) ✓
+  · 精简: scanBookRow helper dedup 8 个 view-data scan 块 (消除复制块 latent
+    列数不匹配风险 + 净 -5 行) ✓
+- 编译: go build ./... 0 errors + go vet ./... 0 warnings, 二进制 26,015,768 bytes.
+- 文件改动: 1 文件 (main.go +70/-65 = 净 +5 行, +200 budget 内). templates/ 0 改.
+- Bug 修复累计 (main+templates scope): +1 unique bug (BUG-272 negative-n guard).
+  跨 scope 同号 convention: BUG-272 fetcher (R96-A err-path Turnstile) / admin
+  (R96-C fire-and-forget Exec) / main+templates (本轮 negative-n guard) 三 scope
+  同号不同内容, worklog 接受.
+- 0 启动/init/main 函数改动 / 0 新依赖 / 0 emoji (rg 检查本轮新增 0 emoji).
+
+未解决 (交接 R97+):
+1. **getKeywordViewData relatedTags `defer rows2.Close()` (line 4192)**: defer
+   在 if 块内绑定到函数末 (非块末), rows2 持续到 getKeywordViewData 返才关 (轻微
+   resource hold, 函数随即返故非真泄漏). R97+ 评估改 rows2.Close() 即时关 (与
+   getReadViewData prev/next prow.Close() 同款即时关 pattern). 本轮 +200 budget
+   内未改 (属 P4 微调).
+2. **topBooks O(n²) 冒泡 (line 3220)**: home view totalNeeded ~88-116 本 → ~7k-13k
+   cmp/req. sort.Slice O(n log n) 可降 ~10x, 但 88 本冒泡 ~μs 级, P4 perf 非
+   correctness. R97+ 评估改 sort.Slice (与 scanBookRow 精简同款 refactor scope).
+3. **getReadViewData prev/next db.Query LIMIT 1 (line 3954/3971)**: 单行查询用
+   db.Query (返 *sql.Rows) 而非 db.QueryRow (返 *sql.Row), 多一次 Next()+Close()
+   开销. P4 perf. R97+ 评估改 QueryRow (与 scanBookRow 同款简化 scope).
+4. **getBookViewData recent 反转顺序 (line 3816-3819)**: `ORDER BY idx DESC LIMIT 12`
+   → tmp[0]=newest, 反转后 recent[0]=oldest-of-12. 注释 "最新→次新" 与代码
+   "oldest→newest" 不一致 (comment-code mismatch). 全 9 主题 .RecentChapters 渲
+   相同顺序, 若反转是 bug 则全主题影响; 若是 intended (recent-12 升序阅读序)
+   则注释错. 模糊, R97+ 评估 (需 user feedback 确认期望顺序). 本轮 0 改 (risk
+   of regression > benefit, ambiguous).
+5. **main.go gofmt 不合规 (pre-existing R76+ 8-space)**: 与 R96-A 未决项 #3 同款,
+   R97+ 批量 gofmt -w 评估 (独立 commit).
+6. **scanBookRow unit test 覆盖**: 0 test files. R97+ 评估加测试 (与 R82-D 未决项
+   #7 getXxxViewData 测试同款).
+
+==============================================================================

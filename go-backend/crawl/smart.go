@@ -200,8 +200,22 @@ func MatchCategoryByText(text string, existingCategories []string) string {
 		for _, c := range existingCategories {
 			normalized = append(normalized, NormalizeCategory(c))
 		}
+		// R96-B BUG-272 (P4) 修复: 原无条件 `strings.Contains(text, c)`
+		//   在 c 为空串时返 true (Go strings.Contains(s, "") 恒真) →
+		//   提前 return "" 跳过关键词评分路径. 场景: caller (未来 admin
+		//   API / 测试) 传含空串的 existingCategories (e.g. ["", "玄幻奇幻"])
+		//   → normalized=["", "玄幻奇幻"] → 首轮 c="" 命中 → return ""
+		//   → MatchCategoryByText 返空 → SmartCategory 第 2 步 keyword 路径
+		//   不会执行 (line 261 `kw := MatchCategoryByText(...)` 拿到 kw=""
+		//   不进 if 分支) → 落到 LLM 兜底 method="none". 当前唯一 live
+		//   caller runner.go line 1737 走 cfg.DB.ListCategoryNames() 已
+		//   filter 空 (admin.go line 387 `n != ""`), 0 生产命中; 但
+		//   MatchCategoryByText 是 export, 防御性修复. latent 自 R38
+		//   TS→Go 迁移 (47 轮未发现). 修复: c != "" 前置条件 + skip 空
+		//   normalized 项 (与 NormalizeCategory 返 "" 同口径, "" 视作
+		//   "无分类" 不参与匹配).
 		for _, c := range normalized {
-			if strings.Contains(text, c) {
+			if c != "" && strings.Contains(text, c) {
 				return c
 			}
 		}

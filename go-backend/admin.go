@@ -454,6 +454,18 @@ func writeJSONOK(w http.ResponseWriter, data interface{}) {
         writeJSON(w, map[string]interface{}{"ok": true, "data": data})
 }
 
+// execLogged 执行 fire-and-forget 状态 UPDATE 并在 DB 故障时 log.Printf 提示运维
+// (visibility-only, 不改 caller 返回语义). 用于 goroutine 内 / handler 内 status
+// 写入等无法把 DB err 返给 caller 的场景 (runtime 已 MarkStopped/MarkPaused/
+// MarkResumed 是事实, 返 500 反让用户误判操作失败而重试触发重复 goroutine).
+// R96-C BUG-272~274 fire-and-forget Exec family helper — 与 R94-C BUG-266 Pattern C
+// `switch selErr ... default: log.Printf` Scan-swallow log-on-fail 并行的 Exec family.
+func execLogged(label, query string, args ...interface{}) {
+        if _, err := db.Exec(query, args...); err != nil {
+                log.Printf("[%s] 状态写入失败: %v", label, err)
+        }
+}
+
 // readJSONBody 读 request body 为 map.
 func readJSONBody(r *http.Request) map[string]interface{} {
         out := map[string]interface{}{}
@@ -1238,15 +1250,21 @@ func startCrawlTask(taskID, ruleID, ruleConfig, mode, bookURL, listURL, fetchCon
         //   把 panic 转 DB UPDATE status='error' (与 adminDownloadsCreate goroutine
         //   line 3075 同款 panic-safe 模式). 注: 此 defer 在 status='running' UPDATE 前
         //   注册, panic 发生时仍能 UPDATE 标 error (DB UPDATE 是幂等).
+        // R96-C BUG-273 (P4, fire-and-forget Exec visibility family, R95-C 未决项
+        //   #2 续抓, goroutine 变种): 本函数 5 处 `_, _ = db.Exec(UPDATE Task
+        //   SET status=...)` 吞错 — DB 故障 (SQLite busy lock / 连接闪断) 时 status
+        //   未刷新 (running/error/done 任一), 任务卡 running 用户无感. 改 execLogged
+        //   log-on-fail (与 R94-C BUG-266 Pattern C log-on-fail 同款 visibility, 但属
+        //   Exec family; goroutine 无 ResponseWriter 故仅 log 不返 err).
         defer func() {
                 if r := recover(); r != nil {
                         log.Printf("[task:%s] panic: %v", taskID, r)
-                        _, _ = db.Exec(`UPDATE Task SET status='error', updatedAt=datetime('now') WHERE id=?`, taskID)
+                        execLogged("startCrawlTask", `UPDATE Task SET status='error', updatedAt=datetime('now') WHERE id=?`, taskID)
                 }
         }()
 
         // 更新状态为 running
-        _, _ = db.Exec(`UPDATE Task SET status='running', updatedAt=datetime('now') WHERE id=?`, taskID)
+        execLogged("startCrawlTask", `UPDATE Task SET status='running', updatedAt=datetime('now') WHERE id=?`, taskID)
 
         // 1. 解析规则 (RuleConfig)
         rule := crawl.ParseRuleConfig(ruleConfig)
@@ -1322,11 +1340,11 @@ func startCrawlTask(taskID, ruleID, ruleConfig, mode, bookURL, listURL, fetchCon
                 var unreachable *crawl.ErrSourceUnreachable
                 if errors.As(err, &unreachable) {
                         log.Printf("[task:%s] 源站不可达, 跳过任务: %s", taskID, unreachable.Reason)
-                        _, _ = db.Exec(`UPDATE Task SET status='error', updatedAt=datetime('now') WHERE id=?`, taskID)
+                        execLogged("startCrawlTask", `UPDATE Task SET status='error', updatedAt=datetime('now') WHERE id=?`, taskID)
                         return
                 }
                 log.Printf("[task:%s] 采集失败: %v", taskID, err)
-                _, _ = db.Exec(`UPDATE Task SET status='error', updatedAt=datetime('now') WHERE id=?`, taskID)
+                execLogged("startCrawlTask", `UPDATE Task SET status='error', updatedAt=datetime('now') WHERE id=?`, taskID)
                 return
         }
         // 终态由 ExecuteTask 内部已写 'done' (或 'stopped' 由 control 写); 这里兜底
@@ -1350,7 +1368,7 @@ func startCrawlTask(taskID, ruleID, ruleConfig, mode, bookURL, listURL, fetchCon
         switch selErr := db.QueryRow(`SELECT status FROM Task WHERE id=?`, taskID).Scan(&curStatus); selErr {
         case nil:
                 if curStatus == "running" {
-                        _, _ = db.Exec(`UPDATE Task SET status='done', updatedAt=datetime('now') WHERE id=?`, taskID)
+                        execLogged("startCrawlTask", `UPDATE Task SET status='done', updatedAt=datetime('now') WHERE id=?`, taskID)
                 }
         case sql.ErrNoRows:
                 // 任务被删 mid-crawl (并发 adminBackupClear/adminTaskDelete), 兜底
@@ -1423,6 +1441,14 @@ func adminTaskControlHandler(w http.ResponseWriter, r *http.Request) {
         tr := crawl.GetTaskRunner()
         rt := tr.GetRuntime(taskID)
 
+        // R96-C BUG-272 (P3, fire-and-forget Exec visibility family, R95-C 未决项 #2
+        //   续抓): 本 handler 5 处 `_, _ = db.Exec(UPDATE Task SET status=...)` 吞错
+        //   — DB 故障 (SQLite busy lock / 连接闪断) 时 runtime 已 MarkStopped/
+        //   MarkPaused/MarkResumed 但 DB status 未刷新 → handler 返 200 {action:...}
+        //   但 admin UI 下次 list 看到旧 status (如用户点 stop 后仍显示 running). 改
+        //   execLogged log-on-fail (visibility-only, 不改 200 返回 — runtime 已改是
+        //   事实, 返 500 会让用户误以为操作失败而重试触发重复 goroutine). 与 R94-C
+        //   BUG-266 Pattern C log-on-fail 同款 visibility, 但属 Exec family.
         switch action {
         case "start":
                 // runtime 已存在且在运行 → 拒绝
@@ -1433,7 +1459,7 @@ func adminTaskControlHandler(w http.ResponseWriter, r *http.Request) {
                 // runtime 不存在 (首次 start 或已被回收) → 启动新 goroutine
                 if rt == nil || rt.IsStopped() {
                         // 从 stopped/done/error 状态重新启动
-                        _, _ = db.Exec(`UPDATE Task SET status='running', updatedAt=datetime('now') WHERE id=?`, taskID)
+                        execLogged("adminTaskControlHandler", `UPDATE Task SET status='running', updatedAt=datetime('now') WHERE id=?`, taskID)
                         go startCrawlTask(taskID, ruleID, ruleConfig, mode, bookURL, listURL, fetchConfigStr,
                                 threadMin, threadMax, intervalMin, intervalMax, recrawlMode,
                                 smartCategory, smartComplete, autoSuggest)
@@ -1443,7 +1469,7 @@ func adminTaskControlHandler(w http.ResponseWriter, r *http.Request) {
                 // 暂停状态 → MarkResumed
                 if rt.IsPaused() {
                         rt.MarkResumed()
-                        _, _ = db.Exec(`UPDATE Task SET status='running', updatedAt=datetime('now') WHERE id=?`, taskID)
+                        execLogged("adminTaskControlHandler", `UPDATE Task SET status='running', updatedAt=datetime('now') WHERE id=?`, taskID)
                         writeJSONOK(w, map[string]interface{}{"action": "start", "taskId": taskID})
                         return
                 }
@@ -1459,18 +1485,18 @@ func adminTaskControlHandler(w http.ResponseWriter, r *http.Request) {
                         return
                 }
                 rt.MarkPaused()
-                _, _ = db.Exec(`UPDATE Task SET status='paused', updatedAt=datetime('now') WHERE id=?`, taskID)
+                execLogged("adminTaskControlHandler", `UPDATE Task SET status='paused', updatedAt=datetime('now') WHERE id=?`, taskID)
                 writeJSONOK(w, map[string]interface{}{"action": "pause", "taskId": taskID})
 
         case "stop":
                 if rt == nil {
                         // 幂等: 已停止
-                        _, _ = db.Exec(`UPDATE Task SET status='stopped', updatedAt=datetime('now') WHERE id=?`, taskID)
+                        execLogged("adminTaskControlHandler", `UPDATE Task SET status='stopped', updatedAt=datetime('now') WHERE id=?`, taskID)
                         writeJSONOK(w, map[string]interface{}{"action": "stop", "taskId": taskID})
                         return
                 }
                 rt.MarkStopped()
-                _, _ = db.Exec(`UPDATE Task SET status='stopped', updatedAt=datetime('now') WHERE id=?`, taskID)
+                execLogged("adminTaskControlHandler", `UPDATE Task SET status='stopped', updatedAt=datetime('now') WHERE id=?`, taskID)
                 writeJSONOK(w, map[string]interface{}{"action": "stop", "taskId": taskID})
         }
 }
@@ -4538,6 +4564,12 @@ func adminDownloadsCreate(w http.ResponseWriter, r *http.Request) {
 
         // 异步生成 TXT (Go 端简化版: 章节序号+标题+正文 拼接, 不混淆)
         go func(jid, bid, bname string) {
+                // R96-C BUG-274 (P4, fire-and-forget Exec visibility family, R95-C 未决项 #2
+                //   续抓, downloads goroutine 变种): 本 goroutine 5 处 `_, _ = db.Exec(UPDATE
+                //   DownloadJob SET status=...)` 吞错 — DB 故障时 status 未刷新 (running/
+                //   error/done 任一), 用户看到旧 status 以为任务卡住. 改 execLogged
+                //   log-on-fail (与 R94-C BUG-266 同款 visibility, 属 Exec family; goroutine
+                //   无 ResponseWriter 仅 log 不返 err).
                 defer func() {
                         // R64-C BUG-45 (P2): goroutine panic 兜底 (如 OOM 拼 TXT, 或
                         //   db.Query 返意外类型断言失败), 原 defer 仅 --inFlight,
@@ -4545,14 +4577,14 @@ func adminDownloadsCreate(w http.ResponseWriter, r *http.Request) {
                         //   done/error. 修复: recover() 把 panic 转 DB UPDATE error,
                         //   与正常路径一样落 status='error' + error 信息.
                         if r := recover(); r != nil {
-                                _, _ = db.Exec(`UPDATE DownloadJob SET status='error', error=? WHERE id=?`,
+                                execLogged("adminDownloadsCreate", `UPDATE DownloadJob SET status='error', error=? WHERE id=?`,
                                         fmt.Sprintf("panic: %v", r), jid)
                         }
                         downloadInFlightMu.Lock()
                         downloadInFlight--
                         downloadInFlightMu.Unlock()
                 }()
-                _, _ = db.Exec(`UPDATE DownloadJob SET status='running' WHERE id=?`, jid)
+                execLogged("adminDownloadsCreate", `UPDATE DownloadJob SET status='running' WHERE id=?`, jid)
                 type chRow struct {
                         idx     int
                         title   string
@@ -4570,7 +4602,7 @@ func adminDownloadsCreate(w http.ResponseWriter, r *http.Request) {
                 //   (从头开始, 用户最需要的部分).
                 crows, err := db.Query(`SELECT idx, title, COALESCE(volume,''), COALESCE(content,'') FROM Chapter WHERE bookId=? ORDER BY idx ASC LIMIT 1000`, bid)
                 if err != nil {
-                        _, _ = db.Exec(`UPDATE DownloadJob SET status='error', error=? WHERE id=?`, "查询章节失败: "+err.Error(), jid)
+                        execLogged("adminDownloadsCreate", `UPDATE DownloadJob SET status='error', error=? WHERE id=?`, "查询章节失败: "+err.Error(), jid)
                         return
                 }
                 for crows.Next() {
@@ -4584,7 +4616,7 @@ func adminDownloadsCreate(w http.ResponseWriter, r *http.Request) {
                 //   error 路径). 与 adminTasksList BUG-111 / 全文件 crows.Err() pattern 统一.
                 if cerr := crows.Err(); cerr != nil {
                         crows.Close()
-                        _, _ = db.Exec(`UPDATE DownloadJob SET status='error', error=? WHERE id=?`, "迭代章节失败: "+cerr.Error(), jid)
+                        execLogged("adminDownloadsCreate", `UPDATE DownloadJob SET status='error', error=? WHERE id=?`, "迭代章节失败: "+cerr.Error(), jid)
                         return
                 }
                 crows.Close()
@@ -4655,7 +4687,7 @@ func adminDownloadsCreate(w http.ResponseWriter, r *http.Request) {
                 if !writeOK {
                         return
                 }
-                _, _ = db.Exec(`UPDATE DownloadJob SET status='done', filePath=?, size=? WHERE id=?`, "memory:"+jid, len(txt), jid)
+                execLogged("adminDownloadsCreate", `UPDATE DownloadJob SET status='done', filePath=?, size=? WHERE id=?`, "memory:"+jid, len(txt), jid)
         }(jobID, bookID, bookName)
 
         writeJSONOK(w, map[string]interface{}{
