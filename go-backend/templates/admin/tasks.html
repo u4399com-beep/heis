@@ -805,10 +805,23 @@ function toggleTaskLogAutoRefresh(){
 }
 
 // URL 模式联动校验
-document.querySelector('[name=mode]').addEventListener('change',function(){
-  var v=this.value;
-  document.querySelector('[name=bookUrl]').required=(v==='single');
-  document.querySelector('[name=listUrl]').required=(v==='range');
+// R90-D BUG-248 (P3, admin/tasks.html scope, 顺延 R90-D BUG-247 main+templates):
+//   原 document.querySelector('[name=mode]') 返页面首个 [name=mode] (createModal
+//   的 select), 仅给 createModal 的 mode/bookUrl/listUrl 加 change 监听; R79-A
+//   editTaskModal 第二个 form 的 mode/bookUrl/listUrl 永远不绑定 — 用户切 mode
+//   后 required 属性不更新 (浏览器原生校验失效, 仅 submitEditTask 手动校验
+//   兜底). 修复: querySelectorAll 遍历所有 form 的 mode select, 各自 scoped
+//   form.querySelector('[name=bookUrl/listUrl]') 仅更新本 form 的 required.
+//   0 现存依赖被破 (createModal 行为不变, editTaskModal 修一致).
+document.querySelectorAll('form select[name=mode]').forEach(function(sel){
+  sel.addEventListener('change',function(){
+    var form=sel.closest('form');if(!form)return;
+    var v=sel.value;
+    var bu=form.querySelector('[name=bookUrl]');
+    var lu=form.querySelector('[name=listUrl]');
+    if(bu){bu.required=(v==='single');}
+    if(lu){lu.required=(v==='range');}
+  });
 });
 </script>
 </body>

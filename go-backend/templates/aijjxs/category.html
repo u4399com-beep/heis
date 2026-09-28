@@ -93,7 +93,7 @@
 {{if gt .Page 1}}<a href="{{.PrevPageURL}}">上一页</a>{{end}}
 {{range .PageList}}{{if eq .page $.Page}}<b>{{.page}}</b>{{else}}<a href="{{.URL}}">{{.page}}</a>{{end}}{{end}}
 {{if lt .Page .TotalPages}}<a href="{{.NextPageURL}}">下一页</a>{{end}}
-{{if lt .Page .TotalPages}}<a href="/?view=category{{if .CatID}}&cat={{.CatID | urlquery}}{{end}}&page={{.TotalPages}}">尾页</a>{{end}}
+{{if lt .Page .TotalPages}}<a href="{{.LastPageURL}}">尾页</a>{{end}}
 </div>
 {{end}}
 </div>

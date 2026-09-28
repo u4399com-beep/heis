@@ -63,11 +63,12 @@
 
 <div class="text">
 <div class="fontsize">
-<button title="小字号" onclick="document.getElementById('article').style.fontSize='16px';">A</button>
-<button title="中字号" onclick="document.getElementById('article').style.fontSize='19px';">A</button>
-<button title="大字号" onclick="document.getElementById('article').style.fontSize='22px';">A</button>
-<span style="margin-left:12px;align-self:center;color:#666;font-size:14px;">字号: 19px</span>
+<button title="小字号" onclick="heisFontSize('16px')">A</button>
+<button title="中字号" onclick="heisFontSize('19px')">A</button>
+<button title="大字号" onclick="heisFontSize('22px')">A</button>
+<span id="heisFontSizeLabel" style="margin-left:12px;align-self:center;color:#666;font-size:14px;">字号: 19px</span>
 </div>
+<script>(function(){window.heisFontSize=function(px){var a=document.getElementById('article');if(a)a.style.fontSize=px;var l=document.getElementById('heisFontSizeLabel');if(l)l.textContent='字号: '+px;};})();</script>
 <div id="article" style="font-size:19px;line-height:1.8;">
 {{if .Chapter.content}}{{.Chapter.content}}{{else}}<p style="text-align:center;color:#999;">本章内容加载中...</p>{{end}}
 </div>

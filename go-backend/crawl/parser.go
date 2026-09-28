@@ -882,6 +882,33 @@ func tokenizeJsonPath(path string) []jsonToken {
                                         continue
                                 }
                         }
+                        // BUG-247 (P3) 修复: [k==v] / [k!=v] 双字符运算符 (无 `?(` wrapper).
+                        //   原实现直接 strings.Index(inner, "=") 找首个 `=`, 对 `[k==v]` 解析
+                        //   为 fk="k" fv="=v" (首 `=` 后是 `=v`), 对 `[k!=v]` 解析为 fk="k!"
+                        //   fv="=v" (fk 含 `!` 残留). 用户意图 `==` / `!=` 双字符运算符被
+                        //   误解析为单 `=` + 残留字符 → filterArray 比较失败 → 路径静默返空.
+                        //   修复: 先检 `==` / `!=` (双字符运算符优先, jsonPathEqRe/NeRe 同
+                        //   语义但 `?()` wrapper 才命中), 后 fallback 单 `=` (历史兼容
+                        //   [k=v] 简单等值). latent 自 R38 TS→Go 迁移 (47 轮未发现, 71 Rule
+                        //   0 用 [k==v]/[k!=v] 无 `?(` wrapper 形态, 多用 [?(...)] JSONPath
+                        //   标准 或 [k=v] 单等号). 与 R83-B BUG-191 ([?(...)] 优先于 [k=v])
+                        //   同款 "运算符特异性优先" 修复方法论.
+                        if eq2 := strings.Index(inner, "=="); eq2 > 0 {
+                                tokens = append(tokens, jsonToken{
+                                        kind: tokenFilter,
+                                        fk:   strings.TrimSpace(inner[:eq2]),
+                                        fv:   strings.TrimSpace(inner[eq2+2:]),
+                                })
+                                continue
+                        }
+                        if ne := strings.Index(inner, "!="); ne > 0 {
+                                tokens = append(tokens, jsonToken{
+                                        kind: tokenFilter,
+                                        fk:   strings.TrimSpace(inner[:ne]),
+                                        fv:   "__NE__" + strings.TrimSpace(inner[ne+2:]),
+                                })
+                                continue
+                        }
                         // [k=v] 过滤 (无 `?(` 前缀的简单等值, JSONPath 已上面接管)
                         if eq := strings.Index(inner, "="); eq > 0 {
                                 tokens = append(tokens, jsonToken{
@@ -946,13 +973,50 @@ func flattenArray(cur any) any {
         return out
 }
 
+// splitJsonArrayPaths — split JsonArrayAt path on commas, respecting
+// double-quoted strings (commas inside "..." preserved).
+//
+// BUG-248 (P3) 修复: 原用 strings.Split(path, ",") 在 quoted value 含逗号
+//
+//      时误分割 (e.g. path=`items[?(@.f=="a,b")],other` 被分割为
+//      `items[?(@.f=="a` + `b")]` + `other`, 前两段路径非法 JsonGet 返 nil,
+//      路径静默返空). 修复: 单遍扫描, 双引号内逗号不分割. latent 自 R38
+//      TS→Go 迁移 (47 轮未发现, 71 Rule 0 用逗号 in quoted value 形态).
+//      注: 不处理 \" 转义 (JSONPath 标准用 \" 转义引号, 但实际 Rule 配置
+//      0 用嵌套引号 + 转义, 复杂度低优先级); 单引号 ' 不视为 string 边界
+//      (JSONPath 标准 RFC 9535 仅双引号).
+func splitJsonArrayPaths(path string) []string {
+        out := []string{}
+        var cur strings.Builder
+        inQuote := false
+        for i := 0; i < len(path); i++ {
+                c := path[i]
+                if c == '"' {
+                        inQuote = !inQuote
+                        cur.WriteByte(c)
+                        continue
+                }
+                if c == ',' && !inQuote {
+                        out = append(out, cur.String())
+                        cur.Reset()
+                        continue
+                }
+                cur.WriteByte(c)
+        }
+        if cur.Len() > 0 {
+                out = append(out, cur.String())
+        }
+        return out
+}
+
 // JsonArrayAt — 取数组路径下的所有元素 (支持逗号分隔多路径并集).
 func JsonArrayAt(root any, path string) []any {
         if root == nil {
                 return nil
         }
         out := []any{}
-        for _, p := range strings.Split(path, ",") {
+        // BUG-248: splitJsonArrayPaths 替代 strings.Split, 尊重双引号内逗号
+        for _, p := range splitJsonArrayPaths(path) {
                 p = strings.TrimSpace(p)
                 if p == "" {
                         continue

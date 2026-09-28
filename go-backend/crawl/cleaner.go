@@ -583,7 +583,11 @@ func RemoveAdLines(text string, patterns []string) string {
 		urls = append(urls, m)
 		// R74-C BUG-117: 占位符用 PUA \uE000/\uE001 (原 \x00, 已剥源文本 \x00 防误识别,
 		//   PUA 更稳健 — 正常 HTML 不含 PUA 字符).
-		return fmt.Sprintf("\uE000%d\uE001", len(urls)-1)
+		// R90-B BUG-249 (P3) perf: strconv.Itoa + 字符串拼接替代 fmt.Sprintf (避免
+		//   fmt 反射 + interface{} boxing; 与 R83-B BUG-182 unescape 路径 strconv.Atoi
+		//   同口径对称优化). hot path: 每章 2 次 RemoveAdLines × N URL, 1000 章任务
+		//   ~20k URL × ~150ns (fmt.Sprintf) → ~3ms; strconv.Itoa+concat ~50ns → ~1ms.
+		return "\uE000" + strconv.Itoa(len(urls)-1) + "\uE001"
 	})
 	// 用户 patterns (缓存复用)
 	for _, p := range patterns {

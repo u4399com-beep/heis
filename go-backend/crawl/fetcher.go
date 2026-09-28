@@ -2694,6 +2694,22 @@ func LooksLikeCaptcha(html string) CaptchaType {
         if strings.Contains(scanLower, "geetest") {
                 return CaptchaGeetest
         }
+        // R90-A BUG-248 (P3) 修复 (R89-A 未决项 #6 fetcher scope 深抓续): 原实现
+        //   captchaRe (line 2598) 含 captcha_container pattern (WordPress / wpforms
+        //   plugin widget class) 但 LooksLikeCaptcha 仅靠 generic "captcha" +
+        //   len<5000 gate 覆盖 — 长页 (>=5KB) 含 captcha_container 无其他 widget
+        //   标识 (e.g., 长正文 + 嵌入 wpforms captcha widget) → LooksBlocked 返 true
+        //   (captchaRe (?i) 命中) 但 LooksLikeCaptcha 返 "" → caller (fetchPageOnce
+        //   success + err path, line ~6235/6294) 不调 2captcha / Turnstile 求解 →
+        //   captcha 不解 → 章节持续 blocked (与 BUG-234 / R89-A BUG-242 同款 family,
+        //   跨函数不对称: LooksBlocked 见 captchaRe captcha_container 但
+        //   LooksLikeCaptcha 不见). 修复: 显式 captcha_container 检查 (无 len<5000
+        //   gate, 该 token 是 widget DOM class 标识非正文词, 误报率低). 返
+        //   CaptchaUnknown (无 dedicated solver, caller 走 bridge fallback, 但
+        //   CaptchaDetected=true 让 caller 计 rt.IncCaptcha + 不误判为 success).
+        if strings.Contains(scanLower, "captcha_container") {
+                return CaptchaUnknown
+        }
         // 短页 + captcha_container / 一般 captcha
         if strings.Contains(scanLower, "captcha") && len(html) < 5000 {
                 return CaptchaUnknown
@@ -4019,6 +4035,23 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 if acac := resp.Header.Get("Access-Control-Allow-Credentials"); acac != "" {
                         recordSecurityHeader(originHost(rawURL), "Access-Control-Allow-Credentials", acac)
                 }
+                // R90-A 反反爬第 144-148 项: CORS 完整 4 头族 + Origin-Agent-Cluster
+                //   响应头观测 (per-host 合并 tracker 第 21-25 字段, 与 124-143 同款).
+                if acam := resp.Header.Get("Access-Control-Allow-Methods"); acam != "" {
+                        recordSecurityHeader(originHost(rawURL), "Access-Control-Allow-Methods", acam)
+                }
+                if acah := resp.Header.Get("Access-Control-Allow-Headers"); acah != "" {
+                        recordSecurityHeader(originHost(rawURL), "Access-Control-Allow-Headers", acah)
+                }
+                if aceh := resp.Header.Get("Access-Control-Expose-Headers"); aceh != "" {
+                        recordSecurityHeader(originHost(rawURL), "Access-Control-Expose-Headers", aceh)
+                }
+                if acma := resp.Header.Get("Access-Control-Max-Age"); acma != "" {
+                        recordSecurityHeader(originHost(rawURL), "Access-Control-Max-Age", acma)
+                }
+                if oac := resp.Header.Get("Origin-Agent-Cluster"); oac != "" {
+                        recordSecurityHeader(originHost(rawURL), "Origin-Agent-Cluster", oac)
+                }
 
                 // Set-Cookie 处理 (autoCookie)
                 if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
@@ -4927,6 +4960,24 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 }
                 if acac := extractHeaderFromCurlStdout(headers, "Access-Control-Allow-Credentials"); acac != "" {
                         recordSecurityHeader(domain, "Access-Control-Allow-Credentials", acac)
+                }
+                // R90-A 反反爬第 144-148 项: CORS 完整 4 头族 + Origin-Agent-Cluster
+                //   响应头观测 (与 fetchHttp 同款, curl -D - dump headers 路径;
+                //   fetchBinaryViaCurl 不 dump 故不调, 与 124-143 同款限制).
+                if acam := extractHeaderFromCurlStdout(headers, "Access-Control-Allow-Methods"); acam != "" {
+                        recordSecurityHeader(domain, "Access-Control-Allow-Methods", acam)
+                }
+                if acah := extractHeaderFromCurlStdout(headers, "Access-Control-Allow-Headers"); acah != "" {
+                        recordSecurityHeader(domain, "Access-Control-Allow-Headers", acah)
+                }
+                if aceh := extractHeaderFromCurlStdout(headers, "Access-Control-Expose-Headers"); aceh != "" {
+                        recordSecurityHeader(domain, "Access-Control-Expose-Headers", aceh)
+                }
+                if acma := extractHeaderFromCurlStdout(headers, "Access-Control-Max-Age"); acma != "" {
+                        recordSecurityHeader(domain, "Access-Control-Max-Age", acma)
+                }
+                if oac := extractHeaderFromCurlStdout(headers, "Origin-Agent-Cluster"); oac != "" {
+                        recordSecurityHeader(domain, "Origin-Agent-Cluster", oac)
                 }
                 if status >= 300 {
                         // R66-C BUG-52 (P3): curl 4xx/5xx 也记 latency + fail (与 fetchHttp
@@ -6288,9 +6339,17 @@ func fetchPageOnce(ctx context.Context, rawURL string, cfg FetchConfig) (*FetchR
 
         // 8 级降级链: fetch-relay → scrapling → Obscura → uc-bridge → moli-bridge → curl-impersonate
         if bridged := tryBridges(ctx, rawURL, cfg, ua); bridged != "" {
-                if LooksBlocked(bridged, nil) {
-                        return &FetchResult{HTML: bridged, Engine: "browser", Blocked: true}, nil
-                }
+                // R90-A BUG-247 (P3) 修复 (R89-A 未决项 #6 fetcher scope 深抓续):
+                //   原实现 LooksBlocked(bridged) 早返 Blocked: true 跳过 LooksLikeCaptcha
+                //   (bridged) captcha 求解路径 → 桥返 captcha widget 页 (LooksBlocked
+                //   jsChallengeRe/captchaRe 命中 + captchaRe 也命中) 时直接放弃求解, 与
+                //   success-path (line ~6268-6295) captcha 块不对称. 后果: err-path 桥
+                //   captcha 不解 → caller (runner.go 4 处) 误判 Blocked 无 captcha → 续抓
+                //   无解 captcha 页 → 章节内容污染 (与 R89-A BUG-242 success-path "仍
+                //   Blocked 但返 false" 同款 family, 反向不对称: err-path 早返跳过
+                //   captcha). 修复: 移除早返, 让 captcha 块先跑 (mirror success-path);
+                //   末尾 re-check LooksBlocked 收口 (与 BUG-242 同款, 防 "just a
+                //   moment" 非 captcha 页落到 Blocked: false 误判).
                 ct := LooksLikeCaptcha(bridged)
                 if ct != "" {
                         // R43-1B: 桥路径也支持 2captcha (h-captcha / reCAPTCHA)
@@ -6308,6 +6367,12 @@ func fetchPageOnce(ctx context.Context, rawURL string, cfg FetchConfig) (*FetchR
                                 }
                         }
                         return &FetchResult{HTML: bridged, Engine: "browser", Blocked: true, CaptchaDetected: true, CaptchaType: ct}, nil
+                }
+                // R90-A BUG-247 续: re-check LooksBlocked (mirror BUG-242 success-path).
+                //   桥返 "just a moment" 非 captcha 页 (LooksBlocked 命中但 captchaRe
+                //   不命中) 收口返 Blocked: true (防 caller 误判 success 解析挑战页作正文).
+                if LooksBlocked(bridged, nil) {
+                        return &FetchResult{HTML: bridged, Engine: "browser", Blocked: true}, nil
                 }
                 return &FetchResult{HTML: bridged, Engine: "browser", Blocked: false}, nil
         }
@@ -6710,6 +6775,25 @@ func fetchBinaryHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, pr
                 }
                 if acac := resp.Header.Get("Access-Control-Allow-Credentials"); acac != "" {
                         recordSecurityHeader(originHost(rawURL), "Access-Control-Allow-Credentials", acac)
+                }
+                // R90-A 反反爬第 144-148 项: CORS 完整 4 头族 + Origin-Agent-Cluster
+                //   响应头观测 (与 fetchHttp 同款, fetchBinaryHttp success + 4xx/5xx 两路径
+                //   都记, BUG-241 修复后 fetchBinaryHttp 已补对称; fetchBinaryViaCurl 不
+                //   dump headers 故不调, 与 124-143 同款限制).
+                if acam := resp.Header.Get("Access-Control-Allow-Methods"); acam != "" {
+                        recordSecurityHeader(originHost(rawURL), "Access-Control-Allow-Methods", acam)
+                }
+                if acah := resp.Header.Get("Access-Control-Allow-Headers"); acah != "" {
+                        recordSecurityHeader(originHost(rawURL), "Access-Control-Allow-Headers", acah)
+                }
+                if aceh := resp.Header.Get("Access-Control-Expose-Headers"); aceh != "" {
+                        recordSecurityHeader(originHost(rawURL), "Access-Control-Expose-Headers", aceh)
+                }
+                if acma := resp.Header.Get("Access-Control-Max-Age"); acma != "" {
+                        recordSecurityHeader(originHost(rawURL), "Access-Control-Max-Age", acma)
+                }
+                if oac := resp.Header.Get("Origin-Agent-Cluster"); oac != "" {
+                        recordSecurityHeader(originHost(rawURL), "Origin-Agent-Cluster", oac)
                 }
                 // 3xx / 4xx / 5xx 视为失败 (与 fetchHttp 同款, 不重试 3xx)
                 if resp.StatusCode >= 300 {
@@ -11328,13 +11412,32 @@ func ClearHostAcceptRanges(host string) {
 //     爬虫 cookie 复用).
 //   第 143 项 Access-Control-Allow-Credentials (Fetch §CORS) — `true` 标识允许跨域请求
 //     带 cookie (与第 140 项 ACAO 配对, CORS inbound policy 完整覆盖).
+//   R90-A 第 144-148 项: CORS 完整覆盖 4 头族 + Origin-Agent-Cluster (合并 hostSecurity
+//     HeadersEntry 扩第 21-25 字段, 与 124-143 同款). 全为 "cross-origin policy response
+//     header" 同类, 合并语义自洽; 反爬本身不基于此检测 (客户端不发), 降分价值 ≤1 分, 主
+//     要 admin 可观测性 (识别 host CORS 完整 inbound/outbound 策略 + origin isolation
+//     升级立场).
+//   第 144 项 Access-Control-Allow-Methods (Fetch §CORS) — `GET, POST, ...` 标识 host
+//     允许的 CORS 方法白名单 (与第 140/143 项 ACAO/ACAC 配对, CORS inbound 完整覆盖).
+//   第 145 项 Access-Control-Allow-Headers (Fetch §CORS) — `Content-Type, X-Requested-With,
+//     ...` 标识 host 允许的 CORS 请求头白名单 (preflight ACK 内容).
+//   第 146 项 Access-Control-Expose-Headers (Fetch §CORS) — `Content-Length, X-Custom, ...`
+//     标识 host 允许跨域 JS 读取的响应头白名单 (outbound policy, 与 140 inbound 对称).
+//   第 147 项 Access-Control-Max-Age (Fetch §CORS) — `<seconds>` 标识 preflight 缓存时间
+//     (Chrome 默认 7200s/2h, 长期值 = host 信任 preflight 结果, 严格 CORS 策略源站通常
+//     反爬也严格, 与第 139 项 TAO 严格策略同款关联).
+//   第 148 项 Origin-Agent-Cluster (Chromium Origin-Keyed Clusters) — `?1` / `?0` 标识
+//     host 是否启用 origin-keyed agent cluster (Chrome 88+, RFC draft-dcutack-web-
+//     agent-clusters). R88-A 未决项 #5 列候选第 145 项 (实为第 148 项, 顺延 144-147 CORS
+//     4 头族), 0 实施. 价值: aggressive origin-isolation 源站通常也反爬严格 (与第 135 项
+//     COEP-Report-Only 升级路径同款关联).
 
 // hostSecurityHeadersEntry — per-host 安全策略响应头观测条目 (R86-A 第 124-128 项 +
-//   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项, 合并 20 字段). entry
-//   是 pointer: recordSecurityHeader LoadOrStore canonical 指针 + 单字段 update-in-place
-//   (非 store-replace, 保留其他 19 头旧值). 同字段并发写 last-write-wins; sweep
-//   CompareAndDelete 后下次 record 重建 entry (与 recordVia store-replace 不一样, 这里需
-//   保留其他 19 头故用 update-in-place).
+//   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项 + R90-A 第 144-148
+//   项, 合并 25 字段). entry 是 pointer: recordSecurityHeader LoadOrStore canonical
+//   指针 + 单字段 update-in-place (非 store-replace, 保留其他 24 头旧值). 同字段并发写
+//   last-write-wins; sweep CompareAndDelete 后下次 record 重建 entry (与 recordVia
+//   store-replace 不一样, 这里需保留其他 24 头故用 update-in-place).
 type hostSecurityHeadersEntry struct {
         hstsValue         string // Strict-Transport-Security (第 124 项)
         cspValue          string // Content-Security-Policy (第 125 项)
@@ -11356,11 +11459,16 @@ type hostSecurityHeadersEntry struct {
         xRobotsTag       string // X-Robots-Tag (第 141 项, R89-A)
         clearSiteData    string // Clear-Site-Data (第 142 项, R89-A)
         acacValue        string // Access-Control-Allow-Credentials (第 143 项, R89-A)
+        acamValue        string // Access-Control-Allow-Methods (第 144 项, R90-A)
+        acahValue        string // Access-Control-Allow-Headers (第 145 项, R90-A)
+        acehValue        string // Access-Control-Expose-Headers (第 146 项, R90-A)
+        acmaValue        string // Access-Control-Max-Age (第 147 项, R90-A)
+        oacValue         string // Origin-Agent-Cluster (第 148 项, R90-A)
         detectedAt        int64  // UnixMilli
 }
 
 // hostSecurityHeadersMap — host string -> *hostSecurityHeadersEntry (R86-A 第 124-128 项 +
-//   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项).
+//   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项 + R90-A 第 144-148 项).
 var hostSecurityHeadersMap sync.Map
 
 // hostSecurityHeadersSweepCounter — sweep 触发累加 (与 hostViaSweepCounter 同口径).
@@ -11370,9 +11478,9 @@ var hostSecurityHeadersSweepCounter atomic.Int64
 const HostSecurityHeadersSweepTTLms = 7 * 24 * 60 * 60 * 1000
 
 // recordSecurityHeader — 记录 host 的单个安全策略响应头 (R86-A 第 124-128 项 +
-//   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项). headerName 区分
-//   20 头 (大小写不敏感). 与 recordVia 同款 Store + 惰性 sweep, 但保留其他 19 头旧值
-//   (LoadOrStore canonical 指针 + 单字段 update-in-place).
+//   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项 + R90-A 第 144-148
+//   项). headerName 区分 25 头 (大小写不敏感). 与 recordVia 同款 Store + 惰性 sweep,
+//   但保留其他 24 头旧值 (LoadOrStore canonical 指针 + 单字段 update-in-place).
 func recordSecurityHeader(host, headerName, value string) {
         if host == "" || value == "" {
                 return
@@ -11420,6 +11528,17 @@ func recordSecurityHeader(host, headerName, value string) {
                 ent.clearSiteData = value
         case "access-control-allow-credentials":
                 ent.acacValue = value
+        // R90-A 反反爬第 144-148 项: CORS 完整 4 头族 + Origin-Agent-Cluster.
+        case "access-control-allow-methods":
+                ent.acamValue = value
+        case "access-control-allow-headers":
+                ent.acahValue = value
+        case "access-control-expose-headers":
+                ent.acehValue = value
+        case "access-control-max-age":
+                ent.acmaValue = value
+        case "origin-agent-cluster":
+                ent.oacValue = value
         default:
                 return
         }
@@ -11462,6 +11581,11 @@ func HostSecurityHeadersSnapshot() map[string]map[string]string {
                         "xRobotsTag":         e.xRobotsTag,
                         "clearSiteData":     e.clearSiteData,
                         "acacValue":         e.acacValue,
+                        "acamValue":         e.acamValue,
+                        "acahValue":         e.acahValue,
+                        "acehValue":         e.acehValue,
+                        "acmaValue":         e.acmaValue,
+                        "oacValue":          e.oacValue,
                         "detectedAt":        fmt.Sprintf("%d", e.detectedAt),
                 }
                 return true

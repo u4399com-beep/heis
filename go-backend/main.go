@@ -988,6 +988,25 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 if page < totalPages {
                         data["NextPageURL"] = buildCategoryURL(pseudoStyle, catID, page+1)
                 }
+                // R90-D BUG-247 (P3, main+templates scope, 顺延 R88-D BUG-237~240:
+                //   R87-D BUG-231/232 + R86-D BUG-225/226; 本 scope 从 231 起避免与
+                //   R87-B BUG-227 crawl + R87-C BUG-228~230 admin.go 撞号): shipsay/
+                //   aijjxs category.html "尾页" 链接硬编码 `/?view=category&cat={...}
+                //   &page={TotalPages}` 绕过 buildCategoryURL, 与同模板内 PageList/
+                //   PrevPageURL/NextPageURL (均 buildCategoryURL 输出, 随 site.
+                //   pseudoStaticStyle 切 numeric/slug/dir/segmented 等形态) 不一致.
+                //   影响场景: admin 配 pseudoStaticStyle=numeric 时, 同一分类页
+                //   内 PageList URL = /category/{hash}/{page}.html, "尾页" URL = /?
+                //   view=category&cat={id}&page={last} → 搜索引擎抓到混合 URL 风格
+                //   (canonical weight 分散, 同页 URL 不一致是 SEO 弱信号). 原 BUG
+                //   无功能 bug (链接仍可达, homeHandler path="/" 走 query 串模式
+                //   渲染), 但 SEO + 用户体验 (风格突变) 损害. 修复: Go 端注入
+                //   LastPageURL field (buildCategoryURL(pseudoStyle, catID,
+                //   totalPages)), shipsay/category.html + aijjxs/category.html 改
+                //   {{.LastPageURL}} (各 1 行替换, 0 净增). ranking/fulltext 同款
+                //   "尾页" 用 buildPagerURL (永远 query 串, 不分风格), 与硬编码
+                //   /?view=ranking&sort=...&page={last} 一致, 0 bug 不动.
+                data["LastPageURL"] = buildCategoryURL(pseudoStyle, catID, totalPages)
         case "ranking":
                 tab := r.URL.Query().Get("sort")
                 if tab == "" {

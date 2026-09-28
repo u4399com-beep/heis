@@ -1497,7 +1497,21 @@ func adminTaskLogsHandler(w http.ResponseWriter, r *http.Request) {
         //   total 来自 COUNT(*) 供 UI 显示日志总数 + 分页 UI 算 totalPages.
         page := clampIntAdm(toIntDefault(r.URL.Query().Get("page"), 1), 1, 1000000)
         pageSize := clampIntAdm(toIntDefault(r.URL.Query().Get("pageSize"), 100), 1, 500)
+        // R90-C BUG-247 (P3, R68-D BUG-77 / R89-C BUG-242 family 续抓): 同 adminBooksList —
+        //   clamp page 到 maxPages 再算 offset, page 与 offset 一致. 原任务日志分页漏此
+        //   clamp, page 钳 [1,1000000] × pageSize 钳 [1,500] → offset 可达 ~500M (大
+        //   TaskLog 表深页翻 → SQLite OFFSET 扫描丢弃近 500M 行 → 查询数秒级 / OOM).
+        //   与书籍分页 (BUG-77 line 2549) + 反馈分页 (BUG-242 line 4716/7655)
+        //   maxPaginationOffset=10000 对称. 正常小日志 (total ≤ maxPages × pageSize)
+        //   0 行为变化 (clamp 不触发).
+        maxPages := maxPaginationOffset/pageSize + 1
+        if page > maxPages {
+                page = maxPages
+        }
         offset := (page - 1) * pageSize
+        if offset > maxPaginationOffset {
+                offset = maxPaginationOffset
+        }
         // COUNT(*) (与 adminRuleByIDHandler taskCount 同款单 SELECT, ~0.1ms; 不阻塞 LIMIT 查询).
         var total int
         _ = db.QueryRow(`SELECT COUNT(*) FROM TaskLog WHERE taskId=?`, taskID).Scan(&total)
@@ -2643,9 +2657,20 @@ func adminBooksCreate(w http.ResponseWriter, r *http.Request) {
         categoryID := strings.TrimSpace(strField(body, "categoryId", 64))
         if categoryID != "" {
                 var exist string
-                _ = db.QueryRow(`SELECT id FROM Category WHERE id=?`, categoryID).Scan(&exist)
-                if exist == "" {
+                // R90-C BUG-248 (P3, R85-C BUG-204 Pattern C / R88-C BUG-236 family 续抓):
+                //   原实现 `_ = db.QueryRow(...).Scan(&exist)` 吞错 — DB 故障 (连接闪断 /
+                //   SQLite 锁竞争 mid-tx) → exist="" → admin 误得 400 "categoryId 不存在"
+                //   (实际 DB 故障, categoryId 行可能仍在). 改显式区分 ErrNoRows (400
+                //   categoryId 不存在) vs DB 故障 (500). 与 BUG-236 adminCategoriesCreate
+                //   upsert 同款 ErrNoRows vs DB err 显式区分 (categoryId 检查 2 处
+                //   callsite: 本 adminBooksCreate + adminBookByIDHandler PUT, 本轮一并修).
+                catExistErr := db.QueryRow(`SELECT id FROM Category WHERE id=?`, categoryID).Scan(&exist)
+                if catExistErr == sql.ErrNoRows || exist == "" {
                         writeJSONErr(w, "categoryId 不存在", 400)
+                        return
+                }
+                if catExistErr != nil {
+                        writeJSONErr(w, "查询分类失败: "+catExistErr.Error(), 500)
                         return
                 }
         }
@@ -2764,9 +2789,18 @@ func adminBookByIDHandler(w http.ResponseWriter, r *http.Request) {
                         }
                         if catID != "" {
                                 var existCat string
-                                _ = db.QueryRow(`SELECT id FROM Category WHERE id=?`, catID).Scan(&existCat)
-                                if existCat == "" {
+                                // R90-C BUG-248 (categoryId 检查 2 处 callsite 第 2 处, 详见
+                                //   adminBooksCreate 同款 rationale): 原实现 `_ = ...Scan(&existCat)`
+                                //   吞错 — DB 故障 → existCat="" → admin 误得 400 "categoryId 不存在".
+                                //   改显式区分 ErrNoRows (400) vs DB 故障 (500). 与 BUG-236
+                                //   adminCategoriesCreate upsert 同款 ErrNoRows vs DB err 显式区分.
+                                catExistErr := db.QueryRow(`SELECT id FROM Category WHERE id=?`, catID).Scan(&existCat)
+                                if catExistErr == sql.ErrNoRows || existCat == "" {
                                         writeJSONErr(w, "categoryId 不存在", 400)
+                                        return
+                                }
+                                if catExistErr != nil {
+                                        writeJSONErr(w, "查询分类失败: "+catExistErr.Error(), 500)
                                         return
                                 }
                         }
