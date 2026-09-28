@@ -1324,7 +1324,7 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) (retErr error) {
                                         }
                                         defer chapterSem.Release()
 
-                                        ok, kind, msg := CrawlChapterContent(ctx, cfg, rt, myEpoch, q)
+                                        ok, kind, msg, _ := CrawlChapterContent(ctx, cfg, rt, myEpoch, q)
                                         // R45-1A: 缩小 batchMu 临界区 (R43-1B defer 修复 panic 但 logf
                                         // 内 cfg.DB.InsertTaskLog 走 DB I/O, 全 goroutine 串行化降低并发).
                                         // 改为: 锁内仅写共享变量 + 准备 logMsg, 锁外执行 logf (DB 写).
@@ -2119,14 +2119,25 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
 // ---------- CrawlChapterContent (阶段 2) ----------
 
 // CrawlChapterContent — 阶段 2: 单章正文采集.
-// 返回 (ok, kind, message). kind: "" | "no-url" | "timeout" | "abort" | "hostgate" | "other"
+// 返回 (ok, kind, message, cleaned). kind: "" | "no-url" | "timeout" | "abort" | "hostgate" | "other"
+//   cleaned: 成功路径返清洗后正文 (供 caller 测试用 snippet, e.g. FetchTestSampleBook);
+//   失败路径返 "". phase 2 生产 caller (line ~1327) 用 _ 丢弃.
+//
+// R98-A BUG-279 (P3) 修复 (R82-D BUG-185 诚实留痕续): 原签名 (bool, string, string)
+//   成功路径已算 cleaned (line ~2293-2318, 含清洗 + 干扰句子插入) 但未返 caller
+//   → FetchTestSampleBook (line ~2744) 用 "<已采>" 占位作 snippet, admin 试采页面
+//   无法看到真实正文前 120 字. 修复: 扩 4th 返 cleaned 字符串 (ok=true 路径返 cleaned,
+//   ok=false 路径返 "" 仅 1 行 line 2361 `return true, "", ""` → `return true, "", "", cleaned`).
+//   12 处失败路径 return 加 `, ""` 第 4 参数 (无语义变化, caller 失败路径不读 cleaned).
+//   与 R67-C BUG-60 (BookMetaResult 加 IsNewBook/CoverSaved 字段供 stats 累计) 同款 "加
+//   返字段供 caller 用" precedent.
 //
 // R43-1B 反反爬增强 + 边缘 case 修复:
 //   - HTTPError 429 / 503+RetryAfter → hostGate.ReportRateLimited (R42-1B 后该函数
 //     是死代码, 429 冷却从未触发, 反爬服务持续命中后续请求)
 //   - FetchResult.CaptchaDetected → rt.IncCaptcha (R42-1B 后 captchaEncountered 字段
 //     是死字段, admin 任务监控永远显示 0)
-func CrawlChapterContent(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, myEpoch int64, q *ChapterTask) (bool, string, string) {
+func CrawlChapterContent(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, myEpoch int64, q *ChapterTask) (bool, string, string, string) {
         // R80-B BUG-177 (P3) 修复: defense-in-depth nil 检查.
         //   当前 caller (runner.go phase 2 goroutine line 1270) 总是非 nil 构造 ChapterTask
         //   (line 1177-1184 字面量, BookCtx 来自 r.BookCtx 已 nil 检查 line 1168 if r.BookCtx != nil),
@@ -2135,18 +2146,18 @@ func CrawlChapterContent(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRun
         //   在 q.BookCtx nil 时 panic. 防御: 入口加 nil 检查 + 返 "no-url" sentinel (caller
         //   按 "no-url" 处理 — 计 stats.Errors + log + 跳过该章, 不死 goroutine).
         if q == nil {
-                return false, "no-url", "ChapterTask nil"
+                return false, "no-url", "ChapterTask nil", ""
         }
         if q.URL == "" {
-                return false, "no-url", ""
+                return false, "no-url", "", ""
         }
         if q.BookCtx == nil {
-                return false, "no-url", "ChapterTask.BookCtx nil"
+                return false, "no-url", "ChapterTask.BookCtx nil", ""
         }
         // 预算检查
         if err := rt.CheckBudget(); err != nil {
                 // BudgetExceeded 上抛任务级 (返回 other 让上层处理)
-                return false, "other", err.Error()
+                return false, "other", err.Error(), ""
         }
         rt.IncRequest()
         rt.SetCurrentURL(q.URL)
@@ -2156,7 +2167,7 @@ func CrawlChapterContent(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRun
         ticket, err := hostGate.Acquire(ctx, q.URL, cfg.Override.HostGateLimit, HostGateWaitTimeoutMs, cfg.Override.PerHostConcurrency)
         if err != nil {
                 // 槽满等待超时 → hostgate 路径
-                return false, "hostgate", fmt.Sprintf("书籍采集等待同站并发闸门超时 (host:%s): %s", HostGateKeyOf(q.URL), truncate(q.URL, 120))
+                return false, "hostgate", fmt.Sprintf("书籍采集等待同站并发闸门超时 (host:%s): %s", HostGateKeyOf(q.URL), truncate(q.URL, 120)), ""
         }
         defer hostGate.Release(ticket)
 
@@ -2171,7 +2182,7 @@ func CrawlChapterContent(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRun
         if err != nil {
                 if ctx.Err() != nil {
                         // R65-C: ctx 取消不计失败 (操作员主动停止, 非 host 健康问题)
-                        return false, "abort", ""
+                        return false, "abort", "", ""
                 }
                 // R43-1B: HTTPError 429 / 503+RetryAfter → 调 ReportRateLimited (R42-1B 后
                 // 该函数是死代码, 反爬 429 冷却从未触发). 其它网络层错误仍调 ReportFailure.
@@ -2186,12 +2197,12 @@ func CrawlChapterContent(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRun
                         hostGate.ReportFailure(chapterHost)
                         // R65-C: 超时计 per-host 失败 (health 降 → AdjustConcurrency 减并发)
                         getHealthTracker().recordFailure(chapterHost)
-                        return false, "timeout", fmt.Sprintf("章节抓取超时: %s", truncate(q.URL, 120))
+                        return false, "timeout", fmt.Sprintf("章节抓取超时: %s", truncate(q.URL, 120)), ""
                 }
                 hostGate.ReportFailure(chapterHost)
                 // R65-C: 其它错误计 per-host 失败
                 getHealthTracker().recordFailure(chapterHost)
-                return false, "other", fmt.Sprintf("章节采集失败 %s: %s", q.Title, truncate(errStr, 120))
+                return false, "other", fmt.Sprintf("章节采集失败 %s: %s", q.Title, truncate(errStr, 120)), ""
         }
         // R67-C BUG-56 (P2) 修复: 同 CrawlBookMeta 路径, recordSuccess +
         //   ReportSuccess 移到 Blocked 检查后避免双计数. recordLatency + AdjustMinGap
@@ -2209,7 +2220,7 @@ func CrawlChapterContent(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRun
                 hostGate.ReportFailure(chapterHost)
                 // R65-C: 拦截视为失败, 计 per-host 失败
                 getHealthTracker().recordFailure(chapterHost)
-                return false, "other", fmt.Sprintf("章节内容疑似被拦截: %s", truncate(q.URL, 120))
+                return false, "other", fmt.Sprintf("章节内容疑似被拦截: %s", truncate(q.URL, 120)), ""
         }
         // 成功 (HTTP 200 + 非 Blocked): 记 success + ReportSuccess
         getHealthTracker().recordSuccess(chapterHost)
@@ -2286,7 +2297,7 @@ func CrawlChapterContent(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRun
         }
         content, err := ParseContent(ctx, q.URL, res.HTML, cfg.Rule.Content, cfg.Override, pageFetcher)
         if err != nil {
-                return false, "other", fmt.Sprintf("章节正文解析失败 %s: %v", q.Title, err)
+                return false, "other", fmt.Sprintf("章节正文解析失败 %s: %v", q.Title, err), ""
         }
 
         // 清洗正文 (含 trafilatura 桥)
@@ -2318,7 +2329,7 @@ func CrawlChapterContent(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRun
         }
 
         if cleaned == "" {
-                return false, "other", fmt.Sprintf("章节正文为空: %s", q.Title)
+                return false, "other", fmt.Sprintf("章节正文为空: %s", q.Title), ""
         }
 
         // 落库 (UpsertChapter)
@@ -2341,7 +2352,7 @@ func CrawlChapterContent(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRun
                 //   分支恒不命中 (IDMap[url] 永远是 "", `&& id != ""` 永远 false), 删除.
                 _, err := cfg.DB.UpsertChapter(ch)
                 if err != nil {
-                        return false, "other", fmt.Sprintf("章节入库失败 %s: %v", q.Title, err)
+                        return false, "other", fmt.Sprintf("章节入库失败 %s: %v", q.Title, err), ""
                 }
         }
 
@@ -2358,7 +2369,7 @@ func CrawlChapterContent(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRun
         //   需扩 DBClient 接口 + admin.go wiring, 范围外, 留 R69+).
         atomic.AddInt64(&q.BookCtx.ParsedWordCount, int64(utf8.RuneCountInString(cleaned)))
 
-        return true, "", ""
+        return true, "", "", cleaned
 }
 
 // ---------- FinalizeBook (阶段 3) ----------
@@ -2741,17 +2752,22 @@ func FetchTestSampleBook(ctx context.Context, rule RuleConfig, override FetchCon
                 Volume:  firstToc.Volume,
                 Idx:     1,
         }
-        ok, kind, msg := CrawlChapterContent(ctx, cfg, rt, myEpoch, q)
+        // R98-A BUG-279 (P3) 修复 (R82-D BUG-185 诚实留痕续): CrawlChapterContent 现
+        //   扩 4th 返 cleaned 字符串 (成功路径返清洗后正文). 原占位 "<已采>" 替为
+        //   truncate(cleaned, 120), admin 试采页面可看真实正文前 120 字 (与 R79-B
+        //   FetchTestSample.ContentSnippet 字段语义一致, 不再 placeholder). 与
+        //   R67-C BUG-60 (BookMetaResult 加 IsNewBook/CoverSaved 供 stats) 同款 "扩
+        //   返字段供 caller 用" precedent. cleaned 失败路径返 "" → snippet=truncate("",
+        //   120)="" (truncate n<=0 返 "", n=120 对 "" 返 ""), admin 看到 empty snippet
+        //   (ok=true 路径 cleaned 非空才有意义; ok=false 路径早返 line 2756, 不到此).
+        ok, kind, msg, cleaned := CrawlChapterContent(ctx, cfg, rt, myEpoch, q)
         if !ok {
                 return FetchTestSample{Status: "failed", Reachable: true, BookURL: firstURL,
                         BookName: meta.BookCtx.BookName, TocCount: len(meta.BookCtx.TocItems),
                         FirstChapterTitle: firstToc.Title, FirstChapterURL: firstToc.URL,
                         Reason: fmt.Sprintf("CrawlChapterContent: kind=%s msg=%s", kind, truncate(msg, 120))}
         }
-        // 取正文 snippet: 重新解析首章 content (CrawlChapterContent 内部已清洗但未返)
-        // 为简化 + 避免二次请求, 用 msg (空字符串 ok 路径) 作 placeholder; admin 可
-        // 后续调 retry-failed 单 URL 模式触发完整试采看正文.
-        snippet := "<已采>" // CrawlChapterContent 不返 cleaned 字符串, 用占位
+        snippet := truncate(cleaned, 120)
         return FetchTestSample{
                 Reachable:         true,
                 BookURL:           firstURL,

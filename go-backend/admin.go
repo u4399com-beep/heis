@@ -601,6 +601,37 @@ func clampIntAdm(v, lo, hi int) int {
         return v
 }
 
+// maybeSwapArgs 在 max < min 时把 args[idxMin]/args[idxMax] 两 slot 互换 (用户输入
+// 任意顺序, swap 而非报错, 与 adminTasksCreate line 832-834 / 837-839 同款语义).
+//
+// R98-C BUG-283 (P4, 精简 + latent defensive): adminTaskUpdateHandler 4 处 swap/
+// clamp 块原用 `args[len(args)-1]` / `args[len(args)-2]` 索引, 依赖 listStart/
+// listEnd (或 bookStart/bookEnd/threadMin/threadMax/intervalMin/intervalMax) 两
+// 字段 append 连续无插入. 未来若在两字段间插入新 SET 子句 (如 line 1810 listStart
+// 与 line 1816 listEnd 之间插入 listStep=?), `args[len(args)-2]` 不再指向 listStart
+// slot → swap 静默把 wrong column 值改写 (DB 列 corrupt, latent P0). 改用 idxMin/
+// idxMax 显式跟踪 args slot 索引 (各 callsite append 后 `idx = len(args) - 1` 记录
+// 真实位置), 防御后续字段插入. 与 R84-D BUG-194 n==0 guard / R96-D BUG-272 n<0
+// guard 同款 "防御性深抓" (latent, 现 caller 无插入, 0 行为变化, 0 perf 影响).
+//
+// 4 处 callsite 共享本 helper (DRY 收口): listStart/listEnd (swap) + bookStart/
+// bookEnd (swap, 含 both>0 外层条件) + threadMin/threadMax (clamp) + intervalMin/
+// intervalMax (clamp). clamp 见 maybeClampArgs.
+func maybeSwapArgs(args []interface{}, idxMin, idxMax int, minVal, maxVal int) {
+        if idxMin >= 0 && idxMax >= 0 && maxVal < minVal {
+                args[idxMin], args[idxMax] = maxVal, minVal
+        }
+}
+
+// maybeClampArgs 在 max < min 时把 args[idxMax] slot 替换为 minVal (钳而非 swap,
+// 与 adminTasksCreate line 850-852 threadMax>=threadMin / line 855-857
+// intervalMax>=intervalMin 同口径). 与 maybeSwapArgs 同款 -N 索引错位防御 (BUG-283).
+func maybeClampArgs(args []interface{}, idxMin, idxMax int, minVal, maxVal int) {
+        if idxMin >= 0 && idxMax >= 0 && maxVal < minVal {
+                args[idxMax] = minVal
+        }
+}
+
 // likeSafe — LIKE 查询安全转义 (防注入, 用 ESCAPE).
 func likeSafe(s string) string {
         s = strings.TrimSpace(s)
@@ -1804,44 +1835,40 @@ func adminTaskUpdateHandler(w http.ResponseWriter, r *http.Request, taskID strin
                 return
         }
         // listStart/listEnd (钳 + swap, 与 adminTasksCreate line 830-834 同口径)
+        // R98-C BUG-283: 改用 idxMin/idxMax 跟踪 args slot (替代 args[len(args)-N]
+        //   索引, 防后续字段插入致 -N 错位; swap 逻辑提为 maybeSwapArgs helper).
         var newListStart, newListEnd int
-        listStartChanged, listEndChanged := false, false
+        listStartIdx, listEndIdx := -1, -1
         if v, ok := body["listStart"]; ok && v != nil {
                 newListStart = clampIntAdm(intField(body, "listStart", 1, 1, 100000), 1, 100000)
                 sets = append(sets, "listStart=?")
                 args = append(args, newListStart)
-                listStartChanged = true
+                listStartIdx = len(args) - 1
         }
         if v, ok := body["listEnd"]; ok && v != nil {
                 newListEnd = clampIntAdm(intField(body, "listEnd", 1, 1, 100000), 1, 100000)
                 sets = append(sets, "listEnd=?")
                 args = append(args, newListEnd)
-                listEndChanged = true
+                listEndIdx = len(args) - 1
         }
-        if listStartChanged && listEndChanged && newListEnd < newListStart {
-                // swap (与 adminTasksCreate line 832-834 同款, 不返错而是 swap 让用户输入任意顺序).
-                // swap 后需更新 sets/args (已 append, 需找到 index 替换). 简化: 重新构建这两条 SET.
-                // args[len(args)-2] = listStart, args[len(args)-1] = listEnd (按 append 顺序).
-                args[len(args)-2], args[len(args)-1] = newListEnd, newListStart
-        }
-        // bookStart/bookEnd (钳 + swap, 与 adminTasksCreate line 835-839 同口径)
+        maybeSwapArgs(args, listStartIdx, listEndIdx, newListStart, newListEnd)
+        // bookStart/bookEnd (钳 + swap, 与 adminTasksCreate line 835-839 同口径, 仅当两者都 >0 时 swap, 0=不限)
         var newBookStart, newBookEnd int
-        bookStartChanged, bookEndChanged := false, false
+        bookStartIdx, bookEndIdx := -1, -1
         if v, ok := body["bookStart"]; ok && v != nil {
                 newBookStart = clampIntAdm(intField(body, "bookStart", 0, 0, 100000), 0, 100000)
                 sets = append(sets, "bookStart=?")
                 args = append(args, newBookStart)
-                bookStartChanged = true
+                bookStartIdx = len(args) - 1
         }
         if v, ok := body["bookEnd"]; ok && v != nil {
                 newBookEnd = clampIntAdm(intField(body, "bookEnd", 0, 0, 100000), 0, 100000)
                 sets = append(sets, "bookEnd=?")
                 args = append(args, newBookEnd)
-                bookEndChanged = true
+                bookEndIdx = len(args) - 1
         }
-        if bookStartChanged && bookEndChanged && newBookStart > 0 && newBookEnd > 0 && newBookEnd < newBookStart {
-                // swap (与 adminTasksCreate line 837-839 同口径, 仅当两者都 >0 时 swap, 0=不限).
-                args[len(args)-2], args[len(args)-1] = newBookEnd, newBookStart
+        if newBookStart > 0 && newBookEnd > 0 {
+                maybeSwapArgs(args, bookStartIdx, bookEndIdx, newBookStart, newBookEnd)
         }
         // recrawlMode (incremental/full)
         if v, ok := body["recrawlMode"]; ok && v != nil {
@@ -1864,44 +1891,38 @@ func adminTaskUpdateHandler(w http.ResponseWriter, r *http.Request, taskID strin
                 args = append(args, s)
         }
         // threadMin/threadMax (钳 + threadMax>=threadMin 校验, 与 adminTasksCreate line 848-852 同口径)
+        // R98-C BUG-283: 改用 idxMin/idxMax 跟踪 + maybeClampArgs helper (同 listStart/listEnd).
         var newThreadMin, newThreadMax int
-        threadMinChanged, threadMaxChanged := false, false
+        threadMinIdx, threadMaxIdx := -1, -1
         if v, ok := body["threadMin"]; ok && v != nil {
                 newThreadMin = clampIntAdm(intField(body, "threadMin", 1, 1, 32), 1, 32)
                 sets = append(sets, "threadMin=?")
                 args = append(args, newThreadMin)
-                threadMinChanged = true
+                threadMinIdx = len(args) - 1
         }
         if v, ok := body["threadMax"]; ok && v != nil {
                 newThreadMax = clampIntAdm(intField(body, "threadMax", 3, 1, 32), 1, 32)
                 sets = append(sets, "threadMax=?")
                 args = append(args, newThreadMax)
-                threadMaxChanged = true
+                threadMaxIdx = len(args) - 1
         }
-        if threadMinChanged && threadMaxChanged && newThreadMax < newThreadMin {
-                // threadMax = threadMin (与 adminTasksCreate line 850-852 同款, 钳而非 swap).
-                // args[len(args)-1] 是 threadMax (最后 append), 替换为 newThreadMin.
-                args[len(args)-1] = newThreadMin
-        }
+        maybeClampArgs(args, threadMinIdx, threadMaxIdx, newThreadMin, newThreadMax)
         // intervalMin/intervalMax (钳 + intervalMax>=intervalMin, 与 adminTasksCreate line 853-857 同口径)
         var newIntervalMin, newIntervalMax int
-        intervalMinChanged, intervalMaxChanged := false, false
+        intervalMinIdx, intervalMaxIdx := -1, -1
         if v, ok := body["intervalMin"]; ok && v != nil {
                 newIntervalMin = clampIntAdm(intField(body, "intervalMin", 500, 0, 600000), 0, 600000)
                 sets = append(sets, "intervalMin=?")
                 args = append(args, newIntervalMin)
-                intervalMinChanged = true
+                intervalMinIdx = len(args) - 1
         }
         if v, ok := body["intervalMax"]; ok && v != nil {
                 newIntervalMax = clampIntAdm(intField(body, "intervalMax", 2000, 0, 600000), 0, 600000)
                 sets = append(sets, "intervalMax=?")
                 args = append(args, newIntervalMax)
-                intervalMaxChanged = true
+                intervalMaxIdx = len(args) - 1
         }
-        if intervalMinChanged && intervalMaxChanged && newIntervalMax < newIntervalMin {
-                // intervalMax = intervalMin (与 adminTasksCreate line 855-857 同款钳).
-                args[len(args)-1] = newIntervalMin
-        }
+        maybeClampArgs(args, intervalMinIdx, intervalMaxIdx, newIntervalMin, newIntervalMax)
         // bool flags (smartCategory/smartComplete/autoSuggest/autoRefresh)
         if v, ok := body["smartCategory"]; ok && v != nil {
                 sets = append(sets, "smartCategory=?")
@@ -3997,8 +4018,26 @@ func adminCategoriesCreate(w http.ResponseWriter, r *http.Request) {
                 writeJSONErr(w, "分类名必填", 400)
                 return
         }
+        // R98-C BUG-282 (P3, R80-D BUG-171 / R85-C BUG-204~215 / R88-C BUG-236 /
+        //   R93-C BUG-260~264 同款 Pattern C `_ = ...Scan` 吞错 family 续抓, MAX-return
+        //   变种): 原实现 `_ = db.QueryRow(SELECT MAX(sortOrder)).Scan(&maxSort)` 吞错 —
+        //   MAX(sortOrder) 恒返 1 行 (空表返 NULL → sql.NullInt64.Valid=false, 非空表返
+        //   数值; 无 ErrNoRows 分支). DB 故障 (SQLite busy lock / 连接闪断 / 磁盘满) 时
+        //   selErr != nil 但 maxSort.Int64=0 (默认值) → sortOrder=0+1=1 → 新建 category
+        //   排 sortOrder=1 (admin/categories 列表首位), 而非排在末尾 (sortOrder=max+1).
+        //   非 DB 故障下表非空时正确 (maxSort.Int64=max → max+1 末尾); 仅 DB 故障下错位.
+        //   与 BUG-236 upsert path 同函数同 family (line 4042 SELECT id), 但 BUG-236 修
+        //   的是 INSERT-UNIQUE-fail 后的 upsert SELECT; 此处是 INSERT 前的 MAX(sortOrder)
+        //   默认值计算, 独立 callsite. 显式 selErr 区分: selErr == nil → 用 maxSort (空
+        //   表 NULL→0 → sortOrder=1 正确; 非空表 → max+1 正确); selErr != nil → 500
+        //   (与 BUG-236 / BUG-255 同款 entry-point err 显式区分, 不让 DB 故障静默 corrupt
+        //   sortOrder 让用户分类列表顺序乱).
         var maxSort sql.NullInt64
-        _ = db.QueryRow(`SELECT MAX(sortOrder) FROM Category`).Scan(&maxSort)
+        maxSortErr := db.QueryRow(`SELECT MAX(sortOrder) FROM Category`).Scan(&maxSort)
+        if maxSortErr != nil {
+                writeJSONErr(w, "查询分类最大序号失败: "+maxSortErr.Error(), 500)
+                return
+        }
         sortOrder := int(maxSort.Int64) + 1
         if v, ok := body["sortOrder"]; ok && v != nil {
                 sortOrder = clampIntAdm(intField(body, "sortOrder", sortOrder, 0, 1000000), 0, 1000000)

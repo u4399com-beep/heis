@@ -10,10 +10,10 @@
 //
 // R52-1A: 标准分类名改为 4 字名 (与 DB schema 一致):
 //
-//	玄幻奇幻 / 奇幻魔幻 / 武侠江湖 / 仙侠修真 / 都市生活 / 言情小说 /
-//	历史军事 / 军事战争 / 游戏竞技 / 科幻未来 / 悬疑推理 / 灵异鬼怪 /
-//	体育竞技 / 轻小说类 / 现实生活
-//	原 2 字名 (玄幻/奇幻/...) 通过 categoryAliases 兜底转 4 字, 兼容旧源站分类.
+//      玄幻奇幻 / 奇幻魔幻 / 武侠江湖 / 仙侠修真 / 都市生活 / 言情小说 /
+//      历史军事 / 军事战争 / 游戏竞技 / 科幻未来 / 悬疑推理 / 灵异鬼怪 /
+//      体育竞技 / 轻小说类 / 现实生活
+//      原 2 字名 (玄幻/奇幻/...) 通过 categoryAliases 兜底转 4 字, 兼容旧源站分类.
 //
 // 已知差异 (Go 端简化):
 //   - SmartCategory LLM 兜底未实现 (z-ai-web-dev-sdk 仅 Node 可用), Go 端走 source +
@@ -22,100 +22,100 @@
 package crawl
 
 import (
-	"regexp"
-	"sort"
-	"strings"
-	"sync"
-	"unicode/utf8"
+        "regexp"
+        "sort"
+        "strings"
+        "sync"
+        "unicode/utf8"
 )
 
 // 标准分类 + 关键词权重 (R52-1A: 改 4 字名, 15 分类).
 //
-//	原 2 字名 (玄幻/奇幻/...) 通过 categoryAliases 兜底转 4 字 (e.g. "玄幻" → "玄幻奇幻").
-//	关键词保持不变 (玄幻/修罗/斗气 仍然匹配 "玄幻奇幻" 分类), 评分逻辑同 R44-1C.
+//      原 2 字名 (玄幻/奇幻/...) 通过 categoryAliases 兜底转 4 字 (e.g. "玄幻" → "玄幻奇幻").
+//      关键词保持不变 (玄幻/修罗/斗气 仍然匹配 "玄幻奇幻" 分类), 评分逻辑同 R44-1C.
 //
-//	R83-B BUG-186 (P3) 修复: "科幻未来" 关键词 "AI" (大写) 不匹配 englishWordRe
-//	  (^[a-z]+$ 要求全小写) → 走 strings.Contains(text, "AI") 路径, text 未 lowercase
-//	  时源站 "ai" (小写) 不匹配. 改 "ai" (小写) → 走 \bai\b 正则 + ToLower(text)
-//	  路径, 正确匹配 "AI"/"ai"/"Ai"/"aI" 全 case. 影响 1 个 keyword, 0 用户报告.
+//      R83-B BUG-186 (P3) 修复: "科幻未来" 关键词 "AI" (大写) 不匹配 englishWordRe
+//        (^[a-z]+$ 要求全小写) → 走 strings.Contains(text, "AI") 路径, text 未 lowercase
+//        时源站 "ai" (小写) 不匹配. 改 "ai" (小写) → 走 \bai\b 正则 + ToLower(text)
+//        路径, 正确匹配 "AI"/"ai"/"Ai"/"aI" 全 case. 影响 1 个 keyword, 0 用户报告.
 var categoryKeywords = []struct {
-	name string
-	kws  []string
+        name string
+        kws  []string
 }{
-	{"玄幻奇幻", []string{"玄幻", "修罗", "斗气", "魔法学院", "异界", "大陆", "废材", "逆天", "神帝", "武魂"}},
-	{"奇幻魔幻", []string{"奇幻", "史诗", "骑士", "法师", "精灵", "龙族", "矮人", "魔兽"}},
-	{"武侠江湖", []string{"武侠", "江湖", "剑客", "侠", "武林", "门派", "轻功", "内力", "镖局"}},
-	{"仙侠修真", []string{"仙侠", "修真", "修仙", "筑基", "金丹", "元婴", "渡劫", "灵气", "仙人", "道法"}},
-	{"都市生活", []string{"都市", "重生", "赘婿", "神豪", "总裁", "兵王", "神医", " urb ", "打工", "逆袭", "求婚", "离婚"}},
-	{"言情小说", []string{"言情", "甜宠", "恋爱", "霸总", "婚恋", "公主", "新娘", "嫁", "爱恋", "心动"}},
-	{"历史军事", []string{"历史", "穿越", "朝代", "大唐", "大明", "大清", "三国", "水浒", "宋朝", "始皇", "皇帝", "王朝"}},
-	{"军事战争", []string{"军事", "抗战", " war ", "士兵", "特种兵", "战场", "部队", "军官"}},
-	{"游戏竞技", []string{"游戏", "网游", "电竞", "副本", "升级", "系统", "玩家", "战队", "开黑"}},
-	{"科幻未来", []string{"科幻", "星际", "末世", "丧尸", "机甲", "飞船", "外星", "末日", "ai", "人工智能", "虫族"}},
-	{"悬疑推理", []string{"悬疑", "推理", "侦探", "凶案", "犯罪", "谜团", "刑警", "法医", "命案"}},
-	{"灵异鬼怪", []string{"灵异", "鬼", "阴阳", "风水", "盗墓", "僵尸", "驱魔", "诡异"}},
-	{"体育竞技", []string{"体育", "足球", "篮球", "奥运", "冠军", "教练", "联赛"}},
-	{"轻小说类", []string{"轻小说", "萌妹", "校园", "社团", "二次元", "青梅", "学妹", "学姐"}},
-	{"现实生活", []string{"现实", "职场", "创业", "商战", "生活", "家庭", "医生", "教师"}},
+        {"玄幻奇幻", []string{"玄幻", "修罗", "斗气", "魔法学院", "异界", "大陆", "废材", "逆天", "神帝", "武魂"}},
+        {"奇幻魔幻", []string{"奇幻", "史诗", "骑士", "法师", "精灵", "龙族", "矮人", "魔兽"}},
+        {"武侠江湖", []string{"武侠", "江湖", "剑客", "侠", "武林", "门派", "轻功", "内力", "镖局"}},
+        {"仙侠修真", []string{"仙侠", "修真", "修仙", "筑基", "金丹", "元婴", "渡劫", "灵气", "仙人", "道法"}},
+        {"都市生活", []string{"都市", "重生", "赘婿", "神豪", "总裁", "兵王", "神医", " urb ", "打工", "逆袭", "求婚", "离婚"}},
+        {"言情小说", []string{"言情", "甜宠", "恋爱", "霸总", "婚恋", "公主", "新娘", "嫁", "爱恋", "心动"}},
+        {"历史军事", []string{"历史", "穿越", "朝代", "大唐", "大明", "大清", "三国", "水浒", "宋朝", "始皇", "皇帝", "王朝"}},
+        {"军事战争", []string{"军事", "抗战", " war ", "士兵", "特种兵", "战场", "部队", "军官"}},
+        {"游戏竞技", []string{"游戏", "网游", "电竞", "副本", "升级", "系统", "玩家", "战队", "开黑"}},
+        {"科幻未来", []string{"科幻", "星际", "末世", "丧尸", "机甲", "飞船", "外星", "末日", "ai", "人工智能", "虫族"}},
+        {"悬疑推理", []string{"悬疑", "推理", "侦探", "凶案", "犯罪", "谜团", "刑警", "法医", "命案"}},
+        {"灵异鬼怪", []string{"灵异", "鬼", "阴阳", "风水", "盗墓", "僵尸", "驱魔", "诡异"}},
+        {"体育竞技", []string{"体育", "足球", "篮球", "奥运", "冠军", "教练", "联赛"}},
+        {"轻小说类", []string{"轻小说", "萌妹", "校园", "社团", "二次元", "青梅", "学妹", "学姐"}},
+        {"现实生活", []string{"现实", "职场", "创业", "商战", "生活", "家庭", "医生", "教师"}},
 }
 
 // 源站分类名变体合并到标准 15 分类 4 字名 (R52-1A 改 4 字目标).
 //
-//	原 2 字名 (玄幻/武侠/...) 通过本表转 4 字, 兼容旧源站分类 (source 端未升级到 4 字
-//	名, NormalizeCategory 走 alias 兜底). 4 字名本身 (玄幻奇幻/武侠江湖/...) 不在
-//	本表 (它们是标准名, NormalizeCategory 第 2 步直接返回).
+//      原 2 字名 (玄幻/武侠/...) 通过本表转 4 字, 兼容旧源站分类 (source 端未升级到 4 字
+//      名, NormalizeCategory 走 alias 兜底). 4 字名本身 (玄幻奇幻/武侠江湖/...) 不在
+//      本表 (它们是标准名, NormalizeCategory 第 2 步直接返回).
 var categoryAliases = map[string]string{
-	// 2 字旧名 → 4 字新名 (兼容旧源站分类)
-	"玄幻": "玄幻奇幻", "奇幻": "奇幻魔幻", "武侠": "武侠江湖", "仙侠": "仙侠修真",
-	"都市": "都市生活", "言情": "言情小说", "历史": "历史军事", "军事": "军事战争",
-	"游戏": "游戏竞技", "科幻": "科幻未来", "悬疑": "悬疑推理", "灵异": "灵异鬼怪",
-	"体育": "体育竞技", "现实": "现实生活",
+        // 2 字旧名 → 4 字新名 (兼容旧源站分类)
+        "玄幻": "玄幻奇幻", "奇幻": "奇幻魔幻", "武侠": "武侠江湖", "仙侠": "仙侠修真",
+        "都市": "都市生活", "言情": "言情小说", "历史": "历史军事", "军事": "军事战争",
+        "游戏": "游戏竞技", "科幻": "科幻未来", "悬疑": "悬疑推理", "灵异": "灵异鬼怪",
+        "体育": "体育竞技", "现实": "现实生活",
 
-	// 玄幻奇幻
-	"玄幻小说": "玄幻奇幻", "玄幻魔法": "玄幻奇幻", "魔幻": "玄幻奇幻", "魔幻玄幻": "玄幻奇幻",
-	"异界大陆": "玄幻奇幻", "异世大陆": "玄幻奇幻", "东方玄幻": "玄幻奇幻", "异界幻想": "玄幻奇幻",
-	// 奇幻魔幻
-	"奇幻小说": "奇幻魔幻", "西方奇幻": "奇幻魔幻", "史诗奇幻": "奇幻魔幻", "奇幻魔法": "奇幻魔幻",
-	// 武侠江湖
-	"武侠小说": "武侠江湖", "传统武侠": "武侠江湖", "新武侠": "武侠江湖", "武侠仙侠": "武侠江湖",
-	// 仙侠修真
-	"仙侠小说": "仙侠修真", "修真": "仙侠修真", "修仙": "仙侠修真", "古典仙侠": "仙侠修真",
-	"现代仙侠": "仙侠修真", "幻想仙侠": "仙侠修真",
-	// 都市生活
-	"都市娱乐": "都市生活", "都市异能": "都市生活", "都市言情": "都市生活",
-	"现代都市": "都市生活", "都市职业": "都市生活", "青春都市": "都市生活", "都市青春": "都市生活",
-	// 言情小说
-	"现代言情": "言情小说", "古代言情": "言情小说", "总裁豪门": "言情小说",
-	"甜宠": "言情小说", "豪门": "言情小说", "婚恋": "言情小说", "青春言情": "言情小说",
-	// 历史军事
-	"历史小说": "历史军事", "穿越历史": "历史军事", "古代": "历史军事",
-	"架空历史": "历史军事", "历史架空": "历史军事", "两宋元明": "历史军事", "历朝历代": "历史军事",
-	// 军事战争
-	"军事小说": "军事战争", "战争": "军事战争", "抗战": "军事战争", "军旅": "军事战争",
-	// 游戏竞技
-	"游戏小说": "游戏竞技", "网游": "游戏竞技", "电竞": "游戏竞技", "虚拟网游": "游戏竞技",
-	// 科幻未来
-	"科幻小说": "科幻未来", "末世危机": "科幻未来", "星际科幻": "科幻未来", "机甲": "科幻未来",
-	"未来科技": "科幻未来", "科幻末世": "科幻未来",
-	// 悬疑推理
-	"推理": "悬疑推理", "侦探": "悬疑推理", "恐怖悬疑": "悬疑推理", "刑侦": "悬疑推理",
-	// 灵异鬼怪
-	"鬼怪": "灵异鬼怪", "盗墓": "灵异鬼怪", "恐怖": "灵异鬼怪", "诡异": "灵异鬼怪",
-	// 体育竞技
-	"竞技": "体育竞技", "足球": "体育竞技", "篮球": "体育竞技", "体育运动": "体育竞技",
-	// 轻小说类
-	//   R53-1A 修复 BUG-1: 原 alias 表漏 "轻小说" 本身 (3 字). 源站分类 "轻小说" 在
-	//     NormalizeCategory: 1. alias 查 "轻小说" → 未命中; 2. standard 4 字名循环
-	//     "轻小说" != "轻小说类"; 3. fuzzy len("轻小说")=3 > len("轻小说类")=4 → false
-	//     跳过; 4. 返回 "轻小说" 原名. SmartCategory 第 1 步 source 路径用
-	//     normalized="轻小说" 与 existing categories (4 字标准名) 比较 → 不匹配 → 退
-	//     到 keyword 路径 (命中关键词 "轻小说" → "轻小说类"), 但 method="keyword"
-	//     而非 "source" → 上层若按 method 路由 (source 优先级高) 会误降级. 补
-	//     "轻小说" → "轻小说类" alias 让 source 路径直接命中, method="source".
-	"轻小说": "轻小说类", "轻文": "轻小说类", "日本轻小说": "轻小说类", "国产轻小说": "轻小说类",
-	"动漫": "轻小说类", "二次元小说": "轻小说类",
-	// 现实生活
-	"职场": "现实生活", "商战": "现实生活", "社会": "现实生活", "现实主义": "现实生活",
+        // 玄幻奇幻
+        "玄幻小说": "玄幻奇幻", "玄幻魔法": "玄幻奇幻", "魔幻": "玄幻奇幻", "魔幻玄幻": "玄幻奇幻",
+        "异界大陆": "玄幻奇幻", "异世大陆": "玄幻奇幻", "东方玄幻": "玄幻奇幻", "异界幻想": "玄幻奇幻",
+        // 奇幻魔幻
+        "奇幻小说": "奇幻魔幻", "西方奇幻": "奇幻魔幻", "史诗奇幻": "奇幻魔幻", "奇幻魔法": "奇幻魔幻",
+        // 武侠江湖
+        "武侠小说": "武侠江湖", "传统武侠": "武侠江湖", "新武侠": "武侠江湖", "武侠仙侠": "武侠江湖",
+        // 仙侠修真
+        "仙侠小说": "仙侠修真", "修真": "仙侠修真", "修仙": "仙侠修真", "古典仙侠": "仙侠修真",
+        "现代仙侠": "仙侠修真", "幻想仙侠": "仙侠修真",
+        // 都市生活
+        "都市娱乐": "都市生活", "都市异能": "都市生活", "都市言情": "都市生活",
+        "现代都市": "都市生活", "都市职业": "都市生活", "青春都市": "都市生活", "都市青春": "都市生活",
+        // 言情小说
+        "现代言情": "言情小说", "古代言情": "言情小说", "总裁豪门": "言情小说",
+        "甜宠": "言情小说", "豪门": "言情小说", "婚恋": "言情小说", "青春言情": "言情小说",
+        // 历史军事
+        "历史小说": "历史军事", "穿越历史": "历史军事", "古代": "历史军事",
+        "架空历史": "历史军事", "历史架空": "历史军事", "两宋元明": "历史军事", "历朝历代": "历史军事",
+        // 军事战争
+        "军事小说": "军事战争", "战争": "军事战争", "抗战": "军事战争", "军旅": "军事战争",
+        // 游戏竞技
+        "游戏小说": "游戏竞技", "网游": "游戏竞技", "电竞": "游戏竞技", "虚拟网游": "游戏竞技",
+        // 科幻未来
+        "科幻小说": "科幻未来", "末世危机": "科幻未来", "星际科幻": "科幻未来", "机甲": "科幻未来",
+        "未来科技": "科幻未来", "科幻末世": "科幻未来",
+        // 悬疑推理
+        "推理": "悬疑推理", "侦探": "悬疑推理", "恐怖悬疑": "悬疑推理", "刑侦": "悬疑推理",
+        // 灵异鬼怪
+        "鬼怪": "灵异鬼怪", "盗墓": "灵异鬼怪", "恐怖": "灵异鬼怪", "诡异": "灵异鬼怪",
+        // 体育竞技
+        "竞技": "体育竞技", "足球": "体育竞技", "篮球": "体育竞技", "体育运动": "体育竞技",
+        // 轻小说类
+        //   R53-1A 修复 BUG-1: 原 alias 表漏 "轻小说" 本身 (3 字). 源站分类 "轻小说" 在
+        //     NormalizeCategory: 1. alias 查 "轻小说" → 未命中; 2. standard 4 字名循环
+        //     "轻小说" != "轻小说类"; 3. fuzzy len("轻小说")=3 > len("轻小说类")=4 → false
+        //     跳过; 4. 返回 "轻小说" 原名. SmartCategory 第 1 步 source 路径用
+        //     normalized="轻小说" 与 existing categories (4 字标准名) 比较 → 不匹配 → 退
+        //     到 keyword 路径 (命中关键词 "轻小说" → "轻小说类"), 但 method="keyword"
+        //     而非 "source" → 上层若按 method 路由 (source 优先级高) 会误降级. 补
+        //     "轻小说" → "轻小说类" alias 让 source 路径直接命中, method="source".
+        "轻小说": "轻小说类", "轻文": "轻小说类", "日本轻小说": "轻小说类", "国产轻小说": "轻小说类",
+        "动漫": "轻小说类", "二次元小说": "轻小说类",
+        // 现实生活
+        "职场": "现实生活", "商战": "现实生活", "社会": "现实生活", "现实主义": "现实生活",
 }
 
 // NormalizeCategory — 归一化分类名 → 标准 15 分类 4 字名.
@@ -140,35 +140,35 @@ var categoryAliases = map[string]string{
 //     byte, byte_count ≥ rune_count). 但为防极端 case (源站分类名含 emoji 等 4-
 //     byte rune), 改用 []rune 长度比较更准确 + 与 MatchCategoryByText 同口径.
 func NormalizeCategory(name string) string {
-	n := strings.TrimSpace(name)
-	if n == "" {
-		return ""
-	}
-	// 1. 精确别名命中
-	if v, ok := categoryAliases[n]; ok {
-		return v
-	}
-	// 2. 标准 15 分类 4 字名直接返回
-	for _, c := range categoryKeywords {
-		if c.name == n {
-			return n
-		}
-	}
-	// 3. 模糊: 包含标准分类名 (长名合并到短标准)
-	//   R53-1A BUG-9: 用 []rune 长度比较替代 byte 长度, 防 emoji/4-byte rune
-	//   误判 (与 MatchCategoryByText 同口径).
-	//   R83-B BUG-183 (P3) 修复: 原循环每 call 分配 16 个 []rune slices (nRunes
-	//   + 15 个 []rune(c.name) per call, NormalizeCategory 是 per-book ~71 次/
-	//   任务). 改 utf8.RuneCountInString (allocation-free, 单遍解码计数不分配
-	//   slice), 省 15 allocs/call. nRunes (line 155) 仍需 (strings.Contains 不
-	//   需 rune 但 nRunes 比较需要), 改 utf8.RuneCountInString(n) 省 1 alloc.
-	nRunes := utf8.RuneCountInString(n)
-	for _, c := range categoryKeywords {
-		if nRunes > utf8.RuneCountInString(c.name) && strings.Contains(n, c.name) {
-			return c.name
-		}
-	}
-	return n
+        n := strings.TrimSpace(name)
+        if n == "" {
+                return ""
+        }
+        // 1. 精确别名命中
+        if v, ok := categoryAliases[n]; ok {
+                return v
+        }
+        // 2. 标准 15 分类 4 字名直接返回
+        for _, c := range categoryKeywords {
+                if c.name == n {
+                        return n
+                }
+        }
+        // 3. 模糊: 包含标准分类名 (长名合并到短标准)
+        //   R53-1A BUG-9: 用 []rune 长度比较替代 byte 长度, 防 emoji/4-byte rune
+        //   误判 (与 MatchCategoryByText 同口径).
+        //   R83-B BUG-183 (P3) 修复: 原循环每 call 分配 16 个 []rune slices (nRunes
+        //   + 15 个 []rune(c.name) per call, NormalizeCategory 是 per-book ~71 次/
+        //   任务). 改 utf8.RuneCountInString (allocation-free, 单遍解码计数不分配
+        //   slice), 省 15 allocs/call. nRunes (line 155) 仍需 (strings.Contains 不
+        //   需 rune 但 nRunes 比较需要), 改 utf8.RuneCountInString(n) 省 1 alloc.
+        nRunes := utf8.RuneCountInString(n)
+        for _, c := range categoryKeywords {
+                if nRunes > utf8.RuneCountInString(c.name) && strings.Contains(n, c.name) {
+                        return c.name
+                }
+        }
+        return n
 }
 
 // MatchCategoryByText — 关键词评分匹配.
@@ -177,120 +177,120 @@ func NormalizeCategory(name string) string {
 //
 // R44-1C 修复: 原 text[:3000] 按字节切片, 中文 (3-byte UTF-8) 在边界处会切出孤立
 //
-//	continuation byte, 可能导致后续 strings.Contains 误命中 (代理对部分字节凑成另一词).
-//	改用 []rune 安全截断.
-//	R84-B BUG-200 (P3) 修复: len([]rune(text)) → utf8.RuneCountInString(text)
-//	  (allocation-free, 单遍解码计数不分配 slice), 省 1 alloc/call (text 不超长
-//	  时 1→0 alloc, 超长时 2→1 alloc). 与 R83-B BUG-183 NormalizeCategory 同口径.
-//	R84-B BUG-199 (P3) 修复: 原 wordMatches 内 strings.ToLower(t) 每 keyword call
-//	  1 alloc. keyword 循环 165 次 (15 cat × ~11 kws), 165 alloc/call 浪费. 改:
-//	  keyword loop 前 pre-lowercase text 一次 (1 alloc/call), wordMatches 不再
-//	  ToLower (caller 责任). 第 1 步 strings.Contains 用原文 case-sensitive
-//	  (admin 设的 existingCategories 可能含非中文 case-sensitive 名, 不能 lowercase).
+//      continuation byte, 可能导致后续 strings.Contains 误命中 (代理对部分字节凑成另一词).
+//      改用 []rune 安全截断.
+//      R84-B BUG-200 (P3) 修复: len([]rune(text)) → utf8.RuneCountInString(text)
+//        (allocation-free, 单遍解码计数不分配 slice), 省 1 alloc/call (text 不超长
+//        时 1→0 alloc, 超长时 2→1 alloc). 与 R83-B BUG-183 NormalizeCategory 同口径.
+//      R84-B BUG-199 (P3) 修复: 原 wordMatches 内 strings.ToLower(t) 每 keyword call
+//        1 alloc. keyword 循环 165 次 (15 cat × ~11 kws), 165 alloc/call 浪费. 改:
+//        keyword loop 前 pre-lowercase text 一次 (1 alloc/call), wordMatches 不再
+//        ToLower (caller 责任). 第 1 步 strings.Contains 用原文 case-sensitive
+//        (admin 设的 existingCategories 可能含非中文 case-sensitive 名, 不能 lowercase).
 func MatchCategoryByText(text string, existingCategories []string) string {
-	if utf8.RuneCountInString(text) > 3000 {
-		text = string([]rune(text)[:3000])
-	}
-	if text == "" {
-		return ""
-	}
-	// 1. 直接命中已有分类名 (归一化后匹配)
-	if len(existingCategories) > 0 {
-		normalized := []string{}
-		for _, c := range existingCategories {
-			normalized = append(normalized, NormalizeCategory(c))
-		}
-		// R96-B BUG-272 (P4) 修复: 原无条件 `strings.Contains(text, c)`
-		//   在 c 为空串时返 true (Go strings.Contains(s, "") 恒真) →
-		//   提前 return "" 跳过关键词评分路径. 场景: caller (未来 admin
-		//   API / 测试) 传含空串的 existingCategories (e.g. ["", "玄幻奇幻"])
-		//   → normalized=["", "玄幻奇幻"] → 首轮 c="" 命中 → return ""
-		//   → MatchCategoryByText 返空 → SmartCategory 第 2 步 keyword 路径
-		//   不会执行 (line 261 `kw := MatchCategoryByText(...)` 拿到 kw=""
-		//   不进 if 分支) → 落到 LLM 兜底 method="none". 当前唯一 live
-		//   caller runner.go line 1737 走 cfg.DB.ListCategoryNames() 已
-		//   filter 空 (admin.go line 387 `n != ""`), 0 生产命中; 但
-		//   MatchCategoryByText 是 export, 防御性修复. latent 自 R38
-		//   TS→Go 迁移 (47 轮未发现). 修复: c != "" 前置条件 + skip 空
-		//   normalized 项 (与 NormalizeCategory 返 "" 同口径, "" 视作
-		//   "无分类" 不参与匹配).
-		for _, c := range normalized {
-			if c != "" && strings.Contains(text, c) {
-				return c
-			}
-		}
-	}
-	// 2. 关键词评分 (pre-lowercase once for wordMatches hot loop, R84-B BUG-198)
-	lowerText := strings.ToLower(text)
-	bestName := ""
-	bestScore := 0
-	for _, c := range categoryKeywords {
-		score := 0
-		for _, kw := range c.kws {
-			kt := strings.TrimSpace(kw)
-			if wordMatches(lowerText, kt) {
-				if utf8.RuneCountInString(kt) >= 2 {
-					score += 2
-				} else {
-					score += 1
-				}
-			}
-		}
-		if score > 0 && score > bestScore {
-			bestScore = score
-			bestName = c.name
-		}
-	}
-	return bestName
+        if utf8.RuneCountInString(text) > 3000 {
+                text = string([]rune(text)[:3000])
+        }
+        if text == "" {
+                return ""
+        }
+        // 1. 直接命中已有分类名 (归一化后匹配)
+        if len(existingCategories) > 0 {
+                normalized := []string{}
+                for _, c := range existingCategories {
+                        normalized = append(normalized, NormalizeCategory(c))
+                }
+                // R96-B BUG-272 (P4) 修复: 原无条件 `strings.Contains(text, c)`
+                //   在 c 为空串时返 true (Go strings.Contains(s, "") 恒真) →
+                //   提前 return "" 跳过关键词评分路径. 场景: caller (未来 admin
+                //   API / 测试) 传含空串的 existingCategories (e.g. ["", "玄幻奇幻"])
+                //   → normalized=["", "玄幻奇幻"] → 首轮 c="" 命中 → return ""
+                //   → MatchCategoryByText 返空 → SmartCategory 第 2 步 keyword 路径
+                //   不会执行 (line 261 `kw := MatchCategoryByText(...)` 拿到 kw=""
+                //   不进 if 分支) → 落到 LLM 兜底 method="none". 当前唯一 live
+                //   caller runner.go line 1737 走 cfg.DB.ListCategoryNames() 已
+                //   filter 空 (admin.go line 387 `n != ""`), 0 生产命中; 但
+                //   MatchCategoryByText 是 export, 防御性修复. latent 自 R38
+                //   TS→Go 迁移 (47 轮未发现). 修复: c != "" 前置条件 + skip 空
+                //   normalized 项 (与 NormalizeCategory 返 "" 同口径, "" 视作
+                //   "无分类" 不参与匹配).
+                for _, c := range normalized {
+                        if c != "" && strings.Contains(text, c) {
+                                return c
+                        }
+                }
+        }
+        // 2. 关键词评分 (pre-lowercase once for wordMatches hot loop, R84-B BUG-198)
+        lowerText := strings.ToLower(text)
+        bestName := ""
+        bestScore := 0
+        for _, c := range categoryKeywords {
+                score := 0
+                for _, kw := range c.kws {
+                        kt := strings.TrimSpace(kw)
+                        if wordMatches(lowerText, kt) {
+                                if utf8.RuneCountInString(kt) >= 2 {
+                                        score += 2
+                                } else {
+                                        score += 1
+                                }
+                        }
+                }
+                if score > 0 && score > bestScore {
+                        bestScore = score
+                        bestName = c.name
+                }
+        }
+        return bestName
 }
 
 // SmartCategoryResult — 智能分类结果.
 type SmartCategoryResult struct {
-	Category string
-	Method   string // source | keyword | llm | none
+        Category string
+        Method   string // source | keyword | llm | none
 }
 
 // SmartCategory — 智能分类 (Go 端: source + keyword 两层, LLM 兜底返回 none).
 // 与 smartCategory 同口径, 仅 LLM 兜底路径未实现 (z-ai-web-dev-sdk 不可用).
 func SmartCategory(bookName, intro, sourceCategory string, existingCategories []string) SmartCategoryResult {
-	// 1. 来源站点自带分类 (归一化合并)
-	if sourceCategory != "" {
-		normalized := NormalizeCategory(strings.TrimSpace(sourceCategory))
-		for _, c := range existingCategories {
-			// R93-B BUG-260 (P3) 修复: 原 `c == normalized` 不归一化 c, DB 存 2 字
-			//   legacy 名 (e.g. "玄幻") 与 normalized 4 字标准名 ("玄幻奇幻") 不
-			//   匹配 → source 路径 silent miss, 退到 keyword 路径 (MatchCategoryByText
-			//   line 200-205 已 normalize c, keyword 路径不受影响, 但 Method 从
-			//   "source" 降级为 "keyword", 上层按 Method 路由会误降级). 修复: 同款
-			//   normalize c 后比较, 返回 normalized 4 字标准名 (post-R52-1A canonical,
-			//   与 MatchCategoryByText keyword 路径返 4 字名一致). 0 用户受影响 (DB 已
-			//   迁移 4 字名 R52-1A, legacy 2 字名仅历史 row; 即便命中 legacy row,
-			//   返 normalized 让上层存储 4 字, 顺带迁移).
-			if NormalizeCategory(c) == normalized {
-				return SmartCategoryResult{Category: normalized, Method: "source"}
-			}
-		}
-	}
-	// 2. 关键词规则
-	kw := MatchCategoryByText(bookName+"\n"+intro, existingCategories)
-	if kw != "" {
-		return SmartCategoryResult{Category: kw, Method: "keyword"}
-	}
-	// 3. LLM 兜底 (Go 端未实现, 返回 none)
-	return SmartCategoryResult{Category: "", Method: "none"}
+        // 1. 来源站点自带分类 (归一化合并)
+        if sourceCategory != "" {
+                normalized := NormalizeCategory(strings.TrimSpace(sourceCategory))
+                for _, c := range existingCategories {
+                        // R93-B BUG-260 (P3) 修复: 原 `c == normalized` 不归一化 c, DB 存 2 字
+                        //   legacy 名 (e.g. "玄幻") 与 normalized 4 字标准名 ("玄幻奇幻") 不
+                        //   匹配 → source 路径 silent miss, 退到 keyword 路径 (MatchCategoryByText
+                        //   line 200-205 已 normalize c, keyword 路径不受影响, 但 Method 从
+                        //   "source" 降级为 "keyword", 上层按 Method 路由会误降级). 修复: 同款
+                        //   normalize c 后比较, 返回 normalized 4 字标准名 (post-R52-1A canonical,
+                        //   与 MatchCategoryByText keyword 路径返 4 字名一致). 0 用户受影响 (DB 已
+                        //   迁移 4 字名 R52-1A, legacy 2 字名仅历史 row; 即便命中 legacy row,
+                        //   返 normalized 让上层存储 4 字, 顺带迁移).
+                        if NormalizeCategory(c) == normalized {
+                                return SmartCategoryResult{Category: normalized, Method: "source"}
+                        }
+                }
+        }
+        // 2. 关键词规则
+        kw := MatchCategoryByText(bookName+"\n"+intro, existingCategories)
+        if kw != "" {
+                return SmartCategoryResult{Category: kw, Method: "keyword"}
+        }
+        // 3. LLM 兜底 (Go 端未实现, 返回 none)
+        return SmartCategoryResult{Category: "", Method: "none"}
 }
 
 // ---------- 智能完结判断 ----------
 
 var completeWords = []string{
-	"已完结", "已完本", "完结", "完本", "全本", "大结局", "全书完", "正文完",
-	"无弹窗全本", "final", "completed", "complete", "finished",
+        "已完结", "已完本", "完结", "完本", "全本", "大结局", "全书完", "正文完",
+        "无弹窗全本", "final", "completed", "complete", "finished",
 }
 
 var ongoingWords = []string{
-	"连载中", "连载", "未完结", "未完待续", "新书", "更新中",
-	"ongoing", "on going", "on-going", "serial", "serializing", "updating",
-	"unfinished", "incomplete", "hiatus", "paused",
+        "连载中", "连载", "未完结", "未完待续", "新书", "更新中",
+        "ongoing", "on going", "on-going", "serial", "serializing", "updating",
+        "unfinished", "incomplete", "hiatus", "paused",
 }
 
 var englishWordRe = regexp.MustCompile(`^[a-z]+$`)
@@ -307,27 +307,27 @@ var wordMatchesReCache sync.Map
 // R45-1A: 缓存预编译正则, 避免每次 regexp.Compile.
 // R84-B BUG-199 (P3) 修复: 移除 strings.ToLower(t) (caller 已 pre-lowercase).
 //
-//	两个 caller: MatchCategoryByText (line ~207 pre-lowercase 1 次) +
-//	DetectCompleteFromText (line ~303 pre-lowercase 1 次). 原实现每 call 1 alloc
-//	× 165 keywords/call = 165 alloc/call 浪费. 改后 0 alloc (caller 已 lower).
-//	行为不变 (英文 keyword 全小写, text 已 lower, ToLower 是 no-op). BUG-186
-//	("AI"→"ai" 走 \bai\b 正则全 case 匹配) 仍生效 (caller pre-lowercase 覆盖).
+//      两个 caller: MatchCategoryByText (line ~207 pre-lowercase 1 次) +
+//      DetectCompleteFromText (line ~303 pre-lowercase 1 次). 原实现每 call 1 alloc
+//      × 165 keywords/call = 165 alloc/call 浪费. 改后 0 alloc (caller 已 lower).
+//      行为不变 (英文 keyword 全小写, text 已 lower, ToLower 是 no-op). BUG-186
+//      ("AI"→"ai" 走 \bai\b 正则全 case 匹配) 仍生效 (caller pre-lowercase 覆盖).
 func wordMatches(t, w string) bool {
-	if englishWordRe.MatchString(w) {
-		var re *regexp.Regexp
-		if v, ok := wordMatchesReCache.Load(w); ok {
-			re = v.(*regexp.Regexp)
-		} else {
-			r, err := regexp.Compile(`\b` + regexp.QuoteMeta(w) + `\b`)
-			if err != nil {
-				return strings.Contains(t, w)
-			}
-			re = r
-			wordMatchesReCache.Store(w, re)
-		}
-		return re.MatchString(t)
-	}
-	return strings.Contains(t, w)
+        if englishWordRe.MatchString(w) {
+                var re *regexp.Regexp
+                if v, ok := wordMatchesReCache.Load(w); ok {
+                        re = v.(*regexp.Regexp)
+                } else {
+                        r, err := regexp.Compile(`\b` + regexp.QuoteMeta(w) + `\b`)
+                        if err != nil {
+                                return strings.Contains(t, w)
+                        }
+                        re = r
+                        wordMatchesReCache.Store(w, re)
+                }
+                return re.MatchString(t)
+        }
+        return strings.Contains(t, w)
 }
 
 // DetectCompleteFromText — 文本完结判断.
@@ -336,81 +336,81 @@ func wordMatches(t, w string) bool {
 //
 // R44-1C 修复: 原 text[:2000] 按字节切片不安全, 改用 []rune 防多字节字符斩半.
 func DetectCompleteFromText(text string) string {
-	if utf8.RuneCountInString(text) > 2000 {
-		text = string([]rune(text)[:2000])
-	}
-	t := strings.ToLower(text)
-	if t == "" {
-		return "unknown"
-	}
-	// 未完优先
-	for _, w := range ongoingWords {
-		if wordMatches(t, w) {
-			return "ongoing"
-		}
-	}
-	for _, w := range completeWords {
-		if wordMatches(t, w) {
-			return "completed"
-		}
-	}
-	return "unknown"
+        if utf8.RuneCountInString(text) > 2000 {
+                text = string([]rune(text)[:2000])
+        }
+        t := strings.ToLower(text)
+        if t == "" {
+                return "unknown"
+        }
+        // 未完优先
+        for _, w := range ongoingWords {
+                if wordMatches(t, w) {
+                        return "ongoing"
+                }
+        }
+        for _, w := range completeWords {
+                if wordMatches(t, w) {
+                        return "completed"
+                }
+        }
+        return "unknown"
 }
 
 // SmartCompleteDetectInput — 智能完结判断输入.
 type SmartCompleteDetectInput struct {
-	StatusField        string
-	Intro              string
-	LatestChapterTitle string
-	BookName           string
-	LastChapterTitle   string
+        StatusField        string
+        Intro              string
+        LatestChapterTitle string
+        BookName           string
+        LastChapterTitle   string
 }
 
 // SmartCompleteDetectResult — 智能完结判断结果.
 type SmartCompleteDetectResult struct {
-	Status string // completed | ongoing | unknown
-	Reason string
+        Status string // completed | ongoing | unknown
+        Reason string
 }
 
 // SmartCompleteDetect — 智能判断完结 (源站状态 → 简介 → 末章标题 → 书名标注).
 func SmartCompleteDetect(in SmartCompleteDetectInput) SmartCompleteDetectResult {
-	if in.StatusField != "" {
-		r := DetectCompleteFromText(in.StatusField)
-		if r != "unknown" {
-			s := in.StatusField
-			// R44-1C 修复: 原 s[:30] 按字节切片不安全, 改用 []rune 防多字节字符斩半.
-			// R84-B BUG-200 (P3): len([]rune(s)) → utf8.RuneCountInString(s) (省 1 alloc).
-			if utf8.RuneCountInString(s) > 30 {
-				s = string([]rune(s)[:30])
-			}
-			return SmartCompleteDetectResult{Status: r, Reason: "源站状态: " + s}
-		}
-	}
-	if in.Intro != "" {
-		r := DetectCompleteFromText(in.Intro)
-		if r != "unknown" {
-			return SmartCompleteDetectResult{Status: r, Reason: "简介关键词"}
-		}
-	}
-	if in.LatestChapterTitle != "" {
-		r := DetectCompleteFromText(in.LatestChapterTitle)
-		if r != "unknown" {
-			return SmartCompleteDetectResult{Status: r, Reason: "最新章节标题"}
-		}
-	}
-	if in.LastChapterTitle != "" {
-		r := DetectCompleteFromText(in.LastChapterTitle)
-		if r != "unknown" {
-			return SmartCompleteDetectResult{Status: r, Reason: "目录末章标题"}
-		}
-	}
-	if in.BookName != "" {
-		r := DetectCompleteFromText(in.BookName)
-		if r != "unknown" {
-			return SmartCompleteDetectResult{Status: r, Reason: "书名标注"}
-		}
-	}
-	return SmartCompleteDetectResult{Status: "unknown", Reason: "无法判断"}
+        if in.StatusField != "" {
+                r := DetectCompleteFromText(in.StatusField)
+                if r != "unknown" {
+                        s := in.StatusField
+                        // R44-1C 修复: 原 s[:30] 按字节切片不安全, 改用 []rune 防多字节字符斩半.
+                        // R84-B BUG-200 (P3): len([]rune(s)) → utf8.RuneCountInString(s) (省 1 alloc).
+                        if utf8.RuneCountInString(s) > 30 {
+                                s = string([]rune(s)[:30])
+                        }
+                        return SmartCompleteDetectResult{Status: r, Reason: "源站状态: " + s}
+                }
+        }
+        if in.Intro != "" {
+                r := DetectCompleteFromText(in.Intro)
+                if r != "unknown" {
+                        return SmartCompleteDetectResult{Status: r, Reason: "简介关键词"}
+                }
+        }
+        if in.LatestChapterTitle != "" {
+                r := DetectCompleteFromText(in.LatestChapterTitle)
+                if r != "unknown" {
+                        return SmartCompleteDetectResult{Status: r, Reason: "最新章节标题"}
+                }
+        }
+        if in.LastChapterTitle != "" {
+                r := DetectCompleteFromText(in.LastChapterTitle)
+                if r != "unknown" {
+                        return SmartCompleteDetectResult{Status: r, Reason: "目录末章标题"}
+                }
+        }
+        if in.BookName != "" {
+                r := DetectCompleteFromText(in.BookName)
+                if r != "unknown" {
+                        return SmartCompleteDetectResult{Status: r, Reason: "书名标注"}
+                }
+        }
+        return SmartCompleteDetectResult{Status: "unknown", Reason: "无法判断"}
 }
 
 // ---------- R64-B 采集增强 B5: 智能续采优先级排序 ----------
@@ -430,74 +430,74 @@ func SmartCompleteDetect(in SmartCompleteDetectInput) SmartCompleteDetectResult 
 
 // SmartResumeItem — 续采优先级排序输入 (单本书的进度快照).
 type SmartResumeItem struct {
-	BookID        string
-	ChaptersDone  int   // 已采集章节数 (来自 DB COUNT)
-	ChaptersTotal int   // 目录总章节数 (来自 DB Toc 表 / ParsedBook)
-	LastFetchAt   int64 // 上次采集时间 (UnixMilli, 0 = 从未采过)
+        BookID        string
+        ChaptersDone  int   // 已采集章节数 (来自 DB COUNT)
+        ChaptersTotal int   // 目录总章节数 (来自 DB Toc 表 / ParsedBook)
+        LastFetchAt   int64 // 上次采集时间 (UnixMilli, 0 = 从未采过)
 }
 
 // SmartResumeSort — 续采优先级排序. 稳定排序 (不改变同优先级内原顺序).
 //
-//	返回新 slice, 不修改入参. 空 / 单元素直接返副本.
+//      返回新 slice, 不修改入参. 空 / 单元素直接返副本.
 func SmartResumeSort(items []SmartResumeItem) []SmartResumeItem {
-	if len(items) <= 1 {
-		out := make([]SmartResumeItem, len(items))
-		copy(out, items)
-		return out
-	}
-	// 分三组
-	var nearDone, started, fresh []SmartResumeItem
-	for _, it := range items {
-		if it.ChaptersDone == 0 {
-			fresh = append(fresh, it)
-			continue
-		}
-		r := resumeRatio(it)
-		if r > 0.5 {
-			nearDone = append(nearDone, it)
-		} else {
-			started = append(started, it)
-		}
-	}
-	// nearDone: 完成率降序 (越接近完成越优先)
-	//   使用稳定 sort (sort.SliceStable) 保持同 ratio 的原顺序
-	sort.SliceStable(nearDone, func(i, j int) bool {
-		ri := resumeRatio(nearDone[i])
-		rj := resumeRatio(nearDone[j])
-		if ri != rj {
-			return ri > rj // 降序
-		}
-		// 同 ratio: LastFetchAt 升序 (最久未采先)
-		return nearDone[i].LastFetchAt < nearDone[j].LastFetchAt
-	})
-	// started: LastFetchAt 升序 (最久未采先)
-	sort.SliceStable(started, func(i, j int) bool {
-		if started[i].LastFetchAt != started[j].LastFetchAt {
-			return started[i].LastFetchAt < started[j].LastFetchAt
-		}
-		return false // 同时间保持原顺序
-	})
-	// fresh: LastFetchAt 升序 (最久未采先, 0 视为最久)
-	sort.SliceStable(fresh, func(i, j int) bool {
-		if fresh[i].LastFetchAt != fresh[j].LastFetchAt {
-			return fresh[i].LastFetchAt < fresh[j].LastFetchAt
-		}
-		return false
-	})
-	// 拼接: nearDone (优先) → started (次) → fresh (最后)
-	out := make([]SmartResumeItem, 0, len(items))
-	out = append(out, nearDone...)
-	out = append(out, started...)
-	out = append(out, fresh...)
-	return out
+        if len(items) <= 1 {
+                out := make([]SmartResumeItem, len(items))
+                copy(out, items)
+                return out
+        }
+        // 分三组
+        var nearDone, started, fresh []SmartResumeItem
+        for _, it := range items {
+                if it.ChaptersDone == 0 {
+                        fresh = append(fresh, it)
+                        continue
+                }
+                r := resumeRatio(it)
+                if r > 0.5 {
+                        nearDone = append(nearDone, it)
+                } else {
+                        started = append(started, it)
+                }
+        }
+        // nearDone: 完成率降序 (越接近完成越优先)
+        //   使用稳定 sort (sort.SliceStable) 保持同 ratio 的原顺序
+        sort.SliceStable(nearDone, func(i, j int) bool {
+                ri := resumeRatio(nearDone[i])
+                rj := resumeRatio(nearDone[j])
+                if ri != rj {
+                        return ri > rj // 降序
+                }
+                // 同 ratio: LastFetchAt 升序 (最久未采先)
+                return nearDone[i].LastFetchAt < nearDone[j].LastFetchAt
+        })
+        // started: LastFetchAt 升序 (最久未采先)
+        sort.SliceStable(started, func(i, j int) bool {
+                if started[i].LastFetchAt != started[j].LastFetchAt {
+                        return started[i].LastFetchAt < started[j].LastFetchAt
+                }
+                return false // 同时间保持原顺序
+        })
+        // fresh: LastFetchAt 升序 (最久未采先, 0 视为最久)
+        sort.SliceStable(fresh, func(i, j int) bool {
+                if fresh[i].LastFetchAt != fresh[j].LastFetchAt {
+                        return fresh[i].LastFetchAt < fresh[j].LastFetchAt
+                }
+                return false
+        })
+        // 拼接: nearDone (优先) → started (次) → fresh (最后)
+        out := make([]SmartResumeItem, 0, len(items))
+        out = append(out, nearDone...)
+        out = append(out, started...)
+        out = append(out, fresh...)
+        return out
 }
 
 // resumeRatio — 计算单本书的完成率 (0.0 ~ 1.0). ChaptersTotal=0 时返 0.
 func resumeRatio(it SmartResumeItem) float64 {
-	if it.ChaptersTotal <= 0 {
-		return 0.0
-	}
-	return float64(it.ChaptersDone) / float64(it.ChaptersTotal)
+        if it.ChaptersTotal <= 0 {
+                return 0.0
+        }
+        return float64(it.ChaptersDone) / float64(it.ChaptersTotal)
 }
 
 // R83-B BUG-193 (P3) deadcode 删除: CollectRateSnapshot (smart.go line 464-489)
@@ -536,11 +536,11 @@ func resumeRatio(it SmartResumeItem) float64 {
 
 // BookProgressLookup — 查询 DB 单本书的章节进度 (R65-B B8).
 //
-//	实现方: runner.go 的 DBClient 可加 BookChapterProgress 方法满足该接口.
-//	返 (done, total, err). done = 已采章节数; total = 目录总章节数.
-//	err != nil 时调用方保留原 item (容错).
+//      实现方: runner.go 的 DBClient 可加 BookChapterProgress 方法满足该接口.
+//      返 (done, total, err). done = 已采章节数; total = 目录总章节数.
+//      err != nil 时调用方保留原 item (容错).
 type BookProgressLookup interface {
-	BookChapterProgress(bookID string) (done int, total int, err error)
+        BookChapterProgress(bookID string) (done int, total int, err error)
 }
 
 // SmartResumeSortWithDB — DB 协同的断点续采优先级排序 (B8).
@@ -550,61 +550,56 @@ type BookProgressLookup interface {
 //     稳定排序, 返回新 slice 不修改入参 (先 copy items 再 DB 填充 + 排序).
 //     R65-B 采集增强 B8.
 func SmartResumeSortWithDB(items []SmartResumeItem, lookup BookProgressLookup) []SmartResumeItem {
-	if len(items) <= 1 {
-		out := make([]SmartResumeItem, len(items))
-		copy(out, items)
-		return out
-	}
-	// 先 copy items, 后续 DB 填充 + SmartResumeSort 都在 copy 上做, 不修改入参
-	work := make([]SmartResumeItem, len(items))
-	copy(work, items)
-	// 第 1 步: DB 协同填充 ChaptersDone=0 或 ChaptersTotal=0 的 item
-	if lookup != nil {
-		for i, it := range work {
-			needLookup := false
-			if it.ChaptersDone == 0 {
-				needLookup = true
-			}
-			if it.ChaptersTotal == 0 {
-				needLookup = true
-			}
-			if !needLookup {
-				continue
-			}
-			if it.BookID == "" {
-				continue // 无 bookID 无法查 DB
-			}
-			// R79-B BUG-161 (P2) 修复: SmartResumeSortWithDB BookID 语义陷阱.
-			//   runner.go applyResumeSort line 635 把 BookURL 作 BookID 用 (注
-			//  释 "URL 作 ID (SmartResumeSort 不读语义)"), SmartResumeSort 不读
-			//   BookID 字段 → OK. 但 SmartResumeSortWithDB 用 it.BookID 调
-			//   lookup.BookChapterProgress(it.BookID) 做 DB 查询, DB 期望真实
-			//   cuid (24 字符 base36), 传 URL 形态 ("http://...") → DB 返
-			//   not-found / err → continue 保留原 item → SmartResumeSortWithDB
-			//   退化成 SmartResumeSort (DB 协同无效果).
-			//   若 R80+ agent 把 SmartResumeSortWithDB wired 进 runner 用 URL-as-ID
-			//   convention, DB lookup 全静默失败, 操作员无法察觉.
-			//   修复: 检测 BookID 形如 URL (http:// / https:// 前缀) 时跳过 DB
-			//   lookup (URL 形态 ID 不适配 DB 查询, 与"无 BookID"同款处理).
-			if strings.HasPrefix(it.BookID, "http://") || strings.HasPrefix(it.BookID, "https://") {
-				continue // URL 形态 ID 不适配 DB lookup, 保留原 item
-			}
-			done, total, err := lookup.BookChapterProgress(it.BookID)
-			if err != nil {
-				continue // 容错: 保留原 item
-			}
-			// 仅当 DB 返的值 > 内存值时更新 (避免 DB 落后于内存覆盖新值).
-			if done > it.ChaptersDone {
-				work[i].ChaptersDone = done
-			}
-			if total > it.ChaptersTotal {
-				work[i].ChaptersTotal = total
-			}
-		}
-	}
-	// 第 2 步: 走原 SmartResumeSort 排序 (SmartResumeSort 内部会再 copy 一份,
-	//   但接受 work slice 作为输入是安全的)
-	return SmartResumeSort(work)
+        if len(items) <= 1 {
+                out := make([]SmartResumeItem, len(items))
+                copy(out, items)
+                return out
+        }
+        // 先 copy items, 后续 DB 填充 + SmartResumeSort 都在 copy 上做, 不修改入参
+        work := make([]SmartResumeItem, len(items))
+        copy(work, items)
+        // 第 1 步: DB 协同填充 ChaptersDone=0 或 ChaptersTotal=0 的 item
+        if lookup != nil {
+                for i, it := range work {
+                        // R98-B 精简: 原 needLookup 变量 + 3 个 if 块 (10 行) 合并为单条件
+                        //   (ChaptersDone/Total 任一为 0 → needLookup). 行为 0 变化.
+                        if it.ChaptersDone != 0 && it.ChaptersTotal != 0 {
+                                continue
+                        }
+                        if it.BookID == "" {
+                                continue // 无 bookID 无法查 DB
+                        }
+                        // R79-B BUG-161 (P2) 修复: SmartResumeSortWithDB BookID 语义陷阱.
+                        //   runner.go applyResumeSort line 635 把 BookURL 作 BookID 用 (注
+                        //  释 "URL 作 ID (SmartResumeSort 不读语义)"), SmartResumeSort 不读
+                        //   BookID 字段 → OK. 但 SmartResumeSortWithDB 用 it.BookID 调
+                        //   lookup.BookChapterProgress(it.BookID) 做 DB 查询, DB 期望真实
+                        //   cuid (24 字符 base36), 传 URL 形态 ("http://...") → DB 返
+                        //   not-found / err → continue 保留原 item → SmartResumeSortWithDB
+                        //   退化成 SmartResumeSort (DB 协同无效果).
+                        //   若 R80+ agent 把 SmartResumeSortWithDB wired 进 runner 用 URL-as-ID
+                        //   convention, DB lookup 全静默失败, 操作员无法察觉.
+                        //   修复: 检测 BookID 形如 URL (http:// / https:// 前缀) 时跳过 DB
+                        //   lookup (URL 形态 ID 不适配 DB 查询, 与"无 BookID"同款处理).
+                        if strings.HasPrefix(it.BookID, "http://") || strings.HasPrefix(it.BookID, "https://") {
+                                continue // URL 形态 ID 不适配 DB lookup, 保留原 item
+                        }
+                        done, total, err := lookup.BookChapterProgress(it.BookID)
+                        if err != nil {
+                                continue // 容错: 保留原 item
+                        }
+                        // 仅当 DB 返的值 > 内存值时更新 (避免 DB 落后于内存覆盖新值).
+                        if done > it.ChaptersDone {
+                                work[i].ChaptersDone = done
+                        }
+                        if total > it.ChaptersTotal {
+                                work[i].ChaptersTotal = total
+                        }
+                }
+        }
+        // 第 2 步: 走原 SmartResumeSort 排序 (SmartResumeSort 内部会再 copy 一份,
+        //   但接受 work slice 作为输入是安全的)
+        return SmartResumeSort(work)
 }
 
 // R83-B BUG-193 (P3) deadcode 删除: SortTaskPriorityQueue + TaskPriorityItem
@@ -623,22 +618,22 @@ func SmartResumeSortWithDB(items []SmartResumeItem, lookup BookProgressLookup) [
 //          + 显式 tie-breaker TaskID 字典序, 无逻辑分支, 无 BUG 修复历史).
 
 // R84-B BUG-198 (P3) deadcode 删除: AdaptiveTaskConcurrency + taskProgress group
-//	(smart.go line 603-803, 201 行). R68-B 加的 "future wiring" exported per-task
-//	并发自适应 (AdaptiveTaskConcurrency) + 任务进度追踪组 (taskProgress struct
-//	+ taskProgressMap sync.Map + RecordTaskProgress + ClearTaskProgress +
-//	EstimateTaskETA + TaskProgressSnapshot), R68 → R84 = 16 轮未 wire (R69-R84),
-//	rg 全仓 0 caller (仅注释提及). 与 R83-B BUG-193 SortTaskPriorityQueue
-//	(R67-B 16 == 16 边界删) 同款 precedent (越 16 轮阈值, 16 == 16 边界). 删除
-//	后无 cascade 依赖 (taskProgress 仅 Record/Clear/Estimate/Snapshot 用,
-//	taskProgressMap 仅这 4 个函数 + taskProgress struct 用, 一并删). 未来若 admin
-//	需任务 ETA + 进度查询, 重新加仅需 ~50 行: struct + sync.Map + Record/Clear +
-//	EstimateETA float64 + Snapshot range.
+//      (smart.go line 603-803, 201 行). R68-B 加的 "future wiring" exported per-task
+//      并发自适应 (AdaptiveTaskConcurrency) + 任务进度追踪组 (taskProgress struct
+//      + taskProgressMap sync.Map + RecordTaskProgress + ClearTaskProgress +
+//      EstimateTaskETA + TaskProgressSnapshot), R68 → R84 = 16 轮未 wire (R69-R84),
+//      rg 全仓 0 caller (仅注释提及). 与 R83-B BUG-193 SortTaskPriorityQueue
+//      (R67-B 16 == 16 边界删) 同款 precedent (越 16 轮阈值, 16 == 16 边界). 删除
+//      后无 cascade 依赖 (taskProgress 仅 Record/Clear/Estimate/Snapshot 用,
+//      taskProgressMap 仅这 4 个函数 + taskProgress struct 用, 一并删). 未来若 admin
+//      需任务 ETA + 进度查询, 重新加仅需 ~50 行: struct + sync.Map + Record/Clear +
+//      EstimateETA float64 + Snapshot range.
 //
-//	历史 BUG 修复痕迹 (随函数消亡):
-//	  - R68-B BUG-77: taskProgress.mu sync.Mutex 防 race (随 struct 消亡).
-//	  - R83-B BUG-188: EstimateTaskETA float64 + 1 year cap 防 int64 overflow
-//	    (随 EstimateTaskETA 消亡, R83-B 已预言 "BUG-188 修复随 EstimateTaskETA
-//	    消亡, R84+ 不需补修").
+//      历史 BUG 修复痕迹 (随函数消亡):
+//        - R68-B BUG-77: taskProgress.mu sync.Mutex 防 race (随 struct 消亡).
+//        - R83-B BUG-188: EstimateTaskETA float64 + 1 year cap 防 int64 overflow
+//          (随 EstimateTaskETA 消亡, R83-B 已预言 "BUG-188 修复随 EstimateTaskETA
+//          消亡, R84+ 不需补修").
 
 // ---------- R79-B 目标 A: 智能规则适配 (Rule 字段缺失时 fallback 通用提取逻辑) ----------
 //
@@ -671,70 +666,70 @@ func SmartResumeSortWithDB(items []SmartResumeItem, lookup BookProgressLookup) [
 
 // ApplySmartRuleFallback — RuleConfig 字段缺失时填充通用 fallback (R79-B 目标 A).
 //
-//	保守: 仅填缺失字段, 不覆盖 caller 已配置的字段. 传入 nil 直接返 (无操作).
-//	设计: 四段独立处理 (list/book/toc/content), 互不影响. PageFields 为 nil 时
-//	先初始化空 map (防 nil map 写 panic).
+//      保守: 仅填缺失字段, 不覆盖 caller 已配置的字段. 传入 nil 直接返 (无操作).
+//      设计: 四段独立处理 (list/book/toc/content), 互不影响. PageFields 为 nil 时
+//      先初始化空 map (防 nil map 写 panic).
 func ApplySmartRuleFallback(rule *RuleConfig) {
-	if rule == nil {
-		return
-	}
-	// 1. List fallback
-	if rule.List.Fields == nil {
-		rule.List.Fields = PageFields{}
-	}
-	if rule.List.ItemSelector == nil || rule.List.ItemSelector.Type == "" {
-		rule.List.ItemSelector = &FieldRule{Type: FieldCSS, Expression: "a[href*='/']"}
-	}
-	if _, ok := rule.List.Fields["url"]; !ok {
-		rule.List.Fields["url"] = FieldRule{Type: FieldCSS, Expression: "a", Attr: "href"}
-	}
-	if _, ok := rule.List.Fields["bookUrl"]; !ok {
-		// R56-1B 修复 BUG-E: 50+ 规则用 bookUrl 字段名 (非 url). fallback 同时填
-		//   url + bookUrl, 让 ParseList 两种字段名都识别 (ParseList 内部已兼容).
-		rule.List.Fields["bookUrl"] = FieldRule{Type: FieldCSS, Expression: "a", Attr: "href"}
-	}
-	// 2. Book fallback
-	if rule.Book.Fields == nil {
-		rule.Book.Fields = PageFields{}
-	}
-	if _, ok := rule.Book.Fields["name"]; !ok {
-		// <title> 是书名兜底源 (浏览器 tab 标题, 大多源站 <title> 含书名)
-		rule.Book.Fields["name"] = FieldRule{Type: FieldCSS, Expression: "title"}
-	}
-	// 3. Toc fallback
-	if rule.Toc.Fields == nil {
-		rule.Toc.Fields = PageFields{}
-	}
-	if rule.Toc.ItemSelector == nil || rule.Toc.ItemSelector.Type == "" {
-		rule.Toc.ItemSelector = &FieldRule{Type: FieldCSS, Expression: "a[href]"}
-	}
-	if _, ok := rule.Toc.Fields["url"]; !ok {
-		rule.Toc.Fields["url"] = FieldRule{Type: FieldCSS, Expression: "a", Attr: "href"}
-	}
-	if _, ok := rule.Toc.Fields["title"]; !ok {
-		rule.Toc.Fields["title"] = FieldRule{Type: FieldCSS, Expression: "a"}
-	}
-	// 4. Content fallback
-	if rule.Content.Fields == nil {
-		rule.Content.Fields = PageFields{}
-	}
-	if _, ok := rule.Content.Fields["content"]; !ok {
-		// BUG-251 (P3) 修复: 原逗号列表末尾含 `body` — goquery Find 返回匹配按
-		//   文档顺序 (depth-first pre-order), body 是 #content/.content/... 的祖先,
-		//   文档顺序中 body 先于后代 → cssExtract First() 总返 body, 特异性选择器
-		//   永不被使用, fallback 退化为 "整页 body cleaned" (与无 content 字段路径
-		//   同款结果, fallback 失效). 验证: goquery `Find("#content, ..., body")`
-		//   实测返 [body, #content], First()=body (整页含广告). 修复: 移除 body,
-		//   ParseContent (parser.go ParseContent FieldCSS miss 路径) 显式 fallback
-		//   到 body. 行为变化: 有 #content 等匹配的站点从 "整页 body cleaned" →
-		//   "#content cleaned" (更精准, 噪音更少); 无匹配的站点从 "body cleaned"
-		//   → "body fallback → body cleaned" (同结果, 0 退化). 0 用户受负面影响
-		//   (71 Rule 0 用 ApplySmartRuleFallback 的 content fallback — 有 content
-		//   字段的 Rule 不触发 fallback; 14 empty Rule 触发 fallback 的, 从 body
-		//   cleaned → 更精准或同款 body cleaned).
-		rule.Content.Fields["content"] = FieldRule{
-			Type:       FieldCSS,
-			Expression: "#content, .content, .chapter-content, .chapter_content, .read-content, #booktxt",
-		}
-	}
+        if rule == nil {
+                return
+        }
+        // 1. List fallback
+        if rule.List.Fields == nil {
+                rule.List.Fields = PageFields{}
+        }
+        if rule.List.ItemSelector == nil || rule.List.ItemSelector.Type == "" {
+                rule.List.ItemSelector = &FieldRule{Type: FieldCSS, Expression: "a[href*='/']"}
+        }
+        if _, ok := rule.List.Fields["url"]; !ok {
+                rule.List.Fields["url"] = FieldRule{Type: FieldCSS, Expression: "a", Attr: "href"}
+        }
+        if _, ok := rule.List.Fields["bookUrl"]; !ok {
+                // R56-1B 修复 BUG-E: 50+ 规则用 bookUrl 字段名 (非 url). fallback 同时填
+                //   url + bookUrl, 让 ParseList 两种字段名都识别 (ParseList 内部已兼容).
+                rule.List.Fields["bookUrl"] = FieldRule{Type: FieldCSS, Expression: "a", Attr: "href"}
+        }
+        // 2. Book fallback
+        if rule.Book.Fields == nil {
+                rule.Book.Fields = PageFields{}
+        }
+        if _, ok := rule.Book.Fields["name"]; !ok {
+                // <title> 是书名兜底源 (浏览器 tab 标题, 大多源站 <title> 含书名)
+                rule.Book.Fields["name"] = FieldRule{Type: FieldCSS, Expression: "title"}
+        }
+        // 3. Toc fallback
+        if rule.Toc.Fields == nil {
+                rule.Toc.Fields = PageFields{}
+        }
+        if rule.Toc.ItemSelector == nil || rule.Toc.ItemSelector.Type == "" {
+                rule.Toc.ItemSelector = &FieldRule{Type: FieldCSS, Expression: "a[href]"}
+        }
+        if _, ok := rule.Toc.Fields["url"]; !ok {
+                rule.Toc.Fields["url"] = FieldRule{Type: FieldCSS, Expression: "a", Attr: "href"}
+        }
+        if _, ok := rule.Toc.Fields["title"]; !ok {
+                rule.Toc.Fields["title"] = FieldRule{Type: FieldCSS, Expression: "a"}
+        }
+        // 4. Content fallback
+        if rule.Content.Fields == nil {
+                rule.Content.Fields = PageFields{}
+        }
+        if _, ok := rule.Content.Fields["content"]; !ok {
+                // BUG-251 (P3) 修复: 原逗号列表末尾含 `body` — goquery Find 返回匹配按
+                //   文档顺序 (depth-first pre-order), body 是 #content/.content/... 的祖先,
+                //   文档顺序中 body 先于后代 → cssExtract First() 总返 body, 特异性选择器
+                //   永不被使用, fallback 退化为 "整页 body cleaned" (与无 content 字段路径
+                //   同款结果, fallback 失效). 验证: goquery `Find("#content, ..., body")`
+                //   实测返 [body, #content], First()=body (整页含广告). 修复: 移除 body,
+                //   ParseContent (parser.go ParseContent FieldCSS miss 路径) 显式 fallback
+                //   到 body. 行为变化: 有 #content 等匹配的站点从 "整页 body cleaned" →
+                //   "#content cleaned" (更精准, 噪音更少); 无匹配的站点从 "body cleaned"
+                //   → "body fallback → body cleaned" (同结果, 0 退化). 0 用户受负面影响
+                //   (71 Rule 0 用 ApplySmartRuleFallback 的 content fallback — 有 content
+                //   字段的 Rule 不触发 fallback; 14 empty Rule 触发 fallback 的, 从 body
+                //   cleaned → 更精准或同款 body cleaned).
+                rule.Content.Fields["content"] = FieldRule{
+                        Type:       FieldCSS,
+                        Expression: "#content, .content, .chapter-content, .chapter_content, .read-content, #booktxt",
+                }
+        }
 }

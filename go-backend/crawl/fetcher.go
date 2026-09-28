@@ -4215,6 +4215,39 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 if pp := resp.Header.Get("P3P"); pp != "" {
                         recordSecurityHeader(originHost(rawURL), "P3P", pp)
                 }
+                // R98-A 反反爬第 184-188 项: auth challenge / proxy challenge / typed
+                //   link relations / rate limit policy 响应头观测 (per-host 合并
+                //   tracker 第 56-60 字段, 与 124-178 同款). 179-183 reserve/defer.
+                //   第 184 项 WWW-Authenticate (RFC 7235 §4.1) — 401 challenge
+                //     scheme + realm, 反爬关联: auth wall host posture, 与第 142
+                //     Clear-Site-Data aggressive session 同款 mature anti-bot stack.
+                //   第 185 项 Proxy-Authenticate (RFC 7235 §4.3) — proxy auth
+                //     challenge, 反爬关联: 上游代理 auth wall (e.g. 公司 / 区域
+                //     gateway), 与第 172 Via proxy hop chain family 续.
+                //   第 186 项 Link (RFC 8288 §3) — typed relations (rel=next/prev/
+                //     canonical), 反爬关联: pagination fingerprint (真实浏览器跟
+                //     Link rel=next 翻页, 缺失 = host 不暴露 pagination metadata).
+                //   第 187 项 RateLimit-Limit (IETF draft-ietf-httpapi-ratelimit-
+                //     headers) — rate limit policy quota, 反爬关联: host 暴露限流
+                //     上限 (现代 API gateway posture), 与第 159 Retry-After 频控同款.
+                //   第 188 项 RateLimit-Reset (IETF draft 同上) — rate limit reset
+                //     window, 反爬关联: 重置窗口 (RFC 草案已广泛部署, Cloudflare
+                //     / Fastly / AWS WAF 均发, 与 Retry-After 互补).
+                if wa := resp.Header.Get("WWW-Authenticate"); wa != "" {
+                        recordSecurityHeader(originHost(rawURL), "WWW-Authenticate", wa)
+                }
+                if pa := resp.Header.Get("Proxy-Authenticate"); pa != "" {
+                        recordSecurityHeader(originHost(rawURL), "Proxy-Authenticate", pa)
+                }
+                if lk := resp.Header.Get("Link"); lk != "" {
+                        recordSecurityHeader(originHost(rawURL), "Link", lk)
+                }
+                if rll := resp.Header.Get("RateLimit-Limit"); rll != "" {
+                        recordSecurityHeader(originHost(rawURL), "RateLimit-Limit", rll)
+                }
+                if rlr := resp.Header.Get("RateLimit-Reset"); rlr != "" {
+                        recordSecurityHeader(originHost(rawURL), "RateLimit-Reset", rlr)
+                }
 
                 // Set-Cookie 处理 (autoCookie)
                 if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
@@ -4599,8 +4632,26 @@ func parseRetryAfterMs(s string) int {
         }
         // 数字 = 秒
         if n, err := parseIntSafe(s); err == nil {
+                // R98-A BUG-280 (P3) 修复: 负整数 (e.g. "Retry-After: -1") 让 ms=-1000,
+                //   caller time.After(-1s) 立即返 → 无退避立即重试 → 同 host 持续命中
+                //   429 (Cloudflare 升级 IP 封禁). RFC 7231 §7.1.3 规定 delay-seconds 是
+                //   non-negative decimal integer, 负值非法. 防御: 负值视为 0 (无延迟, 与
+                //   "无 Retry-After 头" 同口径 caller 走默认 backoff, 不立即重试无退避).
+                //   与 R84-A BUG-198 cap 30s 同款 defensive clamp family.
+                if n < 0 {
+                        return 0
+                }
+                // R98-A BUG-281 (P3) 修复: n 极大值 (e.g. "9999999999999999999") 让
+                //   n*1000 在 int (64-bit) 上溢出, 溢出后 ms 可能为负值 (signed overflow
+                //   wrap) → `ms > RetryAfterCapMs` 不触发 → 返负值 → caller time.After(负值)
+                //   立即返 → 同 BUG-280 立即重试无退避. 防御: ms<0 (溢出后) 视为极大值,
+                //   钳到 RetryAfterCapMs (RFC 语义: "retry very far in future" → clamp 到
+                //   cap, 而非 0). 与 BUG-280 负 n (RFC 非法) 区分: BUG-280 是源站恶意/误
+                //   配置发负值 (n<0 直接 0); BUG-281 是源站发合法极大正值但 n*1000 溢出
+                //   (n>0 但 ms<0 → 钳 cap). 64-bit Linux int=64, 触发需 n>9.2e15 (约 29
+                //   万年), 32-bit 平台 int=32 触发需 n>2.1e6 (约 24 天, 更易触发).
                 ms := n * 1000
-                if ms > RetryAfterCapMs {
+                if ms < 0 || ms > RetryAfterCapMs {
                         return RetryAfterCapMs
                 }
                 return ms
@@ -5264,6 +5315,25 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 }
                 if pp := extractHeaderFromCurlStdout(headers, "P3P"); pp != "" {
                         recordSecurityHeader(domain, "P3P", pp)
+                }
+                // R98-A 反反爬第 184-188 项: auth challenge / proxy challenge / typed
+                //   link relations / rate limit policy 响应头观测 (与 fetchHttp
+                //   同款, curl -D - dump headers 路径; fetchBinaryViaCurl 不 dump 故
+                //   不调, 与 124-178 同款限制. 详见 fetchHttp line ~4181 rationale).
+                if wa := extractHeaderFromCurlStdout(headers, "WWW-Authenticate"); wa != "" {
+                        recordSecurityHeader(domain, "WWW-Authenticate", wa)
+                }
+                if pa := extractHeaderFromCurlStdout(headers, "Proxy-Authenticate"); pa != "" {
+                        recordSecurityHeader(domain, "Proxy-Authenticate", pa)
+                }
+                if lk := extractHeaderFromCurlStdout(headers, "Link"); lk != "" {
+                        recordSecurityHeader(domain, "Link", lk)
+                }
+                if rll := extractHeaderFromCurlStdout(headers, "RateLimit-Limit"); rll != "" {
+                        recordSecurityHeader(domain, "RateLimit-Limit", rll)
+                }
+                if rlr := extractHeaderFromCurlStdout(headers, "RateLimit-Reset"); rlr != "" {
+                        recordSecurityHeader(domain, "RateLimit-Reset", rlr)
                 }
                 if status >= 300 {
                         // R66-C BUG-52 (P3): curl 4xx/5xx 也记 latency + fail (与 fetchHttp
@@ -7391,6 +7461,27 @@ func fetchBinaryHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, pr
                 }
                 if pp := resp.Header.Get("P3P"); pp != "" {
                         recordSecurityHeader(originHost(rawURL), "P3P", pp)
+                }
+                // R98-A 反反爬第 184-188 项: auth challenge / proxy challenge / typed
+                //   link relations / rate limit policy 响应头观测 (与 fetchHttp
+                //   同款, fetchBinaryHttp success + 4xx/5xx 两路径都记, BUG-241
+                //   修复后 fetchBinaryHttp 已补对称; fetchBinaryViaCurl 不 dump
+                //   headers 故不调, 与 124-178 同款限制. 详见 fetchHttp line ~4181
+                //   rationale).
+                if wa := resp.Header.Get("WWW-Authenticate"); wa != "" {
+                        recordSecurityHeader(originHost(rawURL), "WWW-Authenticate", wa)
+                }
+                if pa := resp.Header.Get("Proxy-Authenticate"); pa != "" {
+                        recordSecurityHeader(originHost(rawURL), "Proxy-Authenticate", pa)
+                }
+                if lk := resp.Header.Get("Link"); lk != "" {
+                        recordSecurityHeader(originHost(rawURL), "Link", lk)
+                }
+                if rll := resp.Header.Get("RateLimit-Limit"); rll != "" {
+                        recordSecurityHeader(originHost(rawURL), "RateLimit-Limit", rll)
+                }
+                if rlr := resp.Header.Get("RateLimit-Reset"); rlr != "" {
+                        recordSecurityHeader(originHost(rawURL), "RateLimit-Reset", rlr)
                 }
                 // 3xx / 4xx / 5xx 视为失败 (与 fetchHttp 同款, 不重试 3xx)
                 if resp.StatusCode >= 300 {
@@ -12162,13 +12253,21 @@ type hostSecurityHeadersEntry struct {
         contentLocationValue   string // Content-Location (第 176 项, R96-A)
         trailerValue           string // Trailer (第 177 项, R96-A)
         p3pValue                string // P3P (第 178 项, R96-A)
+        // R98-A 反反爬第 184-188 项: auth challenge / proxy challenge / typed link
+        //   relations / rate limit policy 响应头观测 (与 124-178 同款 family, 单值
+        //   last-write-wins per-host 合并 tracker). 179-183 reserve/defer.
+        wwwAuthenticateValue    string // WWW-Authenticate (第 184 项, R98-A)
+        proxyAuthenticateValue  string // Proxy-Authenticate (第 185 项, R98-A)
+        linkValue               string // Link (第 186 项, R98-A)
+        rateLimitLimitValue     string // RateLimit-Limit (第 187 项, R98-A)
+        rateLimitResetValue     string // RateLimit-Reset (第 188 项, R98-A)
         detectedAt              int64  // UnixMilli
 }
 
 // hostSecurityHeadersMap — host string -> *hostSecurityHeadersEntry (R86-A 第 124-128 项 +
 //   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项 + R90-A 第 144-148 项
 //   + R91-A 第 149-153 项 + R92-A 第 154-158 项 + R93-A 第 159-163 项 + R94-A 第
-//   164-168 项 + R95-A 第 169-173 项 + R96-A 第 174-178 项).
+//   164-168 项 + R95-A 第 169-173 项 + R96-A 第 174-178 项 + R98-A 第 184-188 项).
 var hostSecurityHeadersMap sync.Map
 
 // hostSecurityHeadersSweepCounter — sweep 触发累加 (与 hostViaSweepCounter 同口径).
@@ -12220,9 +12319,9 @@ func extractSetCookieAttr(cookies []string, attr string) string {
 // recordSecurityHeader — 记录 host 的单个安全策略响应头 (R86-A 第 124-128 项 +
 //   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项 + R90-A 第 144-148
 //   项 + R91-A 第 149-153 项 + R92-A 第 154-158 项 + R93-A 第 159-163 项 + R94-A 第
-//   164-168 项 + R95-A 第 169-173 项 + R96-A 第 174-178 项). headerName 区分 55 头
-//   (大小写不敏感). 与 recordVia 同款 Store + 惰性 sweep, 但保留其他 54 头旧值
-//   (LoadOrStore canonical 指针 + 单字段 update-in-place).
+//   164-168 项 + R95-A 第 169-173 项 + R96-A 第 174-178 项 + R98-A 第 184-188 项).
+//   headerName 区分 60 头 (大小写不敏感). 与 recordVia 同款 Store + 惰性 sweep, 但
+//   保留其他 59 头旧值 (LoadOrStore canonical 指针 + 单字段 update-in-place).
 func recordSecurityHeader(host, headerName, value string) {
         if host == "" || value == "" {
                 return
@@ -12352,6 +12451,19 @@ func recordSecurityHeader(host, headerName, value string) {
                 ent.trailerValue = value
         case "p3p":
                 ent.p3pValue = value
+        // R98-A 反反爬第 184-188 项: auth challenge / proxy challenge / typed link
+        //   relations / rate limit policy 响应头观测 (与 124-178 同款 family, 单值
+        //   last-write-wins per-host 合并 tracker). 179-183 reserve/defer.
+        case "www-authenticate":
+                ent.wwwAuthenticateValue = value
+        case "proxy-authenticate":
+                ent.proxyAuthenticateValue = value
+        case "link":
+                ent.linkValue = value
+        case "ratelimit-limit":
+                ent.rateLimitLimitValue = value
+        case "ratelimit-reset":
+                ent.rateLimitResetValue = value
         default:
                 return
         }
@@ -12429,6 +12541,11 @@ func HostSecurityHeadersSnapshot() map[string]map[string]string {
                         "contentLocationValue":  e.contentLocationValue,
                         "trailerValue":          e.trailerValue,
                         "p3pValue":                e.p3pValue,
+                        "wwwAuthenticateValue":    e.wwwAuthenticateValue,
+                        "proxyAuthenticateValue":  e.proxyAuthenticateValue,
+                        "linkValue":               e.linkValue,
+                        "rateLimitLimitValue":     e.rateLimitLimitValue,
+                        "rateLimitResetValue":     e.rateLimitResetValue,
                         "detectedAt":        fmt.Sprintf("%d", e.detectedAt),
                 }
                 return true

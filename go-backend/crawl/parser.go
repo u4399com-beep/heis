@@ -1626,12 +1626,27 @@ func ParseList(html, baseURL string, pageRule PageRule, urlFields []string) List
         if err != nil {
                 return out
         }
+        // R98-B BUG-279 (P3) 修复 (R96-B 未决项 #1+#2 续抓): HTML 模式 ParseList
+        //   ExtractField 传 nil ctx → FieldConst 分支 (本文件 line ~1234 `if ctx != nil`
+        //   守卫) 跳过 applyConstTemplate → const 模板占位符 0 替换 → 模板破损
+        //   (e.g. admin 配 list.fields.bookUrl = const "https://x/{q.id}" → 返 ""
+        //   而非 evaluated URL). 与 JSON 模式 (line ~1579 ctx1) + runner.go tocLink
+        //   (line ~1876 BUG-268 修复) 同款 latent, 3/4 callsite 已传 ctx, 仅 HTML
+        //   模式 ParseList 漏传. 71 Rule 0 用 FieldConst in HTML list fields
+        //   (yueyouxs 用 const 仅在 toc.tocLink, runner.go 已修); 0 生产命中, 防御
+        //   性修复. latent 自 R38 TS→Go 迁移 (47 轮未发现). 修复: 提供
+        //   URLVars(baseURL) + index ctx 让 FieldConst 跑 applyConstTemplate. 0
+        //   行为变化 (FieldCSS/FieldRegex/FieldJSON 不读 ctx.Vars, 传 ctx 无害; 仅
+        //   FieldConst 受益). 与下方 ParseToc HTML (line ~1927) 同口径对称修复.
+        urlVars := URLVars(baseURL)
 
         if itemSelector == nil {
-                // 无容器: 直接对整页提取字段 (单值型, 如书籍页)
+                // 无容器: 直接对整页提取字段 (单值型, 如书籍页). index=1 (与 JSON 模式
+                //   单 scope 同口径, line ~1575 {json: root, index: 1}).
                 rec := map[string]string{}
+                ctx := &ExtractCtx{Vars: mergeVars(urlVars, map[string]string{"index": "1"})}
                 for name, rule := range fields {
-                        rec[name] = ExtractField(htmlClean, doc, nil, rule, nil)
+                        rec[name] = ExtractField(htmlClean, doc, nil, rule, ctx)
                 }
                 if hasRequiredFailure(fields, rec) {
                         return out
@@ -1659,10 +1674,12 @@ func ParseList(html, baseURL string, pageRule PageRule, urlFields []string) List
                 scopes = nil
         }
 
-        for _, scope := range scopes {
+        for i, scope := range scopes {
                 rec := map[string]string{}
+                // R98-B BUG-279: per-scope ctx with index=i+1 (与 JSON 模式 scope.index 同口径).
+                ctx := &ExtractCtx{Vars: mergeVars(urlVars, map[string]string{"index": strconv.Itoa(i + 1)})}
                 for name, rule := range fields {
-                        rec[name] = ExtractField(htmlClean, doc, scope, rule, nil)
+                        rec[name] = ExtractField(htmlClean, doc, scope, rule, ctx)
                 }
                 for _, uf := range urlFields {
                         if rec[uf] != "" {
@@ -1924,16 +1941,31 @@ func ParseToc(ctx context.Context, firstURL, html string, pageRule PageRule, pag
                         scopes = []*goquery.Selection{doc.Find("body")}
                 }
 
-                for _, scope := range scopes {
+                // R98-B BUG-279 (P3) 续修 (与 ParseList HTML line ~1641 同口径对称):
+                //   原 ExtractField 传 nil ctx → FieldConst 分支跳过 applyConstTemplate
+                //   → toc.fields.title/url/volume = const 时返 "" 而非 evaluated value.
+                //   71 Rule 0 用 FieldConst in toc.fields (yueyouxs 用 const 仅在
+                //   toc.tocLink, runner.go line ~1876 BUG-268 已修); 0 生产命中, 防御
+                //   性修复. 修复: urlVars (per-page, curURL 随翻页变) + per-scope
+                //   index=i+1 ctx. 同时 propagate title/href 到 vars 让后续 const
+                //   (e.g. vol 模板含 {url}) 引用前值 (与 JSON 模式 BUG-192 line ~1827
+                //   rec["url"]=href 同款 propagate, HTML 模式顺序固定 title→url→vol
+                //   无需 2-pass fixpoint). 0 行为变化 (FieldCSS/FieldRegex/FieldJSON
+                //   不读 ctx.Vars).
+                urlVars := URLVars(curURL)
+                for i, scope := range scopes {
+                        vars := mergeVars(urlVars, map[string]string{"index": strconv.Itoa(i + 1)})
                         var title, href, vol string
                         if titleRule.Type != "" {
-                                title = ExtractField(current, doc, scope, titleRule, nil)
+                                title = ExtractField(current, doc, scope, titleRule, &ExtractCtx{Vars: vars})
+                                vars["title"] = title
                         }
                         if urlRule.Type != "" {
-                                href = ExtractField(current, doc, scope, urlRule, nil)
+                                href = ExtractField(current, doc, scope, urlRule, &ExtractCtx{Vars: vars})
+                                vars["url"] = href
                         }
                         if volRule.Type != "" {
-                                vol = ExtractField(current, doc, scope, volRule, nil)
+                                vol = ExtractField(current, doc, scope, volRule, &ExtractCtx{Vars: vars})
                         }
                         if title == "" && href == "" {
                                 continue

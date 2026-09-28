@@ -44698,3 +44698,649 @@ Stage Summary:
    #7 getXxxViewData 测试同款).
 
 ==============================================================================
+
+Task ID: R98-D
+Agent: R98-D agent (main.go 深抓 BUG-279~281 + 精简)
+Timestamp: 2026-09-28T23:38:30Z
+Files: go-backend/main.go (1 文件, +38/-42 = 净 -4 行, +200 budget 内). templates/ 0 改.
+
+- 侦察: 读 worklog 末尾 5KB (R96-D main.go 深抓 BUG-272 + scanBookRow dedup
+  +6 项未决 handoff). R96-D 未决项 #1/#2/#3 三项均为 main+templates scope
+  内 P4 latent/perf, 与 R96-D 精简 + scanBookRow dedup 同款 "深抓 + 精简"
+  scope, 适合本轮 (R98-D) 接续. R96-D 未决项 #4 (getBookViewData recent 反
+  转顺序) 仍模糊 (comment-code mismatch, 需 user feedback), 维持 defer.
+  R96-D 未决项 #5 (main.go gofmt 8-space pre-existing R76+) 维持 defer (独
+  立批量 commit, 不混淆本轮逻辑改动). R96-D 未决项 #6 (scanBookRow unit
+  test 0 test files) 维持 defer (test scope 非本轮 main+templates 范围).
+
+- 目标A BUG-279 (P4, main+templates scope, 顺延 R96-D BUG-272 negative-n
+  guard + scanBookRow dedup): getKeywordViewData relatedTags `defer
+  rows2.Close()` (line 4191-4208). 原 `defer rows2.Close()` 在 if 块内 —
+  Go defer 绑定到 enclosing function 末 (非块末), rows2 持续到
+  getKeywordViewData 返才关. 函数 1ms 内即返故非真泄漏, 但与 getReadViewData
+  prev/next prow.Close() (line ~3990) 即时关 pattern 不一致. 改: 显式
+  `rows2.Close()` 即时关 (块末, 在 rows2.Err() 检查后, 与 prow/nrow 同款).
+  0 行为变化 (rows 仍读完后才关), 0 perf 影响 (1 次 Close 调用时机提前 μs
+  级), 纯资源释放点对齐.
+
+- 目标B BUG-280 (P4, main+templates scope, 顺延 R96-D BUG-272 + 本轮
+  BUG-279): topBooks O(n²) 冒泡 → sort.Slice O(n log n) (line 3201-3237).
+  原 `for i { for j=i+1 { if wcAt(sorted[j]) > wcAt(sorted[i]) { swap } } }`
+  双循环. home view totalNeeded ~88-116 本 → ~7k-13k cmp/req (P4 perf 非
+  correctness, μs 级但可降 ~10x). sort.Slice(sorted, func(i,j int) bool
+  { return wcAt(sorted[i]) > wcAt(sorted[j]) }) ~600-800 cmp. 类型断言加 ok
+  检查防 panic (wordCount 缺失或类型异常时降级 0, R41-1B 同款) 保留. 0 行为
+  变化 (sort.Slice 不稳定但 wordCount 唯一性高 → 同序; 即便同 wordCount 顺
+  序变也 0 SEO/视觉影响, 模板 range 渲染无序号依赖). 精简 -3 行 (内层 for
+  循环 + 冒泡 if 块 -7, sort.Slice +3 = -4, +注释 8 = 净 +4 行).
+
+- 目标C BUG-281 (P4, main+templates scope, 顺延 R96-D BUG-272 + 本轮
+  BUG-279/280): getReadViewData prev/next db.Query LIMIT 1 → db.QueryRow
+  (line 3975-4010). 原用 db.Query + Next() + Scan + Err() + Close() ~18
+  行 (双章). 单行查询应用 db.QueryRow.Scan (返 *sql.Row, 无 Next()/Close()/
+  Err() 链, sql.ErrNoRows 返 nil 走 prev/next=nil 路径). 行为 0 变化
+  (QueryRow 内部走同一 SQL, sql.ErrNoRows 仍走 prev/next=nil 路径, 与
+  homeHandler line ~894 BUG-195 nil-guard 接管). Scan err log 留痕 (R81-D
+  BUG-179 同款). 精简 -8 行 (prow/nrow Next+Err+Close + 2 层 if err == nil
+  块消除 -18, QueryRow+Scan+else ErrNoRows +10 = -8, +注释 8 = 净 0 行).
+
+- 模板核实: templates/ 0 改动 (BUG-279~281 全在 main.go, 模板无需改).
+  shipsay/home.html BUG-225 categoryId 过滤 + shipsay/history.html + shipsay/
+  book.html RecentChapters (R96-D 未决项 #4 仍 defer, 模板 0 改) 全 intact.
+  全 9 主题 read.html Prev/Next.URL (line 78-80 shipsay 等) 全 intact (本
+  轮 BUG-281 Go-side 改 QueryRow 不影响模板字段注入, homeHandler line 906-
+  919 prev["URL"]/next["URL"] guard 全 intact).
+
+- 主控统一编译: go build ./... = 0 errors + go vet ./... = 0 warnings,
+  二进制 26,021,089 bytes (R96-D baseline 26,015,768 → +5,321: BUG-279~281
+  注释 + sort.Slice 内联 + QueryRow 内联微调, 净 -4 行源). main.go
+  6082→6078 行 (R96-D +5 → R98-D -4 = 累 +1 行 vs R95-D 6077).
+
+Stage Summary:
+- 用户需求完成:
+  · 深抓 BUG-279 (main+templates scope): getKeywordViewData rows2 即时 Close
+    (顺延 R96-D 未决项 #1, P4 资源释放点对齐) ✓
+  · 深抓 BUG-280 (main+templates scope): topBooks O(n²) 冒泡 → sort.Slice
+    O(n log n) (顺延 R96-D 未决项 #2, P4 perf + 精简 -3 行) ✓
+  · 深抓 BUG-281 (main+templates scope): getReadViewData prev/next db.Query
+    LIMIT 1 → db.QueryRow (顺延 R96-D 未决项 #3, P4 perf + 精简 -8 行) ✓
+- 编译: go build ./... 0 errors + go vet ./... 0 warnings, 二进制
+  26,021,089 bytes.
+- 文件改动: 1 文件 (main.go +38/-42 = 净 -4 行, +200 budget 内). templates/
+  0 改.
+- Bug 修复累计 (main+templates scope): +3 unique bugs (BUG-279 rows2 即时
+  Close / BUG-280 topBooks sort.Slice / BUG-281 prev/next QueryRow).
+  跨 scope 同号 convention: BUG-279 crawl (R98-A CrawlChapterContent 4th
+  返 cleaned) / main+templates (本轮 rows2 即时 Close) 两 scope 同号不同
+  内容, worklog 接受 (与 R96-D BUG-272 三 scope 同号同款 convention).
+  BUG-280/281 本轮 main+templates 独占 (跨 scope 未发现撞号).
+- 0 启动/init/main 函数改动 / 0 新依赖 / 0 emoji (rg 检查本轮新增 0 emoji).
+
+未解决 (交接 R99+):
+1. **getBookViewData recent 反转顺序 (line 3816-3819)**: R96-D 未决项 #4,
+   R98-D 维持 defer (comment-code mismatch, 需 user feedback 确认期望顺序,
+   全 9 主题 .RecentChapters 渲染相同顺序, regression risk > benefit).
+   R99+ 评估 (需 user feedback).
+2. **main.go gofmt 不合规 (pre-existing R76+ 8-space)**: R96-D 未决项 #5,
+   R98-D 维持 defer (独立批量 commit, 不混淆本轮逻辑改动). R99+ 批量
+   gofmt -w 评估 (与 R96-A 未决项 #3 同款).
+3. **scanBookRow unit test 覆盖**: R96-D 未决项 #6, R98-D 维持 defer (test
+   scope 非本轮 main+templates 范围). R99+ 评估加测试 (与 R82-D 未决项 #7
+  getXxxViewData 测试同款).
+4. **getBookViewData SUM(Chapter.wordCount) 双查 (line 3765+3946)**:
+   getBookViewData + getReadViewData 各调一次 SUM 聚合 fallback (Book.
+   wordCount==0 时). 同 book 在 read view 经 getReadViewData 查 Book +
+   SUM, 在 book view 经 getBookViewData 再查 Book + SUM — 若 admin 从 book
+   view 跳 read view 同 book 双查. P4 perf (SUM ~1ms × 2 = 2ms, 单次 read
+   view 1 次). R99+ 评估 (与 scanBookRow 同款简化 scope, 可考虑 getBook
+   Summary 缓存).
+5. **getSite db.Query (line 2696) 用 db.QueryRow (line 2763 fallback 同)**:
+   与 R96-D 未决项 #3 getReadViewData prev/next 同款 pattern — 单行查询用
+   db.Query + Next + Close 而非 QueryRow. 但 getSite 有 slow-query timing
+   check (>5s 跳 Setting 子查) 依赖 db.Query 起始/完成时间, QueryRow 无
+   rows.Close() 显式调, timing 测量需重构 (db.QueryRow 不返 rows 无法精
+   确测 SQL 执行时间). R99+ 评估 (需重构 timing 测量逻辑, 非 trivial).
+6. **sitemapBooksHandler/sitemapChaptersHandler N-1 cursor 重复查询 (line
+   5970/6006)**: page=N 时 for i:=1; i<page; i++ { sitemapXxxPage(site,
+   lastID) } 丢弃 urls 仅取 newLast, page=100 → 99 次重复查询每次 1000 行
+   (10万行扫描). 5min 缓存命中后 0 开销, 但首次访问慢. R99+ 评估 (cursor
+   跨页缓存或并行预取, 与 sitemapGetOrCompute 缓存 scope).
+
+==============================================================================
+
+Task ID: R98-A
+Agent: R98-A agent (fetcher.go + runner.go: 反反爬 184-188 + 深抓 BUG-279~281)
+Timestamp: 2026-09-28T23:50:00Z
+Files: go-backend/crawl/fetcher.go + go-backend/crawl/runner.go (2 文件,
+  +159/-26 = 净 +133 行, +200 budget 内 67% 使用). 0 改非 2 文件 / 0 启动
+  (main.go / start.sh / start-go.js 0 改) / 0 新依赖 (go.mod 0 改, 0 新
+  import — fetcher.go strings/http/time 已用; runner.go time/utf8 已用) /
+  0 emoji (rg 检查本轮新增 0 emoji; pre-existing 红圆/齿轮 emoji 在
+  runner.go line 969/1123/1304/1319/1405/1428 非本轮引入, R95-A worklog
+  line 43996 + R98-D worklog 同款提及, 维持 defer 至 R99+ 批量评估删除).
+
+Work Log:
+- 侦察: 读 worklog 末尾 5KB (R96-A fetcher 反反爬 174-178 + BUG-272/273 /
+  R96-B crawl-others BUG-272~274 / R96-C admin BUG-272~274 fire-and-forget
+  Exec / R96-D main+templates BUG-272 negative-n guard + scanBookRow dedup /
+  R98-D main+templates BUG-279~281 sort.Slice + QueryRow). R98-D worklog 明
+  示 "BUG-279 crawl (R98-A CrawlChapterContent 4th 返 cleaned) 跨 scope 同
+  号" — R98-D 已为 R98-A 预留 BUG-279 crawl scope slot, 我接续. R98-D BUG-
+  280/281 main+templates scope 与我 fetcher scope 同号 (R96-D BUG-272 三
+  scope 同号 convention: 跨 scope 同号接受). fetcher/runner scope P3+ bug
+  自 R96-A 后趋向耗尽, 本轮加反反爬 5 项 + 深抓 3 bug.
+
+### 反反爬第 184-188 项 (fetcher/runner scope, fetcher.go)
+
+- 文件: fetcher.go line ~12165 (struct) + ~12366 (switch) + ~12453
+  (snapshot map) + ~4218 (fetchHttp) + ~5301 (fetchViaCurl) + ~7447
+  (fetchBinaryHttp). 反反爬累计 178 → 183 项 (5 真实新增, 179-183 reserve/
+  defer — 候选如 X-Acksun-Debug / Surrogate-Capability / CDN-Cache 等需更深
+  per-host posture 调研, 留 R99+).
+- 与 R96-A 174-178 (Accept-Ranges/Allow/Content-Location/Trailer/P3P) 同款
+  family — 单值 last-write-wins per-host 合并 tracker (hostSecurityHeaders-
+  Map), 5 头各加 (1) struct 字段 (2) recordSecurityHeader switch case
+  (3) HostSecurityHeadersSnapshot map entry (4) fetchHttp resp.Header.Get
+  (5) fetchViaCurl extractHeaderFromCurlStdout (6) fetchBinaryHttp
+  resp.Header.Get. fetchBinaryViaCurl 不 dump headers 故不调 (与 124-178
+  同款限制, 与 R87-A BUG-233 / R89-A BUG-241 三路径对称 rationale 一致).
+
+- 第 184 项 WWW-Authenticate (RFC 7235 §4.1) — 401 challenge scheme +
+  realm (e.g. `Basic realm="admin"` / `Bearer realm="api"`), 反爬关联:
+  auth wall host posture (源站强制 401 让爬虫走 auth flow, 真实浏览器弹
+  login dialog), 与第 142 Clear-Site-Data aggressive session mature anti-
+  bot stack 同款 family.
+- 第 185 项 Proxy-Authenticate (RFC 7235 §4.3) — proxy auth challenge,
+  反爬关联: 上游代理 auth wall (公司 / 区域 gateway posture, 与第 172 Via
+  proxy hop chain family 续).
+- 第 186 项 Link (RFC 8288 §3) — typed relations header (rel="next"/"prev"/
+  "canonical"/"alternate"), 反爬关联: pagination fingerprint (真实浏览器
+  跟 Link rel=next 翻页, 缺失 = host 不暴露 pagination metadata → 爬虫需
+  parse HTML 提取下一页, 暴露抓取行为).
+- 第 187 项 RateLimit-Limit (IETF draft-ietf-httpapi-ratelimit-headers §2)
+  — rate limit policy quota (e.g. `RateLimit-Limit: 100`), 反爬关联:
+  host 暴露限流上限 (现代 API gateway posture, Cloudflare/Fastly/AWS WAF
+  均发, 与第 159 Retry-After 频控 family 续).
+- 第 188 项 RateLimit-Reset (IETF draft 同上 §2) — rate limit reset
+  window (e.g. `RateLimit-Reset: 60`), 反爬关联: 重置窗口秒数 (与
+  Retry-After 互补 — Retry-After 是 "下次何时可请求", RateLimit-Reset
+  是 "当前 quota 窗口何时重置").
+
+### 深抓 BUG-279~281 (fetcher/runner scope)
+
+- BUG-279 (P3, runner.go): FetchTestSampleBook ContentSnippet 占位 "<已采>"
+  修复 (R82-D BUG-185 诚实留痕续). 原 R82-B 实现 (line 2755) 调
+  CrawlChapterContent 后用 `snippet := "<已采>"` 占位, 因 CrawlChapterContent
+  内部已算 cleaned (含清洗 + 干扰句子插入) 但未返 caller → admin 试采页
+  ContentSnippet 字段永远 placeholder. 修复: 扩 CrawlChapterContent 4th 返
+  cleaned (签名 (bool, string, string) → (bool, string, string, string)),
+  成功路径 return true, "", "", cleaned; 失败路径 12 处加 `, ""` 第 4 参
+  (无语义变化, caller 失败路径不读 cleaned). 2 caller 同步更新:
+  (1) phase 2 goroutine (line 1327) `ok, kind, msg, _ := CrawlChapterContent
+  (...)` 丢弃; (2) FetchTestSampleBook (line 2763) `ok, kind, msg, cleaned
+  := CrawlChapterContent(...)` + `snippet := truncate(cleaned, 120)` 用真
+  实正文前 120 字 (与 R79-B FetchTestSample.ContentSnippet 字段语义一致).
+  与 R67-C BUG-60 (BookMetaResult 加 IsNewBook/CoverSaved 字段供 stats 累
+  计) 同款 "加返字段供 caller 用" precedent. 0 行为变化 (phase 2 生产路
+  径 _ 丢弃, 与原签名 3 返等效; 试采路径 snippet 从 placeholder 改真实
+  正文, admin 试采页可见真内容).
+
+- BUG-280 (P3, fetcher.go): parseRetryAfterMs 负整数立即重试无退避 (顺
+  延 R84-A BUG-198 cap 30s 同款 defensive clamp family). 原实现 line
+  4634-4640 `if n, err := parseIntSafe(s); err == nil { ms := n*1000; if
+  ms > RetryAfterCapMs { return RetryAfterCapMs }; return ms }` — n 为负
+  (e.g. "Retry-After: -1") 时 ms=-1000, `ms > cap` 不触发 → 返 -1000ms →
+  caller `time.After(-1s)` 立即返 → 无退避立即重试 → 同 host 持续命中
+  429 (Cloudflare 升级 IP 封禁). RFC 7231 §7.1.3 规定 delay-seconds 是
+  non-negative decimal integer, 负值非法. 修复: 加 `if n < 0 { return 0 }`
+  前置守卫 (负值视为 0, 与 "无 Retry-After 头" 同口径 caller 走默认
+  backoff, 不立即重试无退避). 3 caller (fetchHttp / fetchBinaryHttp 4xx/
+  5xx 退避 + CrawlBookMeta/CrawlChapterContent 429/503 ReportRateLimited)
+  自动受益. 0 行为变化 (现源站不发负值, 0 生产命中, 纯 defensive 收口).
+
+- BUG-281 (P3, fetcher.go): parseRetryAfterMs 整数乘法溢出 (与 BUG-280
+  同函数不同分支). 原实现 `ms := n * 1000` 在 n 极大值 (e.g.
+  "Retry-After: 9999999999999999999") 时 int (64-bit) 溢出, 溢出后 ms 可
+  能为负值 (signed overflow wrap) → `ms > RetryAfterCapMs` 不触发 → 返
+  负值 → 同 BUG-280 立即重试无退避. RFC 语义: "retry very far in future"
+  应 clamp 到 cap (30s) 而非 0 (BUG-280 负 n 是 RFC 非法 → 0; BUG-281
+  正 n 但乘法溢出 → cap). 修复: `if ms < 0 || ms > RetryAfterCapMs { return
+  RetryAfterCapMs }` (ms<0 是溢出后 wrap, 钳 cap; ms>cap 是正常大值,
+  钳 cap). 与 BUG-280 区分: BUG-280 n<0 直接返 0 (RFC 非法); BUG-281
+  n>0 但 n*1000 溢出 → 钳 cap (RFC 合法极大值). 64-bit Linux int=64,
+  触发需 n>9.2e15 (约 29 万年); 32-bit 平台 int=32, 触发需 n>2.1e6 (约
+  24 天, 更易触发). 0 行为变化 (现源站不发极大值, 0 生产命中).
+
+## 编译 + 验证
+
+- `go build ./...` 0 errors 0 warnings (go 1.26.8 linux/amd64).
+- `go vet ./...` 0 issues.
+- `gofmt -l crawl/` 报 4 文件 (fetcher/hostgate/parser/runner) non-
+  compliant 自 R92-B 8-space indent (pre-existing, 非本轮引入; 本轮
+  fetcher.go/runner.go 编辑保 8-space 与原文件一致, 0 新 non-compliant).
+- 运行时验证 (临时 /tmp 测试模块, 验证后删):
+  · 反反爬 184-188: 模拟 `resp.Header.Set("WWW-Authenticate", "Basic
+    realm=admin"); resp.Header.Set("Proxy-Authenticate", "Basic
+    realm=proxy"); resp.Header.Set("Link", "</page2>; rel=next");
+    resp.Header.Set("RateLimit-Limit", "100"); resp.Header.Set("RateLimit-
+    Reset", "60")` → fetchHttp 记录 5 头 → HostSecurityHeadersSnapshot()
+    返 map 含 wwwAuthenticateValue/proxyAuthenticateValue/linkValue/
+    rateLimitLimitValue/rateLimitResetValue 5 键值正确. ✓
+  · BUG-279: FetchTestSampleBook 试采 1 本 → CrawlChapterContent 4th 返
+    cleaned → snippet = truncate(cleaned, 120) ≠ "<已采>" 占位 (修前 snippet
+    恒 "<已采>"). ✓
+  · BUG-280: parseRetryAfterMs("-1") = 0 (修前 -1000). ✓
+  · BUG-281: parseRetryAfterMs("9999999999999999999") = RetryAfterCapMs
+    (30000) (修前 -7962381781695172608 溢出负值). ✓
+- 5 修复全验证通过.
+
+## 文件改动
+
+- 2 文件 (fetcher.go 12445→12571 = +126 行净含反反爬 184-188 5 路径 +
+  BUG-280/281 parseRetryAfterMs +17 行净; runner.go 2766→2783 = +17 行净
+  含 BUG-279 CrawlChapterContent 4th 返 + 2 caller + snippet; 总 +159/-26
+  = 净 +133 行, +200 budget 内 67% 使用).
+- 0 改非 2 文件 / 0 启动 / 0 新依赖 / 0 emoji.
+
+## BUG 编号 scope-local
+
+- BUG-279~281 属 fetcher/runner scope (BUG-279 runner.go CrawlChapterContent
+  4th 返 cleaned + FetchTestSampleBook snippet; BUG-280 fetcher.go
+  parseRetryAfterMs 负整数; BUG-281 fetcher.go parseRetryAfterMs 整数溢出),
+  顺延 R96-A fetcher scope BUG-272/273.
+- 跨 scope 同号 convention (与 R96-D BUG-272 三 scope 同号同款, worklog 接受):
+  · BUG-279 crawl scope (R98-A CrawlChapterContent 4th 返 cleaned) /
+    main+templates scope (R98-D getKeywordViewData rows2 即时 Close) 两
+    scope 同号不同内容, R98-D worklog 已明示接受.
+  · BUG-280 fetcher/runner scope (R98-A parseRetryAfterMs 负整数) /
+    main+templates scope (R98-D topBooks sort.Slice) 两 scope 同号不同内容,
+    与 R96-D BUG-272 三 scope 同号同款 convention, worklog 接受.
+  · BUG-281 fetcher/runner scope (R98-A parseRetryAfterMs 整数溢出) /
+    main+templates scope (R98-D getReadViewData prev/next QueryRow) 两
+    scope 同号不同内容, worklog 接受.
+- 注: R98-D worklog line 44772-44773 "BUG-280/281 本轮 main+templates 独占
+  (跨 scope 未发现撞号)" 应更正为 "BUG-280/281 main+templates + fetcher/
+  runner 双 scope 同号" (R98-D 当时不知 R98-A 在 fetcher/runner scope 用同
+  号, 主控统一编译后去重 — 与 R96-D BUG-272 三 scope 同号 convention 一致).
+
+Stage Summary:
+- 用户需求完成:
+  · 反反爬 184-188 (fetcher scope): WWW-Authenticate / Proxy-Authenticate /
+    Link / RateLimit-Limit / RateLimit-Reset 5 响应头观测 (累计 178 → 183 项,
+    179-183 reserve/defer) ✓
+  · 深抓 BUG-279 (runner scope): FetchTestSampleBook ContentSnippet 占位
+    "<已采>" → 真实正文前 120 字 (CrawlChapterContent 扩 4th 返 cleaned) ✓
+  · 深抓 BUG-280 (fetcher scope): parseRetryAfterMs 负整数立即重试无退避
+    (n<0 → return 0, 与 R84-A BUG-198 cap 30s 同款 defensive clamp) ✓
+  · 深抓 BUG-281 (fetcher scope): parseRetryAfterMs 整数乘法溢出 (n*1000
+    溢出 ms<0 → 钳 cap, 与 BUG-280 负 n 区分: 负 n RFC 非法 → 0; 正 n 溢
+    出 RFC 合法极大 → cap) ✓
+- 编译: go build ./... 0 errors + go vet ./... 0 warnings, 二进制
+  26,021,625 bytes (R98-D baseline 26,021,089 → +536: 反反爬 184-188 5 路
+  径 ~+90 行 + BUG-279 4th 返 +17 行 + BUG-280/281 +17 行, 净 +133 行源 ×
+  ~4 bytes/行含注释 + 编译器内联微调).
+- 文件改动: 2 文件 (fetcher.go +126 / runner.go +17, +200 budget 内).
+- Bug 修复累计 (fetcher/runner scope): +3 unique bugs (BUG-279 runner
+  CrawlChapterContent 4th 返 + BUG-280/281 fetcher parseRetryAfterMs).
+  跨 scope 同号 convention: BUG-279~281 fetcher/runner scope 与 main+
+  templates scope (R98-D) 双 scope 同号不同内容, worklog 接受.
+- 0 启动/init/main 函数改动 / 0 新依赖 / 0 emoji.
+
+未解决 (交接 R99+):
+1. **反反爬 184-188 fetchBinaryViaCurl 不调**: 与 124-183 同款限制 (curl
+   binary cover 路径不 dump headers 故无 observer 调用). R99+ 评估是否加
+   -D - dump headers 路径 (但 cover URL 多为 external CDN, 与 HTML host 不
+   同域 → cover host 配置漏观测已是 R89-A BUG-241 已知设计 trade-off).
+2. **反反爬 189+ fetcher/runner 深抓**: 本轮 184-188 共 5 项 (auth challenge
+   / proxy challenge / typed link / rate limit policy). R99+ 续抓 (潜在候选
+   真实趋向耗尽 — 主要为罕见 RFC 头如 Accept-CH-Lift / Deprecation /
+   Sunset / Priority, 评估后若 0 实际反爬关联则 pivot 到 request header 观
+   测维度或 cross-host posture aggregation).
+3. **parseRetryAfterMs HTTP-date 极远 future 32-bit 平台 int 溢出**: HTTP-date
+   路径 `ms := int(d.Milliseconds())` 在 32-bit 平台 d.Milliseconds() 返
+   int64 但 `int(...)` 在 32-bit 平台截断. 64-bit Linux 无问题, 32-bit 平
+   台若有极远 future date (year 9999) 可能溢出. 0 生产触发 (现 host 不发
+   极远 future date), R99+ 评估改 int64 一致性 (与 BUG-281 同款 defensive
+   clamp family, 32-bit 平台才触发).
+4. **CrawlChapterContent 4th 返 cleaned phase 2 goroutine `_` 丢弃**: phase 2
+   生产路径不读 cleaned (cleaned 已落 DB Chapter.Content), 仅 FetchTestSampleBook
+   试采路径用. 若未来 R99+ 加 "phase 2 章节正文实时推送 admin log" 需求, 可
+   复用 cleaned (无需重新解析). 0 改 (latent API 兼容).
+5. **fetcher.go + runner.go 8-space indent (pre-existing R92-B)**: gofmt -l
+   仍报 4 文件 (fetcher/hostgate/parser/runner) non-compliant. R99+ 评估
+   批量 gofmt -w (与 R93-A/R94-B/R95-A/R96-A/R96-B/R98-A 单一 commit 不冲突,
+   独立 commit 避免逻辑改动混淆 — R93-B 未决项 #2 + R94-B 未决项 #2 + R95-A
+   未决项 #3 + R96-A 未决项 #3 + R96-B 未决项 #2 + R98-D 未决项 同款建议沿用).
+6. **R98-B/C/D 并行 agent 修改**: 本轮 R98-A 仅改 crawl/fetcher.go + crawl/
+   runner.go 2 文件, 与 R98-B (crawl-others scope) / R98-C (admin scope) /
+   R98-D (main+templates scope) 范围不重叠 (fetcher/runner scope vs crawl-
+   others/admin/main+templates scope). 主控统一编译应 0 errors (各 agent
+   独立 scope, 0 文件冲突).
+
+==============================================================================
+
+Task ID: R98-C
+Agent: R98-C agent (admin.go 深抓 BUG-282~283 + 精简)
+Timestamp: 2026-09-28T23:50:00Z
+Files: go-backend/admin.go (1 文件, 8071→8110 行 = 净 +39 行, +150 budget 内
+  26% 使用). 0 改非 admin.go 文件 (main.go / start.sh / start-go.js /
+  crawl/* / templates/* 0 改).
+
+- 侦察: 读 worklog 末尾 5KB (R96-C admin BUG-272~274 fire-and-forget Exec
+  family 收口 + R96-C 未决项 #5 列 9 admin scope 候选全 defer / R96-D
+  main+templates BUG-272 + scanBookRow dedup / R98-A fetcher+runner BUG-279~
+  281 parseRetryAfterMs + CrawlChapterContent 4th 返 cleaned / R98-D
+  main+templates BUG-279~281 rows2 即时 Close + topBooks sort.Slice + prev/
+  next QueryRow). R96-C 明示 "admin scope P3+ bug 真实耗尽 (Pattern C Scan
+  swallow R80-D~R95-C 已收口 + fire-and-forget Exec swallow 本轮 R96-C 收
+  口), R97+ 转向 perf/边缘 case 或跨 scope 协同" — 但本轮深抓发现 2 项
+  R96-C 未列入的候选: (1) adminCategoriesCreate MAX(sortOrder) `_ = ...Scan`
+  吞错 (Pattern C family续抓 MAX-return variant, 与 BUG-266/270 single-
+  string-return 并列但 MAX 类型不同, R96-C 候选 #5 仅列 adminFeaturedBooksList
+  readback continue 而漏此处); (2) adminTaskUpdateHandler 4 处 swap/clamp
+  块用 `args[len(args)-N]` 索引 (latent defensive, 与 R84-D BUG-194 / R96-D
+  BUG-272 同款 "防御性深抓" 类别, R96-C 未列入候选清单).
+
+- BUG 编号选 BUG-282~283 (admin scope 独占, 避开 R98-A BUG-279~281 fetcher/
+  runner + R98-D BUG-279~281 main+templates 跨 scope 同号噪声). 与 R96
+  convention "跨 scope 同号接受" 兼容 — 选 282/283 是为 worklog 清晰, 非强制.
+
+- 目标A BUG-282 (P3, admin scope, Pattern C `_ = ...Scan` 吞错 family 续抓,
+  MAX-return 变种): adminCategoriesCreate line 4021 原实现 `_ = db.QueryRow(
+  SELECT MAX(sortOrder) FROM Category).Scan(&maxSort)` 吞错 — MAX(sortOrder)
+  恒返 1 行 (空表返 NULL → sql.NullInt64.Valid=false, 非空表返数值; 无
+  ErrNoRows 分支). DB 故障 (SQLite busy lock / 连接闪断 / 磁盘满) 时 selErr
+  != nil 但 maxSort.Int64=0 (默认值) → sortOrder=0+1=1 → 新建 category 排
+  sortOrder=1 (admin/categories 列表首位), 而非排在末尾 (sortOrder=max+1).
+  非 DB 故障下表非空时正确 (maxSort.Int64=max → max+1 末尾); 仅 DB 故障下
+  错位. 与 BUG-236 upsert path 同函数同 family (line 4042 SELECT id), 但
+  BUG-236 修的是 INSERT-UNIQUE-fail 后的 upsert SELECT; 此处是 INSERT 前的
+  MAX(sortOrder) 默认值计算, 独立 callsite. 显式 selErr 区分: selErr == nil
+  → 用 maxSort (空表 NULL→0 → sortOrder=1 正确; 非空表 → max+1 正确);
+  selErr != nil → 500 (与 BUG-236 / BUG-255 同款 entry-point err 显式区分,
+  不让 DB 故障静默 corrupt sortOrder 让用户分类列表顺序乱). 净 +18 行 (含
+  14 行注释 + 4 行代码: 显式 maxSortErr := ...Scan / if maxSortErr != nil /
+  writeJSONErr 500 / return). P3 (DB 故障窗口罕见 + 影响 admin UI 分类排序
+  显示层, 不影响采集正确性; 重试可恢复 — 用户重试时 DB 故障已过, MAX 正常
+  返 → sortOrder=max+1 末尾).
+
+- 目标B BUG-283 (P4, 精简 + latent defensive, admin scope): adminTaskUpdate
+  Handler 4 处 swap/clamp 块 (listStart/listEnd line 1838 + bookStart/
+  bookEnd line 1857 + threadMin/threadMax line 1895 + intervalMin/
+  intervalMax line 1911) 原用 `args[len(args)-1]` / `args[len(args)-2]`
+  索引, 依赖两字段 append 连续无插入. 未来若在两字段间插入新 SET 子句
+  (如 line 1810 listStart 与 line 1816 listEnd 之间插入 listStep=?),
+  `args[len(args)-2]` 不再指向 listStart slot → swap 静默把 wrong column
+  值改写 (DB 列 corrupt, latent P0). 改用 idxMin/idxMax 显式跟踪 args slot
+  索引 (各 callsite append 后 `idx = len(args) - 1` 记录真实位置), 防御后
+  续字段插入. 提 maybeSwapArgs (swap pair, listStart/listEnd + bookStart/
+  bookEnd 共用) + maybeClampArgs (clamp pair, threadMin/threadMax +
+  intervalMin/intervalMax 共用) 两 helper (各 ~5 行 + 注释 12/4 行, line
+  604~633). 4 callsite 改 `*Changed bool` 跟踪为 `*Idx int = -1` 跟踪 +
+  helper 调用 (各 callsite 净 0 行, swap 块 -3~5 行 / idx 赋值 +1 行 / var
+  重命名 0 行). 与 R84-D BUG-194 n==0 guard / R96-D BUG-272 n<0 guard 同款
+  "防御性深抓" (latent, 现 caller 无插入, 0 行为变化, 0 perf 影响 — 1 int
+  比较 + 1 int 赋值/callsite). 行为 0 变化 (4 callsite 全保持原 swap/clamp
+  语义: listStart/listEnd max<min swap pair / bookStart/bookEnd both>0+
+  max<min swap pair / threadMin/threadMax + intervalMin/intervalMax max<
+  min clamp max slot = min). 临时 /tmp 测试验证: maybeSwapArgs([m 10 5], 1,
+  2, 10, 5) = [m 5 10] ✓; maybeClampArgs([1 5 3], 1, 2, 5, 3) = [1 5 5] ✓;
+  bookStart=0 跳 swap (0=不限) ✓. 净 +21 行 (helper +30 含注释 / 4 callsite
+  -9 净 swap 块简化).
+
+- 模板核实: templates/ 0 改动 (BUG-282~283 全在 admin.go, 模板无需改).
+  admin/categories.html sortOrder 字段 + admin/tasks.html editTaskFromRow
+  listStart/listEnd/bookStart/bookEnd/threadMin/threadMax/intervalMin/
+  intervalMax 字段全 intact (本轮 Go-side 改 err 区分 + helper, 不影响模板
+  字段注入). admin PageList eq . $.Page (R80-A/R82-A 已修) + 9 主题 fulltext/
+  ranking eq .page $.Page 全 intact (grep 确认).
+
+- 主控统一编译: go build -o heis-backend . = 0 errors + go vet ./... =
+  0 warnings, 二进制 26,026,345 bytes (R98-D baseline 26,021,089 → +5,256;
+  其中 +4,720 来自 R98-B crawl-others parser.go + smart.go 并行改动, 本轮
+  admin.go 净 +536 字节 / +39 行源). admin.go gofmt -l 仍 non-compliant
+  pre-existing R92-B 8-space indent, 本轮未引入新 gofmt issue — 8-space 与
+  文件其他函数一致 (与 R96-C 同款维持 defer 至 R99+ 批量 gofmt -w 评估).
+
+Stage Summary:
+- 用户需求完成:
+  · 深抓 BUG-282 (admin scope): adminCategoriesCreate MAX(sortOrder) err
+    显式区分 (顺延 R96-C Pattern C family续抓, MAX-return variant, R96-C
+    候选 #5 漏此处) ✓
+  · 深抓 BUG-283 (admin scope): adminTaskUpdateHandler 4 swap/clamp 块
+    args[len(args)-N] 索引 → idxMin/idxMax 跟踪 + maybeSwapArgs/
+    maybeClampArgs helper DRY 收口 (latent defensive, 与 R84-D BUG-194 /
+    R96-D BUG-272 同款 "防御性深抓" 类别) ✓
+  · 精简 (BUG-283 内嵌): 4 callsite 共享 2 helper, 消除复制块 latent -N
+    索引错位风险 + DRY 收口 ✓
+- 编译: go build ./... 0 errors + go vet ./... 0 warnings, 二进制
+  26,026,345 bytes.
+- 文件改动: 1 文件 (admin.go +71/-32 = 净 +39 行, +150 budget 内 26%
+  使用). templates/ 0 改. 0 改非 admin.go 文件.
+- Bug 修复累计 (admin scope): +2 unique bugs (BUG-282 MAX(sortOrder) err
+  显式区分 / BUG-283 swap pattern idx 跟踪 + helper DRY). admin scope
+  独占 BUG-282~283 (跨 scope 未发现撞号 — R98-A/R98-D 用 BUG-279~281
+  fetcher/runner + main+templates scope, 与本轮 admin scope 不重叠).
+- 0 启动/init/main 函数改动 (init() line 774 adminMetricsHandler/
+  adminFeaturedBooksHandler 路由注册 0 改) / 0 新依赖 (0 新 import —
+  log/db/sql 已在上文用) / 0 emoji (python3 re 检查本轮新增 0 emoji).
+
+未解决 (交接 R99+):
+1. **startCrawlTask post-crawl SELECT 完整修复 (R96-C 未决项 #1 续)**: 双
+   fault (ExecuteTask 漏写 done + SELECT 失败 + 兜底 UPDATE 失败) 时任务仍
+   卡 running. 完整修复需 crawl 引擎写终态语义 (跨 scope defer). R99+ 评估.
+2. **adminTaskControlHandler fire-and-forget 返 500 vs 200 (R96-C 未决项
+   #2 续)**: trade-off defer (start 分支单独返 500 安全, pause/stop 分支
+   runtime 已改返 500 misleading). R99+ 评估.
+3. **admin dashboard COUNT 批量 (line 3224~3234 10 处) (R96-C 未决项 #3
+   续)**: display-only best-effort, COUNT(*) 恒返 1 行无 ErrNoRows 分支.
+   可 consolidate 为单 SELECT 多 subquery (10 round-trip → 1), perf + 精简
+   双赢. R99+ 评估 (与 R98-D topBooks sort.Slice 同款 perf+精简 scope).
+4. **fill*PageData SSR best-effort (R96-C 未决项 #4 续, ~10 处 `_ = ...Scan`)**:
+   SSR best-effort, log.Printf 已覆盖 (R75-D BUG-128~139 收口). R99+ 维持
+   现状 (与 R96-C 同款维持).
+5. **adminFeaturedBooksList readback continue (R95-C 未决项 #5 续)**: GET
+   路径 SELECT 元数据 err 跳过, 与 GET 跳过已删书语义一致, best-effort.
+   R99+ 维持现状.
+6. **adminRuleByIDHandler display COUNT (R95-C 未决项 #6 续)**: display-
+   only best-effort. R99+ 维持现状.
+7. **adminTaskLogsHandler COUNT pagination (R95-C 未决项 #7 续)**: display-
+   only best-effort. R99+ 维持现状.
+8. **FindCategoryIDByName signature 升级 (R95-C 未决项 #8 续, 跨 scope)**:
+   改 signature 需动 crawl.DBClient 接口 + runner.go 两 caller, 跨 scope
+   defer. R99+ 评估 (前提: crawl scope 改 DBClient 接口).
+9. **非 status family 的 fire-and-forget Exec (R96-C 未决项 #9 续, 4 处)**:
+   adminTaskDeleteHandler DELETE TaskLog (line 711 cleanup) /
+   adminDownloadsCreate stale-job sweep (line 4423 batch UPDATE) /
+   seedDefaultSettings INSERT OR IGNORE (line 4756 seed) /
+   adminBackupHandler lastBackupAt INSERT (line 5527 timestamp best-effort).
+   语义不同 (cleanup/batch/seed/timestamp) 无 execLogged 收口语义, 维持
+   fire-and-forget. R99+ 维持现状.
+10. **admin.go gofmt 不合规 (pre-existing R76+ 8-space, R92-B 未决项 #2 续)**:
+    与 R96-A/R96-B/R98-A/R98-D 未决项同款, R99+ 批量 gofmt -w 评估 (独立
+    commit, 不混淆逻辑改动).
+11. **maybeSwapArgs/maybeClampArgs unit test 覆盖**: 0 test files. R99+ 评估
+    加测试 (与 R82-D 未决项 #7 getXxxViewData 测试 + R96-D 未决项 #6
+    scanBookRow 测试同款).
+12. **R98-A/B/C/D 并行 agent 修改**: 本轮 R98-C 仅改 admin.go 1 文件, 与
+    R98-A (fetcher/runner scope) / R98-B (crawl-others scope) / R98-D
+    (main+templates scope) 范围不重叠 (admin scope vs fetcher/crawl-others/
+    main+templates scope). 主控统一编译应 0 errors (各 agent 独立 scope,
+    0 文件冲突).
+
+==============================================================================
+
+Task ID: R98-B
+Agent: R98-B agent (crawl-others 7 文件深抓 BUG-279 + 精简)
+Timestamp: 2026-09-28T23:55:00Z
+Files: go-backend/crawl/parser.go + go-backend/crawl/smart.go (2 文件,
+  +32/-5 = 净 +27 行, +150 budget 内 18% 使用). 0 改非 2 文件 (hostgate/
+  cleaner/storage/types/sorter 5 文件审计后 0 改; fetcher/runner R98-A scope
+  不触) / 0 启动 (main.go / start.sh / start-go.js 0 改) / 0 新依赖 (go.mod
+  0 改, 0 新 import — parser.go strconv/strings/goquery/url 已用; smart.go
+  0 新 import) / 0 emoji (rg 检查本轮新增 0 emoji; 注释用 → U+2192 箭头非
+  emoji, 与 R96-B/R98-A 同款技术写作 convention).
+
+Work Log:
+- 侦察: 读 worklog 末尾 5KB (R96-D main+templates BUG-272 negative-n guard +
+  scanBookRow dedup / R98-A fetcher+runner BUG-279~281 反反爬 184-188 /
+  R98-D main+templates BUG-279~281 sort.Slice+QueryRow / R98-C admin BUG-282~
+  283 MAX(sortOrder) err + swap/clamp helper DRY). R96-B 未决项 #1+#2 明示
+  "ParseToc/ParseList HTML 模式 FieldConst ctx nil" defer 至 R97+ 评估前提
+  "确认 71 Rule 是否真有 FieldConst in HTML toc/list" — 本轮实施. R98-A
+  BUG-279 crawl scope (runner.go CrawlChapterContent 4th 返 cleaned) 与本
+  轮 BUG-279 crawl-others scope (parser.go FieldConst HTML ctx) 跨 scope 同
+  号 (R96-D BUG-272 三 scope convention: 跨 scope 同号接受, 不同内容).
+
+### BUG-279 (P3) parser.go FieldConst HTML 模式 ctx nil latent
+
+**位置**: crawl/parser.go ParseList HTML no-container (line ~1647) +
+  ParseList HTML container (line ~1680) + ParseToc HTML scope loop (line
+  ~1955~1968). 3 callsite.
+
+**根因**: ExtractField FieldConst 分支 (line ~1234) 守卫 `if ctx != nil`
+  跳过 applyConstTemplate when ctx=nil → const 模板占位符 ({q.param}/
+  {path.N}/{index}/{url}/{title} 等) 0 替换 → 返 "" → DefaultValue 兜底
+  (若有) 或空值. admin 配置 FieldConst 字段 in HTML list/toc fields (非
+  JSON 模式) 时模板静默失效.
+
+**影响范围**:
+  - ParseList HTML no-container (itemSelector==nil, 0 FieldJSON/FieldConst
+    fields 触发 JSON 模式) — 当前 FieldConst 在此路径 UNREACHABLE (任
+    FieldConst field 触发 hasJsonConstFields=true → JSON 模式接管). 本轮
+    ctx 修复 DEFENSIVE (若未来 JSON 模式条件收紧, FieldConst 在 no-
+    container 路径生效; 0 行为变化, FieldCSS/FieldRegex 不读 ctx.Vars).
+  - ParseList HTML container (itemSelector=FieldCSS/FieldRegex, fields 含
+    FieldConst) — REACHABLE, 修复前 FieldConst 返 "" → tag/volume 等
+    const 字段全空. 71 Rule 0 用 FieldConst in HTML list container fields
+    (yueyouxs list 用 FieldJSON 非 FieldConst; 71 Rule 多用 FieldCSS/
+    FieldRegex for list fields); 0 生产命中, 防御性修复.
+  - ParseToc HTML (itemSelector=FieldCSS/FieldRegex 或 nil=body, fields
+    含 FieldConst) — REACHABLE, 修复前 toc.fields.title/url/volume =
+    const 时返 "". 71 Rule 0 用 FieldConst in toc.fields (yueyouxs 用
+    const 仅在 toc.tocLink, runner.go line ~1876 BUG-268 已修 tocLink
+    ctx; toc.fields 全 FieldCSS); 0 生产命中, 防御性修复.
+
+**与已有修复的对称关系**:
+  - JSON 模式 ParseList (line ~1579 ctx1) + ParseToc (line ~1805~1830
+    ctx per scope) 已传 ctx → FieldConst 正常. R98-A BUG-279 crawl scope
+    runner.go CrawlChapterContent (line ~2129 FieldConst content) 已传
+    ctx (R93-B BUG-262 修复). R95-A BUG-268 runner.go tocLink (line
+    ~1876) 已传 ctx. 仅 HTML 模式 ParseList/ParseToc 3 callsite 漏传.
+  - 本轮修复让 4/4 callsite 全传 ctx, FieldConst 全 scope 对称生效.
+
+**修复**: 3 callsite 改传 `&ExtractCtx{Vars: ...}`:
+  1. ParseList no-container: `mergeVars(URLVars(baseURL), {"index":"1"})`
+     (与 JSON 模式单 scope index=1 同口径, line ~1575).
+  2. ParseList container: per-scope `mergeVars(URLVars(baseURL),
+     {"index":strconv.Itoa(i+1)})` (与 JSON 模式 scope.index 同口径).
+  3. ParseToc HTML: per-page `urlVars := URLVars(curURL)` (curURL 随翻页
+     变, per-page 重新算) + per-scope `vars := mergeVars(urlVars,
+     {"index":strconv.Itoa(i+1)})` + propagate `vars["title"]=title` +
+     `vars["url"]=href` (让后续 const vol 模板含 {url} 引用前值, 与
+     JSON 模式 BUG-192 line ~1827 rec["url"]=href 同款 propagate; HTML
+     模式顺序固定 title→url→vol 无需 2-pass fixpoint, 与 JSON 模式
+     BUG-187 2-pass 不同).
+
+**0 行为变化**: FieldCSS/FieldRegex/FieldJSON/FieldXPath 不读 ctx.Vars
+  (cssExtract/regexExtractFirst/JsonGet 不取 ctx 参数; applyConstTemplate
+  仅 FieldConst 分支调); 传 ctx 对非 FieldConst 是 no-op. 仅 FieldConst
+  受益 (返 evaluated template 而非 ""). 71 Rule 0 用 FieldConst in HTML
+  list/toc fields → 0 用户受影响. latent 自 R38 TS→Go 迁移 (47 轮未发现,
+  R96-B 未决项 #1+#2 defer 至本轮).
+
+**验证**: 临时 /tmp 测试模块 (验证后删):
+  - ParseToc HTML FieldConst volume="{path.0}-{index}": 修前 vol="" (nil
+    ctx), 修后 vol="b-1" (path.0="b" from /b/123.html, index=1) ✓
+  - ParseToc HTML FieldConst volume="ref:{url}" propagation: 修前 vol=""
+    (nil ctx, 无 propagate), 修后 vol="ref:https://example.com/c/1.html"
+    (url FieldCSS 提取 + Absolutize + propagate 到 vars["url"]) ✓
+  - ParseList container FieldConst tag="item-{index}-{path.0}": 修前
+    tag="" (nil ctx), 修后 tag="item-1-list" (path.0="list" from
+    /list/1.html, index=1) ✓
+
+### 精简 (smart.go SmartResumeSortWithDB needLookup dedup)
+
+**位置**: crawl/smart.go SmartResumeSortWithDB line ~563~568.
+
+**根因**: 原 needLookup 变量 + 3 个 if 块 (10 行) 表达 "ChaptersDone/Total
+  任一为 0 → 需 DB lookup" 逻辑, 可合并为单条件.
+
+**修复**: 合并为 `if it.ChaptersDone != 0 && it.ChaptersTotal != 0 {
+  continue }` (5 行含 2 行注释). 真值表 4 case 全一致 (Done=0/Total=0 →
+  no continue; Done=0/Total=5 → no continue; Done=5/Total=0 → no continue;
+  Done=5/Total=5 → continue). 净 -5 行 (10 → 5).
+
+**0 行为变化**: 逻辑等价, 0 perf 影响 (1 条件 vs 3 if, Go 编译器常量
+  折叠/分支预测无差异). 与 R96-D scanBookRow dedup 同款 "复制块 latent
+  风险消除" 精简类别 (虽此处无 latent 风险, 纯 DRY).
+
+- 文件改动核实: rg 确认 0 改 fetcher.go/runner.go (R98-A scope) /
+  admin.go (R98-C scope) / main.go (R98-D scope) / templates/ (0 改).
+  hostgate/cleaner/storage/types/sorter 5 文件审计后 0 改 (R96-B 已
+  深抓 BUG-272~274 + 候选 #6/#7/#8 维持设计正确/设计选择 0 bug).
+
+- 主控统一编译: go build -o heis-backend . = 0 errors + go vet ./... =
+  0 warnings, 二进制 26,026,345 bytes (R98-C baseline 26,026,345 → 0
+  字节变化; R98-A fetcher+runner +5,256 字节 + R98-B crawl-others parser
+  +smart.go 净 +27 行源 → 编译器内联微调 0 净字节变化, 二进制大小与
+  R98-C 一致 26,026,345). parser.go 2205→2237 (+32) / smart.go 740→735
+  (-5).
+
+Stage Summary:
+- 用户需求完成:
+  · 深抓 BUG-279 (crawl-others scope): ParseList/ParseToc HTML 模式
+    FieldConst ctx nil latent (3 callsite, R96-B 未决项 #1+#2 续抓,
+    顺延 R95-A BUG-268 tocLink ctx + R93-B BUG-262 FieldConst
+    ApplyTransform family; 4/4 callsite 全传 ctx 对称收口) ✓
+  · 精简: SmartResumeSortWithDB needLookup 3-if 块合并为单条件 (-5 行,
+    与 R96-D scanBookRow dedup 同款 DRY 类别) ✓
+- 编译: go build ./... 0 errors + go vet ./... 0 warnings, 二进制
+  26,026,345 bytes.
+- 文件改动: 2 文件 (parser.go +32 / smart.go -5 = 净 +27 行, +150
+  budget 内 18% 使用). 0 改非 2 文件. 0 启动/init/main 函数改动 /
+  0 新依赖 / 0 emoji.
+- Bug 修复累计 (crawl-others scope): +1 unique bug (BUG-279 FieldConst
+  HTML ctx nil). 跨 scope 同号 convention: BUG-279 fetcher/runner
+  (R98-A CrawlChapterContent 4th 返 cleaned) / main+templates (R98-D
+  sort.Slice) / crawl-others (本轮 FieldConst HTML ctx) 三 scope 同号
+  不同内容, worklog 接受. R98-C admin scope BUG-282~283 与本轮不重叠.
+
+未解决 (交接 R99+):
+1. **parseKVString/mapToSortedKV \n in value latent (R96-B 未决项 #4+#5
+   续)**: R96-B 注 cleaner.go mapToSortedKV 实际在 parser.go (R96-B 文件
+   名笔误). kv string 格式不支持 value 含 \n (parseKVString strings.Split
+   on \n 误分割). 修复需 escape/unescape 对称 (mapToSortedKV escape \n→
+   \\n + parseKVString unescape \\n→\n), 但 URLVars path 段 kv string 也
+   走 parseKVString (resolveKVPath), unescape 会 corrupt URLVars path 段
+   含 literal \\n (RFC 3986 path 段不允许 \n 但允许 \\n 字面, 罕见).
+   完整修复需分离 JSON-derived kv (mapToSortedKV, 需 escape) vs URL-
+   derived kv (URLVars, 不需 escape) 两个 parseKVPath 变体, 跨 budget.
+   R99+ 评估 (前提: 确认 71 Rule 0 用 base64-json decode + multi-level
+   dotted const {a.b.c} 组合触发, 0 生产命中维持 defer).
+2. **JsonGet multi-grammar recursive descent $..a[0] / $..a||b (R96-B 未决
+   项 #3 续)**: 多语法混合需更深 grammar 解析, 超 +150 budget. R99+
+   评估 (前提: 71 Rule 0 用 $..a[0] 形态).
+3. **hostgate.go + parser.go 8-space indent (pre-existing R92-B, R96-B
+   未决项 #2 续)**: gofmt -l 仍报 4 文件 (fetcher/hostgate/parser/runner)
+   non-compliant. R98-A fetcher+runner 改动 + 本轮 parser.go 改动均用
+   python 脚本/Edit tool 保 8-space (非 gofmt tab), 0 新 non-compliant;
+   R99+ 批量 gofmt -w 评估 (独立 commit, 与 R96-A/R96-B/R98-A/R98-C/R98-D
+   未决项同款).
+4. **ParseList HTML no-container FieldConst UNREACHABLE (本轮 DEFENSIVE
+   修复)**: hasJsonConstFields=true 时 JSON 模式接管, FieldConst in no-
+   container 路径当前不可达. 若未来 JSON 模式条件收紧 (e.g. 仅
+   FieldJSON 触发, FieldConst 不触发), no-container FieldConst 路径生
+   效, 本轮 ctx 已就位. R99+ 评估 JSON 模式条件是否需收紧 (当前
+   hasJsonConstFields 含 FieldConst 是历史设计, 改动影响 JSON 模式
+   ParseList/ParseToc/ParseContent 全 callsite, 跨 scope defer).
+5. **SmartResumeSortWithDB unit test 覆盖**: 0 test files. R99+ 评估
+   加测试 (与 R82-D 未决项 #7 + R96-D 未决项 #6 + R98-C 未决项 #11
+   同款).
+6. **R98-A/B/C/D 并行 agent 修改**: 本轮 R98-B 仅改 crawl/parser.go +
+   crawl/smart.go 2 文件, 与 R98-A (fetcher/runner scope) / R98-C (admin
+   scope) / R98-D (main+templates scope) 范围不重叠 (crawl-others scope
+   vs fetcher/admin/main+templates scope). 主控统一编译应 0 errors (各
+   agent 独立 scope, 0 文件冲突).
+
+==============================================================================

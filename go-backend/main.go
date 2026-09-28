@@ -3206,8 +3206,14 @@ func topBooks(books []map[string]interface{}, n int) []map[string]interface{} {
         // 按字数排序取前 N
         sorted := make([]map[string]interface{}, len(books))
         copy(sorted, books)
-        // 简单冒泡 (按 wordCount desc)
-        // R41-1B: 类型断言加 ok 检查防 panic (wordCount 缺失或类型异常时降级 0)
+        // R98-D BUG-280 (P4, main+templates scope, 顺延 R96-D BUG-272 negative-n
+        //   guard + scanBookRow dedup; R96-D 未决项 #2): 原 O(n²) 冒泡 (按 wordCount
+        //   desc). home view totalNeeded ~88-116 本 → ~7k-13k cmp/req, μs 级但 P4
+        //   perf 仍可降 ~10x. sort.Slice O(n log n) ~7k→~600 cmp (88 本) / 13k→
+        //   ~800 cmp (116 本). 类型断言加 ok 检查防 panic (wordCount 缺失或类型异
+        //   常时降级 0, R41-1B 同款). 0 行为变化 (sort 不稳定但 wordCount 唯一性
+        //   高 → 同序; 即便同 wordCount 顺序变也 0 SEO/视觉影响, 模板 range 渲
+        //   染无序号依赖). 精简 -7 行 (内层 for + 冒泡 if 块 -7).
         wcAt := func(b map[string]interface{}) int64 {
                 if v, ok := b["wordCount"]; ok {
                         switch x := v.(type) {
@@ -3221,13 +3227,9 @@ func topBooks(books []map[string]interface{}, n int) []map[string]interface{} {
                 }
                 return 0
         }
-        for i := 0; i < len(sorted); i++ {
-                for j := i + 1; j < len(sorted); j++ {
-                        if wcAt(sorted[j]) > wcAt(sorted[i]) {
-                                sorted[i], sorted[j] = sorted[j], sorted[i]
-                        }
-                }
-        }
+        sort.Slice(sorted, func(i, j int) bool {
+                return wcAt(sorted[i]) > wcAt(sorted[j])
+        })
         if n > len(sorted) {
                 n = len(sorted)
         }
@@ -3971,40 +3973,25 @@ func getReadViewData(chID string, site map[string]interface{}) (map[string]inter
         }
 
         // 3. prev / next (基于 idx)
+        // R98-D BUG-281 (P4, main+templates scope, 顺延 R96-D BUG-272 + R98-D
+        //   BUG-279/280; R96-D 未决项 #3): 原用 db.Query LIMIT 1 + Next() + Scan
+        //   + Err() + Close() ~7 行/章. 单行查询应用 db.QueryRow.Scan (返 *sql.
+        //   Row, 无 Next()/Close()/Err() 链). 行为 0 变化 (QueryRow 内部走同一 SQL
+        //   + sql.ErrNoRows 返 nil 仍走 prev/next=nil 路径, 与 homeHandler line
+        //   ~894 BUG-195 nil-guard 接管). 精简 -10 行 (prow/nrow Next+Err+Close
+        //   + 2 层 if err == nil 块消除). Scan err log 留痕 (R81-D BUG-179 同款).
         var prev, next map[string]interface{}
-        if prow, err := db.Query(`SELECT id, title FROM Chapter WHERE bookId=? AND idx<? ORDER BY idx DESC LIMIT 1`, bookID.String, idx); err == nil {
-                if prow.Next() {
-                        var pid, ptitle sql.NullString
-                        // R81-D BUG-179: per-row Scan err log (prev 仍为 nil, 模板
-                        //   {{if .Prev}} 跳过, 无空 prev section).
-                        if err := prow.Scan(&pid, &ptitle); err != nil {
-                                log.Printf("[R81-D] getReadViewData prev prow.Scan failed (chID=%s): %v - leaving prev nil", chID, err)
-                        } else {
-                                prev = map[string]interface{}{"id": pid.String, "title": ptitle.String}
-                        }
-                }
-                // R75-A 目标C4 (fill*-style crows.Err): prow 迭代后检查 prow.Err().
-                if rerr := prow.Err(); rerr != nil {
-                        log.Printf("[R75-A] getReadViewData prev prow.Err() (chID=%s): %v", chID, rerr)
-                }
-                prow.Close()
+        var pid, ptitle sql.NullString
+        if perr := db.QueryRow(`SELECT id, title FROM Chapter WHERE bookId=? AND idx<? ORDER BY idx DESC LIMIT 1`, bookID.String, idx).Scan(&pid, &ptitle); perr == nil {
+                prev = map[string]interface{}{"id": pid.String, "title": ptitle.String}
+        } else if perr != sql.ErrNoRows {
+                log.Printf("[R81-D] getReadViewData prev QueryRow.Scan failed (chID=%s): %v - leaving prev nil", chID, perr)
         }
-        if nrow, err := db.Query(`SELECT id, title FROM Chapter WHERE bookId=? AND idx>? ORDER BY idx ASC LIMIT 1`, bookID.String, idx); err == nil {
-                if nrow.Next() {
-                        var nid, ntitle sql.NullString
-                        // R81-D BUG-179: 同 prev, per-row Scan err log (next 仍为 nil,
-                        //   模板 {{if .Next}} 跳过).
-                        if err := nrow.Scan(&nid, &ntitle); err != nil {
-                                log.Printf("[R81-D] getReadViewData next nrow.Scan failed (chID=%s): %v - leaving next nil", chID, err)
-                        } else {
-                                next = map[string]interface{}{"id": nid.String, "title": ntitle.String}
-                        }
-                }
-                // R75-A 目标C4: nrow 迭代后检查 nrow.Err().
-                if rerr := nrow.Err(); rerr != nil {
-                        log.Printf("[R75-A] getReadViewData next nrow.Err() (chID=%s): %v", chID, rerr)
-                }
-                nrow.Close()
+        var nid, ntitle sql.NullString
+        if nerr := db.QueryRow(`SELECT id, title FROM Chapter WHERE bookId=? AND idx>? ORDER BY idx ASC LIMIT 1`, bookID.String, idx).Scan(&nid, &ntitle); nerr == nil {
+                next = map[string]interface{}{"id": nid.String, "title": ntitle.String}
+        } else if nerr != sql.ErrNoRows {
+                log.Printf("[R81-D] getReadViewData next QueryRow.Scan failed (chID=%s): %v - leaving next nil", chID, nerr)
         }
 
         return chapter, bookMap, prev, next, true
@@ -4188,8 +4175,16 @@ func getKeywordViewData(tag string, limit int) ([]map[string]interface{}, []stri
         if len(books) > 0 {
                 firstBookID, _ := books[0]["id"].(string)
                 if firstBookID != "" {
+                        // R98-D BUG-279 (P4, main+templates scope, 顺延 R96-D BUG-272
+                        //   negative-n guard + scanBookRow dedup; 本 scope 从 279 起避免与
+                        //   R96-A fetcher / R96-B crawl / R96-C admin / R97-* 跨 scope 撞号):
+                        //   原 `defer rows2.Close()` 在 if 块内 — defer 绑定到函数末 (非块末),
+                        //   rows2 持续到 getKeywordViewData 返才关. 函数 1ms 内即返故非真泄漏,
+                        //   但与 getReadViewData prev/next prow.Close() 即时关 pattern 不一致
+                        //   (R96-D 未决项 #1). 改: 显式 rows2.Close() 即时关 (块末, 与 prow/nrow
+                        //   同款). 0 行为变化 (rows 仍读完后才关), 0 perf 影响 (1 次 Close 调用
+                        //   时机提前 μs 级), 纯资源释放点对齐.
                         if rows2, err := db.Query(`SELECT DISTINCT tag FROM BookTag WHERE bookId=? AND tag!=? ORDER BY hits DESC LIMIT 12`, firstBookID, tag); err == nil {
-                                defer rows2.Close()
                                 for rows2.Next() {
                                         var t sql.NullString
                                         // R81-D BUG-179: per-row Scan err log + skip.
@@ -4205,6 +4200,7 @@ func getKeywordViewData(tag string, limit int) ([]map[string]interface{}, []stri
                                 if rerr := rows2.Err(); rerr != nil {
                                         log.Printf("[R75-A] getKeywordViewData relatedTags rows2.Err() (tag=%q bookID=%s): %v", tag, firstBookID, rerr)
                                 }
+                                rows2.Close()
                         }
                 }
         }
