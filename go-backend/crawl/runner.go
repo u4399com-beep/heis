@@ -1369,7 +1369,13 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) (retErr error) {
                                                         case "no-url":
                                                                 stats.Errors++
                                                                 logLevel = LogWarn
-                                                                logMsg = fmt.Sprintf("章节无有效链接, 跳过: %s", truncate(q.Title, 60))
+                                                                // R83-A BUG-191 (P3): BUG-177 (R80-B) 加 nil q 防御返 msg="ChapterTask nil",
+                                                                //   但 caller truncate(q.Title, 60) 在 q==nil 时 panic. 修复: msg 非空用 msg.
+                                                                if msg != "" {
+                                                                        logMsg = fmt.Sprintf("章节无有效链接, 跳过: %s", msg)
+                                                                } else {
+                                                                        logMsg = fmt.Sprintf("章节无有效链接, 跳过: %s", truncate(q.Title, 60))
+                                                                }
                                                                 shouldLog = true
                                                                 done++
                                                                 progress.ContentDone = done
@@ -1385,6 +1391,10 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) (retErr error) {
                                                                 logLevel = LogWarn
                                                                 logMsg = msg
                                                                 shouldLog = true
+                                                                // R83-A BUG-192 (P3): 原实现 hostgate case 无 done++ → 章节被 hostGate 拒后
+                                                                //   从 globalQueue 删除但不计入 done/errors → progress 不一致. 与 no-url 同口径.
+                                                                done++
+                                                                progress.ContentDone = done
                                                         case "other":
                                                                 // R42-1B: 检测 BudgetExceeded 并上抛任务级
                                                                 // (CrawlChapterContent 内部 CheckBudget 失败时返回 "other" + BudgetExceeded msg)
@@ -2117,12 +2127,11 @@ func CrawlChapterContent(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRun
         }
         // R70-B 目标A (用户需求 #3 干扰接入): 在所有清洗链 (CleanContentHtml /
         //   CleanContentHtmlWithTrafilatura / TryTrafilaturaFallback) 完成后,
-        //   落库前应用干扰句子插入. R69-B 在 cleaner.go 加了 CleanContentHtmlWithInterference
-        //   + InterfereConfig + InjectInterferenceSentences 公开 API 但 runner 未接入
-        //   (R69 交接 R70 #5). 本轮接入: cfg.Rule.Clean.Interfere (admin Rule JSON 配置)
-        //   + runner 运行时填 Seed = bookID + ":" + chapterID (chapterID 空时用 q.URL
-        //   兜底, 保同章节同干扰输出 → SEO 缓存友好). cleaner.ApplyInterferenceToCleaned
-        //   内部钳 interval 3-5 + 默认 4; Enabled=false 短路返原 cleaned 不破坏 71 Rule.
+        //   落库前应用干扰句子插入. R69-B 加 InterfereConfig + applyInterference 私有
+        //   helper + ApplyInterferenceToCleaned 公开 API (R82-C BUG-189 删 0-caller 13 轮
+        //   未 wire 的 CleanContentHtmlWithInterference + InjectInterferenceSentences 2
+        //   exported wrapper, cleaner.go). 接入: cfg.Rule.Clean.Interfere + Seed =
+        //   bookID + ":" + chapterID (空时用 q.URL). Enabled=false 短路返原 cleaned.
         if cfg.Rule.Clean.Interfere.Enabled {
                 chSeed := q.ChID
                 if chSeed == "" {

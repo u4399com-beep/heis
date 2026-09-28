@@ -561,16 +561,16 @@ func (g *HostGate) AdjustMinGap(host string, latencyMs int64) {
 	st.lastMinGapAdjustAt = now
 }
 
-// HostHealthForAdjust — 计算 host 当前健康度 (供 admin / runner 查询).
+// R83-B BUG-193 (P3) deadcode 删除: HostHealthForAdjust (hostgate.go line 564-576)
 //
-//	返 (baseLimit, limit, inFlight, minGapMs, lastConcurrencyAdjustAt, lastMinGapAdjustAt).
-//	不返 failStreak/successStreak (内部状态, 不暴露).
-func (g *HostGate) HostHealthForAdjust(host string) (baseLimit, limit, inFlight, minGapMs int, lastConcurrencyAdjustAt, lastMinGapAdjustAt int64) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	st, ok := g.gate[host]
-	if !ok {
-		return 0, 0, 0, 0, 0, 0
-	}
-	return st.baseLimit, st.limit, st.inFlight, st.minGapMs, st.lastConcurrencyAdjustAt, st.lastMinGapAdjustAt
-}
+//      R64-B 加的 "future wiring" exported accessor (供 admin / runner 查询 host 健康
+//      度), R64 → R83 = 19 轮未 wire (R65-R83), rg 全仓 0 caller (仅注释提及). 与
+//      R80-C storage TXT API (R38-1C → R80, 42 轮未 wire 删) 同款 precedent (越 16
+//      轮阈值 19 > 16). 删除后 AdjustConcurrency / AdjustMinGap (live caller 路径,
+//      fetcher.go 调) 不受影响. 未来若 admin 需 host 健康度查询, 重新加仅需 ~10
+//      行: 锁内读 st.baseLimit/limit/inFlight/minGapMs/lastConcurrencyAdjustAt/
+//      lastMinGapAdjustAt 返 6-tuple.
+//
+//      历史 BUG 修复痕迹 (随函数消亡):
+//        - 无内嵌 BUG 修复 (HostHealthForAdjust 是纯 accessor, 仅读 st 字段返
+//          6-tuple, 无逻辑分支, 无 BUG 修复历史).

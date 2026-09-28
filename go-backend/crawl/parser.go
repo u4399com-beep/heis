@@ -766,15 +766,11 @@ func tokenizeJsonPath(path string) []jsonToken {
 				tokens = append(tokens, jsonToken{kind: tokenIndex, index: n})
 				continue
 			}
-			// [k=v] 过滤
-			if eq := strings.Index(inner, "="); eq > 0 {
-				tokens = append(tokens, jsonToken{
-					kind: tokenFilter,
-					fk:   strings.TrimSpace(inner[:eq]),
-					fv:   strings.TrimSpace(inner[eq+1:]),
-				})
-				continue
-			}
+			// R83-B BUG-191 (P3) 修复: 原 [k=v] 检查在 [?(...)] JSONPath 过滤之前,
+			//   `?(@.field==value)` 含 `=` (在 `==` 处) → 命中 [k=v] 分支, fk=
+			//   "?(@.field" + fv="=value)" 被误解析为简单 k=v 过滤, JSONPath 路径
+			//   永不触发. 修复: [?(...)] 检查移到 [k=v] 之前 (JSONPath 过滤更特
+			//   殊, 应优先匹配; [k=v] 仅匹配无 `?(` 前缀的简单等值过滤).
 			// [?(@.field==value)] JSONPath 过滤
 			if strings.HasPrefix(inner, "?(") && strings.HasSuffix(inner, ")") {
 				expr := inner[2 : len(inner)-1]
@@ -790,6 +786,15 @@ func tokenizeJsonPath(path string) []jsonToken {
 					tokens = append(tokens, jsonToken{kind: tokenFilter, fk: m[1], fv: "__NE__" + m[2]})
 					continue
 				}
+			}
+			// [k=v] 过滤 (无 `?(` 前缀的简单等值, JSONPath 已上面接管)
+			if eq := strings.Index(inner, "="); eq > 0 {
+				tokens = append(tokens, jsonToken{
+					kind: tokenFilter,
+					fk:   strings.TrimSpace(inner[:eq]),
+					fv:   strings.TrimSpace(inner[eq+1:]),
+				})
+				continue
 			}
 			continue
 		}
@@ -949,7 +954,13 @@ func ExtractField(html string, doc *goquery.Document, scope *goquery.Selection, 
 			v = applyConstTemplate(rule.Expression, ctx.Vars)
 		}
 	default:
-		return ""
+		// R83-B BUG-190 (P3) 修复: 原 `return ""` 提前 return 跳过下方 multi-check
+		//   + ApplyTransform + DefaultValue 兜底. unknown Type + DefaultValue configured
+		//   → 返 "" 不返 DefaultValue. sanitizeFieldRule 已过滤 unknown Type (返 fr
+		//   with Type=""), ParseList/ParseToc/ParseContent 跳过 Type=="" 的 rule,
+		//   但 ExtractField 是 export, 外部 caller 可传 unknown Type. 改 v="" 让下方
+		//   DefaultValue 兜底生效 (与单值路径同口径, ApplyTransform 对 "" 是 no-op).
+		v = ""
 	}
 	// R80-C BUG-174 (P2) 修复: 原实现 `v = ApplyTransform(v, rule)` 在 multi-check
 	//   之前无条件跑, multi 路径下 ApplyTransform 结果被下方 `v = strings.Join
@@ -1224,11 +1235,22 @@ func ParseList(html, baseURL string, pageRule PageRule, urlFields []string) List
 				rec[name] = ExtractField("", nil, nil, rule, ctx1)
 			}
 			ctx2 := &ExtractCtx{Vars: mergeVars(varsBase, rec, map[string]string{"index": strconv.Itoa(scope.index)})}
-			for name, rule := range fields {
-				if rule.Type != FieldConst {
-					continue
+			// R83-B BUG-187 (P3) 修复: JSON 模式 const 字段相互引用 (e.g. name 字段
+			//   模板含 {url}, url 也是 const) 时, Go map 迭代非确定顺序 + ctx2 在循环
+			//   前固定 → 反向迭顺序时 const B 引用 {A} 拿不到 A (A 尚未提取). 罕见 case
+			//   (admin 配置多 const 字段互引用). 修复: 2 趟 fixpoint + 立即 propagate
+			//   到 ctx2.Vars. pass 1 设值 + propagate, pass 2 让反向迭顺序的 const
+			//   也能取到上趟值 (足够覆盖 1 级引用链, 多级链式引用仍可能漏但极罕见).
+			//   +5 行. 71 Rule 罕见配置 (const→const 引用), 0 用户报告.
+			for pass := 0; pass < 2; pass++ {
+				for name, rule := range fields {
+					if rule.Type != FieldConst {
+						continue
+					}
+					v := ExtractField("", nil, nil, rule, ctx2)
+					rec[name] = v
+					ctx2.Vars[name] = v // propagate for chained const → const references
 				}
-				rec[name] = ExtractField("", nil, nil, rule, ctx2)
 			}
 			for _, uf := range urlFields {
 				if rec[uf] != "" {
@@ -1446,6 +1468,13 @@ func ParseToc(ctx context.Context, firstURL, html string, pageRule PageRule, pag
 				} else {
 					href = rec["url"]
 				}
+				// R83-B BUG-192 (P3) 修复: const url 未 propagate 到 rec → 后续 const 字段
+				//   (e.g. vol 模板含 {url}) 的 Vars (mergeVars(varsBase, rec, ...)) 取
+				//   rec["url"] 为空 (first loop 跳过 const). 修复: 显式 rec["url"]=href
+				//   让 vol 等后续 const 字段引用 {url} 时拿到 const-extracted 值 (非 const
+				//   url 已由 first loop 设值, 此行 no-op). +1 行. 罕见 case (vol 是 const
+				//   + 模板含 {url} + url 也是 const), 0 用户报告.
+				rec["url"] = href
 				vol := rec["volume"]
 				if vol == "" && volRule.Type == FieldConst {
 					vol = ExtractField("", nil, nil, volRule, &ExtractCtx{Vars: mergeVars(varsBase, rec, map[string]string{"index": strconv.Itoa(index), "title": title})})

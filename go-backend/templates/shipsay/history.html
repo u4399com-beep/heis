@@ -1,0 +1,106 @@
+{{define "shipsay/history"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{if .Title}}{{.Title}}{{else}}{{if .Site.Title}}{{.Site.Title}}{{else}}{{.Site.Name}}{{end}}{{end}} - {{.Site.Name}}</title>
+<meta name="robots" content="noindex,follow">
+<meta name="keywords" content="{{.Site.Keywords}}">
+<meta name="description" content="{{.Site.Description}}">
+<link rel="stylesheet" href="https://cdn.staticfile.org/font-awesome/4.7.0/css/font-awesome.min.css">
+<link rel="stylesheet" href="/clone-css/shipsay.css">
+</head>
+<body>
+<header>
+<div class="container head">
+<a id="logo" href="/">
+<span>{{.Site.Name}}</span>
+<p>{{.Site.Domain}}</p>
+</a>
+<form name="t_frmsearch" action="/?view=search" method="get" onsubmit="return !!this.querySelector('[name=q]').value">
+<input type="hidden" name="view" value="search">
+<input id="searchkey" name="q" class="search_input" placeholder="搜索书名或作者" autocomplete="off">
+<input type="hidden" name="searchtype" value="all">
+<button type="submit" id="search_btn" title="搜索"><i class="fa fa-search fa-lg"></i></button>
+</form>
+<div class="header_right">
+<a id="home" href="/"><i class="fa fa-home fa-lg"></i><br>首页</a>
+<a href="/?view=category"><i class="fa fa-book fa-lg"></i><br>书库</a>
+<a href="/?view=fulltext"><i class="fa fa-coffee fa-lg"></i><br>完本</a>
+<a href="/?view=history"><i class="fa fa-history fa-lg"></i><br>足迹</a>
+</div>
+</div>
+</header>
+
+<div class="navigation">
+<nav class="container">
+<a href="{{.HomeURL}}">首页</a>
+{{range .NavCats}}
+<a href="{{.URL}}">{{.name}}</a>
+{{end}}
+<div id="user_panel"></div>
+</nav>
+</div>
+
+<div class="container">
+<div class="section">
+<p class="title"><i class="fa fa-history fa-lg">&nbsp;</i>{{if .Title}}{{.Title}}{{else}}浏览足迹{{end}}</p>
+{{if .HistoryBooks}}
+<ul class="flex">
+{{range .HistoryBooks}}
+<li>
+<div class="img_span">
+<a href="{{.URL}}">
+{{if .cover}}<img src="{{.cover}}" title="{{.name}}" width="120" height="160">{{end}}
+</a>
+<span>{{.category}} / {{if eq .status "completed"}}完结{{else}}连载{{end}}</span>
+</div>
+<div class="w100">
+<a href="{{.URL}}"><h2>{{.name}}</h2></a>
+<p class="indent">{{.intro}}</p>
+<div class="li_bottom">
+<a><i class="fa fa-user-circle-o">&nbsp;{{.author}}</i></a>
+<div>
+<em class="orange">{{wordCount .wordCount}}</em>
+</div>
+</div>
+</div>
+</li>
+{{end}}
+</ul>
+{{else}}
+<p style="padding:30px 0;text-align:center;color:#999;">暂无浏览足迹, 访问任意 <a href="/?view=category">书籍页</a> 后, 这里会列出最近浏览过的书.</p>
+<ul class="flex">
+{{range .Books}}
+<li>
+<div class="img_span">
+<a href="{{.URL}}">
+{{if .cover}}<img src="{{.cover}}" title="{{.name}}" width="120" height="160">{{end}}
+</a>
+<span>{{.category}} / {{if eq .status "completed"}}完结{{else}}连载{{end}}</span>
+</div>
+<div class="w100">
+<a href="{{.URL}}"><h2>{{.name}}</h2></a>
+<p class="indent">{{.intro}}</p>
+<div class="li_bottom">
+<a><i class="fa fa-user-circle-o">&nbsp;{{.author}}</i></a>
+<div>
+<em class="orange">{{wordCount .wordCount}}</em>
+</div>
+</div>
+</div>
+</li>
+{{end}}
+</ul>
+{{end}}
+</div>
+</div>
+
+<footer class="container">
+<p><i class="fa fa-flag"></i>&nbsp;<a href="{{.HomeURL}}">{{.Site.Name}}</a>&nbsp;书友最值得收藏的网络小说阅读网</p>
+<p>本站所有小说为完本转载作品，所有内容版权归版权方或原作者所有。</p>
+{{if .WheelLinks}}<p>随机推荐：{{range .WheelLinks}}{{if eq .Type "book_intra"}}<a href="{{.URL}}" target="_blank" rel="nofollow">{{.Name}}</a> {{end}}{{end}}{{range .WheelLinks}}{{if eq .Type "home_wheel"}}<a href="{{.URL}}" target="_blank" rel="nofollow">{{.Name}}</a> {{end}}{{end}}{{range .WheelLinks}}{{if eq .Type "book_wheel"}}<a href="{{.URL}}" target="_blank" rel="nofollow">{{.Name}}</a> {{end}}{{end}}</p>{{end}}
+</footer>
+
+</body>
+</html>{{end}}

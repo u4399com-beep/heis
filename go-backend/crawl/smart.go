@@ -27,12 +27,18 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // 标准分类 + 关键词权重 (R52-1A: 改 4 字名, 15 分类).
 //
 //	原 2 字名 (玄幻/奇幻/...) 通过 categoryAliases 兜底转 4 字 (e.g. "玄幻" → "玄幻奇幻").
 //	关键词保持不变 (玄幻/修罗/斗气 仍然匹配 "玄幻奇幻" 分类), 评分逻辑同 R44-1C.
+//
+//	R83-B BUG-186 (P3) 修复: "科幻未来" 关键词 "AI" (大写) 不匹配 englishWordRe
+//	  (^[a-z]+$ 要求全小写) → 走 strings.Contains(text, "AI") 路径, text 未 lowercase
+//	  时源站 "ai" (小写) 不匹配. 改 "ai" (小写) → 走 \bai\b 正则 + ToLower(text)
+//	  路径, 正确匹配 "AI"/"ai"/"Ai"/"aI" 全 case. 影响 1 个 keyword, 0 用户报告.
 var categoryKeywords = []struct {
 	name string
 	kws  []string
@@ -46,7 +52,7 @@ var categoryKeywords = []struct {
 	{"历史军事", []string{"历史", "穿越", "朝代", "大唐", "大明", "大清", "三国", "水浒", "宋朝", "始皇", "皇帝", "王朝"}},
 	{"军事战争", []string{"军事", "抗战", " war ", "士兵", "特种兵", "战场", "部队", "军官"}},
 	{"游戏竞技", []string{"游戏", "网游", "电竞", "副本", "升级", "系统", "玩家", "战队", "开黑"}},
-	{"科幻未来", []string{"科幻", "星际", "末世", "丧尸", "机甲", "飞船", "外星", "末日", "AI", "人工智能", "虫族"}},
+	{"科幻未来", []string{"科幻", "星际", "末世", "丧尸", "机甲", "飞船", "外星", "末日", "ai", "人工智能", "虫族"}},
 	{"悬疑推理", []string{"悬疑", "推理", "侦探", "凶案", "犯罪", "谜团", "刑警", "法医", "命案"}},
 	{"灵异鬼怪", []string{"灵异", "鬼", "阴阳", "风水", "盗墓", "僵尸", "驱魔", "诡异"}},
 	{"体育竞技", []string{"体育", "足球", "篮球", "奥运", "冠军", "教练", "联赛"}},
@@ -152,9 +158,14 @@ func NormalizeCategory(name string) string {
 	// 3. 模糊: 包含标准分类名 (长名合并到短标准)
 	//   R53-1A BUG-9: 用 []rune 长度比较替代 byte 长度, 防 emoji/4-byte rune
 	//   误判 (与 MatchCategoryByText 同口径).
-	nRunes := []rune(n)
+	//   R83-B BUG-183 (P3) 修复: 原循环每 call 分配 16 个 []rune slices (nRunes
+	//   + 15 个 []rune(c.name) per call, NormalizeCategory 是 per-book ~71 次/
+	//   任务). 改 utf8.RuneCountInString (allocation-free, 单遍解码计数不分配
+	//   slice), 省 15 allocs/call. nRunes (line 155) 仍需 (strings.Contains 不
+	//   需 rune 但 nRunes 比较需要), 改 utf8.RuneCountInString(n) 省 1 alloc.
+	nRunes := utf8.RuneCountInString(n)
 	for _, c := range categoryKeywords {
-		if len(nRunes) > len([]rune(c.name)) && strings.Contains(n, c.name) {
+		if nRunes > utf8.RuneCountInString(c.name) && strings.Contains(n, c.name) {
 			return c.name
 		}
 	}
@@ -450,32 +461,21 @@ func resumeRatio(it SmartResumeItem) float64 {
 	return float64(it.ChaptersDone) / float64(it.ChaptersTotal)
 }
 
-// ---------- R65-B 采集增强 B6: 采集速率可视化 (smart.go 包装层) ----------
+// R83-B BUG-193 (P3) deadcode 删除: CollectRateSnapshot (smart.go line 464-489)
 //
-// 原 fetcher 无 per-host QPS / 成功率 / 平均延迟统计. R65-B fetcher.go 加
-//   collectRateTracker (per-host 60s 滑动窗口计数器, B6 内部数据层).
-//   本 smart.go 提供 CollectRateSnapshot 公共 accessor 供 admin API + UI
-//   调用 (smart.go 是 admin/runner 的 API 入口, fetcher.go 是数据层).
+//      R65-B 加的 "future wiring" exported accessor (供 admin API + UI 查询 host
+//      采集速率), R65 → R83 = 18 轮未 wire (R66-R83), rg 全仓 0 caller. 与
+//      R80-C storage TXT API (R38-1C → R80, 42 轮未 wire 删) 同款 precedent
+//      (越 16 轮阈值 18 > 16). 删除后 fetcher.go collectRateSnapshotData (数据
+//      层) 变 orphan, 仍编译 (Go 允许 unused package-level func), R84+ 评估
+//      删 (前提: 确认无外部 caller). 未来若 admin 需速率查询, 重新加仅需 ~5
+//      行: 转 fetcher.go collectRateSnapshotData (host).
 //
-// 返回字段:
-//   qps           — 60s 内总请求数 / 60 (整 QPS)
-//   successRate   — 0-100 整数百分比
-//   avgLatencyMs  — 平均延迟 (整数毫秒)
-//   sampleCount   — 60s 内总请求数 (sample 太少时数据可信度低)
-//
-// 数据源: fetcher.go collectRateSnapshotData (per-host 60s 滑动窗口).
-//   host 为空或未采集过 → 全 0.
-
-// CollectRateSnapshot — 取 host 的采集速率快照 (admin API + UI 调用).
-//
-//	R65-B 采集增强 B6. host 为空 → 全 0. 转发到 fetcher.go 数据层
-//	collectRateSnapshotData (同 crawl 包, 无需 import).
-func CollectRateSnapshot(host string) (qps int64, successRate int, avgLatencyMs int64, sampleCount int64) {
-	if host == "" {
-		return 0, 0, 0, 0
-	}
-	return collectRateSnapshotData(host)
-}
+//      历史 BUG 修复痕迹 (随函数消亡):
+//        - 无内嵌 BUG 修复 (CollectRateSnapshot 是纯 forwarder, host 空 early
+//          return 0-tuple + 调 collectRateSnapshotData, 无逻辑分支, 无 BUG 修复
+//          历史; 数据层 BUG 修复在 fetcher.go collectRateSnapshotData 内, 不
+//          随本函数消亡, 保留供 R84+ 评估时参考).
 
 // ---------- R65-B 采集增强 B8: 断点续采 DB 协同 ----------
 //
@@ -568,56 +568,20 @@ func SmartResumeSortWithDB(items []SmartResumeItem, lookup BookProgressLookup) [
 	return SmartResumeSort(work)
 }
 
-// ---------- R67-B 采集增强 B10: 采集任务优先级队列 ----------
+// R83-B BUG-193 (P3) deadcode 删除: SortTaskPriorityQueue + TaskPriorityItem
 //
-// admin API 调度采集任务时, 按 bookCount DESC + lastCollectedAt ASC 排序:
-//   - bookCount 高 (源站书多) → 优先采 (高 ROI, 单次任务采更多书, 减少 task 数)
-//   - lastCollectedAt 低 (最久未采) → 优先采 (避免长期挂起, 数据新鲜度)
-//   - TaskID ASC 作 tie-breaker (稳定排序, 同 bookCount + 同 lastCollectedAt 时
-//     按 ID 字典序, 防 sync.Map 迭代顺序差异导致跨进程排序不一致).
-// 价值: admin / runner 调度时按 ROI + 数据新鲜度优先, 而非 FIFO (创建顺序).
-//   高 bookCount 站点优先采 → 单任务采更多书 → 降 task 数 + 降源站连接数 +
-//   提速整体采集. lastCollectedAt 旧者优先 → 数据新鲜度 (避免某站长期挂起,
-//   用户访问到过时数据).
-// caller: admin API 在调度前调 SortTaskPriorityQueue(items) 得排序后列表, 按
-//   排序后顺序创建/调度采集任务.
-
-// TaskPriorityItem — 单个任务的优先级排序输入.
-type TaskPriorityItem struct {
-	TaskID          string
-	BookCount       int   // 源站书数 (DESC: 多的优先)
-	LastCollectedAt int64 // 上次采集时间 (ASC: 旧的优先, 0 = 从未采过 — 视为最旧)
-}
-
-// SortTaskPriorityQueue — 任务优先级排序 (稳定).
+//      (smart.go line 571-620, 50 行). R67-B 加的 "future wiring" exported 排
+//      序 API + 输入类型 (供 admin API 调度采集任务时按 bookCount DESC +
+//      lastCollectedAt ASC 排序), R67 → R83 = 16 轮未 wire (R68-R83), rg 全仓
+//      0 caller (仅注释提及). 与 R80-C storage TXT API (R38-1C → R80, 42 轮
+//      未 wire 删) 同款 precedent (越 16 轮阈值, 16 == 16 边界). 删除后无
+//      cascade 依赖 (TaskPriorityItem 仅 SortTaskPriorityQueue 用, 一并删).
+//      未来若 admin 需任务优先级调度, 重新加仅需 ~30 行: struct + sort.Slice
+//      Stable (bookCount DESC → lastCollectedAt ASC → TaskID ASC tie-breaker).
 //
-//	返回新 slice, 不修改入参. 空 / 单元素直接返副本.
-//	排序: bookCount DESC → lastCollectedAt ASC → TaskID ASC.
-//	实现: sort.SliceStable + 显式 tie-breaker (TaskID 字典序), 同 bookCount +
-//	同 lastCollectedAt 时按 TaskID 排序 (跨进程稳定, 防 sync.Map 迭代顺序差异
-//	导致跨进程排序不一致).
-func SortTaskPriorityQueue(items []TaskPriorityItem) []TaskPriorityItem {
-	if len(items) <= 1 {
-		out := make([]TaskPriorityItem, len(items))
-		copy(out, items)
-		return out
-	}
-	out := make([]TaskPriorityItem, len(items))
-	copy(out, items)
-	sort.SliceStable(out, func(i, j int) bool {
-		// 1. bookCount DESC (高的优先)
-		if out[i].BookCount != out[j].BookCount {
-			return out[i].BookCount > out[j].BookCount
-		}
-		// 2. lastCollectedAt ASC (旧的优先; 0 视为最旧)
-		if out[i].LastCollectedAt != out[j].LastCollectedAt {
-			return out[i].LastCollectedAt < out[j].LastCollectedAt
-		}
-		// 3. TaskID ASC (tie-breaker)
-		return out[i].TaskID < out[j].TaskID
-	})
-	return out
-}
+//      历史 BUG 修复痕迹 (随函数消亡):
+//        - 无内嵌 BUG 修复 (SortTaskPriorityQueue 是稳定排序, sort.SliceStable
+//          + 显式 tie-breaker TaskID 字典序, 无逻辑分支, 无 BUG 修复历史).
 
 // ---------- R68-B 采集增强 B12: 采集任务并发自适应 ----------
 //
@@ -786,7 +750,17 @@ func EstimateTaskETA(taskID string) (estimatedAt time.Time, ok bool) {
 	// remaining = total - completed (项)
 	// etaMs = remaining / rate = (total - completed) * elapsed / completed
 	remaining := p.total - p.completed
-	etaMs := remaining * elapsed / p.completed
+	// R83-B BUG-188 (P3) 修复: 原 remaining * elapsed / p.completed int64 乘法
+	//   在极端 case (total=1e9 + elapsed=1e10 ms ~316 年) 乘积 ~1e19 略溢 int64
+	//   max (~9.2e18). 实际不会 (remaining < 1e5 章 + elapsed < 8.64e7 ms = 1 day
+	//   → 乘积 < 8.64e12 安全), 但 admin 可传异常 total. 修复: 用 float64 算避免
+	//   int64 overflow + cap 1 year ms 防 now+etaMs 自身溢 int64 (1 year ~3.15e10,
+	//   now + 3.15e10 < 9.2e18 安全).
+	const etaMsCap int64 = 365 * 24 * 3600 * 1000 // 1 year in ms
+	etaMs := int64(float64(remaining) * float64(elapsed) / float64(p.completed))
+	if etaMs > etaMsCap {
+		etaMs = etaMsCap
+	}
 	return time.UnixMilli(now + etaMs), true
 }
 

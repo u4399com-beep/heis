@@ -3184,6 +3184,44 @@ func buildHeaders(cfg FetchConfig, ua, rawURL, referer string) http.Header {
                 } else {
                         h.Set("Sec-Ch-Ua-Bitness", `"64"`)
                 }
+                // R83-A 反反爬第 114 项: Device-Memory (low-entropy client hint).
+                //   Chrome 顶层文档导航发 (num ∈ {0.25,0.5,1,2,4,8}). 修复: mobile → 4;
+                //   desktop → 8. 用户自定义优先 (h.Get=="" 跳过).
+                if h.Get("Device-Memory") == "" {
+                        if IsMobileUA(ua) {
+                                h.Set("Device-Memory", "4")
+                        } else {
+                                h.Set("Device-Memory", "8")
+                        }
+                }
+                // R83-A 反反爬第 115 项: Sec-Ch-Ua-Arch (high-entropy client hint).
+                //   Chrome 116+ Accept-CH opt-in 时发 (x86 / arm). Intel x86_64 芯片发
+                //   "x86" (非 x86_64), Apple Silicon (M1/M2/M3) 发 "arm". 修复:
+                //   Win64/WOW64/x86_64/Intel Mac OS X/Linux → "x86";
+                //   Macintosh+ARM/Apple/M1/M2/M3 → "arm"; Android 不发 (Chrome mobile
+                //   不发本头). 非 Chrome UA 不发 (外层 if !IsFirefoxUA && !IsSafariUA).
+                if h.Get("Sec-Ch-Ua-Arch") == "" && !IsMobileUA(ua) {
+                        if strings.Contains(ua, "Win64") || strings.Contains(ua, "WOW64") ||
+                                strings.Contains(ua, "x86_64") || strings.Contains(ua, "Intel Mac OS X") ||
+                                strings.Contains(ua, "Linux") {
+                                h.Set("Sec-Ch-Ua-Arch", `"x86"`)
+                        } else if strings.Contains(ua, "Macintosh") &&
+                                (strings.Contains(ua, "ARM") || strings.Contains(ua, "Apple") ||
+                                        strings.Contains(ua, "M1") || strings.Contains(ua, "M2") || strings.Contains(ua, "M3")) {
+                                h.Set("Sec-Ch-Ua-Arch", `"arm"`)
+                        }
+                }
+                // R83-A 反反爬第 116 项: Sec-Ch-Ua-Form-Factors (Chrome 116+ high-entropy).
+                //   Chrome 116+ Accept-CH opt-in 时发 "<form>" (Desktop / Mobile /
+                //   Tablet / Automotive 等). 修复: mobile → "Mobile"; desktop → "Desktop".
+                //   平板识别省略 (UA 不含可靠 tablet 标识, iPad 走 Safari 分支已跳过).
+                if h.Get("Sec-Ch-Ua-Form-Factors") == "" {
+                        if IsMobileUA(ua) {
+                                h.Set("Sec-Ch-Ua-Form-Factors", `"Mobile"`)
+                        } else {
+                                h.Set("Sec-Ch-Ua-Form-Factors", `"Desktop"`)
+                        }
+                }
         }
 
         // Referer 优先级: cfg.RefererURL > per-host 记忆 > 目标站 origin
@@ -3856,6 +3894,18 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 //   (现代安全配置源站, 可触发更严策略); 不在 Top 50 Bot Score, 观测用.
                 if oi := resp.Header.Get("Origin-Isolation"); oi != "" {
                         recordOriginIsolation(originHost(rawURL), oi)
+                }
+
+                // R83-A 反反爬第 117 项: Via 响应头观测 (per-host). RFC 7230 §5.7.1:
+                //   中间代理 (CDN / 反向代理) 追加 Via 头记 hop chain.
+                if via := resp.Header.Get("Via"); via != "" {
+                        recordVia(originHost(rawURL), via)
+                }
+
+                // R83-A 反反爬第 118 项: Cache-Status 响应头观测 (RFC 9213, per-host).
+                //   源站 / CDN 发 Cache-Status 描述每跳缓存命中状态.
+                if cs := resp.Header.Get("Cache-Status"); cs != "" {
+                        recordCacheStatus(originHost(rawURL), cs)
                 }
 
                 // Set-Cookie 处理 (autoCookie)
@@ -4592,6 +4642,21 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 // R75-B 反反爬第 90 项: 记录 X-Frame-Options 响应头 (与 fetchHttp 同款).
                 if xfo := extractHeaderFromCurlStdout(headers, "X-Frame-Options"); xfo != "" {
                         recordFrameOptions(domain, xfo)
+                }
+                // R83-A BUG-193 (P3): curl 路径原仅 recordFrameOptions, 漏调 2 个 observer
+                //   (fetchHttp 路径有). 修复: 与 fetchHttp 同款补 4 个 (2 缺失 + 2 新增 117/118).
+                if xcto := extractHeaderFromCurlStdout(headers, "X-Content-Type-Options"); xcto != "" {
+                        recordContentTypeOptions(domain, xcto)
+                }
+                if oi := extractHeaderFromCurlStdout(headers, "Origin-Isolation"); oi != "" {
+                        recordOriginIsolation(domain, oi)
+                }
+                // R83-A 第 117/118 项: Via + Cache-Status (与 fetchHttp 同款).
+                if via := extractHeaderFromCurlStdout(headers, "Via"); via != "" {
+                        recordVia(domain, via)
+                }
+                if cs := extractHeaderFromCurlStdout(headers, "Cache-Status"); cs != "" {
+                        recordCacheStatus(domain, cs)
                 }
                 if status >= 300 {
                         // R66-C BUG-52 (P3): curl 4xx/5xx 也记 latency + fail (与 fetchHttp
@@ -9476,6 +9541,136 @@ func ClearHostOriginIsolation(host string) {
                 return
         }
         hostOriginIsolationMap.Delete(strings.ToLower(host))
+}
+
+// ---------- R83-A 反反爬第 117 项: Via 响应头观测 ----------
+//
+// 与 R75-B 第 90 项 X-Frame-Options 同款响应头观测 tracker. RFC 7230 §5.7.1:
+//   中间代理 (CDN / 反向代理) 追加 Via 头记 hop chain. 诚实留痕: X-Cache
+//   vendor-specific, R84+ 评估. CDN-Cache 由 RFC 9213 (第 118 项) 事实标准化.
+
+// hostViaEntry — per-host Via 观测条目 (R83-A 第 117 项). 与 hostFrameOptionsEntry 同款.
+type hostViaEntry struct {
+        viaValue    string
+        detectedAt int64 // UnixMilli
+}
+
+// hostViaMap — host string -> *hostViaEntry (R83-A 第 117 项).
+var hostViaMap sync.Map
+
+// hostViaSweepCounter — sweep 触发累加 (R83-A 第 117 项).
+var hostViaSweepCounter atomic.Int64
+
+// HostViaSweepTTLms — per-host Via 条目 7 天 TTL (与 HostFrameOptionsSweepTTLms 同口径).
+const HostViaSweepTTLms = 7 * 24 * 60 * 60 * 1000
+
+// recordVia — 记录 host 的 Via 响应头 (R83-A 第 117 项). 与 recordFrameOptions 同款.
+func recordVia(host, viaHeader string) {
+        if host == "" {
+                return
+        }
+        e := &hostViaEntry{
+                viaValue:    viaHeader,
+                detectedAt: time.Now().UnixMilli(),
+        }
+        hostViaMap.Store(strings.ToLower(host), e)
+        if hostViaSweepCounter.Add(1)%1000 == 0 {
+                now := time.Now().UnixMilli()
+                hostViaMap.Range(func(k, v any) bool {
+                        ent := v.(*hostViaEntry)
+                        if now-ent.detectedAt > HostViaSweepTTLms {
+                                hostViaMap.CompareAndDelete(k, ent)
+                        }
+                        return true
+                })
+        }
+}
+
+// HostViaSnapshot — admin / metrics 查询用: 返回 per-host Via 状态.
+func HostViaSnapshot() map[string]map[string]string {
+        out := map[string]map[string]string{}
+        hostViaMap.Range(func(k, v any) bool {
+                e := v.(*hostViaEntry)
+                out[k.(string)] = map[string]string{
+                        "viaValue":    e.viaValue,
+                        "detectedAt": fmt.Sprintf("%d", e.detectedAt),
+                }
+                return true
+        })
+        return out
+}
+
+// ClearHostVia — 清除 host 的 Via 观测 (失败排查 / 测试用).
+func ClearHostVia(host string) {
+        if host == "" {
+                return
+        }
+        hostViaMap.Delete(strings.ToLower(host))
+}
+
+// ---------- R83-A 反反爬第 118 项: Cache-Status 响应头观测 (RFC 9213) ----------
+//
+// 与第 117 项 Via 同款响应头观测 tracker. RFC 9213: 源站 / CDN 发 Cache-Status
+//   描述每跳缓存命中状态. 与 Via 互补: Via 记代理链 (静态), Cache-Status
+//   记缓存命中 (动态). Store 最近一次观测值 (不累计).
+
+// hostCacheStatusEntry — per-host Cache-Status 观测条目 (R83-A 第 118 项). 与 hostViaEntry 同款.
+type hostCacheStatusEntry struct {
+        cacheStatusValue string
+        detectedAt       int64 // UnixMilli
+}
+
+// hostCacheStatusMap — host string -> *hostCacheStatusEntry (R83-A 第 118 项).
+var hostCacheStatusMap sync.Map
+
+// hostCacheStatusSweepCounter — sweep 触发累加 (R83-A 第 118 项).
+var hostCacheStatusSweepCounter atomic.Int64
+
+// HostCacheStatusSweepTTLms — per-host Cache-Status 条目 7 天 TTL (与 HostViaSweepTTLms 同口径).
+const HostCacheStatusSweepTTLms = 7 * 24 * 60 * 60 * 1000
+
+// recordCacheStatus — 记录 host 的 Cache-Status 响应头 (R83-A 第 118 项). 与 recordVia 同款.
+func recordCacheStatus(host, csHeader string) {
+        if host == "" {
+                return
+        }
+        e := &hostCacheStatusEntry{
+                cacheStatusValue: csHeader,
+                detectedAt:       time.Now().UnixMilli(),
+        }
+        hostCacheStatusMap.Store(strings.ToLower(host), e)
+        if hostCacheStatusSweepCounter.Add(1)%1000 == 0 {
+                now := time.Now().UnixMilli()
+                hostCacheStatusMap.Range(func(k, v any) bool {
+                        ent := v.(*hostCacheStatusEntry)
+                        if now-ent.detectedAt > HostCacheStatusSweepTTLms {
+                                hostCacheStatusMap.CompareAndDelete(k, ent)
+                        }
+                        return true
+                })
+        }
+}
+
+// HostCacheStatusSnapshot — admin / metrics 查询用: 返回 per-host Cache-Status.
+func HostCacheStatusSnapshot() map[string]map[string]string {
+        out := map[string]map[string]string{}
+        hostCacheStatusMap.Range(func(k, v any) bool {
+                e := v.(*hostCacheStatusEntry)
+                out[k.(string)] = map[string]string{
+                        "cacheStatusValue": e.cacheStatusValue,
+                        "detectedAt":       fmt.Sprintf("%d", e.detectedAt),
+                }
+                return true
+        })
+        return out
+}
+
+// ClearHostCacheStatus — 清除 host 的 Cache-Status 观测 (失败排查 / 测试用).
+func ClearHostCacheStatus(host string) {
+        if host == "" {
+                return
+        }
+        hostCacheStatusMap.Delete(strings.ToLower(host))
 }
 
 // ---------- R77-B 反反爬第 95 项: Origin 带路径 自适应 ----------

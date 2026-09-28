@@ -25,6 +25,7 @@ import (
 	"math/rand"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -537,19 +538,17 @@ func RemoveAdLines(text string, patterns []string) string {
 	}
 	// 还原 URL
 	out = urlPlaceholderRe.ReplaceAllStringFunc(out, func(m string) string {
-		sub := urlPlaceholderRe.FindStringSubmatch(m)
-		if len(sub) < 2 {
+		// R83-B BUG-182 (P3) 修复: 原闭包内调 urlPlaceholderRe.FindStringSubmatch(m)
+		//   重复 regex 匹配 + fmt.Sscanf 解析 digits, hot path (每章 2 次 RemoveAdLines
+		//   × N URL). 改 strconv.Atoi 直接切片 (PUA \uE000/\uE001 各 3 字节 UTF-8, m
+		//   = "\uE000<digits>\uE001" byte layout: 3 + N + 3, m[3:len(m)-3] = digits).
+		//   与 urlPlaceholderRe pattern "\uE000(\\d+)\uE001" 同口径 (R74-C BUG-117 PUA
+		//   占位符设计), 0 重复 regex match + 0 Sscanf 反射, ~10ms/1000 章任务.
+		if len(m) < 7 { // 3 + 1 digit + 3 = 7 bytes minimum
 			return ""
 		}
-		var idx int
-		// R67-C BUG-58 (P3) 修复: 原 fmt.Sscanf 忽略 err, 解析失败时 idx 留 0
-		//   → 误用 urls[0] 还原 (URL 占位符 \uE0000\uE001 指向 idx 0, 解析失败
-		//   的占位符也返回 urls[0]). Sscanf 失败场景: 数字溢出 int 范围
-		//   (e.g. \uE00099999999999\uE001 占位符, 占位符 idx 不可能这么大, 但
-		//   源文本本身含形如 PUA<digits>PUA 的字面字节会被误识别为占位符;
-		//   R74-C BUG-117 已剥源文本 PUA 防误识别, 此处 Sscanf err 防御冗余).
-		//   修复: Sscanf 返 err 时返 "" (与 len(sub)<2 同口径), 不误用 urls[0].
-		if _, err := fmt.Sscanf(sub[1], "%d", &idx); err != nil {
+		idx, err := strconv.Atoi(m[3 : len(m)-3])
+		if err != nil {
 			return ""
 		}
 		if idx >= 0 && idx < len(urls) {

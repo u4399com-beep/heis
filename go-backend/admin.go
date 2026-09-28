@@ -2054,6 +2054,13 @@ func adminRulesAudit(w http.ResponseWriter, r *http.Request) {
                 Missing         []string        `json:"missing"`
                 SourceReachable bool            `json:"sourceReachable"`
                 FetchTestResult string          `json:"fetchTestResult"`
+                // R83-C R82 交接 #8: 暴露完整 FetchTestSample (结构化) 供前端展示 BookURL/
+                //   ContentSnippet 等. ContentSnippet 当前是 runner.go FetchTestSampleBook
+                //   占位 "<已采>" (R82-B 避免 2 次请求简化, ok=true 即证明 content 已采).
+                //   完整化需 runner.go CrawlChapterContent 改返 cleaned (R83+ runner.go 范围,
+                //   非 admin.go). 本字段先 wire 好结构, runner.go 后续返真实 snippet 时前端
+                //   零改即可展示. omitempty: full=false 或 fetchTest 未跑时省略.
+                FetchTest       *crawl.FetchTestSample `json:"fetchTest,omitempty"`
         }
 
         out := make([]auditResult, 0, len(collected))
@@ -2063,9 +2070,17 @@ func adminRulesAudit(w http.ResponseWriter, r *http.Request) {
         //   同款占位替换 (retry-failed URLs[0] / list URLTemplate {page}=1). audit 无 task
         //   URLs 信息, 故只用 Rule.List.URLTemplate.
         precheckURLs := make([]string, len(collected))
+        // R83-C BUG-191 (P3 perf + single-source-of-truth, 精简): 缓存首趟 ParseRuleConfig
+        //   结果, fetchTest 路径复用同一份。原 R82-B 在 fullMode 块内重新 ParseRuleConfig
+        //   71 次 (与首趟字段审计用的 cfg 是两份独立解析 — ParseRuleConfig 虽确定性, 但
+        //   2× JSON unmarshal+sanitize 浪费, 且语义上"审计的 cfg"≠"试采的 cfg"隐含漂移
+        //   风险)。复用后单源一致。full=false 时本 slice 仅写不读 (占 ~71×RuleConfig 内存,
+        //   量级 KB, audit 返回即释放, 与 precheckURLs 同款预分配)。
+        parsedConfigs := make([]crawl.RuleConfig, len(collected))
 
         for i, ar := range collected {
                 cfg := crawl.ParseRuleConfig(ar.Config)
+                parsedConfigs[i] = cfg
                 fields := map[string]bool{
                         "name":     hasField(cfg.Book, "name"),
                         "author":   hasField(cfg.Book, "author"),
@@ -2142,11 +2157,9 @@ func adminRulesAudit(w http.ResponseWriter, r *http.Request) {
                 }
                 pctx, pcancel := context.WithTimeout(r.Context(), pctxTimeout)
                 defer pcancel()
-                // R82-B 目标 A: 为 fetchTest 准备每 Rule 的 RuleConfig (避免在 goroutine 内重复解析)
-                parsedRules := make([]crawl.RuleConfig, len(collected))
-                for i, ar := range collected {
-                        parsedRules[i] = crawl.ParseRuleConfig(ar.Config)
-                }
+                // R83-C BUG-191: 复用首趟 parsedConfigs (单源, 见上 line 2072)。原 R82-B
+                //   在此重新 ParseRuleConfig 71 次, 现删除 (goroutine 读 parsedConfigs[idx]
+                //   distinct-index, 首趟写 happens-before goroutine 启动, 无 race)。
                 for i := range out {
                         wg.Add(1)
                         go func(idx int) {
@@ -2193,7 +2206,7 @@ func adminRulesAudit(w http.ResponseWriter, r *http.Request) {
                                                         }
                                                 }
                                         }()
-                                        sample := crawl.FetchTestSampleBook(pctx, parsedRules[idx], crawl.DefaultFetchConfig)
+                                        sample := crawl.FetchTestSampleBook(pctx, parsedConfigs[idx], crawl.DefaultFetchConfig)
                                         fetchTestResults[idx] = sample
                                 }
                         }(i)
@@ -2222,6 +2235,15 @@ func adminRulesAudit(w http.ResponseWriter, r *http.Request) {
                                         out[i].FetchTestResult = "试采失败-TOC 空: " + s.Reason
                                 case "failed":
                                         out[i].FetchTestResult = "试采失败: " + s.Reason
+                                }
+                                // R83-C R82 交接 #8: 暴露结构化 sample (含 ContentSnippet 占位).
+                                //   s.Status=="" 时 (源站不可达跳过试采) 不暴露零值 sample, 保留
+                                //   上方 results[i].reason 即可. 取 sc 副本再 & 取址, 避免取 range
+                                //   内 loop var 地址 (Go 1.22+ range var per-iter, 但 s 是 if 块
+                                //   内 short-decl 非 range var, 显式 copy 更清晰且未来重构安全).
+                                if s.Status != "" {
+                                        sc := s
+                                        out[i].FetchTest = &sc
                                 }
                         }
                 }
