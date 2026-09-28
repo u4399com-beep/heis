@@ -67,7 +67,7 @@
 <tbody>
 {{range .Books}}
 <tr>
-<td><a href="/?view=category&cat={{.categoryId | urlquery}}">[{{.category}}]</a></td>
+<td><a href="{{.CategoryURL}}">[{{.category}}]</a></td>
 {{/* R89-D BUG-243 (template streamline, BUG-240 同款 book URL 不对称): x2552/fulltext.html 2 处 /?view=book&id={{.id}} 裸拼 id (BUG-239 漏网). homeHandler line 1055 injectBookURLs(books, pseudoStyle) 已注入 book["URL"]. 用 {{.URL}} 替裸 id. */}}
 <td><a href="{{.URL}}" target="_blank">{{.name}}</a></td>
 <td><a href="{{.URL}}" target="_blank">{{if .latestChapter}}{{.latestChapter}}{{else}}已完结{{end}}</a></td>

@@ -1972,6 +1972,19 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                 pageLatencyMs := time.Since(pageFetchStart).Milliseconds()
                 getHealthTracker().recordLatency(pageHost, pageLatencyMs)
                 GetHostGate().AdjustMinGap(pageHost, pageLatencyMs)
+                // R91-A BUG-252 (P3) 修复 (R90-A 未决项 #6 候选 #5 续抓): 原实现
+                //   pageFetcher 成功路径漏 rt.IncCaptcha — 多页 TOC 第 2+ 页命中 captcha
+                //   时 rt.captchaEncountered 不增 (外层 FetchPage 4 处 IncCaptcha:
+                //   discoverBooks/CrawlBookMeta book/CrawlBookMeta toc/CrawlChapterContent
+                //   chapter; pageFetcher 2 处 0 调用). 后果: admin 任务监控 captchaEncountered
+                //   低估 → 操作员无法察觉反爬触发频率 (与 R42-1B BUG-56/60 captcha family
+                //   同款潜在不对称, 与 BUG-219/220/230 pageFetcher hostGate 漏调同款 family).
+                //   修复: 与外层 4 callsite 同口径补 rt.IncCaptcha (pageRes.CaptchaDetected
+                //   → 计数, 不返 err — pageFetcher 仍返 pageRes.HTML 让 ParseToc 解析,
+                //   与 Blocked propagation defer 同款保留原行为).
+                if res.CaptchaDetected {
+                        rt.IncCaptcha()
+                }
                 if res.Blocked {
                         // Blocked 页仍返 res.HTML (ParseToc 解析, 与原行为一致 — Blocked
                         //   propagation 是 R86-A 未决项 #4 defer); 此处仅补 hostGate 报告.
@@ -2236,6 +2249,12 @@ func CrawlChapterContent(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRun
                 pageLatencyMs := time.Since(pageFetchStart).Milliseconds()
                 getHealthTracker().recordLatency(pageHost, pageLatencyMs)
                 hostGate.AdjustMinGap(pageHost, pageLatencyMs)
+                // R91-A BUG-252 (P3): 章节正文 pageFetcher 同款补 rt.IncCaptcha
+                //   (详见 CrawlBookMeta pageFetcher line ~1975 注释; 多页章节第 2+
+                //   页命中 captcha 同款 admin stats 低估问题).
+                if pageRes.CaptchaDetected {
+                        rt.IncCaptcha()
+                }
                 if pageRes.Blocked {
                         // Blocked 页仍返 pageRes.HTML (ParseContent 解析, 与原行为一致 —
                         //   Blocked propagation 是 R86-A 未决项 #4 defer); 此处仅补 hostGate.

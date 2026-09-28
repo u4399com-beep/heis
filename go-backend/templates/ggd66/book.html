@@ -45,7 +45,7 @@
 <ul class="breadcrumb">
 <li><a href="{{.HomeURL}}">首页</a></li>
 <li><a href="/?view=category">书库</a></li>
-{{if .Book.categoryId}}<li><a href="/?view=category&cat={{.Book.categoryId | urlquery}}">{{.Book.category}}</a></li>{{end}}
+{{if .Book.categoryId}}<li><a href="{{.Book.CategoryURL}}">{{.Book.category}}</a></li>{{end}}
 <li class="active">{{.Book.name}}</li>
 </ul>
 
@@ -58,7 +58,7 @@
 <div class="bookinfo">
 <h1 class="booktitle">{{.Book.name}}</h1>
 <div class="booktag">
-{{if .Book.categoryId}}<a href="/?view=category&cat={{.Book.categoryId | urlquery}}" class="red">{{.Book.category}}</a>{{else}}<span class="red">{{.Book.category}}</span>{{end}}
+{{if .Book.categoryId}}<a href="{{.Book.CategoryURL}}" class="red">{{.Book.category}}</a>{{else}}<span class="red">{{.Book.category}}</span>{{end}}
 <span class="blue">{{if eq .Book.status "completed"}}已完结{{else}}连载中{{end}}</span>
 <span class="blue">{{wordCount .Book.wordCount}}</span>
 <a href="/?view=search&q={{.Book.author | urlquery}}" class="red">{{.Book.author}}</a>

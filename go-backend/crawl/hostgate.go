@@ -459,7 +459,21 @@ func (g *HostGate) ReportRateLimited(host string, retryAfterMs int) {
                 st = g.stateOf(host, HostGateDefaultLimit)
         }
         now := time.Now().UnixMilli()
-        st.rateLimitedUntil = now + int64(retryAfterMs)
+        // BUG-250 (P3) 修复: 原无条件 `st.rateLimitedUntil = now + retryAfterMs`
+        //   让较短 retry-after 覆盖较长 cooldown. 场景: 第一个 429 设 120s cooldown,
+        //   5s 后第二个 429 (retry-after=30s) 覆盖为 30s, 总 cooldown 从 120s 缩到
+        //   35s, 违反 "限流冷却应取最保守值" 语义 — 源站仍处限流期, 缩短 cooldown
+        //   会让 pump (line 237 `now < st.rateLimitedUntil` 整队不放行) 提前放行,
+        //   二次触发 429. 修复: MAX(existing, new) — 仅当新 cooldown 比当前更长
+        //   时才覆盖 (保守延长不缩短, 与 settleRateLimitExpiry line 207 检查
+        //   expiry 后清零 + pump line 237 整队不放行同口径). minGapMsBeforeCooldown
+        //   snapshot 仍仅首次记录 (== 0 时记, 与原行为一致, 防 caller 接管期间
+        //   snapshot 失真). latent 自 R38 TS→Go 迁移 (47 轮未发现, 71 Rule 0 触发
+        //   并发 429 短 retry-after 覆盖长 retry-after case; 单 429 路径 0 受影响).
+        newUntil := now + int64(retryAfterMs)
+        if newUntil > st.rateLimitedUntil {
+                st.rateLimitedUntil = newUntil
+        }
         if st.minGapMsBeforeCooldown == 0 && st.minGapMs > 0 {
                 st.minGapMsBeforeCooldown = st.minGapMs
         }

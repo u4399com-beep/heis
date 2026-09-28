@@ -52,7 +52,7 @@
               {{if .icbm}} · GEO{{end}}
             </td>
             <td style="white-space:nowrap;">
-              <a class="btn btn-sm" href="https://{{.domain}}" target="_blank">访问</a>
+              <a class="btn btn-sm" href="https://{{.domain | stripScheme}}" target="_blank">访问</a>
               <a class="btn btn-sm" href="/?site={{.id}}" target="_blank">前台</a>
               <button class="btn btn-sm btn-primary" onclick='editSiteFromRow(this)'>编辑</button>
               <button class="btn btn-sm" onclick='generateTDK(this,"{{.id}}","{{.name}}")'>智能 TDK</button>

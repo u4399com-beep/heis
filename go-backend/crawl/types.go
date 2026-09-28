@@ -565,7 +565,16 @@ func sanitizeCleanConfig(m map[string]any) CleanConfig {
 			out.Interfere.Enabled = e
 		}
 		if iv, ok := v["interval"].(float64); ok {
-			out.Interfere.Interval = clampInt(int(iv), 0, 100)
+			// BUG-252 (P3) 修复: 原 clamp [0, 100] 与 cleaner.go applyInterference
+			//   (line 1449-1454) 实际 clamp [3, 5] (0 → 默认 4, 1-2 → 3, 3-5 原值,
+			//   >5 → 5) 不一致. admin 配 Interval=100 会被 applyInterference 静默
+			//   降到 5, 配置 vs 行为脱节 (admin 看到 100, 实际生效 5). 修复:
+			//   clamp [0, 5] 匹配实际行为 (0 → 默认 4, 1-2 → 3, 3-5 原值; >5 在
+			//   sanitize 阶段降到 5, 与 applyInterference 一致, admin 看到的值
+			//   就是实际生效的值). 与 InterfereConfig 注释 (line 1436 "3-5, 0 →
+			//   默认 4") 文档对齐. 0 用户受影响 (71 Rule clean.interfere.enabled
+			//   默认 false, 0 配 Interval >5).
+			out.Interfere.Interval = clampInt(int(iv), 0, 5)
 		}
 	}
 	return out

@@ -85,7 +85,7 @@
 <div class="novel-info-items">
 <div class="novel-info-itemtitle">分类</div>
 <div class="novel-info-actor">
-{{if .Book.categoryId}}<a href="/?view=category&cat={{.Book.categoryId | urlquery}}" title="{{.Book.category}}">{{.Book.category}}{{else}}{{.Book.category}}{{end}}</a>
+{{if .Book.categoryId}}<a href="{{.Book.CategoryURL}}" title="{{.Book.category}}">{{.Book.category}}{{else}}{{.Book.category}}{{end}}</a>
 </div>
 </div>
 <div class="novel-info-items">

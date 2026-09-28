@@ -4052,6 +4052,23 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 if oac := resp.Header.Get("Origin-Agent-Cluster"); oac != "" {
                         recordSecurityHeader(originHost(rawURL), "Origin-Agent-Cluster", oac)
                 }
+                // R91-A 反反爬第 149-153 项: 缓存策略 / 缓存变体 / 客户端提示 / 推测规则
+                //   响应头观测 (per-host 合并 tracker 第 26-30 字段, 与 124-148 同款).
+                if cc := resp.Header.Get("Cache-Control"); cc != "" {
+                        recordSecurityHeader(originHost(rawURL), "Cache-Control", cc)
+                }
+                if pragma := resp.Header.Get("Pragma"); pragma != "" {
+                        recordSecurityHeader(originHost(rawURL), "Pragma", pragma)
+                }
+                if vary := resp.Header.Get("Vary"); vary != "" {
+                        recordSecurityHeader(originHost(rawURL), "Vary", vary)
+                }
+                if ach := resp.Header.Get("Accept-CH"); ach != "" {
+                        recordSecurityHeader(originHost(rawURL), "Accept-CH", ach)
+                }
+                if specRules := resp.Header.Get("Speculation-Rules"); specRules != "" {
+                        recordSecurityHeader(originHost(rawURL), "Speculation-Rules", specRules)
+                }
 
                 // Set-Cookie 处理 (autoCookie)
                 if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
@@ -4978,6 +4995,24 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 }
                 if oac := extractHeaderFromCurlStdout(headers, "Origin-Agent-Cluster"); oac != "" {
                         recordSecurityHeader(domain, "Origin-Agent-Cluster", oac)
+                }
+                // R91-A 反反爬第 149-153 项: 缓存策略 / 缓存变体 / 客户端提示 / 推测规则
+                //   响应头观测 (与 fetchHttp 同款, curl -D - dump headers 路径;
+                //   fetchBinaryViaCurl 不 dump 故不调, 与 124-148 同款限制).
+                if cc := extractHeaderFromCurlStdout(headers, "Cache-Control"); cc != "" {
+                        recordSecurityHeader(domain, "Cache-Control", cc)
+                }
+                if pragma := extractHeaderFromCurlStdout(headers, "Pragma"); pragma != "" {
+                        recordSecurityHeader(domain, "Pragma", pragma)
+                }
+                if vary := extractHeaderFromCurlStdout(headers, "Vary"); vary != "" {
+                        recordSecurityHeader(domain, "Vary", vary)
+                }
+                if ach := extractHeaderFromCurlStdout(headers, "Accept-CH"); ach != "" {
+                        recordSecurityHeader(domain, "Accept-CH", ach)
+                }
+                if specRules := extractHeaderFromCurlStdout(headers, "Speculation-Rules"); specRules != "" {
+                        recordSecurityHeader(domain, "Speculation-Rules", specRules)
                 }
                 if status >= 300 {
                         // R66-C BUG-52 (P3): curl 4xx/5xx 也记 latency + fail (与 fetchHttp
@@ -6289,8 +6324,15 @@ func fetchPageOnce(ctx context.Context, rawURL string, cfg FetchConfig) (*FetchR
                         // 优先于 Turnstile 路径 (Turnstile 走 Obscura 桥 puppeteer 点击更稳定,
                         // 2captcha 仅处理 h-captcha / reCAPTCHA).
                         if ct == CaptchaHCaptcha || ct == CaptchaRecaptcha {
+                                // R91-A BUG-251 (P3): mirror Turnstile 路径加 `LooksLike
+                                //   Captcha(solved) == ""` 二次确认 (详见 err-path
+                                //   line ~6383 注释). verify 失败 fall-through 到 line
+                                //   ~6340 return CaptchaDetected (与 Turnstile 路径
+                                //   fall-through 同款).
                                 if solved := trySolveCaptchaWith2Captcha(ctx, rawURL, cfg, ct, html); solved != "" {
-                                        return &FetchResult{HTML: solved, Engine: "browser", Blocked: false}, nil
+                                        if LooksLikeCaptcha(solved) == "" {
+                                                return &FetchResult{HTML: solved, Engine: "browser", Blocked: false}, nil
+                                        }
                                 }
                         }
                         // R42-1B: Turnstile 8s 截止 — 调 Obscura 桥让 puppeteer 点击通过
@@ -6325,13 +6367,42 @@ func fetchPageOnce(ctx context.Context, rawURL string, cfg FetchConfig) (*FetchR
         // 错误路径: 先尝试 token 挑战求解 (403/412 响应体)
         if he, ok := err.(*HTTPError); ok && he.Body != "" {
                 if LooksBlocked(he.Body, map[string]string{"status": fmt.Sprintf("%d", he.StatusCode)}) {
+                        // R91-A BUG-250 (P3) 修复 (R90-A 未决项 #6 候选 #5 续抓):
+                        //   原实现 token 求解成功后立即 return Blocked: false, 不 re-check
+                        //   LooksLikeCaptcha + LooksBlocked. 与 success-path (line ~6310)
+                        //   不对称 — success-path 设 html=solved 后落到 line ~6321
+                        //   LooksLikeCaptcha(html) captcha 块 + line ~6354 LooksBlocked re-check
+                        //   (BUG-242) 双重收口. 后果: err-path token 求解返 stale "just a
+                        //   moment" 页 (token 重放成功但 CF 仍持续 challenge) 或仍含残留
+                        //   captcha widget (token solve 不解 widget, 需 2captcha/Turnstile)
+                        //   时 caller (runner.go 4 处) 误判 success 解析挑战/captcha 页作
+                        //   正文 (与 BUG-242/247 captcha family 同款潜在不对称, 反向收口).
+                        //   修复: mirror success-path — 求解后 re-check LooksLikeCaptcha
+                        //   (残留 widget → 落 2captcha 块) + LooksBlocked (still "just a
+                        //   moment" → 落 tryBridges). 不直接返, 让 captcha 块 + bridge 块
+                        //   走完 (与 success-path BUG-242 re-check 同款收口路径).
                         if solved, _ := TrySolveTokenChallenge(ctx, rawURL, he.Body, cfg, ua); solved != "" {
-                                return &FetchResult{HTML: solved, Engine: "http", Blocked: false}, nil
+                                if LooksLikeCaptcha(solved) == "" && !LooksBlocked(solved, nil) {
+                                        return &FetchResult{HTML: solved, Engine: "http", Blocked: false}, nil
+                                }
                         }
                         // R43-1B: 错误路径也尝试 2captcha 求解 (h-captcha / reCAPTCHA 返 403)
                         if ct := LooksLikeCaptcha(he.Body); ct == CaptchaHCaptcha || ct == CaptchaRecaptcha {
+                                // R91-A BUG-251 (P3) 修复 (R90-A 未决项 #6 候选 #5 续抓):
+                                //   原实现 2captcha 求解成功后立即 return Blocked: false, 不
+                                //   re-check LooksLikeCaptcha. 与 Turnstile 路径 (line ~6333+
+                                //   / line ~6398+) 不对称 — Turnstile 路径有 `if LooksLike
+                                //   Captcha(solved) == ""` 二次确认, 2captcha 路径无. 后果:
+                                //   2captcha API 偶发返错误 token (solver 服务 bug / 站点
+                                //   调整 widget), 页面仍含 captcha widget 时 caller 误判
+                                //   success → 章节持续 blocked (与 BUG-250 同款不对称 family).
+                                //   修复: mirror Turnstile 路径 — 加 `LooksLikeCaptcha
+                                //   (solved) == ""` 二次确认, verify 失败 fall-through 到
+                                //   tryBridges (与 Turnstile 路径 line ~6337 fall-through 同款).
                                 if solved := trySolveCaptchaWith2Captcha(ctx, rawURL, cfg, ct, he.Body); solved != "" {
-                                        return &FetchResult{HTML: solved, Engine: "browser", Blocked: false}, nil
+                                        if LooksLikeCaptcha(solved) == "" {
+                                                return &FetchResult{HTML: solved, Engine: "browser", Blocked: false}, nil
+                                        }
                                 }
                         }
                 }
@@ -6354,8 +6425,13 @@ func fetchPageOnce(ctx context.Context, rawURL string, cfg FetchConfig) (*FetchR
                 if ct != "" {
                         // R43-1B: 桥路径也支持 2captcha (h-captcha / reCAPTCHA)
                         if ct == CaptchaHCaptcha || ct == CaptchaRecaptcha {
+                                // R91-A BUG-251 (P3): mirror Turnstile 路径二次确认
+                                //   (详见 err-path line ~6383 注释). verify 失败
+                                //   fall-through 到 line ~6411 return CaptchaDetected.
                                 if solved := trySolveCaptchaWith2Captcha(ctx, rawURL, cfg, ct, bridged); solved != "" {
-                                        return &FetchResult{HTML: solved, Engine: "browser", Blocked: false}, nil
+                                        if LooksLikeCaptcha(solved) == "" {
+                                                return &FetchResult{HTML: solved, Engine: "browser", Blocked: false}, nil
+                                        }
                                 }
                         }
                         // R42-1B: Turnstile 8s 截止 (桥路径也支持)
@@ -6794,6 +6870,25 @@ func fetchBinaryHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, pr
                 }
                 if oac := resp.Header.Get("Origin-Agent-Cluster"); oac != "" {
                         recordSecurityHeader(originHost(rawURL), "Origin-Agent-Cluster", oac)
+                }
+                // R91-A 反反爬第 149-153 项: 缓存策略 / 缓存变体 / 客户端提示 / 推测规则
+                //   响应头观测 (与 fetchHttp 同款, fetchBinaryHttp success + 4xx/5xx 两路径
+                //   都记, BUG-241 修复后 fetchBinaryHttp 已补对称; fetchBinaryViaCurl 不
+                //   dump headers 故不调, 与 124-148 同款限制).
+                if cc := resp.Header.Get("Cache-Control"); cc != "" {
+                        recordSecurityHeader(originHost(rawURL), "Cache-Control", cc)
+                }
+                if pragma := resp.Header.Get("Pragma"); pragma != "" {
+                        recordSecurityHeader(originHost(rawURL), "Pragma", pragma)
+                }
+                if vary := resp.Header.Get("Vary"); vary != "" {
+                        recordSecurityHeader(originHost(rawURL), "Vary", vary)
+                }
+                if ach := resp.Header.Get("Accept-CH"); ach != "" {
+                        recordSecurityHeader(originHost(rawURL), "Accept-CH", ach)
+                }
+                if specRules := resp.Header.Get("Speculation-Rules"); specRules != "" {
+                        recordSecurityHeader(originHost(rawURL), "Speculation-Rules", specRules)
                 }
                 // 3xx / 4xx / 5xx 视为失败 (与 fetchHttp 同款, 不重试 3xx)
                 if resp.StatusCode >= 300 {
@@ -11431,13 +11526,35 @@ func ClearHostAcceptRanges(host string) {
 //     agent-clusters). R88-A 未决项 #5 列候选第 145 项 (实为第 148 项, 顺延 144-147 CORS
 //     4 头族), 0 实施. 价值: aggressive origin-isolation 源站通常也反爬严格 (与第 135 项
 //     COEP-Report-Only 升级路径同款关联).
+//   R91-A 第 149-153 项: 缓存策略 / 缓存变体 / 客户端提示 / 推测规则响应头 (合并
+//     hostSecurityHeadersEntry 扩第 26-30 字段, 与 124-148 同款). 全为 "policy
+//     response header" 同类 (缓存策略 + 客户端提示 + 推测规则姿态, 与 124-148 安全/
+//     跨域策略同款语义自洽); 反爬本身不基于此检测 (客户端不发), 降分价值 ≤1 分, 主要
+//     admin 可观测性 (识别 host 缓存严格度 / 客户端指纹姿态 / 推测加载策略).
+//   第 149 项 Cache-Control (RFC 7234 §5.2) — `no-store` / `private` / `no-cache` /
+//     `max-age=<sec>` 等缓存策略. `no-store`/`private`/`no-cache` 是反爬姿态信号 (防
+//     爬虫 cookie/响应复用, 与第 142 项 Clear-Site-Data aggressive session management
+//     同款关联). 严格缓存策略源站通常反爬也严格.
+//   第 150 项 Pragma (RFC 7230 §5.4 legacy, HTTP/1.0 cache) — `no-cache` legacy cache
+//     控制 (与第 149 项 Cache-Control: no-cache 配对, HTTP/1.0 fallback). `Pragma:
+//     no-cache` 是强反爬信号 (双管齐下与 Cache-Control 同时发, 防中间缓存复用).
+//   第 151 项 Vary (RFC 7231 §7.1.4) — 缓存变体提示. `Vary: User-Agent` 或 `Vary:
+//     Cookie` 是直接反爬信号 (per-UA / per-session 响应变体, 防爬虫简单 replay
+//     复用响应). 多 host 设 `Vary: *` 表完全不可缓存 (极严格姿态).
+//   第 152 项 Accept-CH (Client Hints Reliability, W3C draft) — host 请求未来请求
+//     带特定 Sec-CH-* 头 (e.g., `Accept-CH: Sec-CH-UA, Sec-CH-UA-Platform`). 反爬
+//     host 用 Accept-CH 收集客户端指纹 (与第 145 项 ACAH 配对, 主动请求指纹头).
+//   第 153 项 Speculation-Rules (Speculation Rules API, W3C) — host 配置的推测加载
+//     规则 (prefetch / prerender, JSON URL 或 inline). 缺失该头 (且无 Link:
+//     `<...>; rel=prefetch`) 的源站标识禁推测加载 (反爬姿态 — 防 puppeteer
+//     prefetch; 与第 141 项 X-Robots-Tag noindex/nofollow 同款搜索/推测控制信号).
 
 // hostSecurityHeadersEntry — per-host 安全策略响应头观测条目 (R86-A 第 124-128 项 +
 //   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项 + R90-A 第 144-148
-//   项, 合并 25 字段). entry 是 pointer: recordSecurityHeader LoadOrStore canonical
-//   指针 + 单字段 update-in-place (非 store-replace, 保留其他 24 头旧值). 同字段并发写
+//   项 + R91-A 第 149-153 项, 合并 30 字段). entry 是 pointer: recordSecurityHeader LoadOrStore canonical
+//   指针 + 单字段 update-in-place (非 store-replace, 保留其他 29 头旧值). 同字段并发写
 //   last-write-wins; sweep CompareAndDelete 后下次 record 重建 entry (与 recordVia
-//   store-replace 不一样, 这里需保留其他 24 头故用 update-in-place).
+//   store-replace 不一样, 这里需保留其他 29 头故用 update-in-place).
 type hostSecurityHeadersEntry struct {
         hstsValue         string // Strict-Transport-Security (第 124 项)
         cspValue          string // Content-Security-Policy (第 125 项)
@@ -11464,11 +11581,17 @@ type hostSecurityHeadersEntry struct {
         acehValue        string // Access-Control-Expose-Headers (第 146 项, R90-A)
         acmaValue        string // Access-Control-Max-Age (第 147 项, R90-A)
         oacValue         string // Origin-Agent-Cluster (第 148 项, R90-A)
+        ccValue          string // Cache-Control (第 149 项, R91-A)
+        pragmaValue      string // Pragma (第 150 项, R91-A)
+        varyValue        string // Vary (第 151 项, R91-A)
+        acceptChValue    string // Accept-CH (第 152 项, R91-A)
+        specRulesValue   string // Speculation-Rules (第 153 项, R91-A)
         detectedAt        int64  // UnixMilli
 }
 
 // hostSecurityHeadersMap — host string -> *hostSecurityHeadersEntry (R86-A 第 124-128 项 +
-//   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项 + R90-A 第 144-148 项).
+//   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项 + R90-A 第 144-148 项
+//   + R91-A 第 149-153 项).
 var hostSecurityHeadersMap sync.Map
 
 // hostSecurityHeadersSweepCounter — sweep 触发累加 (与 hostViaSweepCounter 同口径).
@@ -11479,8 +11602,9 @@ const HostSecurityHeadersSweepTTLms = 7 * 24 * 60 * 60 * 1000
 
 // recordSecurityHeader — 记录 host 的单个安全策略响应头 (R86-A 第 124-128 项 +
 //   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项 + R90-A 第 144-148
-//   项). headerName 区分 25 头 (大小写不敏感). 与 recordVia 同款 Store + 惰性 sweep,
-//   但保留其他 24 头旧值 (LoadOrStore canonical 指针 + 单字段 update-in-place).
+//   项 + R91-A 第 149-153 项). headerName 区分 30 头 (大小写不敏感). 与 recordVia
+//   同款 Store + 惰性 sweep, 但保留其他 29 头旧值 (LoadOrStore canonical 指针 +
+//   单字段 update-in-place).
 func recordSecurityHeader(host, headerName, value string) {
         if host == "" || value == "" {
                 return
@@ -11539,6 +11663,17 @@ func recordSecurityHeader(host, headerName, value string) {
                 ent.acmaValue = value
         case "origin-agent-cluster":
                 ent.oacValue = value
+        // R91-A 反反爬第 149-153 项: 缓存策略 / 缓存变体 / 客户端提示 / 推测规则响应头.
+        case "cache-control":
+                ent.ccValue = value
+        case "pragma":
+                ent.pragmaValue = value
+        case "vary":
+                ent.varyValue = value
+        case "accept-ch":
+                ent.acceptChValue = value
+        case "speculation-rules":
+                ent.specRulesValue = value
         default:
                 return
         }
@@ -11586,6 +11721,11 @@ func HostSecurityHeadersSnapshot() map[string]map[string]string {
                         "acehValue":         e.acehValue,
                         "acmaValue":         e.acmaValue,
                         "oacValue":          e.oacValue,
+                        "ccValue":           e.ccValue,
+                        "pragmaValue":       e.pragmaValue,
+                        "varyValue":         e.varyValue,
+                        "acceptChValue":     e.acceptChValue,
+                        "specRulesValue":    e.specRulesValue,
                         "detectedAt":        fmt.Sprintf("%d", e.detectedAt),
                 }
                 return true

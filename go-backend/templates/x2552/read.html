@@ -70,14 +70,15 @@
 <div id="a_main">
 <div class="myset">
 阅读设置：
-<a href="javascript:void(0)" title="减小字号" onclick="var c=document.getElementById('contents');var s=window.getComputedStyle(c).fontSize.replace('px','')||14;c.style.fontSize=(Math.max(12,parseInt(s)-1))+'px';" style="display:inline-block;padding:2px 8px;border:1px solid #E4E4E4;color:#666;text-decoration:none;margin-left:8px;">A-</a>
-<span style="color:#999;font-size:12px;margin:0 6px;">14px</span>
-<a href="javascript:void(0)" title="增大字号" onclick="var c=document.getElementById('contents');var s=window.getComputedStyle(c).fontSize.replace('px','')||14;c.style.fontSize=(Math.min(22,parseInt(s)+1))+'px';" style="display:inline-block;padding:2px 8px;border:1px solid #E4E4E4;color:#666;text-decoration:none;">A+</a>
+<a href="javascript:void(0)" title="减小字号" onclick="heisFontSizeDelta(-1)" style="display:inline-block;padding:2px 8px;border:1px solid #E4E4E4;color:#666;text-decoration:none;margin-left:8px;">A-</a>
+<span id="heisFontSizeLabel" style="color:#999;font-size:12px;margin:0 6px;">14px</span>
+<a href="javascript:void(0)" title="增大字号" onclick="heisFontSizeDelta(1)" style="display:inline-block;padding:2px 8px;border:1px solid #E4E4E4;color:#666;text-decoration:none;">A+</a>
 <span style="margin:0 12px;color:#eee;">|</span>
 <a href="javascript:void(0)" title="回顶部" onclick="window.scrollTo({top:0,behavior:'smooth'});" style="color:#2f468f;text-decoration:none;">回顶部</a>
 <span style="margin:0 12px;color:#eee;">|</span>
 <a href="{{.BookURL}}" title="返回书页" style="color:#2f468f;text-decoration:none;">返回书页</a>
 </div>
+<script>(function(){var L='heisFontSizeLabel';var cur=function(){var c=document.getElementById('contents');var s=(window.getComputedStyle(c)||{}).fontSize||'14';var n=parseInt(String(s).replace('px',''))||14;return Math.max(12,Math.min(22,n));};window.heisFontSizeDelta=function(d){var n=Math.max(12,Math.min(22,cur()+d));var c=document.getElementById('contents');if(c)c.style.fontSize=n+'px';var l=document.getElementById(L);if(l)l.textContent=n+'px';};})();</script>
 
 <h1>{{.Chapter.title}}</h1>
 

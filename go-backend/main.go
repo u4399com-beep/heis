@@ -258,6 +258,24 @@ func main() {
                         }
                         return template.HTMLAttr(b)
                 },
+                // R91-D BUG-253 (P3, main+templates scope, 顺延 R90-D BUG-247~249):
+                //   admin/sites.html line 55 `https://{{.domain}}` + shipsay 7 模板 footer
+                //   `https://{{.Site.Domain}}` + 101kks 7 模板 copyright `https://{{.Site.
+                //   Domain}}` 直接拼未剥 scheme 前缀 — admin 配 domain="https://example.com"
+                //   (placeholder 提示 "不含 http" 但 0 校验强制) 时拼成 "https://https://
+                //   example.com" 双 scheme → 链接失效. buildAbsoluteURL (line ~5307) 已剥
+                //   scheme 用于 og:url/canonical/sitemap, 但模板内直接拼 https://+domain
+                //   的 15 callsite 不经 buildAbsoluteURL. 修复: stripScheme FuncMap 剥
+                //   http:// / https:// 前缀 + 末尾 / (与 buildAbsoluteURL 同款归一化),
+                //   模板改 https://{{.domain | stripScheme}}. 0 现存依赖被破 (domain 不含
+                //   scheme 时 stripScheme 原样返回).
+                "stripScheme": func(v interface{}) string {
+                        s := strings.TrimSpace(fmt.Sprintf("%v", v))
+                        s = strings.TrimPrefix(s, "http://")
+                        s = strings.TrimPrefix(s, "https://")
+                        s = strings.TrimSuffix(s, "/")
+                        return s
+                },
         })
         // 收集所有 template 文件 (templates/*.html + templates/*/*.html)
         tmplFiles := []string{}
@@ -1007,6 +1025,16 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 //   "尾页" 用 buildPagerURL (永远 query 串, 不分风格), 与硬编码
                 //   /?view=ranking&sort=...&page={last} 一致, 0 bug 不动.
                 data["LastPageURL"] = buildCategoryURL(pseudoStyle, catID, totalPages)
+                // R91-D BUG-251 (P3, main+templates scope, 顺延 R90-D BUG-247 尾页 family):
+                //   101kks/category.html line 120 "首頁" (<<) 硬编码 /?view=category&cat=
+                //   {CatID}&page=1 绕过 buildCategoryURL (同款 BUG-247 尾页 family 的首页
+                //   对称遗漏). admin 配 pseudoStaticStyle=numeric 时, 同分类页 PageList
+                //   URL = /category/{hash}/{page}.html, "首页" URL = /?view=category&cat=
+                //   {id}&page=1 → 混合 URL 风格 (canonical weight 分散). 修复: Go 端注入
+                //   FirstPageURL = buildCategoryURL(pseudoStyle, catID, 1), 101kks/category
+                //   .html 改 {{.FirstPageURL}}. catID 空 + page=1 → "/?view=category" (BUG-
+                //   250 修复后 buildCategoryURL 空 catID page=1 仍返无 page 参数形态).
+                data["FirstPageURL"] = buildCategoryURL(pseudoStyle, catID, 1)
         case "ranking":
                 tab := r.URL.Query().Get("sort")
                 if tab == "" {
@@ -2359,6 +2387,19 @@ func injectBookURL(book map[string]interface{}, style string) {
         if id, ok := book["id"].(string); ok && id != "" {
                 book["URL"] = buildBookURL(style, id)
         }
+        // R91-D BUG-254 (P3, main+templates scope, 顺延 R90-D BUG-247~249 尾页 family):
+        //   9 book.html + 6 list-page 模板 (pilishuwu/x2552/trxsw home/fulltext/keyword/
+        //   search/category/ranking/book, 共 29 callsite) 硬编码 /?view=category&cat=
+        //   {{.categoryId|urlquery}} 绕过 buildCategoryURL — admin 配 pseudoStaticStyle=
+        //   numeric 时, 分类链接仍 query 串风格, 与同页 NavCats/PageList (buildCategoryURL
+        //   输出) 不一致 (canonical weight 分散). 修复: 注入 CategoryURL = buildCategoryURL
+        //   (style, catID, 1), 模板改 {{.CategoryURL}} / {{.Book.CategoryURL}}. catID 空
+        //   时 CategoryURL = "/?view=category" (BUG-250 修复后 buildCategoryURL 空 catID
+        //   page=1 返此形态), 与原 hardcoded /?view=category&cat= (cat= 空, server 视
+        //   catID="" 走全本分类) 行为等价. injectBookURLs (列表) 调本函数, 故列表页每本
+        //   书也获 CategoryURL (topBooks/takeBooks 共享 map 引用, 派生 slice 同款覆盖).
+        catID, _ := book["categoryId"].(string)
+        book["CategoryURL"] = buildCategoryURL(style, catID, 1)
 }
 
 // injectBookURLs 给 books slice 每项注入 ["URL"] = buildBookURL(style, bookID).
@@ -4487,11 +4528,26 @@ func buildChapterURL(style, chID, bookID string) string {
 //      base62:       /c/{base62Encode(catID)}  (page>1 加 /{page}? 暂简化省略)
 //      segmented:    /category/{catID[:2]}/{catID[2:]}/{page}.html
 func buildCategoryURL(style, catID string, page int) string {
-        if catID == "" {
-                return "/?view=category"
-        }
         if page < 1 {
                 page = 1
+        }
+        // R91-D BUG-250 (P2, main+templates scope, 顺延 R90-D main+templates BUG-247~249):
+        //   buildCategoryURL catID="" 时直接返 "/?view=category" 忽略 page → PageList/
+        //   PrevPageURL/NextPageURL/LastPageURL/CategoryURL 在 catID 空 (全本分类视图)
+        //   时全指向 page 1 (翻页/尾页链接失效). R90-D BUG-247 引入 data["LastPageURL"]
+        //   = buildCategoryURL(style, catID, totalPages) 后, shipsay/aijjxs/category.html
+        //   "尾页" 链接在 catID 空时从原 hardcoded /?view=category&page={last} (正确
+        //   跳尾页) 退化为 {{.LastPageURL}}="/?view=category" (回首页) — 回归. 修复:
+        //   catID 空 + page>1 时返 /?view=category&page={page} (全本分类 query 串分页,
+        //   与 buildPagerURL ranking/fulltext 同款 query-only 退化; 伪静态风格对 catID
+        //   空无意义因无可 hash 的实体 id). catID 空 + page=1 仍返 /?view=category (无
+        //   page 参数, 与 page=1 等价但更简洁). 影响: PageList/Prev/Next/Last/CategoryURL
+        //   在 catID 空时均正确指向各自 page (PageList[i].URL 不再全 = page 1).
+        if catID == "" {
+                if page > 1 {
+                        return "/?view=category&page=" + strconv.Itoa(page)
+                }
+                return "/?view=category"
         }
         // R88-D BUG-237 (P3, main+templates scope, 顺延 R87-D BUG-231/232;
         //   顺延 R87-B BUG-227 crawl + R87-C BUG-228~230 admin.go; 本 scope 从

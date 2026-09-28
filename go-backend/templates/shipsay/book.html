@@ -111,7 +111,7 @@
 <div class="container">
 <div class="section flex">
 <div class="sortvisit">
-<a href="/?view=category&cat={{.Book.categoryId | urlquery}}">同类推荐</a>
+<a href="{{.Book.CategoryURL}}">同类推荐</a>
 <ul>
 {{range .Related}}
 <li>
@@ -128,7 +128,7 @@
 <div class="container">
 <div class="section link">
 <p class="title"><i class="fa fa-link">&nbsp;</i>友情链接</p>
-<a href="{{if .Site.Domain}}https://{{.Site.Domain}}{{else}}/{{end}}" target="_blank">{{.Site.Name}}</a>
+<a href="{{if .Site.Domain}}https://{{.Site.Domain | stripScheme}}{{else}}/{{end}}" target="_blank">{{.Site.Name}}</a>
 <a href="/">{{.Site.Name}}首页</a>
 </div>
 </div>

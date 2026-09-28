@@ -117,13 +117,13 @@
 <div class="pages">
 <div class="pagelink" id="pagelink">
 {{if gt .Page 1}}
-<a class="pgroup" href="/?view=category{{if .CatID}}&cat={{.CatID | urlquery}}{{end}}&page=1">&lt;&lt;</a>
+<a class="pgroup" href="{{.FirstPageURL}}">&lt;&lt;</a>
 <a class="prev" href="{{.PrevPageURL}}">&lt;</a>
 {{end}}
 {{range .PageList}}{{if eq .page $.Page}}<strong>{{.page}}</strong>{{else}}<a href="{{.URL}}">{{.page}}</a>{{end}}{{end}}
 {{if lt .Page .TotalPages}}
 <a class="next" href="{{.NextPageURL}}">&gt;</a>
-<a class="ngroup" href="/?view=category{{if .CatID}}&cat={{.CatID | urlquery}}{{end}}&page={{.TotalPages}}">&gt;&gt;</a>
+<a class="ngroup" href="{{.LastPageURL}}">&gt;&gt;</a>
 {{end}}
 </div>
 </div>
@@ -142,7 +142,7 @@
 <a href="/">全部小說</a>
 <a href="/?view=keyword&tag=系統">熱門標籤</a>
 </div>
-<p>Copyright 2023 <a href="/">Powered by &copy; {{.Site.Name}}（https://{{.Site.Domain}}）</a></p>
+<p>Copyright 2023 <a href="/">Powered by &copy; {{.Site.Name}}（https://{{.Site.Domain | stripScheme}}）</a></p>
 <div>
 友情連結：<a href="/" title="{{.Site.Name}}">{{.Site.Name}}</a>|
 <a href="javascript:;">Cookies Policy</a>|

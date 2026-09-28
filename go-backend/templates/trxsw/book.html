@@ -49,7 +49,7 @@
 <div class="breadcrumb">
 <a href="{{.HomeURL}}">首页</a>
 <span class="breadcrumb-sep">»</span>
-{{if .Book.categoryId}}<a href="/?view=category&cat={{.Book.categoryId | urlquery}}">{{.Book.category}}</a>{{else}}<span>{{.Book.category}}</span>{{end}}
+{{if .Book.categoryId}}<a href="{{.Book.CategoryURL}}">{{.Book.category}}</a>{{else}}<span>{{.Book.category}}</span>{{end}}
 <span class="breadcrumb-sep">»</span>
 <span>{{.Book.name}}</span>
 </div>

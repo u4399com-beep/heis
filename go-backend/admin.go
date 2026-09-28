@@ -4267,7 +4267,22 @@ func adminDownloadsCreate(w http.ResponseWriter, r *http.Request) {
 
         // 并发占位检查
         var dbActive int
-        _ = db.QueryRow(`SELECT COUNT(*) FROM DownloadJob WHERE status IN ('pending','running')`).Scan(&dbActive)
+        // R91-C BUG-252 (P3, R80-D BUG-171 / R85-C BUG-204~215 / R90-C BUG-247~248
+        //   同款 Pattern C `_ = ...Scan` 吞错 family 续抓, COUNT 变种): 原实现
+        //   `_ = db.QueryRow(...).Scan(&dbActive)` 吞错 — DB 故障 (SQLite busy
+        //   lock / 连接闪断) 时 dbActive=0 → 并发占位检查只靠 inFlightNow (per-
+        //   process runtime counter) → 跨进程 stale pending/running (<1h 未清扫)
+        //   不计入 → 用户在 DB 故障窗口可绕过 maxConcurrentDownloadJobs 上限 →
+        //   超并发生成 DownloadJob (后台 goroutine 同步写文件 IO + 拉站, 多并发
+        //   挤占 SQLite SetMaxOpenConns(1) 连接池 → 进一步加剧 DB 故障 → 雪崩).
+        //   COUNT(*) 恒返 1 行 (无 ErrNoRows 分支), 任何 err 都是 DB 故障. 显式
+        //   err 检查: DB 故障返 500 让用户重试 (与 adminTasksList BUG-111 /
+        //   adminDownloadsList BUG-117 同款 err 显式区分), 不绕过并发检查.
+        dbActiveErr := db.QueryRow(`SELECT COUNT(*) FROM DownloadJob WHERE status IN ('pending','running')`).Scan(&dbActive)
+        if dbActiveErr != nil {
+                writeJSONErr(w, "查询在途下载失败: "+dbActiveErr.Error(), 500)
+                return
+        }
         downloadInFlightMu.Lock()
         inFlightNow := downloadInFlight
         if dbActive >= maxConcurrentDownloadJobs || inFlightNow >= maxConcurrentDownloadJobs {
@@ -5972,9 +5987,25 @@ func adminSiteByIDHandler(w http.ResponseWriter, r *http.Request) {
                         }
                         // 校验唯一 (排除自身)
                         var otherID string
-                        _ = db.QueryRow(`SELECT id FROM Site WHERE domain=? AND id!=?`, d, id).Scan(&otherID)
-                        if otherID != "" {
+                        // R91-C BUG-250 (P3, R80-D BUG-171 / R85-C BUG-204~215 / R86-C
+                        //   BUG-219~224 / R88-C BUG-233~236 / R90-C BUG-247~248 同款 Pattern
+                        //   C `_ = ...Scan` 吞错 family 续抓): 原实现 `_ = db.QueryRow(...).
+                        //   Scan(&otherID)` 吞错 — DB 故障 (SQLite busy lock / 连接闪断 /
+                        //   磁盘满) 时 otherID="" → 唯一性检查静默通过 → UPDATE 推进 →
+                        //   SQLite @unique 约束返 cryptic "UNIQUE constraint failed: Site.
+                        //   domain" 500 (而非清晰 400 "domain 已被其他站点使用" 业务语义).
+                        //   与 BUG-219 (Rule PUT 存在性) / BUG-228 (featured-books siteId
+                        //   存在性) 同款显式区分 sql.ErrNoRows (无冲突 → 推进) vs DB 故障
+                        //   (返 500 让操作员区分 "查询失败" vs "domain 冲突"). R90-C 仅修
+                        //   task logs 分页 (BUG-247) + adminBooksCreate categoryId 存在性
+                        //   (BUG-248), Site domain 唯一性 PUT case 漏此处.
+                        otherIDErr := db.QueryRow(`SELECT id FROM Site WHERE domain=? AND id!=?`, d, id).Scan(&otherID)
+                        if otherIDErr == nil && otherID != "" {
                                 writeJSONErr(w, "domain 已被其他站点使用", 400)
+                                return
+                        }
+                        if otherIDErr != nil && otherIDErr != sql.ErrNoRows {
+                                writeJSONErr(w, "查询 domain 唯一性失败: "+otherIDErr.Error(), 500)
                                 return
                         }
                         sets = append(sets, "domain=?")
@@ -6327,9 +6358,21 @@ func adminSitesCreate(w http.ResponseWriter, r *http.Request, body map[string]in
                 return
         }
         var existDomain string
-        _ = db.QueryRow(`SELECT id FROM Site WHERE domain=?`, domain).Scan(&existDomain)
-        if existDomain != "" {
+        // R91-C BUG-251 (P3, BUG-250 同款 Pattern C family 续抓): 原实现
+        //   `_ = db.QueryRow(...).Scan(&existDomain)` 吞错 — DB 故障时
+        //   existDomain="" → 唯一性检查静默通过 → INSERT 推进 → SQLite @unique
+        //   返 cryptic 500 (而非清晰 400 "domain 已存在" 业务语义). 与 BUG-250
+        //   (PUT case) 同 handler 不同 method, 应同口径区分 ErrNoRows (无冲突
+        //   → 推进) vs DB 故障 (返 500). Site.domain @unique 已约束 (schema
+        //   prisma), 不靠 swallow 兜底 — 显式 err 让 admin UI 区分 "domain 冲突"
+        //   vs "DB 故障".
+        existDomainErr := db.QueryRow(`SELECT id FROM Site WHERE domain=?`, domain).Scan(&existDomain)
+        if existDomainErr == nil && existDomain != "" {
                 writeJSONErr(w, "domain 已存在", 400)
+                return
+        }
+        if existDomainErr != nil && existDomainErr != sql.ErrNoRows {
+                writeJSONErr(w, "查询 domain 唯一性失败: "+existDomainErr.Error(), 500)
                 return
         }
         themeID := strField(body, "themeId", 64)

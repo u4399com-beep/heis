@@ -115,7 +115,7 @@
 <p class="mod-cover-list-intro">{{.intro}}</p>
 <p class="mod-cover-list-intro">{{.author}}</p>
 <p class="mod-cover-list-tag">
-<a class="mod-tag-item" href="/?view=category&cat={{.categoryId | urlquery}}" target="_blank" title="{{.category}}">{{.category}}</a>
+<a class="mod-tag-item" href="{{.CategoryURL}}" target="_blank" title="{{.category}}">{{.category}}</a>
 </p>
 </li>
 {{end}}
@@ -144,7 +144,7 @@
 <h5><a class="mod-cover-list-name" href="{{.URL}}" title="{{.name}}" target="_blank">{{.name}}</a></h5>
 <p class="mod-cover-list-intro">{{.author}}</p>
 <p class="mod-cover-list-tag">
-<a class="mod-tag-item" href="/?view=category&cat={{.categoryId | urlquery}}" target="_blank" title="{{.category}}">{{.category}}</a>
+<a class="mod-tag-item" href="{{.CategoryURL}}" target="_blank" title="{{.category}}">{{.category}}</a>
 </p>
 </li>
 {{end}}

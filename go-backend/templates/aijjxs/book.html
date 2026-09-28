@@ -58,7 +58,7 @@
 </div>
 <div class="kv">
 <p><strong>书籍作者：</strong><a href="/?view=search&q={{.Book.author | urlquery}}" title="{{.Book.author}}">{{.Book.author}}</a></p>
-<p><strong>书籍分类：</strong>{{if .Book.categoryId}}<a href="/?view=category&cat={{.Book.categoryId | urlquery}}" title="{{.Book.category}}">{{.Book.category}}{{end}}</a></p>
+<p><strong>书籍分类：</strong>{{if .Book.categoryId}}<a href="{{.Book.CategoryURL}}" title="{{.Book.category}}">{{.Book.category}}{{end}}</a></p>
 <p><strong>书籍大小：</strong>{{wordCount .Book.wordCount}}</p>
 <p><strong>写作进度：</strong><span class="sfwj">{{statusLabel .Book.status}}</span></p>
 <p><strong>上传时间：</strong>{{fmtDate .Book.updatedAt}}</p>

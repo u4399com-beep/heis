@@ -1933,6 +1933,19 @@ func ParseContent(ctx context.Context, firstURL, html string, pageRule PageRule,
                                         content = ExtractField(current, doc, nil, rule, nil)
                                 }
                         }
+                        // BUG-251 (P3): FieldCSS content 规则选择器 miss (源站结构无
+                        //   #content/.content/... 等通用容器, ApplySmartRuleFallback 的
+                        //   通用选择器全 miss) → 显式 fallback 到 body (与无 content 字段
+                        //   路径同款). 防 fallback 路径下章节内容为空. FieldConst/
+                        //   FieldJSON 返空是 admin 配置意图 (模板/JSON 路径显式选空), 不
+                        //   兜底 (兜底会污染 admin 显式 "无内容" 语义). 行为变化: 仅
+                        //   FieldCSS miss 路径, 从空 → body cleaned (非空更优).
+                        if content == "" && rule.Type == FieldCSS {
+                                doc, err := goquery.NewDocumentFromReader(strings.NewReader(current))
+                                if err == nil {
+                                        content, _ = doc.Find("body").Html()
+                                }
+                        }
                 } else {
                         // 无 content 字段规则: 整页正文 (取 body)
                         doc, err := goquery.NewDocumentFromReader(strings.NewReader(current))

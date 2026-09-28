@@ -696,12 +696,22 @@ func ApplySmartRuleFallback(rule *RuleConfig) {
 		rule.Content.Fields = PageFields{}
 	}
 	if _, ok := rule.Content.Fields["content"]; !ok {
-		// 按源站常见 content container id/class 选择器, 第一个匹配生效
-		// (ParseContent 内部按 FieldRule 顺序提取, 多选择器 comma-separated CSS
-		// 联合 (goquery 支持 CSS selector list)).
+		// BUG-251 (P3) 修复: 原逗号列表末尾含 `body` — goquery Find 返回匹配按
+		//   文档顺序 (depth-first pre-order), body 是 #content/.content/... 的祖先,
+		//   文档顺序中 body 先于后代 → cssExtract First() 总返 body, 特异性选择器
+		//   永不被使用, fallback 退化为 "整页 body cleaned" (与无 content 字段路径
+		//   同款结果, fallback 失效). 验证: goquery `Find("#content, ..., body")`
+		//   实测返 [body, #content], First()=body (整页含广告). 修复: 移除 body,
+		//   ParseContent (parser.go ParseContent FieldCSS miss 路径) 显式 fallback
+		//   到 body. 行为变化: 有 #content 等匹配的站点从 "整页 body cleaned" →
+		//   "#content cleaned" (更精准, 噪音更少); 无匹配的站点从 "body cleaned"
+		//   → "body fallback → body cleaned" (同结果, 0 退化). 0 用户受负面影响
+		//   (71 Rule 0 用 ApplySmartRuleFallback 的 content fallback — 有 content
+		//   字段的 Rule 不触发 fallback; 14 empty Rule 触发 fallback 的, 从 body
+		//   cleaned → 更精准或同款 body cleaned).
 		rule.Content.Fields["content"] = FieldRule{
 			Type:       FieldCSS,
-			Expression: "#content, .content, .chapter-content, .chapter_content, .read-content, #booktxt, body",
+			Expression: "#content, .content, .chapter-content, .chapter_content, .read-content, #booktxt",
 		}
 	}
 }
