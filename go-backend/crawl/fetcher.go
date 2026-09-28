@@ -4069,6 +4069,23 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 if specRules := resp.Header.Get("Speculation-Rules"); specRules != "" {
                         recordSecurityHeader(originHost(rawURL), "Speculation-Rules", specRules)
                 }
+                // R92-A 反反爬第 154-158 项: legacy deprecated + info-disclosure 响应头
+                //   观测 (per-host 合并 tracker 第 31-35 字段, 与 124-153 同款).
+                if xss := resp.Header.Get("X-XSS-Protection"); xss != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-XSS-Protection", xss)
+                }
+                if hpkp := resp.Header.Get("Public-Key-Pins"); hpkp != "" {
+                        recordSecurityHeader(originHost(rawURL), "Public-Key-Pins", hpkp)
+                }
+                if ect := resp.Header.Get("Expect-CT"); ect != "" {
+                        recordSecurityHeader(originHost(rawURL), "Expect-CT", ect)
+                }
+                if pby := resp.Header.Get("X-Powered-By"); pby != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Powered-By", pby)
+                }
+                if smap := resp.Header.Get("X-Sourcemap"); smap != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Sourcemap", smap)
+                }
 
                 // Set-Cookie 处理 (autoCookie)
                 if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
@@ -5013,6 +5030,24 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 }
                 if specRules := extractHeaderFromCurlStdout(headers, "Speculation-Rules"); specRules != "" {
                         recordSecurityHeader(domain, "Speculation-Rules", specRules)
+                }
+                // R92-A 反反爬第 154-158 项: legacy deprecated + info-disclosure 响应头
+                //   观测 (与 fetchHttp 同款, curl -D - dump headers 路径;
+                //   fetchBinaryViaCurl 不 dump 故不调, 与 124-153 同款限制).
+                if xss := extractHeaderFromCurlStdout(headers, "X-XSS-Protection"); xss != "" {
+                        recordSecurityHeader(domain, "X-XSS-Protection", xss)
+                }
+                if hpkp := extractHeaderFromCurlStdout(headers, "Public-Key-Pins"); hpkp != "" {
+                        recordSecurityHeader(domain, "Public-Key-Pins", hpkp)
+                }
+                if ect := extractHeaderFromCurlStdout(headers, "Expect-CT"); ect != "" {
+                        recordSecurityHeader(domain, "Expect-CT", ect)
+                }
+                if pby := extractHeaderFromCurlStdout(headers, "X-Powered-By"); pby != "" {
+                        recordSecurityHeader(domain, "X-Powered-By", pby)
+                }
+                if smap := extractHeaderFromCurlStdout(headers, "X-Sourcemap"); smap != "" {
+                        recordSecurityHeader(domain, "X-Sourcemap", smap)
                 }
                 if status >= 300 {
                         // R66-C BUG-52 (P3): curl 4xx/5xx 也记 latency + fail (与 fetchHttp
@@ -6303,6 +6338,15 @@ func fetchPageOnce(ctx context.Context, rawURL string, cfg FetchConfig) (*FetchR
         // Token 挑战 HTTP 求解 (4xx 响应体可能是 token 挑战页)
         // (放在 fetchHttpWithCurlFallback 失败后的错误路径里, 此处仅在成功 HTML looksBlocked 时调用)
         html, err := fetchHttpWithCurlFallback(ctx, rawURL, cfg, ua)
+        // R92-A BUG-255 (P3): engine 跟踪 html 实际来源 (http/curl vs browser 桥).
+        //   原 success-path 3 处 return 硬编码 Engine: "http", 但 tryBridges 返
+        //   bridged 后 html 实为 browser engine (8 级桥 = puppeteer/curl-impersonate).
+        //   与 bridge-path (line ~6491 return Engine: "browser") 不对称 — admin/
+        //   metrics Engine 字段低报 browser engine 占比 → 操作员误判源站只需 http
+        //   链可解 (实际已耗尽 8 级桥仍 Blocked). 修复: engine var 跟踪, tryBridges
+        //   后设 "browser"; 3 处 return 用 engine 替硬编码 "http". token solve 仍
+        //   "http" (in-process HTTP 求解, 非 browser engine).
+        engine := "http"
         if err == nil {
                 // 拦截识别
                 if LooksBlocked(html, nil) {
@@ -6313,8 +6357,9 @@ func fetchPageOnce(ctx context.Context, rawURL string, cfg FetchConfig) (*FetchR
                                 // 8 级降级链: fetch-relay → scrapling → Obscura → uc-bridge → moli-bridge → curl-impersonate
                                 if bridged := tryBridges(ctx, rawURL, cfg, ua); bridged != "" {
                                         html = bridged
+                                        engine = "browser"
                                 } else {
-                                        return &FetchResult{HTML: html, Engine: "http", Blocked: true}, nil
+                                        return &FetchResult{HTML: html, Engine: engine, Blocked: true}, nil
                                 }
                         }
                 }
@@ -6344,7 +6389,24 @@ func fetchPageOnce(ctx context.Context, rawURL string, cfg FetchConfig) (*FetchR
                                         }
                                 }
                         }
-                        return &FetchResult{HTML: html, Engine: "http", Blocked: true, CaptchaDetected: true, CaptchaType: ct}, nil
+                        // R92-A BUG-256 (P3): success-path CaptchaUnknown 未走 tryBridges
+                        //   (仅 LooksBlocked 分支 line ~6349 触发桥; 非 Blocked 的 captcha
+                        //   页 never 桥). 与 bridge-path (line ~6447 已过 tryBridges) 不对
+                        //   称 — bridge-path CaptchaUnknown 已尝试 8 级桥, success-path
+                        //   CaptchaUnknown (e.g., 未知 widget DOM 但无 "just a moment"
+                        //   marker) 直接放弃. 修复: CaptchaUnknown + engine=="http" (未
+                        //   桥) 时补 tryBridges (puppeteer 可点过未知 widget). clean →
+                        //   success; else fall-through (CaptchaDetected 返原 html, engine
+                        //   仍 "http" 因桥返仍 captcha/blocked). 已桥 (engine=="browser")
+                        //   时跳过 (避免二次桥调用死循环).
+                        if ct == CaptchaUnknown && engine == "http" {
+                                if bridged := tryBridges(ctx, rawURL, cfg, ua); bridged != "" {
+                                        if LooksLikeCaptcha(bridged) == "" && !LooksBlocked(bridged, nil) {
+                                                return &FetchResult{HTML: bridged, Engine: "browser", Blocked: false}, nil
+                                        }
+                                }
+                        }
+                        return &FetchResult{HTML: html, Engine: engine, Blocked: true, CaptchaDetected: true, CaptchaType: ct}, nil
                 }
                 // R89-A BUG-242 (P3) 修复 (R88-A 未决项 #8 fetcher scope 深抓 + R87-A 未决
                 //   项 #6 captcha 深抓续): success-path 原 LooksBlocked 分支 (line ~6222-
@@ -6357,11 +6419,12 @@ func fetchPageOnce(ctx context.Context, rawURL string, cfg FetchConfig) (*FetchR
                 //   与 err-path 桥调用 (line ~6275-6278) 不对称 (err-path re-check
                 //   LooksBlocked(bridged) 后返 Blocked: true). 修复: mirror err-path re-check
                 //   — 若 html 仍 Blocked, 返 Blocked: true. 仅补 re-check + 早返, 不改 token
-                //   /bridge 求解逻辑, 与 err-path 同款收口.
+                //   /bridge 求解逻辑, 与 err-path 同款收口. R92-A BUG-255: Engine 用
+                //   engine var (桥后 = "browser", http/token = "http").
                 if LooksBlocked(html, nil) {
-                        return &FetchResult{HTML: html, Engine: "http", Blocked: true}, nil
+                        return &FetchResult{HTML: html, Engine: engine, Blocked: true}, nil
                 }
-                return &FetchResult{HTML: html, Engine: "http", Blocked: false}, nil
+                return &FetchResult{HTML: html, Engine: engine, Blocked: false}, nil
         }
 
         // 错误路径: 先尝试 token 挑战求解 (403/412 响应体)
@@ -6889,6 +6952,25 @@ func fetchBinaryHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, pr
                 }
                 if specRules := resp.Header.Get("Speculation-Rules"); specRules != "" {
                         recordSecurityHeader(originHost(rawURL), "Speculation-Rules", specRules)
+                }
+                // R92-A 反反爬第 154-158 项: legacy deprecated + info-disclosure 响应头
+                //   观测 (与 fetchHttp 同款, fetchBinaryHttp success + 4xx/5xx 两路径
+                //   都记, BUG-241 修复后 fetchBinaryHttp 已补对称; fetchBinaryViaCurl
+                //   不 dump headers 故不调, 与 124-153 同款限制).
+                if xss := resp.Header.Get("X-XSS-Protection"); xss != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-XSS-Protection", xss)
+                }
+                if hpkp := resp.Header.Get("Public-Key-Pins"); hpkp != "" {
+                        recordSecurityHeader(originHost(rawURL), "Public-Key-Pins", hpkp)
+                }
+                if ect := resp.Header.Get("Expect-CT"); ect != "" {
+                        recordSecurityHeader(originHost(rawURL), "Expect-CT", ect)
+                }
+                if pby := resp.Header.Get("X-Powered-By"); pby != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Powered-By", pby)
+                }
+                if smap := resp.Header.Get("X-Sourcemap"); smap != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Sourcemap", smap)
                 }
                 // 3xx / 4xx / 5xx 视为失败 (与 fetchHttp 同款, 不重试 3xx)
                 if resp.StatusCode >= 300 {
@@ -11548,13 +11630,42 @@ func ClearHostAcceptRanges(host string) {
 //     规则 (prefetch / prerender, JSON URL 或 inline). 缺失该头 (且无 Link:
 //     `<...>; rel=prefetch`) 的源站标识禁推测加载 (反爬姿态 — 防 puppeteer
 //     prefetch; 与第 141 项 X-Robots-Tag noindex/nofollow 同款搜索/推测控制信号).
+//   R92-A 第 154-158 项: legacy deprecated + info-disclosure 响应头 (合并
+//     hostSecurityHeadersEntry 扩第 31-35 字段, 与 124-153 同款). 全为 "legacy /
+//     info-disclosure response header" 同类 (废弃安全头 + 框架/源码信息泄露姿态,
+//     与 124-153 安全/跨域/缓存策略同款语义自洽); 反爬本身不基于此检测 (客户端
+//     不发), 降分价值 ≤1 分, 主要 admin 可观测性 (识别 host 框架栈泄露 / 源码
+//     映射暴露 / legacy 安全头遗留姿态).
+//   第 154 项 X-XSS-Protection (IE XSS Auditor, legacy) — `0` / `1` / `1; mode=block` /
+//     `1; report=<uri>` 标识 IE/old-WebKit XSS 过滤策略 (Chrome 2018 起 deprecated,
+//     但 legacy host 仍发; `0` 显式禁 Auditor 防误报, `1; mode=block` 强阻断). 反爬
+//     关联: legacy 安全头遗留 = host 长期未更新安全策略栈, 常配老式反爬 (UA 黑名单
+//     / referer 检查), 与第 138 项 X-Download-Options legacy 同款关联.
+//   第 155 项 Public-Key-Pins (HPKP, RFC 7469, deprecated 2018) — `pin-sha256="<base64>";
+//     max-age=<sec>; includeSubDomains` 标识证书指纹钉扎 (防 MITM, Chrome/Firefox
+//     2018 起 deprecated 因误配致站点不可访问风险). legacy host 仍发 = 严格证书
+//     策略, 通常也严格反爬 (证书钉扎 host 安全姿态高, 反爬常配 mTLS / client cert).
+//   第 156 项 Expect-CT (Chrome, deprecated 2021) — `max-age=<sec>; enforce; report-uri=
+//     <uri>` 标识 Certificate Transparency 监控要求 (Chrome 2021 起 deprecated, CT
+//     已默认强制). legacy host 仍发 = 主动监控证书透明度, 安全姿态高, 反爬也常
+//     严格 (与第 155 项 HPKP 证书策略同款关联).
+//   第 157 项 X-Powered-By (info disclosure, 非标准) — `<framework>/<version>` 标识
+//     服务端框架 (Express 默认发 `Express`, PHP 默认发 `PHP/7.4.3`, ASP.NET 发
+//     `ASP.NET`). info disclosure 反爬关联: 框架泄露 → 反爬 SDK 按栈定制 (Express
+//     常配 csurf/csurf-style UA 检查, PHP 常配 Cloudflare WAF 规则), 与第 124 项
+//     HSTS 严格姿态 host 通常不发 X-Powered-By (安全最佳实践剥除) 的反向关联.
+//   第 158 项 X-Sourcemap (info disclosure, 非标准但 Chrome DevTools 支持) —
+//     `<url>` 标识 JS bundle source map 位置 (调试用, 生产环境暴露 = 源码结构
+//     泄露). info disclosure 反爬关联: 源码映射暴露 → 反爬 JS challenge 逻辑
+//     (Cloudflare hc.js / Akamai sensor) 可被逆向分析, 严格反爬 host 不发该头
+//     (与第 157 项 X-Powered-By 框架泄露同款 info-disclosure family).
 
 // hostSecurityHeadersEntry — per-host 安全策略响应头观测条目 (R86-A 第 124-128 项 +
 //   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项 + R90-A 第 144-148
-//   项 + R91-A 第 149-153 项, 合并 30 字段). entry 是 pointer: recordSecurityHeader LoadOrStore canonical
-//   指针 + 单字段 update-in-place (非 store-replace, 保留其他 29 头旧值). 同字段并发写
+//   项 + R91-A 第 149-153 项 + R92-A 第 154-158 项, 合并 35 字段). entry 是 pointer: recordSecurityHeader LoadOrStore canonical
+//   指针 + 单字段 update-in-place (非 store-replace, 保留其他 34 头旧值). 同字段并发写
 //   last-write-wins; sweep CompareAndDelete 后下次 record 重建 entry (与 recordVia
-//   store-replace 不一样, 这里需保留其他 29 头故用 update-in-place).
+//   store-replace 不一样, 这里需保留其他 34 头故用 update-in-place).
 type hostSecurityHeadersEntry struct {
         hstsValue         string // Strict-Transport-Security (第 124 项)
         cspValue          string // Content-Security-Policy (第 125 项)
@@ -11586,12 +11697,17 @@ type hostSecurityHeadersEntry struct {
         varyValue        string // Vary (第 151 项, R91-A)
         acceptChValue    string // Accept-CH (第 152 项, R91-A)
         specRulesValue   string // Speculation-Rules (第 153 项, R91-A)
+        xssProtectValue  string // X-XSS-Protection (第 154 项, R92-A)
+        hpkpValue        string // Public-Key-Pins (第 155 项, R92-A)
+        expectCtValue    string // Expect-CT (第 156 项, R92-A)
+        poweredByValue   string // X-Powered-By (第 157 项, R92-A)
+        sourceMapValue   string // X-Sourcemap (第 158 项, R92-A)
         detectedAt        int64  // UnixMilli
 }
 
 // hostSecurityHeadersMap — host string -> *hostSecurityHeadersEntry (R86-A 第 124-128 项 +
 //   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项 + R90-A 第 144-148 项
-//   + R91-A 第 149-153 项).
+//   + R91-A 第 149-153 项 + R92-A 第 154-158 项).
 var hostSecurityHeadersMap sync.Map
 
 // hostSecurityHeadersSweepCounter — sweep 触发累加 (与 hostViaSweepCounter 同口径).
@@ -11602,8 +11718,8 @@ const HostSecurityHeadersSweepTTLms = 7 * 24 * 60 * 60 * 1000
 
 // recordSecurityHeader — 记录 host 的单个安全策略响应头 (R86-A 第 124-128 项 +
 //   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项 + R90-A 第 144-148
-//   项 + R91-A 第 149-153 项). headerName 区分 30 头 (大小写不敏感). 与 recordVia
-//   同款 Store + 惰性 sweep, 但保留其他 29 头旧值 (LoadOrStore canonical 指针 +
+//   项 + R91-A 第 149-153 项 + R92-A 第 154-158 项). headerName 区分 35 头 (大小写不敏感). 与 recordVia
+//   同款 Store + 惰性 sweep, 但保留其他 34 头旧值 (LoadOrStore canonical 指针 +
 //   单字段 update-in-place).
 func recordSecurityHeader(host, headerName, value string) {
         if host == "" || value == "" {
@@ -11674,6 +11790,17 @@ func recordSecurityHeader(host, headerName, value string) {
                 ent.acceptChValue = value
         case "speculation-rules":
                 ent.specRulesValue = value
+        // R92-A 反反爬第 154-158 项: legacy deprecated + info-disclosure 响应头.
+        case "x-xss-protection":
+                ent.xssProtectValue = value
+        case "public-key-pins":
+                ent.hpkpValue = value
+        case "expect-ct":
+                ent.expectCtValue = value
+        case "x-powered-by":
+                ent.poweredByValue = value
+        case "x-sourcemap":
+                ent.sourceMapValue = value
         default:
                 return
         }
@@ -11726,6 +11853,11 @@ func HostSecurityHeadersSnapshot() map[string]map[string]string {
                         "varyValue":         e.varyValue,
                         "acceptChValue":     e.acceptChValue,
                         "specRulesValue":    e.specRulesValue,
+                        "xssProtectValue":   e.xssProtectValue,
+                        "hpkpValue":         e.hpkpValue,
+                        "expectCtValue":     e.expectCtValue,
+                        "poweredByValue":    e.poweredByValue,
+                        "sourceMapValue":    e.sourceMapValue,
                         "detectedAt":        fmt.Sprintf("%d", e.detectedAt),
                 }
                 return true

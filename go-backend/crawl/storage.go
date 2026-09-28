@@ -108,7 +108,8 @@ func sanitizeCoverName(name string) string {
 // SaveCoverWebp — 封面字节存 .webp. Go 端无 sharp 库, 直接回存原始字节.
 //   - 公开封面接口按 .webp 文件名提供服务, 浏览器 <img> 解码时按魔数嗅探实际格式,
 //     不影响展示 (与 saveCoverWebp 降级2 回存原始字节同口径)
-//   - 空文件/超大文件保护 (>20MB 拒绝)
+//   - 空文件 (len==0): 返 ("", nil) (caller 跳过 UpdateBookCover, 视为无封面)
+//   - 超大文件 (>20MB): 返 ("", err) (拒绝, 防 OOM 写盘; docstring "拒绝" 语义对齐)
 //   - 文件名: 仅保留 [\w-] 字符, 空串兜底 cover_{ts}_{rand}
 //     返回相对 data/ 的路径 (covers/{name}.webp)
 //
@@ -120,9 +121,22 @@ func sanitizeCoverName(name string) string {
 //	+ .tmp + rename 模式 (与原 SaveChapterTxt 同款, R80-C 已删). fileName 已含 random
 //	suffix 时无并发冲突, 但 crash 中途写仍可能留半成品, atomicWriteFileSync + rename
 //	保证 "要么完整要么不存在" 语义.
+//
+// R92-B BUG-256 (P3) 修复: 原条件 `len(buf) == 0 || len(buf) > 20*1024*1024` 合并
+//
+//	返 ("", nil) — 空文件 (expected skip) vs 超大文件 (reject) 行为混淆, caller
+//	无法区分 "无封面 (0 字节)" 与 "被拒绝 (>20MB OOM 风险)", docstring "拒绝"
+//	语义 vs 实际返 nil 不符 (exported API 可被未来 caller 误用). 修复: 分离两
+//	case — 空文件返 ("", nil) (caller 跳过), 超大文件返 ("", err) (caller 可
+//	log/上报). 当前唯一 caller runner.go line 2085 用 `err == nil && rel != ""`
+//	两 case 均跳过 (行为不变), 但 API 契约正确. latent 自 R38-1C (47 轮未发现因
+//	唯一 caller 不 log err; 未来 caller 加 err log 后受益).
 func SaveCoverWebp(buf []byte, name string) (string, error) {
-	if len(buf) == 0 || len(buf) > 20*1024*1024 {
+	if len(buf) == 0 {
 		return "", nil
+	}
+	if len(buf) > 20*1024*1024 {
+		return "", fmt.Errorf("cover bytes exceed 20MB cap: %d", len(buf))
 	}
 	if err := EnsureDirs(); err != nil {
 		return "", err

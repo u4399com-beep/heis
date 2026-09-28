@@ -833,10 +833,27 @@ func adminTasksCreate(w http.ResponseWriter, r *http.Request) {
         // 取规则
         var ruleName, ruleConfig string
         var ruleEnabled bool
+        // R92-C BUG-255 (P3, R80-D BUG-171 / R85-C BUG-204~215 / R86-C BUG-219~224 /
+        //   R88-C BUG-233~236 / R90-C BUG-247~248 / R91-C BUG-250~252 同款 Pattern B
+        //   `err != nil 全 404` 吞错 family 续抓): 原实现 `err != nil` 不分
+        //   sql.ErrNoRows (规则行不存在 → 404) vs 其他 DB 故障 (SQLite busy lock /
+        //   连接闪断 / 磁盘满 → 500), 全返 404 "规则不存在" 让操作员误以为规则被删
+        //   (实际 DB 故障, 规则行仍在, 重试可成功). 与 adminRuleByIDHandler GET
+        //   (BUG-219 line 2377) / adminTaskControlHandler (BUG-205 line 1331) /
+        //   adminTaskGetHandler (BUG-206 line 1908) 同款 Pattern B (full-row Scan),
+        //   R85-C BUG-204~215 覆盖 task DELETE/control/GET + downloads + feedback +
+        //   downloadFile + rule/book/site/link/category PUT/DELETE 6 handler, 本
+        //   handler 入口 Rule lookup (3 列 Scan, 71 Rule × N 采集任务创建必经路径)
+        //   漏此处 — adminTasksCreate 是 task 创建的 RuleID 校验入口, 与 BUG-250~
+        //   252 Site domain 唯一性检查同 family 同款显式区分 (入口校验不应吞错).
         err := db.QueryRow(`SELECT name, config, enabled FROM Rule WHERE id=?`, ruleID).
                 Scan(&ruleName, &ruleConfig, &ruleEnabled)
-        if err != nil {
+        if err == sql.ErrNoRows {
                 writeJSONErr(w, "规则不存在", 404)
+                return
+        }
+        if err != nil {
+                writeJSONErr(w, "查询规则失败: "+err.Error(), 500)
                 return
         }
 
@@ -1592,10 +1609,27 @@ func adminTaskUpdateHandler(w http.ResponseWriter, r *http.Request, taskID strin
         }
         // 存在性 + 状态 + mode/URL fallback 校验 (单 SELECT 获取 4 字段, 避免后续 N 次 query).
         var curStatus, curMode, curBookURL, curListURL string
+        // R92-C BUG-256 (P3, R80-D BUG-171 / R85-C BUG-204~215 / R86-C BUG-219~224 /
+        //   R88-C BUG-233~236 / R90-C BUG-247~248 / R91-C BUG-250~252 同款 Pattern B
+        //   `err != nil 全 404` 吞错 family 续抓, 与 BUG-255 adminTasksCreate 入口
+        //   Rule lookup 同 family 续抓): 原实现 `err != nil` 不分 sql.ErrNoRows (任务
+        //   行不存在 → 404) vs 其他 DB 故障 (SQLite busy lock / 连接闪断 / 磁盘满 →
+        //   500), 全返 404 "任务不存在" 让操作员误以为任务被删 (实际 DB 故障, 任务行
+        //   仍在, 重试可成功). R80-D BUG-172 修了本 handler 内 post-UPDATE readback
+        //   SELECT 的 `_ = ...Scan` err swallow (line ~1854 selectErr), 但入口存在性 +
+        //   status/mode/URL fallback Scan 漏修 (本 handler 是 PUT 路径入口). R85-C
+        //   BUG-206 修 adminTaskGetHandler GET 入口 (line ~1925 err == sql.ErrNoRows)
+        //   但 PUT 入口同款 Pattern B 未覆盖 — 同 handler 不同 method 应同口径区分
+        //   ErrNoRows (404 任务不存在) vs DB 故障 (500 查询任务失败), 入口 + readback
+        //   双路径对齐 (与 BUG-219 / BUG-205 / BUG-206 / BUG-255 同款 Pattern B).
         err := db.QueryRow(`SELECT status, mode, bookUrl, listUrl FROM Task WHERE id=?`, taskID).
                 Scan(&curStatus, &curMode, &curBookURL, &curListURL)
-        if err != nil {
+        if err == sql.ErrNoRows {
                 writeJSONErr(w, "任务不存在", 404)
+                return
+        }
+        if err != nil {
+                writeJSONErr(w, "查询任务失败: "+err.Error(), 500)
                 return
         }
         if curStatus == "running" {

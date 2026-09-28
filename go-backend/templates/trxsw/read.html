@@ -61,14 +61,15 @@
 
 <div class="content">
 <div class="read-tools">
-<a class="tool-btn" href="javascript:void(0);" title="减小字号" onclick="var c=document.getElementById('article');var s=window.getComputedStyle(c).fontSize.replace('px','')||16;c.style.fontSize=(Math.max(14,parseInt(s)-1))+'px';">A-</a>
-<span class="tool-info">字号: 16px</span>
-<a class="tool-btn" href="javascript:void(0);" title="增大字号" onclick="var c=document.getElementById('article');var s=window.getComputedStyle(c).fontSize.replace('px','')||16;c.style.fontSize=(Math.min(28,parseInt(s)+1))+'px';">A+</a>
+<a class="tool-btn" href="javascript:void(0);" title="减小字号" onclick="trxswFontSizeDelta(-1)">A-</a>
+<span class="tool-info" id="trxswFontSizeLabel">字号: 16px</span>
+<a class="tool-btn" href="javascript:void(0);" title="增大字号" onclick="trxswFontSizeDelta(1)">A+</a>
 <span class="tool-sep">|</span>
 {{if .Prev}}<a class="tool-btn" href="{{.Prev.URL}}" title="上一章">« 上一章</a>{{end}}
 <a class="tool-btn" href="javascript:void(0);" title="回顶部" onclick="window.scrollTo({top:0,behavior:'smooth'});">回顶部</a>
 {{if .Next}}<a class="tool-btn" href="{{.Next.URL}}" title="下一章">下一章 »</a>{{end}}
 </div>
+<script>(function(){var L='trxswFontSizeLabel';var cur=function(){var c=document.getElementById('article');var s=(window.getComputedStyle(c)||{}).fontSize||'16';var n=parseInt(String(s).replace('px',''))||16;return Math.max(14,Math.min(28,n));};window.trxswFontSizeDelta=function(d){var n=Math.max(14,Math.min(28,cur()+d));var c=document.getElementById('article');if(c)c.style.fontSize=n+'px';var l=document.getElementById(L);if(l)l.textContent='字号: '+n+'px';};})();</script>
 
 <div id="article" style="font-size:16px;line-height:1.95;">
 {{if .Chapter.content}}{{.Chapter.content}}{{else}}<p style="text-align:center;color:#999;">本章内容加载中...</p>{{end}}

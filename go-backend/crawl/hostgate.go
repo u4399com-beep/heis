@@ -62,6 +62,7 @@ type hostState struct {
         inFlight               int
         limit                  int
         baseLimit              int
+        lastBaseLimitValue     int // R92-B BUG-259: 上次 Acquire caller 的 baseLimit (tracker, 防 AdjustConcurrency bump 被 Acquire 清零)
         failStreak             int
         successStreak          int
         penaltyUntil           int64
@@ -309,7 +310,23 @@ func (g *HostGate) Acquire(ctx context.Context, rawURL string, limit, timeoutMs,
         //   2nd call is no-op (rateLimitedUntil already 0). Queue path unchanged
         //   (pump still settles after enqueue + on Release).
         g.settleRateLimitExpiry(st)
-        st.baseLimit = baseLimit
+        // R92-B BUG-259 (P3) 修复: 原无条件 `st.baseLimit = baseLimit` 让下次 Acquire
+        //   (caller 恒传 rule 配置 baseLimit e.g. 3) 覆盖 AdjustConcurrency 的 bump
+        //   (health > 0.8 → baseLimit+1 至 4), bump 仅活 0-5s (下次 Acquire 即清零),
+        //   AdjustConcurrency 60s cooldown 内退化为 no-op (设计意图 "下次 Acquire
+        //   fast path 用新 baseLimit" 失效). 与 BUG-255 (AdjustMinGap 同款 bump-wipe)
+        //   同根因. 修复: 加 lastBaseLimitValue tracker (仅 Acquire 更新, 跟踪
+        //   caller 值). caller 值 == lastValue (同 caller re-acquire) → 不覆盖
+        //   st.baseLimit → AdjustConcurrency bump 保留. caller 值 != lastValue
+        //   (新 caller 接管 / admin 改 rule config) → 覆盖 (caller 值 wins).
+        //   行为: 同 task 多次 Acquire (HostGateLimit 恒定) bump 保留; admin 改
+        //   HostGateLimit 即时生效 (新 caller 值 wins). 0 用户受负面影响 (71 Rule
+        //   HostGateLimit 配置恒定, AdjustConcurrency bump 在 cooldown 内不被
+        //   清零; latent 自 R64-B B1 加 (28 轮未发现)).
+        if baseLimit != st.lastBaseLimitValue {
+                st.baseLimit = baseLimit
+                st.lastBaseLimitValue = baseLimit
+        }
         if st.limit > st.baseLimit {
                 st.limit = st.baseLimit
         }
@@ -580,8 +597,19 @@ func (g *HostGate) AdjustMinGap(host string, latencyMs int64) {
         } else {
                 return
         }
-        // R64-B B3: minGapMsLastValue 同步更新 (与 Acquire 同款, 防 caller 接管误判)
-        st.minGapMsLastValue = st.minGapMs
+        // R92-B BUG-255 (P3) 修复: 原同步更新 `st.minGapMsLastValue = st.minGapMs`
+        //   让下次同 caller Acquire (caller 恒传 rule 配置 minGapMs e.g. 500,
+        //   lastValue 被 AdjustMinGap bump 到 600) 的 `if minGapMs != lastValue`
+        //   误判 "caller 接管" → 重置 st.minGapMs 到 caller 旧值 500, bump 仅活
+        //   0-5s (下次 Acquire 即清零), AdjustMinGap 30s cooldown 内退化为 no-op
+        //   (设计意图 "按源站延迟动态调 minGapMs" 失效, 慢响应 host 不减速).
+        //   修复: 不更新 minGapMsLastValue, 让 Acquire 的 lastValue 仅跟踪
+        //   caller 值 (AdjustMinGap 是 host-scoped 内部调整, 非 caller 接管).
+        //   同 caller 下次 Acquire (minGapMs == lastValue) 不重置 → bump 保留.
+        //   新 caller (不同 minGapMs) 仍重置 (caller 值 wins, 与 R45-1A "防旧
+        //   caller 60s 永久毒杀新 caller" 语义一致). 与 BUG-259 (AdjustConcurrency
+        //   同款 bump-wipe) 同根因; 本 fix 复用已有 minGapMsLastValue 字段,
+        //   BUG-259 需加新字段 lastBaseLimitValue (AdjustConcurrency 无现成 tracker).
         st.lastMinGapAdjustAt = now
 }
 

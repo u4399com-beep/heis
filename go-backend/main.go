@@ -2398,6 +2398,19 @@ func injectBookURL(book map[string]interface{}, style string) {
         //   page=1 返此形态), 与原 hardcoded /?view=category&cat= (cat= 空, server 视
         //   catID="" 走全本分类) 行为等价. injectBookURLs (列表) 调本函数, 故列表页每本
         //   书也获 CategoryURL (topBooks/takeBooks 共享 map 引用, 派生 slice 同款覆盖).
+        // R92-D BUG-256 (P3, main+templates scope, 顺延 R91-D BUG-254 hardcoded category
+        //   family): aijjxs/book.html line 145 "返回列表" 链接硬编码
+        //   /?view=category{{if .Book.categoryId}}&cat={{.Book.categoryId | urlquery}}{{end}}
+        //   绕过 buildCategoryURL — R91-D BUG-254 修 9 book.html + 6 list-page 共 29
+        //   callsite 时遗漏此 callsite (guarded {{if .Book.categoryId}} 形式视为已条件化
+        //   而漏审). admin 配 pseudoStaticStyle=numeric 时, "返回列表" URL = /?view=
+        //   category&cat={id} (query), 与同页 {{.Book.CategoryURL}} (line 61, BUG-254
+        //   修) + NavCats/PageList (buildCategoryURL 输出 /category/{hash}.html) 不
+        //   一致 (canonical weight 分散). 修复: aijjxs/book.html line 145 改
+        //   {{.Book.CategoryURL}} (与 line 61 同字段, catID 空 → /?view=category 全本
+        //   分类, catID 非空 → pseudoStatic 风格 URL, 行为等价 + 风格统一). 0 main.go
+        //   改动 (CategoryURL 注入在下方 line 2402, 无需新字段; BUG-256 仅是 template
+        //   callsite 替换).
         catID, _ := book["categoryId"].(string)
         book["CategoryURL"] = buildCategoryURL(style, catID, 1)
 }

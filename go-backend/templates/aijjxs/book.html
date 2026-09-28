@@ -142,7 +142,7 @@
 <h3>上下部翻页</h3>
 <div class="body">
 <ul class="lines">
-<li><a href="/?view=category{{if .Book.categoryId}}&cat={{.Book.categoryId | urlquery}}{{end}}">返回列表</a></li>
+<li><a href="{{.Book.CategoryURL}}">返回列表</a></li>
 {{if .HasChapters}}<li><a href="#chapter_list">查看目录</a></li>{{end}}
 </ul>
 </div>

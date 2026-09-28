@@ -352,9 +352,15 @@ func sanitizeFetchConfig(m map[string]any) FetchConfig {
 				sts = append(sts, clampInt(int(n), 100, 599))
 			}
 		}
-		if len(sts) > 0 {
-			out.BrowserFallbackStatus = sts
-		}
+		// R92-B BUG-258 (P3) 修复: 原 `if len(sts) > 0 { out.BrowserFallbackStatus = sts }`
+		//   让 admin 显式配空数组 `"browserFallbackStatus": []` (意图: 禁用 browser
+		//   fallback) 时, 零元素 sts 不覆盖 default [403, 412, 429, 503] → admin "禁用
+		//   fallback" 意图失效 (配置 vs 行为脱节, 与 BUG-252 同款 mismatch). 与同函数
+		//   sanitizeCleanConfig line 528-536 RemoveSelectors/AdPatterns/Whitelist (无
+		//   len>0 guard, 显式配空数组即清空) 不一致. 修复: 移除 guard, 显式配 key 即
+		//   覆盖 (含空数组, admin 可清空 fallback list). 0 用户受负面影响 (71 Rule 0
+		//   配空数组; admin 配非空数组行为不变; omit key 行为不变, default 保留).
+		out.BrowserFallbackStatus = sts
 	}
 	if v, ok := m["hostGateLimit"].(float64); ok {
 		out.HostGateLimit = clampInt(int(v), 1, 10)
@@ -558,8 +564,8 @@ func sanitizeCleanConfig(m map[string]any) CleanConfig {
 	// R70-B 目标A: clean.interfere 段 (用户需求 #3 干扰接入). 默认零值 (Enabled=false)
 	//   不破坏现有 71 Rule. admin 在 Rule JSON 加 { "clean": { "interfere": { "enabled":
 	//   true, "interval": 4 } } } 启用. Seed 字段不读 (runner 用 bookID+":"+chapterID
-	//   运行时填, 同章节同干扰输出保缓存友好). Interval 钳到 [0, 100] 防越界
-	//   (0 → 默认 4, 1-2 → 3, 3-5 → 原值, >5 → 5; 详细钳制在 cleaner.applyInterference).
+	//   运行时填, 同章节同干扰输出保缓存友好). Interval 钳到 [0, 5] + 归一化
+	//   (0 → 默认 4, 1-2 → 3, 3-5 原值, >5 → 5; 与 cleaner.applyInterference 同口径).
 	if v, ok := m["interfere"].(map[string]any); ok {
 		if e, ok := v["enabled"].(bool); ok {
 			out.Interfere.Enabled = e
@@ -569,12 +575,28 @@ func sanitizeCleanConfig(m map[string]any) CleanConfig {
 			//   (line 1449-1454) 实际 clamp [3, 5] (0 → 默认 4, 1-2 → 3, 3-5 原值,
 			//   >5 → 5) 不一致. admin 配 Interval=100 会被 applyInterference 静默
 			//   降到 5, 配置 vs 行为脱节 (admin 看到 100, 实际生效 5). 修复:
-			//   clamp [0, 5] 匹配实际行为 (0 → 默认 4, 1-2 → 3, 3-5 原值; >5 在
-			//   sanitize 阶段降到 5, 与 applyInterference 一致, admin 看到的值
-			//   就是实际生效的值). 与 InterfereConfig 注释 (line 1436 "3-5, 0 →
-			//   默认 4") 文档对齐. 0 用户受影响 (71 Rule clean.interfere.enabled
-			//   默认 false, 0 配 Interval >5).
-			out.Interfere.Interval = clampInt(int(iv), 0, 5)
+			//   clamp [0, 5] 匹配实际行为; >5 在 sanitize 阶段降到 5.
+			//
+			// R92-B BUG-257 (P3) 续修 BUG-252: 原 clamp [0, 5] 仅处理 >5 → 5
+			//   case, 漏 0 → 4 (default) + 1-2 → 3 (clamped up) case. admin 配
+			//   Interval=1 被 applyInterference 静默提到 3, 配置 vs 行为脱节
+			//   (admin 看到 1, 实际生效 3, 与 BUG-252 "admin 看到的值就是实际
+			//   生效的值" 目标不符). 修复: sanitize 阶段全量归一化 (与
+			//   applyInterference line 1447-1454 同口径), admin 看到的值就是
+			//   实际生效的值. 行为: admin 配 0/1/2 → DB 存 4/3/3 (applyInterference
+			//   原本也这样归一, 现 sanitize 提前到存 DB 阶段, admin 可见); 配
+			//   3-5 原值; 配 >5 → 5. 0 用户受影响 (71 Rule clean.interfere.enabled
+			//   默认 false; admin 配 1/2 的极罕见, 0 配). 注: omit "interval" key
+			//   → sanitize 跳过本分支, out.Interfere.Interval=0 (零值), applyInterference
+			//   0 → 4 兜底 (与原行为一致, omit = default 语义保留).
+			iv2 := clampInt(int(iv), 0, 5)
+			switch {
+			case iv2 == 0:
+				iv2 = 4
+			case iv2 < 3:
+				iv2 = 3
+			}
+			out.Interfere.Interval = iv2
 		}
 	}
 	return out
