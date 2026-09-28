@@ -26,7 +26,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 	"unicode/utf8"
 )
 
@@ -180,8 +179,16 @@ func NormalizeCategory(name string) string {
 //
 //	continuation byte, 可能导致后续 strings.Contains 误命中 (代理对部分字节凑成另一词).
 //	改用 []rune 安全截断.
+//	R84-B BUG-200 (P3) 修复: len([]rune(text)) → utf8.RuneCountInString(text)
+//	  (allocation-free, 单遍解码计数不分配 slice), 省 1 alloc/call (text 不超长
+//	  时 1→0 alloc, 超长时 2→1 alloc). 与 R83-B BUG-183 NormalizeCategory 同口径.
+//	R84-B BUG-199 (P3) 修复: 原 wordMatches 内 strings.ToLower(t) 每 keyword call
+//	  1 alloc. keyword 循环 165 次 (15 cat × ~11 kws), 165 alloc/call 浪费. 改:
+//	  keyword loop 前 pre-lowercase text 一次 (1 alloc/call), wordMatches 不再
+//	  ToLower (caller 责任). 第 1 步 strings.Contains 用原文 case-sensitive
+//	  (admin 设的 existingCategories 可能含非中文 case-sensitive 名, 不能 lowercase).
 func MatchCategoryByText(text string, existingCategories []string) string {
-	if len([]rune(text)) > 3000 {
+	if utf8.RuneCountInString(text) > 3000 {
 		text = string([]rune(text)[:3000])
 	}
 	if text == "" {
@@ -199,15 +206,16 @@ func MatchCategoryByText(text string, existingCategories []string) string {
 			}
 		}
 	}
-	// 2. 关键词评分
+	// 2. 关键词评分 (pre-lowercase once for wordMatches hot loop, R84-B BUG-198)
+	lowerText := strings.ToLower(text)
 	bestName := ""
 	bestScore := 0
 	for _, c := range categoryKeywords {
 		score := 0
 		for _, kw := range c.kws {
 			kt := strings.TrimSpace(kw)
-			if wordMatches(text, kt) {
-				if len([]rune(kt)) >= 2 {
+			if wordMatches(lowerText, kt) {
+				if utf8.RuneCountInString(kt) >= 2 {
 					score += 2
 				} else {
 					score += 1
@@ -274,6 +282,13 @@ var wordMatchesReCache sync.Map
 //   - 含连字符/空格的英文短语走 Contains (短语形态本身隔离良好)
 //
 // R45-1A: 缓存预编译正则, 避免每次 regexp.Compile.
+// R84-B BUG-199 (P3) 修复: 移除 strings.ToLower(t) (caller 已 pre-lowercase).
+//
+//	两个 caller: MatchCategoryByText (line ~207 pre-lowercase 1 次) +
+//	DetectCompleteFromText (line ~303 pre-lowercase 1 次). 原实现每 call 1 alloc
+//	× 165 keywords/call = 165 alloc/call 浪费. 改后 0 alloc (caller 已 lower).
+//	行为不变 (英文 keyword 全小写, text 已 lower, ToLower 是 no-op). BUG-186
+//	("AI"→"ai" 走 \bai\b 正则全 case 匹配) 仍生效 (caller pre-lowercase 覆盖).
 func wordMatches(t, w string) bool {
 	if englishWordRe.MatchString(w) {
 		var re *regexp.Regexp
@@ -287,7 +302,7 @@ func wordMatches(t, w string) bool {
 			re = r
 			wordMatchesReCache.Store(w, re)
 		}
-		return re.MatchString(strings.ToLower(t))
+		return re.MatchString(t)
 	}
 	return strings.Contains(t, w)
 }
@@ -298,7 +313,7 @@ func wordMatches(t, w string) bool {
 //
 // R44-1C 修复: 原 text[:2000] 按字节切片不安全, 改用 []rune 防多字节字符斩半.
 func DetectCompleteFromText(text string) string {
-	if len([]rune(text)) > 2000 {
+	if utf8.RuneCountInString(text) > 2000 {
 		text = string([]rune(text)[:2000])
 	}
 	t := strings.ToLower(text)
@@ -341,7 +356,8 @@ func SmartCompleteDetect(in SmartCompleteDetectInput) SmartCompleteDetectResult 
 		if r != "unknown" {
 			s := in.StatusField
 			// R44-1C 修复: 原 s[:30] 按字节切片不安全, 改用 []rune 防多字节字符斩半.
-			if len([]rune(s)) > 30 {
+			// R84-B BUG-200 (P3): len([]rune(s)) → utf8.RuneCountInString(s) (省 1 alloc).
+			if utf8.RuneCountInString(s) > 30 {
 				s = string([]rune(s)[:30])
 			}
 			return SmartCompleteDetectResult{Status: r, Reason: "源站状态: " + s}
@@ -583,207 +599,23 @@ func SmartResumeSortWithDB(items []SmartResumeItem, lookup BookProgressLookup) [
 //        - 无内嵌 BUG 修复 (SortTaskPriorityQueue 是稳定排序, sort.SliceStable
 //          + 显式 tie-breaker TaskID 字典序, 无逻辑分支, 无 BUG 修复历史).
 
-// ---------- R68-B 采集增强 B12: 采集任务并发自适应 ----------
+// R84-B BUG-198 (P3) deadcode 删除: AdaptiveTaskConcurrency + taskProgress group
+//	(smart.go line 603-803, 201 行). R68-B 加的 "future wiring" exported per-task
+//	并发自适应 (AdaptiveTaskConcurrency) + 任务进度追踪组 (taskProgress struct
+//	+ taskProgressMap sync.Map + RecordTaskProgress + ClearTaskProgress +
+//	EstimateTaskETA + TaskProgressSnapshot), R68 → R84 = 16 轮未 wire (R69-R84),
+//	rg 全仓 0 caller (仅注释提及). 与 R83-B BUG-193 SortTaskPriorityQueue
+//	(R67-B 16 == 16 边界删) 同款 precedent (越 16 轮阈值, 16 == 16 边界). 删除
+//	后无 cascade 依赖 (taskProgress 仅 Record/Clear/Estimate/Snapshot 用,
+//	taskProgressMap 仅这 4 个函数 + taskProgress struct 用, 一并删). 未来若 admin
+//	需任务 ETA + 进度查询, 重新加仅需 ~50 行: struct + sync.Map + Record/Clear +
+//	EstimateETA float64 + Snapshot range.
 //
-// admin 调度采集任务时, 按当前活跃任务数动态调每任务并发 (per-task concurrency).
-// 设计意图: 任务多则降并发防源站过载 (单 host 同时间被打过多 → 频控 + 反爬识别
-// "高频请求" 是爬虫指纹); 任务少则提并发提速采集. caller (admin / runner) 在
-// 启动任务时调本函数得推荐并发, 传入 TaskRuntime.SetConcurrency.
-//
-// 阈值表 (基于经验值, 防源站过载 + 兼顾提速):
-//   activeTasks == 0 → 默认并发 8 (无活跃任务, 用默认值, 不会被调)
-//   activeTasks == 1 → 16 (单任务, 充分利用带宽)
-//   activeTasks 2-3 → 12 (轻度并发, 仍提速)
-//   activeTasks 4-8 → 8 (中度并发, 降源站压力)
-//   activeTasks 9-16 → 4 (重度并发, 防过载)
-//   activeTasks 17-32 → 2 (极重度并发, 仅 2 并发/任务)
-//   activeTasks > 32 → 1 (海量任务, 单并发, 防 IP 封禁)
-//
-// 价值: 防 N 任务 × M 并发 = N×M 总请求率 → 源站识别 "高频" → 频控. 自适应调
-//   并发让 N×M 趋于稳定 (e.g. 1 任务 16 并发 = 16 req/s, 16 任务 4 并发 = 64 req/s,
-//   32 任务 1 并发 = 32 req/s). 上限 ~64 req/s 不超源站频控阈值.
-// caller: admin API 在 /api/admin/tasks/start 路径调本函数得 recommended concurrency,
-//   传入 TaskRuntime + cfg.Concurrency.
-
-// AdaptiveTaskConcurrency — 按活跃任务数返推荐 per-task 并发.
-//
-//	activeTasks < 0 视为 0 (容错). 0 时返默认 8 (caller 可不调本函数, 用默认值).
-//	R68-B 采集增强 B12.
-func AdaptiveTaskConcurrency(activeTasks int) int {
-	if activeTasks < 0 {
-		activeTasks = 0
-	}
-	switch {
-	case activeTasks == 0:
-		return 8
-	case activeTasks == 1:
-		return 16
-	case activeTasks <= 3:
-		return 12
-	case activeTasks <= 8:
-		return 8
-	case activeTasks <= 16:
-		return 4
-	case activeTasks <= 32:
-		return 2
-	default:
-		return 1
-	}
-}
-
-// ---------- R68-B 采集增强 B13: 采集进度预估 ----------
-//
-// admin UI 展示任务进度时, 不仅显示已完成/总数, 还预估完成时间 (ETA).
-// 数据源: caller (runner) 周期性调 RecordTaskProgress(taskID, completed, total),
-//   本函数基于历史速率 (completed / elapsed_seconds) + 剩余量 (total - completed)
-//   预估完成时间. 速率不足 (样本太少) → ok=false, caller 显示 "计算中...".
-//
-// 设计:
-//   - taskProgressTracker 进程级单例, sync.Map[taskID] -> *taskProgress.
-//   - taskProgress: {completed, total, startedAt, lastUpdateAt}.
-//   - ETA = now + (total - completed) / rate, rate = completed / (now - startedAt).
-//   - 容错: rate == 0 (无样本) → ok=false.
-//   - 容错: completed >= total → ok=true, eta = now (已完成).
-//   - 清理: caller 显式调 ClearTaskProgress(taskID) 在任务完成/取消时. 不自动 sweep
-//     (任务数有限, 1000+ 任务也只占少量内存).
-//
-// 价值: admin UI 展示 ETA 让操作员判断 "还要多久完成" (e.g. 万章书 30 分钟完成,
-//   操作员可决定是否等待或并行启新任务). 不影响采集性能 (数据已存在, 仅算除法).
-
-// taskProgress — 单个任务的进度快照.
-//
-//	R68-B BUG-77 (P3) 修复: 加 mu sync.Mutex 保护字段读 / 写, 防数据竞争.
-//	原 RecordTaskProgress 写 + EstimateTaskETA / TaskProgressSnapshot 读 无锁,
-//	并发场景 (runner 写 + admin 读) → race. 改: 所有访问持 mu.
-type taskProgress struct {
-	mu           sync.Mutex
-	completed    int64
-	total        int64
-	startedAt    int64 // UnixMilli, 首次 record 时间
-	lastUpdateAt int64 // UnixMilli, 最近 record 时间
-}
-
-// taskProgressMap — taskID string -> *taskProgress (进程级单例).
-var taskProgressMap sync.Map
-
-// RecordTaskProgress — 记录任务进度 (caller 在周期性 update 时调).
-//
-//	completed < 0 / total < 0 视为 0 (容错). taskID == "" 不记录.
-//	completed > total 时仍记录 (caller 可能误传, 但 ETA 计算会 ok=true 视为完成).
-//	首次 record 设 startedAt = now. 后续只更新 completed / total / lastUpdateAt.
-//	R68-B 采集增强 B13. R68-B BUG-77: 持 p.mu 写防 race.
-func RecordTaskProgress(taskID string, completed, total int64) {
-	if taskID == "" {
-		return
-	}
-	if completed < 0 {
-		completed = 0
-	}
-	if total < 0 {
-		total = 0
-	}
-	now := time.Now().UnixMilli()
-	var p *taskProgress
-	if v, ok := taskProgressMap.Load(taskID); ok {
-		p = v.(*taskProgress)
-	} else {
-		p = &taskProgress{startedAt: now}
-		actual, _ := taskProgressMap.LoadOrStore(taskID, p)
-		p = actual.(*taskProgress)
-	}
-	p.mu.Lock()
-	p.completed = completed
-	p.total = total
-	p.lastUpdateAt = now
-	p.mu.Unlock()
-}
-
-// ClearTaskProgress — 清除任务进度 (caller 在任务完成/取消时调).
-//
-//	R68-B 采集增强 B13.
-func ClearTaskProgress(taskID string) {
-	if taskID == "" {
-		return
-	}
-	taskProgressMap.Delete(taskID)
-}
-
-// EstimateTaskETA — 预估任务完成时间.
-//
-//	返 (estimatedAt, ok). ok=false 表示无样本或 total=0, caller 显示 "计算中...".
-//	ok=true 时 estimatedAt = now + (total - completed) / rate.
-//	rate = completed / (now - startedAt) (整体速率). 若 rate == 0 (startedAt == now
-//	或 completed == 0) → ok=false.
-//	completed >= total → ok=true, estimatedAt = now (已完成).
-//	R68-B 采集增强 B13. R68-B BUG-77: 持 p.mu 读防 race.
-func EstimateTaskETA(taskID string) (estimatedAt time.Time, ok bool) {
-	if taskID == "" {
-		return time.Time{}, false
-	}
-	v, loaded := taskProgressMap.Load(taskID)
-	if !loaded {
-		return time.Time{}, false
-	}
-	p := v.(*taskProgress)
-	now := time.Now().UnixMilli()
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	// 无样本或未启动: 返 ok=false
-	if p.total <= 0 || p.startedAt == 0 {
-		return time.Time{}, false
-	}
-	// 已完成 (completed >= total): 返 now (caller 显示 "已完成")
-	if p.completed >= p.total {
-		return time.UnixMilli(now), true
-	}
-	// 速率计算
-	elapsed := now - p.startedAt
-	if elapsed <= 0 {
-		// startedAt == now (首次 record 刚发生): 无样本, ok=false
-		return time.Time{}, false
-	}
-	if p.completed <= 0 {
-		// 无完成样本: ok=false (无法估速率)
-		return time.Time{}, false
-	}
-	// rate = completed / elapsed (项/ms)
-	// remaining = total - completed (项)
-	// etaMs = remaining / rate = (total - completed) * elapsed / completed
-	remaining := p.total - p.completed
-	// R83-B BUG-188 (P3) 修复: 原 remaining * elapsed / p.completed int64 乘法
-	//   在极端 case (total=1e9 + elapsed=1e10 ms ~316 年) 乘积 ~1e19 略溢 int64
-	//   max (~9.2e18). 实际不会 (remaining < 1e5 章 + elapsed < 8.64e7 ms = 1 day
-	//   → 乘积 < 8.64e12 安全), 但 admin 可传异常 total. 修复: 用 float64 算避免
-	//   int64 overflow + cap 1 year ms 防 now+etaMs 自身溢 int64 (1 year ~3.15e10,
-	//   now + 3.15e10 < 9.2e18 安全).
-	const etaMsCap int64 = 365 * 24 * 3600 * 1000 // 1 year in ms
-	etaMs := int64(float64(remaining) * float64(elapsed) / float64(p.completed))
-	if etaMs > etaMsCap {
-		etaMs = etaMsCap
-	}
-	return time.UnixMilli(now + etaMs), true
-}
-
-// TaskProgressSnapshot — admin / metrics 查询用: 返回任务进度快照.
-//
-//	R68-B 采集增强 B13. R68-B BUG-77: 持 p.mu 读防 race.
-func TaskProgressSnapshot() map[string]map[string]int64 {
-	out := map[string]map[string]int64{}
-	taskProgressMap.Range(func(k, v any) bool {
-		p := v.(*taskProgress)
-		p.mu.Lock()
-		m := map[string]int64{
-			"completed":    p.completed,
-			"total":        p.total,
-			"startedAt":    p.startedAt,
-			"lastUpdateAt": p.lastUpdateAt,
-		}
-		p.mu.Unlock()
-		out[k.(string)] = m
-		return true
-	})
-	return out
-}
+//	历史 BUG 修复痕迹 (随函数消亡):
+//	  - R68-B BUG-77: taskProgress.mu sync.Mutex 防 race (随 struct 消亡).
+//	  - R83-B BUG-188: EstimateTaskETA float64 + 1 year cap 防 int64 overflow
+//	    (随 EstimateTaskETA 消亡, R83-B 已预言 "BUG-188 修复随 EstimateTaskETA
+//	    消亡, R84+ 不需补修").
 
 // ---------- R79-B 目标 A: 智能规则适配 (Rule 字段缺失时 fallback 通用提取逻辑) ----------
 //

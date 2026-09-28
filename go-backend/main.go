@@ -837,23 +837,35 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
 		injectBookURL(book, pseudoStyle)
 		data["Chapter"] = ch
 		data["Book"] = book
-		data["Prev"] = prev
-		data["Next"] = next
 		// R63-A: 注入 URL builder 输出.
 		data["ChapterURL"] = buildChapterURL(pseudoStyle, chID, bookIDFromMap(book))
 		if bid := bookIDFromMap(book); bid != "" {
 			data["BookURL"] = buildBookURL(pseudoStyle, bid)
 		}
+		// R84-D BUG-195 (R83-D 诚实留痕 #3 修复, Go-side 替代 12 主题 × 4 模板
+		//   48 处改动): 原 data["Prev"]=prev 在前 + 后续 if prev["id"]=="" 则
+		//   prev["URL"] 不设 → 模板 {{if .Prev}}<a href="{{.Prev.URL}}"> 渲染
+		//   `<a href="<no value>">` 链接 (Chapter.id NOT NULL schema 保证实际
+		//   不触发, 但 defense in depth). 改 Go-side guard: id 空 → prev=nil
+		//   (模板 {{if .Prev}} 跳过渲染链接). 一处改动替代 12 主题 × 4 模板 48
+		//   处 {{if .Prev.URL}} 二层 guard 改动. 同时把 data["Prev"]/["Next"]
+		//   赋值移到 guard 后 (确保模板看到最终值).
 		if prev != nil {
 			if pid, ok := prev["id"].(string); ok && pid != "" {
 				prev["URL"] = buildChapterURL(pseudoStyle, pid, bookIDFromMap(book))
+			} else {
+				prev = nil
 			}
 		}
 		if next != nil {
 			if nid, ok := next["id"].(string); ok && nid != "" {
 				next["URL"] = buildChapterURL(pseudoStyle, nid, bookIDFromMap(book))
+			} else {
+				next = nil
 			}
 		}
+		data["Prev"] = prev
+		data["Next"] = next
 		// R76-A 目标B (用户需求 #1 pSEO 标签注入, 章节页同款): 章节页 OgType=article
 		//   (FB Open Graph article 类型, 比书页 book 类型更细 — 每章独立 article).
 		//   字段:
@@ -1135,8 +1147,24 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
 	tmplName := theme + "/" + view
 	// R41-1B: 渲染前先校验模板存在; 失败时回退到 shipsay/home 而非"半写后报错"
 	if tmpls.Lookup(tmplName) == nil {
-		log.Printf("[homeHandler] template not found: %s, fallback to shipsay/home", tmplName)
-		tmplName = "shipsay/home"
+		// R84-D (R83-D 交接 #1 "非 shipsay 主题 history.html 接入"):
+		//   view=history 时优先 fallback shipsay/history (单网格
+		//   .HistoryBooks) 而非 shipsay/home (8× Books 重复渲染:
+		//   HomeCategoryBooks × N 分类 + LatestBooks + Popular +
+		//   TopBooks + FeaturedBooks 全用同一 historyBooks 数据).
+		//   非 shipsay 主题 (aijjxs/23qb/101kks/trxsw/ggd66/pilishuwu/
+		//   huangjinwu/ddyueshu/x2552) view=history 现 fallback
+		//   shipsay/history (shipsay CSS 风格而非 aijjxs 风格), 用户
+		//   看到单网格 history 列表 (而非 8 区块重复). 880 行模板复制
+		//   (11 主题 × 80 行) 推 R85+ (前提: 用户反馈 default
+		//   shipsay/history 渲染正确 + 决定逐主题接入). 非 history view
+		//   仍 fallback shipsay/home (兼容旧行为, R41-1B 设计不变).
+		fallbackTmpl := "shipsay/home"
+		if view == "history" {
+			fallbackTmpl = "shipsay/history"
+		}
+		log.Printf("[homeHandler] template not found: %s, fallback to %s", tmplName, fallbackTmpl)
+		tmplName = fallbackTmpl
 	}
 	// 用 bytes.Buffer 先渲染, 失败时还能控制响应
 	var buf strings.Builder
@@ -2421,7 +2449,13 @@ var bookHistoryTrackerHTML = `<script>(function(){
     var raw = localStorage.getItem(key);
     var arr = [];
     if (raw) { try { arr = JSON.parse(raw); if (!Array.isArray(arr)) arr = []; } catch(e) { arr = []; } }
-    arr = arr.filter(function(x){ return x !== bid; });
+    // R84-D BUG-197 (R83-D 诚实留痕 #5 修复): localStorage 被外部修改含非 string
+    //   元素 (e.g. [1,2,"abc"]) → arr 含数字 → JSON.stringify 生成
+    //   {"ids":[1,2,"abc"]} → Go 端 getHistoryViewData json.Unmarshal wrapper.
+    //   IDs []string 失败 → 返 nil → fallback latest 48. 改: filter 仅留
+    //   string 元素 (与 Go 端 []string 一致), 同步移除 bid (dedup 用, 与下
+    //   行 arr.unshift(bid) 配合保 bid 唯一在前). 1 行 guard, 0 perf 影响.
+    arr = arr.filter(function(x){ return typeof x === 'string' && x !== bid; });
     arr.unshift(bid);
     if (arr.length > 48) arr.length = 48;
     try { localStorage.setItem(key, JSON.stringify(arr)); } catch(e) {}
@@ -3087,7 +3121,20 @@ func takeBooks(books []map[string]interface{}, n int) []map[string]interface{} {
 	if n > len(books) {
 		n = len(books)
 	}
-	return books[:n]
+	if n == 0 {
+		return []map[string]interface{}{}
+	}
+	// R84-D BUG-194 (R83-D 诚实留痕 #2 修复): 原 return books[:n] 共享底层数组
+	//   与调用方 (case home/history/search/... 设 data["Books"]=books +
+	//   data["Popular"]=takeBooks(books,12) 等), 两 slice alias 同一 array.
+	//   模板只读 → 0 当前 bug; 但 future maintainer 对 Popular 调 append (cap>len
+	//   时 in-place 写) 会写穿 Books[idx>=n]. 与 topBooks (line ~3057 make+copy
+	//   隔离) 不同款. 改 make+copy 隔离底层数组, +1 alloc/call ~5ms/1000 req
+	//   perf (P3 不值得但 latent 风险 + 代码一致性值得). 0 caller 依赖 aliasing
+	//   副作用 (rg takeBooks 全 7 处均为只读模板字段注入).
+	out := make([]map[string]interface{}, n)
+	copy(out, books[:n])
+	return out
 }
 
 // R82-D: getHistoryViewData — R81 交接 #8 (history view 缺字段) + R77-D 未决项 #10
