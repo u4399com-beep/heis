@@ -2520,7 +2520,23 @@ func adminRuleByIDHandler(w http.ResponseWriter, r *http.Request) {
                         return
                 }
                 var taskCount int
-                _ = db.QueryRow(`SELECT COUNT(*) FROM Task WHERE ruleId=?`, ruleID).Scan(&taskCount)
+                // R93-C BUG-260 (P3, R80-D BUG-171 / R85-C BUG-204~215 / R86-C BUG-219~224 /
+                //   R88-C BUG-233~236 / R90-C BUG-247~248 / R91-C BUG-250~252 / R92-C BUG-255~256
+                //   同款 Pattern C `_ = ...Scan` 吞错 family 续抓, COUNT(*) 变种): 原实现
+                //   `_ = db.QueryRow(...).Scan(&taskCount)` 吞错 — DB 故障 (SQLite busy lock /
+                //   连接闪断 / 磁盘满) 时 taskCount=0 → "规则被 0 任务引用" 检查静默通过 →
+                //   DELETE Rule 推进 → 残留 Task.ruleId 指向已删 Rule (orphan FK;
+                //   adminTaskControlHandler SELECT r.config 返 '{}' 兜底, 采集用空 Rule
+                //   跑 → 0 本采集, 用户以为任务坏实际是 Rule 被删). R88-C BUG-233 已加
+                //   SELECT id 存在性检查 (line ~2511), 本 COUNT 仍在 `_ =` swallow.
+                //   COUNT(*) 恒返 1 行无 ErrNoRows 分支, 任何 err 都是 DB 故障. 显式 err
+                //   检查: DB 故障返 500 让操作员重试 (与 BUG-252 COUNT(*) in-flight 占位
+                //   检查同款 err 显式区分).
+                taskCountErr := db.QueryRow(`SELECT COUNT(*) FROM Task WHERE ruleId=?`, ruleID).Scan(&taskCount)
+                if taskCountErr != nil {
+                        writeJSONErr(w, "查询规则任务引用失败: "+taskCountErr.Error(), 500)
+                        return
+                }
                 if taskCount > 0 {
                         writeJSONErr(w, fmt.Sprintf("该规则被 %d 个任务引用, 请先删除/迁移相关任务", taskCount), 400)
                         return
@@ -3806,7 +3822,22 @@ func adminCategoryByIDHandler(w http.ResponseWriter, r *http.Request) {
                         return
                 }
                 var count int
-                _ = db.QueryRow(`SELECT COUNT(*) FROM Book WHERE categoryId=?`, id).Scan(&count)
+                // R93-C BUG-261 (P3, R80-D BUG-171 / R85-C BUG-204~215 / R86-C BUG-219~224 /
+                //   R88-C BUG-233~236 / R90-C BUG-247~248 / R91-C BUG-250~252 / R92-C BUG-255~256
+                //   同款 Pattern C `_ = ...Scan` 吞错 family 续抓, COUNT(*) 变种): 原实现
+                //   `_ = db.QueryRow(...).Scan(&count)` 吞错 — DB 故障 (SQLite busy lock /
+                //   连接闪断 / 磁盘满) 时 count=0 → "分类下 0 本书" 检查静默通过 → DELETE
+                //   Category 推进 → 残留 Book.categoryId 指向已删 Category (orphan FK;
+                //   adminBooksList JOIN Category 返 COALESCE '未分类' 兜底但 SSR 分类页该
+                //   分类消失, 用户书库分类统计错乱). R88-C BUG-235 已加 SELECT id 存在性
+                //   检查 (line ~3798), 本 COUNT 仍在 `_ =` swallow. COUNT(*) 恒返 1 行无
+                //   ErrNoRows 分支, 任何 err 都是 DB 故障. 显式 err 检查: DB 故障返 500
+                //   让操作员重试 (与 BUG-260 同款 COUNT(*) err 显式区分).
+                bookCountErr := db.QueryRow(`SELECT COUNT(*) FROM Book WHERE categoryId=?`, id).Scan(&count)
+                if bookCountErr != nil {
+                        writeJSONErr(w, "查询分类书籍引用失败: "+bookCountErr.Error(), 500)
+                        return
+                }
                 if count > 0 {
                         writeJSONErr(w, fmt.Sprintf("该分类下有 %d 本书, 请先移除", count), 400)
                         return
@@ -6767,7 +6798,19 @@ func adminFeaturedBooksList(w http.ResponseWriter, r *http.Request) {
                 return
         }
         var raw string
-        _ = db.QueryRow(`SELECT value FROM Setting WHERE key=?`, "featuredBooks."+siteID).Scan(&raw)
+        // R93-C BUG-264 (P3, BUG-262/263 同款 Pattern C family 续抓, GET 路径 Setting 读):
+        //   原实现 `_ = db.QueryRow(...).Scan(&raw)` 吞错 — DB 故障 (SQLite busy lock /
+        //   连接闪断 / 磁盘满) 时 raw="" → bookIDs=[] → 响应返 books:[] (admin UI 显示
+        //   无推荐, 用户以为没配置实际是 SELECT 失败; 重新配置会覆盖既有 Setting JSON
+        //   丢失原配置). 与 BUG-262 SELECT id 不同, Setting key 不存在 (首次配置) 也是
+        //   ErrNoRows (合法状态 → 返空 bookIDs 是正确语义), 仅其他 err (DB 故障) 应 500.
+        //   显式 err 区分: ErrNoRows → 继续 (无 Setting 行, 用空 bookIDs 走响应); 其他
+        //   err → 500 (让 admin UI 知道是 DB 故障而非无配置).
+        rawErr := db.QueryRow(`SELECT value FROM Setting WHERE key=?`, "featuredBooks."+siteID).Scan(&raw)
+        if rawErr != nil && rawErr != sql.ErrNoRows {
+                writeJSONErr(w, "查询推荐书籍配置失败: "+rawErr.Error(), 500)
+                return
+        }
         bookIDs := []string{}
         if raw != "" && raw != "{}" {
                 var parsed map[string]interface{}
@@ -6840,10 +6883,26 @@ func adminFeaturedBooksUpdate(w http.ResponseWriter, r *http.Request) {
         valid := []string{}
         for _, bid := range bookIDs {
                 var bExist string
-                _ = db.QueryRow(`SELECT id FROM Book WHERE id=?`, bid).Scan(&bExist)
-                if bExist != "" {
-                        valid = append(valid, bid)
+                // R93-C BUG-262 (P3, R80-D BUG-171 / R85-C BUG-204~215 / R86-C BUG-219~224 /
+                //   R88-C BUG-233~236 / R90-C BUG-247~248 / R91-C BUG-250~252 / R92-C BUG-255~256
+                //   同款 Pattern C `_ = ...Scan` 吞错 family 续抓, SELECT id 变种): 原实现
+                //   `_ = db.QueryRow(...).Scan(&bExist)` 吞错 — DB 故障 (SQLite busy lock /
+                //   连接闪断 / 磁盘满) 时 bExist="" → 该 bookId 被误判 "不存在" 跳过 →
+                //   admin 保存 10 本推荐, 若某本恰逢 DB 故障窗口 → 该本被静默滤除 →
+                //   Setting JSON 只存 9 本 (用户意图丢失无 500 反馈, 下次 GET 显示 9 本
+                //   用户以为漏勾实际是 SELECT 失败). 与 BUG-260/261 COUNT(*) 不同, SELECT
+                //   id 有 ErrNoRows 分支 (书已删 → 静默跳过是正确语义) vs DB 故障 (应 500).
+                //   显式 err 区分: ErrNoRows → continue (与 GET 同款 line 6789 跳过语义);
+                //   其他 err → 500 (不让 DB 故障静默丢用户配置).
+                bExistErr := db.QueryRow(`SELECT id FROM Book WHERE id=?`, bid).Scan(&bExist)
+                if bExistErr == sql.ErrNoRows || bExist == "" {
+                        continue
                 }
+                if bExistErr != nil {
+                        writeJSONErr(w, "查询书籍存在性失败: "+bExistErr.Error(), 500)
+                        return
+                }
+                valid = append(valid, bid)
         }
         payload, _ := json.Marshal(map[string]interface{}{"bookIds": valid})
         _, err := db.Exec(`INSERT INTO Setting (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
@@ -6856,8 +6915,19 @@ func adminFeaturedBooksUpdate(w http.ResponseWriter, r *http.Request) {
         out := []map[string]interface{}{}
         for _, bid := range valid {
                 var name, author, cover string
-                _ = db.QueryRow(`SELECT COALESCE(name,''), COALESCE(author,''), COALESCE(cover,'') FROM Book WHERE id=?`, bid).
+                // R93-C BUG-263 (P3, BUG-262 同款 Pattern C family 续抓, 同 handler 第 2 处
+                //   readback SELECT): 原实现 `_ = db.QueryRow(...).Scan(&name, &author,
+                //   &cover)` 吞错 — DB 故障时 name/author/cover 全空 → 响应 ok:true 但 books
+                //   内含空 name 卡片 (admin UI 显示空白书卡, 用户以为书被删实际是 SELECT
+                //   失败). 与 GET 路径 (line 6789 `if err != nil { continue }`) 对齐: err 时
+                //   跳过该本不返半截空壳 (response 不含该 bookId, 与 GET 跳过已删书语义一致;
+                //   Setting 已存全量 valid, 用户下次 GET 自然看到真实状态). 不 500 因 Setting
+                //   已成功保存, 500 会让 admin 误以为保存失败. best-effort readback.
+                err := db.QueryRow(`SELECT COALESCE(name,''), COALESCE(author,''), COALESCE(cover,'') FROM Book WHERE id=?`, bid).
                         Scan(&name, &author, &cover)
+                if err != nil {
+                        continue
+                }
                 out = append(out, map[string]interface{}{
                         "id": bid, "name": name, "author": author, "cover": cover,
                 })

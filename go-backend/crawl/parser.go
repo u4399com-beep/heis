@@ -1922,7 +1922,16 @@ func ParseContent(ctx context.Context, firstURL, html string, pageRule PageRule,
                 content := ""
                 if rule, ok := pageRule.Fields["content"]; ok && rule.Type != "" {
                         if rule.Type == FieldConst {
-                                content = applyConstTemplate(rule.Expression, URLVars(curURL))
+                                // R93-B BUG-262 (P3) 修复: 原直接调 applyConstTemplate 跳过
+                                //   ApplyTransform, FieldConst content 规则的 stripTags/replaceFrom/
+                                //   decode/index 静默失效 (FieldJSON 分支 line 1929 显式 ApplyTransform,
+                                //   FieldCSS 分支 line 1933 走 ExtractField 内部 ApplyTransform, 唯独
+                                //   FieldConst 漏). 修复: 走 ExtractField 统一入口 (与 ParseList JSON
+                                //   line 1390 / ParseToc JSON line 1405 同款), ApplyTransform 在 else
+                                //   分支 line 1175 一并生效. 行为变化: FieldConst content 规则若配
+                                //   stripTags 等现在生效 (71 Rule 0 用 FieldConst content, 0 当前用户
+                                //   受影响; 未来 admin 配置后受益).
+                                content = ExtractField("", nil, nil, rule, &ExtractCtx{Vars: URLVars(curURL)})
                         } else if rule.Type == FieldJSON {
                                 root := ParseJsonBody(current)
                                 content = JsonToString(JsonGet(root, rule.Expression))

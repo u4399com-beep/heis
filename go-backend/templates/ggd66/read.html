@@ -64,9 +64,15 @@
 </div>
 <span class="kongwen"></span>
 <div class="booktag">
-{{if .Prev}}<a id="linkPrev" href="{{.Prev.URL}}">上一章</a>{{end}}
-<a id="linkIndex" href="{{.BookURL}}">返回目录</a>
-{{if .Next}}<a id="linkNext" href="{{.Next.URL}}">下一章</a>{{end}}
+{{/* R93-D BUG-262 (P4 精简, main+templates scope): 底部 booktag 复用 line 56-58
+     顶部 booktag 的 id="linkPrev"/"linkIndex"/"linkNext" → DOM 同 id 重复
+     (HTML5 spec: id 必须唯一; getElementById 仅返首个, CSS #id 选中首个).
+     0 JS 引用此 3 id (ggd66/read.html 0 keydown/getElementById('linkPrev'
+     等), 纯装饰 anchor), 0 CSS #linkPrev 选择器 (ggd66.css 用 .booktag a).
+     删底部 3 id 属性, 保顶部 3 id (供未来 keyboard nav 接入用, 首个匹配). */}}
+{{if .Prev}}<a href="{{.Prev.URL}}">上一章</a>{{end}}
+<a href="{{.BookURL}}">返回目录</a>
+{{if .Next}}<a href="{{.Next.URL}}">下一章</a>{{end}}
 </div>
 <div class="clear"></div>
 </div>

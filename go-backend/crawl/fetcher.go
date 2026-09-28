@@ -4086,6 +4086,36 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 if smap := resp.Header.Get("X-Sourcemap"); smap != "" {
                         recordSecurityHeader(originHost(rawURL), "X-Sourcemap", smap)
                 }
+                // R93-A 反反爬第 159-163 项: 频控策略 / 缓存 validator / Set-Cookie 安全
+                //   flag 观测 (per-host 合并 tracker 第 36-40 字段, 与 124-158 同款).
+                //   第 159 项 Retry-After — 显式频控策略 (429/503+Retry-After: <sec>),
+                //     反爬关联: 明确频控 = 成熟反爬基础设施 (Cloudflare/Akamai rate limit).
+                //   第 160 项 ETag — 缓存 validator (强 / 弱), 反爬关联: Cloudflare/Akamai
+                //     用 ETag 跟踪 bot fingerprint (资源版本指纹与 cf-bm cookie 联动).
+                //   第 161 项 Last-Modified — 缓存 validator (server staleness), 反爬
+                //     关联: 静态资源 host 通常严格反爬 (老资源 = 老反爬栈).
+                //   第 162 项 Set-Cookie SameSite — Strict/Lax/None posture, 反爬关联:
+                //     SameSite=Strict/Lax session cookie = 成熟 session 保护, 常配 bot
+                //     detection cookies (__cf_bm + cf_clearance Cloudflare / _abck Akamai).
+                //   第 163 项 Set-Cookie Secure — Secure flag presence, 反爬关联: Secure
+                //     session cookie = HTTPS-only bot mitigation cookie, 与 162 同款 family.
+                if ra := resp.Header.Get("Retry-After"); ra != "" {
+                        recordSecurityHeader(originHost(rawURL), "Retry-After", ra)
+                }
+                if et := resp.Header.Get("ETag"); et != "" {
+                        recordSecurityHeader(originHost(rawURL), "ETag", et)
+                }
+                if lm := resp.Header.Get("Last-Modified"); lm != "" {
+                        recordSecurityHeader(originHost(rawURL), "Last-Modified", lm)
+                }
+                if sc := resp.Header["Set-Cookie"]; len(sc) > 0 {
+                        if v := extractSetCookieAttr(sc, "SameSite"); v != "" {
+                                recordSecurityHeader(originHost(rawURL), "Set-Cookie-SameSite", v)
+                        }
+                        if v := extractSetCookieAttr(sc, "Secure"); v != "" {
+                                recordSecurityHeader(originHost(rawURL), "Set-Cookie-Secure", v)
+                        }
+                }
 
                 // Set-Cookie 处理 (autoCookie)
                 if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
@@ -5048,6 +5078,35 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 }
                 if smap := extractHeaderFromCurlStdout(headers, "X-Sourcemap"); smap != "" {
                         recordSecurityHeader(domain, "X-Sourcemap", smap)
+                }
+                // R93-A 反反爬第 159-163 项: 频控策略 / 缓存 validator / Set-Cookie 安全
+                //   flag 观测 (与 fetchHttp 同款, curl -D - dump headers 路径;
+                //   fetchBinaryViaCurl 不 dump 故不调, 与 124-158 同款限制). Set-Cookie
+                //   在 curl -D - 输出中每 cookie 一行, 逐行扫描提取属性 (与 fetchHttp
+                //   resp.Header["Set-Cookie"] 同款 multi-cookie 处理).
+                if ra := extractHeaderFromCurlStdout(headers, "Retry-After"); ra != "" {
+                        recordSecurityHeader(domain, "Retry-After", ra)
+                }
+                if et := extractHeaderFromCurlStdout(headers, "ETag"); et != "" {
+                        recordSecurityHeader(domain, "ETag", et)
+                }
+                if lm := extractHeaderFromCurlStdout(headers, "Last-Modified"); lm != "" {
+                        recordSecurityHeader(domain, "Last-Modified", lm)
+                }
+                scCookies := []string{}
+                for _, line := range strings.Split(headers, "\r\n")[1:] {
+                        lower := strings.ToLower(line)
+                        if strings.HasPrefix(lower, "set-cookie:") {
+                                scCookies = append(scCookies, strings.TrimSpace(line[len("Set-Cookie:"):]))
+                        }
+                }
+                if len(scCookies) > 0 {
+                        if v := extractSetCookieAttr(scCookies, "SameSite"); v != "" {
+                                recordSecurityHeader(domain, "Set-Cookie-SameSite", v)
+                        }
+                        if v := extractSetCookieAttr(scCookies, "Secure"); v != "" {
+                                recordSecurityHeader(domain, "Set-Cookie-Secure", v)
+                        }
                 }
                 if status >= 300 {
                         // R66-C BUG-52 (P3): curl 4xx/5xx 也记 latency + fail (与 fetchHttp
@@ -6376,7 +6435,14 @@ func fetchPageOnce(ctx context.Context, rawURL string, cfg FetchConfig) (*FetchR
                                 //   fall-through 同款).
                                 if solved := trySolveCaptchaWith2Captcha(ctx, rawURL, cfg, ct, html); solved != "" {
                                         if LooksLikeCaptcha(solved) == "" {
-                                                return &FetchResult{HTML: solved, Engine: "browser", Blocked: false}, nil
+                                                // R93-A BUG-260 (P3): Engine "http" 非 "browser" —
+                                                //   2captcha solve 用 applyCaptchaTokenAndRefetch →
+                                                //   fetchHttpWithCurlFallback (HTTP/curl), 与 BUG-255
+                                                //   engine var 同款 "html 实际来源 = http" (token +
+                                                //   2captcha solve 都 in-process HTTP 求解, 非 browser
+                                                //   桥; Turnstile 路径用 fetchViaObscura = puppeteer
+                                                //   故保 "browser", 与本 2captcha 路径不对称).
+                                                return &FetchResult{HTML: solved, Engine: "http", Blocked: false}, nil
                                         }
                                 }
                         }
@@ -6464,7 +6530,10 @@ func fetchPageOnce(ctx context.Context, rawURL string, cfg FetchConfig) (*FetchR
                                 //   tryBridges (与 Turnstile 路径 line ~6337 fall-through 同款).
                                 if solved := trySolveCaptchaWith2Captcha(ctx, rawURL, cfg, ct, he.Body); solved != "" {
                                         if LooksLikeCaptcha(solved) == "" {
-                                                return &FetchResult{HTML: solved, Engine: "browser", Blocked: false}, nil
+                                                // R93-A BUG-260 (P3): Engine "http" 非 "browser"
+                                                //   (与 success-path line ~6445 同款; 详见该处
+                                                //   rationale).
+                                                return &FetchResult{HTML: solved, Engine: "http", Blocked: false}, nil
                                         }
                                 }
                         }
@@ -6493,7 +6562,13 @@ func fetchPageOnce(ctx context.Context, rawURL string, cfg FetchConfig) (*FetchR
                                 //   fall-through 到 line ~6411 return CaptchaDetected.
                                 if solved := trySolveCaptchaWith2Captcha(ctx, rawURL, cfg, ct, bridged); solved != "" {
                                         if LooksLikeCaptcha(solved) == "" {
-                                                return &FetchResult{HTML: solved, Engine: "browser", Blocked: false}, nil
+                                                // R93-A BUG-260 (P3): Engine "http" 非 "browser"
+                                                //   — solved html 来自 applyCaptchaTokenAndRefetch
+                                                //   (HTTP/curl), 非 bridged (browser); 与 success/
+                                                //   err-path 同款 BUG-260 修复 (详见 line ~6445
+                                                //   rationale). 桥已尝试但 2captcha 重抓返 HTTP html,
+                                                //   故 engine 跟踪 html 实际来源 = "http".
+                                                return &FetchResult{HTML: solved, Engine: "http", Blocked: false}, nil
                                         }
                                 }
                         }
@@ -6971,6 +7046,27 @@ func fetchBinaryHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, pr
                 }
                 if smap := resp.Header.Get("X-Sourcemap"); smap != "" {
                         recordSecurityHeader(originHost(rawURL), "X-Sourcemap", smap)
+                }
+                // R93-A 反反爬第 159-163 项: 频控策略 / 缓存 validator / Set-Cookie 安全
+                //   flag 观测 (与 fetchHttp 同款, fetchBinaryHttp success + 4xx/5xx 两路径
+                //   都记, BUG-241 修复后 fetchBinaryHttp 已补对称; fetchBinaryViaCurl
+                //   不 dump headers 故不调, 与 124-158 同款限制).
+                if ra := resp.Header.Get("Retry-After"); ra != "" {
+                        recordSecurityHeader(originHost(rawURL), "Retry-After", ra)
+                }
+                if et := resp.Header.Get("ETag"); et != "" {
+                        recordSecurityHeader(originHost(rawURL), "ETag", et)
+                }
+                if lm := resp.Header.Get("Last-Modified"); lm != "" {
+                        recordSecurityHeader(originHost(rawURL), "Last-Modified", lm)
+                }
+                if sc := resp.Header["Set-Cookie"]; len(sc) > 0 {
+                        if v := extractSetCookieAttr(sc, "SameSite"); v != "" {
+                                recordSecurityHeader(originHost(rawURL), "Set-Cookie-SameSite", v)
+                        }
+                        if v := extractSetCookieAttr(sc, "Secure"); v != "" {
+                                recordSecurityHeader(originHost(rawURL), "Set-Cookie-Secure", v)
+                        }
                 }
                 // 3xx / 4xx / 5xx 视为失败 (与 fetchHttp 同款, 不重试 3xx)
                 if resp.StatusCode >= 300 {
@@ -11702,12 +11798,17 @@ type hostSecurityHeadersEntry struct {
         expectCtValue    string // Expect-CT (第 156 项, R92-A)
         poweredByValue   string // X-Powered-By (第 157 项, R92-A)
         sourceMapValue   string // X-Sourcemap (第 158 项, R92-A)
+        retryAfterValue  string // Retry-After (第 159 项, R93-A)
+        etagValue        string // ETag (第 160 项, R93-A)
+        lastModifiedValue string // Last-Modified (第 161 项, R93-A)
+        scSameSiteValue  string // Set-Cookie SameSite (第 162 项, R93-A)
+        scSecureValue    string // Set-Cookie Secure (第 163 项, R93-A)
         detectedAt        int64  // UnixMilli
 }
 
 // hostSecurityHeadersMap — host string -> *hostSecurityHeadersEntry (R86-A 第 124-128 项 +
 //   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项 + R90-A 第 144-148 项
-//   + R91-A 第 149-153 项 + R92-A 第 154-158 项).
+//   + R91-A 第 149-153 项 + R92-A 第 154-158 项 + R93-A 第 159-163 项).
 var hostSecurityHeadersMap sync.Map
 
 // hostSecurityHeadersSweepCounter — sweep 触发累加 (与 hostViaSweepCounter 同口径).
@@ -11716,10 +11817,50 @@ var hostSecurityHeadersSweepCounter atomic.Int64
 // HostSecurityHeadersSweepTTLms — per-host 条目 7 天 TTL (与 HostViaSweepTTLms 同口径).
 const HostSecurityHeadersSweepTTLms = 7 * 24 * 60 * 60 * 1000
 
+// extractSetCookieAttr — 从 Set-Cookie 行中提取指定属性值 (R93-A 第 162-163 项).
+//   多 cookie 行 (resp.Header["Set-Cookie"] 返 []string) 逐行扫描; 找到属性返值
+//   (boolean flag e.g. "Secure"/"HttpOnly" 返 "true"; kv e.g. "SameSite=Strict"
+//   返 "Strict"). 多 cookie 同属性 → 返首次命中值. 未命中返 "". 与 recordSecurityHeader
+//   同款 per-host 合并 tracker (多 cookie 同属性仅记首次命中 = 主 cookie 的 security
+//   posture, 与 admin 观测语义一致). 逐 cookie 跳过 name=value 首段 (属性在 ;
+//   分隔的后续段), 按 ";" split 后逐段 TrimSpace + 解析 kv / boolean flag.
+func extractSetCookieAttr(cookies []string, attr string) string {
+        attrLower := strings.ToLower(attr)
+        for _, c := range cookies {
+                rest := c
+                // 跳过 cookie name=value 首段 (属性在 ; 分隔的后续段)
+                if i := strings.IndexByte(rest, ';'); i >= 0 {
+                        rest = rest[i+1:]
+                } else {
+                        rest = ""
+                }
+                for _, seg := range strings.Split(rest, ";") {
+                        seg = strings.TrimSpace(seg)
+                        if seg == "" {
+                                continue
+                        }
+                        // kv 形式: "name=value"
+                        if kv := strings.SplitN(seg, "=", 2); len(kv) == 2 {
+                                if strings.EqualFold(kv[0], attrLower) {
+                                        if v := strings.TrimSpace(kv[1]); v != "" {
+                                                return v
+                                        }
+                                }
+                                continue
+                        }
+                        // boolean flag: "Secure" / "HttpOnly" / "Partitioned"
+                        if strings.EqualFold(seg, attrLower) {
+                                return "true"
+                        }
+                }
+        }
+        return ""
+}
+
 // recordSecurityHeader — 记录 host 的单个安全策略响应头 (R86-A 第 124-128 项 +
 //   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项 + R90-A 第 144-148
-//   项 + R91-A 第 149-153 项 + R92-A 第 154-158 项). headerName 区分 35 头 (大小写不敏感). 与 recordVia
-//   同款 Store + 惰性 sweep, 但保留其他 34 头旧值 (LoadOrStore canonical 指针 +
+//   项 + R91-A 第 149-153 项 + R92-A 第 154-158 项 + R93-A 第 159-163 项). headerName 区分 40 头 (大小写不敏感). 与 recordVia
+//   同款 Store + 惰性 sweep, 但保留其他 39 头旧值 (LoadOrStore canonical 指针 +
 //   单字段 update-in-place).
 func recordSecurityHeader(host, headerName, value string) {
         if host == "" || value == "" {
@@ -11801,6 +11942,17 @@ func recordSecurityHeader(host, headerName, value string) {
                 ent.poweredByValue = value
         case "x-sourcemap":
                 ent.sourceMapValue = value
+        // R93-A 反反爬第 159-163 项: 频控策略 / 缓存 validator / Set-Cookie 安全 flag.
+        case "retry-after":
+                ent.retryAfterValue = value
+        case "etag":
+                ent.etagValue = value
+        case "last-modified":
+                ent.lastModifiedValue = value
+        case "set-cookie-samesite":
+                ent.scSameSiteValue = value
+        case "set-cookie-secure":
+                ent.scSecureValue = value
         default:
                 return
         }
@@ -11858,6 +12010,11 @@ func HostSecurityHeadersSnapshot() map[string]map[string]string {
                         "expectCtValue":     e.expectCtValue,
                         "poweredByValue":    e.poweredByValue,
                         "sourceMapValue":    e.sourceMapValue,
+                        "retryAfterValue":   e.retryAfterValue,
+                        "etagValue":         e.etagValue,
+                        "lastModifiedValue": e.lastModifiedValue,
+                        "scSameSiteValue":   e.scSameSiteValue,
+                        "scSecureValue":     e.scSecureValue,
                         "detectedAt":        fmt.Sprintf("%d", e.detectedAt),
                 }
                 return true

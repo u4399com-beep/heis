@@ -134,7 +134,13 @@ function onDrop(e,targetId){
   var toIdx=rows.findIndex(function(r){return r.dataset.id===targetId;});
   if(fromIdx<0||toIdx<0)return;
   var moved=tbody.removeChild(rows[fromIdx]);
-  if(toIdx>=tbody.children.length){tbody.appendChild(moved);}else{tbody.insertBefore(moved,tbody.children[toIdx>fromIdx?toIdx:toIdx]);}
+  // R93-D BUG-261 (P4 精简, main+templates scope): 原 ternary `toIdx>fromIdx?toIdx:
+  //   toIdx` 两分支同值 (恒 = toIdx) 是 dead code. removeChild 后子节点索引已
+  //   重排, insertBefore(moved, children[toIdx]) 对 toIdx>fromIdx 与 toIdx<fromIdx
+  //   均正确落位 (验证: A[0]→D[3] 移除 A 后 D 在 idx 2, insertBefore(A,children
+  //   [3]=E) → [B,C,D,A,E] A 落 idx 3 ✓; E[4]→B[1] 移除 E 后 B 仍 idx 1,
+  //   insertBefore(E,children[1]=B) → [A,E,B,C,D] E 落 idx 1 ✓). 简化为 toIdx.
+  if(toIdx>=tbody.children.length){tbody.appendChild(moved);}else{tbody.insertBefore(moved,tbody.children[toIdx]);}
   dragId=null;orderDirty=true;
   document.getElementById('reorderBtn').style.display='inline-flex';
 }

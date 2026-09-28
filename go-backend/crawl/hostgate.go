@@ -69,7 +69,6 @@ type hostState struct {
         waiters                []*waiter
         minGapMs               int
         minGapMsLastValue      int
-        minGapMsBeforeCooldown int
         lastAdmitAt            int64
         rateLimitedUntil       int64
         // R64-B B1/B3: 自适应调整时间戳 (UnixMilli), cooldown 防抖动
@@ -191,30 +190,21 @@ func (g *HostGate) maybeSweepAndEvict() {
         }
 }
 
-// settleRateLimitExpiry — 限流冷却到期结算 (惰性): 清零连败 + 回滚 minGapMs 快照.
-// R45-1A 修复: 原实现无条件从 minGapMsBeforeCooldown 还原 minGapMs. 但若冷却期间
+// settleRateLimitExpiry — 限流冷却到期结算 (惰性): 清零连败.
 //
-//      新 caller 调 Acquire 传了不同的 minGapMs (会覆写 st.minGapMs 但不动 snapshot),
-//      冷却到期 restore 会反转 caller 的意图 (回到冷却前的旧值, 不是 caller 期望的新值).
-//      修复: 冷却期间 minGapMs 被 caller 覆写 (st.minGapMs != 快照原值) 时跳过还原.
-//
-// R81-C BUG-180 (P3) 修复: 原 if `st.minGapMs != st.minGapMsBeforeCooldown { /* 空 */ }`
-//
-//      是空 branch (staticcheck SA9003). 逻辑分析: 若 minGapMs == 快照原值 (未被 caller
-//      覆写), 还原是 no-op (current == snapshot, 无变化); 若 minGapMs != 快照原值
-//      (caller 覆写), 不还原 (caller 优先). 两种 case 均不做还原, 仅清 snapshot 让
-//      下次冷却重新记. 空 if 等价于 no-op, 移除空 if + 保留注释, 行为不变.
+//      R45-1A: 原实现无条件从 minGapMsBeforeCooldown 还原 minGapMs, 但若冷却期间
+//      新 caller 调 Acquire 传了不同 minGapMs, 还原会反转 caller 意图. 修复: 不
+//      还原 (caller 的新值优先).
+//      R81-C BUG-180 (P3): 原空 if branch (staticcheck SA9003) 等价于 no-op, 移除.
+//      R93-B BUG-261 (P3) 精简: minGapMsBeforeCooldown 字段自 R81-C BUG-180 移除
+//      还原逻辑后变成 dead state (仅 set at ReportRateLimited line 494 + clear
+//      here, 0 reader). 删字段 + 2 处 write, settleRateLimitExpiry 简化为仅清
+//      rateLimitedUntil + failStreak (与 BUG-243 fast-path settle 同口径, 0 行为
+//      变化 — caller 的 minGapMs 不受冷却到期影响, 与 R45-1A 修复意图一致).
 func (g *HostGate) settleRateLimitExpiry(st *hostState) {
         if st.rateLimitedUntil > 0 && time.Now().UnixMilli() >= st.rateLimitedUntil {
                 st.rateLimitedUntil = 0
                 st.failStreak = 0
-                if st.minGapMsBeforeCooldown > 0 {
-                        // R45-1A: 不还原 minGapMs (两种 case 均不做):
-                        //   1. minGapMs == 快照原值 (未被 caller 覆写): 还原是 no-op, 无意义.
-                        //   2. minGapMs != 快照原值 (caller 覆写): 不还原, caller 的新值生效.
-                        //   R81-C BUG-180: 移除空 if branch (原 SA9003 warning), 行为不变.
-                        st.minGapMsBeforeCooldown = 0
-                }
         }
 }
 
@@ -301,14 +291,14 @@ func (g *HostGate) Acquire(ctx context.Context, rawURL string, limit, timeoutMs,
         g.mu.Lock()
         st := g.stateOf(host, baseLimit)
         // BUG-243 (P2): fast path bypasses pump → settleRateLimitExpiry not called.
-        //   If rate limit just expired, failStreak/minGapMsBeforeCooldown stay
-        //   elevated until next Release's pump. Caller flow Acquire → work →
-        //   ReportFailure (failStreak++ may trigger spurious derate) → defer
-        //   Release (pump → settle clears failStreak, too late). Fix: settle
-        //   here so fast path admits with post-expiry cleared state (failStreak
-        //   =0, rateLimitedUntil=0). Idempotent with pump's settle (line 232):
-        //   2nd call is no-op (rateLimitedUntil already 0). Queue path unchanged
-        //   (pump still settles after enqueue + on Release).
+        //   If rate limit just expired, failStreak stays elevated until next
+        //   Release's pump. Caller flow Acquire → work → ReportFailure
+        //   (failStreak++ may trigger spurious derate) → defer Release (pump →
+        //   settle clears failStreak, too late). Fix: settle here so fast path
+        //   admits with post-expiry cleared state (failStreak=0, rateLimitedUntil
+        //   =0). Idempotent with pump's settle (line 232): 2nd call is no-op
+        //   (rateLimitedUntil already 0). Queue path unchanged (pump still
+        //   settles after enqueue + on Release).
         g.settleRateLimitExpiry(st)
         // R92-B BUG-259 (P3) 修复: 原无条件 `st.baseLimit = baseLimit` 让下次 Acquire
         //   (caller 恒传 rule 配置 baseLimit e.g. 3) 覆盖 AdjustConcurrency 的 bump
@@ -483,16 +473,14 @@ func (g *HostGate) ReportRateLimited(host string, retryAfterMs int) {
         //   会让 pump (line 237 `now < st.rateLimitedUntil` 整队不放行) 提前放行,
         //   二次触发 429. 修复: MAX(existing, new) — 仅当新 cooldown 比当前更长
         //   时才覆盖 (保守延长不缩短, 与 settleRateLimitExpiry line 207 检查
-        //   expiry 后清零 + pump line 237 整队不放行同口径). minGapMsBeforeCooldown
-        //   snapshot 仍仅首次记录 (== 0 时记, 与原行为一致, 防 caller 接管期间
-        //   snapshot 失真). latent 自 R38 TS→Go 迁移 (47 轮未发现, 71 Rule 0 触发
-        //   并发 429 短 retry-after 覆盖长 retry-after case; 单 429 路径 0 受影响).
+        //   expiry 后清零 + pump line 237 整队不放行同口径). latent 自 R38
+        //   TS→Go 迁移 (47 轮未发现, 71 Rule 0 触发并发 429 短 retry-after
+        //   覆盖长 retry-after case; 单 429 路径 0 受影响).
+        //   R93-B BUG-261: minGapMsBeforeCooldown snapshot 已随字段删除移除
+        //   (dead state 自 R81-C BUG-180, 0 reader).
         newUntil := now + int64(retryAfterMs)
         if newUntil > st.rateLimitedUntil {
                 st.rateLimitedUntil = newUntil
-        }
-        if st.minGapMsBeforeCooldown == 0 && st.minGapMs > 0 {
-                st.minGapMsBeforeCooldown = st.minGapMs
         }
 }
 

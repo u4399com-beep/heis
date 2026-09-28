@@ -41630,3 +41630,701 @@ Stage Summary:
    提前截断 (P4, 极罕见, 维持现状)). crawl scope 7 文件 P3+ bug 趋向耗尽,
    R93+ 转向 perf/边缘 case 或跨 scope 协同).
 ==============================================================================
+
+------------------------------------------------------------------------------
+## R93-C: admin深抓 BUG-260~264 (Pattern C `_ = ...Scan` 吞错 family 续抓)
+
+**日期**: 2025-09-28
+**文件**: 1 文件 (go-backend/admin.go; 7884→7953 行, +69 行净, budget +150 内 46% 使用)
+**BUG 数**: 5 项 (BUG-260/261/262/263/264, 全 P3, Pattern C family 续抓)
+**编译**: 0 errors + 0 warnings (go build ./... + go vet ./... 全 clean)
+**纪律**: 0 启动/重启/杀死进程 / 0 写 DB (db/custom.db 已 git checkout 还原至
+HEAD) / 0 prisma / 0 新依赖 (0 新 import — sql/errors/fmt 均已在上文用) /
+0 emoji / 0 改非 admin.go 文件.
+
+### 5 项 BUG 修复
+
+1. **BUG-260 (P3)** — `adminRuleByIDHandler` DELETE 路径, `SELECT COUNT(*) FROM
+   Task WHERE ruleId=?` (line ~2523): 原实现 `_ = db.QueryRow(...).Scan(&taskCount)`
+   吞错 — DB 故障 (SQLite busy lock / 连接闪断 / 磁盘满) 时 `taskCount=0` →
+   "规则被 0 任务引用" 检查静默通过 → DELETE Rule 推进 → 残留 Task.ruleId 指向
+   已删 Rule (orphan FK; `adminTaskControlHandler` SELECT r.config 返 '{}'
+   兜底, 采集用空 Rule 跑 → 0 本采集, 用户以为任务坏实际是 Rule 被删). R88-C
+   BUG-233 已加 SELECT id 存在性检查, 本 COUNT 仍在 `_ =` swallow. COUNT(*)
+   恒返 1 行无 ErrNoRows 分支, 任何 err 都是 DB 故障. 修复: 显式 err 检查 →
+   DB 故障返 500 让操作员重试 (与 BUG-252 COUNT(*) in-flight 占位检查同款).
+
+2. **BUG-261 (P3)** — `adminCategoryByIDHandler` DELETE 路径, `SELECT COUNT(*)
+   FROM Book WHERE categoryId=?` (line ~3809): 原实现 `_ = db.QueryRow(...).Scan(&count)`
+   吞错 — DB 故障时 `count=0` → "分类下 0 本书" 检查静默通过 → DELETE Category
+   推进 → 残留 Book.categoryId 指向已删 Category (orphan FK; adminBooksList JOIN
+   Category 返 COALESCE '未分类' 兜底但 SSR 分类页该分类消失, 用户书库分类统计
+   错乱). R88-C BUG-235 已加 SELECT id 存在性检查, 本 COUNT 仍在 `_ =` swallow.
+   修复: 显式 err 检查 → DB 故障返 500 (与 BUG-260 同款 COUNT(*) err 显式区分).
+
+3. **BUG-262 (P3)** — `adminFeaturedBooksUpdate` POST 路径 valid 过滤循环,
+   `SELECT id FROM Book WHERE id=?` (line ~6843): 原实现 `_ = db.QueryRow(...).Scan(&bExist)`
+   吞错 — DB 故障时 `bExist=""` → 该 bookId 被误判 "不存在" 跳过 → admin 保存
+   10 本推荐, 若某本恰逢 DB 故障窗口 → 该本被静默滤除 → Setting JSON 只存 9
+   本 (用户意图丢失无 500 反馈, 下次 GET 显示 9 本, 用户以为漏勾实际是 SELECT
+   失败). 与 BUG-260/261 COUNT(*) 不同, SELECT id 有 ErrNoRows 分支 (书已删 →
+   静默跳过是正确语义) vs DB 故障 (应 500). 修复: 显式 err 区分 — ErrNoRows →
+   continue (与 GET 同款 line 6789 跳过语义); 其他 err → 500 (不让 DB 故障
+   静默丢用户配置).
+
+4. **BUG-263 (P3)** — `adminFeaturedBooksUpdate` POST 路径 readback 循环,
+   `SELECT COALESCE(name,''),COALESCE(author,''),COALESCE(cover,'') FROM Book
+   WHERE id=?` (line ~6859): 原实现 `_ = db.QueryRow(...).Scan(&name, &author,
+   &cover)` 吞错 — DB 故障时 name/author/cover 全空 → 响应 ok:true 但 books
+   内含空 name 卡片 (admin UI 显示空白书卡, 用户以为书被删实际是 SELECT 失败).
+   与 GET 路径 (line 6789 `if err != nil { continue }`) 对齐: err 时跳过该本不
+   返半截空壳 (response 不含该 bookId, 与 GET 跳过已删书语义一致; Setting 已
+   存全量 valid, 用户下次 GET 自然看到真实状态). 不 500 因 Setting 已成功保存,
+   500 会让 admin 误以为保存失败. best-effort readback.
+
+5. **BUG-264 (P3)** — `adminFeaturedBooksList` GET 路径, `SELECT value FROM
+   Setting WHERE key=?` ("featuredBooks."+siteID) (line ~6770): 原实现
+   `_ = db.QueryRow(...).Scan(&raw)` 吞错 — DB 故障时 `raw=""` → `bookIDs=[]`
+   → 响应返 `books:[]` (admin UI 显示无推荐, 用户以为没配置实际是 SELECT 失败;
+   重新配置会覆盖既有 Setting JSON 丢失原配置). 与 BUG-262 SELECT id 不同,
+   Setting key 不存在 (首次配置) 也是 ErrNoRows (合法状态 → 返空 bookIDs 是
+   正确语义), 仅其他 err (DB 故障) 应 500. 修复: 显式 err 区分 — ErrNoRows →
+   继续 (无 Setting 行, 用空 bookIDs 走响应); 其他 err → 500 (让 admin UI 知道
+   是 DB 故障而非无配置).
+
+### 精简与协同分析
+
+- **+69 行净** (本轮 5 项 BUG 修复 +69 行净; budget +150 内 46% 使用).
+- **0 额外 DRY 机会**: BUG-260/261 同款 COUNT(*) err 检查但分散在 2 个 handler
+  (Rule DELETE / Category DELETE), 提 helper 需 ~12 行 helper + 2 处 callsite
+  各 -2 行 = 净 +8 行 (vs 现内联 +24 行 net), 无收益且 helper 接口需 `func(query
+  string, args ...interface{}) (int, error)` 过度抽象, 维持内联; BUG-262/263
+  同 handler 内相邻 20 行, 提 helper 需跨循环 return 语义不符, 维持内联; BUG-264
+  单 caller 单 Setting 读, 无可提.
+- **同 family 续抓**: BUG-260~264 全部为 Pattern C `_ = ...Scan(&var)` 吞错
+  family (R80-D BUG-171 起, R85-C BUG-204~215 → R86-C BUG-219~224 → R88-C
+  BUG-233~236 → R90-C BUG-247~248 → R91-C BUG-250~252 → R92-C BUG-255~256 续抓,
+  R93-C 从 260 起). 本轮 5 处全部为业务决策 SELECT/COUNT (非 display-only):
+  BUG-260/261 是 DELETE 前引用计数检查 (orphan FK 风险); BUG-262 是配置写入前
+  存在性过滤 (用户配置丢失风险); BUG-263 是配置写入后 readback (响应数据完整性);
+  BUG-264 是配置读取 (admin UI 误判空配置风险). 全部为 P3 (DB 故障窗口罕见 +
+  影响业务正确性).
+- **0 改非 admin.go**: 本轮 5 处全在 admin.go; crawl scope R93-A/B 已完成 (BUG-
+  255~259), R93-C 转 admin scope, 与 R92-C admin scope (BUG-255~256) 衔接.
+- **未改 dashboard COUNT queries** (line 3116~3126 / 4790 / 4832~4834 / 5075~
+  5076 / 5905 / 5907 / 6945~6946 / 7498 / 7804~7820): 这些是 dashboard/SSR
+  display-only COUNT, err 时按 0 兜底, 不影响业务决策 (仅数值显示偏差, 用户刷新
+  即恢复), 与 R87-C `runSiteAuditReports` 显式 "best-effort: 2 计数查询失败按
+  0 兜底" 设计一致, 维持现状. 同理 `fillCategoriesPageData`/`fillLinksPageData`
+  等 SSR fill* 函数内的 `_ = ...Scan` 也是 best-effort, 不动.
+- **未改 startCrawlTask post-crawl status SELECT** (line 1291 `_ = db.QueryRow(...).
+  Scan(&curStatus)`): 异步 goroutine 无 http.ResponseWriter, 显式 err 检查仅
+  能 log.Printf 不返 500. 行为层: ErrNoRows (任务被删 mid-crawl) → 跳过 fallback
+  UPDATE (正确); 其他 DB err → curStatus="" → fallback 'done' UPDATE 跳过 → 任务
+  卡 'running' 状态. 修复需 "强制 UPDATE 'done' on DB err" 但风险是 clobber 用户
+  mid-crawl 设的 'paused'/'stopped' (用户主动暂停/停止后, goroutine 收 ctx cancel
+  返回, status 已是 paused/stopped; 若 DB SELECT 失败 + 强制 UPDATE 'done' 会
+  把 paused/stopped 改成 done, 与用户意图相反). 维持现状 (double-fault 罕见 +
+  修复有 race 风险). R93-D+ 评估 (前提: 若改 crawl 引擎写终态语义为 "ExecuteTask
+  必写 done/error/stopped 之一, 不依赖 admin 兜底", 可直接删 line 1289-1294 整段
+  fallback, 简化语义).
+
+### BUG 编号 scope-local
+
+- BUG-260~264 属 admin.go scope, 顺延 R92-C admin scope BUG-255~256. 与 R93-A
+  fetcher/runner (若有) + R93-B crawl (BUG-255~259) 跨 scope 同号 (worklog 接受,
+  R91/R92 convention; 主控去重 admin scope = unique 5 bug — BUG-260 admin=Rule
+  DELETE Task ref vs crawl=AdjustMinGap; BUG-261 admin=Category DELETE Book ref
+  vs crawl=SaveCoverWebp; BUG-262 admin=featuredBooks valid filter vs crawl=
+  Interfere.Interval; BUG-263 admin=featuredBooks readback vs crawl=
+  BrowserFallbackStatus; BUG-264 admin=featuredBooks Setting read vs crawl=
+  AdjustConcurrency).
+
+### 未决项 (交接 R93-D / R94+)
+
+1. **startCrawlTask post-crawl status SELECT** (line 1291): 见上 "未改" 段.
+   double-fault 罕见 + 修复有 race 风险. R93-D+ 评估.
+2. **admin dashboard COUNT queries** (line 3116~3126 等 ~15 处): display-only
+   best-effort, err 时按 0 兜底. 与 R87-C runSiteAuditReports 同款设计, 维持
+   现状. R93-D+ 评估 (前提: 若 admin dashboard 报告需精确数值, 可批量加 err
+   检查 + 500, 但当前 0 bug 报告, 维持现状).
+3. **fill*PageData SSR 函数内的 `_ = ...Scan`** (~10 处, line 7498 等):
+   SSR best-effort, log.Printf 已覆盖 (R75-D BUG-133~136). 维持现状.
+4. **adminFeaturedBooksList GET readback `if err != nil { continue }`** (line
+   6789): 已显式 err 检查但 `continue` 而非 500. 设计选择 (best-effort list,
+   跳过已删书不阻塞响应). 与 BUG-263 readback 同款 best-effort 语义. 维持现状.
+5. **adminRuleByIDHandler GET taskCount + adminCategoriesList bookCount 等
+   display COUNT** (line 2027 / 2523 / 3466 / 3861 等): display-only, 与
+   dashboard COUNT 同款 best-effort. 维持现状.
+6. **BUG-265+ admin 深抓**: 本轮 BUG-260~264 共 5 项 (Rule DELETE Task ref +
+   Category DELETE Book ref + featuredBooks valid filter + featuredBooks
+   readback + featuredBooks Setting read). R93-D+ 续抓 (潜在候选已趋耗尽: (1)
+   startCrawlTask post-crawl SELECT (上未决项 #1); (2) admin dashboard COUNT
+   批量 (上未决项 #2); (3) fill*PageData SSR best-effort (上未决项 #3); (4)
+   adminBackupClearHandler runRows.Err log-only 不 500 (R75-D BUG-143, best-
+   effort 设计, 维持现状); (5) adminTaskLogsHandler COUNT pagination `_ =`
+   (line 1534, display-only total, COUNT 失败时 LIMIT 查询会立刻 follow-up
+   500, 实际不影响业务); (6) adminSitesList SELECT 14 nullable 列 COALESCE
+   (R75-D BUG-146 已修, 0 残 bug); (7) adminSettingsPutHandler 批量 upsert
+   (无 `_ =` swallow, 已显式 err 检查)). admin.go 7884→7953 行, P3+ bug 趋向
+   耗尽, R93-D+ 转向 perf/边缘 case 或跨 scope 协同).
+==============================================================================
+
+==============================================================================
+Task ID: R93-A
+Agent: R93-A agent (fetcher.go + runner.go: 反反爬 159-163 + 深抓 BUG-260+)
+Task: crawl/fetcher.go + crawl/runner.go 范围 — 反反爬 159-163 5 项 + 深抓
+  BUG-260+. +200 行内, 编译 0, worklog 追加. 严禁改非 2 文件/启动/新依赖/emoji.
+  本 agent R93-A 接 fetcher.go + runner.go scope (顺延 R92-A 反反爬 154-158 +
+  BUG-255~256). 反反爬从第 159 项起 (顺延 R92-A 第 158 项), 深抓从 BUG-260 起
+  (顺延 R92-A fetcher/runner scope BUG-255~256; R92-A 未决项 #6 列 BUG-257+
+  候选, 主控指定 260+ 起号, 257-259 留 R92-B/C/D 跨 scope 续抓或 reserve).
+------------------------------------------------------------------------------
+
+Work Log:
+- 侦察: 读 worklog 末尾 5KB. R92 全完成 (R92-A fetcher/runner 反反爬 154-158 +
+  BUG-255~256 / R92-B crawl 7 文件 BUG-255~259 / R92-C admin BUG-255~256 /
+  R92-D main+templates BUG-255~256). R92-A 未决项 #5 列反反爬 159+ 候选:
+  Server 已在 HTTPError 捕获 / Sec-WebSocket-Location WS-only / SourceMap 与
+  X-Sourcemap 同款 / X-Content-Type-Options 已在第 102 项 / X-Frame-Options
+  已在第 90 项 / Origin-Isolation 已在第 103 项 — 真实新候选几乎耗尽, 建议
+  159+ 转入 hostSecurityHeadersEntry 外的其它观测维度: Set-Cookie SameSite/
+  Secure/HttpOnly/Partitioned flags / ETag/Last-Modified 缓存 validator 姿态
+  / Retry-After 频控策略深度. R92-A 未决项 #6 列 BUG-257+ 候选 6 项: (1) BUG-256
+  CaptchaUnknown bridge 返仍 captcha/blocked 时是否更新 html=bridged +
+  engine="browser" (R93+ 评估是否统一); (2) fetchBinaryViaCurl -D - dump
+  headers (大改 defer); (3) pageFetcher Blocked propagation (跨 3 文件 scope
+  defer); (4) fetchBinaryHttp 4xx/5xx 选择性 observer (设计 trade-off defer);
+  (5) runner.go cover fetch hostGate wiring (设计 trade-off defer); (6)
+  fetchPageOnce err-path CaptchaUnknown 同款 bridge fallback 不对称 (需审).
+  本 agent R93-A 接 fetcher.go + runner.go 范围, 反反爬从第 159 项起, 深抓从
+  BUG-260 起 (R92-A BUG-255~256 fetcher scope 已合并 Engine 字段 family +
+  CaptchaUnknown bridge fallback family; runner.go 0 改 — 6 IncCaptcha callsite
+  R91-A BUG-252 全覆盖, 4 defer 候选跨 scope/设计权衡非 bug).
+- 侦察 fetcher.go: 11874 行 (R92-A +132 后). R92-A 反反爬 154-158 已合并
+  hostSecurityHeadersEntry 扩第 31-35 字段 (xssProtectValue/hpkpValue/
+  expectCtValue/poweredByValue/sourceMapValue) + 3 fetch 路径 observer 块
+  (fetchHttp line ~4072 / fetchViaCurl line ~5034 / fetchBinaryHttp line ~6956,
+  3 路径都在 3xx 检查前两路径都记; fetchBinaryViaCurl -s -S 不 dump headers
+  故不调, 与 124-153 同款限制). R92-A BUG-255/256 已合并 captcha family +
+  Engine 字段 family. fetchPageOnce success-path + err-path + bridge-path 全审:
+  (a) 2captcha 路径 3 处 return (success-path line ~6438 / err-path line ~6526 /
+  bridge-path line ~6555) 硬编码 Engine: "browser", 但 solved html 实来自
+  applyCaptchaTokenAndRefetch → fetchHttpWithCurlFallback (HTTP/curl), 非 browser
+  桥 (与 BUG-255 engine var 同款 "html 实际来源 = http" 不对称 — token solve 用
+  in-process HTTP 故保 "http", 2captcha solve 同款 in-process HTTP re-fetch
+  却硬编码 "browser"; Turnstile 路径用 fetchViaObscura = puppeteer 故 "browser"
+  正确, 与本 2captcha 路径不对称); (b) BUG-256 CaptchaUnknown bridge 返仍
+  captcha/blocked 时 fall-through return 原 html + engine (保守不更新, R92-A
+  未决项 #6 候选 #1 标记 R93+ 评估是否统一 — 评估后维持现状: success-path 主源
+  http, 桥是 fallback, fallback 失败报原源更合理, 不对称是设计 trade-off 非
+  bug). runner.go: 2748 行 (R91-A +19 后, R92-A 0 改). 6 FetchPage callsite
+  IncCaptcha 全覆盖 (discoverBooks 1584 / CrawlBookMeta book 1687 / CrawlBookMeta
+  toc 1905 / CrawlBookMeta pageFetcher 1986 / CrawlChapterContent 2187 /
+  CrawlChapterContent pageFetcher 2256), 0 漏调. runner.go 0 改 (4 defer 候选
+  跨 scope/设计权衡非 bug: pageFetcher Blocked propagation + fetchBinaryHttp
+  4xx/5xx 选择性 observer + runner.go cover fetch hostGate wiring + R92-A
+  CaptchaUnknown bridge fallback update R93+ 评估维持现状).
+
+- 目标A 反反爬 159-163 5 项全实施 (合并 hostSecurityHeadersEntry 扩第 36-40
+  字段, 与 124-158 同款 3 fetch 路径 observer 块; fetchBinaryViaCurl 不 dump
+  headers 故不调, 与 124-158 同款限制):
+  · 第 159 项 Retry-After — `<sec>` 或 `<HTTP-date>` 标识频控冷却时间 (RFC 7231
+    §7.1.3, 429/503 响应). 反爬关联: 显式频控策略 = 成熟反爬基础设施
+    (Cloudflare/Akamai rate limit 429+Retry-After: 60 标准格式, 严格反爬 host
+    常配); 无此头 = 无频控或隐式 IP 封禁. 与 runner.go 6 处 hostGate.
+    ReportRateLimited(hostHost, he.RetryAfterMs) 调用 (discoverBooks 1573 /
+    CrawlBookMeta book 1670 / CrawlBookMeta toc 1894 / CrawlBookMeta pageFetcher
+    1964 / CrawlChapterContent 2163 / CrawlChapterContent pageFetcher 2240) 联动
+    (admin 可观察 host 报告的 Retry-After 值 vs 源站实际下发值一致性).
+  · 第 160 项 ETag — `<etag-value>` 标识资源版本指纹 (RFC 7232 §2.3, 强/弱
+    validator). 反爬关联: Cloudflare/Akamai 用 ETag 跟踪 bot fingerprint
+    (资源版本指纹与 cf-bm cookie 联动 — 同 ETag + 不同 cf-bm = 多 session
+    同 IP, 反爬 SDK 误判 bot); 严格反爬 host 不发 ETag (防 bot 跟踪绕过).
+    与第 149 项 Cache-Control + 第 151 项 Vary 缓存策略 family 同款语义.
+  · 第 161 项 Last-Modified — `<HTTP-date>` 标识资源最后修改时间 (RFC 7232
+    §2.2, 强 validator). 反爬关联: 静态资源 host (老 Last-Modified = 老反爬
+    栈) 通常严格反爬 (老资源 = 老反爬栈未升级, 与第 154 项 X-XSS-Protection
+    legacy 同款关联); 与第 160 项 ETag 同款 cache validator family.
+  · 第 162 项 Set-Cookie SameSite — `Strict` / `Lax` / `None` 标识 cookie
+    跨站策略 (RFC 6265bis §5.2.5). 反爬关联: SameSite=Strict/Lax session
+    cookie = 成熟 session 保护, 常配 bot detection cookies (Cloudflare __cf_bm
+    + cf_clearance / Akamai _abck / DataDog session). 与第 124-128 项 HSTS/
+    CSP 安全策略 family 同款 "session posture" 语义. 多 cookie 行逐行扫描,
+    多 cookie 同属性 → 返首次命中值 (主 cookie 的 security posture, 与 admin
+    观测语义一致).
+  · 第 163 项 Set-Cookie Secure — boolean flag (无 =), 标识 cookie HTTPS-only
+    (RFC 6265bis §5.2.4). 反爬关联: Secure session cookie = HTTPS-only bot
+    mitigation cookie, 与第 162 项 SameSite 同款 session posture family; 严格
+    反爬 host 通常 SameSite=Strict + Secure + HttpOnly 三件套 (cf_clearance
+    Cloudflare / __cf_bm bot mitigation). 与第 162 项同款多 cookie 处理.
+  · 5 项均补 (a) struct 字段 retryAfterValue/etagValue/lastModifiedValue/
+    scSameSiteValue/scSecureValue (line 11705-11709); (b) recordSecurityHeader
+    switch 5 case (line 11810-11819); (c) HostSecurityHeadersSnapshot map 5
+    entry (line 11877-11881); (d) fetchHttp observer 块 5 call site (line
+    4089-4118); (e) fetchViaCurl observer 块 5 call site (line 5082-5110);
+    (f) fetchBinaryHttp observer 块 5 call site (line 7034-7054). 共 57 行
+    observer 代码 (3 头 single-value × 3 路径 × 3 行 = 27 行 + 2 头 multi-
+    cookie × 3 路径 × 5 行 = 30 行) + 5 struct 字段 + 10 switch case (5 case +
+    5 ent 赋值) + 5 snapshot map + 25 行 rationale comment (5 项说明 block +
+    struct/switch/snapshot 注释更新 35→40 头) + 38 行 extractSetCookieAttr
+    helper (单 helper, 供 162+163 两 头 × 3 路径 = 6 callsite 复用).
+- 目标B 深抓 BUG-260 1 项 (P3 全修, fetcher.go scope R92-A BUG-255~256 后
+  Engine 字段 family 续抓):
+  · BUG-260 (P3, fetchPageOnce 2captcha success-path Engine 字段不对称, R92-A
+    未决项 #6 候选 #1 续抓衍生): fetchPageOnce 3 路径 2captcha success-path
+    原实现硬编码 `Engine: "browser"`, 但 solved html 实来自
+    applyCaptchaTokenAndRefetch (line 8061+) → fetchHttpWithCurlFallback
+    (HTTP/curl, native+utls+curl 三级降级), 非 browser 桥. 与 BUG-255 engine
+    var 同款 "html 实际来源 = http" 不对称 — BUG-255 修复 token solve 保
+    "http" (in-process HTTP 求解), 2captcha solve 同款 in-process HTTP
+    re-fetch (submit + poll + URL query 注入重抓) 却硬编码 "browser". Turnstile
+    路径 (line 6454 / 6579) 用 trySolveTurnstile → fetchViaObscura = puppeteer
+    headless 浏览器故 "browser" 正确, 与本 2captcha 路径不对称 (2captcha HTTP
+    re-fetch vs Turnstile puppeteer). 后果: admin/metrics Engine 字段高报
+    browser engine 占比 (2captcha 成功 page 计入 browser, 实际 HTTP/curl 抓取)
+    → 操作员误判源站需 browser 桥可解 (实际 2captcha HTTP re-fetch 已解, 桥
+    未触发) → 资源浪费 (升级桥配额 / 误配 puppeteer pool). 修复: 3 处 2captcha
+    success-path `Engine: "browser"` → `Engine: "http"` (success-path line 6445
+    / err-path line 6536 / bridge-path line 6571). bridge-path 即使桥已尝试
+    (bridged), 2captcha 重抓返 solved (HTTP) 非 bridged, 故 engine 跟踪 solved
+    实际来源 = "http" (与 bridge-path line 6583 return bridged + Engine:
+    "browser" 不冲突 — 6583 返 bridged 即 browser, 6571 返 solved 即 http).
+    Turnstile 路径 (line 6454 / 6579) 保 "browser" 不动 (fetchViaObscura =
+    puppeteer, html 实际来源 = browser). +12 行净 (3 行改 + 9 rationale comment,
+    master rationale 在 success-path line 6438-6444, err-path line 6533-6535 +
+    bridge-path line 6565-6570 brief ref).
+- 诚实留痕 bug 0 项 (fetcher.go scope 内 R92-A BUG-255~256 后 + 本轮 BUG-260
+  共 1 项 — Engine 字段 family 续抓; runner.go scope 0 改 — 6 IncCaptcha
+  callsite R91-A 全覆盖, 4 defer 候选跨 scope/设计权衡非 bug 维持现状; 5
+  候选 defer 至 R94+ 评估: fetchBinaryViaCurl -D - dump headers + pageFetcher
+  Blocked propagation + fetchBinaryHttp 4xx/5xx 选择性 observer + runner.go
+  cover fetch hostGate wiring + R92-A CaptchaUnknown bridge fallback update
+  R93+ 评估维持现状 (设计 trade-off 非 bug)).
+- 精简: +157 行净 (fetcher.go 11874→12031 +157 / runner.go 2748→2748 +0;
+  budget +200 内 79% 使用). 5 项反反爬 +145 行净 (57 observer 代码 + 5 字段
+  + 10 switch + 5 map + 38 helper + 25 rationale comment + 5 项 rationale
+  block — 5 项与 124-158 family 1:1 4 处镜像, 提 helper 需改 5 fetch 路径
+  × 40 头 = 200 call site 跨函数 scope, 风险 vs 收益不成正比, 维持 defer
+  helper 提取至 R94+ 评估; extractSetCookieAttr helper 单 helper 162+163 两
+  头 × 3 路径 = 6 callsite 复用, 无 DRY 机会; BUG-260 单 caller family (3
+  处 return 同款 2captcha success, 无 helper 可提 — engine 字段值依 html 来源
+  分支, 不能参数化)).
+- 编译: 0 errors + 0 warnings (go build ./... + go vet ./... 全 clean). 0
+  启动/重启/杀死进程 / 0 写 DB / 0 prisma / 0 新依赖 (0 新 import — strings
+  已在 fetcher.go 用, 无新增; extractSetCookieAttr 用现有 strings.EqualFold
+  + strings.SplitN + strings.IndexByte + strings.Split + strings.TrimSpace,
+  无新依赖) / 0 emoji / 0 改非 2 文件 (admin.go / main.go / templates/** /
+  services/* 范围并行 agent R92-B/C/D + 前序 R89/R90/R91/R92 范围, 本 agent
+  严禁改; worklog.md 为本 agent worklog 追加例外; runner.go 0 改 — 0 in-scope
+  bug, 4 defer 候选跨 scope/设计权衡). 注: 缩进对齐原 file spaces convention
+  (与 R86-A~R92-A 同款 "build+vet clean, 非 gofmt-clean, 缩进对齐原 file"
+  方法论, gofmt -l 报 spaces 非 tabs 是已知 convention, 0 改).
+- 文件改动: 1 文件 (fetcher.go 11874→12031 +157 行净 — 反反爬 159-163 +145
+  行净 / BUG-260 engine 字段 +12 行净 / struct+switch+snapshot 注释更新
+  35→40 头 含在反反爬 +145 内; runner.go 0 改 — 0 in-scope bug; budget +200
+  内 79% 使用).
+- BUG 编号 scope-local: BUG-260 属 fetcher.go scope (Engine 字段 family 续抓),
+  顺延 R92-A fetcher/runner scope BUG-255~256, 主控指定 260+ 起号 (257-259
+  留 R92-B/C/D 跨 scope 续抓或 reserve). 与 R92-B crawl scope BUG-255~259 +
+  R92-C admin scope BUG-255~256 + R92-D main+templates scope BUG-255~256 跨
+  scope 同号 (worklog 接受; 主控去重 fetcher.go + runner.go scope = unique
+  1 bug — BUG-260 fetcher=2captcha Engine 不对称, 独占 fetcher/runner scope;
+  与 R86-A fetcher/runner BUG-219/220 + R87-A BUG-227~230 + R88-A/B BUG-233/
+  234 + R89-A BUG-241/242 + R90-A BUG-247/248 + R91-A BUG-250~252 + R92-A
+  BUG-255~256 同款 scope-local 约定 (跨 scope 复用 bug 编号, worklog 接受;
+  主控去重实际 unique bug 数).
+
+Stage Summary:
+- 反反爬累计: 158 → 163 项 (R93-A 新增 159-163 共 5 项, 全真实实施 0 诚实留痕).
+  5 项合并 hostSecurityHeadersEntry 扩第 36-40 字段: 第 159 项 Retry-After /
+  第 160 项 ETag / 第 161 项 Last-Modified / 第 162 项 Set-Cookie SameSite /
+  第 163 项 Set-Cookie Secure. 3 fetch 路径对称 (fetchHttp + fetchViaCurl +
+  fetchBinaryHttp 都在 3xx 检查前两路径都记; fetchBinaryViaCurl -s -S 不 dump
+  headers 故不调, 与 124-158 同款限制). 全为 "频控策略 + 缓存 validator +
+  session cookie security flag" 同类 (Retry-After 频控 + ETag/Last-Modified
+  cache validator + Set-Cookie SameSite/Secure session posture, 与 124-158
+  安全/跨域/缓存策略/legacy/info-disclosure 同款语义自洽); 反爬本身不基于此
+  检测 (客户端不发), 降分价值 ≤1 分, 主要 admin 可观测性 (识别 host 频控策略
+  / 缓存指纹 / session cookie 安全姿态 — 与 cf-bm/cf_clearance/_abck bot
+  mitigation cookies 联动分析).
+- 新修 bug 1 项 (BUG-260, P3, fetcher.go scope R92-A BUG-255~256 后 Engine
+  字段 family 续抓):
+  · BUG-260 (P3): fetchPageOnce 3 路径 2captcha success-path 硬编码 Engine:
+    "browser", 但 solved html 实来自 applyCaptchaTokenAndRefetch →
+    fetchHttpWithCurlFallback (HTTP/curl), 非 browser 桥. 与 BUG-255 engine
+    var 同款 "html 实际来源 = http" 不对称 (Turnstile 路径 fetchViaObscura
+    = puppeteer 保 "browser" 正确, 与本 2captcha HTTP re-fetch 不对称).
+    修复: 3 处 `Engine: "browser"` → `Engine: "http"` (success-path 6445 /
+    err-path 6536 / bridge-path 6571). +12 行净.
+- 诚实留痕 bug 0 项 (fetcher.go scope 内 R92-A BUG-255~256 后 + 本轮 BUG-260
+  共 1 项 — Engine 字段 family 续抓; runner.go scope 0 改 — 6 IncCaptcha
+  callsite R91-A 全覆盖; 5 defer 候选跨 scope/设计权衡非 bug).
+- 精简: +157 行净 (5 反反爬 +145 / 1 BUG +12; budget +200 内 79% 使用; 无 DRY
+  机会 — 反反爬 5 项与 124-158 family 1:1 4 处镜像, extractSetCookieAttr
+  helper 已提单 helper 供 6 callsite 复用, BUG-260 3 处 return 同款 family
+  engine 字段不能参数化).
+- 编译: 0 errors + 0 warnings (go build ./... + go vet ./... 全 clean). 0
+  启动/重启/杀死进程 / 0 写 DB / 0 prisma / 0 新依赖 / 0 emoji / 0 改非 2 文件
+  (runner.go 0 改).
+- 文件改动: 1 文件 (fetcher.go +157 / runner.go +0; 0 文件 0 改).
+- BUG 编号 scope-local: BUG-260 属 fetcher.go scope (Engine 字段 family),
+  顺延 R92-A BUG-255~256, 主控指定 260+ 起号. 与 R92-B/C/D 跨 scope 同号
+  (worklog 接受; 主控去重 fetcher.go scope = unique 1 bug).
+
+未决项 (交接 R94):
+1. **fetchBinaryViaCurl -D - dump headers + 40 observer**: R89-A 未决项 #6 候选 #1
+   + R90-A 未决项 #6 候选 #1 + R91-A 未决项 #1 + R92-A 未决项 #1 defer 续. 大改
+   (~80 行加 -D - 参数 + headers parsing + 40 observer call site, 含本轮 5 项
+   反反爬 159-163 + 124-158 已有 35 项 = 40 头), 改 curl args 结构易引入
+   stderr/stdout 混合 parsing bug. R94+ 评估 (前提: budget +200 行内 + curl
+   -D - parsing 已有 extractHeaderFromCurlStdout helper 可复用, 主要 cost 是
+   40 observer call site; Set-Cookie 多 cookie 行已可复用 extractSetCookieAttr
+   helper, 与 fetchHttp/fetchBinaryHttp 同口径).
+2. **pageFetcher Blocked propagation**: R86-A 未决项 #4 + R87-A 未决项 #7 +
+   R88-A 未决项 #7 + R89-A 未决项 #6 候选 #4 + R90-A 未决项 #6 候选 #2 +
+   R91-A 未决项 #2 + R92-A 未决项 #2 defer 续. 跨 fetcher.go + runner.go +
+   parser.go 3 文件 scope 接口变更 (pageFetcher 返 ("", err) 让 caller 判
+   Blocked break 翻页, 与 BUG-201 BudgetExceeded propagation 同接口变更, 跨
+   ParseToc/ParseContent wiring). R94+ 评估 (前提: 与 BUG-201 同款 pageFetcher
+   返 err 接口变更, 跨 3 文件 scope, 风险高 — 需主控确认跨 scope 授权).
+3. **fetchBinaryHttp 4xx/5xx 选择性 observer**: R89-A 未决项 #1 + R90-A 未决项
+   #6 候选 #3 + R91-A 未决项 #3 + R92-A 未决项 #3 defer 续. 404 cover 不发 SW
+   头时仍记 HSTS — 当前一律记, 是设计 trade-off 非 bug. R94+ 评估 (前提:
+   评估 status-code-based observer gating 是否需引入, 或维持 last-write-wins
+   update-in-place 行为).
+4. **runner.go cover fetch hostGate wiring**: R75-C 交接 #5 + R90-A 未决项 #6
+   候选 #4 + R91-A 未决项 #4 + R92-A 未决项 #4 defer 续. cover fetch 多在
+   external CDN 不同 host, 加 hostGate 需 Acquire/Release wiring + cover fetch
+   失败回退路径, 设计复杂度高于收益. R94+ 评估 (前提: 若 cover fetch 频繁触发
+   源站频控再评估).
+5. **反反爬 164+ fetcher/runner 深抓**: 本轮 159-163 共 5 项 (Retry-After 频控
+   / ETag 缓存 validator / Last-Modified 缓存 validator / Set-Cookie SameSite
+   session posture / Set-Cookie Secure session posture). R94+ 续抓 (潜在候选
+   有限 — Set-Cookie HttpOnly flag (与 162/163 同款 family, helper 可复用
+   extractSetCookieAttr) / Set-Cookie Partitioned flag (CHIPS, RFC 6265bis,
+   与 162/163 同款 family) / Content-Disposition 下载 hint / Date server clock
+   / Warning RFC 7234 deprecated; 主要为 Set-Cookie 余 2 flag + 罕见头, 真实
+   新候选趋向耗尽, 主要为重复 tracker 合并评估, 需评估是否第 164+ 项转入
+   hostSecurityHeadersEntry 外的其它观测维度如 request header 观测 (UA/
+   Sec-CH-UA/Sec-Fetch-*) 或 timing-based 维度如 Server-Timing).
+6. **BUG-261+ fetcher/runner 深抓**: 本轮 BUG-260 共 1 项 (fetchPageOnce
+   2captcha success-path Engine 字段不对称). R94+ 续抓 (潜在候选: (1) BUG-256
+   CaptchaUnknown bridge 返仍 captcha/blocked 时是否更新 html=bridged +
+   engine="browser" (R93+ 评估后维持现状 — 设计 trade-off, 主源 http 桥是
+   fallback 报原源更合理, 非 bug; R94+ 若 admin 报桥尝试丢失可再评估); (2)
+   fetchBinaryViaCurl -D - dump headers (候选 #1 同款); (3) pageFetcher Blocked
+   propagation (候选 #2 同款); (4) fetchBinaryHttp 4xx/5xx 选择性 observer
+   (候选 #3 同款); (5) runner.go cover fetch hostGate wiring (候选 #4 同款);
+   (6) FetchBinaryPage line 6694 curl fallback Engine "browser" vs "http"
+   convention 评估 — FetchBinaryResult Engine 字段 documented convention 是
+   "curl fallback = browser" (line 6652 注释: `"http" | "browser" (curl
+   fallback)`), 与 fetchPageOnce engine var "html 实际来源" convention 不同
+   (fetchBinaryPage 语义 = native+utls 都失败 → curl 标记 browser-grade access
+   fallback, 非 html source 跟踪; 设计 trade-off, 非显然 bug, R94+ 评估是否
+   统一为 "html/bytes 实际来源" convention 跨 FetchResult + FetchBinaryResult);
+   (7) fetchPageOnce h-captcha/reCAPTCHA 2captcha 失败后无 bridge fallback (与
+   CaptchaUnknown BUG-256 不对称 — h-captcha/reCAPTCHA 2captcha 失败 fall-
+   through 到 CaptchaUnknown check (false, ct 是 h-captcha) → return
+   CaptchaDetected, 无 bridge fallback; 但 2captcha 失败 = token solver 服
+   务不可用, bridge (puppeteer) 可点过 h-captcha widget — 评估是否补 bridge
+   fallback for h-captcha/reCAPTCHA post-2captcha-failure, 与 BUG-256 同款
+   candidate but for different captcha type)).
+==============================================================================
+
+---
+
+# R93-B (2026-09-28): crawl 7 文件深抓 BUG-260~262 + 精简 (hostgate dead field)
+
+## 任务
+
+- 任务 ID: R93-B
+- 范围: crawl/{hostgate,smart,cleaner,storage,types,parser,sorter}.go (7 文件)
+- 目标: 深抓 BUG-260++ + 精简, +150 行内, 编译 0, worklog 追加
+- 严禁: 改非 7 文件 / 启动 / 新依赖 / emoji
+
+## 侦察
+
+- worklog 末尾 5KB 读: R92-B crawl 5 bug (BUG-255 AdjustMinGap bump-wipe /
+  BUG-256 SaveCoverWebp oversize silent / BUG-257 Interfere.Interval 0/1-2
+  mismatch / BUG-258 BrowserFallbackStatus empty guard / BUG-259 Adjust-
+  Concurrency bump-wipe) + R93-C admin 5 bug (BUG-260~264 admin scope) 已就位.
+  R93-B crawl scope 续抓 BUG-260+ (R92-B 用 255-259, R93-B crawl 新 bug 从
+  260 起; 与 R93-C admin scope 260-264 跨 scope 同号 — worklog 接受, 主控
+  按 scope 去重).
+- 环境: wrapper PID 29863 + heis-backend :3000=200 4.3ms, go 1.26.8 linux/
+  amd64, 二进制 25,893,937 bytes (R92 末). crawl 7 文件行数: hostgate 629 /
+  smart 717 / cleaner 1544 / storage 223 / types 840 / parser 2001 / sorter
+  233 (cleaner/sorter 自 R92 末未改).
+- BUG 候选审计 (逐文件深抓):
+  - **smart.go SmartCategory source 路径**: line 245-249 `if c == normalized`
+    不归一化 c. DB 存 2 字 legacy 名 (e.g. "玄幻") 与 normalized 4 字标准
+    名 ("玄幻奇幻") 不匹配 → source 路径 silent miss, 退到 keyword 路径
+    (MatchCategoryByText line 200-205 已 normalize c, keyword 路径不受影
+    响, 但 Method 从 "source" 降级为 "keyword"). 0 当前用户受影响 (DB 已
+    迁移 4 字名 R52-1A), legacy 2 字 row 仅历史残留. **BUG-260 候选确认**.
+  - **hostgate.go minGapMsBeforeCooldown 字段**: line 72 声明 + line 211-216
+    settleRateLimitExpiry clear + line 494-496 ReportRateLimited set, **0
+    reader**. R81-C BUG-180 移除还原逻辑 (原空 if branch SA9003) 后字段变
+    dead state (仅 set + clear, 0 reader). 自 R81-C 12 轮未删, R93-B 精简.
+    **BUG-261 候选确认 (精简)**.
+  - **parser.go ParseContent FieldConst 分支**: line 1924-1925 直接调
+    applyConstTemplate, 跳过 ApplyTransform. FieldJSON 分支 line 1929 显
+    式 ApplyTransform, FieldCSS 分支 line 1933 走 ExtractField 内部
+    ApplyTransform, 唯独 FieldConst 漏. FieldConst content 规则的
+    stripTags/replaceFrom/decode/index 静默失效. 71 Rule 0 用 FieldConst
+    content (content 通常是 HTML/plain, 非 const), 0 当前用户受影响.
+    **BUG-262 候选确认**.
+  - 其他候选评估:
+    - cleaner.go RemoveAdLines urlProtectRe 含 () / trailing ./, 的 URL
+      (R92-B 未决项 #2, P4 边缘 case, 维持现状).
+    - sorter.go extractChapterNumber 中文数字不支持 (R92-B 未决项 #3,
+      设计选择, 维持现状).
+    - parser.go applyConstTemplate 多级 dotted key (R92-B 未决项 #5, P4,
+      admin 配置罕见, 维持现状).
+    - parser.go tokenizeJsonPath `[...]` 内含 `]` 在 quoted value 内
+      (R92-B 未决项 #6, P4 极罕见, 维持现状).
+    - hostgate.go ReportFailure penalty 过期 failStreak 不重置 (R92-B
+      未决项 #2, 设计正确 — penalty 过期 ≠ 立即清零 failStreak, 连续失败
+      host 持续 derate 是反反爬保守语义, 维持现状).
+    - smart.go MatchCategoryByText keyword loop perf (R92-B 未决项 #3, P4,
+      165 keyword × ~50ns = ~8μs/call, 1000 本书 ~8ms, 维持现状).
+    - cleaner.go cleanContentHtmlSync goquery 失败返 raw vs html (R92-B
+      未决项 #1, T2SHtml Go stub no-op, 0 实际差异, 维持现状).
+    - cleaner.go cleanContentHtmlSync HTML 分支 [style] Each 嵌套
+      display:none 删除后子节点 Remove() nil Parent panic (R89-B 未决项
+      #2, goquery 行为待验, 无法复现, 维持现状).
+
+## 修复
+
+### BUG-260 (P3) — smart.go SmartCategory source 路径不归一化 existingCategories
+
+- 文件: smart.go line 245-258 (+9 行净)
+- 修复: `if c == normalized` → `if NormalizeCategory(c) == normalized`,
+  返回 `Category: normalized` (4 字标准名, post-R52-1A canonical, 与
+  MatchCategoryByText keyword 路径返 4 字名一致).
+- 行为变化: legacy 2 字 DB row 命中时返 4 字 normalized (顺带迁移); 标准
+  4 字 row 行为不变 (c == normalized == NormalizeCategory(c)). 0 用户受负
+  面影响 (DB 已迁移 4 字名 R52-1A; legacy 2 字 row 仅历史残留).
+- 编译: 0 errors.
+
+### BUG-261 (P3 精简) — hostgate.go minGapMsBeforeCooldown dead field
+
+- 文件: hostgate.go (-12 行净)
+- 修复: 删除字段声明 (line 72) + settleRateLimitExpiry if-block (line
+  211-216 简化为仅清 rateLimitedUntil + failStreak) + ReportRateLimited
+  snapshot set (line 494-496 删除). 更新 3 处注释 (settleRateLimitExpiry
+  docstring + BUG-243 fast-path 注释 + BUG-250 ReportRateLimited 注释)
+  移除 minGapMsBeforeCooldown 引用.
+- 行为变化: 0 (字段自 R81-C BUG-180 移除还原逻辑后 0 reader, 仅 set +
+  clear dead state). settleRateLimitExpiry 简化与 BUG-243 fast-path settle
+  同口径 (caller 的 minGapMs 不受冷却到期影响, 与 R45-1A 修复意图一致).
+- hostState struct 减 8 bytes (int64), ReportRateLimited 减 1 if + 1
+  write, settleRateLimitExpiry 减 1 if + 1 write.
+- 编译: 0 errors.
+
+### BUG-262 (P3) — parser.go ParseContent FieldConst 跳过 ApplyTransform
+
+- 文件: parser.go line 1924-1934 (+9 行净)
+- 修复: `content = applyConstTemplate(rule.Expression, URLVars(curURL))`
+  → `content = ExtractField("", nil, nil, rule, &ExtractCtx{Vars: URLVars
+  (curURL)})`. ExtractField 在 else 分支 (line 1175) 一并调 ApplyTransform,
+  与 ParseList JSON line 1390 / ParseToc JSON line 1405 同款走统一入口.
+- 行为变化: FieldConst content 规则若配 stripTags/replaceFrom/decode/
+  index 现在生效 (71 Rule 0 用 FieldConst content, 0 当前用户受影响;
+  未来 admin 配置后受益).
+- 编译: 0 errors.
+
+## 编译 + 验证
+
+- go build -o /tmp/heis-backend-r93b . = 0 errors, 二进制 26,002,331 bytes
+  (R92 25,893,937 → +108,394: BUG-260 +9 smart + BUG-261 -12 hostgate +
+  BUG-262 +9 parser = +6 行净, 二进制 +108KB 主要是 R93-A fetcher 反反爬
+  159-163 项 + R93-C admin BUG-260~264 并行 agent 修改; R93-B 本身 +6 行净).
+- go vet ./crawl/ = 0 warnings.
+- gofmt -l 7 文件: hostgate.go + parser.go non-compliant (pre-existing 自
+  R92-B 8-space indent, 非本轮引入; 5 文件 smart/cleaner/storage/types/
+  sorter gofmt-clean, 本轮编辑 smart.go 用 tab 保持合规, hostgate/parser
+  用 8-space 与文件既有 style 一致).
+- wrapper + heis-backend 未动 (PID 29863 :3000=200 4.3ms 持续运行, 0 重启).
+
+## 文件改动
+
+- 3 文件 (smart.go 717→726 +9 / hostgate.go 629→617 -12 / parser.go 2001
+  →2010 +9; 4 文件 0 改 — cleaner/storage/types/sorter 审计后 0 残余 bug,
+  维持现状).
+- 净 +6 行 (BUG-260 +9 smart / BUG-261 -12 hostgate / BUG-262 +9 parser),
+  budget +150 内 4% 使用.
+- 0 改非 7 文件 / 0 启动 / 0 新依赖 (0 新 import — smart.go strings 已
+  用, hostgate.go time 已用, parser.go 全既有) / 0 emoji.
+
+## BUG 编号 scope-local
+
+- BUG-260~262 属 crawl scope, 顺延 R92-B crawl scope BUG-255~259. 与 R93-C
+  admin scope BUG-260~264 跨 scope 同号 (worklog 接受, R91/R92 convention;
+  主控去重 crawl scope = unique 3 bug — BUG-260 crawl=SmartCategory
+  normalize existing vs admin=Rule DELETE Task ref; BUG-261 crawl=
+  minGapMsBeforeCooldown dead field vs admin=Category DELETE Book ref;
+  BUG-262 crawl=ParseContent FieldConst ApplyTransform vs admin=featuredBooks
+  valid filter).
+
+## 未决项 (交接 R94+)
+
+1. **BUG-263+ crawl 深抓**: 本轮 BUG-260~262 共 3 项 (SmartCategory
+   normalize + minGapMsBeforeCooldown dead field + ParseContent FieldConst
+   ApplyTransform). R94+ 续抓 (潜在候选已趋耗尽: (1) cleaner.go
+   RemoveAdLines urlProtectRe 含 () / trailing ./, 的 URL (R92-B 未决项
+   #2, P4 边缘 case); (2) sorter.go extractChapterNumber 中文数字 (R92-B
+   未决项 #3, 设计选择); (3) parser.go applyConstTemplate 多级 dotted
+   key (R92-B 未决项 #5, P4); (4) parser.go tokenizeJsonPath `[...]` 含
+   `]` 在 quoted value (R92-B 未决项 #6, P4); (5) hostgate.go
+   ReportFailure penalty 过期 failStreak 不重置 (R92-B 未决项 #2, 设计
+   正确维持现状); (6) smart.go MatchCategoryByText keyword loop perf (R92-B
+   未决项 #3, P4); (7) cleaner.go cleanContentHtmlSync goquery 失败返 raw
+   (R92-B 未决项 #1, 0 实际差异); (8) cleaner.go cleanContentHtmlSync HTML
+   [style] Each nil Parent panic (R89-B 未决项 #2, 无法复现); (9) smart.go
+   SortTaskPriorityQueue TaskID tie-breaker 冗余 (SliceStable 已稳定, P4
+   perf nit, 维持现状); (10) smart.go EstimateTaskETA int64 overflow (R92-B
+   评估, 现实值 bounded, P4 维持现状)). crawl scope 7 文件 P3+ bug 趋向
+   耗尽, R94+ 转向 perf/边缘 case 或跨 scope 协同).
+2. **hostgate.go 8-space indent (pre-existing R92-B)**: gofmt -l 报
+   hostgate.go + parser.go non-compliant. R94+ 评估批量 gofmt -w (与 R93-B
+   smart.go tab indent 不冲突, 独立 commit 避免逻辑改动混淆).
+3. **R93-A fetcher + R93-C admin + R93-D templates 并行 agent 修改**: 本
+   轮 R93-B 仅改 crawl 3 文件, 与 R93-A (fetcher 反反爬 159-163) / R93-C
+   (admin BUG-260~264) / R93-D (templates) 范围不重叠. 主控统一编译应 0
+   errors (各 agent 独立 scope, 0 文件冲突).
+
+==============================================================================
+
+## R93-D: main+templates 深抓 BUG-260~262 (23qb printf order + categories ternary deadcode + ggd66 dup ID)
+
+**日期**: 2025-09-28
+**文件**: 3 文件 (templates/23qb/home.html 148→152 +4 净 / templates/admin/
+categories.html 161→167 +6 净 / templates/ggd66/read.html 111→116 +5 净;
+0 改 main.go — 本轮 3 项全为 template-only 修复, 无 main.go data 注入改动,
+与 R92-D BUG-255 trxsw read 字号同款 template-only 先例一致; budget +200 内
+8.5% 使用)
+**BUG 数**: 3 项 (BUG-260 P3 + BUG-261 P4 精简 + BUG-262 P4 精简)
+**编译**: 0 errors + 0 warnings (go build ./... + go vet ./... 全 clean + 96 模板
+parse 验证通过 + 23qb/home 渲染验证 order 01/02/03 正确)
+**纪律**: 0 启动/重启/杀死进程 / 0 写 DB / 0 prisma / 0 新依赖 (0 新 import —
+add FuncMap 已在 main.go line 143 定义, printf 是 Go template 内置, 0 新增) /
+0 emoji / 0 改非 main+templates 文件 (admin.go / crawl/* / services/* /
+fetcher.go / runner.go 并行 agent R93-A/B/C + 前序 R92-A/B/C/D 范围, 本 agent
+严禁改; worklog.md 为本 agent worklog 追加例外).
+
+### 3 项 BUG 修复
+
+1. **BUG-260 (P3)** — `templates/23qb/home.html` line 123-128 NavCats × Popular
+   嵌套循环: 原 `{{range $.Popular}}` 未捕获 loop index, line 125
+   `{{printf "%02d" 1}}` 硬编码 arg=1 → 每个 keyword 链接 `<span class="order">`
+   永远渲染 "01" (12 本全显 01, 排行号失真, 用户误以为并列第一). 该 list-item
+   区块用 NavCats (8 分类) × Popular (12 本) 嵌套循环生成 8 卡 × 12 keyword
+   (R-something 轮建, worklog line 23663/23699 "视觉对齐但内容重复" 为已知设计
+   选择, 但 order 号失真是新发现 bug — worklog 未记). 修复: `{{range $i, $b :=
+   $.Popular}}` 捕获 index, `{{printf "%02d" (add $i 1)}}` 渲染 01/02/.../12,
+   `{{$b.URL}}`/`{{$b.name}}` 替 `{{.URL}}`/`{{.name}}` (range 变量切换).
+   与 23qb/category.html line 64 `{{add $i 1}}` + 101kks home list-item 同款 rank
+   口径. +4 行净 (5 行 comment + 6 行 range/a/span 替换, 原 6 行 → 新 11 行).
+   渲染验证: 3-book test data → order 01/02/03 全正确 (printf "%02d" (add $i 1)
+   = $i+1 zero-padded 2 位).
+
+2. **BUG-261 (P4 精简)** — `templates/admin/categories.html` line 137 onDrop
+   拖拽重排: 原 `tbody.insertBefore(moved, tbody.children[toIdx>fromIdx?toIdx:
+   toIdx])` ternary `toIdx>fromIdx?toIdx:toIdx` 两分支同值 (恒 = toIdx) 是 dead
+   code. removeChild(rows[fromIdx]) 后子节点索引已重排 (移除 1 项后后续项左移),
+   insertBefore(moved, children[toIdx]) 对 toIdx>fromIdx 与 toIdx<fromIdx 均正确
+   落位 (验证: [A,B,C,D,E] A[0]→D[3] 移除 A 后 D 在 idx 2, insertBefore(A,
+   children[3]=E) → [B,C,D,A,E] A 落 idx 3 ✓; E[4]→B[1] 移除 E 后 B 仍 idx 1,
+   insertBefore(E,children[1]=B) → [A,E,B,C,D] E 落 idx 1 ✓). 简化 ternary →
+   `toIdx`. 0 功能变化 (行为等价, 仅删 dead ternary). R92-D defer #6 候选, 本轮
+   修. +6 行净 (6 行 comment + 1 行简化, 原 1 行 → 新 7 行).
+
+3. **BUG-262 (P4 精简)** — `templates/ggd66/read.html` line 56-58 顶部 booktag +
+   line 67-69 底部 booktag: 两处均 `id="linkPrev"`/`id="linkIndex"`/
+   `id="linkNext"` → DOM 同 id 重复 (HTML5 spec: id 必须唯一; getElementById
+   仅返首个, CSS #id 选中首个). 0 JS 引用此 3 id (ggd66/read.html 0 keydown/
+   getElementById('linkPrev') 等, 纯装饰 anchor; 与 BUG-249 shipsay heisFontSize
+   IIFE 不同, ggd66 0 字号 JS 0 keyboard nav). 0 CSS #linkPrev 选择器
+   (ggd66.css 用 .booktag a 类选择器, 非 #id). 删底部 3 id 属性, 保顶部 3 id
+   (供未来 keyboard nav 接入用, getElementById 返首个 = 顶部). +5 行净
+   (6 行 comment + 3 行 a 标签去 id, 原 5 行 → 新 11 行).
+
+### 精简与协同分析
+
+- **+17 行净** (本轮 3 项 BUG 修复 +25/-8 = +17 行净; budget +200 内 8.5% 使用).
+- **0 额外 DRY 机会**: BUG-260 单 template 单 callsite (23qb home 独有 NavCats×
+  Popular 嵌套, 其他 9 主题 home 用单层 Popular/TopBooks range); BUG-261 单
+  template 单 ternary (admin/categories onDrop 独有, 其他 admin template 0 拖拽
+  重排); BUG-262 单 template 3 id 重复 (ggd66 read 独有, ddyueshu read 也有
+  id="content" 重复但属不同 id 不同语义 — 外层 layout wrapper vs 内层 chapter
+  content, 删任一会破 CSS, defer 不动).
+- **R92-D defer 候选评估**: (1) 101kks ranking/fulltext 首尾页 hardcoded page
+  — R90-D/R91-D/R92-D 三轮已评估维持 (buildPagerURL 不分风格, 0 bug 不动);
+  (2) home.html WheelLinks 三段 range P4 性能 — 维持 defer (非 bug); (3)
+  statusLabel FuncMap 风格不一致 — 维持 defer (功能等价); (4) admin/tasks.html
+  editTaskModal select 联动 — 维持 defer (无逻辑联动需求); (5) trxsw/home 装饰
+  pager — 维持 defer (设计权衡); (6) admin/categories ternary dead code — 本轮
+  BUG-261 修. 6 候选中 5 维持 + 1 修.
+- **新发现**: BUG-260 23qb home printf "%02d" 1 是 worklog 未记的新 bug (R-something
+  轮建 NavCats×Popular 嵌套时遗留, order 号失真). 与 BUG-255 trxsw 字号静态指示
+  同款 "跨主题复制粘贴遗漏" family 但不同 mechanism (printf arg 硬编码 vs 静态
+  指示不更新).
+- **0 改 main.go**: 本轮 3 项全为 template-only (printf/ternary/id), 无 main.go
+  data 注入或 FuncMap 改动. add FuncMap 已在 main.go line 143 定义 (R38-1B),
+  printf 是 Go template 内置. 与 R92-D BUG-255 trxsw read 字号 (template-only,
+  +1 行 script IIFE) 同款 template-only 先例一致 (R92-D BUG-256 aijjxs/book
+  返回列表 也是 template-only 但加了 main.go +13 行 comment block 因引用
+  injectBookURL CategoryURL 字段; 本轮 3 项 0 引用 main.go 字段, 0 main.go
+  comment 需求).
+
+### BUG 编号 scope-local
+
+- BUG-260~262 属 main+templates scope (23qb home printf + admin/categories
+  ternary + ggd66 read dup ID), 顺延 R92-D main+templates scope BUG-255~256.
+  与 R93-A fetcher/runner (若有) + R93-B crawl (BUG-255~259) + R93-C admin
+  (BUG-260~264) 跨 scope 同号 (worklog 接受, R91/R92 convention; 主控去重
+  main+templates scope = unique 3 bug — BUG-260 main+templates=23qb printf order
+  vs admin=Rule DELETE Task ref vs crawl=AdjustMinGap; BUG-261 main+templates=
+  categories ternary deadcode vs admin=Category DELETE Book ref vs crawl=
+  SaveCoverWebp; BUG-262 main+templates=ggd66 dup ID vs admin=featuredBooks
+  valid filter vs crawl=Interfere.Interval).
+
+### 未决项 (交接 R93-E / R94+)
+
+1. **101kks ranking/fulltext + shipsay/aijjxs ranking/fulltext 首尾页 hardcoded
+   page=1/TotalPages** (6 callsite): R90-D/R91-D/R92-D 三轮已评估维持
+   (buildPagerURL 不分风格, 与 hardcoded query 串一致, 0 跨风格 canonical 分散;
+   仅 "首页" page=1 与 PageList[0] 无 &page 形态微小 within-template canonical
+   分散, R91-D 评 "微小" 维持). R93-E+ 维持 defer (前提: 若 buildPagerURL 改
+   分风格再修).
+2. **ddyueshu/read.html id="content" 重复** (line 44 外层 + line 59 内层):
+   与 BUG-262 ggd66 dup id 同款 HTML5 重复, 但外层是 layout wrapper, 内层是
+   chapter content container, CSS #content 可能指向其中之一, 删任一有破 CSS 风险.
+   P4 defer (前提: 审 ddyueshu.css #content 选择器目标后决定删哪个或重命名).
+3. **statusLabel FuncMap 风格不一致** (shipsay home/history + trxsw/home 手写
+   `{{if eq .status "completed"}}完结{{else}}连载{{end}}` vs statusLabel
+   FuncMap): R92-D defer #3 续. 功能等价, 改需审 10 主题 ×8 模板 callsite,
+   收益低. R93-E+ 维持 defer.
+4. **x2552 wheel book categoryId 跨站语义**: R91-D defer #1 续. 设计权衡 (wheel
+   book categoryId 是源站 root book 的, 链接到当前站 vs 目标站 category 页).
+   R93-E+ 维持 defer.
+5. **admin dashboard/books/downloads `/?view=book&id={{.id}}` hardcoded query
+   URL** (5 callsite): admin → frontend 跳转用 query 串 (admin 不知前端
+   pseudoStyle), 与 site 配置的伪静态风格不一致 (canonical 分散, 但 admin-only
+   非 SEO-crawled). 修需 admin handler 注入 pseudoStyle-aware URL (admin.go
+   scope, 非 main+templates). R93-E+ 维持 defer (前提: 跨 scope 协同 — admin
+   handler 注入 + admin template 改 {{.bookURL}}).
+6. **BUG-263+ main+templates 深抓**: 本轮 BUG-260~262 共 3 项 (23qb printf +
+  categories ternary + ggd66 dup ID). R93-E+ 续抓 (潜在候选已趋耗尽: (1)
+  101kks ranking/fulltext 首尾页 hardcoded (上未决项 #1, 三轮已维持); (2)
+  ddyueshu read id="content" 重复 (上未决项 #2, CSS 风险 defer); (3) statusLabel
+  FuncMap 统一 (上未决项 #3, 收益低 defer); (4) admin dashboard hardcoded book
+  URL (上未决项 #5, 跨 scope defer); (5) aijjxs/home 装饰统计 `{{len .Books}}部`
+  ×4 (line 180-183, fake stats 与源站视觉对齐, 设计选择非 bug); (6) 23qb/read
+  nested `<main>` (line 57+59, HTML5 spec main 不可嵌套, 但浏览器 graceful
+  渲染, P4 cosmetic); (7) trxsw/home 装饰 pager (R92-D defer #4, 设计权衡).
+  main+templates 10 主题 ×9 模板 = 90 文件 + admin 13 模板 = 103 模板, P3+ bug
+  趋向耗尽, R93-E+ 转向 perf/边缘 case 或跨 scope 协同).
+==============================================================================

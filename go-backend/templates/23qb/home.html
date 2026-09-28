@@ -120,10 +120,15 @@
 <i class="icon-hot"></i>
 <span>{{.name}}</span>
 </h5>
-{{range $.Popular}}
-<a class="item" href="{{.URL}}" title="{{.name}}" target="_blank">
-<span class="order">{{printf "%02d" 1}}</span>
-<span class="keyword">{{.name}}</span>
+{{/* R93-D BUG-260 (P3, main+templates scope): 原 {{range $.Popular}} 未捕获 loop index,
+     {{printf "%02d" 1}} 硬编码 arg=1 → 每个 keyword 链接 order span 永远渲染 "01"
+     (12 本全显 01, 排行号失真, 用户误以为并列第一). 修复: 改 {{range $i, $b :=
+     $.Popular}} 捕获 index, {{printf "%02d" (add $i 1)}} 渲染 01/02/.../12 (与
+     23qb/category.html line 64 {{add $i 1}} + 101kks home list-item 同款 rank 口径). */}}
+{{range $i, $b := $.Popular}}
+<a class="item" href="{{$b.URL}}" title="{{$b.name}}" target="_blank">
+<span class="order">{{printf "%02d" (add $i 1)}}</span>
+<span class="keyword">{{$b.name}}</span>
 </a>
 {{end}}
 </div>

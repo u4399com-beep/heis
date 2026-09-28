@@ -243,8 +243,17 @@ func SmartCategory(bookName, intro, sourceCategory string, existingCategories []
 	if sourceCategory != "" {
 		normalized := NormalizeCategory(strings.TrimSpace(sourceCategory))
 		for _, c := range existingCategories {
-			if c == normalized {
-				return SmartCategoryResult{Category: c, Method: "source"}
+			// R93-B BUG-260 (P3) 修复: 原 `c == normalized` 不归一化 c, DB 存 2 字
+			//   legacy 名 (e.g. "玄幻") 与 normalized 4 字标准名 ("玄幻奇幻") 不
+			//   匹配 → source 路径 silent miss, 退到 keyword 路径 (MatchCategoryByText
+			//   line 200-205 已 normalize c, keyword 路径不受影响, 但 Method 从
+			//   "source" 降级为 "keyword", 上层按 Method 路由会误降级). 修复: 同款
+			//   normalize c 后比较, 返回 normalized 4 字标准名 (post-R52-1A canonical,
+			//   与 MatchCategoryByText keyword 路径返 4 字名一致). 0 用户受影响 (DB 已
+			//   迁移 4 字名 R52-1A, legacy 2 字名仅历史 row; 即便命中 legacy row,
+			//   返 normalized 让上层存储 4 字, 顺带迁移).
+			if NormalizeCategory(c) == normalized {
+				return SmartCategoryResult{Category: normalized, Method: "source"}
 			}
 		}
 	}
