@@ -744,9 +744,7 @@ func JsonGet(root any, path string) any {
         if path == "$" {
                 return root
         }
-        if strings.HasPrefix(path, "$.") {
-                path = path[2:]
-        }
+        path = strings.TrimPrefix(path, "$.")
         // 标准点路径
         // [] 装饰可剔, [n] 下标, [k=v] 过滤
         return jsonGetByPath(root, path)
