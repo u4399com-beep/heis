@@ -4115,6 +4115,33 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                         if v := extractSetCookieAttr(sc, "Secure"); v != "" {
                                 recordSecurityHeader(originHost(rawURL), "Set-Cookie-Secure", v)
                         }
+                        // R94-A 反反爬第 164-165 项: Set-Cookie HttpOnly + Partitioned
+                        //   flag (与 162/163 同款 family, 复用 extractSetCookieAttr).
+                        if v := extractSetCookieAttr(sc, "HttpOnly"); v != "" {
+                                recordSecurityHeader(originHost(rawURL), "Set-Cookie-HttpOnly", v)
+                        }
+                        if v := extractSetCookieAttr(sc, "Partitioned"); v != "" {
+                                recordSecurityHeader(originHost(rawURL), "Set-Cookie-Partitioned", v)
+                        }
+                }
+                // R94-A 反反爬第 166-168 项: legacy 安全 / info-disclosure / 缓存年龄
+                //   响应头观测 (per-host 合并 tracker 第 43-45 字段, 与 124-163 同款).
+                //   第 166 项 CF-Ray — Cloudflare per-request ray ID (非标准), 直接
+                //     Cloudflare CDN 标识 = Cloudflare Bot Management 反爬 (与 142
+                //     Clear-Site-Data aggressive session 同款 mature anti-bot stack);
+                //     X-Frame-Options 已在第 90 项 (hostFrameOptionsEntry) 不重复.
+                //   第 167 项 Server — 服务端软件 banner (info disclosure), 与 157
+                //     X-Powered-By 同款 info-disclosure family.
+                //   第 168 项 Age — 响应年龄秒数 (cache freshness), 与 149 Cache-Control
+                //     + 160 ETag + 161 Last-Modified 缓存策略 family 续.
+                if cfRay := resp.Header.Get("Cf-Ray"); cfRay != "" {
+                        recordSecurityHeader(originHost(rawURL), "Cf-Ray", cfRay)
+                }
+                if srv := resp.Header.Get("Server"); srv != "" {
+                        recordSecurityHeader(originHost(rawURL), "Server", srv)
+                }
+                if age := resp.Header.Get("Age"); age != "" {
+                        recordSecurityHeader(originHost(rawURL), "Age", age)
                 }
 
                 // Set-Cookie 处理 (autoCookie)
@@ -5107,6 +5134,26 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                         if v := extractSetCookieAttr(scCookies, "Secure"); v != "" {
                                 recordSecurityHeader(domain, "Set-Cookie-Secure", v)
                         }
+                        // R94-A 反反爬第 164-165 项: Set-Cookie HttpOnly + Partitioned
+                        //   (与 fetchHttp 同款, 复用 extractSetCookieAttr).
+                        if v := extractSetCookieAttr(scCookies, "HttpOnly"); v != "" {
+                                recordSecurityHeader(domain, "Set-Cookie-HttpOnly", v)
+                        }
+                        if v := extractSetCookieAttr(scCookies, "Partitioned"); v != "" {
+                                recordSecurityHeader(domain, "Set-Cookie-Partitioned", v)
+                        }
+                }
+                // R94-A 反反爬第 166-168 项: legacy 安全 / info-disclosure / 缓存年龄
+                //   响应头观测 (与 fetchHttp 同款, curl -D - dump headers 路径;
+                //   fetchBinaryViaCurl 不 dump 故不调, 与 124-163 同款限制).
+                if cfRay := extractHeaderFromCurlStdout(headers, "Cf-Ray"); cfRay != "" {
+                        recordSecurityHeader(domain, "Cf-Ray", cfRay)
+                }
+                if srv := extractHeaderFromCurlStdout(headers, "Server"); srv != "" {
+                        recordSecurityHeader(domain, "Server", srv)
+                }
+                if age := extractHeaderFromCurlStdout(headers, "Age"); age != "" {
+                        recordSecurityHeader(domain, "Age", age)
                 }
                 if status >= 300 {
                         // R66-C BUG-52 (P3): curl 4xx/5xx 也记 latency + fail (与 fetchHttp
@@ -6446,6 +6493,21 @@ func fetchPageOnce(ctx context.Context, rawURL string, cfg FetchConfig) (*FetchR
                                         }
                                 }
                         }
+                        // R94-A BUG-265 (P3): h-captcha/reCAPTCHA 2captcha 失败 → 补
+                        //   tryBridges fallback (mirror CaptchaUnknown BUG-256). 2captcha
+                        //   fail = solver 服务不可用/全 cooldown/错误 token/sitekey 提取
+                        //   失败, puppeteer 桥可点过 widget (与 CaptchaUnknown +
+                        //   engine=="http" 同款路径). clean → success; else fall-
+                        //   through (CaptchaDetected 返原 html, engine 仍 "http" 因桥
+                        //   返仍 captcha/blocked). 已桥 (engine=="browser") 时跳过
+                        //   (避免二次桥调用死循环, 与 BUG-256 同款).
+                        if (ct == CaptchaHCaptcha || ct == CaptchaRecaptcha) && engine == "http" {
+                                if bridged := tryBridges(ctx, rawURL, cfg, ua); bridged != "" {
+                                        if LooksLikeCaptcha(bridged) == "" && !LooksBlocked(bridged, nil) {
+                                                return &FetchResult{HTML: bridged, Engine: "browser", Blocked: false}, nil
+                                        }
+                                }
+                        }
                         // R42-1B: Turnstile 8s 截止 — 调 Obscura 桥让 puppeteer 点击通过
                         if ct == CaptchaTurnstile {
                                 if solved := trySolveTurnstile(ctx, rawURL, cfg, ua); solved != "" {
@@ -6465,7 +6527,15 @@ func fetchPageOnce(ctx context.Context, rawURL string, cfg FetchConfig) (*FetchR
                         //   success; else fall-through (CaptchaDetected 返原 html, engine
                         //   仍 "http" 因桥返仍 captcha/blocked). 已桥 (engine=="browser")
                         //   时跳过 (避免二次桥调用死循环).
-                        if ct == CaptchaUnknown && engine == "http" {
+                        // R94-A BUG-266 (P3): CaptchaGeetest 无 dedicated solver (与
+                        //   CaptchaUnknown 同款 — LooksLikeCaptcha 返 CaptchaGeetest
+                        //   但 fetchPageOnce 无 trySolveGeetest). 原 success-path
+                        //   Geetest + engine=="http" 落 fall-through return
+                        //   CaptchaDetected, 无桥 fallback, 与 BUG-256 不对称.
+                        //   puppeteer 桥可尝试点过 slide puzzle. 修复: 扩 BUG-256
+                        //   条件含 CaptchaGeetest (同款 engine=="http" gate + 桥
+                        //   fallback).
+                        if (ct == CaptchaUnknown || ct == CaptchaGeetest) && engine == "http" {
                                 if bridged := tryBridges(ctx, rawURL, cfg, ua); bridged != "" {
                                         if LooksLikeCaptcha(bridged) == "" && !LooksBlocked(bridged, nil) {
                                                 return &FetchResult{HTML: bridged, Engine: "browser", Blocked: false}, nil
@@ -7067,6 +7137,27 @@ func fetchBinaryHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, pr
                         if v := extractSetCookieAttr(sc, "Secure"); v != "" {
                                 recordSecurityHeader(originHost(rawURL), "Set-Cookie-Secure", v)
                         }
+                        // R94-A 反反爬第 164-165 项: Set-Cookie HttpOnly + Partitioned
+                        //   (与 fetchHttp 同款, 复用 extractSetCookieAttr).
+                        if v := extractSetCookieAttr(sc, "HttpOnly"); v != "" {
+                                recordSecurityHeader(originHost(rawURL), "Set-Cookie-HttpOnly", v)
+                        }
+                        if v := extractSetCookieAttr(sc, "Partitioned"); v != "" {
+                                recordSecurityHeader(originHost(rawURL), "Set-Cookie-Partitioned", v)
+                        }
+                }
+                // R94-A 反反爬第 166-168 项: legacy 安全 / info-disclosure / 缓存年龄
+                //   响应头观测 (与 fetchHttp 同款, fetchBinaryHttp success + 4xx/5xx
+                //   两路径都记, BUG-241 修复后 fetchBinaryHttp 已补对称;
+                //   fetchBinaryViaCurl 不 dump headers 故不调, 与 124-163 同款限制).
+                if cfRay := resp.Header.Get("Cf-Ray"); cfRay != "" {
+                        recordSecurityHeader(originHost(rawURL), "Cf-Ray", cfRay)
+                }
+                if srv := resp.Header.Get("Server"); srv != "" {
+                        recordSecurityHeader(originHost(rawURL), "Server", srv)
+                }
+                if age := resp.Header.Get("Age"); age != "" {
+                        recordSecurityHeader(originHost(rawURL), "Age", age)
                 }
                 // 3xx / 4xx / 5xx 视为失败 (与 fetchHttp 同款, 不重试 3xx)
                 if resp.StatusCode >= 300 {
@@ -11758,7 +11849,8 @@ func ClearHostAcceptRanges(host string) {
 
 // hostSecurityHeadersEntry — per-host 安全策略响应头观测条目 (R86-A 第 124-128 项 +
 //   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项 + R90-A 第 144-148
-//   项 + R91-A 第 149-153 项 + R92-A 第 154-158 项, 合并 35 字段). entry 是 pointer: recordSecurityHeader LoadOrStore canonical
+//   项 + R91-A 第 149-153 项 + R92-A 第 154-158 项 + R93-A 第 159-163 项 + R94-A 第
+//   164-168 项, 合并 45 字段). entry 是 pointer: recordSecurityHeader LoadOrStore canonical
 //   指针 + 单字段 update-in-place (非 store-replace, 保留其他 34 头旧值). 同字段并发写
 //   last-write-wins; sweep CompareAndDelete 后下次 record 重建 entry (与 recordVia
 //   store-replace 不一样, 这里需保留其他 34 头故用 update-in-place).
@@ -11803,12 +11895,18 @@ type hostSecurityHeadersEntry struct {
         lastModifiedValue string // Last-Modified (第 161 项, R93-A)
         scSameSiteValue  string // Set-Cookie SameSite (第 162 项, R93-A)
         scSecureValue    string // Set-Cookie Secure (第 163 项, R93-A)
+        scHttpOnlyValue    string // Set-Cookie HttpOnly (第 164 项, R94-A)
+        scPartitionedValue string // Set-Cookie Partitioned (第 165 项, R94-A)
+        cfRayValue         string // CF-Ray (第 166 项, R94-A)
+        serverValue        string // Server (第 167 项, R94-A)
+        ageValue           string // Age (第 168 项, R94-A)
         detectedAt        int64  // UnixMilli
 }
 
 // hostSecurityHeadersMap — host string -> *hostSecurityHeadersEntry (R86-A 第 124-128 项 +
 //   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项 + R90-A 第 144-148 项
-//   + R91-A 第 149-153 项 + R92-A 第 154-158 项 + R93-A 第 159-163 项).
+//   + R91-A 第 149-153 项 + R92-A 第 154-158 项 + R93-A 第 159-163 项 + R94-A 第
+//   164-168 项).
 var hostSecurityHeadersMap sync.Map
 
 // hostSecurityHeadersSweepCounter — sweep 触发累加 (与 hostViaSweepCounter 同口径).
@@ -11859,7 +11957,8 @@ func extractSetCookieAttr(cookies []string, attr string) string {
 
 // recordSecurityHeader — 记录 host 的单个安全策略响应头 (R86-A 第 124-128 项 +
 //   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项 + R90-A 第 144-148
-//   项 + R91-A 第 149-153 项 + R92-A 第 154-158 项 + R93-A 第 159-163 项). headerName 区分 40 头 (大小写不敏感). 与 recordVia
+//   项 + R91-A 第 149-153 项 + R92-A 第 154-158 项 + R93-A 第 159-163 项 + R94-A 第
+//   164-168 项). headerName 区分 45 头 (大小写不敏感). 与 recordVia
 //   同款 Store + 惰性 sweep, 但保留其他 39 头旧值 (LoadOrStore canonical 指针 +
 //   单字段 update-in-place).
 func recordSecurityHeader(host, headerName, value string) {
@@ -11953,6 +12052,18 @@ func recordSecurityHeader(host, headerName, value string) {
                 ent.scSameSiteValue = value
         case "set-cookie-secure":
                 ent.scSecureValue = value
+        // R94-A 反反爬第 164-168 项: Set-Cookie session flag 续 + legacy 安全 +
+        //   info-disclosure + 缓存年龄.
+        case "set-cookie-httponly":
+                ent.scHttpOnlyValue = value
+        case "set-cookie-partitioned":
+                ent.scPartitionedValue = value
+        case "cf-ray":
+                ent.cfRayValue = value
+        case "server":
+                ent.serverValue = value
+        case "age":
+                ent.ageValue = value
         default:
                 return
         }
@@ -12015,6 +12126,11 @@ func HostSecurityHeadersSnapshot() map[string]map[string]string {
                         "lastModifiedValue": e.lastModifiedValue,
                         "scSameSiteValue":   e.scSameSiteValue,
                         "scSecureValue":     e.scSecureValue,
+                        "scHttpOnlyValue":    e.scHttpOnlyValue,
+                        "scPartitionedValue": e.scPartitionedValue,
+                        "cfRayValue":         e.cfRayValue,
+                        "serverValue":        e.serverValue,
+                        "ageValue":           e.ageValue,
                         "detectedAt":        fmt.Sprintf("%d", e.detectedAt),
                 }
                 return true

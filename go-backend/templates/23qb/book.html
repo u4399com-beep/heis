@@ -127,7 +127,15 @@
 </main>
 
 {{if .RecentChapters}}
-<main id="main" class="wrapper" style="padding-top:0;">
+{{/* R94-D BUG-267 (P4, main+templates scope): 23qb/book.html 原 4× <main id="main">
+   (line 57 always + line 130/155/180 conditional), .RecentChapters+.Chapters+.Related
+   同真时 2-4 个 <main id="main"> 同文档重复, 违 HTML5 (main 唯一 + id 唯一).
+   line 57 保 <main id="main"> 作页面唯一 main landmark; line 130/155/180 改
+   <section class="wrapper"> (保 .wrapper class 样式, 0 CSS 用 #main 或 bare
+   main 选择器, 0 break; <section> 语义合 — 各含 <h3 class="module-title">
+   标题). 同 BUG-265 23qb/read 嵌套 main + BUG-266 ddyueshu dup id 同款 HTML5
+   family. */}}
+<section class="wrapper" style="padding-top:0;">
 <div class="content">
 <div class="list">
 <div class="box">
@@ -148,11 +156,11 @@
 </div>
 </div>
 </div>
-</main>
+</section>
 {{end}}
 
 {{if .Chapters}}
-<main id="main" class="wrapper" style="padding-top:0;">
+<section class="wrapper" style="padding-top:0;">
 <div class="content">
 <div class="list">
 <div class="box" id="chapter_list">
@@ -173,11 +181,11 @@
 </div>
 </div>
 </div>
-</main>
+</section>
 {{end}}
 
 {{if .Related}}
-<main id="main" class="wrapper" style="padding-top:0;">
+<section class="wrapper" style="padding-top:0;">
 <div class="content">
 <div class="list">
 <div class="box">
@@ -209,7 +217,7 @@
 </div>
 </div>
 </div>
-</main>
+</section>
 {{end}}
 
 <footer id="footer" class="wrapper pd60">

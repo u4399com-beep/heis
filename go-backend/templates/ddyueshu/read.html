@@ -41,7 +41,14 @@
 </div>
 
 <div id="main">
-<div id="content">
+{{/* R94-D BUG-266 (P4, main+templates scope): 原 line 44 外层 <div id="content"> +
+   line 59 内层 <div id="content"> 同 id 重复, 违 HTML5 (id 唯一). ddyueshu.css
+   `.box_con #content` (line 163 字号/行距 + line 164 img) 是后代选择器, 定位
+   内层 #content (.box_con 的后代); 外层 #content 是 .box_con 的祖先非后代,
+   0 CSS 直接定位外层. 0 JS 引用 #content. 改外层 id="content" → id="content-wrap"
+   (保 div 作 layout wrapper, 0 CSS/JS break, 内层 #content 仍受 .box_con
+   #content 样式). R93-D defer #2 续, 本轮审 CSS 后确认安全修. */}}
+<div id="content-wrap">
 <div class="content_read">
 <div class="box_con">
 <div class="con_top">

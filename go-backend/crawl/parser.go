@@ -832,8 +832,25 @@ func tokenizeJsonPath(path string) []jsonToken {
                                 cur.Reset()
                         }
                         j := i + 1
-                        for j < len(path) && path[j] != ']' {
-                                cur.WriteByte(path[j])
+                        // R94-B BUG-267 (P4) 修复 (R93-B 未决项 #4, 原 R92-B 未决项
+                        //   #6): 原 `for j < len(path) && path[j] != ']'` 在 quoted
+                        //   value 内含 ] (e.g. [?(@.field="a]b")]) 提前截断, 残留
+                        //   b")] 误解析为后续 token. 修复: 加 quote state (单/双引号),
+                        //   引号内 ] 不截断. 71 Rule 0 用 quoted value 含 ] 形态;
+                        //   JSONPath 过滤标准 [?(@.f==v)] 无 quote 包裹 (71 Rule
+                        //   多用此形态), 不受影响. latent 自 R38 TS→Go 迁移 (47
+                        //   轮未发现).
+                        inQuote := byte(0)
+                        for j < len(path) {
+                                ch := path[j]
+                                if inQuote == 0 && (ch == '"' || ch == '\'') {
+                                        inQuote = ch
+                                } else if inQuote != 0 && ch == inQuote {
+                                        inQuote = 0
+                                } else if inQuote == 0 && ch == ']' {
+                                        break
+                                }
+                                cur.WriteByte(ch)
                                 j++
                         }
                         parts = append(parts, "["+cur.String()+"]")
@@ -1182,33 +1199,82 @@ func ExtractField(html string, doc *goquery.Document, scope *goquery.Selection, 
 }
 
 // applyConstTemplate — const 模板占位符替换. {name} → vars[name]; 未命中替换为空.
+//
+//      支持三种占位符语法 (constTemplateRe `\{([a-zA-Z_][a-zA-Z0-9_.]*)\}`):
+//        1. {name}        — 直接查 vars[name] (URLVars 查询参数键 / rec 字段键)
+//        2. {q.param}     — 查询参数命名空间前缀 (URLVars 设 vars[param], admin
+//           用 {q.param} 引用; R94-B BUG-265 修复, 原 docstring 声称 0 实现)
+//        3. {a.b.c}       — 多级 dotted key 递归解析 (vars[a] 是 kv string,
+//           逐段解析查下一层; R94-B BUG-266 修复, 原仅 1 级)
 func applyConstTemplate(tmpl string, vars map[string]string) string {
         if tmpl == "" {
                 return ""
         }
-        // 简单实现: 正则替换 {field.subfield} / {field} / {q.param}
         re := constTemplateRe
         return re.ReplaceAllStringFunc(tmpl, func(m string) string {
                 // m = "{name}", 取中间
                 key := m[1 : len(m)-1]
-                // 支持嵌套对象访问 (vars[field] 为对象/数组时按点路径逐层取值)
+                // 1. 直接命中 (vars[key] 存在, e.g. rec 字段名或 URLVars 直键)
                 if v, ok := vars[key]; ok {
                         return v
                 }
-                // 支持 field.subfield
+                // 2. R94-B BUG-265 (P3) 修复: {q.param} 语法 (docstring 原 line 1189 声称,
+                //   原 0 实现). URLVars 设 vars[param_name] (无 "q." 前缀), admin 用
+                //   {q.param} 引用 → 原走下方 dotted key 解析 vars["q"] (miss) → 返空
+                //   → const 模板破损 (e.g. yueyouxs tocLink ".../c/{q.bookId}.html" →
+                //   URL 破损 ".../c/.html"). 修复: key 以 "q." 前缀时直接查 vars[key[2:]]
+                //   (与 URLVars 输出键对齐). 0 用户受负面影响 (原 {q.param} 全破损, 修后
+                //   正确; 多级 {q.a.b} 仍返空, 与 multi-level dotted 同款 defer). latent
+                //   自 R38 TS→Go 迁移 (47 轮未发现因 runner.go line 1859 tocLink 调
+                //   ExtractField 传 nil ctx → FieldConst 分支跳过 applyConstTemplate,
+                //   3/4 callsite (ParseList/ParseToc/ParseContent) 传 ctx 已生效).
+                if strings.HasPrefix(key, "q.") {
+                        if v, ok := vars[key[2:]]; ok {
+                                return v
+                        }
+                        return ""
+                }
+                // 3. R94-B BUG-266 (P4) 修复 (R93-B 未决项 #1, 原 R92-B 未决项 #5):
+                //   {a.b.c} 多级 dotted key 递归解析. 原仅 1 级 (prefix + suffix), suffix
+                //   含 . 时 m[suffix] 仅匹配 literal "b.c" key (vars[a] 含 "b.c=val" 行
+                //   极罕见). 修复: resolveKVPath 递归 — vars[a] kv 解析取 m[b], 若 m[b]
+                //   仍是 kv string 再解析取 m[c]. 71 Rule 0 用 {a.b.c} 多级, 0 用户受
+                //   影响; 未来 admin 配置后受益.
                 if dot := strings.Index(key, "."); dot > 0 {
                         prefix := key[:dot]
                         suffix := key[dot+1:]
                         if v, ok := vars[prefix]; ok {
-                                // v 是 "k=val\n..." 形态, 解析为 map
-                                m := parseKVString(v)
-                                if mv, ok := m[suffix]; ok {
-                                        return mv
-                                }
+                                return resolveKVPath(v, suffix)
                         }
                 }
                 return ""
         })
+}
+
+// resolveKVPath — 递归解析多级 dotted key 路径 (vars[a] kv 中的 b → b 的 kv 中的 c).
+//
+//      BUG-266 (P4) 修复: applyConstTemplate 多级 dotted key 支持. parseKVString
+//      解析 "k=val\n..." 形态; 每段路径取 kv map 查找, 命中后若值仍是 kv string
+//      形态继续递归. 未命中返 "" (与原 1 级 m[suffix] miss 行为一致).
+func resolveKVPath(v, path string) string {
+        cur := v
+        for path != "" {
+                var key string
+                if dot := strings.Index(path, "."); dot > 0 {
+                        key = path[:dot]
+                        path = path[dot+1:]
+                } else {
+                        key = path
+                        path = ""
+                }
+                m := parseKVString(cur)
+                next, ok := m[key]
+                if !ok {
+                        return ""
+                }
+                cur = next
+        }
+        return cur
 }
 
 func parseKVString(s string) map[string]string {

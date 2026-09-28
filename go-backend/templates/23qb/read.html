@@ -54,7 +54,12 @@
 </div>
 </header>
 
-<main id="main" class="wrapper">
+{{/* R94-D BUG-265 (P4, main+templates scope): 原外层 <main id="main"> + 内层 <main>
+   (line 59) 嵌套, 违反 HTML5 spec (main 不可嵌套). 内层 <main> 被 23qb.css
+   `.article main` (line 4243 position:relative + line 4247 ::after 装饰灰块)
+   定位, 删内层破 CSS. 改外层 <main> → <div> (保 id="main" + .wrapper class,
+   0 CSS 用 #main 选择器, 0 break), 内层 <main> 成为页面唯一 main landmark. */}}
+<div id="main" class="wrapper">
 <div class="article">
 <main>
 <div class="chepnav">
@@ -78,7 +83,7 @@
 </div>
 </main>
 </div>
-</main>
+</div>
 
 <footer id="footer" class="wrapper pd60">
 <p class="sitemap">

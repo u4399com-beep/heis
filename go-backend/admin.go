@@ -1287,10 +1287,33 @@ func startCrawlTask(taskID, ruleID, ruleConfig, mode, bookURL, listURL, fetchCon
                 return
         }
         // 终态由 ExecuteTask 内部已写 'done' (或 'stopped' 由 control 写); 这里兜底
+        // R94-C BUG-266 (P4, R93-C 未决项 #1 / R80-D BUG-171 同款 Pattern C
+        //   `_ = ...Scan` 吞错 family 续抓, goroutine 兜底 SELECT 变种): 原实现
+        //   `_ = db.QueryRow(...).Scan(&curStatus)` 吞错 — ExecuteTask 返 nil err
+        //   时, 正常路径 ExecuteTask 内部已写 'done', 此 SELECT 兜底为防御 (status
+        //   仍 'running' 时补写 'done'). DB 故障 (SQLite busy lock / 连接闪断) 时
+        //   curStatus="" → `if curStatus == "running"` 不命中 → 兜底 UPDATE 跳过.
+        //   行为层: 若 ExecuteTask 实写 'done' (常态), SELECT 失败不影响 (status
+        //   已 'done', 兜底本就跳过); 仅 double-fault (ExecuteTask 漏写 'done'
+        //   + 此 SELECT 失败) 时任务卡 'running'. R93-C 未决项 #1 评估 "强制
+        //   UPDATE 'done' on DB err" 有 race 风险 (用户 mid-crawl 主动 pause/stop
+        //   后 status='paused'/'stopped', SELECT 失败 + 强制 'done' 会 clobber
+        //   用户意图). 本轮采 P4 visibility-only 修复: 显式区分 sql.ErrNoRows
+        //   (任务被删 mid-crawl, 兜底跳过正确) vs 其他 DB err (log.Printf 提示
+        //   运维, 不强制 UPDATE, 0 race 风险). 与 R75-D BUG-143 adminBackupClear
+        //   runRows.Err log-only best-effort 同款 goroutine 无 ResponseWriter 语义.
+        //   不改兜底 UPDATE 行为 (curStatus=="" 时仍跳过, 维持 R93-C 现状).
         var curStatus string
-        _ = db.QueryRow(`SELECT status FROM Task WHERE id=?`, taskID).Scan(&curStatus)
-        if curStatus == "running" {
-                _, _ = db.Exec(`UPDATE Task SET status='done', updatedAt=datetime('now') WHERE id=?`, taskID)
+        switch selErr := db.QueryRow(`SELECT status FROM Task WHERE id=?`, taskID).Scan(&curStatus); selErr {
+        case nil:
+                if curStatus == "running" {
+                        _, _ = db.Exec(`UPDATE Task SET status='done', updatedAt=datetime('now') WHERE id=?`, taskID)
+                }
+        case sql.ErrNoRows:
+                // 任务被删 mid-crawl (并发 adminBackupClear/adminTaskDelete), 兜底
+                //   UPDATE 无目标行 → 静默跳过 (与原 _ = 吞错 ErrNoRows 行为一致).
+        default:
+                log.Printf("[task:%s] post-crawl status 兜底 SELECT 失败 (status 未写 done, 若任务卡 running 请人工核查): %v", taskID, selErr)
         }
 }
 
@@ -7147,8 +7170,28 @@ func adminSiteGenerateTDK(w http.ResponseWriter, r *http.Request, siteID string)
                 return
         }
         // 读回 DB 最终值返响应 (确保默认站 title 字段反映实际 DB 状态, 非生成的 title).
+        // R94-C BUG-265 (P3, R93-C BUG-263 featuredBooks readback 同款 Pattern C
+        //   `_ = ...Scan` 吞错 family 续抓, readback-after-UPDATE 变种): 原实现
+        //   `_ = db.QueryRow(...).Scan(&finalTitle, &finalDesc, &finalKw)` 吞错 —
+        //   UPDATE 已成功 (上方 db.Exec err 显式检查), 但 readback SELECT 失败
+        //   (SQLite busy lock / 连接闪断 / 磁盘满) 时 finalTitle/finalDesc/finalKw
+        //   全空 → 响应 ok:true 但 site 内含空 title/description/keywords → admin
+        //   TDK 卡片显示空白 (用户以为 TDK 生成失败, 重新点生成 → 浪费配额 + 同款
+        //   空白; 实际 DB 已写正确值, 下次 GET/列表查可见). 与 BUG-263 best-effort
+        //   readback 同款: 不 500 (UPDATE 已成功, 500 会让 admin 误以为保存失败),
+        //   改 fallback 到 generateSiteTDK 已返的 (title, desc, kw) — 非默认站
+        //   title/desc/kw 三字段刚被 UPDATE 写入, generated 与 DB 一致; 默认站
+        //   title 未被 UPDATE (保留手工值), generated title 是 "未落库的候选",
+        //   fallback 仅作响应占位 (优于空串, 用户下次刷新 GET 自然取回真实 DB title).
+        //   desc/kw 对默认/非默认均刚 UPDATE, generated 即 DB 最终值.
         var finalTitle, finalDesc, finalKw string
-        _ = db.QueryRow(`SELECT COALESCE(title,''), COALESCE(description,''), COALESCE(keywords,'') FROM Site WHERE id=?`, siteID).Scan(&finalTitle, &finalDesc, &finalKw)
+        readbackErr := db.QueryRow(`SELECT COALESCE(title,''), COALESCE(description,''), COALESCE(keywords,'') FROM Site WHERE id=?`, siteID).Scan(&finalTitle, &finalDesc, &finalKw)
+        if readbackErr != nil {
+                log.Printf("[adminSiteGenerateTDK] site=%s readback 失败 (fallback 到 generated 值): %v", siteID, readbackErr)
+                finalTitle = title
+                finalDesc = desc
+                finalKw = kw
+        }
         writeJSONOK(w, map[string]interface{}{
                 "site": map[string]interface{}{
                         "id":          siteID,
