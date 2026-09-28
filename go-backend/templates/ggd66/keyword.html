@@ -89,9 +89,14 @@
 
 <div class="content-right" id="fengyou">
 <div class="search hidden-xs">
+{{/* R95-D BUG-270 (P4, main+templates scope, 与 BUG-269 同款 family): 原底部
+     search 输入框 id="searchkey" 与 line 46 顶部 search 输入框同 id 重复
+     (HTML5 spec: id 必须唯一). ggd66.css 0 引用 #searchkey; 0 JS
+     getElementById('searchkey'). 删底部 id 保留顶部唯一 id. 0 视觉/功能
+     变化. */}}
 <form name="articlesearch" method="get" action="/?view=search">
 <input type="hidden" name="view" value="search">
-<input name="q" type="text" class="text" id="searchkey" size="10" maxlength="50" placeholder="搜索从这里开始...">
+<input name="q" type="text" class="text" size="10" maxlength="50" placeholder="搜索从这里开始...">
 <button type="submit" name="submit">搜  索</button>
 </form>
 </div>

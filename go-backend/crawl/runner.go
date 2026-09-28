@@ -1856,7 +1856,25 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                 // 提取目录页链接 (从书籍页)
                 doc, _ := goquery.NewDocumentFromReader(strings.NewReader(bookRes.HTML))
                 if doc != nil {
-                        tocURL = ExtractField(bookRes.HTML, doc, nil, *cfg.Rule.Toc.TocLink, nil)
+                        // R95-A BUG-268 (P3) 修复 (R94-B 未决项 #3, crawl/parser.go scope
+                        //   BUG-265 family 续): 原实现 `ExtractField(bookRes.HTML, doc,
+                        //   nil, *cfg.Rule.Toc.TocLink, nil)` 末位 ctx 传 nil. ExtractField
+                        //   FieldConst 分支 `if ctx != nil` 守卫 (parser.go line ~1125)
+                        //   跳过 applyConstTemplate → `{q.bookId}` / `{bookId}` 等 const
+                        //   模板占位符 0 替换 → 模板破损 (e.g. yueyouxs tocLink
+                        //   `https://sma.yueyouxs.com/c/{q.bookId}.html` 返
+                        //   "https://sma.yueyouxs.com/c/.html" 后 Absolutize 同款 URL,
+                        //   后续 toc fetch 404). 3/4 callsite (ParseList/ParseToc/
+                        //   ParseContent) 已传 ctx, 仅 runner.go tocLink 漏传. 修复:
+                        //   传 &ExtractCtx{Vars: URLVars(bookURL)} 让 FieldConst 分支跑
+                        //   applyConstTemplate (R94-B BUG-265 已修 {q.param} 前缀). 注:
+                        //   仅 FieldConst 走 ctx.Vars; FieldCSS/FieldRegex/FieldJSON 不用
+                        //   ctx.Vars (传 ctx 无害). URLVars 从 bookURL query 提取参数
+                        //   (e.g. ?bookId=123 → vars["bookId"]="123"); 若 bookURL 无 query
+                        //   则 vars 空 → {q.bookId} 仍返空 (与原行为相同, 0 回归); rule
+                        //   若依赖 path 段需用 FieldCSS 提取 (不在本 fix 范围).
+                        tocURL = ExtractField(bookRes.HTML, doc, nil, *cfg.Rule.Toc.TocLink,
+                                &ExtractCtx{Vars: URLVars(bookURL)})
                         tocURL = Absolutize(tocURL, bookURL)
                         if tocURL == "" {
                                 tocURL = bookURL

@@ -668,27 +668,36 @@ func JsonGet(root any, path string) any {
         }
         // 联合 "||" 分支
         if strings.Contains(path, "||") {
-                for _, p := range strings.Split(path, "||") {
-                        p = strings.TrimSpace(p)
-                        v := JsonGet(root, p)
-                        if v == nil {
-                                continue
+                // R95-B BUG-269 (P4): splitJsonOrPaths 替代 strings.Split, 尊重双引号
+                //   内 "||" (与 BUG-248 splitJsonArrayPaths 对称; 详见 line 1029 注释).
+                //   关键: len(parts)>1 才进 || 分支 — 若 path 仅含 quoted "||" (e.g.
+                //   `items[?(@.f=="a||b")]` 无真 fallback), splitJsonOrPaths 返单元素,
+                //   跳过本分支走 dot-path 解析 (否则 JsonGet 在含 quoted "||" 的 path
+                //   上递归自身 → 死循环 stack overflow).
+                parts := splitJsonOrPaths(path)
+                if len(parts) > 1 {
+                        for _, p := range parts {
+                                p = strings.TrimSpace(p)
+                                v := JsonGet(root, p)
+                                if v == nil {
+                                        continue
+                                }
+                                // R88-B BUG-233 (P3) 修复: || fallback 应取首个非空 (注释 line 618
+                                //   "取首个非空"), 非首个非 nil. 原 `if v != nil` 让 {"title": "",
+                                //   "name": "x"} 配 path "title||name" 返 "" (empty title 不 fall
+                                //   back 到 name), 与注释不符 → 字段提取返空值. 修复: 也 skip empty
+                                //   string value ("" 是合法 JSON 字符串值, 但语义上属"空"应触发
+                                //   fallback; 其他类型 number/array/map 不 skip, 0 / [] / {} 各
+                                //   自有语义不视作空). latent 自 R38 TS→Go 迁移 (47 轮未发现因
+                                //   71 Rule 0 用 "||" 形态 path, 多用单字段 path 或 fallback 由
+                                //   ApplyTransform defaultValue 接管).
+                                if s, ok := v.(string); ok && s == "" {
+                                        continue
+                                }
+                                return v
                         }
-                        // R88-B BUG-233 (P3) 修复: || fallback 应取首个非空 (注释 line 618
-                        //   "取首个非空"), 非首个非 nil. 原 `if v != nil` 让 {"title": "",
-                        //   "name": "x"} 配 path "title||name" 返 "" (empty title 不 fall
-                        //   back 到 name), 与注释不符 → 字段提取返空值. 修复: 也 skip empty
-                        //   string value ("" 是合法 JSON 字符串值, 但语义上属"空"应触发
-                        //   fallback; 其他类型 number/array/map 不 skip, 0 / [] / {} 各
-                        //   自有语义不视作空). latent 自 R38 TS→Go 迁移 (47 轮未发现因
-                        //   71 Rule 0 用 "||" 形态 path, 多用单字段 path 或 fallback 由
-                        //   ApplyTransform defaultValue 接管).
-                        if s, ok := v.(string); ok && s == "" {
-                                continue
-                        }
-                        return v
+                        return nil
                 }
-                return nil
         }
         // 递归下降
         if strings.HasPrefix(path, "$..") || strings.HasPrefix(path, "..") {
@@ -1026,6 +1035,46 @@ func splitJsonArrayPaths(path string) []string {
         return out
 }
 
+// splitJsonOrPaths — split JsonGet "||" fallback path, respecting
+// double-quoted strings ("||" inside "..." preserved).
+//
+// R95-B BUG-269 (P4) 修复 (BUG-248 对称): JsonGet line 671 原用
+//
+//      strings.Split(path, "||"), 在 quoted value 含 "||" 时误分割 (e.g.
+//      path=`items[?(@.f=="a||b")] || other` 被分割为 `items[?(@.f=="a` +
+//      `b")] ` + ` other`, 前两段路径非法 JsonGet 返 nil → || fallback
+//      静默退化 (filter 永不命中, fallback 永远走第二段; 与 BUG-248 commas
+//      in quotes for JsonArrayAt 同根因). 修复: 单遍扫描, 双引号内 "||" 不分割
+//      (与 splitJsonArrayPaths 同款 quote-aware 模式). 71 Rule 0 用 "||"
+//      形态 (BUG-233 line 684 注 "71 Rule 0 用 || 形态 path"), 0 用户受
+//      影响; 未来 admin 配 `[?(@.title=="A||B")] || name` 后受益. latent 自
+//      R38 TS→Go 迁移 (47 轮未发现). 注: 与 BUG-248 同款, 不处理 \" 转义 +
+//      单引号 ' 不视为 string 边界 (JSONPath 标准 RFC 9535 仅双引号).
+func splitJsonOrPaths(path string) []string {
+        out := []string{}
+        var cur strings.Builder
+        inQuote := false
+        for i := 0; i < len(path); i++ {
+                c := path[i]
+                if c == '"' {
+                        inQuote = !inQuote
+                        cur.WriteByte(c)
+                        continue
+                }
+                if c == '|' && !inQuote && i+1 < len(path) && path[i+1] == '|' {
+                        out = append(out, cur.String())
+                        cur.Reset()
+                        i++ // skip second '|' (for-loop i++ makes total +2)
+                        continue
+                }
+                cur.WriteByte(c)
+        }
+        if cur.Len() > 0 {
+                out = append(out, cur.String())
+        }
+        return out
+}
+
 // JsonArrayAt — 取数组路径下的所有元素 (支持逗号分隔多路径并集).
 func JsonArrayAt(root any, path string) []any {
         if root == nil {
@@ -1083,6 +1132,19 @@ func JsonToString(v any) string {
 }
 
 // URLVars — URL 查询参数 + path 段 → map.
+//   - 查询参数: vars[param]=value (首值, 多值取 [0])
+//   - path 段: vars["path"]="0=seg0\n1=seg1\n..." kv string (R95-B BUG-268
+//     修复, 原 docstring 声称 path 段提取但 0 实现; worklog R94-B 未决
+//     项 #1 候选 #7 defer 至 R95+ 评估, 本轮实施). {path.N} 走
+//     applyConstTemplate 的 dotted-key 解析 (resolveKVPath → parseKVString),
+//     与 {q.param} 同款 namespace + 与 R94-B BUG-266 multi-level dotted
+//     同款 helper. 跳过空段 (头尾 / 或连续 // 不计 idx). path 段 URL-
+//     decoded (u.Path 已由 url.Parse 解码 %XX). 段内 \n 不可能 (RFC 3986
+//     path 段不允许 \n, 必须 %0A 编码; 源站误传 → parseKVString 分割错
+//     乱, 与段含 = 同款 latent, 维持 defer). 行为: 仅新增 vars["path"]
+//     key (kv string), 0 旧 key 改动; 71 Rule const 模板 0 引用 {path.N},
+//     0 用户受影响; 未来 admin 配 (e.g. tocLink ".../chapter/{path.3}.html"
+//     提第 3 段) 后受益. latent 自 R38 TS→Go 迁移 (47 轮未发现).
 func URLVars(rawURL string) map[string]string {
         out := map[string]string{}
         u, err := url.Parse(rawURL)
@@ -1092,6 +1154,27 @@ func URLVars(rawURL string) map[string]string {
         for k, vs := range u.Query() {
                 if len(vs) > 0 {
                         out[k] = vs[0]
+                }
+        }
+        // R95-B BUG-268: path 段塞 vars["path"] kv string, 供 {path.N} 引用.
+        if u.Path != "" && u.Path != "/" {
+                segs := strings.Split(u.Path, "/")
+                var b strings.Builder
+                idx := 0
+                for _, s := range segs {
+                        if s == "" {
+                                continue // 头尾 / 或连续 // 跳过
+                        }
+                        if idx > 0 {
+                                b.WriteByte('\n')
+                        }
+                        b.WriteString(strconv.Itoa(idx))
+                        b.WriteByte('=')
+                        b.WriteString(s)
+                        idx++
+                }
+                if idx > 0 {
+                        out["path"] = b.String()
                 }
         }
         return out

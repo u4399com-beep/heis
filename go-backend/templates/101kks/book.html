@@ -174,7 +174,14 @@
 <div class="mybox">
 <h3 class="mytitle">完整章節目錄</h3>
 <div class="newbox">
-<ul id="article_list_content">
+{{/* R95-D BUG-271 (P4, main+templates scope): 原本 ul id="article_list_content"
+     与 line 162 (在 {{if .RecentChapters}} 块下) 的 ul id="article_list_content"
+     非互斥 — 一本书可同时有 RecentChapters (最新章節短列表) + Chapters (完整
+     章節目錄), 两者均渲染同 id 重复 (HTML5 spec: id 必须唯一). 101kks.css
+     0 引用 #article_list_content; 0 JS getElementById. 删本块 id 保
+     line 162 唯一 (line 162 在前, 浏览器 getElementById 默认返首个匹配).
+     0 视觉/功能变化. */}}
+<ul>
 {{range .Chapters}}
 <li style="width:33%;float:left;display:inline-block;padding:8px 0;border-bottom:1px dashed #eee;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
 <a href="{{.URL}}" style="margin-left:10px;" title="{{.title}}">{{.title}}</a>

@@ -33,7 +33,14 @@
 
 <div id="main">
 <div id="content">
-<div id="main">
+{{/* R95-D BUG-268 (P4, main+templates scope): 原内层 <div id="main"> 与外层
+     line 34 <div id="main"> 同文档 id 重复 (HTML5 spec: id 必须唯一). ddyueshu.css
+     #main{width:980px;margin:auto} 仅用于外层 980px 居中, 内层 #content 已占满
+     外层 #main 的 980px 宽度, 内层 div 的 id="main" 是冗余 + 视觉无差异 (block
+     默认 width:auto 占满 parent). 0 JS 引用 #main (getElementById('main') 0
+     命中); 0 CSS #main .X 后代选择器. 删内层 id="main" 保留外层唯一 #main
+     landmark. */}}
+<div>
 
 <div id="hotcontent">
 <div class="l">

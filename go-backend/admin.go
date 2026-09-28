@@ -97,7 +97,23 @@ func (a *adminDB) UpsertBook(b crawl.Book) (crawl.Book, error) {
         // 查存在
         var existingID string
         if b.SourceURL != "" {
-                _ = a.db.QueryRow(`SELECT id FROM Book WHERE sourceUrl=? LIMIT 1`, b.SourceURL).Scan(&existingID)
+                // R95-C BUG-268 (P3, R94-C 未决项 #1 / R80-D BUG-171 同款 Pattern C
+                //   `_ = ...Scan` 吞错 family 续抓, exist-SELECT 变种): 原实现
+                //   `_ = a.db.QueryRow(...).Scan(&existingID)` 吞错 — DB 故障 (SQLite
+                //   busy lock / 连接闪断 / 磁盘满) 时 existingID="" → fall to INSERT →
+                //   Book 表 sourceUrl 无唯一约束 (schema.prisma line 46 仅 @@index
+                //   非 @@unique, 见 line 58-61), INSERT 成功 → DB 出现 duplicate
+                //   Book 行 (同 sourceUrl 两 ID), 同源 URL 重采会越积越多. runner.go
+                //   caller (line 1814 existing 路径 log warn 续采; line 1840 新建路径
+                //   return err 让 phase 1 走 AddToFailed) 均已处理 UpsertBook err. 显式
+                //   err 区分: ErrNoRows → fall to INSERT (合法 "not found"); 其他 err
+                //   → return (b, err) 让 caller 走 err 路径, 不污染 DB (existing 路径
+                //   bookID 已 valid 续采, 新建路径整本 fail).
+                switch selErr := a.db.QueryRow(`SELECT id FROM Book WHERE sourceUrl=? LIMIT 1`, b.SourceURL).Scan(&existingID); selErr {
+                case nil, sql.ErrNoRows:
+                default:
+                        return b, selErr
+                }
         }
         if existingID != "" {
                 b.ID = existingID
@@ -168,7 +184,21 @@ func (a *adminDB) UpsertChapter(c crawl.Chapter) (crawl.Chapter, error) {
         // 查存在
         var existingID string
         if c.SourceURL != "" {
-                _ = a.db.QueryRow(`SELECT id FROM Chapter WHERE bookId=? AND url=? LIMIT 1`, c.BookID, c.SourceURL).Scan(&existingID)
+                // R95-C BUG-269 (P3, BUG-268 同款 Pattern C family 续抓, exist-SELECT
+                //   变种, Chapter 域): 原实现 `_ = a.db.QueryRow(...).Scan(&existingID)`
+                //   吞错 — DB 故障时 existingID="" → fall to INSERT → Chapter 表 (bookId,
+                //   url) 无唯一约束 (schema.prisma line 83 @@index 非 @@unique; 唯一约束
+                //   是 @@unique([bookId, idx]) line 82, 与 url 不相关) → INSERT 成功 →
+                //   DB 出现 duplicate Chapter 行 (同 bookId+url 两 ID, content 双份占
+                //   空间 + 后台 list/detail 渲染重复章). runner.go caller (line 2324)
+                //   已处理 UpsertChapter err (return false + err message 让 phase 2
+                //   goroutine 标该章失败). 与 BUG-268 同款: ErrNoRows → fall to INSERT;
+                //   其他 err → return (c, err) 让 caller 走 err 路径, 不污染 DB.
+                switch selErr := a.db.QueryRow(`SELECT id FROM Chapter WHERE bookId=? AND url=? LIMIT 1`, c.BookID, c.SourceURL).Scan(&existingID); selErr {
+                case nil, sql.ErrNoRows:
+                default:
+                        return c, selErr
+                }
         }
         if existingID != "" {
                 c.ID = existingID
@@ -379,7 +409,20 @@ func (a *adminDB) FindCategoryIDByName(name string) string {
                 return ""
         }
         var id string
-        _ = a.db.QueryRow(`SELECT id FROM Category WHERE name=? LIMIT 1`, name).Scan(&id)
+        // R95-C BUG-270 (P4, BUG-268/269 同款 Pattern C family 续抓, single-
+        //   string-return 变种): 原实现 `_ = a.db.QueryRow(...).Scan(&id)` 吞错 —
+        //   DB 故障时 id="" → caller (runner.go line 1739/1745) 拿 "" 当 "未命中"
+        //   → newBook.CategoryID="" 或 existing 不刷新 → 书无分类 (前台归 "全部"
+        //   而非所属分类, SmartCategory 命中却未持久化 categoryId). 与 BUG-266
+        //   同款 goroutine/无 err-return 路径: 显式区分 sql.ErrNoRows (Category
+        //   表为空 / 名字 typo, 返 "" 正确) vs 其他 DB err (log.Printf 提示运维,
+        //   不改返值 — signature `string` 不支持 err return, 改 signature 需动
+        //   crawl.DBClient 接口 + runner.go 两 caller, 跨 scope defer 至 R96+).
+        switch selErr := a.db.QueryRow(`SELECT id FROM Category WHERE name=? LIMIT 1`, name).Scan(&id); selErr {
+        case nil, sql.ErrNoRows:
+        default:
+                log.Printf("[adminDB.FindCategoryIDByName] name=%q SELECT 失败 (返空串, 书将无分类): %v", name, selErr)
+        }
         return id
 }
 

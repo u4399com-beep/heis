@@ -4143,6 +4143,41 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 if age := resp.Header.Get("Age"); age != "" {
                         recordSecurityHeader(originHost(rawURL), "Age", age)
                 }
+                // R95-A 反反爬第 169-173 项: download hint / server clock / deprecated
+                //   warning / proxy hop chain / CDN cache status 响应头观测 (per-host
+                //   合并 tracker 第 46-50 字段, 与 124-168 同款).
+                //   第 169 项 Content-Disposition (RFC 6266) — `attachment; filename="..."`
+                //     下载 hint, 反爬关联: 下载 hint = 资源非 inline 浏览, 与第 138 项
+                //     X-Download-Options 同款 download posture family.
+                //   第 170 项 Date (RFC 7231 §7.1.1.2) — server clock (HTTP date GMT),
+                //     反爬关联: server clock 用于检测 cookie expiry timing / clock skew,
+                //     与第 161 项 Last-Modified + 168 Age 缓存策略 family.
+                //   第 171 项 Warning (RFC 7234 §5.5) — deprecated warning header
+                //     (`199 Miscellaneous warning` 等), 反爬关联: deprecated 暖讯息 =
+                //     host 用老栈, 与第 154 项 X-XSS-Protection / 155 HPKP / 156
+                //     Expect-CT legacy deprecated family.
+                //   第 172 项 Via (RFC 7234 §5.7.1) — `1.1 varnish` proxy/CDN hop 链,
+                //     反爬关联: proxy/CDN 标识 = 反爬基础设施 (CDN 路径), 与第 157
+                //     项 X-Powered-By + 167 Server 同款 info-disclosure family.
+                //   第 173 项 X-Cache (非标准) — `HIT` / `MISS` / `BYPASS` CDN cache
+                //     status, 反爬关联: cache status = 反爬 host 通常强 cache posture
+                //     (CDN edge 缓存是反爬基础), 与第 168 项 Age + 149 Cache-Control
+                //     缓存策略 family 续.
+                if cd := resp.Header.Get("Content-Disposition"); cd != "" {
+                        recordSecurityHeader(originHost(rawURL), "Content-Disposition", cd)
+                }
+                if dt := resp.Header.Get("Date"); dt != "" {
+                        recordSecurityHeader(originHost(rawURL), "Date", dt)
+                }
+                if wr := resp.Header.Get("Warning"); wr != "" {
+                        recordSecurityHeader(originHost(rawURL), "Warning", wr)
+                }
+                if via := resp.Header.Get("Via"); via != "" {
+                        recordSecurityHeader(originHost(rawURL), "Via", via)
+                }
+                if xc := resp.Header.Get("X-Cache"); xc != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Cache", xc)
+                }
 
                 // Set-Cookie 处理 (autoCookie)
                 if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
@@ -5154,6 +5189,25 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 }
                 if age := extractHeaderFromCurlStdout(headers, "Age"); age != "" {
                         recordSecurityHeader(domain, "Age", age)
+                }
+                // R95-A 反反爬第 169-173 项: download hint / server clock / deprecated
+                //   warning / proxy hop chain / CDN cache status 响应头观测 (与 fetchHttp
+                //   同款, curl -D - dump headers 路径; fetchBinaryViaCurl 不 dump 故不调,
+                //   与 124-168 同款限制. 详见 fetchHttp line ~4146 rationale).
+                if cd := extractHeaderFromCurlStdout(headers, "Content-Disposition"); cd != "" {
+                        recordSecurityHeader(domain, "Content-Disposition", cd)
+                }
+                if dt := extractHeaderFromCurlStdout(headers, "Date"); dt != "" {
+                        recordSecurityHeader(domain, "Date", dt)
+                }
+                if wr := extractHeaderFromCurlStdout(headers, "Warning"); wr != "" {
+                        recordSecurityHeader(domain, "Warning", wr)
+                }
+                if via := extractHeaderFromCurlStdout(headers, "Via"); via != "" {
+                        recordSecurityHeader(domain, "Via", via)
+                }
+                if xc := extractHeaderFromCurlStdout(headers, "X-Cache"); xc != "" {
+                        recordSecurityHeader(domain, "X-Cache", xc)
                 }
                 if status >= 300 {
                         // R66-C BUG-52 (P3): curl 4xx/5xx 也记 latency + fail (与 fetchHttp
@@ -6517,6 +6571,29 @@ func fetchPageOnce(ctx context.Context, rawURL string, cfg FetchConfig) (*FetchR
                                         }
                                 }
                         }
+                        // R95-A BUG-270 (P3) 修复 (R94-A 未决项 #6 候选 #7 续抓):
+                        //   success-path Turnstile trySolveTurnstile 失败 → 补 tryBridges
+                        //   fallback (mirror BUG-265 h-captcha/reCAPTCHA 同款 "solver
+                        //   失败 → 桥 fallback (engine=='http' gate)" family). trySolve
+                        //   Turnstile 仅用 Obscura (tier=maximum), tryBridges 含 7 其它
+                        //   桥 (fetch-relay / scrapling / uc-bridge / moli-bridge /
+                        //   curl-impersonate) 可尝试不同栈点过 widget. 与 BUG-265 (h-
+                        //   captcha/reCAPTCHA 2captcha fail → tryBridges) + BUG-256/
+                        //   266 (Unknown/Geetest 无 dedicated solver → tryBridges) 同
+                        //   family 对称 — Turnstile 是当前唯一 captcha 类型缺 tryBridges
+                        //   fallback (R94-A 候选 #7 标 "err-path Turnstile asymmetry"
+                        //   defer, 本轮 success-path 补足). 已桥 (engine=="browser")
+                        //   时跳过 (避免二次桥调用死循环, 与 BUG-265/256/266 同款).
+                        //   注: trySolveTurnstile 内部已 check !LooksBlocked (BUG-269
+                        //   修复), fail 包含 "返 interstitial 页" case; tryBridges 可
+                        //   能 fetch 干净页.
+                        if ct == CaptchaTurnstile && engine == "http" {
+                                if bridged := tryBridges(ctx, rawURL, cfg, ua); bridged != "" {
+                                        if LooksLikeCaptcha(bridged) == "" && !LooksBlocked(bridged, nil) {
+                                                return &FetchResult{HTML: bridged, Engine: "browser", Blocked: false}, nil
+                                        }
+                                }
+                        }
                         // R92-A BUG-256 (P3): success-path CaptchaUnknown 未走 tryBridges
                         //   (仅 LooksBlocked 分支 line ~6349 触发桥; 非 Blocked 的 captcha
                         //   页 never 桥). 与 bridge-path (line ~6447 已过 tryBridges) 不对
@@ -6685,6 +6762,20 @@ func trySolveTurnstile(ctx context.Context, rawURL string, cfg FetchConfig, ua s
         maxCfg.CloakBrowserURL = bridgeURL
         html, err := fetchViaObscura(turnstileCtx, rawURL, maxCfg, ua)
         if err != nil || html == "" {
+                return ""
+        }
+        // R95-A BUG-269 (P3) 修复: 也 check !LooksBlocked (mirror
+        //   applyCaptchaTokenAndRefetch line ~8274 双重收口). trySolveTurnstile 用
+        //   puppeteer 点过 Turnstile widget, 点过后页面应跳转至实际内容 (无
+        //   jsChallenge "just a moment" marker). 若仍 LooksBlocked (Turnstile 点
+        //   过但页面未跳转 — 极少数 case e.g. Cloudflare 仍持续 challenge / 桥
+        //   返同款 interstitial 页), 返空让 caller fall-through 到下一 captcha
+        //   solver / tryBridges 路径 (与 applyCaptchaTokenAndRefetch 同款行为).
+        //   原仅 callsite check LooksLikeCaptcha(solved)=="" (line ~6515/6648),
+        //   漏 check LooksBlocked → interstitial 页 (无 captcha widget,
+        //   jsChallengeRe 命中) 被误判 success (caller 5 处). 修复后 callsite 的
+        //   LooksLikeCaptcha 检查保留作 defense-in-depth (redundant but harmless).
+        if LooksBlocked(html, nil) {
                 return ""
         }
         return html
@@ -7158,6 +7249,27 @@ func fetchBinaryHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, pr
                 }
                 if age := resp.Header.Get("Age"); age != "" {
                         recordSecurityHeader(originHost(rawURL), "Age", age)
+                }
+                // R95-A 反反爬第 169-173 项: download hint / server clock / deprecated
+                //   warning / proxy hop chain / CDN cache status 响应头观测 (与
+                //   fetchHttp 同款, fetchBinaryHttp success + 4xx/5xx 两路径都记,
+                //   BUG-241 修复后 fetchBinaryHttp 已补对称; fetchBinaryViaCurl 不
+                //   dump headers 故不调, 与 124-168 同款限制. 详见 fetchHttp line
+                //   ~4146 rationale).
+                if cd := resp.Header.Get("Content-Disposition"); cd != "" {
+                        recordSecurityHeader(originHost(rawURL), "Content-Disposition", cd)
+                }
+                if dt := resp.Header.Get("Date"); dt != "" {
+                        recordSecurityHeader(originHost(rawURL), "Date", dt)
+                }
+                if wr := resp.Header.Get("Warning"); wr != "" {
+                        recordSecurityHeader(originHost(rawURL), "Warning", wr)
+                }
+                if via := resp.Header.Get("Via"); via != "" {
+                        recordSecurityHeader(originHost(rawURL), "Via", via)
+                }
+                if xc := resp.Header.Get("X-Cache"); xc != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Cache", xc)
                 }
                 // 3xx / 4xx / 5xx 视为失败 (与 fetchHttp 同款, 不重试 3xx)
                 if resp.StatusCode >= 300 {
@@ -8182,8 +8294,21 @@ func applyCaptchaTokenAndRefetch(ctx context.Context, rawURL string, cfg FetchCo
         if err != nil || solvedHTML == "" {
                 return ""
         }
-        // 二次确认: 通过后不再是 captcha
-        if LooksLikeCaptcha(solvedHTML) == "" {
+        // 二次确认: 通过后不再是 captcha 且非 blocked (R95-A BUG-269 mirror
+        //   BUG-265/266/256 tryBridges blocks 的 LooksLikeCaptcha + LooksBlocked
+        //   双重收口). 原仅 check LooksLikeCaptcha (BUG-3 同款 re-fetch 后只测
+        //   captcha widget cleared). 后果: token 注入成功但源站返 "just a moment"
+        //   interstitial (无 captcha widget, jsChallengeRe 命中) 时 solvedHTML
+        //   非 empty 且 LooksLikeCaptcha(solvedHTML)=="" → 返 solvedHTML → caller
+        //   (fetchPageOnce 5 处 2captcha/Turnstile callsite) 误判 success →
+        //   runner.go 解析 interstitial 页作正文/TOC → 章节内容污染. 与 BUG-242
+        //   success-path LooksBlocked re-check (line ~6560) + BUG-247 err-path
+        //   bridge re-check 不对称 — 本函数只 check captcha, 漏 check blocked.
+        //   修复: 加 !LooksBlocked(solvedHTML, nil) (与 BUG-265/266/256 blocks
+        //   `LooksLikeCaptcha(bridged)=="" && !LooksBlocked(bridged, nil)` 同款).
+        //   "just a moment" 页返空 → caller (trySolveCaptchaWith2Captcha 等 3
+        //   callsite) 视为 solver 失败 fall-through 到 tryBridges / 下游 solver.
+        if LooksLikeCaptcha(solvedHTML) == "" && !LooksBlocked(solvedHTML, nil) {
                 return solvedHTML
         }
         return ""
@@ -11850,10 +11975,10 @@ func ClearHostAcceptRanges(host string) {
 // hostSecurityHeadersEntry — per-host 安全策略响应头观测条目 (R86-A 第 124-128 项 +
 //   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项 + R90-A 第 144-148
 //   项 + R91-A 第 149-153 项 + R92-A 第 154-158 项 + R93-A 第 159-163 项 + R94-A 第
-//   164-168 项, 合并 45 字段). entry 是 pointer: recordSecurityHeader LoadOrStore canonical
-//   指针 + 单字段 update-in-place (非 store-replace, 保留其他 34 头旧值). 同字段并发写
-//   last-write-wins; sweep CompareAndDelete 后下次 record 重建 entry (与 recordVia
-//   store-replace 不一样, 这里需保留其他 34 头故用 update-in-place).
+//   164-168 项 + R95-A 第 169-173 项, 合并 50 字段). entry 是 pointer: recordSecurityHeader
+//   LoadOrStore canonical 指针 + 单字段 update-in-place (非 store-replace, 保留其他 49
+//   头旧值). 同字段并发写 last-write-wins; sweep CompareAndDelete 后下次 record 重建
+//   entry (与 recordVia store-replace 不一样, 这里需保留其他 49 头故用 update-in-place).
 type hostSecurityHeadersEntry struct {
         hstsValue         string // Strict-Transport-Security (第 124 项)
         cspValue          string // Content-Security-Policy (第 125 项)
@@ -11900,13 +12025,21 @@ type hostSecurityHeadersEntry struct {
         cfRayValue         string // CF-Ray (第 166 项, R94-A)
         serverValue        string // Server (第 167 项, R94-A)
         ageValue           string // Age (第 168 项, R94-A)
-        detectedAt        int64  // UnixMilli
+        // R95-A 反反爬第 169-173 项: download hint / server clock / deprecated
+        //   warning / proxy hop chain / CDN cache status 响应头观测 (与 124-168
+        //   同款 family, 单值 last-write-wins per-host 合并 tracker).
+        contentDispositionValue string // Content-Disposition (第 169 项, R95-A)
+        dateValue               string // Date (第 170 项, R95-A)
+        warningValue            string // Warning (第 171 项, R95-A)
+        viaValue                string // Via (第 172 项, R95-A)
+        xCacheValue             string // X-Cache (第 173 项, R95-A)
+        detectedAt              int64  // UnixMilli
 }
 
 // hostSecurityHeadersMap — host string -> *hostSecurityHeadersEntry (R86-A 第 124-128 项 +
 //   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项 + R90-A 第 144-148 项
 //   + R91-A 第 149-153 项 + R92-A 第 154-158 项 + R93-A 第 159-163 项 + R94-A 第
-//   164-168 项).
+//   164-168 项 + R95-A 第 169-173 项).
 var hostSecurityHeadersMap sync.Map
 
 // hostSecurityHeadersSweepCounter — sweep 触发累加 (与 hostViaSweepCounter 同口径).
@@ -11958,9 +12091,9 @@ func extractSetCookieAttr(cookies []string, attr string) string {
 // recordSecurityHeader — 记录 host 的单个安全策略响应头 (R86-A 第 124-128 项 +
 //   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项 + R90-A 第 144-148
 //   项 + R91-A 第 149-153 项 + R92-A 第 154-158 项 + R93-A 第 159-163 项 + R94-A 第
-//   164-168 项). headerName 区分 45 头 (大小写不敏感). 与 recordVia
-//   同款 Store + 惰性 sweep, 但保留其他 39 头旧值 (LoadOrStore canonical 指针 +
-//   单字段 update-in-place).
+//   164-168 项 + R95-A 第 169-173 项). headerName 区分 50 头 (大小写不敏感). 与
+//   recordVia 同款 Store + 惰性 sweep, 但保留其他 49 头旧值 (LoadOrStore canonical
+//   指针 + 单字段 update-in-place).
 func recordSecurityHeader(host, headerName, value string) {
         if host == "" || value == "" {
                 return
@@ -12064,6 +12197,19 @@ func recordSecurityHeader(host, headerName, value string) {
                 ent.serverValue = value
         case "age":
                 ent.ageValue = value
+        // R95-A 反反爬第 169-173 项: download hint / server clock / deprecated
+        //   warning / proxy hop chain / CDN cache status 响应头观测 (与 124-168
+        //   同款 family, 单值 last-write-wins per-host 合并 tracker).
+        case "content-disposition":
+                ent.contentDispositionValue = value
+        case "date":
+                ent.dateValue = value
+        case "warning":
+                ent.warningValue = value
+        case "via":
+                ent.viaValue = value
+        case "x-cache":
+                ent.xCacheValue = value
         default:
                 return
         }
@@ -12131,6 +12277,11 @@ func HostSecurityHeadersSnapshot() map[string]map[string]string {
                         "cfRayValue":         e.cfRayValue,
                         "serverValue":        e.serverValue,
                         "ageValue":           e.ageValue,
+                        "contentDispositionValue": e.contentDispositionValue,
+                        "dateValue":              e.dateValue,
+                        "warningValue":           e.warningValue,
+                        "viaValue":               e.viaValue,
+                        "xCacheValue":            e.xCacheValue,
                         "detectedAt":        fmt.Sprintf("%d", e.detectedAt),
                 }
                 return true
