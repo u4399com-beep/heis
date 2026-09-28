@@ -113,7 +113,7 @@
 
 <div id="firendlink">
 相关关键词：
-{{if .RelatedTags}}{{range .RelatedTags}}<a href="/?view=keyword&tag={{.}}">{{.}}</a>{{end}}{{end}}
+{{if .RelatedTags}}{{range .RelatedTags}}<a href="/?view=keyword&tag={{. | urlquery}}">{{.}}</a>{{end}}{{end}}
 <a href="{{.HomeURL}}">返回首页</a>
 </div>
 </div>

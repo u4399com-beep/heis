@@ -35,7 +35,8 @@
 <ul>
 <li class="m_ml"></li>
 <li><a href="/">吾爱首页</a></li>
-{{range .NavCats}}<li><a href="/?view=category&cat={{.id | urlquery}}">{{.name}}</a></li>{{end}}
+{{/* R89-D BUG-246 (template streamline, BUG-243 同款 NavCats 不对称): x2552/home.html line 38 原 /?view=category&cat={{.id | urlquery}} (BUG-239 已加 urlquery 防 URL 分裂但绕过 Go-side buildCategoryURL). homeHandler line 700-701 injectCategoryURLs 已注入 cat["URL"] = buildCategoryURL(pseudoStyle, catID, 1). 用 {{.URL}} 替裸 cat 让 admin 配置的 pseudoStyle (dir / slug / hashid 等) 生效, 不再强制 query 风格. */}}
+{{range .NavCats}}<li><a href="{{.URL}}">{{.name}}</a></li>{{end}}
 <li><a href="/?view=fulltext">全本</a></li>
 <li><a href="/?view=history">阅读记录</a></li>
 <li class="m_bc"><a rel="nofollow" href="/?view=category"></a></li>
@@ -51,8 +52,9 @@
 <abbr><bdo id="s_dd">
 {{range .TopBooks}}
 <dd style="display: block;">
-<a href="/?view=book&id={{.id}}" target="_blank">{{if .cover}}<img src="{{.cover}}" alt="{{.name}}">{{end}}</a>
-<br><a href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a>
+{{/* R89-D BUG-243 (template streamline, BUG-240 同款 book URL 不对称): x2552/home.html 6 处 /?view=book&id={{.id}}/{{$b.id}} 裸拼 id 入 query value (BUG-239 漏网 — 仅覆盖 cat/q/sort, 未覆盖 id). homeHandler line 1155 injectBookURLs(books, pseudoStyle) 已注入 book["URL"] = buildBookURL(pseudoStyle, id); Popular/TopBooks/LatestBooks/HotBooks takeBooks/topBooks 共享底层 map → .URL 已传. 用 {{.URL}}/{{$b.URL}} 替裸 id 让 admin 配置的 pseudoStyle 生效, 不再强制 query 风格. */}}
+<a href="{{.URL}}" target="_blank">{{if .cover}}<img src="{{.cover}}" alt="{{.name}}">{{end}}</a>
+<br><a href="{{.URL}}" target="_blank">{{.name}}</a>
 </dd>
 {{end}}
 </bdo></abbr>
@@ -68,8 +70,8 @@
 <ul class="update">
 {{range .Books}}
 <li>
-<p class="ul1"><a href="/?view=category&cat={{.categoryId | urlquery}}">[{{.category}}]</a>《<a class="poptext" href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a>》</p>
-<p class="ul2"><a href="/?view=book&id={{.id}}" target="_blank">{{if .latestChapter}}{{.latestChapter}}{{else}}查看最新章节{{end}}</a></p>
+<p class="ul1"><a href="/?view=category&cat={{.categoryId | urlquery}}">[{{.category}}]</a>《<a class="poptext" href="{{.URL}}" target="_blank">{{.name}}</a>》</p>
+<p class="ul2"><a href="{{.URL}}" target="_blank">{{if .latestChapter}}{{.latestChapter}}{{else}}查看最新章节{{end}}</a></p>
 <p>{{.author}}</p>{{fmtDateMD .updatedAt}}
 </li>
 {{end}}
@@ -85,7 +87,7 @@
 <div class="blockcontent">
 <ul class="ultop">
 {{range $i, $b := .Popular}}
-<li><p>{{add $i 1}}</p><a href="/?view=book&id={{$b.id}}" target="_blank">{{$b.name}}</a></li>
+<li><p>{{add $i 1}}</p><a href="{{$b.URL}}" target="_blank">{{$b.name}}</a></li>
 {{end}}
 <li style=" list-style:none; text-align:right; border:none;"><a href="/?view=fulltext">更多...</a></li>
 </ul>
@@ -97,7 +99,7 @@
 <div class="blockcontent">
 <ul class="ultop">
 {{range $i, $b := .Books}}
-<li><p>{{add $i 1}}</p><a href="/?view=book&id={{$b.id}}" target="_blank">{{$b.name}}</a></li>
+<li><p>{{add $i 1}}</p><a href="{{$b.URL}}" target="_blank">{{$b.name}}</a></li>
 {{end}}
 <li style=" list-style:none; text-align:right; border:none;"><a href="/?view=category">更多...</a></li>
 </ul>

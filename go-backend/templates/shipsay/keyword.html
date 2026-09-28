@@ -48,7 +48,7 @@
 {{if .RelatedTags}}
 <ul class="ulcard">
 {{range .RelatedTags}}
-<li><a href="/?view=keyword&tag={{.}}">{{.}}</a></li>
+<li><a href="/?view=keyword&tag={{. | urlquery}}">{{.}}</a></li>
 {{end}}
 </ul>
 {{end}}

@@ -114,7 +114,7 @@
 <h2 class="section-title"><span class="iconfont icon-mark"></span> 相关标签</h2>
 <div class="tag-list">
 {{range .RelatedTags}}
-<a class="tag-item" href="/?view=keyword&tag={{.}}"><span class="tag-name">{{.}}</span></a>
+<a class="tag-item" href="/?view=keyword&tag={{. | urlquery}}"><span class="tag-name">{{.}}</span></a>
 {{end}}
 </div>
 </div>

@@ -123,11 +123,12 @@
 <div class="infotag clearfix" id="infotag">
 <h3 class="tagtitle">標籤</h3>
 <ul class="tagul" id="tagul">
-{{if .Book.keywords}}{{if .Book.categoryId}}<li><a href="/?view=keyword&tag={{.Book.category}}">{{.Book.category}}</a></li>{{end}}
-{{if .Book.author}}<li><a href="/?view=keyword&tag={{.Book.author}}">{{.Book.author}}</a></li>{{end}}
-{{if .Book.category}}<li><a href="/?view=keyword&tag={{.Book.category}}小說">{{.Book.category}}小說</a></li>{{end}}
-<li><a href="/?view=keyword&tag={{.Book.name}}">{{.Book.name}}</a></li>
-{{if .Book.latestChapter}}<li><a href="/?view=keyword&tag={{.Book.latestChapter}}">{{.Book.latestChapter}}</a></li>{{end}}
+{{/* R89-D BUG-245 (urlquery filter, BUG-239 同款 &tag= 漏网): 101kks/book.html line 126-130 /?view=keyword&tag={{.Book.*}} 裸拼 Book 字段入 query value. tag 源自 Book.category/author/name/latestChapter (admin/crawl 生成, 可含 & = # 等). 加 | urlquery 同 Go-side url.QueryEscape 语义, 防 URL 分裂. (line 128 &tag={{.Book.category | urlquery}}小說 — urlquery 仅作用于 .Book.category 部分, “小說” 后缀不需 encode.) */}}
+{{if .Book.keywords}}{{if .Book.categoryId}}<li><a href="/?view=keyword&tag={{.Book.category | urlquery}}">{{.Book.category}}</a></li>{{end}}
+{{if .Book.author}}<li><a href="/?view=keyword&tag={{.Book.author | urlquery}}">{{.Book.author}}</a></li>{{end}}
+{{if .Book.category}}<li><a href="/?view=keyword&tag={{.Book.category | urlquery}}小說">{{.Book.category}}小說</a></li>{{end}}
+<li><a href="/?view=keyword&tag={{.Book.name | urlquery}}">{{.Book.name}}</a></li>
+{{if .Book.latestChapter}}<li><a href="/?view=keyword&tag={{.Book.latestChapter | urlquery}}">{{.Book.latestChapter}}</a></li>{{end}}
 {{else}}<li><a>暫無標籤</a></li>{{end}}
 </ul>
 </div>

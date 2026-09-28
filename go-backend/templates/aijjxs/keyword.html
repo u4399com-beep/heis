@@ -80,7 +80,7 @@
 <article class="panel" style="margin-top:14px;">
 <h3>相关标签</h3>
 <div class="body tags">
-{{range .RelatedTags}}<a href="/?view=keyword&tag={{.}}" title="{{.}}">{{.}}</a>{{end}}
+{{range .RelatedTags}}<a href="/?view=keyword&tag={{. | urlquery}}" title="{{.}}">{{.}}</a>{{end}}
 </div>
 </article>
 {{end}}

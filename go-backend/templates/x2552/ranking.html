@@ -35,7 +35,8 @@
 <ul>
 <li class="m_ml"></li>
 <li><a href="/">吾爱首页</a></li>
-{{range .NavCats}}<li><a href="/?view=category&cat={{.id | urlquery}}">{{.name}}</a></li>{{end}}
+{{/* R89-D BUG-246 (template streamline, BUG-243 同款 NavCats 不对称): x2552/ranking.html line 38 原 /?view=category&cat={{.id | urlquery}} 绕过 Go-side buildCategoryURL. homeHandler line 700-701 injectCategoryURLs 已注入 cat["URL"]. 用 {{.URL}} 替裸 cat. */}}
+{{range .NavCats}}<li><a href="{{.URL}}">{{.name}}</a></li>{{end}}
 <li><a href="/?view=fulltext">全本</a></li>
 <li class="m_bc"><a rel="nofollow" href="/?view=category"></a></li>
 <li class="m_mr"></li>
@@ -75,8 +76,9 @@
 <tr>
 <td style="text-align:center;"><span class="hottext" style="font-weight:bold;">{{.rank}}</span></td>
 <td><a href="/?view=category&cat={{.categoryId | urlquery}}">[{{.category}}]</a></td>
-<td><a href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a></td>
-<td><a href="/?view=book&id={{.id}}" target="_blank">{{if .latestChapter}}{{.latestChapter}}{{else}}最新章节{{end}}</a></td>
+{{/* R89-D BUG-243 (template streamline, BUG-240 同款 book URL 不对称): x2552/ranking.html 2 处 /?view=book&id={{.id}} 裸拼 id (BUG-239 漏网). homeHandler line 1015 injectBookURLs(books, pseudoStyle) 已注入 book["URL"]. 用 {{.URL}} 替裸 id. */}}
+<td><a href="{{.URL}}" target="_blank">{{.name}}</a></td>
+<td><a href="{{.URL}}" target="_blank">{{if .latestChapter}}{{.latestChapter}}{{else}}最新章节{{end}}</a></td>
 <td>{{.author}}</td>
 <td><span class="hottext">{{wordCount .wordCount}}</span></td>
 <td>{{fmtDateShort .updatedAt}}</td>

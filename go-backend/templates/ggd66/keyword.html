@@ -52,7 +52,7 @@
 {{if .RelatedTags}}
 <div class="class">
 <ul>
-{{range .RelatedTags}}<li><a href="/?view=keyword&tag={{.}}">{{.}}</a></li>{{end}}
+{{range .RelatedTags}}<li><a href="/?view=keyword&tag={{. | urlquery}}">{{.}}</a></li>{{end}}
 </ul>
 </div>
 <div class="clear"></div>

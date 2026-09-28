@@ -4002,6 +4002,23 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 if xdo := resp.Header.Get("X-Download-Options"); xdo != "" {
                         recordSecurityHeader(originHost(rawURL), "X-Download-Options", xdo)
                 }
+                // R89-A 反反爬第 139-143 项: timing / CORS inbound / SEO 反爬立场 / 数据清理 /
+                //   CORS credentials 响应头观测 (per-host 合并 tracker 第 16-20 字段, 与 124-138 同款).
+                if tao := resp.Header.Get("Timing-Allow-Origin"); tao != "" {
+                        recordSecurityHeader(originHost(rawURL), "Timing-Allow-Origin", tao)
+                }
+                if acao := resp.Header.Get("Access-Control-Allow-Origin"); acao != "" {
+                        recordSecurityHeader(originHost(rawURL), "Access-Control-Allow-Origin", acao)
+                }
+                if xrt := resp.Header.Get("X-Robots-Tag"); xrt != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Robots-Tag", xrt)
+                }
+                if csd := resp.Header.Get("Clear-Site-Data"); csd != "" {
+                        recordSecurityHeader(originHost(rawURL), "Clear-Site-Data", csd)
+                }
+                if acac := resp.Header.Get("Access-Control-Allow-Credentials"); acac != "" {
+                        recordSecurityHeader(originHost(rawURL), "Access-Control-Allow-Credentials", acac)
+                }
 
                 // Set-Cookie 处理 (autoCookie)
                 if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
@@ -4892,6 +4909,24 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 }
                 if xdo := extractHeaderFromCurlStdout(headers, "X-Download-Options"); xdo != "" {
                         recordSecurityHeader(domain, "X-Download-Options", xdo)
+                }
+                // R89-A 反反爬第 139-143 项: timing / CORS inbound / SEO 反爬立场 / 数据清理 /
+                //   CORS credentials 响应头观测 (与 fetchHttp 同款, curl -D - dump headers
+                //   路径; fetchBinaryViaCurl 不 dump 故不调, 与 124-138 同款限制).
+                if tao := extractHeaderFromCurlStdout(headers, "Timing-Allow-Origin"); tao != "" {
+                        recordSecurityHeader(domain, "Timing-Allow-Origin", tao)
+                }
+                if acao := extractHeaderFromCurlStdout(headers, "Access-Control-Allow-Origin"); acao != "" {
+                        recordSecurityHeader(domain, "Access-Control-Allow-Origin", acao)
+                }
+                if xrt := extractHeaderFromCurlStdout(headers, "X-Robots-Tag"); xrt != "" {
+                        recordSecurityHeader(domain, "X-Robots-Tag", xrt)
+                }
+                if csd := extractHeaderFromCurlStdout(headers, "Clear-Site-Data"); csd != "" {
+                        recordSecurityHeader(domain, "Clear-Site-Data", csd)
+                }
+                if acac := extractHeaderFromCurlStdout(headers, "Access-Control-Allow-Credentials"); acac != "" {
+                        recordSecurityHeader(domain, "Access-Control-Allow-Credentials", acac)
                 }
                 if status >= 300 {
                         // R66-C BUG-52 (P3): curl 4xx/5xx 也记 latency + fail (与 fetchHttp
@@ -6218,6 +6253,21 @@ func fetchPageOnce(ctx context.Context, rawURL string, cfg FetchConfig) (*FetchR
                         }
                         return &FetchResult{HTML: html, Engine: "http", Blocked: true, CaptchaDetected: true, CaptchaType: ct}, nil
                 }
+                // R89-A BUG-242 (P3) 修复 (R88-A 未决项 #8 fetcher scope 深抓 + R87-A 未决
+                //   项 #6 captcha 深抓续): success-path 原 LooksBlocked 分支 (line ~6222-
+                //   6234) 后直接调 LooksLikeCaptcha, 不 re-check LooksBlocked. 后果: 若
+                //   token 求解 / 桥降级修改后 html 仍 Blocked (e.g., Obscura 桥也返同款 CF
+                //   "just a moment" 页), 且 LooksLikeCaptcha 返 "" (jsChallengeRe 词不在
+                //   captchaRe patterns), 代码落到本行 return Blocked: false → caller
+                //   (runner.go discoverBooks/CrawlBookMeta/CrawlChapterContent/pageFetcher
+                //   4 处) 误以为成功, 解析挑战 / captcha 页作正文 / TOC → 章节内容污染.
+                //   与 err-path 桥调用 (line ~6275-6278) 不对称 (err-path re-check
+                //   LooksBlocked(bridged) 后返 Blocked: true). 修复: mirror err-path re-check
+                //   — 若 html 仍 Blocked, 返 Blocked: true. 仅补 re-check + 早返, 不改 token
+                //   /bridge 求解逻辑, 与 err-path 同款收口.
+                if LooksBlocked(html, nil) {
+                        return &FetchResult{HTML: html, Engine: "http", Blocked: true}, nil
+                }
                 return &FetchResult{HTML: html, Engine: "http", Blocked: false}, nil
         }
 
@@ -6553,6 +6603,114 @@ func fetchBinaryHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, pr
                 //   brotli 检查后 / 3xx 检查前调 (success + err 两路径都记 proto, 与 fetchHttp
                 //   line ~3870 同口径). 仅观测, 不改 transport 行为.
                 recordHostProtoFingerprint(originHost(rawURL), resp.Proto, resp.Header.Get("Server"))
+                // R89-A BUG-241 (P3) 修复 (R88-A 未决项 #8 fetchBinaryHttp scope 深抓):
+                //   fetchBinaryHttp 成功路径原仅调 3 transport observer (R88-A BUG-233
+                //   补 recordHostProtoFingerprint + RecordH2FlowControlObserved +
+                //   RecordTls13PskObserved), 漏调 fetchHttp 成功路径 (line ~3879-4004)
+                //   的 4 dedicated tracker (Via / Cache-Status / Content-Language /
+                //   Accept-Ranges) + 20 security header (124-143) + 3 Service-Worker +
+                //   3 isolation (X-Frame-Options / X-Content-Type-Options / Origin-Isolation).
+                //   后果: cover host 走 native HTTP 时响应头 observer 漏计 → admin
+                //   hostSecurityHeadersSnapshot / ViaSnapshot 等 snapshot 漏 cover host 条目
+                //   (cover 多在 external CDN, 与 HTML host 不同 → cover host 配置漏观测).
+                //   修复: 与 fetchHttp 同款在 brotli 检查后 / 3xx 检查前调 (success + err
+                //   两路径都记, 与 fetchHttp line ~3879-4004 同口径). rationale 扩展:
+                //   R88-A BUG-233 "transport-level 非 HTML 专用" rationale 同款扩到响应头
+                //   observer (HSTS/CSP/Via 等是 host 级 server config, 非 HTML 专用 — cover
+                //   host 与 HTML host 同域时 update-in-place last-write-wins, 不污染; 不同
+                //   域时各自独立条目, 无污染). 仅观测, 不改 transport / fetch 行为.
+                if swHdr := resp.Header.Get("Service-Worker"); swHdr != "" {
+                        recordServiceWorkerDetection(originHost(rawURL), "Service-Worker", swHdr)
+                }
+                if swAllowed := resp.Header.Get("Service-Worker-Allowed"); swAllowed != "" {
+                        recordServiceWorkerDetection(originHost(rawURL), "Service-Worker-Allowed", swAllowed)
+                }
+                if swNavMode := resp.Header.Get("Service-Worker-Navigation-Mode"); swNavMode != "" {
+                        recordServiceWorkerDetection(originHost(rawURL), "Service-Worker-Navigation-Mode", swNavMode)
+                }
+                if xfo := resp.Header.Get("X-Frame-Options"); xfo != "" {
+                        recordFrameOptions(originHost(rawURL), xfo)
+                }
+                if xcto := resp.Header.Get("X-Content-Type-Options"); xcto != "" {
+                        recordContentTypeOptions(originHost(rawURL), xcto)
+                }
+                if oi := resp.Header.Get("Origin-Isolation"); oi != "" {
+                        recordOriginIsolation(originHost(rawURL), oi)
+                }
+                if via := resp.Header.Get("Via"); via != "" {
+                        recordVia(originHost(rawURL), via)
+                }
+                if cs := resp.Header.Get("Cache-Status"); cs != "" {
+                        recordCacheStatus(originHost(rawURL), cs)
+                }
+                if cl := resp.Header.Get("Content-Language"); cl != "" {
+                        recordContentLanguage(originHost(rawURL), cl)
+                }
+                if ar := resp.Header.Get("Accept-Ranges"); ar != "" {
+                        recordAcceptRanges(originHost(rawURL), ar)
+                }
+                // R86-A 第 124-128 项 + R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A
+                //   第 139-143 项: 20 安全策略响应头 (与 fetchHttp line ~3954-4021 同口径).
+                if hsts := resp.Header.Get("Strict-Transport-Security"); hsts != "" {
+                        recordSecurityHeader(originHost(rawURL), "Strict-Transport-Security", hsts)
+                }
+                if csp := resp.Header.Get("Content-Security-Policy"); csp != "" {
+                        recordSecurityHeader(originHost(rawURL), "Content-Security-Policy", csp)
+                }
+                if pp := resp.Header.Get("Permissions-Policy"); pp != "" {
+                        recordSecurityHeader(originHost(rawURL), "Permissions-Policy", pp)
+                }
+                if rp := resp.Header.Get("Referrer-Policy"); rp != "" {
+                        recordSecurityHeader(originHost(rawURL), "Referrer-Policy", rp)
+                }
+                if coop := resp.Header.Get("Cross-Origin-Opener-Policy"); coop != "" {
+                        recordSecurityHeader(originHost(rawURL), "Cross-Origin-Opener-Policy", coop)
+                }
+                if coep := resp.Header.Get("Cross-Origin-Embedder-Policy"); coep != "" {
+                        recordSecurityHeader(originHost(rawURL), "Cross-Origin-Embedder-Policy", coep)
+                }
+                if corp := resp.Header.Get("Cross-Origin-Resource-Policy"); corp != "" {
+                        recordSecurityHeader(originHost(rawURL), "Cross-Origin-Resource-Policy", corp)
+                }
+                if xpcdp := resp.Header.Get("X-Permitted-Cross-Domain-Policies"); xpcdp != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Permitted-Cross-Domain-Policies", xpcdp)
+                }
+                if xdns := resp.Header.Get("X-DNS-Prefetch-Control"); xdns != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-DNS-Prefetch-Control", xdns)
+                }
+                if cspro := resp.Header.Get("Content-Security-Policy-Report-Only"); cspro != "" {
+                        recordSecurityHeader(originHost(rawURL), "Content-Security-Policy-Report-Only", cspro)
+                }
+                if coopro := resp.Header.Get("Cross-Origin-Opener-Policy-Report-Only"); coopro != "" {
+                        recordSecurityHeader(originHost(rawURL), "Cross-Origin-Opener-Policy-Report-Only", coopro)
+                }
+                if coepro := resp.Header.Get("Cross-Origin-Embedder-Policy-Report-Only"); coepro != "" {
+                        recordSecurityHeader(originHost(rawURL), "Cross-Origin-Embedder-Policy-Report-Only", coepro)
+                }
+                if re := resp.Header.Get("Reporting-Endpoints"); re != "" {
+                        recordSecurityHeader(originHost(rawURL), "Reporting-Endpoints", re)
+                }
+                if nel := resp.Header.Get("NEL"); nel != "" {
+                        recordSecurityHeader(originHost(rawURL), "NEL", nel)
+                }
+                if xdo := resp.Header.Get("X-Download-Options"); xdo != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Download-Options", xdo)
+                }
+                if tao := resp.Header.Get("Timing-Allow-Origin"); tao != "" {
+                        recordSecurityHeader(originHost(rawURL), "Timing-Allow-Origin", tao)
+                }
+                if acao := resp.Header.Get("Access-Control-Allow-Origin"); acao != "" {
+                        recordSecurityHeader(originHost(rawURL), "Access-Control-Allow-Origin", acao)
+                }
+                if xrt := resp.Header.Get("X-Robots-Tag"); xrt != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Robots-Tag", xrt)
+                }
+                if csd := resp.Header.Get("Clear-Site-Data"); csd != "" {
+                        recordSecurityHeader(originHost(rawURL), "Clear-Site-Data", csd)
+                }
+                if acac := resp.Header.Get("Access-Control-Allow-Credentials"); acac != "" {
+                        recordSecurityHeader(originHost(rawURL), "Access-Control-Allow-Credentials", acac)
+                }
                 // 3xx / 4xx / 5xx 视为失败 (与 fetchHttp 同款, 不重试 3xx)
                 if resp.StatusCode >= 300 {
                         herr := &HTTPError{
@@ -11149,13 +11307,34 @@ func ClearHostAcceptRanges(host string) {
 //     ({report_to, max_age, include_subdomains, success_fraction, failure_fraction}).
 //   第 138 项 X-Download-Options (IE legacy, MSIE) — noopen 标识防 IE 自动打开下载文件
 //     (legacy, 与第 131 项 X-Permitted-Cross-Domain-Policies 同款 legacy 安全头).
+//
+// R89-A 反反爬第 139-143 项: 续 5 个 timing / CORS inbound / SEO 反爬立场 / 数据清理 /
+//   CORS credentials 响应头 (合并到同一 entry 第 16-20 字段, 与第 124-138 项同口径
+//   fetchHttp + fetchViaCurl 两路径对称; fetchBinaryHttp 成功路径 BUG-241 修复后补对称;
+//   fetchBinaryViaCurl 不 dump headers 故不调, 与 124-138 同款限制). 全为 "security/
+//   cross-origin policy response header" 同类, 合并语义自洽; 反爬本身不基于此检测 (客户端
+//   不发), 降分价值 ≤1 分, 主要 admin 可观测性 (识别 host timing 策略 / CORS inbound /
+//   SEO 反爬立场 / 数据清理 / agent 隔离).
+//
+//   第 139 项 Timing-Allow-Origin (TAO, W3C Resource Timing §timing-allow-origin) —
+//     `*` / `<origin>` 标识允许跨域资源 timing info 暴露 (默认同源 only). 严格 timing
+//     策略源站通常反爬也严格.
+//   第 140 项 Access-Control-Allow-Origin (Fetch §CORS, RFC 6454) — `*` / `<origin>` /
+//     `null` 标识 host inbound CORS 策略 (与第 124-138 项同款跨域 policy family).
+//   第 141 项 X-Robots-Tag (Google/Yandex/Bing) — `noindex` / `nofollow` / `noarchive` /
+//     `none` 标识搜索引擎索引控制 (反爬立场直接信号 — 阻搜索引擎通常也阻爬虫).
+//   第 142 项 Clear-Site-Data (W3C Clear Site Data) — `"cache"` / `"cookies"` /
+//     `"storage"` / `"*"` 标识 host 主动清浏览器数据 (aggressive session management 防
+//     爬虫 cookie 复用).
+//   第 143 项 Access-Control-Allow-Credentials (Fetch §CORS) — `true` 标识允许跨域请求
+//     带 cookie (与第 140 项 ACAO 配对, CORS inbound policy 完整覆盖).
 
 // hostSecurityHeadersEntry — per-host 安全策略响应头观测条目 (R86-A 第 124-128 项 +
-//   R87-A 第 129-133 项 + R88-A 第 134-138 项, 合并 15 字段). entry 是 pointer:
-//   recordSecurityHeader LoadOrStore canonical 指针 + 单字段 update-in-place (非
-//   store-replace, 保留其他 14 头旧值). 同字段并发写 last-write-wins; sweep
+//   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项, 合并 20 字段). entry
+//   是 pointer: recordSecurityHeader LoadOrStore canonical 指针 + 单字段 update-in-place
+//   (非 store-replace, 保留其他 19 头旧值). 同字段并发写 last-write-wins; sweep
 //   CompareAndDelete 后下次 record 重建 entry (与 recordVia store-replace 不一样, 这里需
-//   保留其他 14 头故用 update-in-place).
+//   保留其他 19 头故用 update-in-place).
 type hostSecurityHeadersEntry struct {
         hstsValue         string // Strict-Transport-Security (第 124 项)
         cspValue          string // Content-Security-Policy (第 125 项)
@@ -11172,11 +11351,16 @@ type hostSecurityHeadersEntry struct {
         reportingEndpoints string // Reporting-Endpoints (第 136 项, R88-A)
         nel              string // NEL (Network Error Logging, 第 137 项, R88-A)
         xDownloadOptions  string // X-Download-Options (第 138 项, R88-A)
+        timingAllowOrigin string // Timing-Allow-Origin (第 139 项, R89-A)
+        acaoValue        string // Access-Control-Allow-Origin (第 140 项, R89-A)
+        xRobotsTag       string // X-Robots-Tag (第 141 项, R89-A)
+        clearSiteData    string // Clear-Site-Data (第 142 项, R89-A)
+        acacValue        string // Access-Control-Allow-Credentials (第 143 项, R89-A)
         detectedAt        int64  // UnixMilli
 }
 
 // hostSecurityHeadersMap — host string -> *hostSecurityHeadersEntry (R86-A 第 124-128 项 +
-//   R87-A 第 129-133 项 + R88-A 第 134-138 项).
+//   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项).
 var hostSecurityHeadersMap sync.Map
 
 // hostSecurityHeadersSweepCounter — sweep 触发累加 (与 hostViaSweepCounter 同口径).
@@ -11186,9 +11370,9 @@ var hostSecurityHeadersSweepCounter atomic.Int64
 const HostSecurityHeadersSweepTTLms = 7 * 24 * 60 * 60 * 1000
 
 // recordSecurityHeader — 记录 host 的单个安全策略响应头 (R86-A 第 124-128 项 +
-//   R87-A 第 129-133 项 + R88-A 第 134-138 项). headerName 区分 15 头 (大小写不敏感).
-//   与 recordVia 同款 Store + 惰性 sweep, 但保留其他 14 头旧值 (LoadOrStore canonical
-//   指针 + 单字段 update-in-place).
+//   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项). headerName 区分
+//   20 头 (大小写不敏感). 与 recordVia 同款 Store + 惰性 sweep, 但保留其他 19 头旧值
+//   (LoadOrStore canonical 指针 + 单字段 update-in-place).
 func recordSecurityHeader(host, headerName, value string) {
         if host == "" || value == "" {
                 return
@@ -11226,6 +11410,16 @@ func recordSecurityHeader(host, headerName, value string) {
                 ent.nel = value
         case "x-download-options":
                 ent.xDownloadOptions = value
+        case "timing-allow-origin":
+                ent.timingAllowOrigin = value
+        case "access-control-allow-origin":
+                ent.acaoValue = value
+        case "x-robots-tag":
+                ent.xRobotsTag = value
+        case "clear-site-data":
+                ent.clearSiteData = value
+        case "access-control-allow-credentials":
+                ent.acacValue = value
         default:
                 return
         }
@@ -11262,7 +11456,12 @@ func HostSecurityHeadersSnapshot() map[string]map[string]string {
                         "coepReportOnly":    e.coepReportOnly,
                         "reportingEndpoints": e.reportingEndpoints,
                         "nel":               e.nel,
-                        "xDownloadOptions":  e.xDownloadOptions,
+                        "xDownloadOptions":   e.xDownloadOptions,
+                        "timingAllowOrigin":  e.timingAllowOrigin,
+                        "acaoValue":         e.acaoValue,
+                        "xRobotsTag":         e.xRobotsTag,
+                        "clearSiteData":     e.clearSiteData,
+                        "acacValue":         e.acacValue,
                         "detectedAt":        fmt.Sprintf("%d", e.detectedAt),
                 }
                 return true

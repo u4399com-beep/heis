@@ -46,7 +46,8 @@
 <ul>
 <li class="m_ml"></li>
 <li><a href="/">吾爱首页</a></li>
-{{range .NavCats}}<li><a href="/?view=category&cat={{.id | urlquery}}">{{.name}}</a></li>{{end}}
+{{/* R89-D BUG-246 (template streamline, BUG-243 同款 NavCats 不对称): x2552/book.html line 49 原 /?view=category&cat={{.id | urlquery}} 绕过 Go-side buildCategoryURL. homeHandler line 700-701 injectCategoryURLs 已注入 cat["URL"]. 用 {{.URL}} 替裸 cat. */}}
+{{range .NavCats}}<li><a href="{{.URL}}">{{.name}}</a></li>{{end}}
 <li><a href="/?view=fulltext">全本</a></li>
 <li><a href="/?view=history">阅读记录</a></li>
 <li class="m_bc"><a rel="nofollow" href="/?view=category"></a></li>
@@ -113,9 +114,10 @@
 <ul class="update">
 {{if .RecentChapters}}
 {{range .RecentChapters}}
+{{/* R89-D BUG-244 (template streamline, BUG-240 同款 chapter URL 不对称): x2552/book.html line 117/118 /?view=read&chapter={{.id}} 裸拼 chapter id 入 query value (BUG-239 漏网). homeHandler line 783 injectChapterURLs(recent, pseudoStyle, id) 已注入 recent[i]["URL"] = buildChapterURL(pseudoStyle, chID, id). 用 {{.URL}} 替裸 id 让 admin 配置的 pseudoStyle 生效. */}}
 <li>
-<p class="ul1"><a href="/?view=category&cat={{$.Book.categoryId | urlquery}}">[{{$.Book.category}}]</a>《<a class="poptext" href="/?view=read&chapter={{.id}}" target="_blank">{{.title}}</a>》</p>
-<p class="ul2"><a href="/?view=read&chapter={{.id}}" target="_blank">{{.title}}</a></p>
+<p class="ul1"><a href="/?view=category&cat={{$.Book.categoryId | urlquery}}">[{{$.Book.category}}]</a>《<a class="poptext" href="{{.URL}}" target="_blank">{{.title}}</a>》</p>
+<p class="ul2"><a href="{{.URL}}" target="_blank">{{.title}}</a></p>
 <p>{{$.Book.author}}</p>{{fmtDateShort $.Book.updatedAt}}
 </li>
 {{end}}
@@ -138,7 +140,8 @@
 <div class="blockcontent">
 <ul class="ultop">
 {{range $i, $b := .HotBooks}}
-<li><p>{{add $i 1}}</p><a href="/?view=book&id={{$b.id}}" target="_blank">{{$b.name}}</a></li>
+{{/* R89-D BUG-243 (template streamline, BUG-240 同款 book URL 不对称): x2552/book.html line 141/153 /?view=book&id={{$b.id}}/{{.id}} 裸拼 id (BUG-239 漏网). homeHandler line 784 injectBookURLs(related, pseudoStyle) 注入 related["URL"], 但本模板 HotBooks 区块 (line 140/152) case "book" 未设 (range nil skip) — 现 latent; 未来 wiring HotBooks 时不需改本模板. 用 {{$b.URL}}/{{.URL}} 替裸 id. */}}
+<li><p>{{add $i 1}}</p><a href="{{$b.URL}}" target="_blank">{{$b.name}}</a></li>
 {{end}}
 <li style="list-style:none;text-align:right;border:none;"><a href="/?view=ranking">更多...</a></li>
 </ul>
@@ -150,7 +153,7 @@
 <div class="blockcontent">
 <ul class="ultop">
 {{range .HotBooks}}
-<li><p>{{fmtDateShort .updatedAt}}</p><a href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a></li>
+<li><p>{{fmtDateShort .updatedAt}}</p><a href="{{.URL}}" target="_blank">{{.name}}</a></li>
 {{end}}
 <li style="list-style:none;text-align:right;border:none;"><a href="/?view=ranking">更多...</a></li>
 </ul>

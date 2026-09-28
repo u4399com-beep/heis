@@ -4709,10 +4709,21 @@ func adminFeedbackHandler(w http.ResponseWriter, r *http.Request) {
         if totalPages < 1 {
                 totalPages = 1
         }
+        // R89-C BUG-242 (P3, R68-D BUG-77 family 续抓): 同 adminBooksList — clamp
+        //   totalPages + offset. 原反馈分页漏此 clamp, page 钳 [1,10000] × size 钳
+        //   [5,100] → offset 可达 ~1M (大反馈表深页翻 → SQLite OFFSET 扫描丢弃近
+        //   1M 行 → 查询数秒级). 与书籍分页 maxPaginationOffset=10000 对称.
+        maxPages := maxPaginationOffset/size + 1
+        if totalPages > maxPages {
+                totalPages = maxPages
+        }
         if page > totalPages {
                 page = totalPages
         }
         offset := (page - 1) * size
+        if offset > maxPaginationOffset {
+                offset = maxPaginationOffset
+        }
         listArgs := append(args, size, offset)
         rows, err := db.Query(`SELECT id, type, COALESCE(contact,''), content, COALESCE(url,''), COALESCE(siteId,''), status, COALESCE(ip,''), COALESCE(adminNote,''), createdAt, updatedAt FROM Feedback WHERE `+whereSQL+` ORDER BY createdAt DESC LIMIT ? OFFSET ?`, listArgs...)
         rowsList := []map[string]interface{}{}
@@ -5756,6 +5767,23 @@ func adminSeoAuditHandler(w http.ResponseWriter, r *http.Request) {
         })
 }
 
+// reportErrorCount 统计单站点 SEO 审计报告内 severity=="error" 的 issue 数.
+//
+//      seoAuditSummary (汇总 totalErrors) + sortAuditReports (排序键) 共用 —
+//      原 2 处 inline loop copy-paste 提为单一真源 (R89-C 精简, 续 R86-C
+//      seoAuditSummary + R87-C runSiteAuditReports 提取后剩同款 inline error-count).
+func reportErrorCount(r map[string]interface{}) int {
+        n := 0
+        if issues, ok := r["issues"].([]map[string]interface{}); ok {
+                for _, x := range issues {
+                        if x["severity"] == "error" {
+                                n++
+                        }
+                }
+        }
+        return n
+}
+
 // seoAuditSummary 计算审计报告汇总 (总 issue 数 / 总 error 数 / 平均分).
 //
 //      fillSeoAuditPageData (SSR) + adminSeoAuditHandler (API) 共用 — 原 2 处 18 行
@@ -5766,12 +5794,8 @@ func seoAuditSummary(reports []map[string]interface{}) (totalIssues, totalErrors
         for _, r := range reports {
                 if issues, ok := r["issues"].([]map[string]interface{}); ok {
                         totalIssues += len(issues)
-                        for _, it := range issues {
-                                if it["severity"] == "error" {
-                                        totalErrors++
-                                }
-                        }
                 }
+                totalErrors += reportErrorCount(r)
                 if s, ok := r["score"].(int); ok {
                         scoreSum += s
                 }
@@ -5813,21 +5837,7 @@ func runSiteAuditReports(sites []map[string]string, siteFilter string) []map[str
 // sortAuditReports 排序: error 多的在前, 同错按 score 升序.
 func sortAuditReports(reports []map[string]interface{}) {
         sort.SliceStable(reports, func(i, j int) bool {
-                ei, ej := 0, 0
-                if ii, ok := reports[i]["issues"].([]map[string]interface{}); ok {
-                        for _, x := range ii {
-                                if x["severity"] == "error" {
-                                        ei++
-                                }
-                        }
-                }
-                if ij, ok := reports[j]["issues"].([]map[string]interface{}); ok {
-                        for _, x := range ij {
-                                if x["severity"] == "error" {
-                                        ej++
-                                }
-                        }
-                }
+                ei, ej := reportErrorCount(reports[i]), reportErrorCount(reports[j])
                 if ei != ej {
                         return ei > ej
                 }
@@ -7131,6 +7141,30 @@ func adminDownloadsDelete(w http.ResponseWriter, r *http.Request, jobID string) 
         writeJSONOK(w, map[string]interface{}{"id": jobID, "deleted": true})
 }
 
+// contentDispositionFilename 构造 RFC 6266/5987 兼容的 Content-Disposition filename 头:
+// ASCII fallback (filename="...") + UTF-8 percent-encoded (filename*=UTF-8''...).
+//
+//      R89-C BUG-241 (P3, R85-C BUG-209 已修 err 区分但漏此处 disposition encoding):
+//      原 url.QueryEscape 编码空格为 '+' (form-encoding 语义), 且 filename="..."
+//      ASCII slot 内 percent-encoding 不被浏览器解码 (RFC 6266 仅 filename*= 才解码)
+//      → 非 ASCII 书名 (如 "我的书") 下载文件名用户看到 literal "%E6%88%91..." 或
+//      "my+book.txt" (空格变 '+'). 改双 slot: filename="..." ASCII-safe fallback
+//      (非 printable / '"' → '_') + filename*=UTF-8''<url.PathEscape> (PathEscape
+//      产 %20 非 '+', 与 RFC 6266 filename* 解码语义一致).
+func contentDispositionFilename(name, ext string) string {
+        // ASCII fallback: 0x20-0x7E except '"' (防引号破坏 header), 其余 '_'.
+        fb := make([]byte, 0, len(name))
+        for _, b := range []byte(name) {
+                if b >= 0x20 && b <= 0x7E && b != '"' {
+                        fb = append(fb, b)
+                } else {
+                        fb = append(fb, '_')
+                }
+        }
+        return fmt.Sprintf(`attachment; filename="%s%s"; filename*=UTF-8''%s%s`,
+                string(fb), ext, url.PathEscape(name), ext)
+}
+
 // adminDownloadFileHandlerImpl — 原 adminDownloadFileHandler 实现 (按 jobID 返回 TXT 内容).
 //
 //      从原 handler 抽出, 让 adminDownloadsSubHandler 调用.
@@ -7163,7 +7197,8 @@ func adminDownloadFileHandlerImpl(w http.ResponseWriter, r *http.Request, jobID 
         }
         txt := entry.content
         w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-        w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.txt"`, url.QueryEscape(bookName)))
+        // R89-C BUG-241: url.QueryEscape → contentDispositionFilename (RFC 6266/5987 双 slot).
+        w.Header().Set("Content-Disposition", contentDispositionFilename(bookName, ".txt"))
         w.Header().Set("Content-Length", strconv.Itoa(len(txt)))
         w.Write([]byte(txt))
 }
@@ -7612,10 +7647,22 @@ func fillFeedbackPageData(data map[string]interface{}, r *http.Request) {
         if totalPages < 1 {
                 totalPages = 1
         }
+        // R89-C BUG-242 (P3, R68-D BUG-77 family 续抓): 同 fillBooksPageData — clamp
+        //   totalPages + offset. 原反馈 SSR 分页漏此 clamp (与 adminFeedbackList API
+        //   同款漏), page 钳 [1,10000] × size=20 → offset 可达 ~200k (大反馈表深页翻
+        //   → SQLite OFFSET 扫描丢弃近 200k 行 → 查询秒级). 与书籍 SSR 分页
+        //   maxPaginationOffset=10000 对称.
+        maxPages := maxPaginationOffset/size + 1
+        if totalPages > maxPages {
+                totalPages = maxPages
+        }
         if page > totalPages {
                 page = totalPages
         }
         offset := (page - 1) * size
+        if offset > maxPaginationOffset {
+                offset = maxPaginationOffset
+        }
         listArgs := append(args, size, offset)
         rows, err := db.Query(`SELECT id, type, COALESCE(contact,''), content, COALESCE(url,''), COALESCE(siteId,''), status, COALESCE(ip,''), COALESCE(adminNote,''), createdAt FROM Feedback WHERE `+whereSQL+` ORDER BY createdAt DESC LIMIT ? OFFSET ?`, listArgs...)
         rowsList := []map[string]interface{}{}

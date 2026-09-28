@@ -35,7 +35,8 @@
 <ul>
 <li class="m_ml"></li>
 <li><a href="/">吾爱首页</a></li>
-{{range .NavCats}}<li><a href="/?view=category&cat={{.id | urlquery}}">{{.name}}</a></li>{{end}}
+{{/* R89-D BUG-246 (template streamline, BUG-243 同款 NavCats 不对称): x2552/keyword.html line 38 原 /?view=category&cat={{.id | urlquery}} 绕过 Go-side buildCategoryURL. homeHandler line 700-701 injectCategoryURLs 已注入 cat["URL"]. 用 {{.URL}} 替裸 cat. */}}
+{{range .NavCats}}<li><a href="{{.URL}}">{{.name}}</a></li>{{end}}
 <li><a href="/?view=fulltext">全本</a></li>
 <li class="m_bc"><a rel="nofollow" href="/?view=category"></a></li>
 <li class="m_mr"></li>
@@ -70,8 +71,9 @@
 {{range .Books}}
 <tr>
 <td><a href="/?view=category&cat={{.categoryId | urlquery}}">[{{.category}}]</a></td>
-<td><a href="/?view=book&id={{.id}}" target="_blank">{{.name}}</a></td>
-<td><a href="/?view=book&id={{.id}}" target="_blank">{{if .latestChapter}}{{.latestChapter}}{{else}}最新章节{{end}}</a></td>
+{{/* R89-D BUG-243 (template streamline, BUG-240 同款 book URL 不对称): x2552/keyword.html 2 处 /?view=book&id={{.id}} 裸拼 id (BUG-239 漏网). homeHandler line 1080 injectBookURLs(books, pseudoStyle) 已注入 book["URL"]. 用 {{.URL}} 替裸 id. */}}
+<td><a href="{{.URL}}" target="_blank">{{.name}}</a></td>
+<td><a href="{{.URL}}" target="_blank">{{if .latestChapter}}{{.latestChapter}}{{else}}最新章节{{end}}</a></td>
 <td>{{.author}}</td>
 <td><span class="hottext">{{wordCount .wordCount}}</span></td>
 <td>{{fmtDateShort .updatedAt}}</td>
@@ -90,7 +92,8 @@
 {{if .RelatedTags}}
 <p class="tags" style="margin-top:16px;padding:8px 12px;border-top:1px dotted #E4E4E4;">
 <strong>相关标签：</strong>
-{{range $i, $t := .RelatedTags}}<span>{{if gt $i 0}}<span style="color:#eee;margin:0 4px;">|</span>{{end}}<a href="/?view=keyword&tag={{$t}}" style="color:#2f468f;text-decoration:none;">{{$t}}</a></span>{{end}}
+{{/* R89-D BUG-245 (urlquery filter, BUG-239 同款 &tag= 漏网): x2552/keyword.html line 93 /?view=keyword&tag={{$t}} 裸拼 RelatedTags tag 入 query value. BUG-239 (R88-D) 覆盖 cat/q/sort 但漏 &tag=. tag 源自 getKeywordViewData BookTag.tag (admin/crawl 生成, 可含 & = # 等). 加 | urlquery 同 Go-side url.QueryEscape 语义, 防 URL 分裂. */}}
+{{range $i, $t := .RelatedTags}}<span>{{if gt $i 0}}<span style="color:#eee;margin:0 4px;">|</span>{{end}}<a href="/?view=keyword&tag={{$t | urlquery}}" style="color:#2f468f;text-decoration:none;">{{$t}}</a></span>{{end}}
 </p>
 {{end}}
 </div>

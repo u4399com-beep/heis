@@ -117,7 +117,7 @@
 <div class="mybox" style="margin-top:14px;padding:14px;">
 <h3 class="mytitle" style="margin-bottom:10px;">相關標籤</h3>
 <div class="tagul-list">
-{{range .RelatedTags}}<a href="/?view=keyword&tag={{.}}" style="display:inline-block;padding:4px 10px;margin:4px;background:#f5f5f5;border-radius:3px;font-size:13px;">{{.}}</a>{{end}}
+{{range .RelatedTags}}<a href="/?view=keyword&tag={{. | urlquery}}" style="display:inline-block;padding:4px 10px;margin:4px;background:#f5f5f5;border-radius:3px;font-size:13px;">{{.}}</a>{{end}}
 </div>
 </div>
 {{end}}

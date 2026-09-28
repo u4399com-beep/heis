@@ -115,7 +115,7 @@
 <h2>相关标签</h2>
 </div>
 <div class="tags">
-{{range .RelatedTags}}<a class="tag" href="/?view=keyword&tag={{.}}" title="{{.}}">{{.}}</a>{{end}}
+{{range .RelatedTags}}<a class="tag" href="/?view=keyword&tag={{. | urlquery}}" title="{{.}}">{{.}}</a>{{end}}
 </div>
 </section>
 {{end}}

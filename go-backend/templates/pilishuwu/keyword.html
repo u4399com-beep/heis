@@ -107,7 +107,7 @@
 <p class="works-intro-tags">
 <span class="ui-left" style="font-weight:bold;margin-right:8px;">相关标签：</span>
 <span class="tags-show">
-{{range .RelatedTags}}<a href="/?view=keyword&tag={{.}}" class="works-intro-tags-item">{{.}}</a>{{end}}
+{{range .RelatedTags}}<a href="/?view=keyword&tag={{. | urlquery}}" class="works-intro-tags-item">{{.}}</a>{{end}}
 </span>
 </p>
 </div>
