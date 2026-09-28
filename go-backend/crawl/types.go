@@ -708,7 +708,33 @@ func safeStr(s string, max int) string {
 		//   注入会让 DB 字段渲染时显示"零宽不显字"占位. U+FFFD 是 decoder
 		//   把无效 UTF-8 字节替换后的"豆腐块", 残留 = 编码 bug 痕迹.
 		//   修复: 显式剥 U+2028/U+2029/U+FEFF/U+FFFD (4 个高频污染符).
-		if r == 0x2028 || r == 0x2029 || r == 0xFEFF || r == 0xFFFD {
+		//
+		// R86-B BUG-220 (P3) 修复: R67-C BUG-59 对齐 ZWStripOnlyRe 仅部分
+		//   完成 — 漏 SHY (U+00AD) / ZWSP (U+200B) / ZWNJ (U+200C) / ZWJ
+		//   (U+200D) / LRM (U+200E) / RLM (U+200F) / WJ (U+2060) / invisible
+		//   math operators (U+2061-2064) / Bidi isolate marks (U+2066-2069).
+		//   这些字符残留在 DB 用户配置字段 (site name / rule CSS selector /
+		//   expression / cookie value / Referer-URL / Header value) 破坏:
+		//     - CSS 选择器: "di\u200Bv.ad" 残留 ZWSP → goquery Find 解析失
+		//       败 (Cascadia 视 ZWSP 为非法字符) → 选择器返 0 元素 → 字段
+		//       提取返空 (e.g. 章节标题全空, 71 Rule 中 0 用 ZWSP 但 admin
+		//       复制粘贴论坛 / 文档时可能引入);
+		//     - regex Expression: "(?i)ab\u00ADc" 残留 SHY → regexp.Compile
+		//       解析为 "ab\u00ADc" 字面 SHY → 不匹配 "abc" (源文本无 SHY);
+		//     - 字符串相等: book name "玄幻\u200B奇幻" ≠ "玄幻奇幻" → DB
+		//       unique 约束未触发 → 同名书重复入库;
+		//     - 渲染: NBSP/U+3000 等不在范围 (CcAndZwStripRe 兜底, 见 cleaner
+		//       调用链). 本处仅剥 invisible/format 类.
+		//   修复: 与 ZWStripOnlyRe (R49-1B + R66-C) 完全对齐, 补全 9 类
+		//   invisible/format 字符. 行为变化: 用户配置字段经 safeStr 后不含
+		//   SHY/ZWSP/ZWNJ/ZWJ/LRM/RLM/WJ/invisible operators/Bidi isolates
+		//   (与 content text ZWStripOnlyRe 同口径). 0 用户报告 (71 Rule 配
+		//   置全 ASCII / CJK, 0 含这些字符), latent 自 R67-C (BUG-59 修复
+		//   时漏对齐 ZWStripOnlyRe 全集, 19 轮未发现).
+		if r == 0x00AD || (r >= 0x200B && r <= 0x200F) ||
+			r == 0x2028 || r == 0x2029 ||
+			(r >= 0x2060 && r <= 0x2069) ||
+			r == 0xFEFF || r == 0xFFFD {
 			continue
 		}
 		b = append(b, r)

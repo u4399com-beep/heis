@@ -2352,10 +2352,20 @@ func adminRuleByIDHandler(w http.ResponseWriter, r *http.Request) {
 		var id, name, config, createdAt, updatedAt string
 		var description sql.NullString
 		var enabled bool
+		// R86-C BUG-219 (P3, R80-D BUG-171 / R85-C BUG-204 同款 conflation):
+		//   原实现 `err != nil` 不分 sql.ErrNoRows (行不存在 → 404) vs 其他 DB 故障
+		//   (连接断/磁盘满 → 500), 全返 404 让操作员误以为规则被删 (实际 DB 故障,
+		//   行仍在). 改显式区分. 与 R85-C BUG-208 adminFeedbackByIDHandler GET
+		//   同款 Pattern B (full-row Scan). R85-C 仅修 BUG-204~209 6 处, GET case 漏
+		//   此处; 本轮一并修 (BUG-219~224 共 6 处同款 conflation 续留).
 		err := db.QueryRow(`SELECT id,name,description,config,enabled,createdAt,updatedAt FROM Rule WHERE id=?`, ruleID).
 			Scan(&id, &name, &description, &config, &enabled, &createdAt, &updatedAt)
-		if err != nil {
+		if err == sql.ErrNoRows {
 			writeJSONErr(w, "规则不存在", 404)
+			return
+		}
+		if err != nil {
+			writeJSONErr(w, "查询规则失败: "+err.Error(), 500)
 			return
 		}
 		// config 尝试解析为对象, 失败则原样
@@ -2677,9 +2687,16 @@ func adminBookByIDHandler(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPut:
 		body := readJSONBody(r)
 		var exist string
-		_ = db.QueryRow(`SELECT id FROM Book WHERE id=?`, bookID).Scan(&exist)
-		if exist == "" {
+		// R86-C BUG-220 (P3, R80-D BUG-171 / R85-C BUG-211 同款 conflation):
+		//   显式区分 (详见 BUG-219 rationale). R85-C 仅修 DELETE case (BUG-211),
+		//   PUT case 漏此处; 同 handler 不同 method 应同口径.
+		bookExistErr := db.QueryRow(`SELECT id FROM Book WHERE id=?`, bookID).Scan(&exist)
+		if bookExistErr == sql.ErrNoRows || exist == "" {
 			writeJSONErr(w, "书籍不存在", 404)
+			return
+		}
+		if bookExistErr != nil {
+			writeJSONErr(w, "查询书籍失败: "+bookExistErr.Error(), 500)
 			return
 		}
 		sets := []string{}
@@ -3634,9 +3651,16 @@ func adminCategoryByIDHandler(w http.ResponseWriter, r *http.Request) {
 		//   404. 与 adminRuleByIDHandler PUT (BUG-85) / adminBookByIDHandler PUT /
 		//   adminSiteByIDHandler PUT 同款存在性检查.
 		var existCat string
-		_ = db.QueryRow(`SELECT id FROM Category WHERE id=?`, id).Scan(&existCat)
-		if existCat == "" {
+		// R86-C BUG-222 (P3, R80-D BUG-171 / R85-C BUG-210 同款 conflation):
+		//   显式区分 (详见 BUG-219 rationale). R85-C 修 BUG-210 ruleByIDHandler
+		//   PUT, categoryByIDHandler PUT 同款 pattern 漏此处.
+		catExistErr := db.QueryRow(`SELECT id FROM Category WHERE id=?`, id).Scan(&existCat)
+		if catExistErr == sql.ErrNoRows || existCat == "" {
 			writeJSONErr(w, "分类不存在", 404)
+			return
+		}
+		if catExistErr != nil {
+			writeJSONErr(w, "查询分类失败: "+catExistErr.Error(), 500)
 			return
 		}
 		sets := []string{}
@@ -5660,7 +5684,24 @@ func adminSeoAuditHandler(w http.ResponseWriter, r *http.Request) {
 		reports = append(reports, r)
 	}
 	sortAuditReports(reports)
-	totalIssues, totalErrors, scoreSum := 0, 0, 0
+	// R86-C 精简: 17 行汇总计算提为 seoAuditSummary (与 fillSeoAuditPageData 共用).
+	totalIssues, totalErrors, avgScore := seoAuditSummary(reports)
+	writeJSONOK(w, map[string]interface{}{
+		"sites": reports,
+		"summary": map[string]interface{}{
+			"totalSites": len(reports), "avgScore": avgScore,
+			"totalIssues": totalIssues, "totalErrors": totalErrors,
+		},
+	})
+}
+
+// seoAuditSummary 计算审计报告汇总 (总 issue 数 / 总 error 数 / 平均分).
+//
+//	fillSeoAuditPageData (SSR) + adminSeoAuditHandler (API) 共用 — 原 2 处 18 行
+//	copy-paste loop 提为单一真源 (R86-C 精简). 与 fillDashboardData stats 计算风格
+//	同款 best-effort (无 err 返, 数值缺失时按 0 兜底).
+func seoAuditSummary(reports []map[string]interface{}) (totalIssues, totalErrors, avgScore int) {
+	scoreSum := 0
 	for _, r := range reports {
 		if issues, ok := r["issues"].([]map[string]interface{}); ok {
 			totalIssues += len(issues)
@@ -5674,17 +5715,10 @@ func adminSeoAuditHandler(w http.ResponseWriter, r *http.Request) {
 			scoreSum += s
 		}
 	}
-	avgScore := 0
 	if len(reports) > 0 {
 		avgScore = scoreSum / len(reports)
 	}
-	writeJSONOK(w, map[string]interface{}{
-		"sites": reports,
-		"summary": map[string]interface{}{
-			"totalSites": len(reports), "avgScore": avgScore,
-			"totalIssues": totalIssues, "totalErrors": totalErrors,
-		},
-	})
+	return
 }
 
 // sortAuditReports 排序: error 多的在前, 同错按 score 升序.
@@ -5759,9 +5793,16 @@ func adminSiteByIDHandler(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPut:
 		body := readJSONBody(r)
 		var exist string
-		_ = db.QueryRow(`SELECT id FROM Site WHERE id=?`, id).Scan(&exist)
-		if exist == "" {
+		// R86-C BUG-221 (P3, R80-D BUG-171 / R85-C BUG-215 同款 conflation):
+		//   显式区分 (详见 BUG-219 rationale). R85-C 仅修 DELETE case (BUG-215),
+		//   PUT case 漏此处; 同 handler 不同 method 应同口径.
+		siteExistErr := db.QueryRow(`SELECT id FROM Site WHERE id=?`, id).Scan(&exist)
+		if siteExistErr == sql.ErrNoRows || exist == "" {
 			writeJSONErr(w, "站点不存在", 404)
+			return
+		}
+		if siteExistErr != nil {
+			writeJSONErr(w, "查询站点失败: "+siteExistErr.Error(), 500)
 			return
 		}
 		// R64-C BUG-44 (P1): 原实现 isDefault clear (UPDATE Site SET isDefault=0)
@@ -6946,9 +6987,16 @@ func adminDownloadsSubHandler(w http.ResponseWriter, r *http.Request) {
 //	entry. 全场景无 orphan.
 func adminDownloadsDelete(w http.ResponseWriter, r *http.Request, jobID string) {
 	var exist string
-	_ = db.QueryRow(`SELECT id FROM DownloadJob WHERE id=?`, jobID).Scan(&exist)
-	if exist == "" {
+	// R86-C BUG-223 (P3, R80-D BUG-171 / R85-C BUG-209 同款 conflation):
+	//   显式区分 (详见 BUG-219 rationale). R85-C 仅修 adminDownloadFileHandlerImpl
+	//   (GET 文件下载 case, BUG-209), DELETE case 漏此处.
+	dlExistErr := db.QueryRow(`SELECT id FROM DownloadJob WHERE id=?`, jobID).Scan(&exist)
+	if dlExistErr == sql.ErrNoRows || exist == "" {
 		writeJSONErr(w, "下载任务不存在", 404)
+		return
+	}
+	if dlExistErr != nil {
+		writeJSONErr(w, "查询下载任务失败: "+dlExistErr.Error(), 500)
 		return
 	}
 	// R69-D BUG-83: Lock 覆盖 DELETE row + delete map (原子, 与 goroutine 串行)
@@ -7026,9 +7074,15 @@ func adminSettingsDeleteHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var exist string
-	_ = db.QueryRow(`SELECT key FROM Setting WHERE key=?`, key).Scan(&exist)
-	if exist == "" {
+	// R86-C BUG-224 (P3, R80-D BUG-171 / R85-C BUG-204 同款 conflation):
+	//   显式区分 (详见 BUG-219 rationale). R85-C 未覆盖 settings DELETE 路径.
+	settingExistErr := db.QueryRow(`SELECT key FROM Setting WHERE key=?`, key).Scan(&exist)
+	if settingExistErr == sql.ErrNoRows || exist == "" {
 		writeJSONErr(w, "设置项不存在", 404)
+		return
+	}
+	if settingExistErr != nil {
+		writeJSONErr(w, "查询设置项失败: "+settingExistErr.Error(), 500)
 		return
 	}
 	_, err := db.Exec(`DELETE FROM Setting WHERE key=?`, key)
@@ -7557,24 +7611,8 @@ func fillSeoAuditPageData(data map[string]interface{}, r *http.Request) {
 	}
 	sortAuditReports(reports)
 	data["Reports"] = reports
-	totalIssues, totalErrors, scoreSum := 0, 0, 0
-	for _, r := range reports {
-		if issues, ok := r["issues"].([]map[string]interface{}); ok {
-			totalIssues += len(issues)
-			for _, it := range issues {
-				if it["severity"] == "error" {
-					totalErrors++
-				}
-			}
-		}
-		if s, ok := r["score"].(int); ok {
-			scoreSum += s
-		}
-	}
-	avgScore := 0
-	if len(reports) > 0 {
-		avgScore = scoreSum / len(reports)
-	}
+	// R86-C 精简: 17 行汇总计算提为 seoAuditSummary (与 adminSeoAuditHandler 共用).
+	totalIssues, totalErrors, avgScore := seoAuditSummary(reports)
 	data["Summary"] = map[string]interface{}{
 		"totalSites": len(reports), "avgScore": avgScore,
 		"totalIssues": totalIssues, "totalErrors": totalErrors,

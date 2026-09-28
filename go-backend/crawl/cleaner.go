@@ -386,6 +386,18 @@ var (
 	chapterHeadENRe = regexp.MustCompile(`(?i)^Chapter\s+\d+`)
 	chapterTailRe   = regexp.MustCompile(`本章(?:未完|未完待续|继续阅读)|点击下一(?:页|章)|敬请(?:期待|关注)|加入书签|为了方便下次阅读`)
 
+	// R86-B BUG-219 (P3) 修复: cleanContentHtmlSync HTML 分支隐藏元素检测
+	//   原子串 strings.Contains(styleNoSpace, "display:none") 漏 "display:none-flex"
+	//   / "display:nonefoo" / "visibility:hidden-flex" 等无效 CSS 值 (浏览器
+	//   忽略, 元素可见) — cleaner 误删可见元素 (R85-B 未决项 #6 候选). 改用预
+	//   编译正则: display:none / visibility:hidden 后必跟 ; (下一属) / } (规则
+	//   块尾, inline 罕见) / ! (!important 优先级) / 末 (字符串尾), 不跟 -/字母
+	//   (防 display:none-flex 等无效值误命中). 与 R85-B BUG-218 (br 带属性修
+	//   复) 同款 "源站偶发变体" 类修复. latent 自 R49-1B (隐藏元素检测加, 37
+	//   轮未发现因源站极少用 display:none-flex 无效值).
+	displayNoneRe      = regexp.MustCompile(`(?i)display:none(?:[;}]|!|$)`)
+	visibilityHiddenRe = regexp.MustCompile(`(?i)visibility:hidden(?:[;}]|!|$)`)
+
 	// 4. 规范化 (空段落合并 + <br><br> → </p><p>)
 	// R85-B BUG-218 (P3) 修复: plainTextBrRe / normBrDoubleRe / normEmptyPRe
 	//   原 `<\s*br\s*/?\s*>` 不匹配带属性的 <br> (e.g. <br class="x"> /
@@ -739,8 +751,11 @@ func cleanContentHtmlSync(raw string, cfg CleanConfig) string {
 		}
 		style := strings.ToLower(s.AttrOr("style", ""))
 		styleNoSpace := strings.ReplaceAll(style, " ", "")
-		if strings.Contains(styleNoSpace, "display:none") ||
-			strings.Contains(styleNoSpace, "visibility:hidden") {
+		// R86-B BUG-219 (P3): 改用 displayNoneRe / visibilityHiddenRe 正则
+		//   (终结符 [;}]|!|$), 防 "display:none-flex" 等无效 CSS 值误命中.
+		//   原 strings.Contains 子串匹配漏此 case → 误删可见元素.
+		if displayNoneRe.MatchString(styleNoSpace) ||
+			visibilityHiddenRe.MatchString(styleNoSpace) {
 			s.Remove()
 		}
 	})

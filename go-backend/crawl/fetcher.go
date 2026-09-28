@@ -3939,6 +3939,25 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                         recordAcceptRanges(originHost(rawURL), ar)
                 }
 
+                // R86-A 反反爬第 124-128 项: 安全策略响应头观测 (HSTS / CSP / Permissions-Policy /
+                //   Referrer-Policy / COOP, per-host 合并 tracker, 与 recordVia 同款). admin 识别
+                //   host 安全配置严格度; 反爬本身不基于此 5 头检测 (客户端不发).
+                if hsts := resp.Header.Get("Strict-Transport-Security"); hsts != "" {
+                        recordSecurityHeader(originHost(rawURL), "Strict-Transport-Security", hsts)
+                }
+                if csp := resp.Header.Get("Content-Security-Policy"); csp != "" {
+                        recordSecurityHeader(originHost(rawURL), "Content-Security-Policy", csp)
+                }
+                if pp := resp.Header.Get("Permissions-Policy"); pp != "" {
+                        recordSecurityHeader(originHost(rawURL), "Permissions-Policy", pp)
+                }
+                if rp := resp.Header.Get("Referrer-Policy"); rp != "" {
+                        recordSecurityHeader(originHost(rawURL), "Referrer-Policy", rp)
+                }
+                if coop := resp.Header.Get("Cross-Origin-Opener-Policy"); coop != "" {
+                        recordSecurityHeader(originHost(rawURL), "Cross-Origin-Opener-Policy", coop)
+                }
+
                 // Set-Cookie 处理 (autoCookie)
                 if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
                         GetCookieJar().Store(originHost(rawURL), resp.Header["Set-Cookie"])
@@ -4775,6 +4794,24 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 }
                 if ar := extractHeaderFromCurlStdout(headers, "Accept-Ranges"); ar != "" {
                         recordAcceptRanges(domain, ar)
+                }
+                // R86-A 反反爬第 124-128 项: 安全策略响应头观测 (与 fetchHttp 同款, curl -D -
+                //   dump headers 路径). fetchBinaryViaCurl 不 dump headers 故不调 (与 117/118/
+                //   122/123 项同款限制).
+                if hsts := extractHeaderFromCurlStdout(headers, "Strict-Transport-Security"); hsts != "" {
+                        recordSecurityHeader(domain, "Strict-Transport-Security", hsts)
+                }
+                if csp := extractHeaderFromCurlStdout(headers, "Content-Security-Policy"); csp != "" {
+                        recordSecurityHeader(domain, "Content-Security-Policy", csp)
+                }
+                if pp := extractHeaderFromCurlStdout(headers, "Permissions-Policy"); pp != "" {
+                        recordSecurityHeader(domain, "Permissions-Policy", pp)
+                }
+                if rp := extractHeaderFromCurlStdout(headers, "Referrer-Policy"); rp != "" {
+                        recordSecurityHeader(domain, "Referrer-Policy", rp)
+                }
+                if coop := extractHeaderFromCurlStdout(headers, "Cross-Origin-Opener-Policy"); coop != "" {
+                        recordSecurityHeader(domain, "Cross-Origin-Opener-Policy", coop)
                 }
                 if status >= 300 {
                         // R66-C BUG-52 (P3): curl 4xx/5xx 也记 latency + fail (与 fetchHttp
@@ -10917,4 +10954,103 @@ func ClearHostAcceptRanges(host string) {
                 return
         }
         hostAcceptRangesMap.Delete(strings.ToLower(host))
+}
+
+// ---------- R86-A 反反爬第 124-128 项: 安全策略响应头观测 (合并 tracker) ----------
+//
+// 与第 117/118/122/123 项 (Via / Cache-Status / Content-Language / Accept-Ranges) 同款
+// 响应头观测 tracker, 但合并 5 个安全策略响应头到单一 per-host entry (5 头常同时出现
+// 在同一 host, admin 查 host 安全姿态时一次取全, 比 5 个独立 map 省内存 + 查询更快).
+// 反爬本身不基于此 5 头检测 (客户端不发); 价值: admin 识别 host 安全配置严格度 (严格
+// 配置源站通常反爬也严格, 可触发桥 / cf_clearance 路径调整); 降分价值 ≤1 分.
+//
+//   第 124 项 Strict-Transport-Security (HSTS, RFC 6797) — max-age/includeSubDomains/preload.
+//   第 125 项 Content-Security-Policy (CSP, W3C) — default-src/script-src 等 XSS 防护.
+//   第 126 项 Permissions-Policy (RFC 8917, 前身 Feature-Policy) — camera/geolocation 等.
+//   第 127 项 Referrer-Policy (W3C Referrer Policy) — no-referrer/strict-origin 等.
+//   第 128 项 Cross-Origin-Opener-Policy (COOP, HTML §COOP) — same-origin 等 opener 隔离.
+
+// hostSecurityHeadersEntry — per-host 安全策略响应头观测条目 (R86-A 第 124-128 项).
+//   entry 是 pointer: recordSecurityHeader LoadOrStore canonical 指针 + 单字段 update-in-place
+//   (非 store-replace, 保留其他 4 头旧值). 同字段并发写 last-write-wins; sweep
+//   CompareAndDelete 后下次 record 重建 entry (与 recordVia store-replace 不一样, 这里需
+//   保留其他 4 头故用 update-in-place).
+type hostSecurityHeadersEntry struct {
+        hstsValue         string // Strict-Transport-Security (第 124 项)
+        cspValue          string // Content-Security-Policy (第 125 项)
+        permissionsPolicy string // Permissions-Policy (第 126 项)
+        referrerPolicy    string // Referrer-Policy (第 127 项)
+        coopValue         string // Cross-Origin-Opener-Policy (第 128 项)
+        detectedAt        int64  // UnixMilli
+}
+
+// hostSecurityHeadersMap — host string -> *hostSecurityHeadersEntry (R86-A 第 124-128 项).
+var hostSecurityHeadersMap sync.Map
+
+// hostSecurityHeadersSweepCounter — sweep 触发累加 (与 hostViaSweepCounter 同口径).
+var hostSecurityHeadersSweepCounter atomic.Int64
+
+// HostSecurityHeadersSweepTTLms — per-host 条目 7 天 TTL (与 HostViaSweepTTLms 同口径).
+const HostSecurityHeadersSweepTTLms = 7 * 24 * 60 * 60 * 1000
+
+// recordSecurityHeader — 记录 host 的单个安全策略响应头 (R86-A 第 124-128 项).
+//   headerName 区分 5 头 (大小写不敏感). 与 recordVia 同款 Store + 惰性 sweep, 但保留
+//   其他 4 头旧值 (LoadOrStore canonical 指针 + 单字段 update-in-place).
+func recordSecurityHeader(host, headerName, value string) {
+        if host == "" || value == "" {
+                return
+        }
+        e, _ := hostSecurityHeadersMap.LoadOrStore(strings.ToLower(host), &hostSecurityHeadersEntry{detectedAt: time.Now().UnixMilli()})
+        ent := e.(*hostSecurityHeadersEntry)
+        switch strings.ToLower(headerName) {
+        case "strict-transport-security":
+                ent.hstsValue = value
+        case "content-security-policy":
+                ent.cspValue = value
+        case "permissions-policy":
+                ent.permissionsPolicy = value
+        case "referrer-policy":
+                ent.referrerPolicy = value
+        case "cross-origin-opener-policy":
+                ent.coopValue = value
+        default:
+                return
+        }
+        ent.detectedAt = time.Now().UnixMilli()
+        if hostSecurityHeadersSweepCounter.Add(1)%1000 == 0 {
+                now := time.Now().UnixMilli()
+                hostSecurityHeadersMap.Range(func(k, v any) bool {
+                        cur := v.(*hostSecurityHeadersEntry)
+                        if now-cur.detectedAt > HostSecurityHeadersSweepTTLms {
+                                hostSecurityHeadersMap.CompareAndDelete(k, v)
+                        }
+                        return true
+                })
+        }
+}
+
+// HostSecurityHeadersSnapshot — admin / metrics 查询用: 返回 per-host 安全策略头.
+func HostSecurityHeadersSnapshot() map[string]map[string]string {
+        out := map[string]map[string]string{}
+        hostSecurityHeadersMap.Range(func(k, v any) bool {
+                e := v.(*hostSecurityHeadersEntry)
+                out[k.(string)] = map[string]string{
+                        "hstsValue":         e.hstsValue,
+                        "cspValue":          e.cspValue,
+                        "permissionsPolicy": e.permissionsPolicy,
+                        "referrerPolicy":    e.referrerPolicy,
+                        "coopValue":         e.coopValue,
+                        "detectedAt":        fmt.Sprintf("%d", e.detectedAt),
+                }
+                return true
+        })
+        return out
+}
+
+// ClearHostSecurityHeaders — 清除 host 的安全策略头观测 (失败排查 / 测试用).
+func ClearHostSecurityHeaders(host string) {
+        if host == "" {
+                return
+        }
+        hostSecurityHeadersMap.Delete(strings.ToLower(host))
 }

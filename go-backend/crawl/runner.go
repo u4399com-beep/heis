@@ -1556,7 +1556,17 @@ func discoverBooks(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                 //   R85-A BUG-207 (P3) 同款: Blocked 路径漏调 ReportFailure + recordFailure
                 //   (CrawlBookMeta line 1661-1663 同款). 补 err + Blocked 双路径对称.
                 listHost := HostGateKeyOf(url)
+                // R86-A BUG-219 (P3) 修复: 成功路径补 recordLatency + AdjustMinGap +
+                //   recordSuccess + ReportSuccess (与 CrawlBookMeta line 1666-1683 同款).
+                //   R85-A BUG-207 补了 err + Blocked 路径的 recordFailure/ReportFailure,
+                //   但成功路径仍不报告 → hostGate failStreak 在间歇 list 失败时只增不减,
+                //   derate 误触发 → 列表发现并发被压低; healthTracker successRate 低估 →
+                //   AdjustConcurrency 降并发. timing + 4 调用对称补齐 (latency/Adjust 放
+                //   Blocked 检查前 — HTTP 响应延迟有效无论是否 Blocked; success/Report 放
+                //   Blocked 检查后 — 仅真实成功才计 success, 与 CrawlBookMeta 同款).
+                listFetchStart := time.Now()
                 res, err := FetchPage(ctx, url, cfg.Override)
+                listLatencyMs := time.Since(listFetchStart).Milliseconds()
                 if err != nil {
                         var he *HTTPError
                         if errors.As(err, &he) && (he.StatusCode == 429 || he.StatusCode == 503) && he.RetryAfterMs > 0 {
@@ -1567,6 +1577,9 @@ func discoverBooks(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                         getHealthTracker().recordFailure(listHost)
                         break
                 }
+                // R86-A BUG-219: HTTP 响应延迟有效 (无论是否 Blocked), 记 latency + AdjustMinGap.
+                getHealthTracker().recordLatency(listHost, listLatencyMs)
+                GetHostGate().AdjustMinGap(listHost, listLatencyMs)
                 if res.CaptchaDetected {
                         rt.IncCaptcha()
                 }
@@ -1577,6 +1590,10 @@ func discoverBooks(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                         getHealthTracker().recordFailure(listHost)
                         break
                 }
+                // R86-A BUG-219: 成功 (200 + 非 Blocked) 补 recordSuccess + ReportSuccess
+                //   (与 CrawlBookMeta line 1681-1683 同款, 重置 failStreak + success 计数).
+                getHealthTracker().recordSuccess(listHost)
+                GetHostGate().ReportSuccess(listHost)
                 // R56-1B 修复 BUG-E (P0): 原 ParseList 硬编码 urlFields=['url'],
                 //   但 DB 53 条 enabled 规则中 50+ 条 list.fields 用 'bookUrl' 字段名
                 //   (e.g. 101kks / 久久小说 / 飘天文学 / 铅笔小说 / 黄金屋 / 西红柿 /
@@ -1921,6 +1938,23 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                         RequestPriority: "book",
                 }))
                 if err != nil {
+                        // R86-A BUG-220 (P3) 修复 (R85-A BUG-207 discoverBooks 同款遗漏):
+                        //   pageFetcher err 路径漏调 hostGate.ReportRateLimited (429/503+
+                        //   RetryAfter) + recordFailure. 多页 TOC 第 2+ 页 429 不触发
+                        //   hostGate derate → 后续 TOC/book/chapter 同 host 仍按原间隔发,
+                        //   持续 429 频控 (Cloudflare 升级 IP 封禁). 与外层 toc fetch
+                        //   (line ~1872-1881) + discoverBooks BUG-207 同款补 err 路径.
+                        //   ctx 取消不计失败 (操作员主动停止); BudgetExceeded 在 line 1931
+                        //   已先返, 不到此. 与 CrawlBookMeta 外层 err 同口径 (recordFailure
+                        //   + ReportRateLimited, 不调 ReportFailure — 仅 Blocked 才 Report).
+                        if ctx.Err() == nil {
+                                pageHost := HostGateKeyOf(u)
+                                var he *HTTPError
+                                if errors.As(err, &he) && (he.StatusCode == 429 || he.StatusCode == 503) && he.RetryAfterMs > 0 {
+                                        GetHostGate().ReportRateLimited(pageHost, he.RetryAfterMs)
+                                }
+                                getHealthTracker().recordFailure(pageHost)
+                        }
                         return "", err
                 }
                 return res.HTML, nil
@@ -2143,6 +2177,26 @@ func CrawlChapterContent(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRun
                         RequestPriority: "chapter",
                 }))
                 if err != nil {
+                        // R86-A BUG-220 (P3) 修复 (R85-A BUG-207 discoverBooks 同款遗漏):
+                        //   pageFetcher err 路径漏调 hostGate reporting. 多页章节第 2+ 页
+                        //   429/timeout 不触发 hostGate derate → 后续章节同 host 仍按原
+                        //   间隔发, 持续 429 频控. 与外层 chapter fetch (line ~2082-2106 同款
+                        //   ReportFailure + recordFailure + ReportRateLimited) 对称补 err
+                        //   路径 — 此处比 CrawlBookMeta pageFetcher 更严: chapter 外层 err
+                        //   路径调 ReportFailure (line ~2097/2102), 故 pageFetcher 同口径
+                        //   补 ReportFailure (transient timeout 也可触发 derate, 与外层一致).
+                        //   ctx 取消不计失败 (操作员主动停止); BudgetExceeded 在 line 2170
+                        //   已先返, 不到此. hostGate 变量在 line ~2102 (CrawlChapterContent
+                        //   外层) 已声明, 此 closure 共享.
+                        if ctx.Err() == nil {
+                                pageHost := HostGateKeyOf(u)
+                                var he *HTTPError
+                                if errors.As(err, &he) && (he.StatusCode == 429 || he.StatusCode == 503) && he.RetryAfterMs > 0 {
+                                        hostGate.ReportRateLimited(pageHost, he.RetryAfterMs)
+                                }
+                                hostGate.ReportFailure(pageHost)
+                                getHealthTracker().recordFailure(pageHost)
+                        }
                         return "", err
                 }
                 return pageRes.HTML, nil
