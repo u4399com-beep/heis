@@ -2470,6 +2470,45 @@ func pageListWithURLs(pages []int, urlBuilder func(int) string) []map[string]int
 //      cap totalPages 防止用户跳过 cap 页 (page > maxPages 时 totalPages=maxPages, page clamp 到 maxPages).
 const maxPaginationOffset = 10000
 
+// R100-D BUG-287 (P3 correctness, main scope) + BUG-288 (P4 精简/DRY, main scope):
+// clampPageOffset — clamp page 到真实 totalPages (由 COUNT total 推导) + cap offset 到
+// maxPaginationOffset. 被 getCategoryViewData/getRankingViewData/getFulltextViewData 三处
+// 分页函数共用.
+//
+//   BUG-287: 原 3 函数仅 `offset := (page-1)*size; if offset > 10000 { offset = 10000 }` 不
+//     clamp page 到 totalPages. caller (homeHandler category/ranking/fulltext case) 在 fetch
+//     后才 clamp `if page > totalPages { page = totalPages }` — fetch 用的是 un-clamped page:
+//     当 totalPages < page ≤ maxPages (e.g. total=50 size=24 totalPages=3, 用户请求 page=4,
+//     4 ≤ maxPages=417 故 caller 预 clamp 不触发): getXxxViewData 用 page=4 → OFFSET=72 >
+//     total=50 → SQL 返 0 行 → Books=[]; caller 后 clamp page=3 → 显示 "Page 3/3" 但 Books
+//     为空 (应显示 page 3 的 2 本书). 修复: getXxxViewData 内 (COUNT 后 SELECT 前) clamp
+//     page 到 totalPages, fetch 用 clamped page → Books 与显示 Page 一致. 0 行为变化 for
+//     valid pages (page ≤ totalPages → clamp no-op). 跨 R64-D BUG-31 maxPages clamp (caller
+//     -side 防 page > maxPages 致 OFFSET cap 越界) 互补: BUG-31 防 page > maxPages, BUG-287
+//     防 totalPages < page ≤ maxPages (BUG-31 未覆盖的 in-range beyond-data gap).
+//   BUG-288: 抽 clampPageOffset helper 替 3 处 inline offset 块 (DRY, 0 行为变化). 原 3 处
+//     各 4 行 (offset 算 + cap if) → 各 1 行 callsite; clamp 逻辑集中 helper 内.
+func clampPageOffset(page, total, size int) (int, int) {
+        if size < 1 {
+                size = 1
+        }
+        totalPages := (total + size - 1) / size
+        if totalPages < 1 {
+                totalPages = 1
+        }
+        if page < 1 {
+                page = 1
+        }
+        if page > totalPages {
+                page = totalPages
+        }
+        offset := (page - 1) * size
+        if offset > maxPaginationOffset {
+                offset = maxPaginationOffset
+        }
+        return page, offset
+}
+
 // R54-1A: feedbackWidgetHTML — 前台浮窗反馈按钮 (右下角固定定位, inline 样式避免依赖主题 CSS 变量).
 //
 //  1. 浮动按钮 💬 反馈 — 点击展开模态框
@@ -4026,10 +4065,8 @@ func getCategoryViewData(catID string, page, size int) (string, []map[string]int
                 db.QueryRow(`SELECT COUNT(*) FROM Book`).Scan(&total)
         }
 
-        offset := (page - 1) * size
-        if offset > 10000 {
-                offset = 10000
-        }
+        // R100-D BUG-287+288: clamp page 到 totalPages (COUNT 推导) + cap offset (helper).
+        page, offset := clampPageOffset(page, total, size)
 
         var rows *sql.Rows
         var err error
@@ -4069,10 +4106,8 @@ func getRankingViewData(tab string, page, size int) ([]map[string]interface{}, i
         var total int
         db.QueryRow(`SELECT COUNT(*) FROM Book`).Scan(&total)
 
-        offset := (page - 1) * size
-        if offset > 10000 {
-                offset = 10000
-        }
+        // R100-D BUG-287+288: clamp page 到 totalPages (COUNT 推导) + cap offset (helper).
+        page, offset := clampPageOffset(page, total, size)
         q := `SELECT b.id,b.name,b.author,b.intro,b.cover,b.status,b.wordCount,b.latestChapter,COALESCE(c.name,'未分类'),b.categoryId,b.updatedAt FROM Book b LEFT JOIN Category c ON b.categoryId=c.id ORDER BY ` + orderClause + ` LIMIT ? OFFSET ?`
         rows, err := db.Query(q, size, offset)
         if err != nil {
@@ -4099,10 +4134,8 @@ func getRankingViewData(tab string, page, size int) ([]map[string]interface{}, i
 func getFulltextViewData(page, size int) ([]map[string]interface{}, int) {
         var total int
         db.QueryRow(`SELECT COUNT(*) FROM Book WHERE status='completed'`).Scan(&total)
-        offset := (page - 1) * size
-        if offset > 10000 {
-                offset = 10000
-        }
+        // R100-D BUG-287+288: clamp page 到 totalPages (COUNT 推导) + cap offset (helper).
+        page, offset := clampPageOffset(page, total, size)
         rows, err := db.Query(`SELECT b.id,b.name,b.author,b.intro,b.cover,b.status,b.wordCount,b.latestChapter,COALESCE(c.name,'未分类'),b.categoryId,b.updatedAt FROM Book b LEFT JOIN Category c ON b.categoryId=c.id WHERE b.status='completed' ORDER BY b.updatedAt DESC LIMIT ? OFFSET ?`, size, offset)
         if err != nil {
                 return []map[string]interface{}{}, total

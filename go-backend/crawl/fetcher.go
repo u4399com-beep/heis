@@ -3812,8 +3812,25 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                                 return "", lastErr
                         }
                         // 退避 (full jitter: 0 ~ base*2^attempt, 封顶 8s)
-                        backoffMs := 1500 * (1 << uint(attempt)) // 1.5s, 3s, 6s
-                        if backoffMs > 8000 {
+                        // R100-A BUG-287 (P3) 修复 (R99-A BUG-285 续, fetcher.go 4 sites
+                        //   family): `1500 * (1 << uint(attempt))` 在 32-bit 平台 int=32
+                        //   时若 attempt=23+ → 1500 * 8,388,608 = 12,582,912,000 超过
+                        //   MaxInt32 (2.1e9) → 溢出返负值 (int32 wrap) → `backoffMs >
+                        //   8000` 不触发 → backoffMs 仍负 → `rand.Intn(backoffMs + 1)` 若
+                        //   arg <= 0 panic (rand.Intn 文档: panics if n <= 0). 64-bit
+                        //   Linux int=64 无问题 (12.5e9 < MaxInt64 9.2e18, 触发需 attempt=62+
+                        //   则 1500 * 2^62 = 6.9e18 < MaxInt64 仍安全). R99-A BUG-285 已修
+                        //   runner.go ExecuteTaskWithRetry 同款 backoff int shift 32-bit
+                        //   溢出, 但漏 fetcher.go 4 sites (fetchHttp net-err retry +
+                        //   fetchHttp 4xx/5xx retry + fetchBinaryHttp net-err retry +
+                        //   fetchBinaryHttp 4xx/5xx retry). 本轮补对称 (4 sites 同款 fix).
+                        //   防御: `int(int64(1500) << uint(attempt))` 先提升 int64 移位
+                        //   (32-bit 平台 int64=64 不溢出, 移位 well-defined), 转 int 后
+                        //   再加 `|| backoffMs < 0` 兜底 (若 int 截断使 int32 仍负 → 钳
+                        //   8000). 与 R99-A BUG-285 `int64(baseBackoffMs)<<shift` 同款
+                        //   defensive clamp family 续.
+                        backoffMs := int(int64(1500) << uint(attempt)) // 1.5s, 3s, 6s
+                        if backoffMs > 8000 || backoffMs < 0 {
                                 backoffMs = 8000
                         }
                         jitter := rand.Intn(backoffMs + 1)
@@ -4286,6 +4303,45 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 if cch := resp.Header.Get("Critical-CH"); cch != "" {
                         recordSecurityHeader(originHost(rawURL), "Critical-CH", cch)
                 }
+                // R100-A 反反爬第 194-198 项: CDN cache directive / proxy status / origin trial
+                //   / service worker scope / POST media types 响应头观测 (per-host 合并
+                //   tracker 第 66-70 字段, 与 124-193 同款). R99-A 未决项 #1 pivot 续 —
+                //   Cloudflare Bot Score Top 50 已耗尽, 本轮 pivot 到 modern CDN/proxy/
+                //   web platform posture 响应头 family.
+                //   第 194 项 CDN-Cache-Control (RFC 9212 §3) — CDN 缓存指令 (与浏览器
+                //     Cache-Control 149 分离, 仅 CDN 中间层用), 反爬关联: 现代 CDN posture
+                //     (Cloudflare/Fastly/Akamai 发, 与第 172 Via + 173 X-Cache + 118
+                //     Cache-Status 同款 CDN family 续, modern 替代 X-Cache).
+                //   第 195 项 Proxy-Status (RFC 9209 §2) — proxy/gateway 错误状态字段,
+                //     反爬关联: 现代 CDN/proxy posture (与第 184 WWW-Authenticate auth
+                //     challenge + 185 Proxy-Authenticate proxy challenge 同款 proxy family
+                //     续, response-side proxy status analog).
+                //   第 196 项 Origin-Trial (Chrome Origin Trial token) — 实验性 API token,
+                //     反爬关联: 现代 web platform posture (Cloudflare-managed 站常配, 与第
+                //     152 Accept-CH + 189 Accept-CH-Lifetime client hint posture 同款 modern
+                //     web posture family).
+                //   第 197 项 Service-Worker-Allowed — service worker scope path (Service
+                //     Worker 规范), 反爬关联: 现代 PWA/SPA posture (与第 186 Link typed
+                //     relation 同款 modern web infra family 续).
+                //   第 198 项 Accept-Post (W3C LDP §4.2.3 / ActivityPub) — POST media
+                //     types 接受列表, 反爬关联: 现代 REST/GraphQL API posture (与第 175
+                //     Allow method allowlist 同款 API posture family 续, response-side
+                //     analog).
+                if ccc := resp.Header.Get("CDN-Cache-Control"); ccc != "" {
+                        recordSecurityHeader(originHost(rawURL), "CDN-Cache-Control", ccc)
+                }
+                if ps := resp.Header.Get("Proxy-Status"); ps != "" {
+                        recordSecurityHeader(originHost(rawURL), "Proxy-Status", ps)
+                }
+                if ot := resp.Header.Get("Origin-Trial"); ot != "" {
+                        recordSecurityHeader(originHost(rawURL), "Origin-Trial", ot)
+                }
+                if swa := resp.Header.Get("Service-Worker-Allowed"); swa != "" {
+                        recordSecurityHeader(originHost(rawURL), "Service-Worker-Allowed", swa)
+                }
+                if ap := resp.Header.Get("Accept-Post"); ap != "" {
+                        recordSecurityHeader(originHost(rawURL), "Accept-Post", ap)
+                }
 
                 // Set-Cookie 处理 (autoCookie)
                 if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
@@ -4335,8 +4391,9 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                                 // 退避 (尊重 Retry-After, 否则 full jitter)
                                 waitMs := herr.RetryAfterMs
                                 if waitMs <= 0 {
-                                        waitMs = 1500 * (1 << uint(attempt))
-                                        if waitMs > 8000 {
+                                        // R100-A BUG-287 续 (site 2/4): 详见 line ~3815 rationale.
+                                        waitMs = int(int64(1500) << uint(attempt))
+                                        if waitMs > 8000 || waitMs < 0 {
                                                 waitMs = 8000
                                         }
                                         waitMs = rand.Intn(waitMs + 1)
@@ -5400,6 +5457,25 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 }
                 if cch := extractHeaderFromCurlStdout(headers, "Critical-CH"); cch != "" {
                         recordSecurityHeader(domain, "Critical-CH", cch)
+                }
+                // R100-A 反反爬第 194-198 项: CDN cache directive / proxy status / origin
+                //   trial / service worker scope / POST media types 响应头观测 (与
+                //   fetchHttp 同款, curl -D - dump headers 路径; fetchBinaryViaCurl 不
+                //   dump 故不调, 与 124-193 同款限制. 详见 fetchHttp line ~4289 rationale).
+                if ccc := extractHeaderFromCurlStdout(headers, "CDN-Cache-Control"); ccc != "" {
+                        recordSecurityHeader(domain, "CDN-Cache-Control", ccc)
+                }
+                if ps := extractHeaderFromCurlStdout(headers, "Proxy-Status"); ps != "" {
+                        recordSecurityHeader(domain, "Proxy-Status", ps)
+                }
+                if ot := extractHeaderFromCurlStdout(headers, "Origin-Trial"); ot != "" {
+                        recordSecurityHeader(domain, "Origin-Trial", ot)
+                }
+                if swa := extractHeaderFromCurlStdout(headers, "Service-Worker-Allowed"); swa != "" {
+                        recordSecurityHeader(domain, "Service-Worker-Allowed", swa)
+                }
+                if ap := extractHeaderFromCurlStdout(headers, "Accept-Post"); ap != "" {
+                        recordSecurityHeader(domain, "Accept-Post", ap)
                 }
                 if status >= 300 {
                         // R66-C BUG-52 (P3): curl 4xx/5xx 也记 latency + fail (与 fetchHttp
@@ -7209,8 +7285,10 @@ func fetchBinaryHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, pr
                                 return nil, lastErr
                         }
                         // 退避 (full jitter: 0 ~ base*2^attempt, 封顶 8s, 与 fetchHttp 同款)
-                        backoffMs := 1500 * (1 << uint(attempt))
-                        if backoffMs > 8000 {
+                        // R100-A BUG-287 续 (site 3/4, fetchBinaryHttp net-err retry):
+                        //   详见 fetchHttp line ~3815 rationale. 同款 int64 cast + <0 钳.
+                        backoffMs := int(int64(1500) << uint(attempt))
+                        if backoffMs > 8000 || backoffMs < 0 {
                                 backoffMs = 8000
                         }
                         jitter := rand.Intn(backoffMs + 1)
@@ -7569,6 +7647,26 @@ func fetchBinaryHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, pr
                 if cch := resp.Header.Get("Critical-CH"); cch != "" {
                         recordSecurityHeader(originHost(rawURL), "Critical-CH", cch)
                 }
+                // R100-A 反反爬第 194-198 项: CDN cache directive / proxy status / origin
+                //   trial / service worker scope / POST media types 响应头观测 (与
+                //   fetchHttp 同款, fetchBinaryHttp success + 4xx/5xx 两路径都记,
+                //   BUG-241 修复后 fetchBinaryHttp 已补对称; fetchBinaryViaCurl 不 dump
+                //   headers 故不调, 与 124-193 同款限制. 详见 fetchHttp line ~4289 rationale).
+                if ccc := resp.Header.Get("CDN-Cache-Control"); ccc != "" {
+                        recordSecurityHeader(originHost(rawURL), "CDN-Cache-Control", ccc)
+                }
+                if ps := resp.Header.Get("Proxy-Status"); ps != "" {
+                        recordSecurityHeader(originHost(rawURL), "Proxy-Status", ps)
+                }
+                if ot := resp.Header.Get("Origin-Trial"); ot != "" {
+                        recordSecurityHeader(originHost(rawURL), "Origin-Trial", ot)
+                }
+                if swa := resp.Header.Get("Service-Worker-Allowed"); swa != "" {
+                        recordSecurityHeader(originHost(rawURL), "Service-Worker-Allowed", swa)
+                }
+                if ap := resp.Header.Get("Accept-Post"); ap != "" {
+                        recordSecurityHeader(originHost(rawURL), "Accept-Post", ap)
+                }
                 // 3xx / 4xx / 5xx 视为失败 (与 fetchHttp 同款, 不重试 3xx)
                 if resp.StatusCode >= 300 {
                         herr := &HTTPError{
@@ -7585,8 +7683,10 @@ func fetchBinaryHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, pr
                         if isRetriableStatus(resp.StatusCode) && attempt < retries {
                                 waitMs := herr.RetryAfterMs
                                 if waitMs <= 0 {
-                                        waitMs = 1500 * (1 << uint(attempt))
-                                        if waitMs > 8000 {
+                                        // R100-A BUG-287 续 (site 4/4, fetchBinaryHttp 4xx/5xx retry):
+                                        //   详见 fetchHttp line ~3815 rationale. 同款 int64 cast + <0 钳.
+                                        waitMs = int(int64(1500) << uint(attempt))
+                                        if waitMs > 8000 || waitMs < 0 {
                                                 waitMs = 8000
                                         }
                                         waitMs = rand.Intn(waitMs + 1)
@@ -12355,13 +12455,24 @@ type hostSecurityHeadersEntry struct {
         sunsetValue             string // Sunset (第 191 项, R99-A)
         priorityValue           string // Priority (第 192 项, R99-A)
         criticalChValue         string // Critical-CH (第 193 项, R99-A)
+        // R100-A 反反爬第 194-198 项: CDN cache directive / proxy status / origin trial /
+        //   service worker scope / POST media types 响应头观测 (与 124-193 同款 family,
+        //   单值 last-write-wins per-host 合并 tracker). R99-A 未决项 #1 pivot 续 —
+        //   Cloudflare Bot Score Top 50 已耗尽, 本轮 pivot 到 modern CDN/proxy/web
+        //   platform posture 响应头 family.
+        cdnCacheControlValue    string // CDN-Cache-Control (第 194 项, R100-A)
+        proxyStatusValue        string // Proxy-Status (第 195 项, R100-A)
+        originTrialValue        string // Origin-Trial (第 196 项, R100-A)
+        swAllowedValue          string // Service-Worker-Allowed (第 197 项, R100-A)
+        acceptPostValue         string // Accept-Post (第 198 项, R100-A)
         detectedAt              int64  // UnixMilli
 }
 
 // hostSecurityHeadersMap — host string -> *hostSecurityHeadersEntry (R86-A 第 124-128 项 +
 //   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项 + R90-A 第 144-148 项
 //   + R91-A 第 149-153 项 + R92-A 第 154-158 项 + R93-A 第 159-163 项 + R94-A 第
-//   164-168 项 + R95-A 第 169-173 项 + R96-A 第 174-178 项 + R98-A 第 184-188 项).
+//   164-168 项 + R95-A 第 169-173 项 + R96-A 第 174-178 项 + R98-A 第 184-188 项
+//   + R99-A 第 189-193 项 + R100-A 第 194-198 项).
 var hostSecurityHeadersMap sync.Map
 
 // hostSecurityHeadersSweepCounter — sweep 触发累加 (与 hostViaSweepCounter 同口径).
@@ -12413,7 +12524,8 @@ func extractSetCookieAttr(cookies []string, attr string) string {
 // recordSecurityHeader — 记录 host 的单个安全策略响应头 (R86-A 第 124-128 项 +
 //   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项 + R90-A 第 144-148
 //   项 + R91-A 第 149-153 项 + R92-A 第 154-158 项 + R93-A 第 159-163 项 + R94-A 第
-//   164-168 项 + R95-A 第 169-173 项 + R96-A 第 174-178 项 + R98-A 第 184-188 项).
+//   164-168 项 + R95-A 第 169-173 项 + R96-A 第 174-178 项 + R98-A 第 184-188 项
+//   + R99-A 第 189-193 项 + R100-A 第 194-198 项).
 //   headerName 区分 60 头 (大小写不敏感). 与 recordVia 同款 Store + 惰性 sweep, 但
 //   保留其他 59 头旧值 (LoadOrStore canonical 指针 + 单字段 update-in-place).
 func recordSecurityHeader(host, headerName, value string) {
@@ -12571,6 +12683,19 @@ func recordSecurityHeader(host, headerName, value string) {
                 ent.priorityValue = value
         case "critical-ch":
                 ent.criticalChValue = value
+        // R100-A 反反爬第 194-198 项: CDN cache directive / proxy status / origin trial
+        //   / service worker scope / POST media types 响应头观测 (与 124-193 同款 family,
+        //   单值 last-write-wins per-host 合并 tracker). 详见 fetchHttp line ~4289 rationale.
+        case "cdn-cache-control":
+                ent.cdnCacheControlValue = value
+        case "proxy-status":
+                ent.proxyStatusValue = value
+        case "origin-trial":
+                ent.originTrialValue = value
+        case "service-worker-allowed":
+                ent.swAllowedValue = value
+        case "accept-post":
+                ent.acceptPostValue = value
         default:
                 return
         }
@@ -12658,6 +12783,11 @@ func HostSecurityHeadersSnapshot() map[string]map[string]string {
                         "sunsetValue":             e.sunsetValue,
                         "priorityValue":           e.priorityValue,
                         "criticalChValue":         e.criticalChValue,
+                        "cdnCacheControlValue":    e.cdnCacheControlValue,
+                        "proxyStatusValue":        e.proxyStatusValue,
+                        "originTrialValue":        e.originTrialValue,
+                        "swAllowedValue":          e.swAllowedValue,
+                        "acceptPostValue":         e.acceptPostValue,
                         "detectedAt":        fmt.Sprintf("%d", e.detectedAt),
                 }
                 return true

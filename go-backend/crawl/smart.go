@@ -578,7 +578,21 @@ func SmartResumeSortWithDB(items []SmartResumeItem, lookup BookProgressLookup) [
                         //   convention, DB lookup 全静默失败, 操作员无法察觉.
                         //   修复: 检测 BookID 形如 URL (http:// / https:// 前缀) 时跳过 DB
                         //   lookup (URL 形态 ID 不适配 DB 查询, 与"无 BookID"同款处理).
-                        if strings.HasPrefix(it.BookID, "http://") || strings.HasPrefix(it.BookID, "https://") {
+                        //   R100-B BUG-288 (P3) 续修 BUG-161: 原仅检小写 "http://" /
+                        //   "https://" 前缀, 漏 "HTTP://" / "Https://" 大写 + "//"
+                        //   protocol-relative 形态. caller (runner.go applyResumeSort)
+                        //   把 BookURL 作 BookID 用 — URL 经 url.Parse 后 scheme 已小写,
+                        //   但若 caller 直接传 raw URL (未 normalize) 或 admin 配置
+                        //   用大写 scheme, 检查漏 → lookup.BookChapterProgress(URL-form ID)
+                        //   DB not-found → continue (行为正确, DB query 浪费). 与
+                        //   parser.go Absolutize (line ~1420 strings.ToLower scheme 检) +
+                        //   cleaner.go matchedHTTP (line ~922 strings.ToLower) 同口径
+                        //   case-insensitive scheme 处理. 加 "//" protocol-relative (HTML
+                        //   常见, e.g. "//example.com/path") — 不适配 DB cuid 查询, 同款
+                        //   skip. 0 用户受负面影响 (71 Rule 0 wired SmartResumeSortWithDB;
+                        //   防御性修复). latent 自 R79-B BUG-161 (21 轮未发现).
+                        lowerID := strings.ToLower(it.BookID)
+                        if strings.HasPrefix(lowerID, "http://") || strings.HasPrefix(lowerID, "https://") || strings.HasPrefix(lowerID, "//") {
                                 continue // URL 形态 ID 不适配 DB lookup, 保留原 item
                         }
                         done, total, err := lookup.BookChapterProgress(it.BookID)

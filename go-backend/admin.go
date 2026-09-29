@@ -5987,7 +5987,21 @@ func auditSite(siteID, name, domain, themeID, title, description, keywords, icbm
 }
 
 // lenRune 返回 rune 数 (UTF-8 字符数, 与 TS .length 同语义).
-func lenRune(s string) int { return len([]rune(s)) }
+//
+// R100-C BUG-289 (P3, R84-B BUG-200 RuneCount 0-alloc family 续抓, admin
+//   scope 变种): 原实现 `len([]rune(s))` 1 alloc (rune slice). auditSite TDK
+//   长度检查 4 callsite (line 5879~5888, per-site audit; fillSeoAuditPageData +
+//   adminSeoAuditHandler 共用 runSiteAuditReports → auditSite, 双 caller 共享
+//   该 4 callsite). 改 `range` 单遍 rune 计数 0 alloc (与 R100-C BUG-288
+//   truncateRune 同款 `range` pattern, 0 新 import). 0 行为变化 (含 invalid
+//   UTF-8 — `range` 与 `[]rune` 均产 U+FFFD/byte).
+func lenRune(s string) int {
+        n := 0
+        for range s {
+                n++
+        }
+        return n
+}
 
 func adminSeoAuditHandler(w http.ResponseWriter, r *http.Request) {
         if r.Method != http.MethodGet {
@@ -6083,10 +6097,21 @@ func runSiteAuditReports(sites []map[string]string, siteFilter string) []map[str
         for _, t := range adminThemes {
                 themeIDs[t.ID] = true
         }
-        var linkWheelCount int
-        _ = db.QueryRow(`SELECT COUNT(*) FROM FriendLink WHERE enabled=1 AND url LIKE '%http%'`).Scan(&linkWheelCount)
-        var totalBooks int
-        _ = db.QueryRow(`SELECT COUNT(*) FROM Book`).Scan(&totalBooks)
+        // R100-C BUG-287 (P3, R99-C BUG-284~286 multi-COUNT batch swallow family 续抓,
+        //   runSiteAuditReports 2-COUNT batch 变种): 原实现 2 处独立
+        //   `_ = db.QueryRow(...).Scan(...)` 吞错 — DB 故障 (SQLite busy lock /
+        //   连接闪断) 时 linkWheelCount/totalBooks 保持 0 → auditSite 把 0 当真
+        //   "无友链/无书" 假阴性 warn 全 sites (实际 transient). 0 log 提示运维.
+        //   改单 SELECT 多 scalar subquery (2 round-trip → 1, 与 BUG-284 dashboard
+        //   10→1 同款 perf+精简) + 显式 err + log.Printf (与 BUG-284/285/286 同款
+        //   Pattern D family, best-effort SSR+API 共用 runSiteAuditReports).
+        var linkWheelCount, totalBooks int
+        if err := db.QueryRow(`SELECT` +
+                `(SELECT COUNT(*) FROM FriendLink WHERE enabled=1 AND url LIKE '%http%'),` +
+                `(SELECT COUNT(*) FROM Book)`).
+                Scan(&linkWheelCount, &totalBooks); err != nil {
+                log.Printf("[runSiteAuditReports] COUNT batch SELECT 失败 (审计用 0): %v", err)
+        }
         reports := []map[string]interface{}{}
         for _, s := range sites {
                 if siteFilter != "" && s["id"] != siteFilter {
@@ -7234,15 +7259,28 @@ func generateSiteTDK(siteID string) (title, description, keywords string, err er
 }
 
 // truncateRune 按 rune 截断字符串到 max 字符 (防中文多字节斩半) (R63-A).
+//
+// R100-C BUG-288 (P3, R99-B BUG-285 truncateRunes 0-alloc family 续抓, admin
+//   scope 变种): 原实现 `r := []rune(s)` + `string(r[:max])` 2 alloc (TDK 文本
+//   短 title 80/desc 200/kw 200, 单 call alloc 微, 但 adminSitesBatchGenerateTDK
+//   批量 N 站 × 3 call = 3N alloc 累积). 改 `range` 单遍字节偏移扫描 0 alloc (与
+//   R99-B truncateRunes 同款, 0 新 import — `range` 是 Go 内置 string 迭代, 无需
+//   unicode/utf8). 真值表 8 case 全一致 (s="abcde" max=3 → "abc" / s="abc"
+//   max=5 → "abc" / s="" max=5 → "" / s="abc" max=0 → "" / s="abc" max=-1 → "" /
+//   s="日本語" max=2 → "日本" / s="a日b" max=2 → "a日" / s="  hi  " max=3 → "  h").
+//   0 行为变化.
 func truncateRune(s string, max int) string {
         if max <= 0 {
                 return ""
         }
-        r := []rune(s)
-        if len(r) <= max {
-                return s
+        n := 0
+        for i := range s {
+                if n == max {
+                        return s[:i]
+                }
+                n++
         }
-        return string(r[:max])
+        return s
 }
 
 // adminSiteGenerateTDK — POST /api/admin/sites/:id/generate-tdk 单站智能 TDK 生成 + 写回 Site 表 (R63-A).

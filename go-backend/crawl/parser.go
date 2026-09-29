@@ -913,6 +913,33 @@ func tokenizeJsonPath(path string) []jsonToken {
                                 tokens = append(tokens, jsonToken{kind: tokenIndex, index: n})
                                 continue
                         }
+                        // R100-B BUG-289 (P3) 修复: 原 ["key"] / ['key'] (string key in
+                        //   brackets, JSONPath bracket notation per RFC 9535) 未处理 —
+                        //   inner = `"key"` (with quotes), strconv.Atoi fails, 无 `?(...)`
+                        //   前缀, 无 `==`/`!=`/`=` → 全 fall through 到 `continue` (drop
+                        //   token). 路径如 `items["title"]` tokenize 为 [tokenKey("items")]
+                        //   + drop `["title"]`, jsonGetByPath 只 navigate 到 items, 返
+                        //   整个数组而非 title 值. JSONPath 标准 $["key"] 等价 $.key (dot
+                        //   notation), 应 tokenize 为 tokenKey. 修复: inner 两端匹配
+                        //   quote (双/单) 时 strip + tokenKey. 防御性: key 非空才触发
+                        //   (空 [""] 不命中, 与原 drop 行为一致). 不处理 \" 转义 (与
+                        //   BUG-248/269 splitJsonArrayPaths/OrPaths 同款 defer — JSONPath
+                        //   标准用 \" 转义引号, 但 71 Rule 0 用嵌套引号 + 转义, 复杂度
+                        //   低优先级). 与 BUG-216 ($.field 根引用) + BUG-267 (quoted ]
+                        //   in tokenize) + BUG-273 ($..a.b multi-level) 同款 "JSONPath
+                        //   标准未对齐" family. 71 Rule 0 用 ["key"] 形态 (多用 .key
+                        //   dot notation); 0 用户受影响, 未来 admin 配置后受益. latent
+                        //   自 R38 TS→Go 迁移 (47 轮未发现).
+                        if len(inner) >= 2 {
+                                first, last := inner[0], inner[len(inner)-1]
+                                if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+                                        key := inner[1 : len(inner)-1]
+                                        if key != "" {
+                                                tokens = append(tokens, jsonToken{kind: tokenKey, key: key})
+                                                continue
+                                        }
+                                }
+                        }
                         // R83-B BUG-191 (P3) 修复: 原 [k=v] 检查在 [?(...)] JSONPath 过滤之前,
                         //   `?(@.field==value)` 含 `=` (在 `==` 处) → 命中 [k=v] 分支, fk=
                         //   "?(@.field" + fv="=value)" 被误解析为简单 k=v 过滤, JSONPath 路径

@@ -1208,6 +1208,24 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) (retErr error) {
                         if cfg.IntervalMax > cfg.IntervalMin {
                                 interval = cfg.IntervalMin + rand.Intn(cfg.IntervalMax-cfg.IntervalMin+1)
                         }
+                        // R100-A BUG-288 (P3) 修复 (negative interval defensive clamp
+                        //   family, 与 R98-A BUG-280 parseRetryAfterMs 负值同款
+                        //   defensive clamp family): ExecuteTaskConfig 公开字段
+                        //   ThreadsMin/Max + IntervalMin/Max 由 admin wiring 配置, admin
+                        //   默认 clamp 为非负, 但 ExecuteTaskConfig 也可由测试 / 其他
+                        //   wiring 路径构造 (R46-1B line 1283 已有 ThreadsMax<1 兜底,
+                        //   说明已防御非 admin 路径). 若 IntervalMin 被外部传负值 (e.g.
+                        //   -5) + IntervalMax > IntervalMin (e.g. 0) → rand.Intn(0-(-5)+1)
+                        //   = rand.Intn(6) = [0,5] → interval = -5+[0,5] = [-5,0] →
+                        //   time.Duration(-1..0) * time.Millisecond = -1ms..0ms →
+                        //   time.After(负值) 立即返 → 批次间无节流 → 同 host 持续命中
+                        //   (与 R98-A BUG-280 同款 立即重试无退避 family). 防御: 钳
+                        //   interval 非负 (负值视为 0 = 无 sleep, 与 admin 未配 Interval
+                        //   默认 0 同口径). 0 生产触发 (admin clamp 已保证非负), 仅
+                        //   defensive 兜底. 与 site 2 (phase 2 line ~1460) 同款 fix.
+                        if interval < 0 {
+                                interval = 0
+                        }
                         select {
                         case <-time.After(time.Duration(interval) * time.Millisecond):
                         case <-ctx.Done():
@@ -1460,6 +1478,13 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) (retErr error) {
                         jitter := cfg.Override.JitterMs
                         if jitter > 0 {
                                 interval += rand.Intn(jitter)
+                        }
+                        // R100-A BUG-288 续 (site 2/2, phase 2 sleepGap):
+                        //   详见 phase 1 line ~1211 rationale. 同款 negative interval
+                        //   defensive clamp (IntervalMin 负值 + jitter 后仍可能负 → 钳
+                        //   非负防 time.After(负值) 立即返 + 持续命中).
+                        if interval < 0 {
+                                interval = 0
                         }
                         select {
                         case <-time.After(time.Duration(interval) * time.Millisecond):
