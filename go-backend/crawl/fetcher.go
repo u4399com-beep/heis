@@ -4380,6 +4380,42 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 if nvs := resp.Header.Get("No-Vary-Search"); nvs != "" {
                         recordSecurityHeader(originHost(rawURL), "No-Vary-Search", nvs)
                 }
+                // R102-A 反反爬第 204-208 项: modern observability / connection-upgrade /
+                //   privacy posture 响应头观测 (per-host 合并 tracker 第 76-80 字段, 与
+                //   124-203 同款). R101-A 未决项 #1 pivot 续 — modern CDN/security/cache
+                //   posture 耗尽, pivot modern observability + protocol-upgrade + privacy.
+                //   第 204 项 Server-Timing (W3C Server Timing §3) — server 端 timing
+                //     breakdown (db/cache/cpu), 反爬关联: 现代 observability posture (成熟
+                //     CDN/origin 发, Chrome DevTools 显示, 与第 194 CDN-Cache-Control +
+                //     199 Cache-Status 同款 CDN family 续).
+                //   第 205 项 Alt-Svc (RFC 7838 §3) — alternative service advertisement
+                //     (HTTP/3 over QUIC hint), 反爬关联: 现代 protocol-upgrade posture
+                //     (Cloudflare/Fastly 发, 让 client 下次用 HTTP/3 直连 edge).
+                //   第 206 项 Tk (W3C Tracking Compliance §3) — tracking status
+                //     (response counterpart of DNT request, !/?/N 字段标识 tracking
+                //     consent), 反爬关联: 现代 privacy posture (legacy 但仍部署).
+                //   第 207 项 Traceparent (W3C Trace Context §3.2) — distributed tracing
+                //     context (version-traceid-spanid-flags), 反爬关联: 现代 observability
+                //     posture (instrumented backend 发, 与第 204 Server-Timing 同款
+                //     observability family 续).
+                //   第 208 项 Baggage (W3C Baggage §3) — distributed tracing context
+                //     correlation (key=value list), 反爬关联: 现代 observability posture
+                //     (与第 207 Traceparent 同款 tracing family 续).
+                if st := resp.Header.Get("Server-Timing"); st != "" {
+                        recordSecurityHeader(originHost(rawURL), "Server-Timing", st)
+                }
+                if as := resp.Header.Get("Alt-Svc"); as != "" {
+                        recordSecurityHeader(originHost(rawURL), "Alt-Svc", as)
+                }
+                if tk := resp.Header.Get("Tk"); tk != "" {
+                        recordSecurityHeader(originHost(rawURL), "Tk", tk)
+                }
+                if tp := resp.Header.Get("Traceparent"); tp != "" {
+                        recordSecurityHeader(originHost(rawURL), "Traceparent", tp)
+                }
+                if bg := resp.Header.Get("Baggage"); bg != "" {
+                        recordSecurityHeader(originHost(rawURL), "Baggage", bg)
+                }
 
                 // Set-Cookie 处理 (autoCookie)
                 if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
@@ -5532,6 +5568,24 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 }
                 if nvs := extractHeaderFromCurlStdout(headers, "No-Vary-Search"); nvs != "" {
                         recordSecurityHeader(domain, "No-Vary-Search", nvs)
+                }
+                // R102-A 反反爬第 204-208 项 续 (与 fetchHttp line ~4383 同款, curl
+                //   -D - dump headers 路径; fetchBinaryViaCurl 不 dump 故不调, 与
+                //   124-203 同款限制. 详见 fetchHttp line ~4383 rationale).
+                if st := extractHeaderFromCurlStdout(headers, "Server-Timing"); st != "" {
+                        recordSecurityHeader(domain, "Server-Timing", st)
+                }
+                if as := extractHeaderFromCurlStdout(headers, "Alt-Svc"); as != "" {
+                        recordSecurityHeader(domain, "Alt-Svc", as)
+                }
+                if tk := extractHeaderFromCurlStdout(headers, "Tk"); tk != "" {
+                        recordSecurityHeader(domain, "Tk", tk)
+                }
+                if tp := extractHeaderFromCurlStdout(headers, "Traceparent"); tp != "" {
+                        recordSecurityHeader(domain, "Traceparent", tp)
+                }
+                if bg := extractHeaderFromCurlStdout(headers, "Baggage"); bg != "" {
+                        recordSecurityHeader(domain, "Baggage", bg)
                 }
                 if status >= 300 {
                         // R66-C BUG-52 (P3): curl 4xx/5xx 也记 latency + fail (与 fetchHttp
@@ -7741,6 +7795,25 @@ func fetchBinaryHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, pr
                 }
                 if nvs := resp.Header.Get("No-Vary-Search"); nvs != "" {
                         recordSecurityHeader(originHost(rawURL), "No-Vary-Search", nvs)
+                }
+                // R102-A 反反爬第 204-208 项 续 (与 fetchHttp line ~4383 同款,
+                //   fetchBinaryHttp success + 4xx/5xx 两路径都记, BUG-241 修复后
+                //   fetchBinaryHttp 已补对称; fetchBinaryViaCurl 不 dump headers
+                //   故不调, 与 124-203 同款限制. 详见 fetchHttp line ~4383 rationale).
+                if st := resp.Header.Get("Server-Timing"); st != "" {
+                        recordSecurityHeader(originHost(rawURL), "Server-Timing", st)
+                }
+                if as := resp.Header.Get("Alt-Svc"); as != "" {
+                        recordSecurityHeader(originHost(rawURL), "Alt-Svc", as)
+                }
+                if tk := resp.Header.Get("Tk"); tk != "" {
+                        recordSecurityHeader(originHost(rawURL), "Tk", tk)
+                }
+                if tp := resp.Header.Get("Traceparent"); tp != "" {
+                        recordSecurityHeader(originHost(rawURL), "Traceparent", tp)
+                }
+                if bg := resp.Header.Get("Baggage"); bg != "" {
+                        recordSecurityHeader(originHost(rawURL), "Baggage", bg)
                 }
                 // 3xx / 4xx / 5xx 视为失败 (与 fetchHttp 同款, 不重试 3xx)
                 if resp.StatusCode >= 300 {
@@ -12549,6 +12622,17 @@ type hostSecurityHeadersEntry struct {
         xfoValue                string // X-Frame-Options (第 201 项, R101-A)
         cdnLoopValue            string // CDN-Loop (第 202 项, R101-A)
         noVarySearchValue       string // No-Vary-Search (第 203 项, R101-A)
+        // R102-A 反反爬第 204-208 项: modern observability / connection-upgrade /
+        //   privacy posture 响应头观测 (与 124-203 同款 family, 单值 last-
+        //   write-wins per-host 合并 tracker). R101-A 未决项 #1 pivot 续 —
+        //   modern CDN/security/cache posture 耗尽, pivot modern observability
+        //   (Server-Timing / Traceparent / Baggage) + protocol-upgrade (Alt-Svc
+        //   HTTP/3) + privacy (Tk tracking compliance) posture family.
+        serverTimingValue       string // Server-Timing (第 204 项, R102-A)
+        altSvcValue             string // Alt-Svc (第 205 项, R102-A)
+        tkValue                 string // Tk (第 206 项, R102-A)
+        traceparentValue        string // Traceparent (第 207 项, R102-A)
+        baggageValue            string // Baggage (第 208 项, R102-A)
         detectedAt              int64  // UnixMilli
 }
 
@@ -12556,7 +12640,8 @@ type hostSecurityHeadersEntry struct {
 //   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项 + R90-A 第 144-148 项
 //   + R91-A 第 149-153 项 + R92-A 第 154-158 项 + R93-A 第 159-163 项 + R94-A 第
 //   164-168 项 + R95-A 第 169-173 项 + R96-A 第 174-178 项 + R98-A 第 184-188 项
-//   + R99-A 第 189-193 项 + R100-A 第 194-198 项 + R101-A 第 199-203 项).
+//   + R99-A 第 189-193 项 + R100-A 第 194-198 项 + R101-A 第 199-203 项 + R102-A
+//   第 204-208 项).
 var hostSecurityHeadersMap sync.Map
 
 // hostSecurityHeadersSweepCounter — sweep 触发累加 (与 hostViaSweepCounter 同口径).
@@ -12609,9 +12694,10 @@ func extractSetCookieAttr(cookies []string, attr string) string {
 //   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项 + R90-A 第 144-148
 //   项 + R91-A 第 149-153 项 + R92-A 第 154-158 项 + R93-A 第 159-163 项 + R94-A 第
 //   164-168 项 + R95-A 第 169-173 项 + R96-A 第 174-178 项 + R98-A 第 184-188 项
-//   + R99-A 第 189-193 项 + R100-A 第 194-198 项 + R101-A 第 199-203 项).
-//   headerName 区分 60 头 (大小写不敏感). 与 recordVia 同款 Store + 惰性 sweep, 但
-//   保留其他 59 头旧值 (LoadOrStore canonical 指针 + 单字段 update-in-place).
+//   + R99-A 第 189-193 项 + R100-A 第 194-198 项 + R101-A 第 199-203 项 + R102-A
+//   第 204-208 项).
+//   headerName 区分 65 头 (大小写不敏感). 与 recordVia 同款 Store + 惰性 sweep, 但
+//   保留其他 64 头旧值 (LoadOrStore canonical 指针 + 单字段 update-in-place).
 func recordSecurityHeader(host, headerName, value string) {
         if host == "" || value == "" {
                 return
@@ -12794,6 +12880,19 @@ func recordSecurityHeader(host, headerName, value string) {
                 ent.cdnLoopValue = value
         case "no-vary-search":
                 ent.noVarySearchValue = value
+        // R102-A 反反爬第 204-208 项: modern observability / connection-upgrade /
+        //   privacy posture 响应头观测 (与 124-203 同款 family, 单值 last-write-wins
+        //   per-host 合并 tracker). 详见 fetchHttp line ~4384 rationale.
+        case "server-timing":
+                ent.serverTimingValue = value
+        case "alt-svc":
+                ent.altSvcValue = value
+        case "tk":
+                ent.tkValue = value
+        case "traceparent":
+                ent.traceparentValue = value
+        case "baggage":
+                ent.baggageValue = value
         default:
                 return
         }
@@ -12891,6 +12990,11 @@ func HostSecurityHeadersSnapshot() map[string]map[string]string {
                         "xfoValue":                e.xfoValue,
                         "cdnLoopValue":            e.cdnLoopValue,
                         "noVarySearchValue":       e.noVarySearchValue,
+                        "serverTimingValue":       e.serverTimingValue,
+                        "altSvcValue":             e.altSvcValue,
+                        "tkValue":                 e.tkValue,
+                        "traceparentValue":        e.traceparentValue,
+                        "baggageValue":            e.baggageValue,
                         "detectedAt":        fmt.Sprintf("%d", e.detectedAt),
                 }
                 return true

@@ -100,7 +100,15 @@
 <div class="novel-info-items">
 <div class="novel-info-itemtitle">最新章节</div>
 <div class="novel-info-actor">
-<a href="{{.FirstChapterURL}}">{{.Book.latestChapter}}</a>
+{{/* R102-D BUG-294 (P3, templates scope, R99-D BUG-285 FirstChapterURL-guard
+     family 续): 23qb/book.html 原 {{if .Book.latestChapter}} 块内裸用
+     {{.FirstChapterURL}} 无 guard. book 有 latestChapter 字段但无章节行
+     (crawl 写 latestChapter 名后章节未入 DB / admin 手建书填 latestChapter
+     未建章节) 时 FirstChapterURL 空 → 渲染 <a href="">最新章节名</a> 死链
+     (自指当前页, 点击无跳转). 与 R99-D BUG-285 ddyueshu/book.html line 79-84
+     同款 ({{if .FirstChapterURL}} guard + 暂无章节 fallback). 0 行为变化 for
+     有章节书 (FirstChapterURL 非空 → guard 通过 → 渲染如旧). */}}
+{{if .FirstChapterURL}}<a href="{{.FirstChapterURL}}">{{.Book.latestChapter}}</a>{{else}}<span>{{.Book.latestChapter}}</span>{{end}}
 </div>
 </div>
 {{end}}

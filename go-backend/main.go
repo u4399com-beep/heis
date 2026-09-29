@@ -779,6 +779,22 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
         siteDBID, _ := site["ID"].(string)
         data["WheelLinks"] = getWheelLinks(siteDBID, pseudoStyle)
 
+        // R102-D BUG-297 (P3, main+templates scope, pSEO canonical for list
+        //   pages, 续 R76-A 目标B BUG-253 pSEO family / R101-D BUG-290 og:image
+        //   guard family): book/read views 设 CanonicalURL at line 871/964
+        //   (pSEO 绝对 URL). list views (home/category/ranking/fulltext/
+        //   search/keyword/history) 缺 canonical → SEO duplicate-content risk
+        //   (esp. category 有 pseudo-static 变体 /?view=category&cat=X vs
+        //   /category/X.html, search engine 看到两 URL 渲染同内容, canonical
+        //   weight 分散; home/ranking/fulltext 同款 query-form 变体风险较低
+        //   但 canonical 仍澄清首选 URL). 修复: hoist siteDomain 供各 list case
+        //   注入 CanonicalURL, 各 view 用其 URL builder (与 case "book" 同款
+        //   buildAbsoluteURL(siteDomain, buildXxxURL(...))). 模板加
+        //   <link rel="canonical" href="{{.CanonicalURL}}"> (R101-D BUG-290
+        //   og:image guard 同款 {{if .CanonicalURL}} 守护, 0 行为变化 for 空
+        //   canonical — 但 list views 永远 set CanonicalURL, 0 空值场景).
+        siteDomain, _ := site["Domain"].(string)
+
         // 按 view 装配数据.
         // R83-D: bookHistoryJS 仅在 case "book" 赋值 (Go 端 fmt.Sprintf 注入 id 到 tracker JS
         //   模板). history/home/其它 view 不写 cookie (history view 自身只读 cookie).
@@ -838,8 +854,9 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 //   - TwitterDescription = truncate(book.intro, 200)
                 //   注: site.Domain 为空 (开发/预览环境) 时 buildAbsoluteURL 返相对路径 (OgUrl
                 //   无 domain 仍合法, 搜索引擎按相对 URL 解析当前 host; 不致命).
+                //   R102-D BUG-297: siteDomain 已 hoist 至 switch 前 (line ~782),
+                //   本 case "book" 直接复用 (省 1 行 local 声明, DRY).
                 siteName, _ := site["Name"].(string)
-                siteDomain, _ := site["Domain"].(string)
                 bookName, _ := book["name"].(string)
                 bookIntro, _ := book["intro"].(string)
                 bookCover, _ := book["cover"].(string)
@@ -1035,6 +1052,11 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 //   .html 改 {{.FirstPageURL}}. catID 空 + page=1 → "/?view=category" (BUG-
                 //   250 修复后 buildCategoryURL 空 catID page=1 仍返无 page 参数形态).
                 data["FirstPageURL"] = buildCategoryURL(pseudoStyle, catID, 1)
+                // R102-D BUG-297: category view canonical = self (current page, after
+                //   clamp). 与 case "book" line 871 absBookURL 同款 buildAbsoluteURL
+                //   + buildCategoryURL. 防 /?view=category&cat=X vs /category/X.html
+                //   duplicate-content (搜索引擎看到两 URL 渲染同内容).
+                data["CanonicalURL"] = buildAbsoluteURL(siteDomain, buildCategoryURL(pseudoStyle, catID, page))
         case "ranking":
                 tab := r.URL.Query().Get("sort")
                 if tab == "" {
@@ -1081,6 +1103,8 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 if page < totalPages {
                         data["NextPageURL"] = buildPagerURL(pseudoStyle, "ranking", tab, page+1)
                 }
+                // R102-D BUG-297: ranking view canonical = self (current page+tab).
+                data["CanonicalURL"] = buildAbsoluteURL(siteDomain, buildPagerURL(pseudoStyle, "ranking", tab, page))
         case "fulltext":
                 page := clampPage(r.URL.Query().Get("page"))
                 size := 24
@@ -1118,6 +1142,8 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 if page < totalPages {
                         data["NextPageURL"] = buildPagerURL(pseudoStyle, "fulltext", "", page+1)
                 }
+                // R102-D BUG-297: fulltext view canonical = self (current page).
+                data["CanonicalURL"] = buildAbsoluteURL(siteDomain, buildPagerURL(pseudoStyle, "fulltext", "", page))
         case "search":
                 q := r.URL.Query().Get("q")
                 books := getSearchViewData(q, 20)
@@ -1125,6 +1151,9 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 data["Q"] = q
                 data["Books"] = books
                 data["HotBooks"] = takeBooks(books, 12)
+                // R102-D BUG-297: search view canonical = self (含 q, 每搜索 query
+                //   唯一内容, canonical 各异). url.QueryEscape 防 q 含 &/= 破 URL.
+                data["CanonicalURL"] = buildAbsoluteURL(siteDomain, "/?view=search&q="+url.QueryEscape(q))
         case "keyword":
                 tag := r.URL.Query().Get("tag")
                 books, relatedTags := getKeywordViewData(tag, 20)
@@ -1133,6 +1162,8 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 data["Books"] = books
                 data["RelatedTags"] = relatedTags
                 data["HotBooks"] = takeBooks(books, 12)
+                // R102-D BUG-297: keyword view canonical = self (含 tag).
+                data["CanonicalURL"] = buildAbsoluteURL(siteDomain, "/?view=keyword&tag="+url.QueryEscape(tag))
         case "history":
                 // R82-D 目标A (R81 交接 #8 + R77-D 未决项 #10): history view — 从客户端
                 //   `bookHistory` cookie (JSON `{"ids":["cuid1",...]}` 或 bare array) 读浏览
@@ -1173,6 +1204,8 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                         data["HistoryBooks"] = []map[string]interface{}{}
                 }
                 data["Title"] = "浏览足迹"
+                // R102-D BUG-297: history view canonical = self.
+                data["CanonicalURL"] = buildAbsoluteURL(siteDomain, "/?view=history")
         default: // home
                 // R71-A: homeLayout 4 字段注入 (读 Setting 表 homeLayout.{siteID} JSON).
                 //   admin.go getHomeLayoutSetting 返 map (含默认值兑底, clamp [lo,hi] 防坏值).
@@ -1229,6 +1262,8 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                         injectBookURLs(featured, pseudoStyle) // 给 featured 每本注入 URL
                 }
                 data["FeaturedBooks"] = featured
+                // R102-D BUG-297: home view canonical = site root (/).
+                data["CanonicalURL"] = buildAbsoluteURL(siteDomain, buildHomeURL(pseudoStyle))
         }
 
         tmplName := theme + "/" + view

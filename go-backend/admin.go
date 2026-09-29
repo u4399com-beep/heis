@@ -1664,7 +1664,18 @@ func adminTaskLogsHandler(w http.ResponseWriter, r *http.Request) {
         }
         // COUNT(*) (与 adminRuleByIDHandler taskCount 同款单 SELECT, ~0.1ms; 不阻塞 LIMIT 查询).
         var total int
-        _ = db.QueryRow(`SELECT COUNT(*) FROM TaskLog WHERE taskId=?`, taskID).Scan(&total)
+        // R102-C BUG-298 (P3, R101-C BUG-290~292 multi-COUNT batch swallow family 续抓,
+        //   pagination COUNT 单-scalar 显式 err 变种): 原实现 `_ = ...Scan(&total)` 吞错
+        //   — DB 故障 (SQLite busy lock / 连接闪断 / 磁盘满) 时 total=0 → totalPages=1
+        //   (clamp) → rows 查询若恢复返部分数据但响应 "total:0, page:1 of 1" 不一致
+        //   (用户误以为表空). 与 BUG-286 SSR 主 COUNT 同款保持独立 callsite (作
+        //   pagination 核心, 不与 stats batch 合并), 但补显式 err + log.Printf
+        //   best-effort (与 BUG-252/285/286 同款 0 兜底 + best-effort log). 5 callsite
+        //   同款 family: adminTaskLogsHandler / adminBooksList / fillBooksPageData /
+        //   adminFeedbackHandler / fillFeedbackPageData 全覆盖.
+        if err := db.QueryRow(`SELECT COUNT(*) FROM TaskLog WHERE taskId=?`, taskID).Scan(&total); err != nil {
+                log.Printf("[adminTaskLogsHandler] pagination COUNT(*) SELECT 失败 (total 用 0): %v", err)
+        }
         rows, err := db.Query(`SELECT id, level, message, createdAt FROM TaskLog WHERE taskId=? ORDER BY createdAt DESC LIMIT ? OFFSET ?`, taskID, pageSize, offset)
         if err != nil {
                 writeJSONErr(w, "查询日志失败: "+err.Error(), 500)
@@ -2724,7 +2735,11 @@ func adminBooksList(w http.ResponseWriter, r *http.Request) {
 
         // count
         var total int
-        _ = db.QueryRow("SELECT COUNT(*) FROM Book b WHERE "+whereSQL, args...).Scan(&total)
+        // R102-C BUG-298 续抓: pagination COUNT 单-scalar 显式 err 变种 (详见
+        //   adminTaskLogsHandler rationale). 同款 0 兜底 + best-effort log.
+        if err := db.QueryRow("SELECT COUNT(*) FROM Book b WHERE "+whereSQL, args...).Scan(&total); err != nil {
+                log.Printf("[adminBooksList] pagination COUNT(*) SELECT 失败 (total 用 0): %v", err)
+        }
 
         // R68-D BUG-77 (P3): R67-D 未决项 #3 同款 nullable Scan + offset/page 一致性.
         //   原实现: page 来自用户输入 (clamp 1-1000000), offset 单独 clamp 到 10000.
@@ -3514,7 +3529,11 @@ func fillBooksPageData(data map[string]interface{}, r *http.Request) {
 
         // count
         var total int
-        _ = db.QueryRow("SELECT COUNT(*) FROM Book b WHERE "+whereSQL, args...).Scan(&total)
+        // R102-C BUG-298 续抓: pagination COUNT 单-scalar 显式 err 变种 (详见
+        //   adminTaskLogsHandler rationale). 同款 0 兜底 + best-effort log.
+        if err := db.QueryRow("SELECT COUNT(*) FROM Book b WHERE "+whereSQL, args...).Scan(&total); err != nil {
+                log.Printf("[fillBooksPageData] pagination COUNT(*) SELECT 失败 (total 用 0): %v", err)
+        }
         totalPages := (total + size - 1) / size
         if totalPages < 1 {
                 totalPages = 1
@@ -4978,7 +4997,11 @@ func adminFeedbackHandler(w http.ResponseWriter, r *http.Request) {
         }
         whereSQL := strings.Join(where, " AND ")
         var total int
-        _ = db.QueryRow("SELECT COUNT(*) FROM Feedback WHERE "+whereSQL, args...).Scan(&total)
+        // R102-C BUG-298 续抓: pagination COUNT 单-scalar 显式 err 变种 (详见
+        //   adminTaskLogsHandler rationale). 同款 0 兜底 + best-effort log.
+        if err := db.QueryRow("SELECT COUNT(*) FROM Feedback WHERE "+whereSQL, args...).Scan(&total); err != nil {
+                log.Printf("[adminFeedbackHandler] pagination COUNT(*) SELECT 失败 (total 用 0): %v", err)
+        }
         totalPages := (total + size - 1) / size
         if totalPages < 1 {
                 totalPages = 1
@@ -7853,9 +7876,26 @@ func fillLinksPageData(data map[string]interface{}) {
         data["Total"] = total
         data["EnabledCount"] = enabledCount
         data["DisabledCount"] = total - enabledCount
-        // 链轮配置 (Setting.linkwheel)
+        // 链轮配置 (Setting.linkwheel) + 链轮站点数 (Site COUNT inLinkWheel).
+        //
+        // R102-C BUG-297 (P3, R101-C BUG-290~292 multi-COUNT batch swallow family 续抓,
+        //   links page 变种): 原实现 2 处独立 `_ = db.QueryRow(...).Scan(...)` 吞错:
+        //   (a) Setting.linkwheel JSON → DB 故障时 wheelCfgJSON="" → wheel 兜底默认值
+        //   (enabled=true/mode=home/count=6), 显示为 "链轮默认开启" (与用户实际配置相反,
+        //   用户曾显式 enabled=false 关闭链轮, 故障窗口误显示开启); (b) Site inLinkWheel
+        //   COUNT → wheelSiteCount=0 → 链轮页 "链轮站: 0" (实际 N 站 inLinkWheel=1, 用户
+        //   误以为链轮无站而停用链轮或重新选站). 0 log 提示运维. 改单 SELECT 多 scalar
+        //   subquery (2 round-trip → 1, 与 BUG-285/286/290~292 同款 perf + 精简) + 显式
+        //   err + log.Printf (best-effort SSR, 不阻塞链轮页渲染 — 与 BUG-285 backup page
+        //   counts / BUG-286 feedback page stats 同款 best-effort log).
         var wheelCfgJSON string
-        _ = db.QueryRow(`SELECT value FROM Setting WHERE key='linkwheel'`).Scan(&wheelCfgJSON)
+        var wheelSiteCount int
+        if err := db.QueryRow(`SELECT` +
+                `(SELECT value FROM Setting WHERE key='linkwheel'),` +
+                `(SELECT COUNT(*) FROM Site WHERE inLinkWheel=1 AND status=1)`).
+                Scan(&wheelCfgJSON, &wheelSiteCount); err != nil {
+                log.Printf("[fillLinksPageData] wheel batch SELECT 失败 (wheel 默认 + count=0): %v", err)
+        }
         wheel := map[string]interface{}{"enabled": true, "mode": "home", "count": 6}
         if wheelCfgJSON != "" {
                 var raw map[string]interface{}
@@ -7877,8 +7917,6 @@ func fillLinksPageData(data map[string]interface{}) {
                 }
         }
         data["Wheel"] = wheel
-        var wheelSiteCount int
-        _ = db.QueryRow(`SELECT COUNT(*) FROM Site WHERE inLinkWheel=1 AND status=1`).Scan(&wheelSiteCount)
         data["WheelSiteCount"] = wheelSiteCount
 }
 
@@ -8069,7 +8107,11 @@ func fillFeedbackPageData(data map[string]interface{}, r *http.Request) {
         }
         whereSQL := strings.Join(where, " AND ")
         var total int
-        _ = db.QueryRow("SELECT COUNT(*) FROM Feedback WHERE "+whereSQL, args...).Scan(&total)
+        // R102-C BUG-298 续抓: pagination COUNT 单-scalar 显式 err 变种 (详见
+        //   adminTaskLogsHandler rationale). 同款 0 兜底 + best-effort log.
+        if err := db.QueryRow("SELECT COUNT(*) FROM Feedback WHERE "+whereSQL, args...).Scan(&total); err != nil {
+                log.Printf("[fillFeedbackPageData] pagination COUNT(*) SELECT 失败 (total 用 0): %v", err)
+        }
         totalPages := (total + size - 1) / size
         if totalPages < 1 {
                 totalPages = 1

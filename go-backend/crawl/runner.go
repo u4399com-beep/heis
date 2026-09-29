@@ -1429,6 +1429,16 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) (retErr error) {
                                                                         logMsg = msg
                                                                         shouldLog = true
                                                                 }
+                                                        case "blocked":
+                                                                // R102-A BUG-295: 章节首页 Blocked (CrawlChapterContent
+                                                                //   line ~2294 返 kind="blocked"). 与 "other" 同口径 stats.Errors++ +
+                                                                //   consecutiveErrs++ + LogError, 不走 BudgetExceeded 检查 (Blocked 非
+                                                                //   budget 信号). 与 "no-url"/"timeout" 同款 stats 路径.
+                                                                stats.Errors++
+                                                                consecutiveErrs++
+                                                                logLevel = LogError
+                                                                logMsg = msg
+                                                                shouldLog = true
                                                         }
                                                 }
                                         }()
@@ -2190,7 +2200,8 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
 // ---------- CrawlChapterContent (阶段 2) ----------
 
 // CrawlChapterContent — 阶段 2: 单章正文采集.
-// 返回 (ok, kind, message, cleaned). kind: "" | "no-url" | "timeout" | "abort" | "hostgate" | "other"
+// 返回 (ok, kind, message, cleaned). kind: "" | "no-url" | "timeout" | "abort" |
+//   "hostgate" | "blocked" | "other"
 //   cleaned: 成功路径返清洗后正文 (供 caller 测试用 snippet, e.g. FetchTestSampleBook);
 //   失败路径返 "". phase 2 生产 caller (line ~1327) 用 _ 丢弃.
 //
@@ -2291,7 +2302,24 @@ func CrawlChapterContent(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRun
                 hostGate.ReportFailure(chapterHost)
                 // R65-C: 拦截视为失败, 计 per-host 失败
                 getHealthTracker().recordFailure(chapterHost)
-                return false, "other", fmt.Sprintf("章节内容疑似被拦截: %s", truncate(q.URL, 120)), ""
+                // R102-A BUG-295 (P3) 修复 (R101-A BUG-290/291/292 Blocked family 续):
+                //   原实现章节首页 Blocked 返 kind="other" + msg="章节内容疑似被拦截:
+                //   <url>", 与书籍页 Blocked (CrawlBookMeta line ~1749 返 BookMeta
+                //   StatusBlocked) 不对称 — FetchTestSampleBook line ~2820 把书籍页
+                //   Blocked 映射为 Status="blocked", 但章节页 Blocked 走 kind="other"
+                //   路径被 line ~2853 映射为 Status="failed" (语义错配: Blocked 应
+                //   "blocked" 而非 "failed", 操作员试采看到 "failed" 误判为配置/网络
+                //   错而非反爬拦). 修复: kind "other" → "blocked" (新增 kind 值, 与
+                //   BUG-290 sentinel + BUG-291/292 pageFetcher Blocked propagation 同
+                //   family). phase 2 switch (line ~1387) 加 "blocked" case (与 "other"
+                //   同口径 stats.Errors++ + consecutiveErrs++ + LogError, 不走
+                //   BudgetExceeded 检查 — Blocked 非 budget 信号). FetchTestSampleBook
+                //   line ~2853 把 kind="blocked" 映射为 Status="blocked" (与书籍页
+                //   Blocked 同口径). captcha 路径不动 (captcha 走 res.CaptchaDetected,
+                //   非 res.Blocked 分支). 与 BUG-292 (pageFetcher 章节正文翻页 Blocked
+                //   propagation) 互补: BUG-292 修章节正文翻页 page 2+ Blocked, 本
+                //   BUG-295 修章节首页 Blocked kind 语义.
+                return false, "blocked", fmt.Sprintf("章节内容疑似被拦截: %s", truncate(q.URL, 120)), ""
         }
         // 成功 (HTTP 200 + 非 Blocked): 记 success + ReportSuccess
         getHealthTracker().recordSuccess(chapterHost)
@@ -2801,6 +2829,19 @@ func FetchTestSampleBook(ctx context.Context, rule RuleConfig, override FetchCon
         // 4. discoverBooks — 取 list 第 1 本 URL (maxPages=1 已足够试采)
         urls, err := discoverBooks(ctx, cfg, rt, myEpoch)
         if err != nil {
+                // R102-A BUG-294 (P3) 修复 (R101-A BUG-290 Blocked family 续):
+                //   R101-A BUG-290 加 ErrListDiscoveryBlocked sentinel 让 caller 区分
+                //   "list 首页 Blocked" vs "其它失败". 原实现 FetchTestSampleBook
+                //   不区分, 一律 Status="failed". 与书籍页 Blocked (CrawlBookMeta
+                //   line ~1749 返 BookMetaStatusBlocked → FetchTestSampleBook line
+                //   ~2820 映射 Status="blocked") 不对称 — 操作员试采看到 list
+                //   页 Blocked 显示 "failed" 误判为配置/网络错而非反爬拦. 修复:
+                //   errors.Is(err, &ErrListDiscoveryBlocked{}) → Status="blocked"
+                //   (与 BUG-295 章节页 Blocked → Status="blocked" 同款 family).
+                if errors.Is(err, &ErrListDiscoveryBlocked{}) {
+                        return FetchTestSample{Status: "blocked", Reachable: true,
+                                Reason: "discoverBooks: " + truncate(err.Error(), 120)}
+                }
                 return FetchTestSample{Status: "failed", Reachable: true, Reason: "discoverBooks: " + truncate(err.Error(), 120)}
         }
         if len(urls) == 0 {
@@ -2851,7 +2892,16 @@ func FetchTestSampleBook(ctx context.Context, rule RuleConfig, override FetchCon
         //   (ok=true 路径 cleaned 非空才有意义; ok=false 路径早返 line 2756, 不到此).
         ok, kind, msg, cleaned := CrawlChapterContent(ctx, cfg, rt, myEpoch, q)
         if !ok {
-                return FetchTestSample{Status: "failed", Reachable: true, BookURL: firstURL,
+                // R102-A BUG-295 续 (与 BUG-294 同款 family): CrawlChapterContent
+                //   line ~2294 章节首页 Blocked 返 kind="blocked". 映射 Status=
+                //   "blocked" (与 BUG-294 list Blocked + 书籍页 Blocked 三路径
+                //   同口径). 其它 kind (no-url/timeout/hostgate/other) 仍 Status=
+                //   "failed".
+                status := "failed"
+                if kind == "blocked" {
+                        status = "blocked"
+                }
+                return FetchTestSample{Status: status, Reachable: true, BookURL: firstURL,
                         BookName: meta.BookCtx.BookName, TocCount: len(meta.BookCtx.TocItems),
                         FirstChapterTitle: firstToc.Title, FirstChapterURL: firstToc.URL,
                         Reason: fmt.Sprintf("CrawlChapterContent: kind=%s msg=%s", kind, truncate(msg, 120))}

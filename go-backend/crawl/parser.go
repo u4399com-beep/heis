@@ -1020,12 +1020,18 @@ func tokenizeJsonPath(path string) []jsonToken {
                                         tokens = append(tokens, jsonToken{
                                                 kind: tokenFilter,
                                                 fk:   m[1],
-                                                fv:   m[2],
+                                                // R102-B BUG-296 (P3): unquoteFilterValue 解 `\"` 转义
+                                                fv:   unquoteFilterValue(expr, m[2], "=="),
                                         })
                                         continue
                                 }
                                 if m := jsonPathNeRe.FindStringSubmatch(expr); m != nil {
-                                        tokens = append(tokens, jsonToken{kind: tokenFilter, fk: m[1], fv: "__NE__" + m[2]})
+                                        tokens = append(tokens, jsonToken{
+                                                kind: tokenFilter,
+                                                fk:   m[1],
+                                                // R102-B BUG-296 (P3): unquoteFilterValue 解 `\"` 转义 (NE 前缀 __NE__ 保留)
+                                                fv:   "__NE__" + unquoteFilterValue(expr, m[2], "!="),
+                                        })
                                         continue
                                 }
                         }
@@ -1044,7 +1050,8 @@ func tokenizeJsonPath(path string) []jsonToken {
                                 tokens = append(tokens, jsonToken{
                                         kind: tokenFilter,
                                         fk:   strings.TrimSpace(inner[:eq2]),
-                                        fv:   strings.TrimSpace(inner[eq2+2:]),
+                                        // R102-B BUG-296 (P3): unquoteFilterValue 解 `\"` 转义 (无 ?() wrapper 同款)
+                                        fv:   unquoteFilterValue(inner, strings.TrimSpace(inner[eq2+2:]), "=="),
                                 })
                                 continue
                         }
@@ -1052,7 +1059,8 @@ func tokenizeJsonPath(path string) []jsonToken {
                                 tokens = append(tokens, jsonToken{
                                         kind: tokenFilter,
                                         fk:   strings.TrimSpace(inner[:ne]),
-                                        fv:   "__NE__" + strings.TrimSpace(inner[ne+2:]),
+                                        // R102-B BUG-296 (P3): unquoteFilterValue 解 `\"` 转义 (无 ?() wrapper 同款, NE 前缀 __NE__ 保留)
+                                        fv:   "__NE__" + unquoteFilterValue(inner, strings.TrimSpace(inner[ne+2:]), "!="),
                                 })
                                 continue
                         }
@@ -1074,6 +1082,48 @@ func tokenizeJsonPath(path string) []jsonToken {
                 tokens = append(tokens, jsonToken{kind: tokenKey, key: p})
         }
         return tokens
+}
+
+// unquoteFilterValue — JSONPath filter quoted value `\"` unescape (R102-B BUG-296).
+//
+//      BUG-290/291 收口 tokenizeJsonPath 的 `\"` 转义 (bracket scan +
+//      ["key"] Unquote), BUG-294/295 收口 splitJsonArrayPaths/OrPaths 的
+//      `\"` 转义, 但 jsonPathEqRe/NeRe + [k==v]/[k!=v] 的 filter value
+//      路径仍漏: regex `"?(.*?)"?` strip 引号但不 unescape `\"` — quoted
+//      value `"a\"b"` 残 m[2]=`a\"b` (raw escape), 与 JSON unmarshal 后
+//      的 `a"b` 不等 → filterArray 比较静默 miss (e.g. `[?(@.f=="a\"b")]`
+//      永不命中 JSON `{"f":"a\"b"}`). 修复: 检测 op (`==`/`!=`) 后是 quoted
+//      form (`"..."`) → strconv.Unquote 解 `\"`→`"` (含 \\\\ / \b / \f /
+//      \n / \r / \t / \uXXXX Go/JSON 共子集). Unquote 失败 / unquoted
+//      value (e.g. `==5`) → 返原 fv (BUG-289 原行为, 不退化). 与 BUG-291
+//      (["key"] Unquote) + BUG-294/295 (splitJson `\\` 转义) + BUG-290
+//      (tokenize bracket scan `\\` 转义) 同口径闭环. 71 Rule 0 用 `\"`
+//      形态; 0 用户受影响. latent 自 R71-C BUG-93 (jsonPathEqRe 预编译,
+//      31 轮未发现因 71 Rule 0 用 quoted value 含 `\"` 形态, 多用
+//      unquoted 或无转义 quoted value).
+func unquoteFilterValue(expr, fv, op string) string {
+        eq := strings.Index(expr, op)
+        if eq < 0 {
+                return fv
+        }
+        rest := strings.TrimLeft(expr[eq+len(op):], " \t")
+        if len(rest) < 2 || rest[0] != '"' {
+                return fv // unquoted value, no unescape needed
+        }
+        // scan for closing quote (respecting \" escape)
+        for i := 1; i < len(rest); i++ {
+                if rest[i] == '\\' && i+1 < len(rest) {
+                        i++ // skip escaped char (e.g. \" \\ \n etc)
+                        continue
+                }
+                if rest[i] == '"' {
+                        if unq, err := strconv.Unquote(rest[:i+1]); err == nil {
+                                return unq
+                        }
+                        break // Unquote failed, fallback to fv
+                }
+        }
+        return fv
 }
 
 func filterArray(arr []any, k, v string) any {
@@ -1129,15 +1179,31 @@ func flattenArray(cur any) any {
 //      `items[?(@.f=="a` + `b")]` + `other`, 前两段路径非法 JsonGet 返 nil,
 //      路径静默返空). 修复: 单遍扫描, 双引号内逗号不分割. latent 自 R38
 //      TS→Go 迁移 (47 轮未发现, 71 Rule 0 用逗号 in quoted value 形态).
-//      注: 不处理 \" 转义 (JSONPath 标准用 \" 转义引号, 但实际 Rule 配置
-//      0 用嵌套引号 + 转义, 复杂度低优先级); 单引号 ' 不视为 string 边界
-//      (JSONPath 标准 RFC 9535 仅双引号).
+//      R102-B BUG-294 (P3) 续修 (BUG-248 续, R101-B 未决项 #6): 原注 "不
+//      处理 \" 转义" 已收口 — inQuote toggle 不处理 `\"` → `\"` 被当作
+//      close+open quote (toggle inQuote 两次), 后续逗号 split 位置误判
+//      (e.g. path=`items[?(@.f=="a\"b")],other` 的 `,` 在 inQuote 错误
+//      toggle 后被误判 quote 内 → 单段含两段拼接, JsonGet 返 nil, union
+//      静默退化). 与 BUG-290 (tokenizeJsonPath bracket scan `\\` 转义)
+//      同款 fix, callsite 不同 (本处是 JsonArrayAt 入口 splitter). 修复:
+//      inQuote && c=='\\' → write `\\`+next char verbatim (跳过 next 的
+//      引号语义判定), 与 RFC 9535 JSONPath string escape 对齐. 单引号 '
+//      不视为 string 边界 (RFC 9535 仅双引号). 71 Rule 0 用 `\"` 形态;
+//      0 用户受影响. latent 自 R38 TS→Go 迁移.
 func splitJsonArrayPaths(path string) []string {
         out := []string{}
         var cur strings.Builder
         inQuote := false
         for i := 0; i < len(path); i++ {
                 c := path[i]
+                if inQuote && c == '\\' {
+                        cur.WriteByte(c)
+                        i++
+                        if i < len(path) {
+                                cur.WriteByte(path[i])
+                        }
+                        continue
+                }
                 if c == '"' {
                         inQuote = !inQuote
                         cur.WriteByte(c)
@@ -1169,14 +1235,31 @@ func splitJsonArrayPaths(path string) []string {
 //      (与 splitJsonArrayPaths 同款 quote-aware 模式). 71 Rule 0 用 "||"
 //      形态 (BUG-233 line 684 注 "71 Rule 0 用 || 形态 path"), 0 用户受
 //      影响; 未来 admin 配 `[?(@.title=="A||B")] || name` 后受益. latent 自
-//      R38 TS→Go 迁移 (47 轮未发现). 注: 与 BUG-248 同款, 不处理 \" 转义 +
-//      单引号 ' 不视为 string 边界 (JSONPath 标准 RFC 9535 仅双引号).
+//      R38 TS→Go 迁移 (47 轮未发现). R102-B BUG-295 (P3) 续修 (BUG-269 续,
+//      R101-B 未决项 #6): 原注 "与 BUG-248 同款, 不处理 \" 转义" 已收口
+//      — inQuote toggle 不处理 `\"` → `\"` 被当作 close+open quote, 后续
+//      `||` split 位置误判 (e.g. path=`items[?(@.f=="a\"b")] || other`
+//      的 `||` 在 inQuote 错误 toggle 后被误判 quote 内 → 单段含两段拼接,
+//      JsonGet 返 nil, || fallback 静默退化). 与 BUG-294 (splitJsonArrayPaths
+//      `\\` 转义) + BUG-290 (tokenizeJsonPath bracket scan `\\` 转义) 同款
+//      fix, callsite 不同 (本处是 JsonGet || 入口 splitter). 修复: inQuote
+//      && c=='\\' → write `\\`+next char verbatim, 与 RFC 9535 对齐. 单引号
+//      ' 不视为 string 边界 (RFC 9535 仅双引号). 71 Rule 0 用 `\"` 形态;
+//      0 用户受影响. latent 自 R38 TS→Go 迁移.
 func splitJsonOrPaths(path string) []string {
         out := []string{}
         var cur strings.Builder
         inQuote := false
         for i := 0; i < len(path); i++ {
                 c := path[i]
+                if inQuote && c == '\\' {
+                        cur.WriteByte(c)
+                        i++
+                        if i < len(path) {
+                                cur.WriteByte(path[i])
+                        }
+                        continue
+                }
                 if c == '"' {
                         inQuote = !inQuote
                         cur.WriteByte(c)
