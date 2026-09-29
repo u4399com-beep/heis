@@ -1547,6 +1547,18 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) (retErr error) {
 
 // ---------- discoverBooks (列表发现) ----------
 
+// ErrListDiscoveryBlocked — R101-A BUG-290 (P2) 修复: discoverBooks 首页被反爬
+// 拦截 (looksBlocked=true) 时返回的 sentinel error. 与 ErrSourceUnreachable
+// (R80-B) 同款 sentinel 模式, 让 caller (ExecuteTask / FetchTestSampleBook)
+// 可 errors.Is 判断后 mark task "failed" 而非静默 "done with 0 books".
+type ErrListDiscoveryBlocked struct {
+        URL string
+}
+
+func (e *ErrListDiscoveryBlocked) Error() string {
+        return "list discovery blocked: " + e.URL
+}
+
 func discoverBooks(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, myEpoch int64) ([]string, error) {
         // 简化: 单页列表 (翻页由 cfg.Rule.List.Pagination 控制)
         // 拼列表 URL 模板 (支持 {page} 占位符)
@@ -1563,6 +1575,16 @@ func discoverBooks(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
         }
         discovered := []string{}
         seen := map[string]bool{}
+        // R101-A BUG-290 (P2): 首页 Blocked 跟踪. 原实现首页被反爬拦截 (looksBlocked)
+        //   时 break → 返 (empty, nil) → ExecuteTask 走空 bookQueue → 阶段 1/2/3
+        //   全跳过 → 任务标记 "done" (success) 但 0 本采集. 操作员看到"成功"绿
+        //   灯却 0 数据, 无法区分"反爬拦"vs"列表真空". 修复: 首页 Blocked + 0 本
+        //   发现时返 ErrListDiscoveryBlocked sentinel, 让 caller (ExecuteTask /
+        //   ExecuteTaskWithRetry) errors.Is 判定后 mark task "failed" (经重试或
+        //   直接失败, 不再静默 "done"). 与 ErrSourceUnreachable (R80-B) 同款
+        //   sentinel 模式. 非首页 Blocked (p>=2) 仍 break 返部分结果 (与原行为
+        //   一致, 多页发现部分成功是合法的).
+        firstPageBlocked := false
         for p := 1; p <= maxPages; p++ {
                 if rt.IsStopped() || rt.IsStale(myEpoch) {
                         break
@@ -1613,6 +1635,10 @@ func discoverBooks(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                         //   (与 CrawlBookMeta line 1661-1663 同款, 让 derate 触发).
                         GetHostGate().ReportFailure(listHost)
                         getHealthTracker().recordFailure(listHost)
+                        // R101-A BUG-290: 首页 Blocked 跟踪 (详见 line ~1578 rationale).
+                        if p == 1 {
+                                firstPageBlocked = true
+                        }
                         break
                 }
                 // R86-A BUG-219: 成功 (200 + 非 Blocked) 补 recordSuccess + ReportSuccess
@@ -1654,6 +1680,15 @@ func discoverBooks(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                 if newCount == 0 {
                         break
                 }
+        }
+        // R101-A BUG-290: 首页 Blocked + 0 本发现 → 返 sentinel error (详见 line
+        //   ~1578 rationale). 非首页 Blocked (p>=2) 仍返部分 discovered (合法多页
+        //   部分成功). 0 本 + 非首页 Blocked (e.g. 首页 err 路径 line ~1615 break
+        //   但非 Blocked) 仍返 (empty, nil) — ExecuteTask line ~991 把 0 本当
+        //   "成功完成 0 本", 与原行为一致 (首页 err 非 Blocked 是网络层瞬时错误,
+        //   ExecuteTaskWithRetry 会重试; 持续 err 会被 caller 当 transient retry).
+        if firstPageBlocked && len(discovered) == 0 {
+                return nil, &ErrListDiscoveryBlocked{URL: urlTemplate}
         }
         return discovered, nil
 }
@@ -2024,19 +2059,30 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                 //   同款潜在不对称, 与 BUG-219/220/230 pageFetcher hostGate 漏调同款 family).
                 //   修复: 与外层 4 callsite 同口径补 rt.IncCaptcha (pageRes.CaptchaDetected
                 //   → 计数, 不返 err — pageFetcher 仍返 pageRes.HTML 让 ParseToc 解析,
-                //   与 Blocked propagation defer 同款保留原行为).
+                //   captcha 比 Blocked 软, 不中断翻页; Blocked propagation 由 R101-A
+                //   BUG-291 改为返 err break 翻页, captcha 路径不动).
                 if res.CaptchaDetected {
                         rt.IncCaptcha()
                 }
                 if res.Blocked {
-                        // Blocked 页仍返 res.HTML (ParseToc 解析, 与原行为一致 — Blocked
-                        //   propagation 是 R86-A 未决项 #4 defer); 此处仅补 hostGate 报告.
+                        // R101-A BUG-291 (P2) 修复 (R86-A 未决项 #4 续抓): 原实现
+                        //   pageFetcher 多页 TOC 第 2+ 页 Blocked 时仍返 res.HTML
+                        //   (looksBlocked interstitial 页), ParseToc line ~2042
+                        //   nextPageHTML, err = pageFetcher(...) 收非空 HTML → err==nil
+                        //   → 不 break → 继续解析 interstitial 页 → TOC 被反爬挑战页
+                        //   文本污染 (e.g. "Just a moment... Checking your browser"
+                        //   被当章节标题提取, 写入 Book TocItems). 修复: Blocked 时
+                        //   返 error 让 ParseToc break 退出翻页循环 (返已采的部分 TOC,
+                        //   与成功首页 + 部分 page 同款 partial result 语义). ParseToc
+                        //   line ~2050 `if err != nil || nextPageHTML == "" { break }`
+                        //   已正确处理 pageFetcher err (break). 与 BUG-292 (章节正文
+                        //   pageFetcher) 同款 Blocked propagation family.
                         GetHostGate().ReportFailure(pageHost)
                         getHealthTracker().recordFailure(pageHost)
-                } else {
-                        getHealthTracker().recordSuccess(pageHost)
-                        GetHostGate().ReportSuccess(pageHost)
+                        return "", fmt.Errorf("toc page %s blocked by anti-crawl", truncate(u, 120))
                 }
+                getHealthTracker().recordSuccess(pageHost)
+                GetHostGate().ReportSuccess(pageHost)
                 return res.HTML, nil
         }
         toc, err := ParseToc(ctx, tocURL, tocRes.HTML, cfg.Rule.Toc, pageFetcher, nil)
@@ -2310,14 +2356,24 @@ func CrawlChapterContent(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRun
                         rt.IncCaptcha()
                 }
                 if pageRes.Blocked {
-                        // Blocked 页仍返 pageRes.HTML (ParseContent 解析, 与原行为一致 —
-                        //   Blocked propagation 是 R86-A 未决项 #4 defer); 此处仅补 hostGate.
+                        // R101-A BUG-292 (P2) 修复 (R86-A 未决项 #4 续抓, 与 BUG-291
+                        //   CrawlBookMeta pageFetcher 同款 Blocked propagation family):
+                        //   原实现多页章节正文第 2+ 页 Blocked 时仍返 pageRes.HTML
+                        //   (interstitial 页), ParseContent line ~2245 收非空 HTML →
+                        //   err==nil → 不 break → 继续解析 interstitial 页 → 章节正文
+                        //   被反爬挑战页文本污染 (e.g. "Just a moment... Checking your
+                        //   browser" 被当正文段落提取, 落库 UpsertChapter 写入污染正文).
+                        //   修复: Blocked 时返 error 让 ParseContent break 退出翻页循环
+                        //   (返已采的部分正文, 与成功首页 + 部分 page 同款 partial result
+                        //   语义 — partial 干净正文 > 完整污染正文). ParseContent line
+                        //   ~2253 `if err != nil || nextPageHTML == "" { break }` 已正确
+                        //   处理 pageFetcher err (break).
                         hostGate.ReportFailure(pageHost)
                         getHealthTracker().recordFailure(pageHost)
-                } else {
-                        getHealthTracker().recordSuccess(pageHost)
-                        hostGate.ReportSuccess(pageHost)
+                        return "", fmt.Errorf("content page %s blocked by anti-crawl", truncate(u, 120))
                 }
+                getHealthTracker().recordSuccess(pageHost)
+                hostGate.ReportSuccess(pageHost)
                 return pageRes.HTML, nil
         }
         content, err := ParseContent(ctx, q.URL, res.HTML, cfg.Rule.Content, cfg.Override, pageFetcher)

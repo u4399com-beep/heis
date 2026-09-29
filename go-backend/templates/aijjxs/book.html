@@ -9,14 +9,14 @@
 <link rel="stylesheet" href="/clone-css/aijjxs.css">
 {{if .OgTitle}}<meta property="og:title" content="{{.OgTitle}}">
 <meta property="og:description" content="{{.OgDescription}}">
-<meta property="og:image" content="{{.OgImage}}">
+{{if .OgImage}}<meta property="og:image" content="{{.OgImage}}">{{end}}
 <meta property="og:url" content="{{.OgUrl}}">
 <meta property="og:type" content="{{.OgType}}">
 <meta property="og:site_name" content="{{.OgSiteName}}">
 {{end}}{{if .TwitterCard}}<meta name="twitter:card" content="{{.TwitterCard}}">
 <meta name="twitter:title" content="{{.TwitterTitle}}">
 <meta name="twitter:description" content="{{.TwitterDescription}}">
-<meta name="twitter:image" content="{{.TwitterImage}}">
+{{if .TwitterImage}}<meta name="twitter:image" content="{{.TwitterImage}}">{{end}}
 {{end}}{{if .CanonicalURL}}<link rel="canonical" href="{{.CanonicalURL}}">
 {{end}}</head>
 <body class="page-info">

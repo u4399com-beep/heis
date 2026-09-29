@@ -718,9 +718,30 @@ func JsonGet(root any, path string) any {
                 //   发现). 注: 首段含特殊语法 (e.g. "$..a[0]" / "$..a||b") 走
                 //   原 recursiveCollect (literal key 查找, 仍返 [], 维持 defer
                 //   — 多语法混合需更深 grammar 解析, 超本轮 budget).
-                if dot := strings.Index(key, "."); dot > 0 {
-                        firstKey := key[:dot]
-                        remaining := key[dot+1:]
+                //   R101-B BUG-292 (P3) 修复 (R96-B BUG-273 续): 原仅 split on
+                //   `.` → key 含 `[` (e.g. $..a[0] / $..a["k"]) 无 dot, fall to
+                //   recursiveCollect(root, "a[0]") literal 查找, 0 命中 (JSON
+                //   无 "a[0]" 字面 key). 修复: split on 首个 `.` OR `[`
+                //   (strings.IndexAny; `||` 语义在 recursive descent 模糊 —
+                //   $..a||b 应 "递归找 a, 每个 a 值 ||b 兜底" 还是 "递归找 a
+                //   或 b"? 标准 JSONPath 无 ||, 维持 defer 走原 literal 路径).
+                //   firstKey 喂 recursiveCollect, remaining (含 `[` 起, e.g.
+                //   "[0]" / "[\"k\"]" / "b.c") 喂 JsonGet (内部 tokenizeJsonPath
+                //   + BUG-289/290/291 全语法). 与 BUG-273 ($..a.b 多级 dot) +
+                //   BUG-289 (["k"] bracket) + BUG-290/291 (\" escape) 协同闭
+                //   环. 71 Rule 0 用 $..a[0] / $..a["k"] 形态; 0 用户受影响.
+                //   latent 自 R96-B BUG-273 (5 轮未补). 注: $..[0] (bracket 起
+                //   首, splitAt=0 不 >0) 仍走 literal, 维持 defer (需
+                //   recursiveCollect-all-nodes + per-node JsonGet, 超本轮).
+                splitAt := strings.IndexAny(key, ".[")
+                if splitAt > 0 {
+                        firstKey := key[:splitAt]
+                        var remaining string
+                        if key[splitAt] == '.' {
+                                remaining = key[splitAt+1:]
+                        } else {
+                                remaining = key[splitAt:] // keep '[' for JsonGet bracket parse
+                        }
                         collected := recursiveCollect(root, firstKey)
                         out := []any{}
                         for _, v := range collected {
@@ -878,6 +899,28 @@ func tokenizeJsonPath(path string) []jsonToken {
                         inQuote := byte(0)
                         for j < len(path) {
                                 ch := path[j]
+                                // R101-B BUG-290 (P3) 修复 (R94-B BUG-267 续): 原引号
+                                //   状态机不处理 \" 转义 — `\` 当普通字符写入, 紧接
+                                //   的 `\"` 触发 inQuote=0 (误判引号闭合), 后续 `]` 在
+                                //   引号外触发 break (提前截断), cur 残破半 + 段外 `]`
+                                //   被 synth 入 parts, inner 末尾非引号 → BUG-289
+                                //   quote-pair 检查跳过 → token 丢. 与 BUG-248/269
+                                //   splitJsonArrayPaths/OrPaths quote-aware splitter
+                                //   同款 \" 转义 defer family. 修复: inQuote!=0 &&
+                                //   ch=='\\' → write `\\`+next char verbatim (跳过
+                                //   next 的引号语义判定), 与 RFC 9535 JSONPath string
+                                //   escape 对齐. 71 Rule 0 用 \" 形态; 0 用户受影响.
+                                //   latent 自 R94-B BUG-267 (7 轮未发现, BUG-267 加引
+                                //   号状态机时漏加 \\ 转义分支).
+                                if inQuote != 0 && ch == '\\' {
+                                        cur.WriteByte(ch)
+                                        j++
+                                        if j < len(path) {
+                                                cur.WriteByte(path[j])
+                                        }
+                                        j++
+                                        continue
+                                }
                                 if inQuote == 0 && (ch == '"' || ch == '\'') {
                                         inQuote = ch
                                 } else if inQuote != 0 && ch == inQuote {
@@ -932,7 +975,32 @@ func tokenizeJsonPath(path string) []jsonToken {
                         //   自 R38 TS→Go 迁移 (47 轮未发现).
                         if len(inner) >= 2 {
                                 first, last := inner[0], inner[len(inner)-1]
-                                if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+                                if first == '"' && last == '"' {
+                                        // R101-B BUG-291 (P3) 修复 (R100-B BUG-289 续):
+                                        //   原仅 strip 两端引号, 不 unescape \" →
+                                        //   key 残 `a\"b` 字面, 与 JSON key `a"b`
+                                        //   (unescaped) 不匹配, tokenKey 查
+                                        //   m[`a\"b`] 0 命中. 与 BUG-290 (bracket
+                                        //   scan \\ 转义) 协同: BUG-290 保 inner 形
+                                        //   如 `"a\\"b"` (引号配对正确), 本处
+                                        //   strconv.Unquote 解 \" → " (含 \\\\ / \b
+                                        //   / \f / \n / \r / \t / \uXXXX Go/JSON 共
+                                        //   子集; \\/ 不支持 Go strconv, 与 BUG-248/
+                                        //   269 同款 defer). Unquote 失败 → fallback
+                                        //   strip 引号 (BUG-289 原行为, 不退化). 71
+                                        //   Rule 0 用 \" 形态; 0 用户受影响. latent
+                                        //   自 R100-B BUG-289 (1 轮未补).
+                                        if unq, err := strconv.Unquote(inner); err == nil && unq != "" {
+                                                tokens = append(tokens, jsonToken{kind: tokenKey, key: unq})
+                                                continue
+                                        }
+                                        key := inner[1 : len(inner)-1]
+                                        if key != "" {
+                                                tokens = append(tokens, jsonToken{kind: tokenKey, key: key})
+                                                continue
+                                        }
+                                }
+                                if first == '\'' && last == '\'' {
                                         key := inner[1 : len(inner)-1]
                                         if key != "" {
                                                 tokens = append(tokens, jsonToken{kind: tokenKey, key: key})

@@ -5377,6 +5377,29 @@ func randomLinkHandler(w http.ResponseWriter, r *http.Request) {
         }
 }
 
+// normalizeDomain 剥 domain 字符串的 scheme 前缀 (http:// / https://) + 末尾
+// 斜杠, 归一化 admin 配置的 Site.domain (placeholder 提示 "不含 http" 但 0
+// 校验强制, 误配 "https://example.com" 形态常见).
+//
+// R101-D BUG-291 (P4 精简/DRY, main scope, BUG-253 stripScheme family 续):
+//   robotsTxtHandler Host 指令原用 raw site["Domain"] — admin 误配 domain
+//   含 scheme 前缀时 robots.txt 输出 "Host: https://example.com", 违反
+//   Yandex/Bing Host 指令规范 (Host 仅接受裸 host, 不含 scheme; Google 忽略
+//   Host 指令, Yandex/Bing 俄罗斯/东欧市场份额 parser 拒绝带 scheme 的 Host).
+//   R91-D BUG-253 加 stripScheme FuncMap 处理模板 URL 构造 (shipsay/101kks
+//   "https://{{.Site.Domain | stripScheme}}" 等 callsite), 但 Go 代码 (robotsTxtHandler)
+//   不走 FuncMap. 修复: 抽 normalizeDomain Go helper, 用于 robotsTxtHandler
+//   Host 指令 + buildAbsoluteURL inline scheme-strip (DRY, 同款逻辑集中).
+//   与 stripScheme FuncMap 同款 TrimSpace + TrimPrefix(http://) + TrimPrefix
+//   (https://) + TrimSuffix(/) 逻辑 (FuncMap 保留, 不动 main() 函数体).
+func normalizeDomain(s string) string {
+        s = strings.TrimSpace(s)
+        s = strings.TrimPrefix(s, "http://")
+        s = strings.TrimPrefix(s, "https://")
+        s = strings.TrimSuffix(s, "/")
+        return s
+}
+
 // ===== R76-A 目标B 工具: buildAbsoluteURL (pSEO 绝对 URL 构造) =====
 //
 // pSEO og:url / canonical link 必须是绝对 URL (含 scheme + host), 否则 FB / Twitter /
@@ -5417,11 +5440,9 @@ func buildAbsoluteURL(domain, relURL string) string {
         if domain == "" {
                 domain = "localhost:3000"
         }
-        // 标准化 domain: 剥 "http://" / "https://" 前缀 (admin 配置 Site.domain 时可能含 scheme).
-        domain = strings.TrimPrefix(domain, "http://")
-        domain = strings.TrimPrefix(domain, "https://")
-        // 剥末尾 "/" 防止 "//" 双斜杠.
-        domain = strings.TrimSuffix(domain, "/")
+        // R101-D BUG-291: 抽 normalizeDomain helper 替 inline scheme-strip 块 (DRY,
+        //   与 robotsTxtHandler Host 指令共用同款归一化逻辑). 0 行为变化.
+        domain = normalizeDomain(domain)
         if domain == "" {
                 domain = "localhost:3000"
         }
@@ -6109,8 +6130,12 @@ func robotsTxtHandler(w http.ResponseWriter, r *http.Request) {
                 // Sitemap 索引也声明 (搜索引擎可选抓 index).
                 b.WriteString("Sitemap: " + buildAbsoluteURL(domain, "/sitemap-index.xml") + "\n")
                 // Host 指令 (仅 Yandex/Bing 用, Google 忽略; 域名空时省略).
+                // R101-D BUG-291: normalizeDomain 剥 scheme 前缀 (admin 误配 domain=
+                //   "https://example.com" 时, 旧实现输出 "Host: https://example.com"
+                //   违反 Yandex/Bing Host 规范 — Host 仅接受裸 host). 与
+                //   buildAbsoluteURL 内部归一化同款逻辑 (DRY).
                 if domain != "" {
-                        b.WriteString("Host: " + domain + "\n")
+                        b.WriteString("Host: " + normalizeDomain(domain) + "\n")
                 }
                 return []byte(b.String())
         })

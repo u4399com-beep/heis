@@ -502,8 +502,18 @@ func strField(m map[string]interface{}, key string, max int) string {
         // R44-1C 修复: 原实现 s[:max] 按字节切片, 中文 (3-byte UTF-8) 在边界处会切出孤立
         //   continuation byte (admin 字段如 name/description/adminNote 大量中文输入).
         //   改用 []rune 安全截断 (与 main.go truncate 同款).
-        if max > 0 && len([]rune(s)) > max {
-                s = string([]rune(s)[:max])
+        //
+        //   R101-C BUG-293 (P3, R100-C BUG-288 truncateRune 0-alloc family 续抓, admin
+        //   scope inline 变种): 原实现 `len([]rune(s))` 1 alloc (rune slice) +
+        //   `string([]rune(s)[:max])` 1 alloc (string conv) = 2 alloc/call. strField
+        //   高频 admin 字段处理 (ruleCreate/ruleUpdate/bookCreate/feedbackCreate/
+        //   siteUpdate 等数十 caller × 每 request 多字段 × N request 累积 alloc 压力).
+        //   改调 truncateRune(s, max) — 0-alloc `range` 单遍字节偏移扫描 (R100-C 已建
+        //   helper, 0 行为变化 — 11 case 真值表已验证, 含 max>0 + lenRune<=max 直返 s
+        //   + max<=0 + s="" + 中文/混合 case). max>0 守卫保留 (truncateRune max<=0 返 "",
+        //   原行为 max<=0 返 s unchanged, 但所有 strField caller max>0, 守卫纯粹防御).
+        if max > 0 {
+                s = truncateRune(s, max)
         }
         return s
 }
@@ -4552,10 +4562,9 @@ func adminDownloadsCreate(w http.ResponseWriter, r *http.Request) {
                         for _, a := range arr {
                                 if s, isStr := a.(string); isStr {
                                         s = strings.TrimSpace(s)
-                                        // R44-1C 修复: 原 s[:200] 按字节切片, 中文 ad 文本可能斩半.
-                                        if len([]rune(s)) > 200 {
-                                                s = string([]rune(s)[:200])
-                                        }
+                                        // R44-1C 修复: 原 s[:200] 按字节切片, 中文 ad 文本可能斩半. R101-C
+                                        //   BUG-293 续抓: 改调 truncateRune (0-alloc `range`, 与 strField 同款 family).
+                                        s = truncateRune(s, 200)
                                         if s != "" {
                                                 ads = append(ads, s)
                                         }
@@ -5011,9 +5020,19 @@ func adminFeedbackHandler(w http.ResponseWriter, r *http.Request) {
                 }
         }
         var allCount, newCount, resolvedCount int
-        _ = db.QueryRow(`SELECT COUNT(*) FROM Feedback`).Scan(&allCount)
-        _ = db.QueryRow(`SELECT COUNT(*) FROM Feedback WHERE status='new'`).Scan(&newCount)
-        _ = db.QueryRow(`SELECT COUNT(*) FROM Feedback WHERE status='resolved'`).Scan(&resolvedCount)
+        // R101-C BUG-290 (P3, R100-C BUG-287 multi-COUNT batch swallow family 续抓,
+        //   admin scope 变种): 原实现 3 处独立 `_ = db.QueryRow(...).Scan(...)` 吞错 —
+        //   DB 故障 (SQLite busy lock / 连接闪断) 时 allCount/newCount/resolvedCount
+        //   保持 0 → admin 反馈页 stats 全 0 (假阴性, 实际有反馈). 0 log 提示运维.
+        //   改单 SELECT 多 scalar subquery (3 round-trip → 1, 与 BUG-284/287 同款 perf
+        //   + 精简) + 显式 err + log.Printf (best-effort SSR/API stats, 不阻塞列表渲染).
+        if err := db.QueryRow(`SELECT` +
+                `(SELECT COUNT(*) FROM Feedback),` +
+                `(SELECT COUNT(*) FROM Feedback WHERE status='new'),` +
+                `(SELECT COUNT(*) FROM Feedback WHERE status='resolved')`).
+                Scan(&allCount, &newCount, &resolvedCount); err != nil {
+                log.Printf("[adminFeedbackList] COUNT batch SELECT 失败 (stats 用 0): %v", err)
+        }
         writeJSONOK(w, map[string]interface{}{
                 "rows": rowsList, "total": total, "page": page, "size": size,
                 "pages": totalPages,
@@ -5077,13 +5096,10 @@ func adminFeedbackByIDHandler(w http.ResponseWriter, r *http.Request) {
                 if v, ok := body["adminNote"]; ok && v != nil {
                         note := strField(body, "adminNote", 1000)
                         note = tagStripRE.ReplaceAllString(note, "")
-                        // R44-1C 修复: 原 note[:1000] 按字节切片, 中文 (3-byte UTF-8) 在边界处
-                        //   会切出孤立 continuation byte. strField 已按 rune 截断到 ≤1000, 但 tagStripRE
-                        //   剥标签后 byte 长度仍可能 >1000 (因中文字符 3 byte/rune, 350 runes = 1050 bytes).
-                        //   改用 []rune 防多字节字符斩半.
-                        if len([]rune(note)) > 1000 {
-                                note = string([]rune(note)[:1000])
-                        }
+                        // R44-1C 修复: 原 note[:1000] 按字节切片, 中文 (3-byte UTF-8) 边界斩半.
+                        //   strField 已按 rune 截断到 ≤1000, 但 tagStripRE 剥标签后 byte 长度仍可能
+                        //   >1000 (中文 3 byte/rune). R101-C BUG-293 续抓: 改调 truncateRune (0-alloc).
+                        note = truncateRune(note, 1000)
                         note = strings.TrimSpace(note)
                         if note == "" {
                                 sets = append(sets, "adminNote=NULL")
@@ -5179,9 +5195,9 @@ func publicFeedbackSubmitHandler(w http.ResponseWriter, r *http.Request) {
         siteID := strings.TrimSpace(strField(body, "siteId", 64))
         ip := clientIP(r)
         ua := strings.TrimSpace(strings.ToLower(r.Header.Get("User-Agent")))
-        if len([]rune(ua)) > 256 {
-                ua = string([]rune(ua)[:256])
-        }
+        // R101-C BUG-293 (R100-C BUG-288 truncateRune 0-alloc family 续抓, inline 变种):
+        //   改调 truncateRune (0-alloc `range` 扫描, 替 2 处 []rune alloc/string conv).
+        ua = truncateRune(ua, 256)
         id := generateID()
         _, err := db.Exec(`INSERT INTO Feedback (id, type, contact, content, url, siteId, userAgent, ip, status, adminNote, createdAt, updatedAt) VALUES (?,?,?,?,?,?,?,?,?,'',datetime('now'),datetime('now'))`,
                 id, typ, contact, content, urlV, siteID, ua, ip, "new")
@@ -5254,8 +5270,18 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
         }
         exportedAt := time.Now().UTC().Format(time.RFC3339)
         var bookCount, chapterCount int
-        _ = db.QueryRow(`SELECT COUNT(*) FROM Book`).Scan(&bookCount)
-        _ = db.QueryRow(`SELECT COUNT(*) FROM Chapter`).Scan(&chapterCount)
+        // R101-C BUG-291 (P3, R100-C BUG-287 multi-COUNT batch swallow family 续抓,
+        //   admin scope backup 变种): 原实现 2 处独立 `_ = db.QueryRow(...).Scan(...)`
+        //   吞错 — DB 故障时 bookCount/chapterCount 全 0 → bigBooks 判定假阴性 (bookCount
+        //   ≤ backupBigBooksThreshold 即使实际超阈, 不触发 "仅导出元数据" 警告 → 用户
+        //   满章节导出 OOM 风险). 0 log 提示运维. 改单 SELECT 多 scalar subquery (2
+        //   round-trip → 1) + 显式 err + log.Printf (best-effort, 与 BUG-287 同款).
+        if err := db.QueryRow(`SELECT` +
+                `(SELECT COUNT(*) FROM Book),` +
+                `(SELECT COUNT(*) FROM Chapter)`).
+                Scan(&bookCount, &chapterCount); err != nil {
+                log.Printf("[adminBackupHandler] COUNT batch SELECT 失败 (用 0 兜底): %v", err)
+        }
         bigBooks := bookCount > backupBigBooksThreshold
         // R75-D BUG-145 (P3, R74-D 未决项 #2): backup best-effort 警告集合 (settings/
         //   categories/sites/friendLinks/rules/tasks/downloadJobs/chapters 任一迭代
@@ -7188,8 +7214,19 @@ func generateSiteTDK(siteID string) (title, description, keywords string, err er
 
         // 4. N + M (全局; 站群共享书库时同值, 各站因 siteID hash 不同选不同模板, 仍差异化)
         var N, M int
-        _ = db.QueryRow(`SELECT COUNT(*) FROM Book`).Scan(&N)
-        _ = db.QueryRow(`SELECT COUNT(*) FROM Category`).Scan(&M)
+        // R101-C BUG-292 (P3, R100-C BUG-287 multi-COUNT batch swallow family 续抓,
+        //   admin scope TDK 变种): 原实现 2 处独立 `_ = db.QueryRow(...).Scan(...)` 吞错
+        //   — DB 故障时 N/M=0 → TDK 占位符兜底 "小说" (虽不致渲染 bug, 但 TDK 文案
+        //   失真: 实际 100 站仍写 "0 本"). 本 helper 被 adminSiteGenerateTDK +
+        //   adminSitesBatchGenerateTDK 双 caller 共用 (batch 内 N+M 全局常量, 各站
+        //   重复查 → N 站 batch = 2N round-trip, 改后 = N round-trip). 改单 SELECT 多
+        //   scalar subquery (2 round-trip → 1/call) + 显式 err + log.Printf.
+        if err := db.QueryRow(`SELECT` +
+                `(SELECT COUNT(*) FROM Book),` +
+                `(SELECT COUNT(*) FROM Category)`).
+                Scan(&N, &M); err != nil {
+                log.Printf("[generateSiteTDK] COUNT batch SELECT 失败 (N/M 用 0): %v", err)
+        }
 
         // 5. 占位符兜底值 (cat/book 缺失时用通用词, 不空字段)
         cat1, cat2, cat3 := "小说", "小说", "小说"

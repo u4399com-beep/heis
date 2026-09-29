@@ -4342,6 +4342,44 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 if ap := resp.Header.Get("Accept-Post"); ap != "" {
                         recordSecurityHeader(originHost(rawURL), "Accept-Post", ap)
                 }
+                // R101-A 反反爬第 199-203 项: standardized CDN cache status / MIME
+                //   sniff guard / frame guard / CDN loop / no-vary-search 响应头观测
+                //   (per-host 合并 tracker 第 71-75 字段, 与 124-198 同款). R100-A
+                //   未决项 #1 pivot 续 — modern CDN/security/cache posture family.
+                //   第 199 项 Cache-Status (RFC 9211 §2) — 标准化 CDN 缓存状态
+                //     (Hit/Miss/NoStore/...), 反爬关联: 现代 CDN posture 标准化
+                //     替代 ad-hoc X-Cache (第 173), 与第 194 CDN-Cache-Control +
+                //     172 Via + 195 Proxy-Status 同款 CDN family 续.
+                //   第 200 项 X-Content-Type-Options (Fetch Standard §2.1 nosniff) —
+                //     MIME 嗅探防御, 反爬关联: mature security posture (80%+ 站发,
+                //     与第 124 HSTS + 125 CSP security posture family 续, legacy 但
+                //     仍广泛部署).
+                //   第 201 项 X-Frame-Options (RFC 6797 §2) — 点击劫持防御 (DENY/
+                //     SAMEORIGIN), 反爬关联: legacy 但广泛部署 (CSP frame-ancestors
+                //     取代但 80%+ 站仍双发, 与第 125 CSP security posture family 续).
+                //   第 202 项 CDN-Loop (RFC 8586 §3) — CDN 循环检测 token, 反爬关联:
+                //     现代 CDN posture (Cloudflare/Fastly/Akamai 发, 与第 194 CDN-
+                //     Cache-Control + 199 Cache-Status 同款 CDN family 续, 防 CDN 间
+                //     循环请求).
+                //   第 203 项 No-Vary-Search (W3C No-Vary-Search §2) — URL search param
+                //     变体提示 (与 Vary 第 156 互补, 显式声明哪些 query param 不影响
+                //     缓存键), 反爬关联: 现代 cache posture (成熟 CDN/origin 发, 与
+                //     第 149 Cache-Control + 194 CDN-Cache-Control cache family 续).
+                if cs := resp.Header.Get("Cache-Status"); cs != "" {
+                        recordSecurityHeader(originHost(rawURL), "Cache-Status", cs)
+                }
+                if xcto := resp.Header.Get("X-Content-Type-Options"); xcto != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Content-Type-Options", xcto)
+                }
+                if xfo := resp.Header.Get("X-Frame-Options"); xfo != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Frame-Options", xfo)
+                }
+                if cl := resp.Header.Get("CDN-Loop"); cl != "" {
+                        recordSecurityHeader(originHost(rawURL), "CDN-Loop", cl)
+                }
+                if nvs := resp.Header.Get("No-Vary-Search"); nvs != "" {
+                        recordSecurityHeader(originHost(rawURL), "No-Vary-Search", nvs)
+                }
 
                 // Set-Cookie 处理 (autoCookie)
                 if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
@@ -5476,6 +5514,24 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 }
                 if ap := extractHeaderFromCurlStdout(headers, "Accept-Post"); ap != "" {
                         recordSecurityHeader(domain, "Accept-Post", ap)
+                }
+                // R101-A 反反爬第 199-203 项 续 (与 fetchHttp line ~4345 同款, curl
+                //   -D - dump headers 路径; fetchBinaryViaCurl 不 dump 故不调, 与
+                //   124-198 同款限制. 详见 fetchHttp line ~4345 rationale).
+                if cs := extractHeaderFromCurlStdout(headers, "Cache-Status"); cs != "" {
+                        recordSecurityHeader(domain, "Cache-Status", cs)
+                }
+                if xcto := extractHeaderFromCurlStdout(headers, "X-Content-Type-Options"); xcto != "" {
+                        recordSecurityHeader(domain, "X-Content-Type-Options", xcto)
+                }
+                if xfo := extractHeaderFromCurlStdout(headers, "X-Frame-Options"); xfo != "" {
+                        recordSecurityHeader(domain, "X-Frame-Options", xfo)
+                }
+                if cl := extractHeaderFromCurlStdout(headers, "CDN-Loop"); cl != "" {
+                        recordSecurityHeader(domain, "CDN-Loop", cl)
+                }
+                if nvs := extractHeaderFromCurlStdout(headers, "No-Vary-Search"); nvs != "" {
+                        recordSecurityHeader(domain, "No-Vary-Search", nvs)
                 }
                 if status >= 300 {
                         // R66-C BUG-52 (P3): curl 4xx/5xx 也记 latency + fail (与 fetchHttp
@@ -7666,6 +7722,25 @@ func fetchBinaryHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, pr
                 }
                 if ap := resp.Header.Get("Accept-Post"); ap != "" {
                         recordSecurityHeader(originHost(rawURL), "Accept-Post", ap)
+                }
+                // R101-A 反反爬第 199-203 项 续 (与 fetchHttp line ~4345 同款,
+                //   fetchBinaryHttp success + 4xx/5xx 两路径都记, BUG-241 修复后
+                //   fetchBinaryHttp 已补对称; fetchBinaryViaCurl 不 dump headers
+                //   故不调, 与 124-198 同款限制. 详见 fetchHttp line ~4345 rationale).
+                if cs := resp.Header.Get("Cache-Status"); cs != "" {
+                        recordSecurityHeader(originHost(rawURL), "Cache-Status", cs)
+                }
+                if xcto := resp.Header.Get("X-Content-Type-Options"); xcto != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Content-Type-Options", xcto)
+                }
+                if xfo := resp.Header.Get("X-Frame-Options"); xfo != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Frame-Options", xfo)
+                }
+                if cl := resp.Header.Get("CDN-Loop"); cl != "" {
+                        recordSecurityHeader(originHost(rawURL), "CDN-Loop", cl)
+                }
+                if nvs := resp.Header.Get("No-Vary-Search"); nvs != "" {
+                        recordSecurityHeader(originHost(rawURL), "No-Vary-Search", nvs)
                 }
                 // 3xx / 4xx / 5xx 视为失败 (与 fetchHttp 同款, 不重试 3xx)
                 if resp.StatusCode >= 300 {
@@ -12465,6 +12540,15 @@ type hostSecurityHeadersEntry struct {
         originTrialValue        string // Origin-Trial (第 196 项, R100-A)
         swAllowedValue          string // Service-Worker-Allowed (第 197 项, R100-A)
         acceptPostValue         string // Accept-Post (第 198 项, R100-A)
+        // R101-A 反反爬第 199-203 项: standardized CDN cache status / MIME sniff
+        //   guard / frame guard / CDN loop / no-vary-search 响应头观测 (与
+        //   124-198 同款 family, 单值 last-write-wins per-host 合并 tracker).
+        //   R100-A 未决项 #1 pivot 续 — modern CDN/security/cache posture family.
+        cacheStatusValue        string // Cache-Status (第 199 项, R101-A)
+        xctoValue               string // X-Content-Type-Options (第 200 项, R101-A)
+        xfoValue                string // X-Frame-Options (第 201 项, R101-A)
+        cdnLoopValue            string // CDN-Loop (第 202 项, R101-A)
+        noVarySearchValue       string // No-Vary-Search (第 203 项, R101-A)
         detectedAt              int64  // UnixMilli
 }
 
@@ -12472,7 +12556,7 @@ type hostSecurityHeadersEntry struct {
 //   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项 + R90-A 第 144-148 项
 //   + R91-A 第 149-153 项 + R92-A 第 154-158 项 + R93-A 第 159-163 项 + R94-A 第
 //   164-168 项 + R95-A 第 169-173 项 + R96-A 第 174-178 项 + R98-A 第 184-188 项
-//   + R99-A 第 189-193 项 + R100-A 第 194-198 项).
+//   + R99-A 第 189-193 项 + R100-A 第 194-198 项 + R101-A 第 199-203 项).
 var hostSecurityHeadersMap sync.Map
 
 // hostSecurityHeadersSweepCounter — sweep 触发累加 (与 hostViaSweepCounter 同口径).
@@ -12525,7 +12609,7 @@ func extractSetCookieAttr(cookies []string, attr string) string {
 //   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项 + R90-A 第 144-148
 //   项 + R91-A 第 149-153 项 + R92-A 第 154-158 项 + R93-A 第 159-163 项 + R94-A 第
 //   164-168 项 + R95-A 第 169-173 项 + R96-A 第 174-178 项 + R98-A 第 184-188 项
-//   + R99-A 第 189-193 项 + R100-A 第 194-198 项).
+//   + R99-A 第 189-193 项 + R100-A 第 194-198 项 + R101-A 第 199-203 项).
 //   headerName 区分 60 头 (大小写不敏感). 与 recordVia 同款 Store + 惰性 sweep, 但
 //   保留其他 59 头旧值 (LoadOrStore canonical 指针 + 单字段 update-in-place).
 func recordSecurityHeader(host, headerName, value string) {
@@ -12696,6 +12780,20 @@ func recordSecurityHeader(host, headerName, value string) {
                 ent.swAllowedValue = value
         case "accept-post":
                 ent.acceptPostValue = value
+        // R101-A 反反爬第 199-203 项: standardized CDN cache status / MIME sniff
+        //   guard / frame guard / CDN loop / no-vary-search 响应头观测 (与
+        //   124-198 同款 family, 单值 last-write-wins per-host 合并 tracker).
+        //   详见 fetchHttp line ~4350 rationale.
+        case "cache-status":
+                ent.cacheStatusValue = value
+        case "x-content-type-options":
+                ent.xctoValue = value
+        case "x-frame-options":
+                ent.xfoValue = value
+        case "cdn-loop":
+                ent.cdnLoopValue = value
+        case "no-vary-search":
+                ent.noVarySearchValue = value
         default:
                 return
         }
@@ -12788,6 +12886,11 @@ func HostSecurityHeadersSnapshot() map[string]map[string]string {
                         "originTrialValue":        e.originTrialValue,
                         "swAllowedValue":          e.swAllowedValue,
                         "acceptPostValue":         e.acceptPostValue,
+                        "cacheStatusValue":        e.cacheStatusValue,
+                        "xctoValue":               e.xctoValue,
+                        "xfoValue":                e.xfoValue,
+                        "cdnLoopValue":            e.cdnLoopValue,
+                        "noVarySearchValue":       e.noVarySearchValue,
                         "detectedAt":        fmt.Sprintf("%d", e.detectedAt),
                 }
                 return true
