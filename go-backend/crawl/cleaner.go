@@ -1692,16 +1692,17 @@ func newSeededRand(seed string) *rand.Rand {
 //      CleanContentHtmlWithTrafilatura / TryTrafilaturaFallback 任一组合) 完成后,
 //      落库前调本函数.
 //      cfg.Enabled == false → 短路返原 html (不破坏 71 Rule clean 段, 默认关).
-//      cfg.Interval 钳 3-5 (越界裁到边界), 0 → 默认 4 (与 applyInterference 同口径).
-//      cfg.Seed 空 → applyInterference 内部兜底 "default" (主要测试用; runner 实际
-//        传 bookID+":"+chapterID 保同章节同输出).
+//      cfg.Interval / cfg.Seed 直传 applyInterference, 由其内部钳 3-5 + 0→默认 4 +
+//      seed 空→"default" 兜底 (R110-B 精简-1: 原 ApplyInterferenceToCleaned 重复
+//      钳 `if interval <= 0 { interval = 4 }`, 与 applyInterference line 1611
+//      `if interval <= 0 { interval = 4 }` + 钳 3-5 同口径冗余 — applyInterference
+//      已全量钳, caller 传 interval=0/1/2/6 均被内部归一, 重复钳是 no-op. 删除
+//      `interval := cfg.Interval` + 4 行 if 块, 直传 cfg.Interval. 行为 0 变化
+//      (applyInterference(0)→4, applyInterference(2)→3, applyInterference(6)→5,
+//      与原 ApplyInterferenceToCleaned 预钳 + applyInterference 再钳结果同).
 func ApplyInterferenceToCleaned(html string, cfg InterfereConfig) string {
         if !cfg.Enabled || html == "" {
                 return html
         }
-        interval := cfg.Interval
-        if interval <= 0 {
-                interval = 4
-        }
-        return applyInterference(html, cfg.Seed, interval)
+        return applyInterference(html, cfg.Seed, cfg.Interval)
 }

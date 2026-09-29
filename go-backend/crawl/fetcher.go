@@ -4740,6 +4740,33 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 if cfrs := resp.Header.Get("CF-Railgun-Status"); cfrs != "" {
                         recordSecurityHeader(originHost(rawURL), "CF-Railgun-Status", cfrs)
                 }
+                // R110-A 反反爬第 244-248 项: Cloudflare device class + 标准 X-Forwarded-*
+                //   转发链 + IIS rewrite 响应头观测 (与 124-243 同款 family, 单值 last-write-
+                //   wins per-host 合并 tracker). R109-A 未决项 #1 pivot 续 — Cloudflare edge
+                //   client identification (239-243) 耗尽, pivot Cloudflare device class (CF-
+                //   Device-Type, mobile/tablet/desktop edge 端 UA 分类反查 — 反爬侧对比 UA 声明
+                //   desktop 但 CF-Device-Type=mobile 是 bot 信号) + 标准 X-Forwarded-Proto/
+                //   Host/Server 转发链 (origin/CDN debug 配置 echo 回响应时捕获, complement
+                //   CF-Visitor scheme hint + True-Client-IP) + IIS X-Original-URL rewrite 原
+                //   path (IIS 栈信号). 注: X-Forwarded-For / X-Real-IP 不在此批 (R65-B 第 60
+                //   项 outbound 伪造注入, origin echo 会捕获本系统伪造值 = 噪声, 故排除).
+                //   第 244 CF-Device-Type / 第 245 X-Forwarded-Proto / 第 246 X-Forwarded-
+                //   Host / 第 247 X-Forwarded-Server / 第 248 X-Original-URL.
+                if cfdt := resp.Header.Get("CF-Device-Type"); cfdt != "" {
+                        recordSecurityHeader(originHost(rawURL), "CF-Device-Type", cfdt)
+                }
+                if xfp := resp.Header.Get("X-Forwarded-Proto"); xfp != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Forwarded-Proto", xfp)
+                }
+                if xfh := resp.Header.Get("X-Forwarded-Host"); xfh != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Forwarded-Host", xfh)
+                }
+                if xfs := resp.Header.Get("X-Forwarded-Server"); xfs != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Forwarded-Server", xfs)
+                }
+                if xou := resp.Header.Get("X-Original-URL"); xou != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Original-URL", xou)
+                }
 
                 // Set-Cookie 处理 (autoCookie)
                 if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
@@ -6052,6 +6079,28 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 }
                 if cfrs := extractHeaderFromCurlStdout(headers, "CF-Railgun-Status"); cfrs != "" {
                         recordSecurityHeader(domain, "CF-Railgun-Status", cfrs)
+                }
+                // R110-A 反反爬第 244-248 项 续 (与 fetchHttp line ~4744 同款, curl -D -
+                //   dump headers 路径; fetchBinaryViaCurl 不 dump headers 故不调, 与
+                //   124-243 同款限制. 详见 fetchHttp line ~4744 rationale). 第 244 CF-Device-
+                //   Type / 第 245 X-Forwarded-Proto / 第 246 X-Forwarded-Host / 第 247
+                //   X-Forwarded-Server / 第 248 X-Original-URL (extractHeaderFromCurlStdout
+                //   已对 5 头大小写不敏感提取; 与 fetchHttp 同款排除 X-Forwarded-For /
+                //   X-Real-IP 因 R65-B 伪造噪声).
+                if cfdt := extractHeaderFromCurlStdout(headers, "CF-Device-Type"); cfdt != "" {
+                        recordSecurityHeader(domain, "CF-Device-Type", cfdt)
+                }
+                if xfp := extractHeaderFromCurlStdout(headers, "X-Forwarded-Proto"); xfp != "" {
+                        recordSecurityHeader(domain, "X-Forwarded-Proto", xfp)
+                }
+                if xfh := extractHeaderFromCurlStdout(headers, "X-Forwarded-Host"); xfh != "" {
+                        recordSecurityHeader(domain, "X-Forwarded-Host", xfh)
+                }
+                if xfs := extractHeaderFromCurlStdout(headers, "X-Forwarded-Server"); xfs != "" {
+                        recordSecurityHeader(domain, "X-Forwarded-Server", xfs)
+                }
+                if xou := extractHeaderFromCurlStdout(headers, "X-Original-URL"); xou != "" {
+                        recordSecurityHeader(domain, "X-Original-URL", xou)
                 }
                 if status >= 300 {
                         // R66-C BUG-52 (P3): curl 4xx/5xx 也记 latency + fail (与 fetchHttp
@@ -8442,6 +8491,29 @@ func fetchBinaryHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, pr
                 }
                 if cfrs := resp.Header.Get("CF-Railgun-Status"); cfrs != "" {
                         recordSecurityHeader(originHost(rawURL), "CF-Railgun-Status", cfrs)
+                }
+                // R110-A 反反爬第 244-248 项 续 (与 fetchHttp line ~4744 同款,
+                //   fetchBinaryHttp success + 4xx/5xx 两路径都记, BUG-241 修复后
+                //   fetchBinaryHttp 已补对称; fetchBinaryViaCurl 不 dump headers
+                //   故不调, 与 124-243 同款限制. 详见 fetchHttp line ~4744 rationale).
+                //   第 244 CF-Device-Type / 第 245 X-Forwarded-Proto / 第 246 X-Forwarded-
+                //   Host / 第 247 X-Forwarded-Server / 第 248 X-Original-URL (Cloudflare
+                //   device class + 标准 X-Forwarded-* 转发链 + IIS rewrite; cover host
+                //   多在 external CDN / S3, 与 HTML host 不同域各自独立条目, 无污染).
+                if cfdt := resp.Header.Get("CF-Device-Type"); cfdt != "" {
+                        recordSecurityHeader(originHost(rawURL), "CF-Device-Type", cfdt)
+                }
+                if xfp := resp.Header.Get("X-Forwarded-Proto"); xfp != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Forwarded-Proto", xfp)
+                }
+                if xfh := resp.Header.Get("X-Forwarded-Host"); xfh != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Forwarded-Host", xfh)
+                }
+                if xfs := resp.Header.Get("X-Forwarded-Server"); xfs != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Forwarded-Server", xfs)
+                }
+                if xou := resp.Header.Get("X-Original-URL"); xou != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Original-URL", xou)
                 }
                 // 3xx / 4xx / 5xx 视为失败 (与 fetchHttp 同款, 不重试 3xx)
                 if resp.StatusCode >= 300 {
@@ -13167,11 +13239,11 @@ func ClearHostAcceptRanges(host string) {
 //   + R99-A 第 189-193 项 + R100-A 第 194-198 项 + R101-A 第 199-203 项 + R102-A
 //   第 204-208 项 + R103-A 第 209-213 项 + R104-A 第 214-218 项 + R105-A 第
 //   219-223 项 (R106-A BUG-313 补字段) + R106-A 第 224-228 项 + R107-A 第
-//   229-233 项 + R108-A 第 234-238 项 + R109-A 第 239-243 项, 合并 115 字段).
-//   entry 是 pointer: recordSecurityHeader LoadOrStore canonical 指针 + 单字段
-//   update-in-place (非 store-replace, 保留其他 114 头旧值). 同字段并发写
+//   229-233 项 + R108-A 第 234-238 项 + R109-A 第 239-243 项 + R110-A 第 244-248 项,
+//   合并 120 字段). entry 是 pointer: recordSecurityHeader LoadOrStore canonical 指针
+//   + 单字段 update-in-place (非 store-replace, 保留其他 119 头旧值). 同字段并发写
 //   last-write-wins; sweep CompareAndDelete 后下次 record 重建 entry (与 recordVia
-//   store-replace 不一样, 这里需保留其他 114 头故用 update-in-place).
+//   store-replace 不一样, 这里需保留其他 119 头故用 update-in-place).
 type hostSecurityHeadersEntry struct {
         hstsValue         string // Strict-Transport-Security (第 124 项)
         cspValue          string // Content-Security-Policy (第 125 项)
@@ -13369,6 +13441,18 @@ type hostSecurityHeadersEntry struct {
         cfIPCountryValue        string // CF-IPCountry (第 241 项, R109-A)
         cfVisitorValue          string // CF-Visitor (第 242 项, R109-A)
         cfRailgunStatusValue    string // CF-Railgun-Status (第 243 项, R109-A)
+        // R110-A 反反爬第 244-248 项: Cloudflare device class + 标准 X-Forwarded-* 转发
+        //   链 + IIS rewrite 响应头观测 (与 124-243 同款 family, 单值 last-write-wins
+        //   per-host 合并 tracker). 详见 fetchHttp line ~4744 rationale (R110-A 块).
+        //   headerName 大小写不敏感. R109-A 未决项 #1 pivot 续 — Cloudflare edge client
+        //   identification (239-243) 耗尽, pivot CF-Device-Type (edge device class 反查)
+        //   + X-Forwarded-Proto/Host/Server 标准转发链 (origin debug echo, complement
+        //   CF-Visitor scheme) + X-Original-URL (IIS rewrite 原 path).
+        cfDeviceTypeValue       string // CF-Device-Type (第 244 项, R110-A)
+        xForwardedProtoValue    string // X-Forwarded-Proto (第 245 项, R110-A)
+        xForwardedHostValue     string // X-Forwarded-Host (第 246 项, R110-A)
+        xForwardedServerValue   string // X-Forwarded-Server (第 247 项, R110-A)
+        xOriginalURLValue      string // X-Original-URL (第 248 项, R110-A)
         detectedAt              int64  // UnixMilli
 }
 
@@ -13379,7 +13463,7 @@ type hostSecurityHeadersEntry struct {
 //   + R99-A 第 189-193 项 + R100-A 第 194-198 项 + R101-A 第 199-203 项 + R102-A
 //   第 204-208 项 + R103-A 第 209-213 项 + R104-A 第 214-218 项 + R105-A 第
 //   219-223 项 (R106-A BUG-313 补字段) + R106-A 第 224-228 项 + R107-A 第
-//   229-233 项 + R108-A 第 234-238 项 + R109-A 第 239-243 项).
+//   229-233 项 + R108-A 第 234-238 项 + R109-A 第 239-243 项 + R110-A 第 244-248 项).
 var hostSecurityHeadersMap sync.Map
 
 // hostSecurityHeadersSweepCounter — sweep 触发累加 (与 hostViaSweepCounter 同口径).
@@ -13435,9 +13519,9 @@ func extractSetCookieAttr(cookies []string, attr string) string {
 //   + R99-A 第 189-193 项 + R100-A 第 194-198 项 + R101-A 第 199-203 项 + R102-A
 //   第 204-208 项 + R103-A 第 209-213 项 + R104-A 第 214-218 项 + R105-A 第
 //   219-223 项 (R106-A BUG-313 补 case) + R106-A 第 224-228 项 + R107-A 第
-//   229-233 项 + R108-A 第 234-238 项 + R109-A 第 239-243 项).
-//   headerName 区分 115 头 (大小写不敏感). 与 recordVia 同款 Store + 惰性 sweep,
-//   但保留其他 114 头旧值 (LoadOrStore canonical 指针 + 单字段 update-in-place).
+//   229-233 项 + R108-A 第 234-238 项 + R109-A 第 239-243 项 + R110-A 第 244-248 项).
+//   headerName 区分 120 头 (大小写不敏感). 与 recordVia 同款 Store + 惰性 sweep,
+//   但保留其他 119 头旧值 (LoadOrStore canonical 指针 + 单字段 update-in-place).
 func recordSecurityHeader(host, headerName, value string) {
         if host == "" || value == "" {
                 return
@@ -13733,6 +13817,18 @@ func recordSecurityHeader(host, headerName, value string) {
                 ent.cfVisitorValue = value
         case "cf-railgun-status":
                 ent.cfRailgunStatusValue = value
+        // R110-A 反反爬第 244-248 项 (与 124-243 同款 family, 详见 fetchHttp line
+        //   ~4744 rationale. headerName 大小写不敏感).
+        case "cf-device-type":
+                ent.cfDeviceTypeValue = value
+        case "x-forwarded-proto":
+                ent.xForwardedProtoValue = value
+        case "x-forwarded-host":
+                ent.xForwardedHostValue = value
+        case "x-forwarded-server":
+                ent.xForwardedServerValue = value
+        case "x-original-url":
+                ent.xOriginalURLValue = value
         default:
                 return
         }
@@ -13875,6 +13971,12 @@ func HostSecurityHeadersSnapshot() map[string]map[string]string {
                         "cfIPCountryValue":      e.cfIPCountryValue,
                         "cfVisitorValue":        e.cfVisitorValue,
                         "cfRailgunStatusValue":  e.cfRailgunStatusValue,
+                        // R110-A 第 244-248 项.
+                        "cfDeviceTypeValue":     e.cfDeviceTypeValue,
+                        "xForwardedProtoValue":  e.xForwardedProtoValue,
+                        "xForwardedHostValue":   e.xForwardedHostValue,
+                        "xForwardedServerValue": e.xForwardedServerValue,
+                        "xOriginalURLValue":    e.xOriginalURLValue,
                         "detectedAt":        fmt.Sprintf("%d", e.detectedAt),
                 }
                 return true

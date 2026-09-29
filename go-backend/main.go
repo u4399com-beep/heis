@@ -1504,19 +1504,27 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 data["Popular"] = takeBooks(books, hotN)
                 // TopBooks 为一周热榜 + FeaturedBooks 的 fallback (原 topBooks(books, 6) 保留).
                 topN := 6
-                data["TopBooks"] = topBooks(books, topN)
+                // R110-D 精简-1 (P4 精简/DRY, main scope, R109-D 精简-1
+                //   buildHomeURL init-预算复用 sibling + R80-D BUG-170
+                //   defensive-cast family 精简): 原代码用
+                //   data["TopBooks"].([]map[string]interface{}) comma-ok 防御读
+                //   TopBooks (R80-D BUG-170 加防御避免类型断言 panic), 但 TopBooks
+                //   由本 case line 1507 topBooks(books, topN) 赋值, 类型已知
+                //   ([]map[string]interface{} 非 nil slice, 0 panic surface —
+                //   topBooks line 3559 始终返 make+copy 非 nil). hoist tb local
+                //   var, 用 tb 直接复用替代 map 读 + 类型断言, 删 comma-ok 防御
+                //   (本就冗余). 与 R108-D BUG-321 读 book["URL"] 复用 injectBookURL
+                //   预算 + R109-D 精简-1 读 data["HomeURL"] 复用 buildHomeURL 预算
+                //   同款 "DRY 精简" precedent (consolidate map lookup → local var).
+                //   0 行为变化 (tb 同值, len 检查保 fallback [] empty slice 不变).
+                tb := topBooks(books, topN)
+                data["TopBooks"] = tb
                 // R71-A 目标B: FeaturedBooks 封面推荐区块 (读 Setting 表 featuredBooks.{siteID} JSON).
                 //   模板 range .FeaturedBooks 渲染; 为空时 fallback TopBooks 避免空区块 (admin 未配置
                 //   featuredBooks 时显示一周热榜 top6, 与 R70-C 前一致).
                 featured := getFeaturedBooks(siteDBID)
                 if len(featured) == 0 {
-                        // R80-D BUG-170 (P3): 原实现 `data["TopBooks"].([]map[string]interface{})`
-                        //   无 ok-check — TopBooks 由 line 1075 topBooks(books, topN) 设置 (始终非 nil
-                        //   slice), 但 assertion 失败会 panic (非 graceful). 改 comma-ok 防御:
-                        //   未来若 line 1075 被重构移除 / 改名 / 改返类型, 本行 panic 而非 fallback
-                        //   空 slice 是隐性 bug. ok-check 让 assertion 失败时 featured=[] 空 slice,
-                        //   模板 range 空 (区块隐藏), 不 panic.
-                        if tb, ok := data["TopBooks"].([]map[string]interface{}); ok && len(tb) > 0 {
+                        if len(tb) > 0 {
                                 featured = tb
                         } else {
                                 featured = []map[string]interface{}{}
@@ -1646,18 +1654,20 @@ func render404(w http.ResponseWriter, r *http.Request, site map[string]interface
                 if err := t.Execute(&buf, data); err == nil {
                         // R69-A/R70-A: 若 obfuscateHTML=true 应用混淆 (404 页用 "404" view 构造 seed).
                         //   R70-A: 优先 site["ObfuscateHTML"] (per-site 覆盖全局), 缺失 fallback 全局.
-                        out := buf.String()
-                        siteDBID, _ := site["ID"].(string)
-                        obfuscateOn, hasKey := site["ObfuscateHTML"].(bool)
-                        if !hasKey {
-                                obfuscateOn = getObfuscateHTMLEnabled()
-                        }
-                        if obfuscateOn && siteDBID != "" {
-                                out = obfuscateHTML(out, obfuscateHTMLSeed(siteDBID, "404"))
-                        }
+                        //   R110-D BUG-328 (P4 精简/DRY, main scope, R109-D 精简-1
+                        //     buildHomeURL init-预算复用 sibling + R108-D BUG-321
+                        //     init/inject-预算复用 family 续): 原本块 9 行内联 obfuscate
+                        //     if-else (site["ID"] 取 + site["ObfuscateHTML"] ok-check
+                        //     fallback 全局 + obfuscateHTML+obfuscateHTMLSeed 调用) 与
+                        //     writeRenderedHTML (line ~2675) 重复 — writeRenderedHTML
+                        //     文档注释 line ~2672 已声称 "render404 共享此 helper" 但
+                        //     render404 实际 inline, DRY violation. 改读
+                        //     maybeObfuscateHTML helper, 1 行调用替代 9 行 inline
+                        //     obfuscate 块. 0 行为变化 (触发条件等价: obfuscateOn &&
+                        //     siteID != ""; seed 同 "404" view).
                         w.Header().Set("Content-Type", "text/html; charset=utf-8")
                         w.WriteHeader(http.StatusNotFound)
-                        w.Write([]byte(out))
+                        w.Write([]byte(maybeObfuscateHTML(buf.String(), site, "404")))
                         return
                 } else {
                         // Execute 失败 → log + fallback http.NotFound (未写出任何 byte, 可安全 fallback)
@@ -2672,22 +2682,42 @@ func transcodeChapterContent(htmlContent, mode string) string {
 //      homeHandler + render404 共享此 helper, 避免重复 if-else 逻辑.
 //      siteID/view 用于构造 seed (5 分钟窗口); 若二者均空 → 不混淆 (防 admin 测试误用).
 //      R70-A: 改读 site["ObfuscateHTML"] (per-site 覆盖全局), 缺失时 fallback 全局.
+//      R110-D BUG-328 (cont, writeRenderedHTML sibling): obfuscate if-else 块
+//        提取到 maybeObfuscateHTML helper (render404 共享). 原文档 line ~2672 已
+//        声称 "render404 共享此 helper" 但 render404 实际 inline 重复 (本 BUG-328
+//        收口). 13 行 inline if-else 改 1 行 helper 调用. 0 行为变化 (触发条件
+//        等价: site != nil && siteID != "" && obfuscateOn).
 func writeRenderedHTML(w http.ResponseWriter, html string, site map[string]interface{}, view string) {
-        if site != nil {
-                siteID, _ := site["ID"].(string)
-                if siteID != "" {
-                        // R70-A: 优先 site.ObfuscateHTML (per-site), 缺失 fallback 全局
-                        obfuscateOn, hasKey := site["ObfuscateHTML"].(bool)
-                        if !hasKey {
-                                obfuscateOn = getObfuscateHTMLEnabled()
-                        }
-                        if obfuscateOn {
-                                html = obfuscateHTML(html, obfuscateHTMLSeed(siteID, view))
-                        }
-                }
-        }
         w.Header().Set("Content-Type", "text/html; charset=utf-8")
-        w.Write([]byte(html))
+        w.Write([]byte(maybeObfuscateHTML(html, site, view)))
+}
+
+// R110-D BUG-328: maybeObfuscateHTML 返回 (按需 obfuscate 后的) html. site==nil /
+//   siteID 空 / obfuscate 关闭 → passthrough 返原 html; 否则按 siteID+view+
+//   5 分钟窗口 obfuscate (R69-A obfuscateHTMLSeed 同 seed 构造).
+//   原 render404 + writeRenderedHTML 各内联同 obfuscate if-else 块 (2 callsite
+//   重复); 提取单 helper, 2 callsite 各 1 行调用替代 inline 块. 0 行为变化
+//   (触发条件等价于原两 callsite: site != nil && site["ID"] != "" && obfuscateOn).
+//   省 ~16 行重复代码 + obfuscate 触发逻辑维护点合一 (单点修改覆盖
+//   render404+writeRenderedHTML 全 callsite). 与 R108-D BUG-321 init/inject-预算复用
+//   + R109-D 精简-1 buildHomeURL init-预算复用同款 "DRY 精简" precedent
+//   (consolidate redundant inline → shared helper).
+func maybeObfuscateHTML(html string, site map[string]interface{}, view string) string {
+        if site == nil {
+                return html
+        }
+        siteID, _ := site["ID"].(string)
+        if siteID == "" {
+                return html
+        }
+        obfuscateOn, hasKey := site["ObfuscateHTML"].(bool)
+        if !hasKey {
+                obfuscateOn = getObfuscateHTMLEnabled()
+        }
+        if !obfuscateOn {
+                return html
+        }
+        return obfuscateHTML(html, obfuscateHTMLSeed(siteID, view))
 }
 
 // R64-D: per-book/chapter/category URL 注入 helpers.

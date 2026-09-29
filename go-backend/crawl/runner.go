@@ -2441,6 +2441,56 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                         if cfg.Override.FetchMode != "" {
                                 coverCfg.FetchMode = cfg.Override.FetchMode
                         }
+                        // R110-A BUG-328 (P3) 修复 (深抓 cover fetch posture 续, 与
+                        //   BUG-317 TLSProfile/H2Fingerprint/HeaderOrderProfile + BUG-327
+                        //   FetchMode 同 "结构 + 半实现 latent" family 续): cover fetch
+                        //   FetchConfig 仍漏继承 cfg.Override.CurlImpersonateProfile
+                        //   (string) — curl-impersonate 桥浏览器 profile (chrome120 /
+                        //   safari17 / firefox135 等, 决定 JA3/TLS ClientHello 指纹).
+                        //   后果: cover 同域站 (originHost(parsed.Cover) == originHost
+                        //   (bookURL)) behind 反爬时, book fetch 经 mergeFetchConfig(line
+                        //   ~10021-10022) 复制 cfg.Override.CurlImpersonateProfile →
+                        //   fetchViaCurlImpersonate(line ~6332) 按 profile 选 curl_cffi
+                        //   impersonate target (chrome120 JA3 vs safari17 JA3 完全不同),
+                        //   cover fetch 漏继承 → cover fetch 走 default "chrome" profile
+                        //   → 同一浏览器 1s 内 book (chrome120 JA3) + cover (default
+                        //   chrome JA3) TLS 指纹不一致 → 反爬侧 JA3 fingerprint 漂移是
+                        //   bot 信号 (反爬关联高 — JA3 是反爬主检维度之一). 注: 当前
+                        //   cover fetch 路径 (FetchBinaryPage → fetchBinaryHttp) 尚未读
+                        //   cfg.CurlImpersonateProfile (CurlImpersonateProfile 仅在
+                        //   fetchViaCurlImpersonate HTML 路径消费), 故属 "结构 + 半实现
+                        //   latent" (与 BUG-327 FetchMode 同款 precedent), 但 coverSameHost
+                        //   继承是结构对称前提, 后续 cover fetch 路径若加 curl-impersonate
+                        //   路由自动跟上. 与 BUG-314 同 coverSameHost gate. 修复:
+                        //   cfg.Override.CurlImpersonateProfile != "" gate 继承 (与
+                        //   mergeFetchConfig line ~10021-10022 同款 "非空覆盖" gate).
+                        if cfg.Override.CurlImpersonateProfile != "" {
+                                coverCfg.CurlImpersonateProfile = cfg.Override.CurlImpersonateProfile
+                        }
+                        // R110-A BUG-329 (P3) 修复 (深抓 cover fetch posture 续, 与
+                        //   BUG-327 FetchMode + BUG-328 CurlImpersonateProfile 同 "结构 +
+                        //   半实现 latent" alt-engine family 续): cover fetch FetchConfig
+                        //   仍漏继承 cfg.Override.CloakBrowserURL (string) — cloak-browser
+                        //   / obscura 桥 URL (puppeteer-extra stealth, 默认 127.0.0.1:3020/
+                        //   fetch, 用户可 override 指向自建 cloak 实例). 后果: cover 同域站
+                        //   (originHost(parsed.Cover) == originHost(bookURL)) behind 反爬时,
+                        //   book fetch 经 mergeFetchConfig(line ~10024-10025) 复制
+                        //   cfg.Override.CloakBrowserURL → fetchViaObscura(line ~6278) 按
+                        //   bridgeURL 路由到 cloak 桥 (stealth puppeteer, JS eval + iframe
+                        //   bypass), cover fetch 漏继承 → cover fetch 走 default bridge URL
+                        //   (127.0.0.1:3020) → 同一浏览器 1s 内 book (user cloak 实例 A)
+                        //   + cover (default local cloak) 引擎实例不一致 → 反爬侧观察到的
+                        //   behavior fingerprint 不一致是 bot 信号. 注: 当前 cover fetch
+                        //   路径 (FetchBinaryPage → fetchBinaryHttp) 尚未读 cfg.CloakBrowserURL
+                        //   (CloakBrowserURL 仅在 fetchViaObscura HTML 路径消费), 故属 "结构
+                        //   + 半实现 latent" (与 BUG-327/328 同款 precedent), 但 coverSameHost
+                        //   继承是结构对称前提, 后续 cover fetch 路径若加 cloak-browser 路由
+                        //   自动跟上. 与 BUG-314 同 coverSameHost gate. 修复:
+                        //   cfg.Override.CloakBrowserURL != "" gate 继承 (与 mergeFetchConfig
+                        //   line ~10024-10025 同款 "非空覆盖" gate).
+                        if cfg.Override.CloakBrowserURL != "" {
+                                coverCfg.CloakBrowserURL = cfg.Override.CloakBrowserURL
+                        }
                 }
                 coverBin, err := FetchBinaryPage(ctx, parsed.Cover, coverCfg)
                 if err == nil && !coverBin.Blocked && len(coverBin.Bytes) > 0 {

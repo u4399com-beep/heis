@@ -475,7 +475,12 @@ func writeJSONErr(w http.ResponseWriter, msg string, code int) {
         w.Header().Set("Content-Type", "application/json; charset=utf-8")
         w.Header().Set("Access-Control-Allow-Origin", "*")
         w.WriteHeader(code)
-        json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "error": msg})
+        // R110-C BUG-329 Pattern G Encode 吞错 family 续 (BUG-327 续, 隐式
+        //   statement-form swallow 变种): writeJSONErr 是 admin 中央错误响应
+        //   helper — 本 callsite 覆盖 admin 全部 writeJSONErr caller (~50+
+        //   callsite 间接路由), 1 fix 高 leverage. 改 encodeLogged log-on-
+        //   fail, 0 行为变化 (response 仍写, 仅失败加 log).
+        encodeLogged("writeJSONErr", json.NewEncoder(w), map[string]interface{}{"ok": false, "error": msg})
 }
 
 // writeJSONOK 写成功 JSON.
@@ -581,6 +586,41 @@ func queryLogged(label, query string, args ...interface{}) *sql.Rows {
                 return nil
         }
         return rows
+}
+
+// encodeLogged wraps json.Encoder.Encode for response write, log-on-fail
+//   visibility (0 行为变化 — response 仍写, 仅失败时加 log; 与原
+//   statement-form `json.NewEncoder(w).Encode(...)` 隐式 swallow 语义一致,
+//   headers 已发无法改 HTTP status). R110-C BUG-329 Pattern G
+//   json.Encoder.Encode 吞错 family 续 (R109-C BUG-327 1 callsite 用 inline
+//   `if eerr := enc.Encode; eerr != nil { log.Printf }` 收口后, admin scope
+//   剩 2 callsite 隐式 statement-form swallow: writeJSONErr 中央错误响应
+//   helper + feedback 403 路径). 客户端断连 (broken pipe) 时 Encode 写中途
+//   失败 → JSON 响应截断, 前台 fetch().json() 解析失败 toast 报网络错误
+//   (与 BUG-327 backup Encode 同款 response-write swallow sub-family).
+//   helper 单点维护防散落 inline log-on-fail 重复; BUG-327 callsite (line
+//   ~5914) 亦改本 helper DRY 收口 (精简-1, -6 行 inline block).
+func encodeLogged(label string, enc *json.Encoder, v interface{}) {
+        if eerr := enc.Encode(v); eerr != nil {
+                log.Printf("[%s] Encode 失败 (响应可能截断): %v", label, eerr)
+        }
+}
+
+// writeBytesLogged wraps http.ResponseWriter.Write for raw byte response,
+//   log-on-fail visibility (0 行为变化 — bytes 仍写, 仅失败时加 log; 与原
+//   statement-form `w.Write([]byte(...))` 隐式 swallow 语义一致). R110-C
+//   BUG-328 Pattern K w.Write 吞错 family — 与 BUG-329 Encode family 并行
+//   的 raw-byte-write sub-family. 2 callsite: renderAdminPage (整页 admin
+//   HTML ~tens KB) + downloadTxt (txt 下载可能 MBs). 客户端断连时 w.Write
+//   写中途失败 → 响应截断 (admin 见半截 HTML / 下载文件不完整),
+//   Content-Length 头已发浏览器检测 mismatch, 0 log 提示运维. 与 BUG-327/
+//   329 response-write swallow family 同款 (broken pipe 边缘场景, 0 当前
+//   用户受影响, future latent visibility 收口). helper 单点维护防散落
+//   inline log-on-fail 重复.
+func writeBytesLogged(label string, w http.ResponseWriter, data []byte) {
+        if _, werr := w.Write(data); werr != nil {
+                log.Printf("[%s] Write 失败 (响应可能截断): %v", label, werr)
+        }
 }
 
 // parseTaskProgress 解析 Task.progress JSON 列为仪表盘/任务页所需的 progressNote +
@@ -3490,7 +3530,11 @@ func renderAdminPage(w http.ResponseWriter, tmplName, active, title string, r *h
                 return
         }
         w.Header().Set("Content-Type", "text/html; charset=utf-8")
-        w.Write([]byte(buf.String()))
+        // R110-C BUG-328 Pattern K w.Write 吞错 family: 整页 admin HTML
+        //   (~tens KB) 写 response. 客户端断连时 w.Write 截断 → admin 见
+        //   半截 HTML, 0 log. 改 writeBytesLogged log-on-fail, 0 行为变化
+        //   (headers 已发无法改 status, best-effort 写语义不变).
+        writeBytesLogged("renderAdminPage", w, []byte(buf.String()))
 }
 
 // fillDashboardData — 装配仪表盘数据 (统计 + 最近任务 + 最近书籍).
@@ -5430,7 +5474,11 @@ func publicFeedbackSubmitHandler(w http.ResponseWriter, r *http.Request) {
                 w.Header().Set("Content-Type", "application/json; charset=utf-8")
                 w.Header().Set("Access-Control-Allow-Origin", "*")
                 w.WriteHeader(403)
-                json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "error": "反馈模块已关闭"})
+                // R110-C BUG-329 Pattern G Encode 吞错 family 续 (BUG-327 续,
+                //   隐式 statement-form swallow 变种): 反馈模块关闭 403 路径.
+                //   改 encodeLogged log-on-fail, 0 行为变化 (与 writeJSONErr
+                //   callsite 共用 helper, 单点维护).
+                encodeLogged("feedbackSubmit 403", json.NewEncoder(w), map[string]interface{}{"ok": false, "error": "反馈模块已关闭"})
                 return
         }
         body := readJSONBody(r)
@@ -5904,16 +5952,12 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
         w.Header().Set("Cache-Control", "no-store")
         enc := json.NewEncoder(w)
         enc.SetEscapeHTML(false)
-        // R109-C BUG-327 Pattern G json.Encoder.Encode 吞错 family (response
-        //   write swallow): 原 `_ = enc.Encode(payload)` 吞错 — 客户端断连
-        //   (broken pipe) 时 backup 文件截断, 但 lastBackupAt 已在上文
-        //   execLogged 写入 → “成功记录但交付失败” 不一致, 0 log 提示运维.
-        //   改 log-on-fail (best-effort, headers 已发无法改 status, 仅 log
-        //   可见性, 0 行为变化). 与 BUG-326 db.Query family 同款 swallow
-        //   收口, 但属 response write sub-family.
-        if eerr := enc.Encode(payload); eerr != nil {
-                log.Printf("[adminBackupHandler] backup Encode 失败 (客户端可能收到截断文件): %v", eerr)
-        }
+        // R109-C BUG-327 Pattern G Encode 吞错 family + R110-C 精简-1: 原
+        //   inline `if eerr := enc.Encode; eerr != nil { log.Printf }` 改
+        //   encodeLogged helper DRY 收口 (与 BUG-329 writeJSONErr/feedback
+        //   403 callsite 共用 helper, 单点维护). 0 行为变化 (best-effort
+        //   log-on-fail 语义不变, 客户端断连时 backup 截断仍仅 log).
+        encodeLogged("adminBackupHandler backup", enc, payload)
 }
 
 // adminBackupSubHandler — 分发 /api/admin/backup/restore 与 /api/admin/backup/vacuum.
@@ -7945,7 +7989,12 @@ func adminDownloadFileHandlerImpl(w http.ResponseWriter, r *http.Request, jobID 
         // R89-C BUG-241: url.QueryEscape → contentDispositionFilename (RFC 6266/5987 双 slot).
         w.Header().Set("Content-Disposition", contentDispositionFilename(bookName, ".txt"))
         w.Header().Set("Content-Length", strconv.Itoa(len(txt)))
-        w.Write([]byte(txt))
+        // R110-C BUG-328 Pattern K w.Write 吞错 family 续: txt 下载写
+        //   response (可能 MBs). 客户端断连时 w.Write 截断 → 下载文件不
+        //   完整, Content-Length 头已发浏览器检测 mismatch, 0 log. 改
+        //   writeBytesLogged log-on-fail, 0 行为变化 (与 renderAdminPage
+        //   callsite 共用 helper, 单点维护).
+        writeBytesLogged("downloadTxt", w, []byte(txt))
 }
 
 // ---------- 系统设置删除 API (R55-1A 新增) ----------

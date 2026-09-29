@@ -59,10 +59,30 @@ import (
 //      (剥首段章节号), 此处用 FindStringSubmatch 提取数字子串做 int 转换.
 var chapterNumCNRe = regexp.MustCompile(`第\s*(\d+)\s*(?:章|节|回|话|集)`)
 
-// chapterNumENRe — 英文 "Chapter N" / "CHAPTER N" / "Ch.N" / "Chap N" 编号提取.
+// chapterNumENRe — 英文 "Chapter N" / "CHAPTER N" 编号提取 (N 为阿拉伯数字).
+//   注: "Ch.N" / "Chap N" 短前缀由 chapterNumENShortRe 处理 (本 regex 仅匹配
+//   "chapter" 全词, 不匹配 "Ch."/"Chap." 缩写 — 原注释头误标 Ch.N/Chap N 属
+//   ENShort 域, 本轮一并纠正).
 //
-//      (?i) 大小写不敏感; \s+ 至少一个空白; 数字子串 \d+ 提取.
-var chapterNumENRe = regexp.MustCompile(`(?i)chapter\s*(\d+)`)
+//      BUG-330 (P3) 修复: 原 `(?i)chapter\s*(\d+)` 无词边界锚 — "chapter" 作
+//      子串匹配 "subchapter"/"prechapter"/"endchapter" 等以 "chapter" 结尾
+//      的合成词 → 误提取编号 (e.g. 标题 "Subchapter 5 — Intro" 命中 "chapter 5"
+//      → 返 5, 但 "subchapter" 非 "chapter", NormalizeTocOrder dec/inc 对计数
+//      被歪曲, 可能误触发整表镜像反转或漏反转). 与 cleaner.go chapterHeadENRe
+//      `(?i)^Chapter\s+\d+` (行首 ^ 锚 + \s+ 防 "subchapter" 误命中) 不一致 —
+//      sorter 无 ^ 锚 (需匹配 "Volume 2 Chapter N" 非 Chapter 起首的标题), 故
+//      漏. 修复: 加 `\b` 前缀 (词边界). "subchapter" 中 "b→c" 均词字符无边界
+//      → 不匹配; "Chapter N" / "Volume 2 Chapter N" 前为起始/空格/标点 → 边界
+//      → 匹配. `\b` 不影响 "Chapter5" 无空格形态 (\b 在串首, \s* 允零空白, 与原
+//      \s* 同). 同步修注释: 原行 "\s+ 至少一个空白" 与 regex `\s*` (零或多) 不
+//      符 (R108-B 注 sorter 用 \s* 允 "Chapter5" 无空格, cleaner 用 \s+ 严格),
+//      改 "\s* 零或多空白". 71 Rule 0 用 "Subchapter N" 形态 (中文站用 第N章,
+//      英文站用 Chapter N 标准形态); 0 用户受影响, 防御性 + 一致性修复. latent
+//      自 R38 TS→Go 迁移 (47 轮未发现因 71 Rule 0 触 sorter 路径含 "subchapter"
+//      标题, 多用 第N章 / Chapter N 标准形态).
+//      (?i) 大小写不敏感; \b 词边界 (防 "subchapter" 子串误命中); \s* 零或多
+//      空白 (允 "Chapter5" 无空格, 与原 \s* 同); \d+ 数字子串提取.
+var chapterNumENRe = regexp.MustCompile(`(?i)\bchapter\s*(\d+)`)
 
 // chapterNumENShortRe — "Ch. 5" / "Chap.5" 短前缀英文编号提取.
 var chapterNumENShortRe = regexp.MustCompile(`(?i)^ch(?:ap)?\.?\s*(\d+)`)
