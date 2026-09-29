@@ -2728,6 +2728,68 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                         if cfg.Override.PerHostConcurrency > 0 {
                                 coverCfg.PerHostConcurrency = cfg.Override.PerHostConcurrency
                         }
+                        // R115-A BUG-344 (P3) 修复 (深抓 cover fetch posture 续, host-gate
+                        //   rate-limiting posture family 续, 与 BUG-309/310/314/317/321/322/
+                        //   326/327/328/329/331/332/333/335/336/339/340/342/343 同 cover
+                        //   FetchConfig family 续): cover fetch FetchConfig 仍漏继承 cfg.
+                        //   Override.ThinkTimeMs (int) — per-host think-time pacing posture
+                        //   (per-request think time simulating human reading delay, e.g.
+                        //   3000ms = 请求间隔内额外 sleep 3s 模拟人类翻页/阅读). 后果: cover
+                        //   同域站 (originHost(parsed.Cover) == originHost(bookURL)) behind
+                        //   反爬时, book 章节经 fetchHttp/fetchBinaryHttp jitterSleep
+                        //   (line ~8052 jitterSleep 仅消费 JitterMs, think time 由 caller
+                        //   显式 sleep) 按 ThinkTimeMs pacing (per-host think-time 模拟人类
+                        //   间隔, 与 hostGate minGap 配对), cover fetch 经 FetchBinaryPage
+                        //   (line ~2732) → fetchBinaryHttp 仅 jitterSleep 消费 JitterMs (漏
+                        //   ThinkTimeMs, cover fetch think time 未应用) → cover fetch 在 book
+                        //   章节 think-time pacing 等待时仍立即发出 → "同一浏览器 1s 内 book
+                        //   (think-time paced, 间隔 sleep 模拟人类) + cover (think-time
+                        //   unpaced, 立即发出) 请求节奏模式不一致" → 反爬侧 rate/timing
+                        //   分析识别同一会话/IP 请求节奏漂移是 bot 信号 (反爬关联高 — 请求
+                        //   速率/间隔是反爬主检维度之一). 注: 当前 cover fetch 路径
+                        //   (FetchBinaryPage → fetchBinaryHttp) 仅 jitterSleep 消费 JitterMs,
+                        //   ThinkTimeMs 由 caller 显式 sleep (think-time posture 仅在 merge
+                        //   line ~10325-10327 合并, fetchHttp/fetchBinaryHttp 不显式消费),
+                        //   故属 "结构 + 半实现 latent" (与 BUG-327/328/329/331/332/333/335/
+                        //   336/339/340/342/343 同款 precedent), 但 coverSameHost 继承是结构
+                        //   对称前提, 后续 cover fetch 路径若加 think-time sleep (e.g.
+                        //   fetchBinaryHttp 也调 applyThinkTime) 自动跟上. 与 BUG-314 同
+                        //   coverSameHost gate. 修复: cfg.Override.ThinkTimeMs > 0 gate 继承
+                        //   (与 mergeFetchConfig line ~10325-10327 同款 "非零覆盖" gate —
+                        //   int 用 > 0 而非 != "").
+                        if cfg.Override.ThinkTimeMs > 0 {
+                                coverCfg.ThinkTimeMs = cfg.Override.ThinkTimeMs
+                        }
+                        // R115-A BUG-345 (P3) 修复 (深抓 cover fetch posture 续, host-gate
+                        //   rate-limiting posture family 续, 与 BUG-342 HostGateLimit +
+                        //   BUG-343 PerHostConcurrency + BUG-344 ThinkTimeMs 同族 task-
+                        //   level rate cap): cover fetch FetchConfig 仍漏继承 cfg.Override.
+                        //   GlobalRateLimitPerMin (int) — task-level global rate limit (全
+                        //   任务每分钟请求上限, e.g. 60 = 全任务每分钟最多 60 请求, 跨 host
+                        //   共享 token bucket). 后果: cover 同域站 (originHost(parsed.Cover)
+                        //   == originHost(bookURL)) behind 反爬时, book 章节经 task-level
+                        //   globalRateLimiter (在 runner.go 上层调度消费 GlobalRateLimitPerMin)
+                        //   按全局 token bucket 限速, cover fetch 经 FetchBinaryPage(line
+                        //   ~2732) → fetchBinaryHttp 不消费 GlobalRateLimitPerMin (cover fetch
+                        //   不在上层调度路径) → cover fetch 在 book 章节 global rate limit
+                        //   排队等待时仍立即发出 → "同一浏览器 1s 内 book (global rate
+                        //   limited, 每分钟 N 请求跨 host 共享 bucket) + cover (global
+                        //   unlimited, 立即发出) 请求速率模式不一致" → 反爬侧 rate/timing
+                        //   分析识别同一会话/IP 请求速率漂移是 bot 信号 (反爬关联高 — 全
+                        //   任务速率是反爬主检维度之一, complement per-host minGap 维度).
+                        //   注: 当前 cover fetch 路径 (FetchBinaryPage → fetchBinaryHttp)
+                        //   不消费 GlobalRateLimitPerMin (task-level global rate limiter 仅
+                        //   runner.go 上层调度消费), 故属 "结构 + 半实现 latent" (与 BUG-
+                        //   327/328/329/331/332/333/335/336/339/340/342/343/344 同款
+                        //   precedent), 但 coverSameHost 继承是结构对称前提, 后续 cover
+                        //   fetch 路径若加 task-level rate limiter 路由 (e.g. cover fetch
+                        //   也过 global rate limit) 自动跟上. 与 BUG-314 同 coverSameHost
+                        //   gate. 修复: cfg.Override.GlobalRateLimitPerMin > 0 gate 继承 (与
+                        //   mergeFetchConfig line ~10334-10336 同款 "非零覆盖" gate — int 用
+                        //   > 0 而非 != "").
+                        if cfg.Override.GlobalRateLimitPerMin > 0 {
+                                coverCfg.GlobalRateLimitPerMin = cfg.Override.GlobalRateLimitPerMin
+                        }
                 }
                 coverBin, err := FetchBinaryPage(ctx, parsed.Cover, coverCfg)
                 if err == nil && !coverBin.Blocked && len(coverBin.Bytes) > 0 {

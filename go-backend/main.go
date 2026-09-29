@@ -1532,11 +1532,26 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 //   featuredBooks 时显示一周热榜 top6, 与 R70-C 前一致).
                 featured := getFeaturedBooks(siteDBID)
                 if len(featured) == 0 {
-                        if len(tb) > 0 {
-                                featured = tb
-                        } else {
-                                featured = []map[string]interface{}{}
-                        }
+                        // R115-D 精简-1 (P4 精简/dead-branch removal, main scope,
+                        //   R110-D 精简-1 buildHomeURL init-预算复用 sibling +
+                        //   R109-D 精简-1 tb local hoist family 续): 原嵌套
+                        //   `if len(tb) > 0 { featured = tb } else { featured =
+                        //   []map[string]interface{}{} }` — tb 来自 line 1528
+                        //   topBooks(books, topN), topBooks 始终返非 nil slice
+                        //   (line 3760 `return sorted[:n]`, sorted 由 make+copy
+                        //   构造, n 经 R96-D BUG-272 n<0 → n=0 clamp + n>len →
+                        //   n=len clamp, 故 n>=0 且 <= len(sorted), sorted[:n]
+                        //   必返非 nil, 即便空切片 len=0 也是非 nil header).
+                        //   故 `len(tb) > 0` 分支与 `else` 分支均为非 nil slice
+                        //   (前者 tb 非 nil, 后者 literal []T{} 非 nil) — 模板
+                        //   {{range .FeaturedBooks}} 对 nil/empty 同行为 (0 次
+                        //   迭代), 无 observable 差异. 简化为单分支 `featured =
+                        //   tb`, 删 dead else 分支 (-3 行). 0 行为变化 (featured
+                        //   仍非 nil empty slice 当 tb 空; template range 同行
+                        //   为). 与 R106-D BUG-313 删 dead init map defaults +
+                        //   R105-D BUG-311 删 dead-defense 字段同款 "dead-branch
+                        //   精简" precedent.
+                        featured = tb
                 } else {
                         injectBookURLs(featured, pseudoStyle) // 给 featured 每本注入 URL
                 }
@@ -4347,6 +4362,20 @@ func getBookViewData(id string) (map[string]interface{}, []map[string]interface{
         err := db.QueryRow(`SELECT b.id,b.name,b.author,b.intro,b.cover,b.status,b.wordCount,b.latestChapter,COALESCE(c.name,'未分类'),b.categoryId,b.keywords,b.updatedAt FROM Book b LEFT JOIN Category c ON b.categoryId=c.id WHERE b.id=?`, id).Scan(
                 &bid, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryID, &keywords, &updatedAt)
         if err != nil {
+                // R115-D BUG-344 (P3, single-row Scan swallow family sibling 续,
+                //   R113-D BUG-340 getFeaturedBooks setting Scan family sibling 续 +
+                //   R113-D BUG-339 getFeaturedBooks book Scan family sibling 续):
+                //   原 `if err != nil { return ... false }` 吞 err — sql.ErrNoRows
+                //   (书 id 不存在, 正常 404) 与 driver edge Scan err (conn 闪断 /
+                //   磁盘满 / driver bug / SQLite 锁竞争超时) 同走 false →
+                //   homeHandler render404. 用户/运维看到 404 但根因 (DB 故障)
+                //   隐藏, 不知是 DB 故障 (本应 log) 还是真无书 (silent). 改:
+                //   非 ErrNoRows 时 log.Printf 提示运维, ErrNoRows 仍 silent
+                //   (与 BUG-340/339 同款 "正常 skip + 异常 log" 语义). 0 行为变化
+                //   (return false 语义不变, 仅加 log 可见性).
+                if err != sql.ErrNoRows {
+                        log.Printf("[R115-D] getBookViewData Scan failed (id=%s): %v - returning false (caller render404)", id, err)
+                }
                 return nil, nil, nil, nil, "", false
         }
         // R75-A 目标C3: Book.wordCount==0 时 fallback SUM(Chapter.wordCount). R99-D
@@ -4468,6 +4497,19 @@ func getReadViewData(chID string, site map[string]interface{}) (map[string]inter
         err := db.QueryRow(`SELECT id, title, content, idx, wordCount, bookId, volume, storage, filePath FROM Chapter WHERE id=?`, chID).Scan(
                 &cid, &title, &content, &idx, &wc, &bookID, &volume, &storage, &filePath)
         if err != nil {
+                // R115-D BUG-344 (P3, single-row Scan swallow family sibling 续,
+                //   BUG-344 getBookViewData chapter Scan sibling + R113-D BUG-340
+                //   getFeaturedBooks setting Scan sibling): 原 `if err != nil {
+                //   return ... false }` 吞 err — sql.ErrNoRows (章节 id 不存在,
+                //   正常 404) 与 driver edge Scan err 同走 false → homeHandler
+                //   render404. 用户/运维看到 404 但根因 (DB 故障) 隐藏. 改: 非
+                //   ErrNoRows 时 log.Printf 提示运维, ErrNoRows 仍 silent
+                //   (与 BUG-344 getBookViewData + BUG-340/339 同款 "正常 skip +
+                //   异常 log" 语义). 0 行为变化 (return false 语义不变, 仅加
+                //   log 可见性).
+                if err != sql.ErrNoRows {
+                        log.Printf("[R115-D] getReadViewData chapter Scan failed (chID=%s): %v - returning false (caller render404)", chID, err)
+                }
                 return nil, nil, nil, nil, false
         }
         // 兼容 txt 模式: 直接从 DB 取 content; 若空且 storage=txt+filePath, 暂不读 txt 文件 (留给后续)
@@ -4520,7 +4562,22 @@ func getReadViewData(chID string, site map[string]interface{}) (map[string]inter
         var bwc int64
         if err := db.QueryRow(`SELECT b.id,b.name,b.author,b.status,COALESCE(c.name,'未分类'),b.intro,b.cover,b.wordCount FROM Book b LEFT JOIN Category c ON b.categoryId=c.id WHERE b.id=?`, bookID.String).Scan(
                 &bid, &bname, &bauthor, &bstatus, &bcategory, &bintro, &bcover, &bwc); err != nil {
-                // book 查不到也允许渲染
+                // book 查不到也允许渲染 (chapter 渲染依赖 bookMap 但模板缺字段兜底空串).
+                // R115-D BUG-344 (P3, single-row Scan swallow family sibling 续,
+                //   BUG-344 getReadViewData chapter Scan sub-variant + R113-D
+                //   BUG-339 getFeaturedBooks book Scan sibling): 原注释 "book 查
+                //   不到也允许渲染" 吞 err — sql.ErrNoRows (book 已删, 正常
+                //   fallback 渲染 chapter + 空 bookMap) 与 driver edge Scan err
+                //   (conn 闪断 / 磁盘满 / driver bug / SQLite 锁竞争超时) 同走
+                //   空 bookMap 路径. 用户/运维看到 read view 渲染但 book 区块全
+                //   空, 不知是 book 真删 (silent OK) 还是 DB 故障 (本应 log).
+                //   改: 非 ErrNoRows 时 log.Printf 提示运维, ErrNoRows 仍
+                //   silent (与 BUG-344 chapter sub-variant + BUG-339 同款
+                //   "正常 skip + 异常 log" 语义). 0 行为变化 (return 空 bookMap
+                //   语义不变, 仅加 log 可见性).
+                if err != sql.ErrNoRows {
+                        log.Printf("[R115-D] getReadViewData book Scan failed (chID=%s bookID=%s): %v - rendering chapter with empty bookMap fallback", chID, bookID.String, err)
+                }
                 bookMap := map[string]interface{}{"id": bookID.String, "name": "", "author": "", "status": "", "category": "", "intro": "", "cover": "", "wordCount": int64(0)}
                 // R57-1B: 即使 book 查不到, 也填入 SEO TDK (用空 bookName/author/intro + chapterTitle)
                 if site != nil {
@@ -4584,7 +4641,26 @@ func getCategoryViewData(catID string, page, size int) (string, []map[string]int
         // 若指定 catID, 取分类名做 label
         if catID != "" {
                 var cname sql.NullString
-                if err := db.QueryRow(`SELECT name FROM Category WHERE id=?`, catID).Scan(&cname); err == nil && cname.String != "" {
+                // R115-D BUG-344 (P3, single-row Scan swallow family sibling 续,
+                //   R113-D BUG-340 getFeaturedBooks setting Scan sibling + BUG-344
+                //   getBookViewData/getReadViewData/getSitePseudoStaticStyle
+                //   sibling): 原 `if err := ...Scan(&cname); err == nil &&
+                //   cname.String != "" { label = cname.String }` 吞 err —
+                //   sql.ErrNoRows (catID 不存在, 正常 fallback "全本小说"
+                //   label) 与 driver edge Scan err (conn 闪断 / 磁盘满 /
+                //   driver bug / SQLite 锁竞争超时) 同走 label 不赋值 →
+                //   "全本小说". category.html 渲染 label 作 page title + h1 —
+                //   admin 配 catID=valid 但 driver edge 返 "全本小说" 时
+                //   category 页 title 与 DB 分类名不一致 (SEO 内容漂移).
+                //   用户/运维看到错配 label 但不知是 catID 真无效 (silent
+                //   OK) 还是 DB 故障 (本应 log). 改: 非 ErrNoRows 时
+                //   log.Printf 提示运维, ErrNoRows 仍 silent, 成功 + 非空
+                //   cname 时设 label (与 BUG-340/339 同款 "正常 skip + 异常
+                //   log" 语义). 0 行为变化 (label fallback "全本小说" 语义
+                //   不变, 仅加 log 可见性).
+                if err := db.QueryRow(`SELECT name FROM Category WHERE id=?`, catID).Scan(&cname); err != nil && err != sql.ErrNoRows {
+                        log.Printf("[R115-D] getCategoryViewData cname Scan failed (catID=%s): %v - keeping label '全本小说'", catID, err)
+                } else if err == nil && cname.String != "" {
                         label = cname.String
                 }
         }
@@ -5653,12 +5729,31 @@ func queryRandomWheelSites(n int, excludeID string) []wheelSite {
 //      失败 (无任何 status=1 站) 返 "query" 兜底.
 //      单次 db.QueryRow, ~0.5ms; 不调 getSite 全量 (避免 Setting 子查询开销).
 func getSitePseudoStaticStyle(siteID string) string {
+        // R115-D BUG-344 (P3, single-row Scan swallow family sibling 续,
+        //   R113-D BUG-340 getFeaturedBooks setting Scan sibling + BUG-344
+        //   getBookViewData/getReadViewData chapter Scan sibling): 原 2 处
+        //   `_ = db.QueryRow(...).Scan(&style)` 吞 err — sql.ErrNoRows
+        //   (siteID 不存在 / 无 status=1 站, 正常 fallback default 站) 与
+        //   driver edge Scan err (conn 闪断 / 磁盘满 / driver bug / SQLite
+        //   锁竞争超时) 同走 style="" → return "query". randomLinkHandler
+        //   book_intra + buildWheelBookURL 用此返回值编 URL — admin 配
+        //   pseudoStaticStyle=numeric 但 driver edge 返 "query" 时跨站
+        //   URL 走 query 串格式 (与目标站 routes 不一致, canonical weight
+        //   分散, SEO 弱信号). 用户/运维看到 URL 风格突变但不知是 admin
+        //   真配 "query" (silent OK) 还是 DB 故障 (本应 log). 改: 非
+        //   ErrNoRows 时 log.Printf 提示运维, ErrNoRows 仍 silent (与
+        //   BUG-340/339 同款 "正常 skip + 异常 log" 语义). 0 行为变化
+        //   (return "query" 语义不变, 仅加 log 可见性).
         var style sql.NullString
         if siteID != "" {
-                _ = db.QueryRow(`SELECT COALESCE(pseudoStaticStyle,'query') FROM Site WHERE id=? AND status=1`, siteID).Scan(&style)
+                if err := db.QueryRow(`SELECT COALESCE(pseudoStaticStyle,'query') FROM Site WHERE id=? AND status=1`, siteID).Scan(&style); err != nil && err != sql.ErrNoRows {
+                        log.Printf("[R115-D] getSitePseudoStaticStyle site Scan failed (siteID=%s): %v - falling back to default-site lookup", siteID, err)
+                }
         }
         if !style.Valid || style.String == "" {
-                _ = db.QueryRow(`SELECT COALESCE(pseudoStaticStyle,'query') FROM Site WHERE isDefault=1 AND status=1`).Scan(&style)
+                if err := db.QueryRow(`SELECT COALESCE(pseudoStaticStyle,'query') FROM Site WHERE isDefault=1 AND status=1`).Scan(&style); err != nil && err != sql.ErrNoRows {
+                        log.Printf("[R115-D] getSitePseudoStaticStyle default-site Scan failed: %v - returning 'query' fallback", err)
+                }
         }
         if style.String == "" {
                 return "query"

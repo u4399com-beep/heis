@@ -56700,3 +56700,744 @@ PerHostConcurrency (hostGate.Acquire line ~2809 chapter 调度路径消费的双
    R113-D/A/C/B/R114-D 未决项 #8 续).
 
 ==============================================================================
+
+------------------------------------------------------------------------------
+## R115-C — admin.go (admin scope, 1 文件命中)
+------------------------------------------------------------------------------
+
+**任务**: R115-C admin.go. 文件: admin.go. 读 worklog 末尾 5KB. 目标: 深抓
+BUG-344++精简. +150 行内. 编译 0. worklog 追加. 严禁改非 admin.go / 启动 /
+新依赖 / emoji / 临时测试文件.
+
+**起读 worklog 末尾**: 起读时末尾为 R114-A entry (line ~56471, BUG-342/343
+crawl fetcher/runner cover fetch HostGateLimit/PerHostConcurrency 继承). 编辑
++编译期间无 R115-A/B/D 并发追加 (R115+ 起读时仅 R114 各 scope 完结). 本块
+追加在 R114-A 后真末尾 (顺序 ...→R113-B→R114-D→R114-C→R114-A→R115-C).
+
+**深抓 BUG (1 个 + 1 精简, 均 P3/P4 防御性, 同 family sibling 续)**:
+
+1. **BUG-344 (P3, admin API scope, R114-C BUG-342 SSR sub-variant 互补 续 +
+   R114-C 未决项 #1 收口)**: admin API handler db.Query conditional `if err
+   == nil` block-swallow sub-variant — R114-C SSR scope 收口 11 callsite
+   后, API scope 3 callsite defer 至 R115+ 评估 (跨 sub-variant, R114-C
+   未决项 #1 续). 3 callsite: adminThemesHandler counts (line ~4731
+   themeId COUNT GROUP BY) + adminFeedbackHandler list (line ~5416
+   Feedback list WHERE+LIMIT+OFFSET) + adminSeoAuditHandler sites (line
+   ~6484 Site list LIMIT 500). 同款 `rows, err := db.Query` + `if err ==
+   nil {` block-swallow — db.Query 故障 (SQLite busy lock / 连接闪断 /
+   磁盘满 / driver bug) 时 err != nil, success block 跳过, 初始空 result
+   (counts={} / rowsList=[] / sites=[]) → API 返 200 OK + 空数据 (前台
+   admin 主题页 siteCount 全 0 / 反馈列表空 / SEO 审计 0 站点, 用户/运维
+   不知是 DB 故障还是真 0 数据, 0 log). API 客户端期望 data 或 error, 非
+   silently-empty-with-200, 影响更甚 SSR (R114-C 未决项 #1 rationale 续).
+   rows.Err() post-loop 只查 mid-iteration err 不触 initial Query err (与
+   R74-D BUG-111/119/121 adminTasksList/adminFeedbackHandler/adminSeoAudit
+   Handler rows.Err mid-iteration 检查互补 — 那些已收 mid-iteration, 本
+   BUG-344 收 initial Query swallow). 改调 queryLogged (R109-C BUG-326
+   helper, 返 *sql.Rows, nil + log-on-fail) + `if rows != nil {`, 与
+   R114-C SSR 11 callsite (fillBooksPageData/fillTasksPageData/fillThemesPage
+   Data/fillFeedbackPageData/fillSeoAuditPageData/...) + R109-C BUG-326
+   16 callsite 同款已收口 pattern 一致. 0 行为变化 (失败时空 result
+   best-effort API 兜底语义不变, 仅加 log 可见性; 成功路径 queryLogged
+   返非 nil rows, `if rows != nil` 进入循环, 与原 `if err == nil` 等价).
+   非 ErrNoRows (db.Query 返 *sql.Rows 不触 ErrNoRows, 仅 db.QueryRow
+   触, 不同 family — BUG-342 R114-D main scope COUNT(*) Scan 单行 ErrNoRows
+   理论不可达仅 driver edge, 本 BUG-344 是 db.Query 多行 initial err,
+   不同 sub-variant). 续修: 3 callsite 各改 `rows := queryLogged(label,
+   query, args...)` + `if rows != nil {`, label 复用原 scanLogged label
+   (adminThemesHandler counts / adminFeedbackHandler list / adminSeoAudit
+   Handler sites) 保 callsite 一致性. 与 R113-C BUG-339 仅收 admin SSR
+   getCategories (db.Query `, _ :=` discard swallow) + main.go 3 同款
+   callsite defer 至 main scope agent 同款 "同 family 不同 scope 分轮收口"
+   convention (R113-C 收 SSR discard sub-variant, R114-C 收 SSR
+   conditional block-swallow sub-variant, 本轮 R115-C 收 API conditional
+   block-swallow sub-variant — 3 sub-variant 全收口, db.Query swallow
+   family 在 admin scope 闭环). 与 R114-D BUG-342 (main scope COUNT Scan
+   swallow, BUG-314 Scan family) + R114-A BUG-342/343 (crawl fetcher/runner
+   scope cover fetch HostGateLimit/PerHostConcurrency 继承) cross-scope
+   sibling — 本 BUG-344 用 344 新号, 顺延 R113-A BUG-339/340 + R113-D
+   BUG-339/340 + R113-C BUG-339/340 + R113-B BUG-341 + R114-C/D/A BUG-342
+   + R114-A BUG-343 后 344 顺延 (不撞号 — R113 用 339~341, R114 用
+   342~343, 本轮 R115-C 用 344, 主控 merge 时 0 renumber 需求).
+
+### 精简-1
+
+**精简-1 (P4 精简/DRY, admin API scope, R100-D BUG-288 helper-extract family
+sibling 续 + R114-C BUG-342 SSR scope defer Close family sibling 续)**:
+adminSeoAuditHandler block 末双 manual `rows.Close()` (err 路径 line
+~6501 `rows.Close()` + 成功路径 line ~6505 `rows.Close()`) → 单 `defer
+rows.Close()` 替 2 处 manual Close (DRY + 防泄漏, 与 adminThemesHandler
++ adminFeedbackHandler 已用 `defer rows.Close` 同款已收口 pattern 一致).
+原双 manual Close 是 code smell: 若后续 R116+ 在 block 内加 early-return
+路径 (e.g. continue-on-some-condition), 漏 Close → rows 泄漏 (modernc.org
+/sqlite 连接池 SetMaxOpenConNs(1) 等待 rows 释放 → 30s+ 超时死锁, 与 R64-C
+BUG-40 adminCategoriesList per-row db.QueryRow 死锁同款 family). defer Close
+语义等价 manual — block 内 rows 不再被使用 (line ~6544 后 runSiteAudit
+Reports+seoAuditSummary+writeJSONOK 不触 rows), defer 在 writeJSONErr+return
+(mid-iteration rows.Err() 失败路径 line ~6542) / 函数末 return (writeJSON
+OK 成功路径 line ~6556) 两路均触发. 0 行为变化 (Close 时机 block 末 →
+function 末, 因 block 后无 rows 使用, 等价). 与 R114-C SSR scope 11
+callsite 全用 `defer rows.Close` (fillBooksPageData/fillTasksPageData/...)
++ R109-C BUG-326 16 callsite (backup export 10 + dashboard/clear/themes 6)
+同款 "defer Close DRY 收口" precedent; 与 R112-D BUG-335 抽 injectList
+Sidebar + R114-D BUG-342 抽 countBooksBy helper 同款 "DRY 精简" family.
+-2 行净 (删 2 manual Close, +1 defer Close = -1 行; 另 -1 行来自 `err`
+变量从 `:=` 声明中移除 — `rows, err :=` → `rows :=`, 同行内 0 行变化但
+变量空间精简). 精简-1 与 BUG-344 同 callsite (adminSeoAuditHandler),
+不分号 (与 R114-D BUG-342+精简-1 countBooksBy helper 同 callsite 不分号
+同款; 与 R113-A BUG-339 inner + BUG-340 outer Scan 不同 sub-variant 分号
+不同 — 本精简-1 是 BUG-344 callsite 内的 DRY 收口, 非 2 sub-variant).
+
+### 命中范围 / scope 说明
+
+- 全部 fix 在 admin.go 1 文件 (BUG-344+精简-1 3 callsite: adminThemes
+  Handler line ~4744 + adminFeedbackHandler line ~5438 + adminSeoAudit
+  Handler line ~6522), 0 触 main.go / crawl/* / fetcher/runner / templates/** /
+  启动 (start.sh/start-go.js) / 新依赖 / emoji / 临时测试文件. scope "admin.go"
+  限定 1 文件, 本轮命 1 scope (admin.go) — 同 R113-C/R114-C "admin scope 1
+  文件命中 (admin.go)" 同款. 0 触非 scope 文件.
+- BUG-344 收口 R114-C 未决项 #1 (admin.go API handler db.Query conditional
+  `if err == nil` block-swallow sub-variant, 3 callsite: adminThemesHandler
+  counts + adminFeedbackHandler list + adminSeoAuditHandler sites). R114-C
+  SSR scope 11 callsite + 本轮 API scope 3 callsite = admin scope db.Query
+  conditional block-swallow family 14 callsite 全收口 (SSR 11 + API 3).
+  db.Query swallow family 在 admin scope 闭环 (含 R113-C BUG-339 SSR
+  discard `_, _ :=` 1 callsite + R109-C BUG-326 16 callsite discard + R114-C
+  BUG-342 SSR 11 conditional + 本轮 BUG-344 API 3 conditional = 全 admin
+  scope db.Query swallow 收口).
+
+### 编译 / gofmt / 行数
+
+  - go build ./... = 0 (全模块 0 errors, Go 1.26.8 linux/amd64,
+    /home/z/go/go/bin/go).
+  - go vet ./... = 0 (0 vet 警告, BUG-344 queryLogged + `if rows != nil` +
+    defer rows.Close 复用已有 API; 0 新 import / 0 新 var / 0 新 type /
+    0 新 const; queryLogged helper line 594 + scanLogged line 571 复用,
+    0 shadow / 0 unreachable; adminSeoAuditHandler defer Close 在 `if rows
+    != nil` block 内, block 后无 rows 使用, vet 0 警告).
+  - gofmt -l admin.go = admin.go (pre-existing non-compliant from R38, 全
+    文件 8-space 缩进; 本轮编辑用 8-space 与现有 8-space 一致, 0 新
+    non-compliant — admin.go 本就 non-compliant pre-existing from R38).
+    批量 gofmt -w 独立 commit defer, 与 R100-A 未决项 #3 + R114-C 未决项 #4
+    同款.
+  - git diff --shortstat (本轮 1 文件): admin.go 1 file changed, 47
+    insertions(+), 9 deletions(-) = 净 +38 行 (insertions 47 < +150 上限).
+    仅 go-backend/admin.go 1 文件改动 (admin scope 内), 0 触非 admin.go.
+  - 0 新依赖 (BUG-344+精简-1 复用 queryLogged (line 594, R109-C BUG-326
+    helper) + db.Query + log (均已 import, line 4 + 10) + sql.Rows (database
+    /sql line 5 已有); 0 新 import / 0 新 var / 0 新 type / 0 新 const).
+  - 0 emoji (R115-C 新增 0 emoji; 注释中 → 箭头是 CJK 标点 (U+2192, General
+    Punctuation block, 非 emoji range 1F000-1FAFF / 2600-27BF / 1F1E6-1F1FF),
+    与 R111-A/C/D/R111-B/R112-D/A/B/C/R113-D/A/C/B/R114-D/C/A 同款 pre-existing
+    convention).
+  - 0 临时测试文件 (与 R106-B/R107-A/B/C/D/R108-A/B/C/D/R109-A/C/D/R110-A/
+    B/C/D/R111-A/C/D/R111-B/R112-D/A/B/C/R113-D/A/C/B/R114-D/C/A 同款 "防御性
+    修复 0 行为变化 0 用户受影响, 不需 /tmp 测试文件"; BUG-344 0 当前用户受
+    影响 — driver edge Query err 是 rare 路径 (modernc.org/sqlite 稳定,
+    busy_timeout=5s 兜底重试覆盖锁竞争超时, conn 闪断 / 磁盘满是极 rare
+    边缘), fallback 语义不变 (空 result → API 返 200 OK + 空数据, 仅加 log
+    可见性; adminThemesHandler counts={} → 全主题 siteCount=0 显示, admin
+    FeedbackHandler rowsList=[] → 反馈列表空 + total/0 stats, adminSeoAudit
+    Handler sites=[] → SEO 审计 0 站点 + summary totalSites=0, 均维持
+    best-effort, 仅加 log).
+
+未解决 (交接 R116+):
+1. **admin.go API handler db.Query conditional `if err == nil` block-swallow
+   sub-variant**: 已闭环 (R114-C 未决项 #1 收口). 3 API callsite (admin
+   ThemesHandler counts + adminFeedbackHandler list + adminSeoAuditHandler
+   sites) 全改 queryLogged + `if rows != nil`. admin scope db.Query swallow
+   family 闭环 (SSR 11 R114-C + API 3 本轮 + discard 16 R109-C + SSR
+   discard 1 R113-C = 全收口). R116+ 评估是否触其它 API handler (admin
+   TasksList/adminCategoriesList/adminBooksList 等已用 explicit `if err !=
+   nil { writeJSONErr(500) return }` pattern, 非 swallow, 0 命中).
+2. **parseKVString/mapToSortedKV \n in value latent (R96-B 未决项 #1 续,
+   R101-B/R102-B/R103-A/B/R104-A/B/R105-A/D/R106-A/B/D/R107-A/B/C/D/
+   R108-A/B/C/D/R109-A/C/D/R110-A/B/C/D/R111-A/C/D/R111-B/R112-D/A/B/C/
+   R113-D/A/C/B/R114-D/C/A 续)**: kv string 格式不支持 value 含 \n. 本轮
+   BUG-344 不触此 latent (db.Query conditional swallow, 非 kv string). R116+
+   评估.
+3. **JsonGet $..a||b recursive+|| (R96-B 未决项 #2 续, R101-B/R102-B/.../
+   R113-D/A/C/B/R114-D/C/A 续)**: $..a||b 仍走原 literal 路径. 本轮 BUG-344
+   不触此 latent (db.Query, 非 JsonGet). R116+ 评估.
+4. **gofmt -l 现 22+ 文件 non-compliant (R100-A 未决项 #3 续, R101-B/.../
+   R113-D/A/C/B/R114-D/C/A 续)**: 本轮 R115-C 编辑 admin.go 用 8-space (与
+   现有 8-space 一致, 0 新 non-compliant 文件 — admin.go 本就 non-compliant
+   pre-existing from R38). R116+ 批量 gofmt -w 评估 (独立 commit).
+5. **ParseList HTML no-container FieldConst UNREACHABLE (R98-B 未决项 #4 续,
+   R106-B BUG-316 已收口)**: 已闭环, R116+ 评估 JSON 模式条件是否需收紧 (非
+   本轮 scope).
+6. **BUG-344 unit test 覆盖 (R100-B 未决项 #5 续, R101-A/R102-C/R103-A/B/
+   R104-A/B/R105-A/D/R106-A/B/D/R107-A/B/C/D/R108-A/B/C/D/R109-A/C/D/R110-A/
+   B/C/D/R111-A/C/D/R111-B/R112-D/A/B/C/R113-D/A/C/B/R114-D/C/A 同款, R114-C
+   未决项 #6 续)**: 0 test files. R116+ 评估加测试 (本轮 BUG-344 3 API
+   callsite queryLogged 收口 + 精简-1 defer Close 同款缺测试, 与 R108-B
+   BUG-324/325 + R109-A BUG-326/327 + R110-A/C BUG-328/329 + R110-B BUG-330
+   + R111-A BUG-331/332/333 + R111-C/D BUG-331 + R111-B BUG-334 + R112-D
+   BUG-335 + R112-A BUG-335/336 + R112-B BUG-337/338 + R112-C BUG-335/336 +
+   R113-D/A/C BUG-339/340 + R113-B BUG-341 + R114-D BUG-342 + R114-C BUG-342
+   + R114-A BUG-342/343 同款缺测试).
+7. **shared mutable default family (R103-B/R104-B 已收口)**: 本轮 BUG-344 +
+   精简-1 非 shared-default family (是 db.Query conditional block-swallow
+   log + defer Close DRY 收口, 不同 latent class).
+8. **Absolutize 自引用 scheme 不比较 (R106-B 未决项 #7 已收口)**: 本轮
+   评估: 维持 R107-B 收口决策 (NOT a bug, 当前行为正确, 0 改动).
+9. **R115 并行 agent 修改 + 并发追加时序**: 本轮 R115-C 仅改 admin.go 1
+   文件, 与 R115-A/B/D (若存在) scope 应不重叠 (admin.go 仅 R115-C 改;
+   R115-A 改 crawl/fetcher/runner / R115-B 改 crawl-other / R115-D 改
+   main+templates 不触 admin.go; 主控统一编译应 0 errors — 各 agent 独立
+   scope, 0 文件冲突, 本轮 go build ./... + go vet ./... 已验 0 errors 含
+   并行 agent 改动). BUG 编号备注: 本轮 R115-C admin scope 用 BUG-344
+   (admin API handler db.Query conditional `if err == nil` block-swallow
+   sub-variant, 3 callsite 覆盖 adminThemesHandler counts + adminFeedback
+   Handler list + adminSeoAuditHandler sites) + 精简-1 (adminSeoAudit
+   Handler defer Close 替 2 manual Close), 顺延 R113-A BUG-339/340 + R113-D
+   BUG-339/340 + R113-C BUG-339/340 + R113-B BUG-341 + R114-C/D/A BUG-342
+   + R114-A BUG-343 后 344 顺延 (与 R114-A crawl fetcher/runner scope 用
+   BUG-342/343 顺延 R113 339~341 同款 "新 round 新号顺延" convention, 主控
+   merge 时 0 renumber 需求 — 本轮 R115+ 不与 R114 cross-scope 共存, 344
+   admin scope 新号, 不与 R114 342~343 撞号). 本轮 R115-C 起读 worklog 末尾
+   为 R114-A 末 separator (R114-A/B/C/D 已完成追加, R115-A/B/D 本轮不存在
+   或未追加), 完成编辑+编译+vet 验证后追加本块在 R114-A 后真末尾 (顺序
+   ...→R114-D→R114-C→R114-A→R115-C). 后续 R116+ agent 若并发追加 worklog,
+   锚 R115-C 末 separator 同款时序风险, 建议 R116+ 改用 fcntl flock 或
+   append-only 单 writer 串行化 (跨 budget, 非本轮 scope, 与 R106-A/R107-A/
+   R107-B/R107-C/R108-A/B/C/D/R109-A/C/D/R110-A/C/D/R111-A/C/D/R111-B/
+   R112-D/A/B/C/R113-D/A/C/B/R114-D/C/A 未决项 #8/9 续).
+
+==============================================================================
+
+## R115-A — crawl fetcher + runner (反反爬 269-273 + 深抓 BUG-344/345)
+------------------------------------------------------------------------------
+
+**任务**: R115-A fetcher+runner. 文件: crawl/fetcher.go+runner.go (2 文件).
+读 worklog 末尾 5KB. 目标: 反反爬 269-273 + 深抓 BUG-344+. +200 行内.
+编译 0. worklog 追加. 严禁改非 2 文件 / 启动 / 新依赖 / emoji / 临时测试
+文件. 本轮命中 fetcher.go (反反爬第 269-273 项 server-side runtime/
+framework/CMS/optimization-module stack version disclosure family 续) +
+runner.go (BUG-344 cover fetch ThinkTimeMs 继承 + BUG-345 cover fetch
+GlobalRateLimitPerMin 继承, BUG-309/310/314/317/321/322/326/327/328/
+329/331/332/333/335/336/339/340/342/343 同 cover FetchConfig family 续).
+
+Round R115-A (go-backend/crawl/fetcher.go + runner.go scope: 反反爬 269-273 +
+  深抓 BUG-344/345, 2 文件命中, +161 行净, 编译 0 / vet 0, 0 emoji)
+Agent: R115-A agent (crawl/fetcher.go + runner.go: 反反爬第 269-273 项 + 深抓
+  BUG-344/345, 2 文件命中, +161 行净, 编译 0 / vet 0, 0 emoji)
+Task ID: R115-A
+Scope: go-backend/crawl/fetcher.go + runner.go 2 文件 反反爬 269-273 + 深抓
+  BUG-344/345. 本轮命中 fetcher.go (反反爬第 269-273 项 server-side
+  runtime/framework/CMS/optimization-module stack version disclosure family
+  续) + runner.go (BUG-344 cover fetch ThinkTimeMs 继承 + BUG-345 cover
+  fetch GlobalRateLimitPerMin 继承, BUG-309/310/314/317/321/322/326/327/
+  328/329/331/332/333/335/336/339/340/342/343 同 cover FetchConfig family
+  续). +200 行内 (净 +161 / 插 167 删 6). 编译 0 (go build ./... + go vet
+  ./... 全 0). worklog 追加本块. 严禁改非 2 文件 / 启动 / 新依赖 / emoji /
+  临时测试文件 — 本轮仅改 crawl/fetcher.go + crawl/runner.go 2 文件, 0 触
+  admin/main/parser/cleaner/types/sorter/smart/storage/hostgate/templates/
+  start.sh/requirements (admin.go + main.go + db/custom.db 现 git status M
+  是 R113-C/R114-D 并行 agent 残留未 commit, 非本轮 R115-A 改动 — 本轮
+  0 Edit 调用触此 3 文件), 0 新依赖 (仅用 resp.Header.Get +
+  extractHeaderFromCurlStdout + recordSecurityHeader + originHost +
+  cfg.Override.ThinkTimeMs/GlobalRateLimitPerMin > 0 已有 API, 0 新增
+  import / 0 新 var), 0 emoji (R115-A 新增 0 emoji; pre-existing
+  runner.go emoji 8 个 🔴/⚙ 非 本轮引入, 维持 defer 至 R116+ 批量评估
+  删除), 0 测试文件.
+
+### 反反爬第 269-273 项 (fetcher.go scope, server-side runtime/framework/
+  CMS/optimization-module stack version disclosure family 续)
+
+R114-A 第 264-268 项 (X-AspNet-Version + X-AspNetMvc-Version + X-Generator +
+X-Pingback + X-Page-Speed, server-side runtime/framework/CMS/optimization-
+module stack version disclosure family) 同 family 续, R115-A pivot 同
+family 跨 vendor 5 项 (CMS cache module + generic app version + VCS
+revision + CI/CD commit hash + environment disclosure). 与第 157 项 X-
+Powered-By framework 泄露 + 第 167 项 Server generic server + 第 264-268
+项 vendor-specific stack version 同 info-disclosure family, 维度一致
+(具体 version/cache-state/commit/env 串 → 反爬 SDK 据此识别站点成熟度/
+加固态/部署 pipeline leak + 选 vendor-specific bypass posture).
+
+- 第 269 项 X-Drupal-Cache — Drupal CMS cache module HIT/MISS disclosure
+  (e.g. `HIT`). 反爬关联高 — Drupal site 强指纹 → 反爬 SDK 按 Drupal 配
+  Akeeba/RSFirewall bot plugin 定制规则, complement #266 X-Generator generic
+  CMS (Drupal 是具体 CMS 子模块 + cache 状态双维 leak).
+- 第 270 项 X-Version — generic app/server version disclosure (custom
+  server / Node.js app / Flask app / FastAPI app, e.g. `1.2.3`). 反爬关联
+  中 — 非主流栈 leak → 反爬 SDK 据此识别非 nginx/apache 主流栈 (custom
+  app 多无成熟 WAF 配套), crawler 据此降级 bypass posture (无 WAF 则
+  无需 utls 重型指纹, 简单 jitter 即可绕过).
+- 第 271 项 X-Revision — VCS revision disclosure (git short SHA e.g.
+  `a1b2c3d` / SVN r1234). 反爬关联高 — CI pipeline 暴露 + 具体 build →
+  反爬 SDK 据此识别源码版本 + 历史 leak (具体 commit 反查 git log 找
+  部署频度/代码改动模式), crawler 据此识别站点更新节奏.
+- 第 272 项 X-Commit-Hash — CI/CD build commit hash disclosure (e.g.
+  `a1b2c3d4e5f6789...` GitHub Actions/Jenkins 部署 leak). 反爬关联高 —
+  部署 pipeline + 历史回滚面 → 反爬 SDK 据此识别 CI/CD 链 (GitHub
+  Actions/Jenkins 默认配 WAF plugin 联动), complement #271 VCS revision
+  (commit hash 是完整 SHA vs short SHA, 反查具体 commit 文件 diff).
+- 第 273 项 X-Environment — environment disclosure (e.g. `staging`/
+  `dev`/`prod`). 反爬关联高 — staging/dev host 多未加固 (WAF 规则弱/
+  debug 接口开放/rate limit 关闭), crawler 据此降级 bypass posture 或
+  加压探测; prod host 加固态 (WAF 严/严格 rate limit/调试接口关),
+  crawler 据此提级 bypass posture (utls 重型 + 真实 UA + 完整 cookie
+  jar). 是源站部署 pipeline 暴露的最强信号维度之一.
+- 注: Server #167 + X-Powered-By #157 + X-AspNet-Version #264 +
+  X-Generator #266 已覆盖 generic server/framework/CMS 子集, 本批 5 项
+  是 vendor-specific CMS cache module + custom app + VCS + CI/CD +
+  env disclosure, 与前 5 批不同维度 (具体 cache-state/version/commit/
+  env 串 vs 是否发).
+
+fetcher.go 9 处编辑 (与 R109-A/R110-A/R111-A/R112-A/R113-A/R114-A 同款 3
+路径 callsite 对称 + struct/switch/snapshot/comment/doc 同步):
+1. hostSecurityHeadersEntry struct 补 5 字段 (xDrupalCacheValue /
+   xVersionValue / xRevisionValue / xCommitHashValue /
+   xEnvironmentValue, line ~13815-13819, 与第 264-268 项同款 struct
+   append convention).
+2. recordSecurityHeader switch 补 5 case ("x-drupal-cache" / "x-version"
+   / "x-revision" / "x-commit-hash" / "x-environment", line ~14250-14258,
+   headerName 大小写不敏感).
+3. HostSecurityHeadersSnapshot map 补 5 entries (line ~14432-14436).
+4. struct doc + map doc + recordSecurityHeader doc 3 处 round-list 追
+   "+ R115-A 第 269-273 项" + 字段计数 140→145 / 139→144 (line ~13530 /
+   ~13831 / ~13890 + 3 处 "保留其他 139 头" → "144 头", 同 R114-A 135→140
+   同款 count-bump convention).
+5. 3 路径 callsite 对称:
+   a. fetchHttp success path (line ~4880-4903, 10 行 rationale + 5
+      callsite 直 resp.Header.Get).
+   b. fetchViaCurl success path (line ~6318-6338, 6 行 rationale + 5
+      callsite extractHeaderFromCurlStdout; fetchBinaryViaCurl 不 dump
+      headers 故不调, 与 124-268 同款限制).
+   c. fetchBinaryHttp cover path (line ~8844-8866, 8 行 rationale + 5
+      callsite, 与 BUG-241 三路径对称 convention; cover host 多在
+      external CDN / S3, 与 HTML host 不同域各自独立条目, 无污染).
+
+### 深抓 BUG-344/345 (runner.go scope, cover fetch posture 续, host-gate
+  rate-limiting posture family 续)
+
+R114-A BUG-342/343 (cover fetch HostGateLimit + PerHostConcurrency 继承,
+host-gate rate-limiting posture family) 收口后, R115-A pivot 同 family 续
+— BUG-344 ThinkTimeMs + BUG-345 GlobalRateLimitPerMin (per-host think-time
+pacing + task-level global rate limit posture, cover fetch FetchBinaryPage
+路径漏继承的双 posture 配对). 2 bug 同属 "结构 + 半实现 latent" family
+(cover fetch 路径 FetchBinaryPage → fetchBinaryHttp 不消费 ThinkTimeMs/
+GlobalRateLimitPerMin, ThinkTimeMs 仅在 mergeFetchConfig line ~10325-10327
+合并 + 由 caller 显式 sleep 消费, GlobalRateLimitPerMin 仅在 mergeFetchConfig
+line ~10334-10336 合并 + 由 runner.go 上层调度消费, 故属 "结构 + 半实现
+latent" — 与 BUG-327/328/329/331/332/333/335/336/339/340/342/343 同款
+precedent).
+
+- BUG-344 (P3) cover fetch FetchConfig 仍漏继承 cfg.Override.ThinkTimeMs
+  (int) — per-host think-time pacing posture (per-request think time
+  simulating human reading delay, e.g. 3000ms = 请求间隔内额外 sleep 3s
+  模拟人类翻页/阅读). 后果: cover 同域站 (originHost(parsed.Cover) ==
+  originHost(bookURL)) behind 反爬时, book 章节经 fetchHttp/
+  fetchBinaryHttp jitterSleep (line ~8052 jitterSleep 仅消费 JitterMs,
+  think time 由 caller 显式 sleep) 按 ThinkTimeMs pacing (per-host
+  think-time 模拟人类间隔, 与 hostGate minGap 配对), cover fetch 经
+  FetchBinaryPage(line ~2732) → fetchBinaryHttp 仅 jitterSleep 消费
+  JitterMs (漏 ThinkTimeMs, cover fetch think time 未应用) → cover fetch
+  在 book 章节 think-time pacing 等待时仍立即发出 → "同一浏览器 1s 内
+  book (think-time paced, 间隔 sleep 模拟人类) + cover (think-time
+  unpaced, 立即发出) 请求节奏模式不一致" → 反爬侧 rate/timing 分析识别
+  同一会话/IP 请求节奏漂移是 bot 信号 (反爬关联高 — 请求速率/间隔是反
+  爬主检维度之一). 注: 当前 cover fetch 路径 (FetchBinaryPage →
+  fetchBinaryHttp) 仅 jitterSleep 消费 JitterMs, ThinkTimeMs 由 caller
+  显式 sleep (think-time posture 仅在 merge line ~10325-10327 合并,
+  fetchHttp/fetchBinaryHttp 不显式消费), 故属 "结构 + 半实现 latent"
+  (与 BUG-327/328/329/331/332/333/335/336/339/340/342/343 同款
+  precedent), 但 coverSameHost 继承是结构对称前提, 后续 cover fetch 路径
+  若加 think-time sleep (e.g. fetchBinaryHttp 也调 applyThinkTime) 自动
+  跟上. 与 BUG-314 同 coverSameHost gate. 修复: cfg.Override.ThinkTimeMs
+  > 0 gate 继承 (与 mergeFetchConfig line ~10325-10327 同款 "非零覆盖"
+  gate — int 用 > 0 而非 != ""). runner.go line ~2760-2762.
+- BUG-345 (P3) cover fetch FetchConfig 仍漏继承 cfg.Override.
+  GlobalRateLimitPerMin (int) — task-level global rate limit (全任务每
+  分钟请求上限, e.g. 60 = 全任务每分钟最多 60 请求, 跨 host 共享 token
+  bucket). 后果: cover 同域站 (originHost(parsed.Cover) == originHost
+  (bookURL)) behind 反爬时, book 章节经 task-level globalRateLimiter (在
+  runner.go 上层调度消费 GlobalRateLimitPerMin) 按全局 token bucket 限
+  速, cover fetch 经 FetchBinaryPage(line ~2732) → fetchBinaryHttp 不消
+  费 GlobalRateLimitPerMin (cover fetch 不在上层调度路径) → cover fetch
+  在 book 章节 global rate limit 排队等待时仍立即发出 → "同一浏览器 1s
+  内 book (global rate limited, 每分钟 N 请求跨 host 共享 bucket) + cover
+  (global unlimited, 立即发出) 请求速率模式不一致" → 反爬侧 rate/timing
+  分析识别同一会话/IP 请求速率漂移是 bot 信号 (反爬关联高 — 全任务速率
+  是反爬主检维度之一, complement per-host minGap 维度). 注: 当前 cover
+  fetch 路径 (FetchBinaryPage → fetchBinaryHttp) 不消费
+  GlobalRateLimitPerMin (task-level global rate limiter 仅 runner.go 上层
+  调度消费), 故属 "结构 + 半实现 latent" (与 BUG-327/328/329/331/332/
+  333/335/336/339/340/342/343/344 同款 precedent), 但 coverSameHost 继承
+  是结构对称前提, 后续 cover fetch 路径若加 task-level rate limiter 路由
+  (e.g. cover fetch 也过 global rate limit) 自动跟上. 与 BUG-314 同
+  coverSameHost gate. 修复: cfg.Override.GlobalRateLimitPerMin > 0 gate
+  继承 (与 mergeFetchConfig line ~10334-10336 同款 "非零覆盖" gate —
+  int 用 > 0 而非 != ""). runner.go line ~2790-2792.
+
+### 编译 / gofmt / 行数
+
+  - go build ./... = 0 (crawl + 全模块 0 errors, Go 1.26.8 linux/amd64,
+    /home/z/go/go/bin/go).
+  - go vet ./... = 0.
+  - gofmt -l: fetcher.go + runner.go 仍 non-compliant (8-space 缩进,
+    pre-existing 自 R38, 与 R106-B/R107-A/B/C/D/R108-A/B/C/D/R109-A/R110-A/
+    R111-A/R112-A/R113-A/R114-A 同款 "8-space 一致, 0 新 non-compliant
+    文件" — 本轮编辑用 8-space, 0 引入新 gofmt 违规; 批量 gofmt -w 独立
+    commit defer, 与 R100-A 未决项 #3 同款).
+  - git diff --numstat (本轮 2 文件): fetcher.go 105+/6- = 净 +99;
+    runner.go 62+/0- = 净 +62; 合计 2 files changed, 167 insertions(+),
+    6 deletions(-) = 净 +161 行 (insertions 167 亦 < +200 上限). 仅
+    crawl/fetcher.go + crawl/runner.go 2 文件改动 (0 触 admin/main/parser/
+    cleaner/types/sorter/smart/storage/hostgate/templates/start.sh/
+    requirements, 0 文件冲突).
+  - 0 新依赖 (仅用 resp.Header.Get + extractHeaderFromCurlStdout +
+    recordSecurityHeader + originHost + cfg.Override.ThinkTimeMs/
+    GlobalRateLimitPerMin > 0 已有 API, 0 新增 import / 0 新 var).
+  - 0 emoji (R115-A 新增 0 emoji; pre-existing runner.go emoji 8 个
+    🔴/⚙ 非 本轮引入, 维持 defer 至 R116+ 批量评估删除 — 与 R114-A 同款
+    "pre-existing fetcher.go/runner.go emoji 非 本轮引入" convention; 本轮
+    新增 0 行含 emoji, git diff grep emoji 范围 unicode 1F300-1F9FF /
+    2600-27BF / 1F000-1F2FF 命中 0).
+  - 0 临时测试文件 (与 R106-B/R107-A/B/C/D/R108-A/B/C/D/R109-A/B/C/D/
+    R110-A/C/D/R111-A/C/D/R112-A/R113-A/R114-A 同款 "防御性修复 0 行为
+    变化 0 用户受影响, 不需 /tmp 测试文件"; BUG-344/345 0 当前用户受
+    影响).
+
+未解决 (交接 R116+):
+1. **parseKVString/mapToSortedKV \n in value latent (R96-B 未决项 #1 续,
+   R101-B/R102-B/R103-A/B/R104-A/B/R105-A/D/R106-A/B/D/R107-A/B/C/D/
+   R108-A/B/C/D/R109-A/C/D/R110-A/C/D/R111-A/C/D/R111-B/R112-D/A/B/
+   R113-D/A/C/B/R114-A 续)**: kv string 格式不支持 value 含 \n. 本轮
+   BUG-344/345 不触此 latent (cover FetchConfig ThinkTimeMs/
+   GlobalRateLimitPerMin 继承, 非 kv string). R116+ 评估.
+2. **JsonGet $..a||b recursive+|| (R96-B 未决项 #2 续, R101-B/R102-B/
+   R103-A/B/R104-A/B/R105-A/D/R106-A/B/D/R107-A/B/C/D/R108-A/B/C/D/
+   R109-A/C/D/R110-A/C/D/R111-A/C/D/R111-B/R112-D/A/B/R113-D/A/C/B/
+   R114-A 续)**: $..a||b 仍走原 literal 路径. 本轮 BUG-344/345 不触此
+   latent (cover FetchConfig 继承, 非 JsonGet). R116+ 评估.
+3. **gofmt -l 现 22+ 文件 non-compliant (R100-A 未决项 #3 续, R101-B/
+   R102-C/R103-A/B/R104-A/B/R105-A/B/C/D/R106-A/B/D/R107-A/B/C/D/
+   R108-A/B/C/D/R109-A/B/C/D/R110-A/C/D/R111-A/C/D/R111-B/R112-D/A/B/
+   R113-D/A/C/B/R114-D/R114-A 续)**: 本轮 R115-A 编辑 fetcher.go +
+   runner.go 用 8-space (与现有 8-space 一致, 0 新 non-compliant 文件
+   — 2 文件本就 non-compliant pre-existing from R38). R116+ 批量 gofmt
+   -w 评估 (独立 commit).
+4. **ParseList HTML no-container FieldConst UNREACHABLE (R98-B 未决项 #4
+   续, R106-B BUG-316 已收口)**: 已闭环, R116+ 评估 JSON 模式条件是否
+   需收紧 (非本轮 scope).
+5. **BUG-344/345 unit test 覆盖 (R100-B 未决项 #5 续, R101-A/R102-C/
+   R103-A/B/R104-A/B/R105-A/D/R106-A/B/D/R107-A/B/C/D/R108-A/B/C/D/
+   R109-A/B/C/D/R110-A/C/D/R111-A/C/D/R111-B/R112-D/A/B/R113-D/R114-A
+   同款, R113-B 未决项 #5 续)**: 0 test files. R116+ 评估加测试 (本
+   轮 BUG-344 ThinkTimeMs + BUG-345 GlobalRateLimitPerMin 2 fix 同款缺
+   测试, 与 R114-A BUG-342 HostGateLimit + BUG-343 PerHostConcurrency +
+   R113-A BUG-339 AntiCaptchaAPIKey + BUG-340 CapSolverAPIKey + R112-A
+   BUG-335 MoliHeaders + BUG-336 TwoCaptchaAPIKey + R111-A BUG-331/332/
+   333 + R110-A BUG-328/329 + R109-A BUG-326/327 同款缺测试).
+6. **shared mutable default family (R103-B/R104-B 已收口)**: 本轮 BUG-
+   344/345 非 shared-default family (是 coverSameHost ThinkTimeMs/
+   GlobalRateLimitPerMin 继承, 不同 latent class).
+7. **Absolutize 自引用 scheme 不比较 (R106-B 未决项 #7 已收口)**: 本轮
+   评估: 维持 R107-B 收口决策 (NOT a bug, 当前行为正确, 0 改动).
+8. **R115 并行 agent 修改 + 并发追加时序**: 本轮 R115-A 仅改
+   crawl/fetcher.go + crawl/runner.go 2 文件, 与并行 agent (若存在)
+   scope 不重叠 (admin.go + main.go + db/custom.db 现 git status M 是
+   R113-C/R114-D 残留未 commit, 非本轮 R115-A 改动 — 本轮 0 Edit 调用
+   触此 3 文件, 主控统一编译应 0 errors — 各 agent 独立 scope, 0 文件
+   冲突, 本轮 go build ./... 已验 0 errors). BUG 编号备注: 本轮 R115-A
+   crawl fetcher/runner scope 用 BUG-344 (cover fetch ThinkTimeMs 继承)
+   + BUG-345 (cover fetch GlobalRateLimitPerMin 继承), 与 R114-D main+
+   templates scope BUG-342 (COUNT Scan swallow family) 同号跨 scope 共存
+   (与 R114-A 342 = R114-D 342 cross-scope 共存 + R113-A 339 = R113-D
+   339 = R113-C 339 cross-scope 共存 + R112-A 335 = R112-D 335 cross-
+   scope 共存 + R111-A/C/D 331 cross-scope 共存 + R110-A/C/D 328/329
+   cross-scope 共存 + R109-A/C 326/327 cross-scope 共存同款 "同号跨 scope
+   共存, 不同 family 不同 scope" convention, 主控 merge 时 0 renumber 需
+   求 — 不同 scope 不同 latent class, 编号顺延各自 scope 内独立; R114-D
+   BUG-342 是 main scope COUNT Scan swallow, R114-A BUG-342 是 fetcher/
+   runner scope cover fetch HostGateLimit 继承, 不同 scope 不同 family,
+   同号共存 0 冲突; R115-A BUG-344 是 fetcher/runner scope cover fetch
+   ThinkTimeMs 继承, R114-D 未用 344, 0 撞号; R115-A BUG-345 是
+   fetcher/runner scope cover fetch GlobalRateLimitPerMin 继承, 0 撞号).
+   本轮 R115-A 起读 worklog 末尾为 R114-A 末 separator (R114-A 已追加),
+   完成编辑+编译+vet 验证后追加本块在 R114-A 后真末尾 (顺序 ...→R113-B
+   →R114-D→R114-A→R115-A). 后续 R116+ agent 若并发追加 worklog, 锚
+   R115-A 末 separator 同款时序风险, 建议 R116+ 改用 fcntl flock 或
+   append-only 单 writer 串行化 (跨 budget, 非本轮 scope, 与 R106-A/
+   R107-A/R107-B/R107-C/R108-A/B/C/D/R109-A/C/D/R110-A/C/D/R111-A/C/D/
+   R111-B/R112-D/A/B/C/R113-D/A/C/B/R114-D/R114-A 未决项 #8 续).
+
+==============================================================================
+
+------------------------------------------------------------------------------
+## R115-D — main+templates (main.go scope, 1 文件命中)
+------------------------------------------------------------------------------
+
+**任务**: R115-D main+templates. 文件: main.go+templates/**. 读 worklog 末尾 5KB.
+目标: 深抓 BUG-344++精简. +200 行内. 编译 0. worklog 追加. 严禁改非
+main+templates/启动/新依赖/emoji/临时测试文件. 本轮命中 main.go (BUG-344
+single-row QueryRow Scan swallow family sibling 续 — getBookViewData Book
+Scan + getReadViewData Chapter Scan + getReadViewData Book sub-query Scan +
+getSitePseudoStaticStyle 2 处 Site Scan + getCategoryViewData Category name
+Scan 共 5 callsite; 精简-1 homeHandler case home FeaturedBooks dead-branch
+removal). templates/** 0 命中 (88 模板 rg 内层 unsafe filter/JS injection
+全 0 命中, 模板层仅消费 Go-side data map — BUG-344 是 Go-side Scan swallow
+family, 非 template-side family, templates scope 0 latent 召唤).
+
+Round R115-D (go-backend/main.go scope: 深抓 BUG-344 single-row Scan
+swallow family sibling 续 + 精简-1 dead-branch removal, 1 文件命中,
++104/-9 = 净 +95 行, 编译 0 / vet 0, 0 emoji)
+Agent: R115-D agent (main.go: BUG-344 single-row Scan swallow family
+sibling 续 5 callsite + 精简-1 homeHandler FeaturedBooks dead-branch
+removal, 1 文件命中, +104/-9 = 净 +95 行, 编译 0 / vet 0, 0 emoji)
+Task ID: R115-D
+Scope: go-backend/main.go 1 文件 深抓 BUG-344 single-row QueryRow Scan
+swallow family sibling 续 + 精简-1 dead-branch removal. 本轮命中 main.go
+(getBookViewData line ~4349 initial Book Scan + getReadViewData line ~4482
+initial Chapter Scan + getReadViewData line ~4548 book sub-query Scan +
+getSitePseudoStaticStyle line ~5700/5720 2 处 Site Scan (siteID 查询 +
+default 站 fallback 查询) + getCategoryViewData line ~4646 Category name
+Scan 共 5 callsite, single-row QueryRow Scan silent swallow on non-
+ErrNoRows driver edge; 精简-1 homeHandler case home line ~1534 FeaturedBooks
+`if len(tb) > 0 { featured = tb } else { featured = []map[string]interface{}{} }`
+dead-branch removal). +200 行内 (净 +95 / 插 104 删 9). 编译 0 (go build ./
+... + go vet ./... 全 0). worklog 追加本块. 严禁改非 main+templates/启动/
+新依赖/emoji/临时测试文件 — 本轮仅改 main.go 1 文件 (templates 0 命中),
+0 触 admin/crawl/services/start.sh/.env/requirements (admin.go +
+crawl/fetcher.go + crawl/runner.go 现 git status M 是 R115-C/R115-A 并行
+agent 残留未 commit, 非本轮 R115-D 改动 — 本轮 0 Edit 调用触此 3 文件),
+0 新依赖 (仅用 db.QueryRow + sql.NullString/.String + sql.ErrNoRows +
+log.Printf 已有 API, 0 新增 import / 0 新 var), 0 emoji, 0 测试文件.
+
+### 深抓 BUG-344 single-row QueryRow Scan swallow family sibling 续
+  (main scope, R113-D BUG-340/339 single-row Scan swallow family sibling
+  续 + R114-D BUG-342 main scope COUNT Scan swallow sibling 续)
+
+R113-D BUG-340 收口 getFeaturedBooks Setting Scan (line ~3931) +
+R113-D BUG-339 收口 getFeaturedBooks book Scan (line ~3972, inner-loop
+sibling); R114-D BUG-342 收口 main scope COUNT Scan swallow 6 callsite
+(getCategoryViewData/getRankingViewData/getFulltextViewData/sitemapIndex
+Handler/sitemapBooksPage/sitemapChaptersPage COUNT(*) QueryRow.Scan silent
+→ countBooksBy helper 收口). R115-D 续修 main scope single-row NON-COUNT
+QueryRow Scan silent swallow sibling — 5 callsite, 不同 sub-variant (Book
+全行/Chapter 全行/Site COALESCE 单列/Category name 单列 Scan, 非 COUNT(*)
+标量 Scan, 不可复用 countBooksBy helper). family 续修 rationale:
+
+- **getBookViewData line ~4349 initial Book Scan swallow**: 原
+  `if err := db.QueryRow(...12 列 Book + JOIN Category...).Scan(&bid, &name,
+  ...); err != nil { return nil, nil, nil, nil, "", false }` 吞 err —
+  sql.ErrNoRows (book id 不存在, 正常 404) 与 driver edge Scan err (conn
+  闪断 / 磁盘满 / driver bug / SQLite busy_timeout=5s 重试耗尽超时 / 列
+  序 drift during migration) 同走 false → homeHandler case "book" line
+  ~846 render404. 用户/运维看到 404 但根因 (DB 故障) 隐藏 — 不知是 DB
+  故障 (本应 log) 还是真无书 (silent). R113-D BUG-340 已收同 family
+  setting single-row sibling; R115-D 续修 book view 入口 Scan (非
+  COUNT 标量, 不同 sub-variant, countBooksBy 不覆盖). 修复: 非
+  ErrNoRows 时 log.Printf 提示运维 (label 含 id + err + 后果 hint
+  "returning false caller render404"), ErrNoRows 仍 silent (与 BUG-340
+  同款 "正常 skip + 异常 log" 语义). 0 行为变化 (return false 语义
+  不变, 仅加 log 可见性).
+- **getReadViewData line ~4482 initial Chapter Scan swallow**: 同款
+  `if err := db.QueryRow(...9 列 Chapter...).Scan(&cid, &title, &content,
+  &idx, &wc, &bookID, &volume, &storage, &filePath); err != nil {
+  return nil, nil, nil, nil, false }` 吞 err — sql.ErrNoRows (chapter id
+  不存在, 正常 404) 与 driver edge Scan err 同走 false → homeHandler
+  case "read" line ~1020 render404. R115-D 续修 chapter view 入口 Scan
+  (与 BUG-344 getBookViewData Book Scan sibling). 同款 "正常 skip + 异常
+  log" 语义. 0 行为变化.
+- **getReadViewData line ~4548 book sub-query Scan swallow (sub-variant)**:
+  注释 "book 查不到也允许渲染" 暗示 silent OK, 但原 `if err := db.QueryRow
+  (...8 列 Book + JOIN Category...).Scan(&bid, &bname, ...); err != nil {
+  bookMap := map[string]interface{}{"id": bookID.String, "name": "", ...
+  全空} }` 吞 err — sql.ErrNoRows (book 已删, 正常 fallback 渲染 chapter +
+  空 bookMap) 与 driver edge Scan err 同走空 bookMap 路径. 用户/运维看到
+  read view 渲染但 book 区块全空 (无 name/author/intro/cover), 不知是
+  book 真删 (silent OK) 还是 DB 故障 (本应 log). R115-D 续修 chapter
+  view 内 book 二级 Scan sub-variant (与 BUG-344 chapter 入口 Scan +
+  BUG-339 getFeaturedBooks inner-loop book Scan sibling). 同款 "正常
+  skip + 异常 log" 语义. 0 行为变化 (空 bookMap fallback 渲染语义不变).
+- **getSitePseudoStaticStyle line ~5700 + ~5720 双 Site Scan swallow**:
+  原 2 处 `_ = db.QueryRow(\`SELECT COALESCE(pseudoStaticStyle,'query')
+  FROM Site WHERE id=? AND status=1\`, siteID).Scan(&style)` + 同款 default
+  站 fallback 查询 吞 err — sql.ErrNoRows (siteID 不存在 / 无 status=1
+  站, 正常 fallback default 站) 与 driver edge Scan err 同走 style="" →
+  return "query". randomLinkHandler book_intra + buildWheelBookURL 用此返
+  回值编 URL — admin 配 pseudoStaticStyle=numeric 但 driver edge 返
+  "query" 时跨站 URL 走 query 串格式 (与目标站 routes 不一致, canonical
+  weight 分散, SEO 弱信号 — 与 R102-D BUG-297 list view canonical family +
+  R91-D BUG-251 "首页"/R90-D BUG-247 "尾页" buildXxxURL 一致 family). 用
+  户/运维看到 URL 风格突变但不知是 admin 真配 "query" (silent OK) 还是
+  DB 故障 (本应 log). R115-D 续修 wheel link / random link URL builder
+  入口 Scan (与 BUG-344 book/chapter view entry Scan sibling). 同款 "正常
+  skip + 异常 log" 语义 (2 处 Scan 各 1 log callsite, label 区分 siteID
+  查询 vs default 站 fallback 查询). 0 行为变化 (return "query" 语义
+  不变).
+- **getCategoryViewData line ~4646 Category name Scan swallow**: 原
+  `if err := db.QueryRow(\`SELECT name FROM Category WHERE id=?\`,
+  catID).Scan(&cname); err == nil && cname.String != "" { label = cname.
+  String }` 吞 err — sql.ErrNoRows (catID 不存在, 正常 fallback "全本
+  小说" label) 与 driver edge Scan err 同走 label 不赋值 → "全本小说".
+  category.html 渲染 label 作 page title + h1 — admin 配 catID=valid
+  但 driver edge 返 "全本小说" 时 category 页 title/h1 与 DB 分类名不
+  一致 (SEO 内容漂移, 与 R102-D BUG-297 canonical family +
+  R70-C 目标A 修复 categoryId 不一致 family 同 SEO drift class). 用户/
+  运维看到错配 label 但不知是 catID 真无效 (silent OK) 还是 DB 故障
+  (本应 log). R115-D 续修 category view label Scan (与 BUG-344 book/
+  chapter/wheel URL view entry Scan sibling). 同款 "正常 skip + 异常 log"
+  语义 — `err != nil && err != sql.ErrNoRows { log } else if err == nil
+  && cname.String != "" { label = cname.String }` (3-way 分支: driver
+  edge log / silent ErrNoRows / 成功设 label). 0 行为变化 (label
+  fallback "全本小说" 语义不变).
+
+5 callsite 共享 family: single-row QueryRow Scan silent swallow on non-
+ErrNoRows driver edge, 不同 sub-variant (Book 全行 / Chapter 全行 / book
+二级查询 / Site COALESCE 单列 / Category name 单列 Scan), 不可复用
+countBooksBy helper (countBooksBy 仅覆盖 COUNT(*) 标量返 int, 非 12-列/
+9-列/8-列/单列 Scan 返 NullString+int 混合). 与 R113-D BUG-340/339 +
+R114-D BUG-342 同款 "single-row QueryRow Scan swallow family" precedent
+(不同 sub-variant, 不同 scope 不同轮, 编号顺延 — R113 用 339/340,
+R114 用 342, 本轮 R115-D 用 344 续).
+
+### 精简-1
+
+**精简-1 (P4 精简/dead-branch removal, main scope, R106-D BUG-313 删
+dead init map defaults family 续 + R105-D BUG-311 删 dead-defense 字段
+family 续)**: homeHandler case "home" line ~1534 FeaturedBooks fallback
+路径原 `if len(featured) == 0 { if len(tb) > 0 { featured = tb } else {
+featured = []map[string]interface{}{} } }` 嵌套 dead-branch — tb 来自
+line ~1528 `tb := topBooks(books, topN)`, topBooks 始终返非 nil slice
+(line ~3760 `return sorted[:n]`, sorted 由 make+copy 构造, n 经 R96-D
+BUG-272 n<0 → n=0 clamp + n>len → n=len clamp, 故 n>=0 且 <= len(sorted),
+sorted[:n] 必返非 nil header 即便空切片 len=0). 故 `len(tb) > 0` 分支
+(featured = tb, tb 非 nil) 与 `else` 分支 (featured = literal []T{}, 非
+nil) 均 non-nil slice — 模板 `{{range .FeaturedBooks}}` 对 nil/empty
+同行为 (0 次迭代, html/template range nil-safe 0 panic surface). 简化
+为单分支 `featured = tb`, 删 dead else 分支 (-3 行净). 与 R106-D
+BUG-313 删 dead init map HomeLatestBooks/HomeHotBooks/PagerURL/Size 9
+callsite + R105-D BUG-311 删 dead-defense FirstChapterId/ChapterList
+Anchor/ChapterURL + R107-D BUG-318 删 dead-defense Categories/PseudoStyle
+2 字段同款 "dead-branch/dead-field 精简" precedent. 0 行为变化 (featured
+仍非 nil empty slice 当 tb 空; template range 同行为). 不变式验证:
+topBooks 非 nil 由 make+copy 保证 (line 3757-3760: `sorted := make([]T,
+len(books)); copy(...); return sorted[:n]`, n clamp 后 0<=n<=len(sorted),
+slice expression sorted[:n] 永远非 nil). template `{{range}}` nil-safe
+由 html/template 标准库保证 (range nil/empty slice 均 0 迭代).
+
+**编辑 (1 个 + 1 精简, 均 P3/P4 防御性, 同 family sibling 续)**:
+
+- BUG-344 fix #1 getBookViewData line ~4349 initial Book Scan: +12 行净
+  (insert log + BUG-344 sibling 注释 + ErrNoRows 分支).
+- BUG-344 fix #2 getReadViewData line ~4482 initial Chapter Scan: +12 行
+  净 (insert log + BUG-344 sibling 注释 + ErrNoRows 分支).
+- BUG-344 fix #3 getReadViewData line ~4548 book sub-query Scan: +13 行
+  净 (insert log + BUG-344 sub-variant 注释 + ErrNoRows 分支).
+- BUG-344 fix #4 getSitePseudoStaticStyle line ~5700+5720 双 Site Scan:
+  +24 行净 (2 处 Scan 各改 err 捕获 + log + BUG-344 sibling 注释 + func
+  顶部块注释).
+- BUG-344 fix #5 getCategoryViewData line ~4646 Category name Scan: +18
+  行净 (3-way 分支重构: driver edge log / silent ErrNoRows / 成功设 label
+  + BUG-344 sibling 注释).
+- 精简-1 homeHandler case home line ~1534 FeaturedBooks dead-branch:
+  +19/-3 = +16 行净 (insert 精简-1 sibling 注释 + simplify nested if-else
+  to single branch).
+
+总编辑: +104 插 / -9 删 = 净 +95 行 (1 文件 main.go, +200 行内 budget
+余 +105 行). 编译 0 (go build ./... + go vet ./... 全 0 errors 含并行 agent
+R115-A/R115-C 改动 — 主控统一编译验). templates/** 0 改动 (88 模板 rg
+内层 unsafe filter/JS injection/template.HTML/safeHTML/safeJS/safeURL
+全 0 命中, BUG-344 是 Go-side Scan swallow family 非 template-side family,
+templates scope 0 latent 召唤).
+
+**编译/vet/emoji/测试**:
+
+- go build ./...: 0 errors (1 文件 main.go 改动, 含并行 R115-A fetcher/
+  runner + R115-C admin.go 改动统一编译).
+- go vet ./...: 0 errors.
+- 0 新依赖 (仅用 db.QueryRow + sql.NullString/.String + sql.ErrNoRows +
+  log.Printf + len + slice expression 已有 API, 0 新 import / 0 新 var /
+  0 新 type / 0 新 func / 0 新 const).
+- 0 emoji (R115-D 新增 0 emoji; 注释仅用中文 + ASCII 标点 + 阿拉伯数字
+  BUG 编号, 与 R111-A/C/D/R111-B/R112-D/A/B/C/R113-D/A/C/B/R114-D/C/A/
+  R115-A/C 同款 pre-existing convention).
+- 0 临时测试文件 (与 R106-B/R107-A/B/C/D/R108-A/B/C/D/R109-A/C/D/R110-A/
+  C/D/R111-A/C/D/R111-B/R112-D/A/B/C/R113-D/A/C/B/R114-D/C/A/R115-A/C
+  同款 "防御性修复 0 行为变化 0 用户受影响, 不需 /tmp 测试文件"; BUG-344
+  0 当前用户受影响 — driver edge Scan err 是 rare 路径 (modernc.org/
+  sqlite 稳定, busy_timeout=5s 兜底重试覆盖锁竞争超时, conn 闪断 / 磁盘
+  满是极 rare 边缘), fallback 语义不变 (return false / 空 bookMap / "query"
+  fallback / "全本小说" label fallback, 仅加 log 可见性, 0 行为变化).
+
+未解决 (交接 R116+):
+1. **single-row QueryRow Scan swallow family sibling 续 (R113-D BUG-340/
+   339 + R114-D BUG-342 + R115-D BUG-344 family 续)**: 已闭环 5 main
+   scope non-COUNT sub-variant (getBookViewData Book + getReadViewData
+   Chapter + getReadViewData Book sub-query + getSitePseudoStaticStyle
+   Site ×2 + getCategoryViewData Category name). R116+ 评估其它 main scope
+   single-row Scan swallow (e.g. queryRandomBook line ~5584 主路径 +
+   fallback ORDER BY RANDOM() LIMIT 1 — 当前 driver edge 走 fallback
+   无 log, 与本 BUG-344 family sub-variant 不同 — queryRandomBook 有真
+   fallback 路径, 非 silent swallow; findEntityByEncodedToken line ~5502
+   db.Query 全表扫 silent return "" — multi-row sub-variant 非 single-
+   row, 不同 family). main scope single-row Scan swallow family 闭环.
+2. **parseKVString/mapToSortedKV \n in value latent (R96-B 未决项 #1 续,
+   R101-B/R102-B/R103-A/B/R104-A/B/R105-A/D/R106-A/B/D/R107-A/B/C/D/
+   R108-A/B/C/D/R109-A/C/D/R110-A/C/D/R111-A/C/D/R111-B/R112-D/A/B/C/
+   R113-D/A/C/B/R114-D/C/A/R115-A/C 续)**: kv string 格式不支持 value
+   含 \n. 本轮 BUG-344 不触此 latent (single-row QueryRow Scan, 非 kv
+   string). R116+ 评估.
+3. **JsonGet $..a||b recursive+|| (R96-B 未决项 #2 续, R101-B/R102-B/.../
+   R113-D/A/C/B/R114-D/C/A/R115-A/C 续)**: $..a||b 仍走原 literal 路径.
+   本轮 BUG-344 不触此 latent (QueryRow Scan, 非 JsonGet). R116+ 评估.
+4. **gofmt -l 现 22+ 文件 non-compliant (R100-A 未决项 #3 续, R101-B/.../
+   R113-D/A/C/B/R114-D/C/A/R115-A/C 续)**: 本轮 R115-D 编辑 main.go 用
+   8-space (与现有 8-space 一致, 0 新 non-compliant 文件 — main.go 本就
+   non-compliant pre-existing from R38). R116+ 批量 gofmt -w 评估 (独立
+   commit).
+5. **ParseList HTML no-container FieldConst UNREACHABLE (R98-B 未决项 #4
+   续, R106-B BUG-316 已收口)**: 已闭环, R116+ 评估 JSON 模式条件是否需
+   收紧 (非本轮 scope).
+6. **BUG-344 unit test 覆盖 (R100-B 未决项 #5 续, R101-A/R102-C/R103-A/B/
+   R104-A/B/R105-A/D/R106-A/B/D/R107-A/B/C/D/R108-A/B/C/D/R109-A/C/D/
+   R110-A/C/D/R111-A/C/D/R111-B/R112-D/A/B/C/R113-D/A/C/B/R114-D/C/A
+   同款, R114-C/R115-A/R115-C 未决项 #6 续)**: 0 test files. R116+ 评估
+   加测试 (本轮 BUG-344 5 main callsite log 收口 + 精简-1 dead-branch
+   removal 同款缺测试, 与 R108-B BUG-324/325 + R109-A BUG-326/327 +
+   R110-A/C BUG-328/329 + R110-B BUG-330 + R111-A BUG-331/332/333 +
+   R111-C/D BUG-331 + R111-B BUG-334 + R112-D BUG-335 + R112-A BUG-335/
+   336 + R112-B BUG-337/338 + R112-C BUG-335/336 + R113-D/A/C BUG-339/
+   340 + R113-B BUG-341 + R114-D BUG-342 + R114-C BUG-342 + R114-A
+   BUG-342/343 + R115-A BUG-344/345 + R115-C BUG-344 同款缺测试).
+7. **shared mutable default family (R103-B/R104-B 已收口)**: 本轮 BUG-344
+   + 精简-1 非 shared-default family (是 single-row QueryRow Scan
+   swallow log + dead-branch removal, 不同 latent class).
+8. **Absolutize 自引用 scheme 不比较 (R106-B 未决项 #7 已收口)**: 本轮
+   评估: 维持 R107-B 收口决策 (NOT a bug, 当前行为正确, 0 改动).
+9. **R115 并行 agent 修改 + 并发追加时序**: 本轮 R115-D 仅改 main.go 1
+   文件, 与并行 agent R115-A (crawl/fetcher.go + crawl/runner.go) +
+   R115-C (admin.go) scope 不重叠 (main.go 仅 R115-D 改; fetcher/runner
+   仅 R115-A 改; admin.go 仅 R115-C 改; 主控统一编译应 0 errors — 各
+   agent 独立 scope, 0 文件冲突, 本轮 go build ./... + go vet ./... 已
+   验 0 errors 含并行 agent 改动). BUG 编号备注: 本轮 R115-D main scope
+   用 BUG-344 (main scope single-row QueryRow Scan silent swallow on
+   non-ErrNoRows sub-variant, 5 callsite 覆盖 getBookViewData Book +
+   getReadViewData Chapter + getReadViewData Book sub-query +
+   getSitePseudoStaticStyle Site ×2 + getCategoryViewData Category name)
+   + 精简-1 (homeHandler case home FeaturedBooks dead-branch removal),
+   顺延 R113-A BUG-339/340 + R113-D BUG-339/340 + R113-C BUG-339/340 +
+   R113-B BUG-341 + R114-C/D/A BUG-342 + R114-A BUG-343 + R115-A BUG-344/
+   345 + R115-C BUG-344 后 344 顺延 (与 R114-A/R114-C/R114-D cross-scope
+   共用 342 同款 "同 round 同号跨 scope 共存, 不同 family 不同 scope"
+   convention, 主控 merge 时 0 renumber 需求 — 本轮 R115+ 同 round 内
+   R115-A (fetcher/runner scope cover FetchConfig family) + R115-C (admin
+   scope db.Query block-swallow family) + R115-D (main scope single-row
+   QueryRow Scan swallow family) 三 scope 共用 344, 不同 scope 不同 family,
+   同号共存 0 冲突; R115-A 单 scope 内用 344 + 345 两个号 (cover fetch
+   ThinkTimeMs + GlobalRateLimitPerMin 2 sub-variant 同 family), 与 R114-A
+   单 scope 用 342 + 343 同款 "单 scope 内多号顺延" convention). 本轮
+   R115-D 起读 worklog 末尾为 R115-A 末 separator (R115-A/B/C/D 已完成
+   追加顺序 R114-D→R114-C→R114-A→R115-C→R115-A), 完成编辑+编译+vet
+   验证后追加本块在 R115-A 后真末尾 (顺序 ...→R114-D→R114-C→R114-A→
+   R115-C→R115-A→R115-D). 后续 R116+ agent 若并发追加 worklog, 锚 R115-D
+   末 separator 同款时序风险, 建议 R116+ 改用 fcntl flock 或 append-only
+   单 writer 串行化 (跨 budget, 非本轮 scope, 与 R106-A/R107-A/R107-B/
+   R107-C/R108-A/B/C/D/R109-A/C/D/R110-A/C/D/R111-A/C/D/R111-B/R112-D/
+   A/B/C/R113-D/A/C/B/R114-D/C/A/R115-A/C 未决项 #8/9 续).
+
+==============================================================================

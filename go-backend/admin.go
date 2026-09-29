@@ -4727,10 +4727,24 @@ func adminThemesHandler(w http.ResponseWriter, r *http.Request) {
                 writeJSONErr(w, "method not allowed", 405)
                 return
         }
-        // 计算每主题站点数
-        rows, err := db.Query(`SELECT themeId, COUNT(*) FROM Site GROUP BY themeId`)
+        // 计算每主题站点数.
+        // R115-C BUG-344 (P3, R114-C BUG-342 SSR sub-variant 互补, API scope
+        //   sibling 续): 原实现 `rows, err := db.Query` + `if err == nil {`
+        //   block-swallow — db.Query 故障 (SQLite busy lock / 连接闪断 / 磁盘满
+        //   / driver bug) 时 err != nil, success block 跳过, counts={} → API
+        //   返 200 OK + 全主题 siteCount=0 (前台显示 "每主题 0 站", 用户/运维
+        //   不知是 DB 故障还是真 0 站, 0 log). 与 R114-C SSR 11 callsite
+        //   fillBooksPageData/fillTasksPageData/fillThemesPageData/... 同款
+        //   Query-side conditional block-swallow family (本 sub-variant 是 API
+        //   scope, R114-C 已收 SSR scope 11 callsite, API scope 3 callsite defer
+        //   至本轮 R115-C 评估收口). 改调 queryLogged (返 *sql.Rows, nil +
+        //   log-on-fail) + `if rows != nil {`, 与 R114-C SSR 11 callsite +
+        //   R109-C BUG-326 16 callsite 同款已收口 pattern 一致. 0 行为变化
+        //   (失败时 counts={} best-effort API 兜底语义不变, 仅加 log 可见性).
+        rows := queryLogged("adminThemesHandler counts",
+                `SELECT themeId, COUNT(*) FROM Site GROUP BY themeId`)
         counts := map[string]int{}
-        if err == nil {
+        if rows != nil {
                 defer rows.Close()
                 for rows.Next() {
                         var themeID string
@@ -5413,9 +5427,19 @@ func adminFeedbackHandler(w http.ResponseWriter, r *http.Request) {
                 offset = maxPaginationOffset
         }
         listArgs := append(args, size, offset)
-        rows, err := db.Query(`SELECT id, type, COALESCE(contact,''), content, COALESCE(url,''), COALESCE(siteId,''), status, COALESCE(ip,''), COALESCE(adminNote,''), createdAt, updatedAt FROM Feedback WHERE `+whereSQL+` ORDER BY createdAt DESC LIMIT ? OFFSET ?`, listArgs...)
+        // R115-C BUG-344 续 (adminThemesHandler sibling, API scope): 原实现
+        //   `rows, err := db.Query` + `if err == nil {` block-swallow — db.Query
+        //   故障时 err != nil, success block 跳过, rowsList=[] → API 返 200 OK +
+        //   空 rows + total(可能 0) stats (前台显示 "0 条反馈", 用户/运维不知是
+        //   DB 故障还是真 0 反馈, 0 log). 改调 queryLogged + `if rows != nil {`,
+        //   与 adminThemesHandler + R114-C SSR 11 callsite 同款已收口 pattern
+        //   一致. 0 行为变化 (失败时 rowsList=[] best-effort API 兜底语义不变,
+        //   仅加 log 可见性).
+        rows := queryLogged("adminFeedbackHandler list",
+                `SELECT id, type, COALESCE(contact,''), content, COALESCE(url,''), COALESCE(siteId,''), status, COALESCE(ip,''), COALESCE(adminNote,''), createdAt, updatedAt FROM Feedback WHERE `+whereSQL+` ORDER BY createdAt DESC LIMIT ? OFFSET ?`,
+                listArgs...)
         rowsList := []map[string]interface{}{}
-        if err == nil {
+        if rows != nil {
                 defer rows.Close()
                 for rows.Next() {
                         var id, typV, contact, content, urlV, siteID, statusV, ip, adminNote, createdAt, updatedAt string
@@ -6481,9 +6505,25 @@ func adminSeoAuditHandler(w http.ResponseWriter, r *http.Request) {
                 return
         }
         siteFilter := strings.TrimSpace(r.URL.Query().Get("site"))
-        rows, err := db.Query(`SELECT id, name, domain, themeId, COALESCE(title,''), COALESCE(description,''), COALESCE(keywords,''), COALESCE(icbm,''), COALESCE(geoRegion,''), COALESCE(geoPlacename,''), offset FROM Site LIMIT 500`)
+        // R115-C BUG-344 续 (adminThemesHandler/adminFeedbackHandler sibling,
+        //   API scope) + 精简-1 (defer rows.Close 替 2 处 manual Close): 原实现
+        //   `rows, err := db.Query` + `if err == nil {` block-swallow + block 末
+        //   双 manual `rows.Close()` (err 路径 + 成功路径各 1) — db.Query 故障
+        //   时 err != nil, success block 跳过, sites=[] → API 返 200 OK + 空 sites
+        //   + summary totalSites=0 (前台 SEO 审计显示 "0 站点审计", 用户/运维
+        //   不知是 DB 故障还是真 0 站, 0 log); 双 manual Close 是 code smell (漏
+        //   early-return 路径时 rows 泄漏). 改调 queryLogged + `if rows != nil {` +
+        //   单 `defer rows.Close()` 替 2 处 manual Close (DRY + 防泄漏, 与
+        //   adminThemesHandler/adminFeedbackHandler + R114-C SSR 11 callsite 同款
+        //   已收口 pattern 一致). 0 行为变化 (失败时 sites=[] best-effort API
+        //   兜底语义不变, 仅加 log 可见性; defer Close 语义等价 manual — block
+        //   内 rows 不再被使用, defer 在 writeJSONErr+return / 函数末 return 两路
+        //   均触发).
+        rows := queryLogged("adminSeoAuditHandler sites",
+                `SELECT id, name, domain, themeId, COALESCE(title,''), COALESCE(description,''), COALESCE(keywords,''), COALESCE(icbm,''), COALESCE(geoRegion,''), COALESCE(geoPlacename,''), offset FROM Site LIMIT 500`)
         sites := []map[string]string{}
-        if err == nil {
+        if rows != nil {
+                defer rows.Close()
                 for rows.Next() {
                         var id, name, domain, themeID, title, desc, kw, icbm, geoR, geoP string
                         var offset int
@@ -6498,11 +6538,9 @@ func adminSeoAuditHandler(w http.ResponseWriter, r *http.Request) {
                 // R74-D BUG-121 (P3): rows.Err() 检查 — mid-iteration 错误静默吞, SEO 审计
                 //   sites 截断 → audit 漏站点. 与 adminTasksList BUG-111 同款 pattern.
                 if rerr := rows.Err(); rerr != nil {
-                        rows.Close()
                         writeJSONErr(w, "迭代站点 SEO 审计失败: "+rerr.Error(), 500)
                         return
                 }
-                rows.Close()
         }
         // R87-C 精简: 17 行审计管道 (themeIDs 构建 + 2 计数预查 + auditSite 循环 +
         //   sortAuditReports) 提为 runSiteAuditReports (与 fillSeoAuditPageData 共用,
