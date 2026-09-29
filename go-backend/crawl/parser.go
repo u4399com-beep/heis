@@ -356,6 +356,19 @@ func compileUserReplaceFrom(src string) (*regexp.Regexp, bool) {
 //        [?(@.id=="abc")] 或无 filter; 0 用 base64-json decode 配大数值).
 func anyToString(v any) string {
         switch x := v.(type) {
+        // BUG-338 (P3) 修复: JSON null → "null" (JSON 标准). 原 default 分支
+        //   fmt.Sprintf("%v", nil) 返 "<nil>" (Go fmt 默认), 与 filterArray
+        //   (line ~1196) `==null` filter value "null" 不等 → 比较静默 miss
+        //   (RFC 9535 JSONPath `[?(@.f==null)]` 应匹配 f=null 的 item, 原实现
+        //   0 命中). 与 BUG-311 (absent field ≠ null: absent → continue 不参与
+        //   比较, null → valStr="null" 参与比较, ==null 命中 / !=null 不命中)
+        //   协同闭环. mapToSortedKV (line ~384) 亦受益: {"a": null} → "a=null"
+        //   (JSON 标准) 替 "a=<nil>" (Go fmt, 下游 DB 字段含 "<nil>" 不规范).
+        //   71 Rule 0 用 ==null filter (多用 ==string/==number); 0 用户受影
+        //   响, 防御性 + RFC 对齐修复. latent 自 BUG-301/302 抽 anyToString
+        //   helper 时 nil 走 default "同历史" (5 轮未补).
+        case nil:
+                return "null"
         case string:
                 return x
         case float64:
@@ -751,6 +764,10 @@ func JsonGet(root any, path string) any {
                                 //   自有语义不视作空). latent 自 R38 TS→Go 迁移 (47 轮未发现因
                                 //   71 Rule 0 用 "||" 形态 path, 多用单字段 path 或 fallback 由
                                 //   ApplyTransform defaultValue 接管).
+                                //   BUG-337 (P3) 续修: recursive descent ($..a / $..a.b) 0 命中时
+                                //   返 nil (非空 []any, 详见 line ~825/843), 本分支 v==nil continue
+                                //   触发 fallback. BUG-233 "[] 不 skip" 设计仍保留 (a=[] literal
+                                //   值 → recursiveCollect 返 []any{[]} 非空, 非 nil, 不触发 skip).
                                 if s, ok := v.(string); ok && s == "" {
                                         continue
                                 }
@@ -809,9 +826,33 @@ func JsonGet(root any, path string) any {
                                         out = append(out, next)
                                 }
                         }
-                        return out
+                        // BUG-337 (P3) 修复 (R96-B 未决项 #2 续): 原 `return out`
+                        //   在 recursiveCollect 0 命中 (a 不存在) 或 sub-JsonGet 全
+                        //   nil (a 存在但 b 不存在) 时返空 []any (非 nil). JsonGet
+                        //   || 分支 (line ~738) 仅 skip nil + empty string (BUG-233),
+                        //   不 skip empty []any → `$..a.b||c` 返空 []any 非 nil →
+                        //   || fallback 到 c 不触发, 与注释 "取首个非空" 不符. 修复:
+                        //   empty out → 返 nil, || 分支 v==nil continue 触发 fallback.
+                        //   行为变化: 仅 `$..x...||y` recursive descent + || 组合
+                        //   (71 Rule 0 用, 多用 a.b 直连或 $..field 单级); 非 ||
+                        //   caller (JsonToString nil→"" 同 []any{}→"", 0 变化).
+                        //   区分 "nothing found" (nil) vs "value is []" (recursive
+                        //   Collect 命中 a=[] 时返 []any{[]} 非空 → return slice,
+                        //   BUG-233 设计 "[] 各自有语义不视作空" 保留).
+                        if len(out) > 0 {
+                                return out
+                        }
+                        return nil
                 }
-                return recursiveCollect(root, key)
+                // BUG-337 (P3): 同 multi-level — recursiveCollect 0 命中时返 nil
+                //   (非空 []any), 让 || fallback 触发. 保留 "a 存在但 value=[]"
+                //   case (recursiveCollect 返 []any{[]} 非空 → return slice,
+                //   BUG-233 设计保留). 与 multi-level 同口径, 单级是 multi-level
+                //   splitAt<=0 的兜底 (key 无 . 或 [, e.g. $..a 单级).
+                if c := recursiveCollect(root, key); len(c) > 0 {
+                        return c
+                }
+                return nil
         }
         // R85-B BUG-216 (P3) 修复: JsonGet 未处理 "$." JSONPath 根引用前缀.
         //   原实现跳过此处直接走 jsonGetByPath, tokenizeJsonPath 把 "$" 当

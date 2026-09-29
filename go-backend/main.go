@@ -1185,8 +1185,9 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 data["CatID"] = catID
                 data["Label"] = label
                 data["Books"] = books
-                data["HotBooks"] = takeBooks(books, 12)
-                data["TopAuthors"] = pickAuthors(books, 12)
+                // R112-D BUG-335 + 精简-1: injectListSidebar (HotBooks + TopAuthors,
+                //   详见 helper 注释 line ~2845).
+                injectListSidebar(data, books)
                 data["Page"] = page
                 // R106-D BUG-313 (P4 精简/dead-field removal, main+templates
                 //   scope, R105-D BUG-311 dead-field family 续): 删
@@ -1288,7 +1289,10 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 data["Tab"] = tab
                 data["TabName"] = tabName
                 data["Books"] = withRank(books, page, size)
-                data["HotBooks"] = takeBooks(books, 12)
+                // R112-D BUG-335 + 精简-1: injectListSidebar (HotBooks + TopAuthors,
+                //   详见 helper 注释 line ~2845). BUG-335 修复: ranking 漏 TopAuthors
+                //   → aijjxs/ranking.html "热门作者" 侧栏 dead, 走 helper 后注入.
+                injectListSidebar(data, books)
                 data["Page"] = page
                 // R106-D BUG-313 (P4 精简/dead-field removal, main+templates
                 //   scope, R105-D BUG-311 dead-field family 续, 与 case
@@ -1346,8 +1350,9 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 injectBookURLs(books, pseudoStyle)
                 data["Label"] = "全本完本小说"
                 data["Books"] = books
-                data["HotBooks"] = takeBooks(books, 12)
-                data["TopAuthors"] = pickAuthors(books, 12)
+                // R112-D BUG-335 + 精简-1: injectListSidebar (HotBooks + TopAuthors,
+                //   详见 helper 注释 line ~2845).
+                injectListSidebar(data, books)
                 data["Page"] = page
                 // R106-D BUG-313 (P4 精简/dead-field removal, main+templates
                 //   scope, R105-D BUG-311 dead-field family 续, 与 case
@@ -1380,7 +1385,10 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 injectBookURLs(books, pseudoStyle)
                 data["Q"] = q
                 data["Books"] = books
-                data["HotBooks"] = takeBooks(books, 12)
+                // R112-D BUG-335 + 精简-1: injectListSidebar (HotBooks + TopAuthors,
+                //   详见 helper 注释 line ~2845). BUG-335 修复: search 漏 TopAuthors
+                //   → aijjxs/search.html "热门作者" 侧栏 dead, 走 helper 后注入.
+                injectListSidebar(data, books)
                 // R102-D BUG-297: search view canonical = self (含 q, 每搜索 query
                 //   唯一内容, canonical 各异). url.QueryEscape 防 q 含 &/= 破 URL.
                 // R103-D BUG-299 (P3 SEO, main+templates scope, R102-D BUG-297
@@ -2840,6 +2848,48 @@ func injectCategoryURLs(cats []map[string]interface{}, style string) {
                         c["URL"] = buildCategoryURL(style, id, 1)
                 }
         }
+}
+
+// R112-D BUG-335 (P3, main+templates scope, R111-D BUG-331 appendPostRenderExtras DRY
+//   sibling family 续) + 精简-1 (P4 精简/DRY, main scope): injectListSidebar 给 list
+//   view (category/ranking/fulltext/search) 装配侧栏 HotBooks + TopAuthors 两字段.
+//   homeHandler 4 list case 共用此 helper, 替代 4 callsite 各内联 2 步 (takeBooks +
+//   pickAuthors) 逻辑.
+//
+//   BUG-335 (P3 correctness, main+templates scope): aijjxs/ranking.html line 83-90 +
+//   aijjxs/search.html line 97-104 各有 `{{if .TopAuthors}}` 守护的 "热门作者" 侧栏
+//   <article> 块 (range .TopAuthors 渲染作者搜索链接), 但 homeHandler case "ranking"
+//   (原 line ~1291) + case "search" (原 line ~1383) 仅注入 data["HotBooks"] =
+//   takeBooks(books, 12), 漏注入 data["TopAuthors"] → .TopAuthors nil → {{if}} 守护
+//   false → "热门作者" 整块静默跳过 (模板设计存在但 Go 侧数据缺失, 侧栏永远不渲染).
+//   对比 case "category" (原 line 1189) + case "fulltext" (原 line 1350) 均注入
+//   data["TopAuthors"] = pickAuthors(books, 12), shipsay/aijjxs category/fulltext 模板
+//   "热门作者" 块正常渲染. aijjxs/ranking + aijjxs/search 漏注入是 R85-D BUG-225
+//   "shipsay/home 漏 categoryId 过滤 (aijjxs/home 已修)" 同款 "sibling view 漏注入"
+//   family 续 (template 期望字段 + sibling case 已注入 + 本 case 漏). 影响范围:
+//   aijjxs 主题 (clone-aijjxs) 的 ranking + search 页 "热门作者" 侧栏永远空 (用户
+//   看不到作者导航链接, SEO 内链密度下降). 触发条件: admin 选 aijjxs 主题 + 用户
+//   访问 /?view=ranking 或 /?view=search. 修复: 提取 injectListSidebar helper (含
+//   HotBooks + TopAuthors 两步注入), 4 callsite 各 1 行调用替代 inline; ranking +
+//   search 走 helper 后获 TopAuthors 注入 → BUG-335 修复. 0 行为变化 for
+//   category/fulltext (两步注入内容不变); ranking/search 修复 (TopAuthors 注入,
+//   aijjxs 侧栏渲染).
+//
+//   精简-1 (P4 精简/DRY, main scope, R111-D BUG-331 appendPostRenderExtras helper
+//   sibling 续): 原 case "category"/"fulltext" 各内联 2 行 (data["HotBooks"] +
+//   data["TopAuthors"]), case "ranking"/"search" 各内联 1 行 (仅 data["HotBooks"]).
+//   4 callsite 同 "takeBooks(books, 12) + pickAuthors(books, 12)" 两步逻辑 (ranking/
+//   search 漏第二步 = BUG-335). 提取 helper (含两步注入 + magic 12 单点维护), 4
+//   callsite 各 1 行调用替代 inline 块. 与 R111-D appendPostRenderExtras (2 callsite
+//   2 步注入 → 1 helper) + R110-D maybeObfuscateHTML (2 callsite obfuscate if-else →
+//   1 helper) 同款 "DRY 精简" precedent (consolidate redundant inline → shared helper).
+//   不变式: books 变量在 4 case 均为 raw slice (ranking 虽 data["Books"]=withRank(...)
+//   但 HotBooks/TopAuthors 用 raw books 非 withRank 输出, 与 category/fulltext 一致);
+//   takeBooks/pickAuthors 纯读 map 无副作用, 调用次数 per request 不变 (HotBooks 1 +
+//   TopAuthors 1 各 case, helper 内 2 次等价), 0 perf 影响.
+func injectListSidebar(data map[string]interface{}, books []map[string]interface{}) {
+        data["HotBooks"] = takeBooks(books, 12)
+        data["TopAuthors"] = pickAuthors(books, 12)
 }
 
 // pageListWithURLs 把 buildPageList 返回的 []int 转 []map[string]interface{}{page, URL}.

@@ -4796,6 +4796,35 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 if abm := resp.Header.Get("Akamai-BM-Telemetry"); abm != "" {
                         recordSecurityHeader(originHost(rawURL), "Akamai-BM-Telemetry", abm)
                 }
+                // R112-A 反反爬第 254-258 项: alt vendor WAF/edge request ID + error
+                //   分类 响应头观测 (与 124-253 同款 family, 单值 last-write-wins
+                //   per-host 合并 tracker). R111-A 未决项 #1 pivot 续 — Cloudflare
+                //   challenge bypass token + alt vendor WAF/bot identification (249-253)
+                //   耗尽, pivot alt vendor WAF/edge request ID 跨厂商镜像 family 续
+                //   (X-Sucuri-ID complement Akamai BM #253 / Imperva Iinfo #251 / AWS
+                //   WAF Action #252 — Sucuri CloudProxy WAF request ID, alt vendor
+                //   WAF side; X-Akamai-Stub + Akamai-Origin-Hop complement Akamai-GRN
+                //   #250 + X-Akamai-Request-ID #224 — Akamai edge node identifier +
+                //   proxy hop chain, alt vendor Akamai side; X-Amzn-ErrorType +
+                //   Apigw-Requestid complement X-Amz-Request-Id #221 + X-Amzn-Trace-Id
+                //   #223 + X-Amz-Cf-Id #214 — AWS service-specific request ID 跨服务
+                //   镜像 family). 第 254 X-Sucuri-ID / 第 255 X-Akamai-Stub / 第 256
+                //   Akamai-Origin-Hop / 第 257 X-Amzn-ErrorType / 第 258 Apigw-Requestid.
+                if xsu := resp.Header.Get("X-Sucuri-ID"); xsu != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Sucuri-ID", xsu)
+                }
+                if xst := resp.Header.Get("X-Akamai-Stub"); xst != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Akamai-Stub", xst)
+                }
+                if aoh := resp.Header.Get("Akamai-Origin-Hop"); aoh != "" {
+                        recordSecurityHeader(originHost(rawURL), "Akamai-Origin-Hop", aoh)
+                }
+                if xet := resp.Header.Get("X-Amzn-ErrorType"); xet != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Amzn-ErrorType", xet)
+                }
+                if agw := resp.Header.Get("Apigw-Requestid"); agw != "" {
+                        recordSecurityHeader(originHost(rawURL), "Apigw-Requestid", agw)
+                }
 
                 // Set-Cookie 处理 (autoCookie)
                 if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
@@ -6151,6 +6180,27 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 }
                 if abm := extractHeaderFromCurlStdout(headers, "Akamai-BM-Telemetry"); abm != "" {
                         recordSecurityHeader(domain, "Akamai-BM-Telemetry", abm)
+                }
+                // R112-A 反反爬第 254-258 项 续 (与 fetchHttp line ~4800 同款, curl -D -
+                //   dump headers 路径; fetchBinaryViaCurl 不 dump headers 故不调, 与
+                //   124-253 同款限制. 详见 fetchHttp line ~4800 rationale). 第 254 X-
+                //   Sucuri-ID / 第 255 X-Akamai-Stub / 第 256 Akamai-Origin-Hop / 第 257
+                //   X-Amzn-ErrorType / 第 258 Apigw-Requestid (extractHeaderFromCurlStdout
+                //   已对 5 头大小写不敏感提取).
+                if xsu := extractHeaderFromCurlStdout(headers, "X-Sucuri-ID"); xsu != "" {
+                        recordSecurityHeader(domain, "X-Sucuri-ID", xsu)
+                }
+                if xst := extractHeaderFromCurlStdout(headers, "X-Akamai-Stub"); xst != "" {
+                        recordSecurityHeader(domain, "X-Akamai-Stub", xst)
+                }
+                if aoh := extractHeaderFromCurlStdout(headers, "Akamai-Origin-Hop"); aoh != "" {
+                        recordSecurityHeader(domain, "Akamai-Origin-Hop", aoh)
+                }
+                if xet := extractHeaderFromCurlStdout(headers, "X-Amzn-ErrorType"); xet != "" {
+                        recordSecurityHeader(domain, "X-Amzn-ErrorType", xet)
+                }
+                if agw := extractHeaderFromCurlStdout(headers, "Apigw-Requestid"); agw != "" {
+                        recordSecurityHeader(domain, "Apigw-Requestid", agw)
                 }
                 if status >= 300 {
                         // R66-C BUG-52 (P3): curl 4xx/5xx 也记 latency + fail (与 fetchHttp
@@ -8587,6 +8637,29 @@ func fetchBinaryHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, pr
                 }
                 if abm := resp.Header.Get("Akamai-BM-Telemetry"); abm != "" {
                         recordSecurityHeader(originHost(rawURL), "Akamai-BM-Telemetry", abm)
+                }
+                // R112-A 反反爬第 254-258 项 续 (与 fetchHttp line ~4800 同款,
+                //   fetchBinaryHttp success + 4xx/5xx 两路径都记, BUG-241 修复后
+                //   fetchBinaryHttp 已补对称; fetchBinaryViaCurl 不 dump headers
+                //   故不调, 与 124-253 同款限制. 详见 fetchHttp line ~4800 rationale).
+                //   第 254 X-Sucuri-ID / 第 255 X-Akamai-Stub / 第 256 Akamai-Origin-
+                //   Hop / 第 257 X-Amzn-ErrorType / 第 258 Apigw-Requestid (alt vendor
+                //   WAF/edge request ID + error 分类; cover host 多在 external CDN /
+                //   S3, 与 HTML host 不同域各自独立条目, 无污染).
+                if xsu := resp.Header.Get("X-Sucuri-ID"); xsu != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Sucuri-ID", xsu)
+                }
+                if xst := resp.Header.Get("X-Akamai-Stub"); xst != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Akamai-Stub", xst)
+                }
+                if aoh := resp.Header.Get("Akamai-Origin-Hop"); aoh != "" {
+                        recordSecurityHeader(originHost(rawURL), "Akamai-Origin-Hop", aoh)
+                }
+                if xet := resp.Header.Get("X-Amzn-ErrorType"); xet != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Amzn-ErrorType", xet)
+                }
+                if agw := resp.Header.Get("Apigw-Requestid"); agw != "" {
+                        recordSecurityHeader(originHost(rawURL), "Apigw-Requestid", agw)
                 }
                 // 3xx / 4xx / 5xx 视为失败 (与 fetchHttp 同款, 不重试 3xx)
                 if resp.StatusCode >= 300 {
@@ -13313,10 +13386,10 @@ func ClearHostAcceptRanges(host string) {
 //   第 204-208 项 + R103-A 第 209-213 项 + R104-A 第 214-218 项 + R105-A 第
 //   219-223 项 (R106-A BUG-313 补字段) + R106-A 第 224-228 项 + R107-A 第
 //   229-233 项 + R108-A 第 234-238 项 + R109-A 第 239-243 项 + R110-A 第 244-248 项
-//   + R111-A 第 249-253 项, 合并 125 字段). entry 是 pointer: recordSecurityHeader
+//   + R111-A 第 249-253 项 + R112-A 第 254-258 项, 合并 130 字段). entry 是 pointer: recordSecurityHeader
 //   LoadOrStore canonical 指针 + 单字段 update-in-place (非 store-replace, 保留其他
-//   124 头旧值). 同字段并发写 last-write-wins; sweep CompareAndDelete 后下次 record
-//   重建 entry (与 recordVia store-replace 不一样, 这里需保留其他 124 头故用
+//   129 头旧值). 同字段并发写 last-write-wins; sweep CompareAndDelete 后下次 record
+//   重建 entry (与 recordVia store-replace 不一样, 这里需保留其他 129 头故用
 //   update-in-place).
 type hostSecurityHeadersEntry struct {
         hstsValue         string // Strict-Transport-Security (第 124 项)
@@ -13545,6 +13618,22 @@ type hostSecurityHeadersEntry struct {
         xIinfoValue             string // X-Iinfo (第 251 项, R111-A)
         xAmznWAFActionValue      string // X-Amzn-WAF-Action (第 252 项, R111-A)
         akamaiBMTelemetryValue   string // Akamai-BM-Telemetry (第 253 项, R111-A)
+        // R112-A 反反爬第 254-258 项: alt vendor WAF/edge request ID + error 分类
+        //   响应头观测 (与 124-253 同款 family, 单值 last-write-wins per-host 合并
+        //   tracker). 详见 fetchHttp line ~4800 rationale (R112-A 块). headerName 大小写
+        //   不敏感. R111-A 未决项 #1 pivot 续 — Cloudflare challenge bypass token + alt
+        //   vendor WAF/bot identification (249-253) 耗尽, pivot alt vendor WAF/edge
+        //   request ID 跨厂商镜像 family 续 (Sucuri CloudProxy WAF request ID complement
+        //   Akamai BM #253 / Imperva Iinfo #251 / AWS WAF Action #252; Akamai edge stub +
+        //   origin hop complement Akamai-GRN #250 + X-Akamai-Request-ID #224; AWS API
+        //   Gateway error type + request ID complement X-Amz-Request-Id #221 + X-Amzn-
+        //   Trace-Id #223 + X-Amz-Cf-Id #214 — AWS service-specific request ID 跨服务
+        //   镜像 family).
+        xSucuriIDValue          string // X-Sucuri-ID (第 254 项, R112-A)
+        xAkamaiStubValue         string // X-Akamai-Stub (第 255 项, R112-A)
+        akamaiOriginHopValue     string // Akamai-Origin-Hop (第 256 项, R112-A)
+        xAmznErrorTypeValue      string // X-Amzn-ErrorType (第 257 项, R112-A)
+        apigwRequestidValue      string // Apigw-Requestid (第 258 项, R112-A)
         detectedAt              int64  // UnixMilli
 }
 
@@ -13556,7 +13645,7 @@ type hostSecurityHeadersEntry struct {
 //   第 204-208 项 + R103-A 第 209-213 项 + R104-A 第 214-218 项 + R105-A 第
 //   219-223 项 (R106-A BUG-313 补字段) + R106-A 第 224-228 项 + R107-A 第
 //   229-233 项 + R108-A 第 234-238 项 + R109-A 第 239-243 项 + R110-A 第 244-248 项
-//   + R111-A 第 249-253 项).
+//   + R111-A 第 249-253 项 + R112-A 第 254-258 项).
 var hostSecurityHeadersMap sync.Map
 
 // hostSecurityHeadersSweepCounter — sweep 触发累加 (与 hostViaSweepCounter 同口径).
@@ -13613,8 +13702,9 @@ func extractSetCookieAttr(cookies []string, attr string) string {
 //   第 204-208 项 + R103-A 第 209-213 项 + R104-A 第 214-218 项 + R105-A 第
 //   219-223 项 (R106-A BUG-313 补 case) + R106-A 第 224-228 项 + R107-A 第
 //   229-233 项 + R108-A 第 234-238 项 + R109-A 第 239-243 项 + R110-A 第 244-248 项
-//   + R111-A 第 249-253 项). headerName 区分 125 头 (大小写不敏感). 与 recordVia
-//   同款 Store + 惰性 sweep, 但保留其他 124 头旧值 (LoadOrStore canonical 指针 +
+//   + R111-A 第 249-253 项 + R112-A 第 254-258 项). headerName 区分 130 头 (大小
+//   不敏感). 与 recordVia
+//   同款 Store + 惰性 sweep, 但保留其他 129 头旧值 (LoadOrStore canonical 指针 +
 //   单字段 update-in-place).
 func recordSecurityHeader(host, headerName, value string) {
         if host == "" || value == "" {
@@ -13935,6 +14025,18 @@ func recordSecurityHeader(host, headerName, value string) {
                 ent.xAmznWAFActionValue = value
         case "akamai-bm-telemetry":
                 ent.akamaiBMTelemetryValue = value
+        // R112-A 反反爬第 254-258 项 (与 124-253 同款 family, 详见 fetchHttp line
+        //   ~4800 rationale. headerName 大小写不敏感).
+        case "x-sucuri-id":
+                ent.xSucuriIDValue = value
+        case "x-akamai-stub":
+                ent.xAkamaiStubValue = value
+        case "akamai-origin-hop":
+                ent.akamaiOriginHopValue = value
+        case "x-amzn-errortype":
+                ent.xAmznErrorTypeValue = value
+        case "apigw-requestid":
+                ent.apigwRequestidValue = value
         default:
                 return
         }
@@ -14089,6 +14191,12 @@ func HostSecurityHeadersSnapshot() map[string]map[string]string {
                         "xIinfoValue":            e.xIinfoValue,
                         "xAmznWAFActionValue":    e.xAmznWAFActionValue,
                         "akamaiBMTelemetryValue": e.akamaiBMTelemetryValue,
+                        // R112-A 第 254-258 项.
+                        "xSucuriIDValue":      e.xSucuriIDValue,
+                        "xAkamaiStubValue":    e.xAkamaiStubValue,
+                        "akamaiOriginHopValue":e.akamaiOriginHopValue,
+                        "xAmznErrorTypeValue": e.xAmznErrorTypeValue,
+                        "apigwRequestidValue": e.apigwRequestidValue,
                         "detectedAt":        fmt.Sprintf("%d", e.detectedAt),
                 }
                 return true

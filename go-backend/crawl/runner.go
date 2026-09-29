@@ -2565,6 +2565,66 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                         if cfg.Override.MoliEval != "" {
                                 coverCfg.MoliEval = cfg.Override.MoliEval
                         }
+                        // R112-A BUG-335 (P3) 修复 (深抓 cover fetch posture 续, alt-
+                        //   engine moli family 续, 与 BUG-333 MoliEval 同族): cover fetch
+                        //   FetchConfig 仍漏继承 cfg.Override.MoliHeaders (map[string]
+                        //   string) — moli 桥 (127.0.0.1:3017, Rust AI 浏览器) 自定义
+                        //   HTTP 请求头集 (e.g. X-Custom-Header: value1 / Accept-Language:
+                        //   zh-CN — 注入到 moli 桥 fetch 请求头, 决定 moli 浏览器发请求
+                        //   时携带的 header 集合). 后果: cover 同域站 (originHost
+                        //   (parsed.Cover) == originHost(bookURL)) behind 反爬时, book
+                        //   fetch 经 mergeFetchConfig(line ~10088-10090) 复制 cfg.
+                        //   Override.MoliHeaders → fetchViaMoli(line ~6415-6416) 按
+                        //   moliHeaders 注入 HTTP 头集 (header 集合决定 moli 浏览器
+                        //   fingerprint 的 Accept-Language / X-Custom 等维度), cover
+                        //   fetch 漏继承 → cover fetch 走 default 无 moliHeaders 路径
+                        //   → 同一浏览器 1s 内 book (full moliHeaders A 集合) + cover
+                        //   (empty moliHeaders) 请求头集不一致 → 反爬侧 header
+                        //   fingerprint 不一致是 bot 信号. 注: 当前 cover fetch 路径
+                        //   (FetchBinaryPage → fetchBinaryHttp) 尚未读 cfg.MoliHeaders
+                        //   (MoliHeaders 仅在 fetchViaMoli HTML 路径消费), 故属 "结构 +
+                        //   半实现 latent" (与 BUG-327/328/329/331/332/333 同款
+                        //   precedent), 但 coverSameHost 继承是结构对称前提, 后续
+                        //   cover fetch 路径若加 moli 路由自动跟上. 与 BUG-314 同
+                        //   coverSameHost gate. 修复: len(cfg.Override.MoliHeaders) > 0
+                        //   gate 继承 (与 mergeFetchConfig line ~10088-10090 同款
+                        //   "非空覆盖" gate — map 用 len 而非 != "").
+                        if len(cfg.Override.MoliHeaders) > 0 {
+                                coverCfg.MoliHeaders = cfg.Override.MoliHeaders
+                        }
+                        // R112-A BUG-336 (P3) 修复 (深抓 cover fetch posture 续, captcha
+                        //   solver family 续, 与 BUG-333 MoliEval + BUG-335 MoliHeaders
+                        //   同 "结构 + 半实现 latent" family 续 — 但属 captcha 求解家族
+                        //   非 alt-engine 桥家族): cover fetch FetchConfig 仍漏继承 cfg.
+                        //   Override.TwoCaptchaAPIKey (string) — 2captcha 验证码服务 API
+                        //   key (用户配置后, fetchPageOnce 命中 h-captcha / reCAPTCHA 时
+                        //   调 2captcha API 提交任务, 等待人工/AI 解出 token, 注入到
+                        //   页面重新抓取). 后果: cover 同域站 (originHost(parsed.Cover) ==
+                        //   originHost(bookURL)) behind 反爬时, cover URL 可能返
+                        //   Cloudflare challenge HTML 页 (反爬触发 challenge, 返 200 + JS
+                        //   challenge HTML 而非 image bytes), book fetch 经
+                        //   mergeFetchConfig(line ~10175-10176) 复制 cfg.Override.
+                        //   TwoCaptchaAPIKey → fetchPageOnce(line ~9813/9833) HTML 路径
+                        //   触发 trySolveCaptchaWith2Captcha(line ~9137) 按 key 调
+                        //   2captcha 解 h-captcha/reCAPTCHA, cover fetch 漏继承 →
+                        //   cover fetch 走 default 无 API key 路径 → 同一浏览器 1s 内
+                        //   book (2captcha 解 challenge 成功) + cover (无 key 不解
+                        //   challenge, looksBlockedBinary 命中 HTML challenge 标
+                        //   Blocked=true 跳过) 行为深度不一致 → 反爬侧 behavior
+                        //   fingerprint 不一致是 bot 信号. 注: 当前 cover fetch 路径
+                        //   (FetchBinaryPage → fetchBinaryHttp) 尚未读 cfg.
+                        //   TwoCaptchaAPIKey (TwoCaptchaAPIKey 仅在 trySolveCaptcha-
+                        //   With2Captcha HTML 路径消费, fetchBinaryHttp 无 captcha 解
+                        //   求解逻辑), 故属 "结构 + 半实现 latent" (与 BUG-327/328/
+                        //   329/331/332/333/335 同款 precedent), 但 coverSameHost 继承
+                        //   是结构对称前提, 后续 cover fetch 路径若加 captcha 解求解
+                        //   路由 (e.g. cover HTML challenge 解 challenge 后再 fetch
+                        //   binary) 自动跟上. 与 BUG-314 同 coverSameHost gate. 修复:
+                        //   cfg.Override.TwoCaptchaAPIKey != "" gate 继承 (与
+                        //   mergeFetchConfig line ~10175-10176 同款 "非空覆盖" gate).
+                        if cfg.Override.TwoCaptchaAPIKey != "" {
+                                coverCfg.TwoCaptchaAPIKey = cfg.Override.TwoCaptchaAPIKey
+                        }
                 }
                 coverBin, err := FetchBinaryPage(ctx, parsed.Cover, coverCfg)
                 if err == nil && !coverBin.Blocked && len(coverBin.Bytes) > 0 {

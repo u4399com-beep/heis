@@ -649,6 +649,30 @@ func rowsAffectedLogged(label string, res sql.Result) int {
         return int(n)
 }
 
+// rollbackLogged wraps sql.Tx.Rollback, log-on-fail visibility (0 行为变化
+//   — 失败时仅 log, 与原 `_ = tx.Rollback()` swallow 语义一致 — defer 路径
+//   不阻塞 caller). R112-C BUG-335 Pattern R sql.Tx.Rollback 吞错 family
+//   — 与 execLogged (BUG-272~274) / unmarshalLogged (BUG-309) / scanLogged
+//   (BUG-314) / marshalLogged (BUG-321) / parseBookUpdatedAtLogged (BUG-322)
+//   / queryLogged (BUG-326) / encodeLogged (BUG-329) / writeBytesLogged
+//   (BUG-328) / rowsAffectedLogged (BUG-331) 并行的 Tx.Rollback family 收口.
+//   6 callsite (adminBookByIDHandler DELETE + adminSettingsUpdate +
+//   adminBackupRestoreHandler + adminSiteByIDHandler PUT + adminSitesCreate
+//   + adminBackupClearHandler 事务 defer rollback 路径): 原实现
+//   `_ = tx.Rollback()` 吞 — driver 边缘场景 (conn 闪断 / double-Rollback
+//   / Rollback 已 aborted tx / driver bug) 时返 err 静默吞 → 运维不知事务
+//   是否真正回滚 (commit 已失败, Rollback 又失败 → DB 可能停中途状态).
+//   与 BUG-331 RowsAffected family 互补: RowsAffected 收 read-side swallow
+//   (读计数失败显示 0), Rollback 收 rollback-side swallow (回滚失败不知).
+//   helper 单点维护防散落 inline log-on-fail 重复 (精简-1: 6 处
+//   `_ = tx.Rollback()` inline swallow 散落 → 1 helper). 0 行为变化
+//   (best-effort 回滚语义不变, 仅加 log 可见性).
+func rollbackLogged(label string, tx *sql.Tx) {
+        if err := tx.Rollback(); err != nil {
+                log.Printf("[%s] Rollback 失败 (best-effort): %v", label, err)
+        }
+}
+
 // parseTaskProgress 解析 Task.progress JSON 列为仪表盘/任务页所需的 progressNote +
 // pct. R105-C BUG-309 精简-3 (R104-B 精简-1/2 同款 dedup precedent): 原实现
 // fillDashboardData (line ~3382) + fillTasksPageData (line ~3481) 两处 progress
@@ -3395,7 +3419,8 @@ func adminBookByIDHandler(w http.ResponseWriter, r *http.Request) {
                 committed := false
                 defer func() {
                         if !committed {
-                                _ = tx.Rollback()
+                                // R112-C BUG-335 Pattern R Tx.Rollback 吞错 family 续 (rollbackLogged 收口).
+                                rollbackLogged("adminBookByIDHandler DELETE rollback", tx)
                         }
                 }()
                 if _, err := tx.Exec(`DELETE FROM Chapter WHERE bookId=?`, bookID); err != nil {
@@ -5248,7 +5273,8 @@ func adminSettingsUpdate(w http.ResponseWriter, r *http.Request) {
         committed := false
         defer func() {
                 if !committed {
-                        _ = tx.Rollback()
+                        // R112-C BUG-335 Pattern R Tx.Rollback 吞错 family 续 (rollbackLogged 收口).
+                        rollbackLogged("adminSettingsUpdate rollback", tx)
                 }
         }()
         for _, p := range pairs {
@@ -6092,7 +6118,8 @@ func adminBackupRestoreHandler(w http.ResponseWriter, r *http.Request) {
         committed := false
         defer func() {
                 if !committed {
-                        _ = tx.Rollback()
+                        // R112-C BUG-335 Pattern R Tx.Rollback 吞错 family 续 (rollbackLogged 收口).
+                        rollbackLogged("adminBackupRestoreHandler rollback", tx)
                 }
         }()
         imported := 0
@@ -6604,7 +6631,8 @@ func adminSiteByIDHandler(w http.ResponseWriter, r *http.Request) {
                 committed := false
                 defer func() {
                         if !committed {
-                                _ = tx.Rollback()
+                                // R112-C BUG-335 Pattern R Tx.Rollback 吞错 family 续 (rollbackLogged 收口).
+                                rollbackLogged("adminSiteByIDHandler PUT rollback", tx)
                         }
                 }()
                 sets := []string{}
@@ -7105,7 +7133,8 @@ func adminSitesCreate(w http.ResponseWriter, r *http.Request, body map[string]in
         committed := false
         defer func() {
                 if !committed {
-                        _ = tx.Rollback()
+                        // R112-C BUG-335 Pattern R Tx.Rollback 吞错 family 续 (rollbackLogged 收口).
+                        rollbackLogged("adminSitesCreate rollback", tx)
                 }
         }()
         // R55-1B 修复 BUG-4 (P0): 原实现 VALUES 子句多 1 个 `?` 占位符 (15 个 `?` + 2 个
@@ -8146,7 +8175,8 @@ func adminBackupClearHandler(w http.ResponseWriter, r *http.Request) {
         committed := false
         defer func() {
                 if !committed {
-                        _ = tx.Rollback()
+                        // R112-C BUG-335 Pattern R Tx.Rollback 吞错 family 续 (rollbackLogged 收口).
+                        rollbackLogged("adminBackupClearHandler rollback", tx)
                 }
         }()
         cleared := map[string]int{}
@@ -8409,7 +8439,15 @@ func fillSettingsPageData(data map[string]interface{}) {
                                 isJSON = true
                                 var parsed interface{}
                                 if json.Unmarshal([]byte(value), &parsed) == nil {
-                                        b, _ := json.MarshalIndent(parsed, "", "  ")
+                                        // R112-C BUG-336 Pattern D Marshal variant 续
+                                        //   (MarshalIndent sub-variant): 原 swallow →
+                                        //   失败时 v="" 设置页空 value (用户不知是
+                                        //   空 value 还是 marshal 失败). log-on-fail,
+                                        //   0 行为变化 (v=string(b) 仍写 "" 兜底).
+                                        b, merr := json.MarshalIndent(parsed, "", "  ")
+                                        if merr != nil {
+                                                log.Printf("[fillSettingsPageData %s] MarshalIndent 失败 (回退空): %v", key, merr)
+                                        }
                                         v = string(b)
                                 }
                         }
