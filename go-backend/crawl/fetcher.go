@@ -4767,6 +4767,35 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 if xou := resp.Header.Get("X-Original-URL"); xou != "" {
                         recordSecurityHeader(originHost(rawURL), "X-Original-URL", xou)
                 }
+                // R111-A 反反爬第 249-253 项: Cloudflare challenge bypass token + alt
+                //   vendor WAF/bot identification 响应头观测 (与 124-248 同款 family,
+                //   单值 last-write-wins per-host 合并 tracker). R110-A 未决项 #1 pivot 续
+                //   — Cloudflare device class + 标准 X-Forwarded-* + IIS rewrite (244-248)
+                //   耗尽, pivot Cloudflare challenge bypass token (CF-Chl-Bypass, signed
+                //   token after JS challenge solve — complement CF-Mitigated #235 mitigation
+                //   action, bypass 是 success token; 反爬侧反查: 真 bot 不解 challenge
+                //   → 无 bypass token, 真浏览器获 bypass → tracker 区分 bot vs human)
+                //   + alt vendor WAF/bot identification 跨厂商镜像 family (Akamai-GRN
+                //   complement X-Akamai-Request-ID #224; X-Iinfo complement X-Incapsula-
+                //   Request-ID #225; X-Amzn-WAF-Action mirror CF-Mitigated #235 cross-
+                //   vendor AWS; Akamai-BM-Telemetry mirror CF-Chl-Bypass/CF-Mitigated
+                //   cross-vendor Akamai BM). 第 249 CF-Chl-Bypass / 第 250 Akamai-GRN
+                //   / 第 251 X-Iinfo / 第 252 X-Amzn-WAF-Action / 第 253 Akamai-BM-Telemetry.
+                if ccb := resp.Header.Get("CF-Chl-Bypass"); ccb != "" {
+                        recordSecurityHeader(originHost(rawURL), "CF-Chl-Bypass", ccb)
+                }
+                if agrn := resp.Header.Get("Akamai-GRN"); agrn != "" {
+                        recordSecurityHeader(originHost(rawURL), "Akamai-GRN", agrn)
+                }
+                if xif := resp.Header.Get("X-Iinfo"); xif != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Iinfo", xif)
+                }
+                if xwa := resp.Header.Get("X-Amzn-WAF-Action"); xwa != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Amzn-WAF-Action", xwa)
+                }
+                if abm := resp.Header.Get("Akamai-BM-Telemetry"); abm != "" {
+                        recordSecurityHeader(originHost(rawURL), "Akamai-BM-Telemetry", abm)
+                }
 
                 // Set-Cookie 处理 (autoCookie)
                 if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
@@ -6101,6 +6130,27 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 }
                 if xou := extractHeaderFromCurlStdout(headers, "X-Original-URL"); xou != "" {
                         recordSecurityHeader(domain, "X-Original-URL", xou)
+                }
+                // R111-A 反反爬第 249-253 项 续 (与 fetchHttp line ~4770 同款, curl -D -
+                //   dump headers 路径; fetchBinaryViaCurl 不 dump headers 故不调, 与
+                //   124-248 同款限制. 详见 fetchHttp line ~4770 rationale). 第 249 CF-Chl-
+                //   Bypass / 第 250 Akamai-GRN / 第 251 X-Iinfo / 第 252 X-Amzn-WAF-Action
+                //   / 第 253 Akamai-BM-Telemetry (extractHeaderFromCurlStdout 已对 5 头
+                //   大小写不敏感提取).
+                if ccb := extractHeaderFromCurlStdout(headers, "CF-Chl-Bypass"); ccb != "" {
+                        recordSecurityHeader(domain, "CF-Chl-Bypass", ccb)
+                }
+                if agrn := extractHeaderFromCurlStdout(headers, "Akamai-GRN"); agrn != "" {
+                        recordSecurityHeader(domain, "Akamai-GRN", agrn)
+                }
+                if xif := extractHeaderFromCurlStdout(headers, "X-Iinfo"); xif != "" {
+                        recordSecurityHeader(domain, "X-Iinfo", xif)
+                }
+                if xwa := extractHeaderFromCurlStdout(headers, "X-Amzn-WAF-Action"); xwa != "" {
+                        recordSecurityHeader(domain, "X-Amzn-WAF-Action", xwa)
+                }
+                if abm := extractHeaderFromCurlStdout(headers, "Akamai-BM-Telemetry"); abm != "" {
+                        recordSecurityHeader(domain, "Akamai-BM-Telemetry", abm)
                 }
                 if status >= 300 {
                         // R66-C BUG-52 (P3): curl 4xx/5xx 也记 latency + fail (与 fetchHttp
@@ -8514,6 +8564,29 @@ func fetchBinaryHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, pr
                 }
                 if xou := resp.Header.Get("X-Original-URL"); xou != "" {
                         recordSecurityHeader(originHost(rawURL), "X-Original-URL", xou)
+                }
+                // R111-A 反反爬第 249-253 项 续 (与 fetchHttp line ~4770 同款,
+                //   fetchBinaryHttp success + 4xx/5xx 两路径都记, BUG-241 修复后
+                //   fetchBinaryHttp 已补对称; fetchBinaryViaCurl 不 dump headers
+                //   故不调, 与 124-248 同款限制. 详见 fetchHttp line ~4770 rationale).
+                //   第 249 CF-Chl-Bypass / 第 250 Akamai-GRN / 第 251 X-Iinfo / 第 252
+                //   X-Amzn-WAF-Action / 第 253 Akamai-BM-Telemetry (Cloudflare challenge
+                //   bypass + alt vendor WAF/bot identification; cover host 多在 external
+                //   CDN / S3, 与 HTML host 不同域各自独立条目, 无污染).
+                if ccb := resp.Header.Get("CF-Chl-Bypass"); ccb != "" {
+                        recordSecurityHeader(originHost(rawURL), "CF-Chl-Bypass", ccb)
+                }
+                if agrn := resp.Header.Get("Akamai-GRN"); agrn != "" {
+                        recordSecurityHeader(originHost(rawURL), "Akamai-GRN", agrn)
+                }
+                if xif := resp.Header.Get("X-Iinfo"); xif != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Iinfo", xif)
+                }
+                if xwa := resp.Header.Get("X-Amzn-WAF-Action"); xwa != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Amzn-WAF-Action", xwa)
+                }
+                if abm := resp.Header.Get("Akamai-BM-Telemetry"); abm != "" {
+                        recordSecurityHeader(originHost(rawURL), "Akamai-BM-Telemetry", abm)
                 }
                 // 3xx / 4xx / 5xx 视为失败 (与 fetchHttp 同款, 不重试 3xx)
                 if resp.StatusCode >= 300 {
@@ -13239,11 +13312,12 @@ func ClearHostAcceptRanges(host string) {
 //   + R99-A 第 189-193 项 + R100-A 第 194-198 项 + R101-A 第 199-203 项 + R102-A
 //   第 204-208 项 + R103-A 第 209-213 项 + R104-A 第 214-218 项 + R105-A 第
 //   219-223 项 (R106-A BUG-313 补字段) + R106-A 第 224-228 项 + R107-A 第
-//   229-233 项 + R108-A 第 234-238 项 + R109-A 第 239-243 项 + R110-A 第 244-248 项,
-//   合并 120 字段). entry 是 pointer: recordSecurityHeader LoadOrStore canonical 指针
-//   + 单字段 update-in-place (非 store-replace, 保留其他 119 头旧值). 同字段并发写
-//   last-write-wins; sweep CompareAndDelete 后下次 record 重建 entry (与 recordVia
-//   store-replace 不一样, 这里需保留其他 119 头故用 update-in-place).
+//   229-233 项 + R108-A 第 234-238 项 + R109-A 第 239-243 项 + R110-A 第 244-248 项
+//   + R111-A 第 249-253 项, 合并 125 字段). entry 是 pointer: recordSecurityHeader
+//   LoadOrStore canonical 指针 + 单字段 update-in-place (非 store-replace, 保留其他
+//   124 头旧值). 同字段并发写 last-write-wins; sweep CompareAndDelete 后下次 record
+//   重建 entry (与 recordVia store-replace 不一样, 这里需保留其他 124 头故用
+//   update-in-place).
 type hostSecurityHeadersEntry struct {
         hstsValue         string // Strict-Transport-Security (第 124 项)
         cspValue          string // Content-Security-Policy (第 125 项)
@@ -13453,6 +13527,24 @@ type hostSecurityHeadersEntry struct {
         xForwardedHostValue     string // X-Forwarded-Host (第 246 项, R110-A)
         xForwardedServerValue   string // X-Forwarded-Server (第 247 项, R110-A)
         xOriginalURLValue      string // X-Original-URL (第 248 项, R110-A)
+        // R111-A 反反爬第 249-253 项: Cloudflare challenge bypass token + alt vendor
+        //   WAF/bot identification 响应头观测 (与 124-248 同款 family, 单值 last-write-
+        //   wins per-host 合并 tracker). 详见 fetchHttp line ~4770 rationale (R111-A
+        //   块). headerName 大小写不敏感. R110-A 未决项 #1 pivot 续 — Cloudflare device
+        //   class + 标准 X-Forwarded-* + IIS rewrite (244-248) 耗尽, pivot Cloudflare
+        //   challenge bypass token (CF-Chl-Bypass, signed token after JS challenge solve
+        //   — complement CF-Mitigated #235 mitigation action, bypass 是 success token;
+        //   反爬侧反查: 真 bot 不解 challenge → 无 bypass token, 真浏览器获 bypass →
+        //   tracker 区分 bot vs human 流量) + alt vendor WAF/bot identification 跨厂商
+        //   镜像 family (Akamai-GRN complement X-Akamai-Request-ID #224; X-Iinfo
+        //   complement X-Incapsula-Request-ID #225; X-Amzn-WAF-Action mirror CF-
+        //   Mitigated #235 cross-vendor AWS; Akamai-BM-Telemetry mirror CF-Chl-Bypass/
+        //   CF-Mitigated cross-vendor Akamai BM).
+        cfChlBypassValue         string // CF-Chl-Bypass (第 249 项, R111-A)
+        akamaiGRNValue           string // Akamai-GRN (第 250 项, R111-A)
+        xIinfoValue             string // X-Iinfo (第 251 项, R111-A)
+        xAmznWAFActionValue      string // X-Amzn-WAF-Action (第 252 项, R111-A)
+        akamaiBMTelemetryValue   string // Akamai-BM-Telemetry (第 253 项, R111-A)
         detectedAt              int64  // UnixMilli
 }
 
@@ -13463,7 +13555,8 @@ type hostSecurityHeadersEntry struct {
 //   + R99-A 第 189-193 项 + R100-A 第 194-198 项 + R101-A 第 199-203 项 + R102-A
 //   第 204-208 项 + R103-A 第 209-213 项 + R104-A 第 214-218 项 + R105-A 第
 //   219-223 项 (R106-A BUG-313 补字段) + R106-A 第 224-228 项 + R107-A 第
-//   229-233 项 + R108-A 第 234-238 项 + R109-A 第 239-243 项 + R110-A 第 244-248 项).
+//   229-233 项 + R108-A 第 234-238 项 + R109-A 第 239-243 项 + R110-A 第 244-248 项
+//   + R111-A 第 249-253 项).
 var hostSecurityHeadersMap sync.Map
 
 // hostSecurityHeadersSweepCounter — sweep 触发累加 (与 hostViaSweepCounter 同口径).
@@ -13519,9 +13612,10 @@ func extractSetCookieAttr(cookies []string, attr string) string {
 //   + R99-A 第 189-193 项 + R100-A 第 194-198 项 + R101-A 第 199-203 项 + R102-A
 //   第 204-208 项 + R103-A 第 209-213 项 + R104-A 第 214-218 项 + R105-A 第
 //   219-223 项 (R106-A BUG-313 补 case) + R106-A 第 224-228 项 + R107-A 第
-//   229-233 项 + R108-A 第 234-238 项 + R109-A 第 239-243 项 + R110-A 第 244-248 项).
-//   headerName 区分 120 头 (大小写不敏感). 与 recordVia 同款 Store + 惰性 sweep,
-//   但保留其他 119 头旧值 (LoadOrStore canonical 指针 + 单字段 update-in-place).
+//   229-233 项 + R108-A 第 234-238 项 + R109-A 第 239-243 项 + R110-A 第 244-248 项
+//   + R111-A 第 249-253 项). headerName 区分 125 头 (大小写不敏感). 与 recordVia
+//   同款 Store + 惰性 sweep, 但保留其他 124 头旧值 (LoadOrStore canonical 指针 +
+//   单字段 update-in-place).
 func recordSecurityHeader(host, headerName, value string) {
         if host == "" || value == "" {
                 return
@@ -13829,6 +13923,18 @@ func recordSecurityHeader(host, headerName, value string) {
                 ent.xForwardedServerValue = value
         case "x-original-url":
                 ent.xOriginalURLValue = value
+        // R111-A 反反爬第 249-253 项 (与 124-248 同款 family, 详见 fetchHttp line
+        //   ~4770 rationale. headerName 大小写不敏感).
+        case "cf-chl-bypass":
+                ent.cfChlBypassValue = value
+        case "akamai-grn":
+                ent.akamaiGRNValue = value
+        case "x-iinfo":
+                ent.xIinfoValue = value
+        case "x-amzn-waf-action":
+                ent.xAmznWAFActionValue = value
+        case "akamai-bm-telemetry":
+                ent.akamaiBMTelemetryValue = value
         default:
                 return
         }
@@ -13977,6 +14083,12 @@ func HostSecurityHeadersSnapshot() map[string]map[string]string {
                         "xForwardedHostValue":   e.xForwardedHostValue,
                         "xForwardedServerValue": e.xForwardedServerValue,
                         "xOriginalURLValue":    e.xOriginalURLValue,
+                        // R111-A 第 249-253 项.
+                        "cfChlBypassValue":       e.cfChlBypassValue,
+                        "akamaiGRNValue":         e.akamaiGRNValue,
+                        "xIinfoValue":            e.xIinfoValue,
+                        "xAmznWAFActionValue":    e.xAmznWAFActionValue,
+                        "akamaiBMTelemetryValue": e.akamaiBMTelemetryValue,
                         "detectedAt":        fmt.Sprintf("%d", e.detectedAt),
                 }
                 return true

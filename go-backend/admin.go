@@ -623,6 +623,32 @@ func writeBytesLogged(label string, w http.ResponseWriter, data []byte) {
         }
 }
 
+// rowsAffectedLogged wraps sql.Result.RowsAffected, log-on-fail visibility
+//   (0 行为变化 — 失败时返 0, 与原 `n, _ := res.RowsAffected()` swallow 语义
+//   一致 — caller 写 cleared[label]=0 入响应, best-effort 报 0 不阻塞
+//   caller). R111-C BUG-331 Pattern M Result.RowsAffected 吞错 family — 与
+//   execLogged (BUG-272~274 Exec) / unmarshalLogged (BUG-309 Unmarshal) /
+//   scanLogged (BUG-314 Scan) / marshalLogged (BUG-321 Marshal) /
+//   parseBookUpdatedAtLogged (BUG-322 time.Parse) / queryLogged (BUG-326
+//   Query) / encodeLogged (BUG-329 Encode) / writeBytesLogged (BUG-328
+//   w.Write) 并行的 Result.RowsAffected family 收口. 1 callsite
+//   (adminClearConfirm DELETE 计数): 原实现 `n, _ := res.RowsAffected()` 吞
+//   — driver 边缘场景 (conn 闪断 / driver bug / Result 已 close) 时返
+//   (0, err) → cleared[label]=0 → admin UI 显示"清空 0 行"即使 DELETE 实际
+//   删了行 (data 已删 + 事务已 commit, 仅计数显示误导运维). 与 R104-C
+//   BUG-304~308 Pattern C `_, _ = db.Exec` family 互补: Exec family 收
+//   write-side swallow (写失败不知), RowsAffected family 收 read-side
+//   swallow (读计数失败显示 0). helper 单点维护防散落 inline log-on-fail
+//   重复. 0 行为变化 (best-effort 报 0 语义不变, 仅加 log 可见性).
+func rowsAffectedLogged(label string, res sql.Result) int {
+        n, err := res.RowsAffected()
+        if err != nil {
+                log.Printf("[%s] RowsAffected 失败 (报 0): %v", label, err)
+                return 0
+        }
+        return int(n)
+}
+
 // parseTaskProgress 解析 Task.progress JSON 列为仪表盘/任务页所需的 progressNote +
 // pct. R105-C BUG-309 精简-3 (R104-B 精简-1/2 同款 dedup precedent): 原实现
 // fillDashboardData (line ~3382) + fillTasksPageData (line ~3481) 两处 progress
@@ -8130,8 +8156,11 @@ func adminBackupClearHandler(w http.ResponseWriter, r *http.Request) {
                         writeJSONErr(w, "清空 "+o.label+" 失败: "+err.Error(), 500)
                         return
                 }
-                n, _ := res.RowsAffected()
-                cleared[o.label] = int(n)
+                // R111-C BUG-331 Pattern M Result.RowsAffected 吞错 family 续
+                //   (rowsAffectedLogged helper): 原 `n, _ := res.RowsAffected()`
+                //   吞 — driver 边缘场景返 (0, err) → cleared[label]=0 显示
+                //   "清空 0 行"即使 DELETE 实删行. helper log-on-fail, 0 行为变化.
+                cleared[o.label] = rowsAffectedLogged("adminClearConfirm "+o.label, res)
         }
         if err := tx.Commit(); err != nil {
                 writeJSONErr(w, "提交事务失败: "+err.Error(), 500)

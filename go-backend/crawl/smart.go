@@ -46,7 +46,30 @@ var categoryKeywords = []struct {
         {"奇幻魔幻", []string{"奇幻", "史诗", "骑士", "法师", "精灵", "龙族", "矮人", "魔兽"}},
         {"武侠江湖", []string{"武侠", "江湖", "剑客", "侠", "武林", "门派", "轻功", "内力", "镖局"}},
         {"仙侠修真", []string{"仙侠", "修真", "修仙", "筑基", "金丹", "元婴", "渡劫", "灵气", "仙人", "道法"}},
-        {"都市生活", []string{"都市", "重生", "赘婿", "神豪", "总裁", "兵王", "神医", " urb ", "打工", "逆袭", "求婚", "离婚"}},
+        //      BUG-334 (P3) 修复 (R111-B): 原 keyword " urb " (含两端空白, 5 字符)
+        //        在 MatchCategoryByText line 229 `kt := strings.TrimSpace(kw)` 预处理后
+        //        变 "urb" (3 字符), wordMatches 走 englishWordRe `^[a-z]+$` 分支编译
+        //        `\burb\b` 正则. \burb\b 仅匹配独立 "urb" 单词 (罕见, 英文 "urb" 非
+        //        标准词, 字典定义 "city" 缩写或拉丁词根), 漏匹配 "urban fantasy" /
+        //        "urban fiction" / "urban life" 等都市题材正文 (都市生活分类核心语义)
+        //        — "urb" 在 "urban" 中是子串但 \b 在 "b" 与 "a" 间均 word char 无边界
+        //        → 不命中. 与 R83-B BUG-186 ("AI" 大写不走 \b 路径, 改小写 "ai" 走
+        //        \bai\b 匹配 AI/ai/Ai/aI 全 case) 同根因 "英文 keyword 大小写 + 空白
+        //        处理" family, 但 BUG-334 更深一层: " urb " 含空白, R84-B BUG-199 加
+        //        TrimSpace 后变 "urb" 走 \b 路径, 但 "urb" 本身非有效英文词. 修复:
+        //        " urb " → "urban" (无空白), TrimSpace 后仍 "urban", 走 \burban\b 匹配
+        //        独立 "urban" (e.g. "urban fantasy"/"urban life" 命中, "suburban" 不命中
+        //        — \b 在 "b" 与 "u" 间均 word char 无边界, 与 "war"/"award" 同口径,
+        //        防误命中 "suburban" 进都市分类过宽). 71 Rule 0 用都市题材正文 (多
+        //        含 "都市" 中文 keyword 已命中, "urb"/"urban" 极少独立出现); 0 用户
+        //        受影响, 防御性 + 语义对齐修复. latent 自 R38 TS→Go 迁移 (47 轮未发现
+        //        因 71 Rule 0 触都市分类走 "都市" 中文 keyword 路径, 英文 " urb " 失效
+        //        无影响). 与 BUG-186 ("ai" 大小写) + 同文件 line 52 " war " (TrimSpace
+        //        后 "war" 走 \bwar\b 匹配独立 "war" 如 "war story", 行为正确不动)
+        //        区别: " war " TrimSpace 后是有效英文词 "war" (\bwar\b 命中常见 "war"
+        //        独立词), " urb " TrimSpace 后是非有效英文词 "urb" (\burb\b 命中罕见),
+        //        故 " war " 不动 " urb " 改 "urban".
+        {"都市生活", []string{"都市", "重生", "赘婿", "神豪", "总裁", "兵王", "神医", "urban", "打工", "逆袭", "求婚", "离婚"}},
         {"言情小说", []string{"言情", "甜宠", "恋爱", "霸总", "婚恋", "公主", "新娘", "嫁", "爱恋", "心动"}},
         {"历史军事", []string{"历史", "穿越", "朝代", "大唐", "大明", "大清", "三国", "水浒", "宋朝", "始皇", "皇帝", "王朝"}},
         {"军事战争", []string{"军事", "抗战", " war ", "士兵", "特种兵", "战场", "部队", "军官"}},

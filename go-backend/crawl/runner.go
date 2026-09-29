@@ -2491,6 +2491,80 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                         if cfg.Override.CloakBrowserURL != "" {
                                 coverCfg.CloakBrowserURL = cfg.Override.CloakBrowserURL
                         }
+                        // R111-A BUG-331 (P3) 修复 (深抓 cover fetch posture 续, 与
+                        //   BUG-327 FetchMode + BUG-328 CurlImpersonateProfile + BUG-329
+                        //   CloakBrowserURL 同 "结构 + 半实现 latent" alt-engine family
+                        //   续): cover fetch FetchConfig 仍漏继承 cfg.Override.CloakTier
+                        //   (string) — cloak-browser 桥 stealth tier (lite / standard /
+                        //   stealthy / maximum, 决定 puppeteer-extra 插件栈深度: maximum
+                        //   加 Turnstile auto-click 耗时 5-10s, lite 仅基础 stealth 1s).
+                        //   后果: cover 同域站 (originHost(parsed.Cover) == originHost
+                        //   (bookURL)) behind 反爬时, book fetch 经 mergeFetchConfig(line
+                        //   ~10099-10100) 复制 cfg.Override.CloakTier → fetchViaObscura
+                        //   (line ~6331) 按 tier 选 stealth 栈 (maximum vs lite 行为完全
+                        //   不同), cover fetch 漏继承 → cover fetch 走 default "standard"
+                        //   tier → 同一浏览器 1s 内 book (maximum stealth) + cover
+                        //   (standard stealth) 行为指纹不一致 → 反爬侧 behavior fingerprint
+                        //   不一致是 bot 信号. 注: 当前 cover fetch 路径 (FetchBinaryPage
+                        //   → fetchBinaryHttp) 尚未读 cfg.CloakTier (CloakTier 仅在
+                        //   fetchViaObscura HTML 路径消费), 故属 "结构 + 半实现 latent"
+                        //   (与 BUG-327/328/329 同款 precedent), 但 coverSameHost 继承是
+                        //   结构对称前提, 后续 cover fetch 路径若加 cloak-browser 路由自动
+                        //   跟上. 与 BUG-314 同 coverSameHost gate. 修复: cfg.Override.
+                        //   CloakTier != "" gate 继承 (与 mergeFetchConfig line ~10099-
+                        //   10100 同款 "非空覆盖" gate).
+                        if cfg.Override.CloakTier != "" {
+                                coverCfg.CloakTier = cfg.Override.CloakTier
+                        }
+                        // R111-A BUG-332 (P3) 修复 (深抓 cover fetch posture 续, alt-
+                        //   engine bridge family 续, 与 BUG-328 CurlImpersonateProfile +
+                        //   BUG-329 CloakBrowserURL + BUG-331 CloakTier 同族): cover fetch
+                        //   FetchConfig 仍漏继承 cfg.Override.ScraplingBridgeURL (string) —
+                        //   scrapling 桥 URL (默认 127.0.0.1:3012/fetch, 用户可 override
+                        //   指向自建 scrapling 实例; curl_cffi TLS 指纹伪装 + stealthy
+                        //   mode 注入 stealth profile). 后果: cover 同域站 (originHost
+                        //   (parsed.Cover) == originHost(bookURL)) behind 反爬时, book
+                        //   fetch 经 mergeFetchConfig(line ~10018-10019) 复制 cfg.
+                        //   Override.ScraplingBridgeURL → fetchViaScrapling(line ~6311)
+                        //   按 bridgeURL 路由到 scrapling 桥 (curl_cffi impersonate +
+                        //   stealthy), cover fetch 漏继承 → cover fetch 走 default bridge
+                        //   URL (127.0.0.1:3012) → 同一浏览器 1s 内 book (user scrapling
+                        //   实例 A) + cover (default local scrapling) 引擎实例不一致 →
+                        //   反爬侧观察到的 behavior fingerprint 不一致是 bot 信号. 注: 当前
+                        //   cover fetch 路径 (FetchBinaryPage → fetchBinaryHttp) 尚未读
+                        //   cfg.ScraplingBridgeURL (ScraplingBridgeURL 仅在 fetchViaScrapling
+                        //   HTML 路径消费), 故属 "结构 + 半实现 latent" (与 BUG-327/328/
+                        //   329/331 同款 precedent), 但 coverSameHost 继承是结构对称前提,
+                        //   后续 cover fetch 路径若加 scrapling 路由自动跟上. 与 BUG-314
+                        //   同 coverSameHost gate. 修复: cfg.Override.ScraplingBridgeURL
+                        //   != "" gate 继承 (与 mergeFetchConfig line ~10018-10019 同款
+                        //   "非空覆盖" gate).
+                        if cfg.Override.ScraplingBridgeURL != "" {
+                                coverCfg.ScraplingBridgeURL = cfg.Override.ScraplingBridgeURL
+                        }
+                        // R111-A BUG-333 (P3) 修复 (深抓 cover fetch posture 续, alt-
+                        //   engine moli family 续, 与 BUG-327 FetchMode 同族): cover fetch
+                        //   FetchConfig 仍漏继承 cfg.Override.MoliEval (string) — moli 桥
+                        //   (127.0.0.1:3017, Rust AI 浏览器) 自定义 JS eval 串 (e.g. 自动
+                        //   滚动 + 等待 XHR settled + 提取 DOM). 后果: cover 同域站
+                        //   (originHost(parsed.Cover) == originHost(bookURL)) behind 反爬时,
+                        //   book fetch 经 mergeFetchConfig(line ~10012-10013) 复制
+                        //   cfg.Override.MoliEval → fetchViaMoli(line ~6362) 按 eval 注入
+                        //   JS 执行 (scroll + XHR 等待 + DOM 提取 — 行为深度由 eval 决定),
+                        //   cover fetch 漏继承 → cover fetch 走 default 无 eval 路径 →
+                        //   同一浏览器 1s 内 book (full moli eval A) + cover (no eval)
+                        //   引擎行为深度不一致 → 反爬侧 behavior fingerprint 不一致是 bot
+                        //   信号. 注: 当前 cover fetch 路径 (FetchBinaryPage →
+                        //   fetchBinaryHttp) 尚未读 cfg.MoliEval (MoliEval 仅在
+                        //   fetchViaMoli HTML 路径消费), 故属 "结构 + 半实现 latent" (与
+                        //   BUG-327/328/329/331/332 同款 precedent), 但 coverSameHost 继承
+                        //   是结构对称前提, 后续 cover fetch 路径若加 moli 路由自动跟上.
+                        //   与 BUG-314 同 coverSameHost gate. 修复: cfg.Override.MoliEval
+                        //   != "" gate 继承 (与 mergeFetchConfig line ~10012-10013 同款
+                        //   "非空覆盖" gate).
+                        if cfg.Override.MoliEval != "" {
+                                coverCfg.MoliEval = cfg.Override.MoliEval
+                        }
                 }
                 coverBin, err := FetchBinaryPage(ctx, parsed.Cover, coverCfg)
                 if err == nil && !coverBin.Blocked && len(coverBin.Bytes) > 0 {

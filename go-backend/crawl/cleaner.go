@@ -288,7 +288,10 @@ var EXTRA_AD_PATTERNS = []string{
         `加入书签.{0,15}继续阅读`,
         `为了方便下次阅读.{0,30}`,
         `推荐阅读.{0,20}本书`,
-        `本章(?:未完|未完待续|继续阅读).{0,8}`,
+        // R111-B 精简-1: `本章(?:未完|未完待续|继续阅读).{0,8}` 删 `未完待续` (subsumed
+        //   by `未完` + `.{0,8}` — `未完` 匹配前缀, `.{0,8}` 吃后续 "待续"/"。"
+        //   等, `未完待续` alternative 永不试; 详见 watermarkPromoRe2 line 395 注释.
+        `本章(?:未完|继续阅读).{0,8}`,
         `第[一二三四五六七八九十百千万0-9]+(?:章|节|回|话|集).{0,4}(?:未完|继续|下一页)`,
         `未完待续.{0,12}`,
         `本[书站].{0,4}(?:域名|网址|地址)[：:].{0,50}`,
@@ -392,7 +395,20 @@ var (
         navLinkRe         = regexp.MustCompile(`^(下一页|上一页|下页|上页|目录|首?页|尾?页|返回目录|继续阅读|点击阅读|分页阅读?|加入书签|推荐本书?|报错).{0,4}$`)
         watermarkDomainRe = regexp.MustCompile(`(?i)(www\.)?[a-z0-9-]+\.(com|net|cc|org|info|top|xyz|vip|site)`)
         watermarkPromoRe1 = regexp.MustCompile(`敬请(?:期待|关注)|扫码(?:关注|下载)|加入书签|关注微信公众号|为了方便下次阅读`)
-        watermarkPromoRe2 = regexp.MustCompile(`本章(?:未完|未完待续|继续阅读)|点击下一(?:页|章)`)
+        // R111-B 精简-1: `本章(?:未完|未完待续|继续阅读)|点击下一(?:页|章)` 删
+        //   `未完待续` (subsumed by `未完` — Go regexp alternation 按序试, `未完`
+        //   前缀匹配后整个 group 满足, `未完待续` alternative 永不试. 对 "本章未完待续"
+        //   输入, `未完` 命中 "未完" (positions 2-3), 整 regex 命中 "本章未完"
+        //   (4 chars prefix), MatchString 返 true; 删 `未完待续` 后同输入仍 `未完`
+        //   命中, 行为 0 变化. 对 "本章继续阅读" 输入, `未完` 不命中 (首字 "继" ≠
+        //   "未"), `未完待续` 也不命中, `继续阅读` 命中; 删 `未完待续` 后同. 对
+        //   "本章未完" 输入, `未完` 命中; 删后同. 三 case 行为均不变, 故 `未完待续`
+        //   是 dead alternative. 与 chapterTailRe line 443 + EXTRA_AD_PATTERNS line
+        //   291 同款 dead alternative, 一并删 (3 处 -6 bytes each, 行为 0 变化).
+        //   latent 自 R49-1B 加 watermarkPromoRe2 (51 轮未发现). 与 R104-B 精简
+        //   (CcStripOnlyRe+ZWStripOnlyRe 合并) + R108-B 精简-1 (cleanTextFieldWsRe+
+        //   Ws2Re 合并) 同款 "regex dead alternative 删" precedent.
+        watermarkPromoRe2 = regexp.MustCompile(`本章(?:未完|继续阅读)|点击下一(?:页|章)`)
         watermarkPromoRe3 = regexp.MustCompile(`本书首发于|请记住本书|最新章节请到|一秒记住`)
         watermarkPromoRe4 = regexp.MustCompile(`为您提供.*?精彩小说|本站(?:首发|更新最快)`)
         watermarkPromoRe5 = regexp.MustCompile(`下载(?:APP|客户端|手机版)`)
@@ -440,7 +456,10 @@ var (
         //     scope 内不同文件新号顺延" convention, 主控 merge 时 0 renumber 需求).
         chapterHeadCNRe = regexp.MustCompile(`^第\s*[一二三四五六七八九十百千万0-9]+\s*(?:章|节|回|话|集)`)
         chapterHeadENRe = regexp.MustCompile(`(?i)^Chapter\s+\d+`)
-        chapterTailRe   = regexp.MustCompile(`本章(?:未完|未完待续|继续阅读)|点击下一(?:页|章)|敬请(?:期待|关注)|加入书签|为了方便下次阅读`)
+        // R111-B 精简-1: 删 `未完待续` (subsumed by `未完`, 详见 watermarkPromoRe2
+        //   line 395 注释). 3 处 dead alternative 一并删 (chapterTailRe +
+        //   watermarkPromoRe2 + EXTRA_AD_PATTERNS line 291), 行为 0 变化.
+        chapterTailRe   = regexp.MustCompile(`本章(?:未完|继续阅读)|点击下一(?:页|章)|敬请(?:期待|关注)|加入书签|为了方便下次阅读`)
 
         // R86-B BUG-219 (P3) 修复: cleanContentHtmlSync HTML 分支隐藏元素检测
         //   原子串 strings.Contains(styleNoSpace, "display:none") 漏 "display:none-flex"

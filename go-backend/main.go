@@ -1579,10 +1579,10 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 if tmplName != "shipsay/home" {
                         var buf2 strings.Builder
                         if err2 := tmpls.ExecuteTemplate(&buf2, "shipsay/home", data); err2 == nil {
-                                // R54-1A: 注入反馈浮窗 (开关在 Setting.feedbackEnabled)
-                                if getFeedbackEnabled() {
-                                        buf2.WriteString(feedbackWidgetHTML)
-                                }
+                                // R111-D BUG-331 + 精简-1: appendPostRenderExtras 注入
+                                //   bookHistoryJS (fallback 路径原漏注入, 本轮修复) +
+                                //   feedbackWidgetHTML (开关). 详见 helper 注释 line ~1609.
+                                appendPostRenderExtras(&buf2, bookHistoryJS)
                                 // R69-A/R70-A: 若 obfuscateHTML=true 应用混淆 (fallback 路径用 "home" view).
                                 //   R70-A: writeRenderedHTML 改读 site["ObfuscateHTML"] per-site 覆盖全局.
                                 writeRenderedHTML(w, buf2.String(), site, "home")
@@ -1592,18 +1592,63 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 http.Error(w, "模板渲染失败", 500)
                 return
         }
-        // R83-D (R82 交接 #3): book view 注入 history tracker JS (case "book" 设
-        //   bookHistoryJS, 仅 book view 注入避免 history/home view 写 cookie 浪费).
-        if bookHistoryJS != "" {
-                buf.WriteString(bookHistoryJS)
-        }
-        // R54-1A: 开关开启时在 </body> 前注入反馈浮窗 (前台所有 view 都走 homeHandler, 一处注入覆盖全部主题模板)
-        if getFeedbackEnabled() {
-                buf.WriteString(feedbackWidgetHTML)
-        }
+        // R111-D BUG-331 + 精简-1: appendPostRenderExtras 注入 bookHistoryJS +
+        //   feedbackWidgetHTML (主路径 + fallback 路径共用 helper, 详见注释 line ~1609).
+        //   原 2 callsite 各内联同 2 步逻辑 (bookHistoryJS != "" + getFeedbackEnabled
+        //   两 if 块), 提取 helper 后 2 callsite 各 1 行调用替代. fallback 路径原
+        //   漏 bookHistoryJS 注入 (BUG-331), 走 helper 后两路径行为对齐.
+        appendPostRenderExtras(&buf, bookHistoryJS)
         // R69-A/R70-A: 若 obfuscateHTML=true 应用混淆 (主渲染路径用原 view 构造 seed).
         //   R70-A: writeRenderedHTML 改读 site["ObfuscateHTML"] per-site 覆盖全局.
         writeRenderedHTML(w, buf.String(), site, view)
+}
+
+// R111-D BUG-331 + 精简-1: appendPostRenderExtras 注入 bookHistoryJS (非空时) +
+//   feedbackWidgetHTML (Setting.feedbackEnabled 开关开启时) 到 buf. homeHandler
+//   主渲染路径 + fallback 路径 (shipsay/home 兜底) 共用此 helper.
+//
+//   BUG-331 (P3, main+templates scope, R110-D BUG-328 maybeObfuscateHTML DRY
+//     sibling 续): R83-D 引入 bookHistoryJS (case "book" 设, fmt.Sprintf 注入
+//     URL id 到 tracker JS 常量) 仅在主渲染路径注入 (原 line ~1597-1599
+//     `if bookHistoryJS != "" { buf.WriteString(bookHistoryJS) }`); fallback
+//     路径 (原 line ~1579-1591, primary ExecuteTemplate 失败 → 重渲染
+//     shipsay/home 兜底) 漏注入 bookHistoryJS → book view 主模板渲染失败
+//     fallback shipsay/home 时, 用户访问 /?view=book&id=X 的浏览历史未被
+//     cookie 跟踪 (R83-D 设计意图 "book view 注入 history tracker JS" 在
+//     fallback 路径断裂). 触发条件: aijjxs/23qb/101kks/... 等 9 主题 book
+//     模板 runtime ExecuteTemplate 失败 (模板 parse 时启动 glob 校验 0 panic
+//     surface, 但 runtime data 含未预期 nil/类型 → template execute 报错;
+//     或 server 启动后 admin 改主题模板引入语法错误, 重启前 in-flight 请求
+//     fallback). 影响: 罕见路径但 bug 真实 (book view fallback 时历史不
+//     跟踪, 用户回 /?view=history 看不到此书, R83-D 功能在 fallback 退化).
+//     修复: 提取 appendPostRenderExtras helper, 主路径 + fallback 路径均调
+//     用, bookHistoryJS 在两路径均注入 (非空时). 0 行为变化 for 主路径
+//     (注入顺序 + 内容不变, getFeedbackEnabled 调用次数 per request 不变 1
+//     次); fallback 路径修复 (book view fallback 时历史被跟踪, 与 R83-D
+//     设计对齐). bookHistoryJS 仅 case "book" 设非空 (line ~837 declare ""
+//     + line ~1012 case "book" 赋值), 其它 view 仍 "" → fallback 路径其它
+//     view 0 注入 tracker (与 R83-D "仅 book view 注入避免 history/home
+//     view 写 cookie 浪费" 设计一致).
+//
+//   精简-1 (P4 精简/DRY, main scope, R110-D BUG-328 maybeObfuscateHTML DRY
+//     sibling 续): 原 `if getFeedbackEnabled() { buf.WriteString(feedbackWidgetHTML) }`
+//     2 行在主路径 (原 line ~1601-1603) + fallback 路径 (原 line ~1583-1585)
+//     各重复 1 次 — 2 callsite 同 2 步逻辑 (bookHistoryJS != "" check 1 处 +
+//     getFeedbackEnabled check 2 处 共 6 行 inline if 块). 提取 helper (含
+//     bookHistoryJS + feedbackWidget 两步注入), 2 callsite 各 1 行调用替代
+//     inline if 块, 省 ~4 行重复 (主路径 -6 / fallback 0 净 +2 callsite
+//     comment). 与 R110-D BUG-328 maybeObfuscateHTML DRY + R108-D BUG-321
+//     init/inject-预算复用 + R109-D 精简-1 buildHomeURL 复用同款 "DRY 精简"
+//     precedent (consolidate redundant inline → shared helper). 不变式:
+//     getFeedbackEnabled 仍 per-request 调 1 次 (主路径 1 / fallback 路径 1,
+//     与 helper 内 1 次等价), 0 perf 影响.
+func appendPostRenderExtras(buf *strings.Builder, bookHistoryJS string) {
+        if bookHistoryJS != "" {
+                buf.WriteString(bookHistoryJS)
+        }
+        if getFeedbackEnabled() {
+                buf.WriteString(feedbackWidgetHTML)
+        }
 }
 
 // R64-D: render404 渲染 templates/404.html (R64-A 创建模板), 失败时 fallback 到 http.NotFound.
