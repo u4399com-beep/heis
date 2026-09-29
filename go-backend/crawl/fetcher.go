@@ -4825,6 +4825,33 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 if agw := resp.Header.Get("Apigw-Requestid"); agw != "" {
                         recordSecurityHeader(originHost(rawURL), "Apigw-Requestid", agw)
                 }
+                // R113-A 反反爬第 259-263 项: rate-limit/throttle signal cross-RFC-version
+                //   cross-vendor 响应头观测 (与 124-258 同款 family, 单值 last-write-wins
+                //   per-host 合并 tracker). R112-A 未决项 #1 pivot 续 — alt vendor WAF/
+                //   edge request ID + error 分类 (254-258) 耗尽, pivot rate-limit/throttle
+                //   signal family 续 (RFC 9331 RateLimit-Remaining complement RateLimit-
+                //   Limit #187 + RateLimit-Reset #188 完整 RFC triplet, 反爬侧 remaining
+                //   quota 是 crawler 决定 backoff 时机主信号; RateLimit-Policy RFC 9331
+                //   §3.1 policy descriptor e.g. `100;w=60` 暴露源站限流策略; legacy
+                //   de-facto X-RateLimit-Limit/Remaining/Reset GitHub/Twitter/Stripe API
+                //   family cross-RFC-version 镜像 — 仍广泛部署, 与 RFC 9331 共存).
+                //   第 259 RateLimit-Remaining / 第 260 RateLimit-Policy / 第 261 X-
+                //   RateLimit-Limit / 第 262 X-RateLimit-Remaining / 第 263 X-RateLimit-Reset.
+                if rlr := resp.Header.Get("RateLimit-Remaining"); rlr != "" {
+                        recordSecurityHeader(originHost(rawURL), "RateLimit-Remaining", rlr)
+                }
+                if rlp := resp.Header.Get("RateLimit-Policy"); rlp != "" {
+                        recordSecurityHeader(originHost(rawURL), "RateLimit-Policy", rlp)
+                }
+                if xrll := resp.Header.Get("X-RateLimit-Limit"); xrll != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-RateLimit-Limit", xrll)
+                }
+                if xrlr := resp.Header.Get("X-RateLimit-Remaining"); xrlr != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-RateLimit-Remaining", xrlr)
+                }
+                if xrls := resp.Header.Get("X-RateLimit-Reset"); xrls != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-RateLimit-Reset", xrls)
+                }
 
                 // Set-Cookie 处理 (autoCookie)
                 if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
@@ -6201,6 +6228,27 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 }
                 if agw := extractHeaderFromCurlStdout(headers, "Apigw-Requestid"); agw != "" {
                         recordSecurityHeader(domain, "Apigw-Requestid", agw)
+                }
+                // R113-A 反反爬第 259-263 项 续 (与 fetchHttp line ~4828 同款, curl -D -
+                //   dump headers 路径; fetchBinaryViaCurl 不 dump headers 故不调, 与
+                //   124-258 同款限制. 详见 fetchHttp line ~4828 rationale). 第 259 Rate-
+                //   Limit-Remaining / 第 260 RateLimit-Policy / 第 261 X-RateLimit-Limit /
+                //   第 262 X-RateLimit-Remaining / 第 263 X-RateLimit-Reset (extractHeader-
+                //   FromCurlStdout 已对 5 头大小写不敏感提取).
+                if rlr := extractHeaderFromCurlStdout(headers, "RateLimit-Remaining"); rlr != "" {
+                        recordSecurityHeader(domain, "RateLimit-Remaining", rlr)
+                }
+                if rlp := extractHeaderFromCurlStdout(headers, "RateLimit-Policy"); rlp != "" {
+                        recordSecurityHeader(domain, "RateLimit-Policy", rlp)
+                }
+                if xrll := extractHeaderFromCurlStdout(headers, "X-RateLimit-Limit"); xrll != "" {
+                        recordSecurityHeader(domain, "X-RateLimit-Limit", xrll)
+                }
+                if xrlr := extractHeaderFromCurlStdout(headers, "X-RateLimit-Remaining"); xrlr != "" {
+                        recordSecurityHeader(domain, "X-RateLimit-Remaining", xrlr)
+                }
+                if xrls := extractHeaderFromCurlStdout(headers, "X-RateLimit-Reset"); xrls != "" {
+                        recordSecurityHeader(domain, "X-RateLimit-Reset", xrls)
                 }
                 if status >= 300 {
                         // R66-C BUG-52 (P3): curl 4xx/5xx 也记 latency + fail (与 fetchHttp
@@ -8660,6 +8708,29 @@ func fetchBinaryHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, pr
                 }
                 if agw := resp.Header.Get("Apigw-Requestid"); agw != "" {
                         recordSecurityHeader(originHost(rawURL), "Apigw-Requestid", agw)
+                }
+                // R113-A 反反爬第 259-263 项 续 (与 fetchHttp line ~4828 同款,
+                //   fetchBinaryHttp success + 4xx/5xx 两路径都记, BUG-241 修复后
+                //   fetchBinaryHttp 已补对称; fetchBinaryViaCurl 不 dump headers
+                //   故不调, 与 124-258 同款限制. 详见 fetchHttp line ~4828 rationale).
+                //   第 259 RateLimit-Remaining / 第 260 RateLimit-Policy / 第 261 X-
+                //   RateLimit-Limit / 第 262 X-RateLimit-Remaining / 第 263 X-RateLimit-
+                //   Reset (rate-limit/throttle signal cross-RFC-version; cover host 多
+                //   在 external CDN / S3, 与 HTML host 不同域各自独立条目, 无污染).
+                if rlr := resp.Header.Get("RateLimit-Remaining"); rlr != "" {
+                        recordSecurityHeader(originHost(rawURL), "RateLimit-Remaining", rlr)
+                }
+                if rlp := resp.Header.Get("RateLimit-Policy"); rlp != "" {
+                        recordSecurityHeader(originHost(rawURL), "RateLimit-Policy", rlp)
+                }
+                if xrll := resp.Header.Get("X-RateLimit-Limit"); xrll != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-RateLimit-Limit", xrll)
+                }
+                if xrlr := resp.Header.Get("X-RateLimit-Remaining"); xrlr != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-RateLimit-Remaining", xrlr)
+                }
+                if xrls := resp.Header.Get("X-RateLimit-Reset"); xrls != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-RateLimit-Reset", xrls)
                 }
                 // 3xx / 4xx / 5xx 视为失败 (与 fetchHttp 同款, 不重试 3xx)
                 if resp.StatusCode >= 300 {
@@ -13386,10 +13457,10 @@ func ClearHostAcceptRanges(host string) {
 //   第 204-208 项 + R103-A 第 209-213 项 + R104-A 第 214-218 项 + R105-A 第
 //   219-223 项 (R106-A BUG-313 补字段) + R106-A 第 224-228 项 + R107-A 第
 //   229-233 项 + R108-A 第 234-238 项 + R109-A 第 239-243 项 + R110-A 第 244-248 项
-//   + R111-A 第 249-253 项 + R112-A 第 254-258 项, 合并 130 字段). entry 是 pointer: recordSecurityHeader
+//   + R111-A 第 249-253 项 + R112-A 第 254-258 项 + R113-A 第 259-263 项, 合并 135 字段). entry 是 pointer: recordSecurityHeader
 //   LoadOrStore canonical 指针 + 单字段 update-in-place (非 store-replace, 保留其他
-//   129 头旧值). 同字段并发写 last-write-wins; sweep CompareAndDelete 后下次 record
-//   重建 entry (与 recordVia store-replace 不一样, 这里需保留其他 129 头故用
+//   134 头旧值). 同字段并发写 last-write-wins; sweep CompareAndDelete 后下次 record
+//   重建 entry (与 recordVia store-replace 不一样, 这里需保留其他 134 头故用
 //   update-in-place).
 type hostSecurityHeadersEntry struct {
         hstsValue         string // Strict-Transport-Security (第 124 项)
@@ -13634,6 +13705,21 @@ type hostSecurityHeadersEntry struct {
         akamaiOriginHopValue     string // Akamai-Origin-Hop (第 256 项, R112-A)
         xAmznErrorTypeValue      string // X-Amzn-ErrorType (第 257 项, R112-A)
         apigwRequestidValue      string // Apigw-Requestid (第 258 项, R112-A)
+        // R113-A 反反爬第 259-263 项: rate-limit/throttle signal cross-RFC-version
+        //   cross-vendor 响应头观测 (与 124-258 同款 family, 单值 last-write-wins
+        //   per-host 合并 tracker). 详见 fetchHttp line ~4828 rationale (R113-A
+        //   块). headerName 大小写不敏感. R112-A 未决项 #1 pivot 续 — alt vendor
+        //   WAF/edge request ID + error 分类 (254-258) 耗尽, pivot rate-limit/
+        //   throttle signal family 续 (RFC 9331 RateLimit-Remaining complement
+        //   RateLimit-Limit #187 + RateLimit-Reset #188 完整 RFC triplet; RateLimit-
+        //   Policy RFC 9331 §3.1 policy descriptor; legacy de-facto X-RateLimit-*
+        //   GitHub/Twitter/Stripe API family cross-RFC-version 镜像 — 反爬侧
+        //   throttle signal 是 crawler 决定 backoff / IP rotation 的主信号维度).
+        rateLimitRemainingValue   string // RateLimit-Remaining (第 259 项, R113-A)
+        rateLimitPolicyValue      string // RateLimit-Policy (第 260 项, R113-A)
+        xRateLimitLimitValue      string // X-RateLimit-Limit (第 261 项, R113-A)
+        xRateLimitRemainingValue string // X-RateLimit-Remaining (第 262 项, R113-A)
+        xRateLimitResetValue      string // X-RateLimit-Reset (第 263 项, R113-A)
         detectedAt              int64  // UnixMilli
 }
 
@@ -13645,7 +13731,7 @@ type hostSecurityHeadersEntry struct {
 //   第 204-208 项 + R103-A 第 209-213 项 + R104-A 第 214-218 项 + R105-A 第
 //   219-223 项 (R106-A BUG-313 补字段) + R106-A 第 224-228 项 + R107-A 第
 //   229-233 项 + R108-A 第 234-238 项 + R109-A 第 239-243 项 + R110-A 第 244-248 项
-//   + R111-A 第 249-253 项 + R112-A 第 254-258 项).
+//   + R111-A 第 249-253 项 + R112-A 第 254-258 项 + R113-A 第 259-263 项).
 var hostSecurityHeadersMap sync.Map
 
 // hostSecurityHeadersSweepCounter — sweep 触发累加 (与 hostViaSweepCounter 同口径).
@@ -13702,9 +13788,9 @@ func extractSetCookieAttr(cookies []string, attr string) string {
 //   第 204-208 项 + R103-A 第 209-213 项 + R104-A 第 214-218 项 + R105-A 第
 //   219-223 项 (R106-A BUG-313 补 case) + R106-A 第 224-228 项 + R107-A 第
 //   229-233 项 + R108-A 第 234-238 项 + R109-A 第 239-243 项 + R110-A 第 244-248 项
-//   + R111-A 第 249-253 项 + R112-A 第 254-258 项). headerName 区分 130 头 (大小
+//   + R111-A 第 249-253 项 + R112-A 第 254-258 项 + R113-A 第 259-263 项). headerName 区分 135 头 (大小
 //   不敏感). 与 recordVia
-//   同款 Store + 惰性 sweep, 但保留其他 129 头旧值 (LoadOrStore canonical 指针 +
+//   同款 Store + 惰性 sweep, 但保留其他 134 头旧值 (LoadOrStore canonical 指针 +
 //   单字段 update-in-place).
 func recordSecurityHeader(host, headerName, value string) {
         if host == "" || value == "" {
@@ -14037,6 +14123,18 @@ func recordSecurityHeader(host, headerName, value string) {
                 ent.xAmznErrorTypeValue = value
         case "apigw-requestid":
                 ent.apigwRequestidValue = value
+        // R113-A 反反爬第 259-263 项 (与 124-258 同款 family, 详见 fetchHttp line
+        //   ~4828 rationale. headerName 大小写不敏感).
+        case "ratelimit-remaining":
+                ent.rateLimitRemainingValue = value
+        case "ratelimit-policy":
+                ent.rateLimitPolicyValue = value
+        case "x-ratelimit-limit":
+                ent.xRateLimitLimitValue = value
+        case "x-ratelimit-remaining":
+                ent.xRateLimitRemainingValue = value
+        case "x-ratelimit-reset":
+                ent.xRateLimitResetValue = value
         default:
                 return
         }
@@ -14197,6 +14295,12 @@ func HostSecurityHeadersSnapshot() map[string]map[string]string {
                         "akamaiOriginHopValue":e.akamaiOriginHopValue,
                         "xAmznErrorTypeValue": e.xAmznErrorTypeValue,
                         "apigwRequestidValue": e.apigwRequestidValue,
+                        // R113-A 第 259-263 项.
+                        "rateLimitRemainingValue":   e.rateLimitRemainingValue,
+                        "rateLimitPolicyValue":      e.rateLimitPolicyValue,
+                        "xRateLimitLimitValue":      e.xRateLimitLimitValue,
+                        "xRateLimitRemainingValue":  e.xRateLimitRemainingValue,
+                        "xRateLimitResetValue":      e.xRateLimitResetValue,
                         "detectedAt":        fmt.Sprintf("%d", e.detectedAt),
                 }
                 return true

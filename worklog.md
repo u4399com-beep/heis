@@ -55380,3 +55380,716 @@ R110-A/B/C/D/R111-A/C/D/R111-B 同款 "防御性修复 0 行为变化 0 用户�
    R110-A/C/D/R111-A/C/D/R111-B/R112-D/R112-A 未决项 #8 续).
 
 ==============================================================================
+
+------------------------------------------------------------------------------
+## R113-D — main+templates (main.go scope, 1 文件命中)
+------------------------------------------------------------------------------
+
+**任务**: R113-D main+templates. 文件: main.go + templates/**. 读 worklog
+末尾 5KB. 目标: 深抓 BUG-339++ 精简. +200 行内. 编译 0. worklog 追加.
+严禁改非 main+templates / 启动 / 新依赖 / emoji / 临时测试文件.
+
+**起读 worklog 末尾**: 起读时末尾为 R112-B entry (line ~55253, BUG-337
+JsonGet recursive $..a||b fallback + BUG-338 anyToString nil→null). 编辑
++编译期间无 R113-A/B/C 并发追加 (R113+ 起读时仅 R112 各 scope 完结). 本
+块追加在 R112-B 后真末尾 (顺序 ...→R111-B→R112-D→R112-A→R112-B→R113-D).
+
+**深抓 BUG (2 个 + 1 精简, 均 P3/P4 防御性, 同 family sibling 续)**:
+
+1. **BUG-339 (P3, main+templates scope, R81-D BUG-179 per-row Scan swallow
+   family sibling 续)**: getFeaturedBooks (line ~3915 inner loop) 内对每
+   个 admin 配置的 bid 执行 `db.QueryRow(SELECT ... FROM Book WHERE
+   b.id=?).Scan(...)`, Scan 失败时 `continue` 吞 err — sql.ErrNoRows (书
+   已删, normal skip) 与 driver edge Scan err (column-type drift during
+   migration / NULL→non-nullable 列序 drift / driver bug) 同走 continue
+   路径, admin 不知 featured books 配置的某些 bid Scan 失败 (用户看不到
+   该书, admin 不知是配置错 bid 还是 Scan 失败). R81-D BUG-179 覆盖了
+   getCategories (line ~3634) + getBooks (line ~3657) + getBookViewData
+   (line ~4303/4330/4355) + getReadViewData (line ~4481/4487) 7 个 per-row
+   Scan swallow callsite, 但漏 getFeaturedBooks inner loop (R81-D scope
+   注 "per-row Scan err log + skip" family 未触此 callsite — R82-D 引入
+   getFeaturedBooks 时 R81-D 已闭环, R82-D 未对齐 follow-up). 同款 latent
+   class, 续修. 修复: 非 ErrNoRows 时 log.Printf 提示运维 (siteID + bid
+   + err), ErrNoRows 仍 silent skip (与 R81-D BUG-179 同款 "正常行 skip +
+   异常行 log" 语义). 0 行为变化 (continue 语义不变, 仅加 log 可见性).
+   与 R112-C admin.go scope BUG-335 tx.Rollback swallow family
+   cross-scope sibling (不同 scope 不同 family 不同 sub-variant — admin
+   tx.Rollback 是事务回滚 swallow, main getFeaturedBooks Scan 是读行
+   swallow, 不同 latent class; 同号 cross-scope 共存 convention 续).
+
+2. **BUG-340 (P3, main+templates scope, R112-C BUG-335 single-row Scan
+   swallow family cross-scope sibling 续 + R81-D BUG-179 single-row
+   sub-variant)**: getFeaturedBooks (line ~3876 outer setting read) 用
+   `_ = db.QueryRow(SELECT value FROM Setting WHERE key=?).Scan(&raw)` 吞
+   err — sql.ErrNoRows (admin 未配 featuredBooks.{siteID} setting, normal
+   返 nil → home view fallback TopBooks) 与 driver edge Scan err (conn
+   闪断 / 磁盘满 / driver bug) 同走 raw="" → if raw=="" return nil →
+   home view fallback TopBooks. admin 配了 featured books 但 home 仍显
+   TopBooks 时, admin 排查不知是 SQL 故障 (本应 log) 还是配置缺失
+   (silent). 与 BUG-339 同 family 不同 sub-variant (BUG-339 是 inner loop
+   per-row Scan, BUG-340 是 outer single-row Scan — 与 R112-C admin.go
+   scope BUG-335 tx.Rollback (6 callsite) + BUG-336 MarshalIndent (1
+   callsite, sub-variant) 同款 "同 family 不同 sub-variant 分 BUG 号"
+   precedent). 修复: 非 ErrNoRows 时 log.Printf 提示运维 (siteID + err
+   + "home will fallback TopBooks" 提示), ErrNoRows 仍 silent (与 BUG-339
+   同款). 0 行为变化 (return nil 语义不变, 仅加 log 可见性). 与 R112-C
+   admin.go scope BUG-335 (tx.Rollback) + BUG-336 (MarshalIndent sub-
+   variant) cross-scope sibling — 本 BUG-340 用 340 新号, 顺延 R112-D
+   BUG-335 + R112-A BUG-335/336 + R112-B BUG-337/338 + R112-C BUG-335/336
+   后 339+ 顺延 (R113-D main scope 用 BUG-339 inner-loop Scan + BUG-340
+   outer single-row Scan, 同 family 同 scope 不同 sub-variant 分号, 与
+   R112-C "BUG-335 + BUG-336 同 family 不同 sub-variant 分号" 同款
+   convention; 主控 merge 时 0 renumber 需求).
+
+### 精简-1
+
+**精简-1 (P4 精简/defensive-guard, main scope, R96-D BUG-272 family
+sibling 续)**: pickAuthors (line ~4190) 与 takeN (line ~3669) /
+topBooks (line ~3684) / takeBooks (line ~3722) 同属 "top-N slice helper"
+family, 但 R96-D BUG-272 (n<0/n==0 guard) 漏此 callsite — pickAuthors(0)
+返 1 item (首作者, 因 `1>=0` break), pickAuthors(-1) 同款返 1 item
+(`1>=-1` break). 当前 caller 全传 12 (injectListSidebar line ~2890
+pickAuthors(books, 12)), 0 用户受影响. 但 sibling 一致性 + future
+caller 防 (sub template func / admin 配置项暴露后可能传 0 / 未来 main
+scope 重构可能传负). 修复: `if n <= 0 { return []string{} }` guard (与
+takeBooks(0) line ~3733 `if n == 0 { return []map[string]interface{}{} }`
+同款 "0 即空" 语义, 加 `<= 0` 覆盖 n<0 case). 0 行为变化 (current
+callers 不触, 仅防御性). 与 R96-D BUG-272 takeN/topBooks/takeBooks `if
+n<0 { n=0 }` + R84-D BUG-194 takeBooks `if n == 0` guard precedent 同款
+"top-N helper n<=0 defensive guard" family. 精简而非 BUG 因 0 用户受
+影响 (latent defensive 收口, 同 R96-D BUG-272 "全 caller 现传正, sub
+模板 func + 未来 caller 可能传负" precedent — BUG-272 注 "0 panic
+surface" 而本 pickAuthors(0) 0 panic 仅返 1 item, 故降级 P4 精简/防御性
+guard 非 BUG).
+
+### 命中范围 / scope 说明
+
+- 3 fix 全在 main.go 1 文件 (BUG-339 line ~3915 inner Scan + BUG-340
+  line ~3876 outer Scan + 精简-1 line ~4190 pickAuthors guard), 0 触
+  templates/** (本轮 BUG 全在 Go-side per-row Scan swallow + top-N
+  helper family, 模板侧 0 dead-field / 0 missing-injection / 0 sibling-
+  inconsistent 命中 — R112-D BUG-335 injectListSidebar 已收口 aijjxs/
+  ranking+search TopAuthors 漏注入, 本轮评 aijjxs/keyword.html + 全 10
+  主题 ranking/search/category/fulltext/keyword 模板 0 sibling-injection
+  漏; HotBooks/TopAuthors/RelatedTags/PrevPageURL/NextPageURL/
+  FirstPageURL/LastPageURL/CanonicalURL/BookURL/FirstChapterURL/HasChapters
+  各 view Go-side 注入全对齐模板消费, 0 dead-field 命中). scope "main.go
+  + templates/**" 允许两 scope, 本轮命 1 scope (main.go) — 同 R112-D
+  "main+templates scope 1 文件命中 (main.go)" 同款 (R112-D 仅改 main.go
+  injectListSidebar helper, 0 触 templates). 0 触 admin.go / crawl/* /
+  fetcher/runner / 启动 (start.sh/start-go.js) / 新依赖 / emoji / 临时
+  测试文件.
+
+### 编译 / gofmt / 行数
+
+  - go build ./... = 0 (全模块 0 errors, Go 1.26.8 linux/amd64,
+    /home/z/go/go/bin/go).
+  - go vet ./... = 0 (0 vet 警告, BUG-339/340 log.Printf label "R113-D"
+    前缀无 shadow / 0 unreachable, sql.ErrNoRows import 复用
+    database/sql line 7 已有 0 新 import).
+  - gofmt -l main.go = main.go (pre-existing non-compliant from R38, 全
+    文件 8-space 缩进; 本轮编辑用 8-space 与现有 8-space 一致, 0 新
+    non-compliant — main.go 本就 non-compliant pre-existing from R38).
+    批量 gofmt -w 独立 commit defer, 与 R100-A 未决项 #3 同款.
+  - git diff --shortstat (本轮 1 文件): 1 file changed, 49 insertions(+),
+    2 deletions(-) = 净 +47 行 (insertions 49 亦 < +200 上限). 仅
+    main.go 1 文件改动 (main+templates scope 内), 0 触非 scope 文件.
+  - 0 新依赖 (BUG-339/340 复用 database/sql + log 已 import line 7 +
+    11; sql.ErrNoRows 是 database/sql 已有 symbol; 0 新 import / 0 新
+    var / 0 新 type; 精简-1 复用 []string literal 0 新 symbol).
+  - 0 emoji (R113-D 新增 0 emoji; pre-existing main.go emoji 非 本轮
+    引入, 维持 defer 至 R114+ 批量评估删除 — 与 R110-B/R111-D/R112-D
+    同款 pre-existing emoji defer convention).
+  - 0 临时测试文件 (与 R106-B/R107-A/B/C/D/R108-A/B/C/D/R109-A/C/D/
+    R110-A/C/D/R111-A/C/D/R111-B/R112-D/R112-A/B/C 同款 "防御性修复
+    0 行为变化 0 用户受影响, 不需 /tmp 测试文件"; BUG-339/340 0 当前
+    用户受影响 — driver edge Scan err 是 rare 路径 (SQLite driver
+    modernc.org/sqlite 稳定, column-type drift 仅 migration 期间态),
+    fallback 语义不变 (continue 仍跳行 / return nil 仍返 nil → home
+    fallback TopBooks), 仅加 log 可见性; 精简-1 0 用户受影响 — current
+    callers 全传 12, n<=0 不触).
+
+未解决 (交接 R114+):
+1. **parseKVString/mapToSortedKV \n in value latent (R96-B 未决项 #1 续,
+   R101-B/R102-B/R103-A/B/R104-A/B/R105-A/D/R106-A/B/D/R107-A/B/C/D/
+   R108-A/B/C/D/R109-A/C/D/R110-A/C/D/R111-A/C/D/R111-B/R112-D/A/B/C
+   续)**: kv string 格式不支持 value 含 \n. 本轮 BUG-339/340 + 精简-1
+   不触此 latent (Scan swallow + pickAuthors n guard, 非 kv string).
+   R114+ 评估.
+2. **JsonGet $..a||b recursive+|| (R96-B 未决项 #2 续, R101-B/R102-B/
+   R103-A/B/R104-A/B/R105-A/D/R106-A/B/D/R107-A/B/C/D/R108-A/B/C/D/
+   R109-A/C/D/R110-A/C/D/R111-A/C/D/R111-B/R112-D/A/B/C 续)**: R112-B
+   BUG-337 已修 || fallback 触发 (recursiveCollect 0 命中返 nil 非
+   []any{}), 但 $..a[0] / $..a["k"] splitAt<=0 literal defer (R112-B
+   未决项 #2.5). 本轮不触此 latent. R114+ 评估.
+3. **gofmt -l 现 22+ 文件 non-compliant (R100-A 未决项 #3 续,
+   R101-B/R102-C/R103-A/B/R104-A/B/R105-A/B/C/D/R106-A/B/D/R107-A/B/
+   C/D/R108-A/B/C/D/R109-A/B/C/D/R110-A/C/D/R111-A/C/D/R111-B/R112-D/
+   A/B/C 续)**: 本轮 R113-D 编辑 main.go 用 8-space (与现有 8-space
+   一致, 0 新 non-compliant 文件 — main.go 本就 non-compliant pre-
+   existing from R38). R114+ 批量 gofmt -w 评估 (独立 commit).
+4. **ParseList HTML no-container FieldConst UNREACHABLE (R98-B 未决项 #4
+   续, R106-B BUG-316 已收口)**: 已闭环, R114+ 评估 JSON 模式条件是否
+   需收紧 (非本轮 scope).
+5. **BUG-339/340 unit test 覆盖 (R100-B 未决项 #5 续, R101-A/R102-C/
+   R103-A/B/R104-A/B/R105-A/D/R106-A/B/D/R107-A/B/C/D/R108-A/B/C/D/
+   R109-A/B/C/D/R110-A/C/D/R111-A/C/D/R111-B/R112-D/A/B/C 同款, R112-C
+   未决项 #5 续)**: 0 test files. R114+ 评估加测试 (本轮 BUG-339
+   inner Scan + BUG-340 outer Scan + 精简-1 pickAuthors guard 3 fix
+   同款缺测试, 与 R108-B BUG-324/325 + R109-A BUG-326/327 + R110-A/C
+   BUG-328/329 + R110-B BUG-330 + R111-A BUG-331/332/333 + R111-C/D
+   BUG-331 + R111-B BUG-334 + R112-D BUG-335 + R112-A BUG-335/336 +
+   R112-B BUG-337/338 + R112-C BUG-335/336 同款缺测试).
+6. **shared mutable default family (R103-B/R104-B 已收口)**: 本轮
+   BUG-339/340 + 精简-1 非 shared-default family (是 per-row Scan
+   swallow log + top-N helper n guard, 不同 latent class).
+7. **Absolutize 自引用 scheme 不比较 (R106-B 未决项 #7 已收口)**: 本轮
+   评估: 维持 R107-B 收口决策 (NOT a bug, 当前行为正确, 0 改动).
+8. **R113 并行 agent 修改 + 并发追加时序**: 本轮 R113-D 仅改 main.go 1
+   文件, 与 R113-A/B/C (若存在) scope 应不重叠 (main.go 仅 R113-D 改;
+   R113-A 改 crawl/fetcher/runner / R113-B 改 crawl-other /
+   R113-C 改 admin.go 不触 main.go). BUG 编号备注: 本轮 R113-D main+
+   templates scope 用 BUG-339 (getFeaturedBooks inner per-row Scan
+   swallow) + BUG-340 (getFeaturedBooks outer single-row Scan swallow)
+   + 精简-1 (pickAuthors n<=0 guard), 顺延 R112-D BUG-335 + R112-A
+   BUG-335/336 + R112-B BUG-337/338 + R112-C BUG-335/336 后 339+
+   顺延 (与 R112-D main scope 用 BUG-335 顺延 R111-B BUG-334 同款
+   "main D round 新号顺延" convention, 主控 merge 时 0 renumber 需求 —
+   本轮 R113+ 不与 R112 cross-scope 共存, 339/340 main scope 新号,
+   不与 R112 335~338 撞号). 本轮 R113-D 起读 worklog 末尾为 R112-B 末
+   separator (R112-A/B/C/D 已完成追加, R113-A/B/C 本轮不存在或未追加),
+   完成编辑+编译+vet 验证后追加本块在 R112-B 后真末尾 (顺序
+   ...→R111-B→R112-D→R112-A→R112-B→R113-D). 后续 R114+ agent 若并发
+   追加 worklog, 锚 R113-D 末 separator 同款时序风险, 建议 R114+ 改用
+   fcntl flock 或 append-only 单 writer 串行化 (跨 budget, 非本轮
+   scope, 与 R106-A/R107-A/R107-B/R107-C/R108-A/B/C/D/R109-A/C/D/
+   R110-A/C/D/R111-A/C/D/R111-B/R112-D/A/B/C 未决项 #8 续).
+
+==============================================================================
+
+------------------------------------------------------------------------------
+## R113-A — crawl fetcher + runner (反反爬 259-263 + 深抓 BUG-339/340)
+------------------------------------------------------------------------------
+
+**任务**: R113-A fetcher+runner. 文件: crawl/fetcher.go+runner.go (2 文件).
+读 worklog 末尾 5KB. 目标: 反反爬 259-263 + 深抓 BUG-339+. +200 行内.
+编译 0. worklog 追加. 严禁改非 2 文件 / 启动 / 新依赖 / emoji / 临时测试
+文件. 本轮命中 fetcher.go (反反爬第 259-263 项 rate-limit/throttle signal
+cross-RFC-version 跨厂商 family 续) + runner.go (BUG-339 cover fetch
+AntiCaptchaAPIKey 继承 + BUG-340 cover fetch CapSolverAPIKey 继承,
+BUG-309/310/314/317/321/322/326/327/328/329/331/332/333/335/336 同 cover
+FetchConfig family 续).
+
+Round R113-A (go-backend/crawl/fetcher.go + runner.go scope: 反反爬 259-263 +
+  深抓 BUG-339/340, 2 文件命中, +156 行净, 编译 0 / vet 0, 0 emoji)
+Agent: R113-A agent (crawl/fetcher.go + runner.go: 反反爬第 259-263 项 + 深抓
+  BUG-339/340, 2 文件命中, +156 行净, 编译 0 / vet 0, 0 emoji)
+Task ID: R113-A
+Scope: go-backend/crawl/fetcher.go + runner.go 2 文件 反反爬 259-263 + 深抓
+  BUG-339/340. 本轮命中 fetcher.go (反反爬第 259-263 项 rate-limit/throttle
+  signal cross-RFC-version 跨厂商 family 续) + runner.go (BUG-339 cover fetch
+  AntiCaptchaAPIKey 继承 + BUG-340 cover fetch CapSolverAPIKey 继承, BUG-309/
+  310/314/317/321/322/326/327/328/329/331/332/333/335/336 同 cover FetchConfig
+  family 续). +200 行内 (净 +156 / 插 162 删 6). 编译 0 (go build ./... +
+  go vet ./... 全 0). worklog 追加本块. 严禁改非 2 文件 / 启动 / 新依赖 /
+  emoji / 临时测试文件 — 本轮仅改 crawl/fetcher.go + crawl/runner.go 2 文件,
+  0 触 admin/main/parser/cleaner/types/sorter/smart/storage/hostgate/
+  templates/start.sh/requirements, 0 新依赖 (仅用 resp.Header.Get +
+  extractHeaderFromCurlStdout + recordSecurityHeader + originHost + len / !=
+  "" 已有 API, 0 新增), 0 emoji, 0 测试文件.
+
+### 反反爬第 259-263 项 (fetcher.go scope, rate-limit/throttle signal cross-
+  RFC-version 跨厂商 family 续)
+
+R112-A 第 254-258 项 (alt vendor WAF/edge request ID + error 分类 跨厂商镜像)
+耗尽, R113-A pivot 到 rate-limit/throttle signal cross-RFC-version 跨厂商
+family 续 (与第 187 项 RateLimit-Limit + 第 188 项 RateLimit-Reset + 第 159
+项 Retry-After 同 "throttle/频控" family 续, 但维度从已覆盖的 RFC 草案
+limit/reset 双字段 pivot 到 RFC 9331 完整 triplet 第 3 字段 remaining + 第 4
+字段 policy descriptor, + legacy de-facto X-RateLimit-* GitHub/Twitter/
+Stripe API family cross-RFC-version 镜像 — 反爬侧 throttle signal 是 crawler
+决定 backoff / IP rotation 时机的主信号维度, complement request-ID family
+(单请求追踪) 与 cache-status family (缓存命中) 不同维度).
+
+- 第 259 项 RateLimit-Remaining — RFC 9331 §3.2 remaining quota (当前窗口剩
+  余配额数, e.g. `42`). complement RateLimit-Limit #187 (quota ceiling) +
+  RateLimit-Reset #188 (reset epoch) 完整 RFC 9331 triplet 第 3 字段; 反爬关
+  联高 — crawler 读 remaining 决定 backoff 时机 (remaining→0 临近 throttle,
+  反爬侧 throttle signal 是 crawler 主调度信号).
+- 第 260 项 RateLimit-Policy — RFC 9331 §3.1 policy descriptor (限流策略描
+  述串, e.g. `100;w=60;burst=200` = 100 req / 60s window + 200 burst). 反爬
+  关联高 — 暴露源站限流策略 (window size + burst ceiling), crawler 据此
+  pacing 决定 rate (modern API gateway posture, Cloudflare/Fastly/AWS WAF 均
+  发).
+- 第 261 项 X-RateLimit-Limit — legacy de-facto quota ceiling (GitHub/Twitter
+  /Stripe API family, RFC 9331 前广泛部署). 反爬关联高 — 与 #187 同维度但
+  legacy 变体, 仍广泛部署 (GitHub REST API / Twitter v1.1 / Stripe / GitLab
+  / Shopify API); cross-RFC-version 镜像, crawler 同款读 limit 决定 pacing.
+- 第 262 项 X-RateLimit-Remaining — legacy remaining quota (GitHub/Twitter 同
+  family). 反爬关联高 — 与 #259 RFC remaining 同维度但 legacy 变体, crawler
+  读此判临近 throttle; 与 #187/#259 complement ceiling/remaining 双字段.
+- 第 263 项 X-RateLimit-Reset — legacy reset epoch (GitHub/Twitter family).
+  反爬关联高 — 与 #188 RFC reset 同维度但 legacy 变体, crawler 计算 sleep-
+  until-reset backoff (epoch 秒); 与 #159 Retry-After (相对秒) 互补 (reset 是
+  绝对 epoch).
+- 注: X-Forwarded-For / X-Real-IP 仍不在此批 (R65-B 第 60 项 outbound 伪造注
+  入, origin echo 会捕获本系统伪造值 = 噪声, 故排除; 与 R109-A/R110-A/R111-A/
+  R112-A 排除逻辑同款 "outbound 伪造不入 inbound 观测 tracker" convention).
+
+fetcher.go 9 处编辑 (与 R109-A/R110-A/R111-A/R112-A 同款 3 路径 callsite 对
+称 + struct/switch/snapshot/comment/doc 同步):
+1. hostSecurityHeadersEntry struct 补 5 字段 (rateLimitRemainingValue /
+   rateLimitPolicyValue / xRateLimitLimitValue / xRateLimitRemainingValue /
+   xRateLimitResetValue, line ~13718-13722, 与第 254-258 项同款 struct append
+   convention).
+2. recordSecurityHeader switch 补 5 case ("ratelimit-remaining" /
+   "ratelimit-policy" / "x-ratelimit-limit" / "x-ratelimit-remaining" /
+   "x-ratelimit-reset", line ~14128-14137, headerName 大小写不敏感).
+3. HostSecurityHeadersSnapshot map 补 5 entries (line ~14299-14303).
+4. struct doc + map doc + recordSecurityHeader doc 3 处 round-list 追
+   "+ R113-A 第 259-263 项" + 字段计数 130→135 / 129→134 (line ~13389 /
+   ~13663 / ~13720 + 3 处 "保留其他 129 头" → "134 头", 同 R112-A 125→130
+   同款 count-bump convention).
+5. 3 路径 callsite 对称:
+   a. fetchHttp success path (line ~4828-4854, 14 行 rationale + 5 callsite
+      直 resp.Header.Get).
+   b. fetchViaCurl success path (line ~6232-6252, 6 行 rationale + 5 callsite
+      extractHeaderFromCurlStdout; fetchBinaryViaCurl 不 dump headers 故不
+      调, 与 124-258 同款限制).
+   c. fetchBinaryHttp cover path (line ~8712-8734, 8 行 rationale + 5 callsite,
+      与 BUG-241 三路径对称 convention; cover host 多在 external CDN / S3, 与
+      HTML host 不同域各自独立条目, 无污染).
+
+### 深抓 BUG-339/340 (runner.go scope, cover fetch posture 续, captcha solver
+  family 续)
+
+R112-A BUG-335/336 (cover fetch MoliHeaders + TwoCaptchaAPIKey 继承) 收口后,
+R113-A 续 cover fetch FetchConfig 漏继承 — BUG-339 AntiCaptchaAPIKey + BUG-340
+CapSolverAPIKey (captcha solver family 续, 与 BUG-336 TwoCaptchaAPIKey 同族 —
+2captcha primary + anti-captcha fallback #1 + CapSolver fallback #2 / 3rd
+provider 三服务级联, 任一服务连续 3 次失败触发 60s cooldown 同款 logic).
+2 bug 同属 "结构 + 半实现 latent" family (cover fetch 路径 FetchBinaryPage →
+fetchBinaryHttp 尚未消费此 2 字段, 仅 trySolveCaptchaWithAntiCaptcha /
+trySolveCaptchaWithCapSolver HTML 路径消费, 故属 "结构 + 半实现 latent" — 与
+BUG-327/328/329/331/332/333/335/336 同款 precedent).
+
+- BUG-339 (P3) cover fetch FetchConfig 仍漏继承 cfg.Override.AntiCaptchaAPIKey
+  (string) — anti-captcha 验证码服务 API key (2captcha 备用 fallback
+  provider, 2captcha 服务不可用 / 返错 / 未配置时自动 fallback). 后果: cover
+  同域站 (originHost(parsed.Cover) == originHost(bookURL)) behind 反爬时, cover
+  URL 可能返 Cloudflare challenge HTML 页 (反爬触发 challenge, 返 200 + JS
+  challenge HTML 而非 image bytes), book fetch 经 mergeFetchConfig(line
+  ~10322-10323) 复制 cfg.Override.AntiCaptchaAPIKey → captchaTryService(line
+  ~9291) 检 antiCaptchaAvailable → 2captcha 失败时 trySolveCaptchaWithAntiCaptcha
+  (line ~9840/9912) 按 key 调 anti-captcha 解 h-captcha/reCAPTCHA, cover fetch
+  漏继承 → cover fetch 走 default 无 API key 路径 → 同一浏览器 1s 内 book
+  (2captcha→anti-captcha 解 challenge 成功) + cover (无 key 不解 challenge,
+  looksBlockedBinary 命中 HTML challenge 标 Blocked=true 跳过) 行为深度不一致
+  → 反爬侧 behavior fingerprint 不一致是 bot 信号. 注: 当前 cover fetch 路径
+  (FetchBinaryPage → fetchBinaryHttp) 尚未读 cfg.AntiCaptchaAPIKey
+  (AntiCaptchaAPIKey 仅在 trySolveCaptchaWithAntiCaptcha HTML 路径消费), 故属
+  "结构 + 半实现 latent" (与 BUG-327/328/329/331/332/333/335/336 同款
+  precedent), 但 coverSameHost 继承是结构对称前提, 后续 cover fetch 路径若加
+  captcha 解求解路由自动跟上. 与 BUG-314 同 coverSameHost gate. 修复: cfg.
+  Override.AntiCaptchaAPIKey != "" gate 继承 (与 mergeFetchConfig line
+  ~10322-10323 同款 "非空覆盖" gate). runner.go line ~2628-2652.
+- BUG-340 (P3) cover fetch FetchConfig 仍漏继承 cfg.Override.CapSolverAPIKey
+  (string) — CapSolver 验证码服务 API key (3rd provider, 2captcha + anti-
+  captcha 都失败 / 都在 cooldown / 都未配置时自动 fallback 到 CapSolver, 价格
+  $0.7-2/1000 次 更便宜). 后果: cover 同域站 (originHost(parsed.Cover) ==
+  originHost(bookURL)) behind 反爬时, cover URL 可能返 Cloudflare challenge
+  HTML 页, book fetch 经 mergeFetchConfig(line ~10326-10327) 复制 cfg.Override.
+  CapSolverAPIKey → captchaTryService(line ~9292) 检 capSolverAvailable →
+  2captcha+anti-captcha 都失败时 trySolveCaptchaWithCapSolver(line ~10005/
+  10077) 按 key 调 CapSolver 解 h-captcha/reCAPTCHA, cover fetch 漏继承 →
+  cover fetch 走 default 无 API key 路径 → 同一浏览器 1s 内 book (CapSolver 解
+  challenge 成功) + cover (无 key 不解 challenge, looksBlockedBinary 命中 HTML
+  challenge 标 Blocked=true 跳过) 行为深度不一致 → 反爬侧 behavior fingerprint
+  不一致是 bot 信号. 注: 当前 cover fetch 路径 (FetchBinaryPage →
+  fetchBinaryHttp) 尚未读 cfg.CapSolverAPIKey (CapSolverAPIKey 仅在
+  trySolveCaptchaWithCapSolver HTML 路径消费), 故属 "结构 + 半实现 latent" (与
+  BUG-327/328/329/331/332/333/335/336/339 同款 precedent), 但 coverSameHost
+  继承是结构对称前提, 后续 cover fetch 路径若加 captcha 解求解路由自动跟上.
+  与 BUG-314 同 coverSameHost gate. 修复: cfg.Override.CapSolverAPIKey != ""
+  gate 继承 (与 mergeFetchConfig line ~10326-10327 同款 "非空覆盖" gate).
+  runner.go line ~2653-2679.
+
+### 编译 / gofmt / 行数
+
+  - go build ./... = 0 (crawl + 全模块 0 errors, Go 1.26.8 linux/amd64,
+    /home/z/go/go/bin/go).
+  - go vet ./... = 0.
+  - gofmt -l: fetcher.go + runner.go 仍 non-compliant (8-space 缩进,
+    pre-existing 自 R38, 与 R106-B/R107-A/B/C/D/R108-A/B/C/D/R109-A/R110-A/
+    R111-A/R112-A 同款 "8-space 一致, 0 新 non-compliant 文件" — 本轮编辑用
+    8-space, 0 引入新 gofmt 违规; 批量 gofmt -w 独立 commit defer, 与 R100-A
+    未决项 #3 同款).
+  - git diff --numstat (本轮 2 文件): fetcher.go 110+/6- = 净 +104; runner.go
+    52+/0- = 净 +52; 合计 2 files changed, 162 insertions(+), 6 deletions(-) =
+    净 +156 行 (insertions 162 亦 < +200 上限). 仅 crawl/fetcher.go +
+    crawl/runner.go 2 文件改动 (0 触 admin/main/parser/cleaner/types/sorter/
+    smart/storage/hostgate/templates/start.sh/requirements, 0 文件冲突).
+  - 0 新依赖 (仅用 resp.Header.Get + extractHeaderFromCurlStdout +
+    recordSecurityHeader + originHost + len / != "" 已有 API, 0 新增 import
+    / 0 新 var).
+  - 0 emoji (R113-A 新增 0 emoji; pre-existing fetcher.go/runner.go emoji 非
+    本轮引入, 维持 defer 至 R114+ 批量评估删除).
+  - 0 临时测试文件 (与 R106-B/R107-A/B/C/D/R108-A/B/C/D/R109-A/B/C/D/R110-A/
+    C/D/R111-A/C/D/R112-A 同款 "防御性修复 0 行为变化 0 用户受影响, 不需 /tmp
+    测试文件"; BUG-339/340 0 当前用户受影响).
+
+未解决 (交接 R114+):
+1. **parseKVString/mapToSortedKV \n in value latent (R96-B 未决项 #1 续,
+   R101-B/R102-B/R103-A/B/R104-A/B/R105-A/D/R106-A/B/D/R107-A/B/C/D/R108-A/
+   B/C/D/R109-A/C/D/R110-A/C/D/R111-A/C/D/R111-B/R112-D/A/B 续)**: kv string
+   格式不支持 value 含 \n. 本轮 BUG-339/340 不触此 latent (cover FetchConfig
+   AntiCaptchaAPIKey/CapSolverAPIKey 继承, 非 kv string). R114+ 评估.
+2. **JsonGet $..a||b recursive+|| (R96-B 未决项 #2 续, R101-B/R102-B/R103-A/B/
+   R104-A/B/R105-A/D/R106-A/B/D/R107-A/B/C/D/R108-A/B/C/D/R109-A/C/D/R110-A/
+   C/D/R111-A/C/D/R111-B/R112-D/A/B 续)**: $..a||b 仍走原 literal 路径. 本轮
+   BUG-339/340 不触此 latent (cover FetchConfig 继承, 非 JsonGet). R114+ 评估.
+3. **gofmt -l 现 22+ 文件 non-compliant (R100-A 未决项 #3 续, R101-B/R102-C/
+   R103-A/B/R104-A/B/R105-A/B/C/D/R106-A/B/D/R107-A/B/C/D/R108-A/B/C/D/R109-A/
+   B/C/D/R110-A/C/D/R111-A/C/D/R111-B/R112-D/A/B/R113-D 续)**: 本轮 R113-A
+   编辑 fetcher.go + runner.go 用 8-space (与现有 8-space 一致, 0 新 non-
+   compliant 文件 — 2 文件本就 non-compliant pre-existing from R38). R114+
+   批量 gofmt -w 评估 (独立 commit).
+4. **ParseList HTML no-container FieldConst UNREACHABLE (R98-B 未决项 #4 续,
+   R106-B BUG-316 已收口)**: 已闭环, R114+ 评估 JSON 模式条件是否需收紧 (非
+   本轮 scope).
+5. **BUG-339/340 unit test 覆盖 (R100-B 未决项 #5 续, R101-A/R102-C/R103-A/B/
+   R104-A/B/R105-A/D/R106-A/B/D/R107-A/B/C/D/R108-A/B/C/D/R109-A/B/C/D/R110-A/
+   C/D/R111-A/C/D/R111-B/R112-D/A/B/R113-D 同款, R113-D 未决项 #5 续)**: 0
+   test files. R114+ 评估加测试 (本轮 BUG-339 AntiCaptchaAPIKey + BUG-340
+   CapSolverAPIKey 2 fix 同款缺测试, 与 R112-A BUG-335 MoliHeaders + BUG-336
+   TwoCaptchaAPIKey + R111-A BUG-331/332/333 + R110-A BUG-328/329 + R109-A
+   BUG-326/327 + R113-D BUG-339/340 同款缺测试).
+6. **shared mutable default family (R103-B/R104-B 已收口)**: 本轮 BUG-339/340
+   非 shared-default family (是 coverSameHost AntiCaptchaAPIKey/CapSolverAPIKey
+   继承, 不同 latent class).
+7. **Absolutize 自引用 scheme 不比较 (R106-B 未决项 #7 已收口)**: 本轮评估:
+   维持 R107-B 收口决策 (NOT a bug, 当前行为正确, 0 改动).
+8. **R113 并行 agent 修改 + 并发追加时序**: 本轮 R113-A 仅改 crawl/fetcher.go
+   + crawl/runner.go 2 文件, 与 R113-D (main+templates scope, BUG-339/340
+   getFeaturedBooks Scan swallow + 精简-1 pickAuthors guard) scope 不重叠
+   (main.go 仅 R113-D 改; fetcher.go + runner.go 仅 R113-A 改; 主控统一编译
+   应 0 errors — 各 agent 独立 scope, 0 文件冲突, 本轮 go build ./... 已验
+   0 errors). BUG 编号备注: 本轮 R113-A crawl fetcher/runner scope 用 BUG-339
+   (cover fetch AntiCaptchaAPIKey 继承) + BUG-340 (cover fetch CapSolverAPIKey
+   继承), 与 R113-D main+templates scope BUG-339 (getFeaturedBooks inner
+   per-row Scan swallow) + BUG-340 (getFeaturedBooks outer single-row Scan
+   swallow) 同号跨 scope 共存 (与 R112-A 335 = R112-D 335 cross-scope 共存
+   + R111-A/C/D 331 cross-scope 共存 + R110-A/C/D 328/329 cross-scope 共存 +
+   R109-A/C 326/327 cross-scope 共存同款 "同号跨 scope 共存, 不同 family
+   不同 scope" convention, 主控 merge 时 0 renumber 需求 — 不同 scope 不同
+   latent class, 编号顺延各自 scope 内独立; R113-D BUG-339 是 main scope
+   per-row Scan swallow, R113-A BUG-339 是 fetcher/runner scope cover fetch
+   AntiCaptchaAPIKey 继承, 不同 scope 不同 family, 同号共存 0 冲突; R113-D
+   BUG-340 是 main scope outer single-row Scan swallow, R113-A BUG-340 是
+   fetcher/runner scope cover fetch CapSolverAPIKey 继承, 同款 cross-scope
+   共存). 本轮 R113-A 起读 worklog 末尾为 R113-D 末 separator (R113-D 已追加,
+   R113-B/C 本轮不存在或未追加), 完成编辑+编译+vet 验证后追加本块在 R113-D
+   后真末尾 (顺序 ...→R111-B→R112-D→R112-A→R112-B→R113-D→R113-A). 后续
+   R114+ agent 若并发追加 worklog, 锚 R113-A 末 separator 同款时序风险, 建议
+   R114+ 改用 fcntl flock 或 append-only 单 writer 串行化 (跨 budget, 非本
+   轮 scope, 与 R106-A/R107-A/R107-B/R107-C/R108-A/B/C/D/R109-A/C/D/R110-A/
+   C/D/R111-A/C/D/R111-B/R112-D/A/B/C/R113-D 未决项 #8 续).
+
+==============================================================================
+
+==============================================================================
+Round R113-C (go-backend/admin.go scope: 深抓 BUG-339++精简)
+==============================================================================
+Agent: R113-C agent (admin.go: 深抓 BUG-339 getCategories Query swallow +
+  BUG-340 json.Unmarshal 条件执行 sub-variant family + 精简-1
+  unmarshalLogged helper bool 返回扩展收口, 1 文件 scope 内 1 文件命中,
+  +43 行净, 编译 0 / vet 0, 0 emoji)
+Task ID: R113-C
+Scope: go-backend/admin.go 1 文件深抓 BUG-339++精简. 本轮命中 admin.go
+  (BUG-339 + BUG-340 + 精简-1 unmarshalLogged bool 扩展 3 callsite 收口).
+  +150 行内 (净 +43 / 插 48 删 5). 编译 0 (go build ./... + go vet ./... 全 0,
+  Go 1.26.8 linux/amd64, /home/z/go/go/bin/go). worklog 追加本块. 严禁改非
+  admin.go / 启动 / 新依赖 / emoji / 临时测试文件 — 本轮仅改 admin.go
+  (R39-1C admin wiring), 0 触 main.go / crawl/* / 启动 / 新依赖 / emoji /
+  临时测试文件.
+
+### 命中
+
+1. **BUG-339 (P3) Pattern C Query-side swallow 续, getCategories variant**
+   (line 3825, fillBooksPageData): 原实现 `cats, _ := getCategories()` 吞错 —
+   getCategories (main.go:3623) 内 `db.Query(SELECT id,name FROM Category ORDER
+   BY sortOrder ASC LIMIT 60)` 故障 (SQLite busy lock / 连接闪断 / 磁盘满 /
+   driver bug) 时返 (nil, err) → cats=nil → fillBooksPageData
+   data["Categories"]=nil → admin 书籍页 (/admin/books) 分类筛选项 dropdown 空
+   (运维不知是 DB 故障还是真无分类, 0 log). 与 BUG-326 queryLogged (16 处
+   `rows, _ := db.Query` inline swallow → 1 helper) + BUG-314 scanLogged
+   (rows.Scan per-row swallow) + BUG-304 lastBackupAt QueryRow swallow +
+   BUG-308 getHomeLayoutSetting QueryRow swallow 同款 Query-side swallow
+   family. 修复: 显式 `cats, gerr := getCategories()` + `if gerr != nil {
+   log.Printf(...) }` (best-effort SSR, cats 仍 nil 兜底, 与原 swallow 语义
+   一致, 仅加 log 可见性). 0 行为变化. 单 callsite (admin scope 唯一
+   getCategories swallow — grep `getCategories()` admin.go 仅 line 3825 1 处;
+   main.go 3 同款 callsite line 716/3077/6173 出 admin scope 不触, defer 至
+   main scope agent). 跨 scope 共存: R113-D main scope 同用 BUG-339
+   (getFeaturedBooks inner per-row Scan swallow, BUG-314 Scan family), 与
+   本轮 admin scope BUG-339 (getCategories Query swallow, BUG-326 Query
+   family) 不同 family 不同 scope, 同号跨 scope 共存 (与 R112-D/R112-A/
+   R112-C BUG-335 cross-scope 共存 + R111-A/C/D BUG-331 cross-scope 共存 +
+   R110-A/C/D 328/329 + R109-A/C 326/327 cross-scope 共存同款 convention,
+   主控 merge 时 0 renumber 需求).
+
+2. **BUG-340 (P3) Pattern C json.Unmarshal 条件执行 sub-variant 续
+   (BUG-309 family)** (3 callsite: line 7467 adminFeaturedBooksList cfg +
+   line 8344 fillLinksPageData wheel + line 8484 fillSettingsPageData row
+   value): 原实现 `if json.Unmarshal([]byte(raw), &parsed) == nil { 成功 block }`
+   语句式 swallow — Setting JSON 损坏 (truncated / 手编错 / driver 边界
+   partial write) 时 Unmarshal 失败 → parsed 零值 → 外层 best-effort 兜底,
+   无 log 提示运维. 3 callsite 共款 (adminFeaturedBooksList featuredBooks.*
+   Setting → bookIDs 空 → 推荐书页空; fillLinksPageData linkwheel Setting →
+   wheel 兜底默认 enabled=true/mode=home/count=6, 用户曾显式 enabled=false
+   关闭链轮却显示开启 (与 BUG-297 wheel batch SELECT 同款 "默认开启误导");
+   fillSettingsPageData Setting row value 起首 {/[ 但 JSON 损坏 → v 留 raw
+   串 + isJSON=true, 前端按 JSON 渲染但实为损坏串, 与 BUG-336 MarshalIndent
+   下游 swallow 同 callsite 上游). 修复: 改调 unmarshalLogged (返 bool + log-
+   on-fail) 单点收口, callsite 走 `if unmarshalLogged(...) { 成功 block }`.
+   0 行为变化 (失败时 parsed 零值 + 外层 best-effort 兜底语义不变, 仅加 log
+   可见性). 与 unmarshalLogged (BUG-309 zero-on-err 无 bool 返回 variant) /
+   unmarshalOrFallback (BUG-313 fallback value 返 interface{} variant) 并行
+   第 3 sub-variant (条件执行 bool 返 variant). 跨 scope 共存: R113-D main
+   scope 同用 BUG-340 (getFeaturedBooks outer single-row Scan swallow,
+   BUG-314 Scan family), 与本轮 admin scope BUG-340 (json.Unmarshal 条件执行,
+   BUG-309 json family) 不同 family 不同 scope, 同号跨 scope 共存 (convention
+   同 BUG-339).
+
+### 精简
+
+1. **unmarshalLogged helper bool 返回扩展 + 3 callsite `if json.Unmarshal ==
+   nil` 散落 → 1 helper 收口** (BUG-340): unmarshalLogged 原 signature
+   `(label, data, target)` 无返回 — 适配 caller 作 statement 式调用 (caller
+   不 care 成功, target 零值兜底). 但 3 处 `if json.Unmarshal(...) == nil`
+   callsite 需要条件执行 (成功才走 parsed block), 不适配原 signature. 扩展
+   unmarshalLogged 返 bool (true=成功 / false=失败+log), 现 3 statement
+   callsite (parseTaskProgress/fillTasksPageData/getHomeLayoutSetting) 丢弃
+   bool 仍编译 ok (Go 允许丢弃函数返回值), 3 新条件 callsite 走
+   `if unmarshalLogged(...) { 成功 }`. 单点 log-on-fail 维护防散落 inline
+   log-on-fail 重复 (与 execLogged BUG-272~274 / unmarshalOrFallback BUG-313 /
+   marshalLogged BUG-321 / scanLogged BUG-314 / queryLogged BUG-326 /
+   encodeLogged BUG-329 / writeBytesLogged BUG-328 / rowsAffectedLogged
+   BUG-331 / rollbackLogged BUG-335 同款 "swallow → helper DRY 收口"
+   precedent). 0 行为变化 (失败时 target 零值 + best-effort 兜底语义不变).
+   净 +行: helper signature +2 行 (return false / return true) + doc 6 行 +
+   3 callsite 各 +5~6 行 comment = +24, 删 3 处 `if json.Unmarshal(...) ==
+   nil` = -3 (替换为 unmarshalLogged 调用, 同行数), BUG-339 +14 行 (gerr
+   check + doc). 总净 +43 行 (insertions 48 < +150 上限).
+
+### 验证
+
+- go build ./... → 0 errors (Go 1.26.8 linux/amd64, /home/z/go/go/bin/go).
+  go vet ./... → 0 warnings.
+- gofmt -l: admin.go 仍 non-compliant (8-space 缩进, pre-existing 自 R38,
+  与 R106-B/R107-A/B/C/D/R108-A/B/C/D/R109-A/C/D/R110-A/B/C/D/R111-A/C/D/
+  R111-B/R112-D/A/B/C/R113-D 同款 "8-space 一致, 0 新 non-compliant 文件" —
+  本轮编辑用 8-space (helper + callsite 均 8-space 与周围 unmarshalOrFallback
+  / fillBooksPageData 同), 0 引入新 gofmt 违规; 批量 gofmt -w 独立 commit
+  defer, 与 R100-A 未决项 #3 同款).
+- git diff --shortstat (本轮 1 文件): 1 file changed, 48 insertions(+),
+  5 deletions(-) = 净 +43 行 (insertions 48 亦 < +150 上限). 仅
+  go-backend/admin.go 1 文件改动 (admin scope 内), 0 触非 admin.go.
+- 0 新依赖 (unmarshalLogged 复用 encoding/json + log (均已 import, line 5 +
+  10); BUG-339 复用 getCategories + log; BUG-340 复用 unmarshalLogged +
+  json.Unmarshal; 0 新 import / 0 新 var / 0 新 type / 0 新 const).
+- 0 emoji (R113-C 新增 0 emoji; 注释中 → 箭头是 CJK 标点非 emoji, 与
+  R111-A/C/D/R111-B/R112-D/A/B/C/R113-D 同款 pre-existing convention).
+- 0 临时测试文件 (与 R106-B/R107-A/B/C/D/R108-A/B/C/D/R109-A/C/D/R110-A/
+  B/C/D/R111-A/C/D/R111-B/R112-D/A/B/C/R113-D 同款 "防御性修复 0 行为变化
+  0 用户受影响, 不需 /tmp 测试文件"; BUG-339/340 0 当前用户受影响, log-on-
+  fail visibility 收口).
+
+未解决 (交接 R114+):
+1. **parseKVString/mapToSortedKV \n in value latent (R96-B 未决项 #1 续,
+   R101-B/R102-B/R103-A/B/R104-A/B/R105-A/D/R106-A/B/D/R107-A/B/C/D/
+   R108-A/B/C/D/R109-A/C/D/R110-A/C/D/R111-A/C/D/R111-B/R112-D/A/B/C/
+   R113-D 续)**: kv string 格式不支持 value 含 \n. 本轮 BUG-339/340 不触此
+   latent (getCategories Query + json.Unmarshal, 非 kv string). R114+ 评估.
+2. **JsonGet $..a||b recursive+|| (R96-B 未决项 #2 续, ...R113-D 续)**:
+   $..a||b 仍走原 literal 路径. 本轮 BUG-339/340 不触此 latent
+   (getCategories + json.Unmarshal, 非 JsonGet). R114+ 评估.
+3. **gofmt -l 现 22+ 文件 non-compliant (R100-A 未决项 #3 续, ...R113-D 续)**:
+   本轮 R113-C 编辑 admin.go 用 8-space (与现有 8-space 一致, 0 新
+   non-compliant 文件 — admin.go 本就 non-compliant pre-existing from R38).
+   R114+ 批量 gofmt -w 评估 (独立 commit).
+4. **ParseList HTML no-container FieldConst UNREACHABLE (R98-B 未决项 #4 续,
+   R106-B BUG-316 已收口)**: 已闭环, R114+ 评估 JSON 模式条件是否需收紧
+   (非本轮 scope).
+5. **BUG-339/340 unit test 覆盖 (R100-B 未决项 #5 续, ...R113-D 续)**: 0
+   test files. R114+ 评估加测试 (本轮 BUG-339 getCategories inline log +
+   BUG-340 unmarshalLogged bool 扩展 + 3 callsite 收口同款缺测试, 与 R108-B
+   BUG-324/325 + R109-A BUG-326/327 + R110-A/C BUG-328/329 + R110-B BUG-330 +
+   R111-A BUG-331/332/333 + R111-C/D BUG-331 + R111-B BUG-334 + R112-D BUG-335
+   + R112-A BUG-335/336 + R112-B BUG-337/338 + R112-C BUG-335/336 + R113-D
+   BUG-339/340 同款缺测试).
+6. **shared mutable default family (R103-B/R104-B 已收口)**: 本轮
+   BUG-339/340 + 精简-1 非 shared-default family (是 Query-side swallow log
+   + json.Unmarshal 条件执行 bool 扩展, 不同 latent class).
+7. **Absolutize 自引用 scheme 不比较 (R106-B 未决项 #7 已收口)**: 本轮
+   评估: 维持 R107-B 收口决策 (NOT a bug, 当前行为正确, 0 改动).
+8. **R113 并行 agent 修改 + 并发追加时序**: 本轮 R113-C 仅改 admin.go 1
+   文件, 与并发 R113-D (main+templates scope, 已追加 worklog 在本轮起读前 —
+   R113-D 用 BUG-339 getFeaturedBooks inner per-row Scan + BUG-340 outer
+   single-row Scan + 精简-1 pickAuthors n guard, 不同 family 不同 scope) +
+   R113-A (fetcher/runner scope, 若存在) + R113-B (crawl-other scope, 若存在)
+   scope 应不重叠 (admin.go 仅 R113-C 改; R113-D 改 main.go + templates 不触
+   admin.go; R113-A 改 fetcher/runner 不触 admin.go; R113-B 改 crawl-other 不
+   触 admin.go; 主控统一编译应 0 errors — 各 agent 独立 scope, 0 文件冲突).
+   BUG 编号备注: 本轮 R113-C admin scope 用 BUG-339 (getCategories Query
+   swallow, BUG-326 family) + BUG-340 (json.Unmarshal 条件执行, BUG-309
+   family), 与 R113-D main scope BUG-339 (getFeaturedBooks inner Scan, BUG-314
+   family) + BUG-340 (outer Scan, BUG-314 family) 跨 scope 共存 (不同 family
+   不同 scope, 同号共存 0 renumber 需求 — 与 R112-D/R112-A/R112-C BUG-335
+   cross-scope 共存 + R111-A/C/D BUG-331 cross-scope 共存同款 convention).
+   本轮 R113-C 起读 worklog 末尾为 R113-D 末 separator (R113-D 已追加, 顺序
+   ...→R111-B→R112-D→R112-A→R112-B→R113-D), 完成编辑+编译+vet 验证后追加
+   本块在 R113-D 后真末尾 (顺序 ...→R113-D→R113-C). 后续 R114+ agent 若并发
+   追加 worklog, 锚 R113-C 末 separator 同款时序风险, 建议 R114+ 改用
+   fcntl flock 或 append-only 单 writer 串行化 (跨 budget, 非本轮 scope,
+   与 R106-A/R107-A/R107-B/R107-C/R108-A/B/C/D/R109-A/C/D/R110-A/C/D/
+   R111-A/C/D/R111-B/R112-D/A/B/C/R113-D 未决项 #8 续).
+
+==============================================================================
+
+------------------------------------------------------------------------------
+## R113-B — crawl其它 (hostgate/smart/cleaner/storage/types/parser/sorter)
+------------------------------------------------------------------------------
+
+**任务**: R113-B crawl其它. 文件: crawl/{hostgate,smart,cleaner,storage,
+types,parser,sorter}.go (7 文件). 读 worklog 末尾 5KB. 目标: 深抓
+BUG-339++ 精简. +150 行内. 编译 0. worklog 追加. 严禁改非 7 文件 /
+启动 / 新依赖 / emoji / 临时测试文件.
+
+**起读 worklog 末尾**: 起读时末尾为 R113-A entry (line ~55571, BUG-339
+cover fetch AntiCaptchaAPIKey 继承 + BUG-340 cover fetch CapSolverAPIKey
+继承, 反反爬 259-263). 编辑+编译期间 R113-C (admin.go scope, BUG-339
+getCategories Query swallow + BUG-340 json.Unmarshal 条件执行 sub-variant
+family + 精简-1 unmarshalLogged bool 返回扩展 3 callsite 收口) 并发追加,
+完成时末尾变为 R113-C. 本块追加在 R113-C 后真末尾 (顺序 ...→R111-B→
+R112-D→R112-A→R112-B→R113-D→R113-A→R113-C→R113-B).
+
+**深抓 BUG (1 个, P3 防御性 + RFC 对齐)**:
+
+1. **BUG-341 (P3)**: JsonGet 递归下降 bracket 起首 ($..[0] / $..["k"])
+   splitAt=0 (不 >0) 时走原 recursiveCollect(root, "[0]") literal 查找,
+   JSON 无 "[0]" 字面 key → 返 [] (R112-B BUG-337 后返 nil, || fallback
+   仍不触发因 nil 已正确). 场景: admin 配 `$..[0]` (RFC 9535 JSONPath,
+   递归取每个后代 array 的第 0 元素) 或 `$..["k"]` (递归取每个后代 map
+   的 "k" 值). 当前 splitAt>0 case (e.g. $..a[0] splitAt=1>0) 已由
+   R101-B BUG-292 收口 (拆 firstKey="a" + remaining="[0]" 喂 JsonGet);
+   但 splitAt=0 case (key 起首即 `[`, e.g. `$..[0]` / `$..["k"]`)
+   R101-B 显式 defer (注释 "需 recursiveCollect-all-nodes + per-node
+   JsonGet, 超本轮"). 与 BUG-273 ($..a.b multi-level splitAt>0 dot) +
+   BUG-289 (["k"] bracket tokenize) + BUG-292 ($..a[0] splitAt>0) +
+   BUG-337 (recursive descent 0 命中 → nil for || fallback) 同款
+   "JSONPath 标准未对齐 / recursive descent latent" family. 修复: 加
+   recursiveCollectAllNodes helper (root + 所有 map / []any 后代, 含
+   root) 走 splitAt==0 && key[0]=='[' 分支, 对每个节点 apply JsonGet
+   (node, key) (tokenize [0] → tokenIndex, ["k"] → tokenKey, 内
+   jsonGetByPath 处理: map → nil skip / array + tokenIndex → arr[n]
+   命中 / map + tokenKey → m["k"] 命中). 71 Rule 0 用 $..[0] / $..["k"]
+   形态 (多用 $..field 单级或 a.b.c 直连); 0 用户受影响, 防御性 + RFC
+   对齐修复. latent 自 R101-B BUG-292 (defer splitAt=0 case, 12 轮未补).
+   R112-B 未决项 #2 ($..a[0] / $..a["k"] splitAt<=0 literal defer) 续修
+   收口.
+
+**精简**: 1 处 (helper 抽取, BUG-341 配套).
+
+1. **精简-1 (recursiveDescentApply helper 抽取)**: BUG-341 新增 bracket-
+   first 分支原需 inline for-loop + if len(out)>0 { return out }; return
+   nil (~12 行), 与 multi-level 分支 (splitAt>0, 原已存在 line 822-845
+   inline 24 行) 完全同款 (collected []any → per-node JsonGet → 收集
+   非 nil → empty 时返 nil for || fallback). 抽出 recursiveDescentApply
+   helper (collected, remaining → any), 替两处独立 inline 实现. 多
+   level 分支从 24 行 → 1 行 (recursiveDescentApply 调用 + brief BUG-337
+   注释指向 helper docstring), bracket-first 分支从 12 行 → 1 行 (同).
+   -2 处 inline + 1 helper 共用. 行为 0 变化 (helper 内 for-loop +
+   nil-on-empty 与原 inline 同口径, BUG-337 "0 命中 → nil for || fallback"
+   设计保留). 单级 $..a (splitAt<=0 兜底, recursiveCollect 直接返 slice
+   不走 helper) 不动 (该 case 是 collected 即终值, 不需 per-node JsonGet).
+
+**编译**: `go build ./...` = 0 errors. `go vet ./crawl/` = 0 issues.
+`go test ./...` = 0 failures (crawl/ 0 test files, 与 R112-B 同款).
+
+**git diff --shortstat (本轮 1 文件)**: 1 file changed, 88 insertions(+),
+27 deletions(-) = 净 +61 行 (insertions 88 亦 < +150 上限). 仅
+crawl/parser.go 1 文件改动 (7 文件 scope 内), 0 触非 7 文件 (admin.go /
+fetcher.go / runner.go / main.go 改动为 R113-A/C/D 并行 agent, 非本轮;
+hostgate.go / smart.go / cleaner.go / storage.go / types.go / sorter.go
+本轮 0 改动 — 7 文件 scope 内仅 parser.go 命中).
+
+**0 新依赖**: 0 新 import / 0 新 var / 0 新 type / 0 新 const (BUG-341
+复用 recursiveCollect + recursiveCollectAllNodes (新 helper, 复用 walk
+closure + []any{} 已有模式) + recursiveDescentApply (新 helper, 复用
+JsonGet + if len(out)>0 { return out }; return nil 已有模式) + splitAt
+== 0 && key[0] == '[' (复用 splitAt 已有 var, 加 1 比较).
+
+**0 emoji** (R113-B 新增 0 emoji; 注释中 → 箭头是 CJK 标点非 emoji, 与
+R111-A/C/D/R111-B/R112-D/A/B/C/R113-D/A/C 同款 pre-existing convention).
+
+**0 临时测试文件** (与 R106-B/R107-A/B/C/D/R108-A/B/C/D/R109-A/C/D/
+R110-A/B/C/D/R111-A/C/D/R111-B/R112-D/A/B/C/R113-D/A/C 同款 "防御性
+修复 0 行为变化 0 用户受影响, 不需 /tmp 测试文件"; BUG-341 0 当前用户
+受影响).
+
+**未解决 (交接 R114+)**:
+1. **parseKVString/mapToSortedKV \n in value latent (R96-B 未决项 #1 续,
+   R101-B/R102-B/R103-A/B/R104-A/B/R105-A/D/R106-A/B/D/R107-A/B/C/D/
+   R108-A/B/C/D/R109-A/C/D/R110-A/B/C/D/R111-A/C/D/R111-B/R112-D/A/B/C/
+   R113-D/A/C 续)**: kv string 格式不支持 value 含 \n. 本轮 BUG-341 不
+   触此 latent (JsonGet recursive descent, 非 kv string value). R114+
+   评估.
+2. **$..a||b recursive+|| splitAt=0 + mixed-grammar defer (R96-B 未决项
+   #2 部分, R101-B/R102-B/.../R113-D/A/C 续)**: BUG-341 收口了
+   $..[0] / $..["k"] splitAt=0 case (bracket-first), 但 $..a||b (递归
+   找 a, 每 a 值 ||b 兜底 vs 递归找 a 或 b 二义) 仍 defer (RFC 9535 无
+   ||, 语义模糊). R114+ 评估.
+3. **gofmt -l 现 22+ 文件 non-compliant (R100-A 未决项 #3 续, R101-B/
+   .../R113-D/A/C 续)**: 本轮 R113-B 编辑 parser.go 用 8-space (与现有
+   8-space 一致, 0 新 non-compliant 文件 — parser.go 本就 non-compliant
+   pre-existing from R38). R114+ 批量 gofmt -w 评估 (独立 commit).
+4. **ParseList HTML no-container FieldConst UNREACHABLE (R98-B 未决项 #4
+   续, R106-B BUG-316 已收口)**: 已闭环, R114+ 评估 JSON 模式条件是否
+   需收紧 (非本轮 scope).
+5. **BUG-341 unit test 覆盖 (R100-B 未决项 #5 续, ...R113-D/A/C 续)**: 0
+   test files. R114+ 评估加测试 (本轮 BUG-341 JsonGet bracket-first
+   recursive descent 1 fix 同款缺测试, 与 R112-B BUG-337 JsonGet recursive
+   || + BUG-338 anyToString nil + R113-A/D/C BUG-339/340 同款缺测试).
+6. **shared mutable default family (R103-B/R104-B 已收口)**: 本轮
+   BUG-341 非 shared-default family (是 JsonGet recursive descent
+   splitAt=0 case, 不同 latent class).
+7. **Absolutize 自引用 scheme 不比较 (R106-B 未决项 #7 已收口)**: 本轮
+   评估: 维持 R107-B 收口决策 (NOT a bug, 当前行为正确, 0 改动).
+8. **R113 并行 agent 修改 + 并发追加时序**: 本轮 R113-B 仅改
+   crawl/parser.go 1 文件, 与 R113-A (fetcher/runner scope) / R113-C
+   (admin scope) / R113-D (main+templates scope) scope 不重叠
+   (parser.go 仅 R113-B 改; fetcher.go+runner.go 仅 R113-A 改; admin.go
+   仅 R113-C 改; main.go+templates 仅 R113-D 改; 主控统一编译应 0
+   errors — 各 agent 独立 scope, 0 文件冲突, 本轮 go build ./... 已验
+   0 errors). BUG 编号备注: 本轮 R113-B crawl-other scope 用 BUG-341
+   (JsonGet bracket-first recursive descent splitAt=0 case), 顺延 R113-A
+   (crawl fetcher/runner, BUG-339/340) 后 — 同 crawl/ package 内不同
+   file-set scope 新号顺延 (与 R112-B crawl-other 用 BUG-337/338 顺延
+   R112-A crawl fetcher/runner 用 BUG-335/336 同款 "同 package 不同
+   file-set 顺延" convention, 主控 merge 时 0 renumber 需求 — 不与
+   fetcher/runner scope 同号共存). 跨 scope 共存: R113-A (BUG-339 cover
+   fetch AntiCaptchaAPIKey, BUG-340 CapSolverAPIKey) + R113-D (BUG-339
+   getFeaturedBooks inner Scan, BUG-340 outer Scan) + R113-C (BUG-339
+   getCategories Query, BUG-340 json.Unmarshal 条件执行) 同号跨 broad
+   scope 共存 (不同 family 不同 scope, 与 R112-D/A/C BUG-335 cross-scope
+   共存同款). 本轮 R113-B 起读 worklog 末尾为 R113-A (并发追加 — 起读
+   时末尾是 R113-A, 编辑+编译期间 R113-C 并发追加, 完成时末尾变为
+   R113-C), 完成编辑+编译+vet 验证后追加本块在 R113-C 后真末尾 (顺序
+   ...→R112-B→R113-D→R113-A→R113-C→R113-B). 后续 R114+ agent 若并发
+   追加 worklog, 锚 R113-B 末 separator 同款时序风险, 建议 R114+ 改用
+   fcntl flock 或 append-only 单 writer 串行化 (跨 budget, 非本轮 scope,
+   与 R106-A/R107-A/R107-B/R107-C/R108-A/B/C/D/R109-A/C/D/R110-A/C/D/
+   R111-A/C/D/R111-B/R112-D/A/B/C/R113-D/A/C 未决项 #8 续).
+
+==============================================================================

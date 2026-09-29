@@ -503,13 +503,25 @@ func execLogged(label, query string, args ...interface{}) {
 // unmarshalLogged 解析 JSON 字节为 target 并在解析失败时 log.Printf 提示运维
 // (visibility-only, 不改 caller 返回语义; target 失败时保持零值, caller 续用
 // toIntFromInterface/type-assert 兜底, 与原 `_ = json.Unmarshal` swallow 语义一致).
+// 返 bool: true=解析成功, false=失败 (caller 可选丢弃 — 现有 3 callsite
+// parseTaskProgress/fillTasksPageData/getHomeLayoutSetting 作 statement 式调用
+// 丢弃 bool, 编译 ok; 新增条件执行 callsite 用 `if unmarshalLogged(...) {成功}`
+// 替代 `if json.Unmarshal(...) == nil` 语句式 swallow).
 // R105-C BUG-309 Pattern C json.Unmarshal 吞错 family helper — 与 execLogged
 // (BUG-272~274 Exec family) / R104-C BUG-307 (fetchConfig override variant) 并行
 // 的 json family 收口. 单点维护防散落 inline log-on-fail 重复.
-func unmarshalLogged(label string, data []byte, target interface{}) {
+// R113-C BUG-340 (Pattern C 续, 条件执行 sub-variant): 加 bool 返回覆盖
+// `if json.Unmarshal(...) == nil` 散落 callsite (adminFeaturedBooksList cfg /
+// fillLinksPageData wheel / fillSettingsPageData row value 3 处), corrupted
+// Setting JSON → 前端空状态/默认配置, 0 log. 改 helper 后 callsite 走
+// `if unmarshalLogged(...) {成功}` 单点 log-on-fail. 0 行为变化 (失败时
+// target 零值 + 外层 best-effort 兜底语义不变, 仅加 log 可见性).
+func unmarshalLogged(label string, data []byte, target interface{}) bool {
         if uerr := json.Unmarshal(data, target); uerr != nil {
                 log.Printf("[%s] JSON 解析失败 (字段置零/兜底): %v", label, uerr)
+                return false
         }
+        return true
 }
 
 // unmarshalOrFallback 解析 JSON 字节为 interface{}, 失败 log + 返 caller-provided
@@ -3799,7 +3811,21 @@ func fillBooksPageData(data map[string]interface{}, r *http.Request) {
         data["FilterStatus"] = status
 
         // 分类列表
-        cats, _ := getCategories()
+        // R113-C BUG-339 (P3, Pattern C Query-side swallow 续, getCategories variant):
+        //   原 `cats, _ := getCategories()` 吞错 — getCategories (main.go:3623)
+        //   内 db.Query(SELECT id,name FROM Category) 故障 (SQLite busy lock / 连接闪断 /
+        //   磁盘满) 时返 (nil, err) → cats=nil → fillBooksPageData data["Categories"]=nil
+        //   → admin 书籍页分类筛选项空 (运维不知是 DB 故障还是真无分类, 0 log). 与
+        //   BUG-326 queryLogged (16 处 db.Query inline swallow → 1 helper) + BUG-314
+        //   scanLogged (rows.Scan per-row swallow) + BUG-304 lastBackupAt QueryRow
+        //   swallow 同款 Query-side swallow family. 改显式 gerr 检查 + log.Printf
+        //   (best-effort SSR, cats 仍 nil 兜底, 与原 swallow 语义一致, 仅加 log 可见性).
+        //   0 行为变化. 跨 scope: main.go 3 同款 callsite (line 716/3077/6173) 出 admin
+        //   scope 不触, defer 至 main scope agent.
+        cats, gerr := getCategories()
+        if gerr != nil {
+                log.Printf("[fillBooksPageData] getCategories 失败 (分类筛选项展示空): %v", gerr)
+        }
         data["Categories"] = cats
 
         // 构造 WHERE
@@ -7432,7 +7458,13 @@ func adminFeaturedBooksList(w http.ResponseWriter, r *http.Request) {
         bookIDs := []string{}
         if raw != "" && raw != "{}" {
                 var parsed map[string]interface{}
-                if json.Unmarshal([]byte(raw), &parsed) == nil {
+                // R113-C BUG-340 (Pattern C json.Unmarshal 条件执行 sub-variant 续,
+                //   BUG-309 family): 原 `if json.Unmarshal(...) == nil` 语句式 swallow
+                //   — featuredBooks Setting JSON 损坏 (truncated / 手编错) 时 parsed 零值
+                //   → bookIDs 空 → admin 推荐书页空 (用户不知是配置空还是 JSON 损坏).
+                //   改 unmarshalLogged (返 bool + log-on-fail) 单点收口. 0 行为变化
+                //   (失败时 parsed 零值兜底不变).
+                if unmarshalLogged("adminFeaturedBooksList cfg", []byte(raw), &parsed) {
                         if arr, ok := parsed["bookIds"].([]interface{}); ok {
                                 for _, e := range arr {
                                         if s, isStr := e.(string); isStr && s != "" {
@@ -8304,7 +8336,12 @@ func fillLinksPageData(data map[string]interface{}) {
         wheel := map[string]interface{}{"enabled": true, "mode": "home", "count": 6}
         if wheelCfgJSON != "" {
                 var raw map[string]interface{}
-                if json.Unmarshal([]byte(wheelCfgJSON), &raw) == nil {
+                // R113-C BUG-340 (BUG-309 family 续, wheel cfg 条件执行 sub-variant):
+                //   原 `if json.Unmarshal(...) == nil` swallow — linkwheel Setting JSON 损坏
+                //   时 raw 零值 → wheel 兜底默认 (enabled=true/mode=home/count=6), 用户
+                //   曾显式 enabled=false 关闭链轮却显示开启 (与 BUG-297 wheel batch
+                //   SELECT 同款 "默认开启误导"). 改 unmarshalLogged 单点收口. 0 行为变化.
+                if unmarshalLogged("fillLinksPageData wheel", []byte(wheelCfgJSON), &raw) {
                         // R84-C BUG-203 (P4, R72-D BUG-99 / R71-D BUG-92 同款 pattern):
                         //   原 `wheel["enabled"] = v != false` 仅正确处理 v 是 bool 的 case
                         //   (true→true / false→false). 若 admin 手动在 /admin/settings 编辑
@@ -8438,7 +8475,13 @@ func fillSettingsPageData(data map[string]interface{}) {
                         if len(value) > 0 && (value[0] == '{' || value[0] == '[' || value == "true" || value == "false" || value == "null") {
                                 isJSON = true
                                 var parsed interface{}
-                                if json.Unmarshal([]byte(value), &parsed) == nil {
+                                // R113-C BUG-340 (BUG-309 family 续, settings row 条件执行
+                                //   sub-variant): 原 `if json.Unmarshal(...) == nil` swallow — value
+                                //   起首 { / [ 但 JSON 损坏 (truncated) 时 parsed 零值 → v 留
+                                //   raw 串 + isJSON=true (前端按 JSON 渲染但实为损坏串, 0 log).
+                                //   改 unmarshalLogged 单点收口 (与 BUG-336 MarshalIndent 下游
+                                //   swallow 同 callsite 上游). 0 行为变化 (失败时 v 留 raw 不变).
+                                if unmarshalLogged("fillSettingsPageData "+key, []byte(value), &parsed) {
                                         // R112-C BUG-336 Pattern D Marshal variant 续
                                         //   (MarshalIndent sub-variant): 原 swallow →
                                         //   失败时 v="" 设置页空 value (用户不知是

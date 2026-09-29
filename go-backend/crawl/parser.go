@@ -807,9 +807,9 @@ func JsonGet(root any, path string) any {
                 //   + BUG-289/290/291 全语法). 与 BUG-273 ($..a.b 多级 dot) +
                 //   BUG-289 (["k"] bracket) + BUG-290/291 (\" escape) 协同闭
                 //   环. 71 Rule 0 用 $..a[0] / $..a["k"] 形态; 0 用户受影响.
-                //   latent 自 R96-B BUG-273 (5 轮未补). 注: $..[0] (bracket 起
-                //   首, splitAt=0 不 >0) 仍走 literal, 维持 defer (需
-                //   recursiveCollect-all-nodes + per-node JsonGet, 超本轮).
+                //   latent 自 R96-B BUG-273 (5 轮未补). 注: $..[0] (bracket 起首,
+                //   splitAt=0 不 >0) 下方 BUG-341 已收口 (recursiveCollectAll
+                //   Nodes + per-node JsonGet, R101-B defer splitAt=0 case).
                 splitAt := strings.IndexAny(key, ".[")
                 if splitAt > 0 {
                         firstKey := key[:splitAt]
@@ -819,30 +819,29 @@ func JsonGet(root any, path string) any {
                         } else {
                                 remaining = key[splitAt:] // keep '[' for JsonGet bracket parse
                         }
-                        collected := recursiveCollect(root, firstKey)
-                        out := []any{}
-                        for _, v := range collected {
-                                if next := JsonGet(v, remaining); next != nil {
-                                        out = append(out, next)
-                                }
-                        }
-                        // BUG-337 (P3) 修复 (R96-B 未决项 #2 续): 原 `return out`
-                        //   在 recursiveCollect 0 命中 (a 不存在) 或 sub-JsonGet 全
-                        //   nil (a 存在但 b 不存在) 时返空 []any (非 nil). JsonGet
-                        //   || 分支 (line ~738) 仅 skip nil + empty string (BUG-233),
-                        //   不 skip empty []any → `$..a.b||c` 返空 []any 非 nil →
-                        //   || fallback 到 c 不触发, 与注释 "取首个非空" 不符. 修复:
-                        //   empty out → 返 nil, || 分支 v==nil continue 触发 fallback.
-                        //   行为变化: 仅 `$..x...||y` recursive descent + || 组合
-                        //   (71 Rule 0 用, 多用 a.b 直连或 $..field 单级); 非 ||
-                        //   caller (JsonToString nil→"" 同 []any{}→"", 0 变化).
-                        //   区分 "nothing found" (nil) vs "value is []" (recursive
-                        //   Collect 命中 a=[] 时返 []any{[]} 非空 → return slice,
-                        //   BUG-233 设计 "[] 各自有语义不视作空" 保留).
-                        if len(out) > 0 {
-                                return out
-                        }
-                        return nil
+                        // BUG-337 (P3) 修复 (R96-B 未决项 #2 续): empty out → 返 nil
+                        //   让 || fallback 触发 (recursiveCollect 0 命中或 sub-JsonGet
+                        //   全 nil). 0 命中 (nil) vs value=[] ([]any{[]} 非空, BUG-233
+                        //   "[] 各自有语义" 保留) 区分, 详见 recursiveDescentApply
+                        //   docstring.
+                        return recursiveDescentApply(recursiveCollect(root, firstKey), remaining)
+                }
+                // BUG-341 (P3) 修复: $..[0] / $..["k"] (bracket 起首, splitAt=0 不
+                //   >0) 原走 recursiveCollect(root, "[0]") literal 查找返 [] (JSON
+                //   无 "[0]" 字面 key). RFC 9535: $..[expr] 应在 root + 每个后代
+                //   map/array 上 apply [expr] (e.g. $..[0] 取每个后代 array 的第
+                //   0 元素, $..["k"] 取每个后代 map 的 "k" 值). 修复: recursive
+                //   CollectAllNodes (root + 所有 map/array 后代) + per-node
+                //   JsonGet(key) (tokenize [0]/["k"] 内 jsonGetByPath tokenIndex/
+                //   tokenKey 处理). 与 BUG-273 ($..a.b multi-level) + BUG-289
+                //   (["k"] bracket) + BUG-292 ($..a[0] splitAt>0) 协同闭环. 71 Rule
+                //   0 用 $..[0]/$..["k"] 形态 (多用 $..field 单级或 a.b.c 直连); 0
+                //   用户受影响, 防御性 + RFC 对齐修复. latent 自 R101-B BUG-292
+                //   (defer splitAt=0 case, 12 轮未补). BUG 编号: R113-A/D 已用
+                //   339/340 (跨 scope 共存 main + fetcher/runner), 本轮 crawl-other
+                //   scope 顺延 341 (与 R112-B crawl-other 顺延 R112-A 337/338 同款).
+                if splitAt == 0 && key[0] == '[' {
+                        return recursiveDescentApply(recursiveCollectAllNodes(root), key)
                 }
                 // BUG-337 (P3): 同 multi-level — recursiveCollect 0 命中时返 nil
                 //   (非空 []any), 让 || fallback 触发. 保留 "a 存在但 value=[]"
@@ -892,6 +891,68 @@ func recursiveCollect(node any, key string) []any {
         }
         walk(node)
         return out
+}
+
+// recursiveCollectAllNodes — 递归收集 root + 所有 map / []any 节点 (含 root).
+//
+//      BUG-341 (P3) 修复: $..[0] / $..["k"] (bracket 起首, splitAt=0) 原走
+//        recursiveCollect(root, "[0]") literal 查找返 [] (JSON 无 "[0]" 字面
+//        key). RFC 9535: $..[expr] 应在 root + 每个后代 map/array 上 apply
+//        [expr] (e.g. $..[0] 取每个后代 array 的第 0 元素, $..["k"] 取每个
+//        后代 map 的 "k" 值). 与 BUG-273 ($..a.b multi-level splitAt>0) +
+//        BUG-289 (["k"] bracket tokenize) + BUG-292 ($..a[0] splitAt>0) 协同
+//        闭环. 71 Rule 0 用 $..[0]/$..["k"] 形态 (多用 $..field 单级或 a.b.c
+//        直连); 0 用户受影响, 防御性 + RFC 对齐修复. latent 自 R101-B
+//        BUG-292 (defer splitAt=0 case, 12 轮未补).
+func recursiveCollectAllNodes(root any) []any {
+        out := []any{root}
+        var walk func(n any)
+        walk = func(n any) {
+                switch v := n.(type) {
+                case map[string]any:
+                        for _, sub := range v {
+                                out = append(out, sub)
+                                walk(sub)
+                        }
+                case []any:
+                        for _, sub := range v {
+                                out = append(out, sub)
+                                walk(sub)
+                        }
+                }
+        }
+        walk(root)
+        return out
+}
+
+// recursiveDescentApply — 递归下降 apply: 对 collected (root 子树节点集) 每
+//   个节点 apply JsonGet(remaining), 收集非 nil 结果.
+//
+//   BUG-337 (P3) 修复 (R96-B 未决项 #2 续): 0 命中时返 nil (非空 []any),
+//     让 JsonGet || 分支 (line ~755) v==nil continue 触发 fallback. 原
+//     `return out` 在 recursiveCollect 0 命中 (a 不存在) 或 sub-JsonGet 全
+//     nil (a 存在但 b 不存在) 时返空 []any (非 nil), JsonGet || 分支仅
+//     skip nil + empty string (BUG-233), 不 skip empty []any → `$..a.b||c`
+//     返空 []any 非 nil → || fallback 到 c 不触发, 与注释 "取首个非空" 不
+//     符. 区分 "nothing found" (nil → fallback) vs "value is []"
+//     (recursiveCollect 命中 a=[] 时返 []any{[]} 非空 → return slice,
+//     BUG-233 "[] 各自有语义不视作空" 设计保留). 行为变化: 仅 `$..x...||y`
+//     recursive descent + || 组合 (71 Rule 0 用, 多用 a.b 直连或 $..field
+//     单级); 非 || caller (JsonToString nil→"" 同 []any{}→"", 0 变化).
+//   BUG-341 (P3) 精简-1: 抽出 multi-level (splitAt>0, $..a.b / $..a[0]) +
+//     bracket-first (splitAt==0 && key[0]=='[', $..[0] / $..["k"]) 共用
+//     for-loop + nil-on-empty 逻辑, 替两处独立 inline 实现.
+func recursiveDescentApply(collected []any, remaining string) any {
+        out := []any{}
+        for _, v := range collected {
+                if next := JsonGet(v, remaining); next != nil {
+                        out = append(out, next)
+                }
+        }
+        if len(out) > 0 {
+                return out
+        }
+        return nil
 }
 
 func jsonGetByPath(root any, path string) any {

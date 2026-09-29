@@ -2625,6 +2625,58 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                         if cfg.Override.TwoCaptchaAPIKey != "" {
                                 coverCfg.TwoCaptchaAPIKey = cfg.Override.TwoCaptchaAPIKey
                         }
+                        // R113-A BUG-339 (P3) 修复 (深抓 cover fetch posture 续, captcha
+                        //   solver family 续, 与 BUG-336 TwoCaptchaAPIKey 同族): cover fetch
+                        //   FetchConfig 仍漏继承 cfg.Override.AntiCaptchaAPIKey (string) —
+                        //   anti-captcha 验证码服务 API key (2captcha 备用 fallback provider,
+                        //   2captcha 服务不可用 / 返错 / 未配置时自动 fallback). 后果: cover 同域站
+                        //   (originHost(parsed.Cover) == originHost(bookURL)) behind 反爬时, cover
+                        //   URL 可能返 Cloudflare challenge HTML 页, book fetch 经 mergeFetchConfig
+                        //   (line ~10322-10323) 复制 cfg.Override.AntiCaptchaAPIKey →
+                        //   captchaTryService (line ~9291) 检 antiCaptchaAvailable → 2captcha 失败时
+                        //   trySolveCaptchaWithAntiCaptcha (line ~9840/9912) 按 key 调 anti-captcha
+                        //   解 h-captcha/reCAPTCHA, cover fetch 漏继承 → cover fetch 走 default 无
+                        //   API key 路径 → 同一浏览器 1s 内 book (2captcha→anti-captcha 解 challenge
+                        //   成功) + cover (无 key 不解 challenge, looksBlockedBinary 命中 HTML
+                        //   challenge 标 Blocked=true 跳过) 行为深度不一致 → 反爬侧 behavior
+                        //   fingerprint 不一致是 bot 信号. 注: 当前 cover fetch 路径 (FetchBinaryPage
+                        //   → fetchBinaryHttp) 尚未读 cfg.AntiCaptchaAPIKey (AntiCaptchaAPIKey 仅在
+                        //   trySolveCaptchaWithAntiCaptcha HTML 路径消费), 故属 "结构 + 半实现 latent"
+                        //   (与 BUG-327/328/329/331/332/333/335/336 同款 precedent), 但 coverSameHost
+                        //   继承是结构对称前提, 后续 cover fetch 路径若加 captcha 解求解路由自动跟上.
+                        //   与 BUG-314 同 coverSameHost gate. 修复: cfg.Override.AntiCaptchaAPIKey
+                        //   != "" gate 继承 (与 mergeFetchConfig line ~10322-10323 同款 "非空覆盖"
+                        //   gate).
+                        if cfg.Override.AntiCaptchaAPIKey != "" {
+                                coverCfg.AntiCaptchaAPIKey = cfg.Override.AntiCaptchaAPIKey
+                        }
+                        // R113-A BUG-340 (P3) 修复 (深抓 cover fetch posture 续, captcha
+                        //   solver family 续, 与 BUG-336 TwoCaptchaAPIKey + BUG-339
+                        //   AntiCaptchaAPIKey 同族 3rd provider): cover fetch FetchConfig 仍
+                        //   漏继承 cfg.Override.CapSolverAPIKey (string) — CapSolver 验证码服务
+                        //   API key (3rd provider, 2captcha + anti-captcha 都失败 / 都在 cooldown /
+                        //   都未配置时自动 fallback 到 CapSolver, 价格 $0.7-2/1000 次 更便宜).
+                        //   后果: cover 同域站 (originHost(parsed.Cover) == originHost(bookURL))
+                        //   behind 反爬时, cover URL 可能返 Cloudflare challenge HTML 页, book fetch
+                        //   经 mergeFetchConfig (line ~10326-10327) 复制 cfg.Override.
+                        //   CapSolverAPIKey → captchaTryService (line ~9292) 检
+                        //   capSolverAvailable → 2captcha+anti-captcha 都失败时
+                        //   trySolveCaptchaWithCapSolver (line ~10005/10077) 按 key 调 CapSolver
+                        //   解 h-captcha/reCAPTCHA, cover fetch 漏继承 → cover fetch 走 default 无
+                        //   API key 路径 → 同一浏览器 1s 内 book (CapSolver 解 challenge 成功) +
+                        //   cover (无 key 不解 challenge, looksBlockedBinary 命中 HTML challenge 标
+                        //   Blocked=true 跳过) 行为深度不一致 → 反爬侧 behavior fingerprint 不一致
+                        //   是 bot 信号. 注: 当前 cover fetch 路径 (FetchBinaryPage →
+                        //   fetchBinaryHttp) 尚未读 cfg.CapSolverAPIKey (CapSolverAPIKey 仅在
+                        //   trySolveCaptchaWithCapSolver HTML 路径消费), 故属 "结构 + 半实现 latent"
+                        //   (与 BUG-327/328/329/331/332/333/335/336/339 同款 precedent), 但
+                        //   coverSameHost 继承是结构对称前提, 后续 cover fetch 路径若加 captcha 解
+                        //   求解路由自动跟上. 与 BUG-314 同 coverSameHost gate. 修复:
+                        //   cfg.Override.CapSolverAPIKey != "" gate 继承 (与 mergeFetchConfig line
+                        //   ~10326-10327 同款 "非空覆盖" gate).
+                        if cfg.Override.CapSolverAPIKey != "" {
+                                coverCfg.CapSolverAPIKey = cfg.Override.CapSolverAPIKey
+                        }
                 }
                 coverBin, err := FetchBinaryPage(ctx, parsed.Cover, coverCfg)
                 if err == nil && !coverBin.Blocked && len(coverBin.Bytes) > 0 {

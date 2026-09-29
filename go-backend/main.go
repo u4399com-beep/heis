@@ -3873,7 +3873,23 @@ func getFeaturedBooks(siteID string) []map[string]interface{} {
                 return nil
         }
         var raw string
-        _ = db.QueryRow(`SELECT value FROM Setting WHERE key=?`, "featuredBooks."+siteID).Scan(&raw)
+        // R113-D BUG-340 (P3, main+templates scope, R112-C BUG-335 single-row
+        //   Scan swallow family cross-scope sibling 续): 原 `_ = db.QueryRow
+        //   ().Scan(&raw)` 吞 err — sql.ErrNoRows (admin 未配 featuredBooks
+        //   setting, normal) 与 driver edge Scan err (conn 闪断 / 磁盘满 /
+        //   driver bug) 同走 raw="" → if raw=="" return nil → home view
+        //   fallback TopBooks. admin 配了 featured books 但 home 仍显 TopBooks
+        //   时, admin 排查不知是 SQL 故障 (本应 log) 还是配置缺失 (silent).
+        //   改: 非 ErrNoRows 时 log.Printf 提示运维, ErrNoRows 仍 silent
+        //   (与 BUG-339 同款 "正常 skip + 异常 log" 语义). 0 行为变化
+        //   (return nil 语义不变, 仅加 log 可见性). 与 R112-C admin.go scope
+        //   BUG-335 tx.Rollback + BUG-336 MarshalIndent swallow family cross-
+        //   scope sibling (不同 scope 不同 family, 同号 cross-scope 共存;
+        //   本 BUG-340 用 340 新号, 顺延 R112-D 335 + R112-A 335/336 +
+        //   R112-B 337/338 + R112-C 335/336 后 339+ 顺延, 不撞号).
+        if ferr := db.QueryRow(`SELECT value FROM Setting WHERE key=?`, "featuredBooks."+siteID).Scan(&raw); ferr != nil && ferr != sql.ErrNoRows {
+                log.Printf("[R113-D] getFeaturedBooks setting Scan failed (siteID=%s): %v - returning nil (home will fallback TopBooks)", siteID, ferr)
+        }
         if raw == "" || raw == "{}" {
                 return nil
         }
@@ -3899,7 +3915,23 @@ func getFeaturedBooks(siteID string) []map[string]interface{} {
                 err := db.QueryRow(`SELECT b.id,b.name,b.author,b.intro,b.cover,b.status,b.wordCount,b.latestChapter,COALESCE(c.name,'未分类'),b.categoryId,b.updatedAt FROM Book b LEFT JOIN Category c ON b.categoryId=c.id WHERE b.id=?`, bid).
                         Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter, &category, &categoryID, &updatedAt)
                 if err != nil {
-                        continue // 书已删 (ErrNoRows) 或 Scan 失败 → 跳过, 不阻塞整体返回.
+                        // R113-D BUG-339 (P3, main+templates scope, R81-D BUG-179
+                        //   family sibling 续): 原 `continue` 吞 err — sql.ErrNoRows
+                        //   (书已删, normal skip) 与 driver edge Scan err (column-
+                        //   type drift during migration / NULL→non-nullable 列序 drift)
+                        //   同走 continue, admin 不知 featured books 配置的某些 bid
+                        //   Scan 失败 (用户看不到该书, admin 不知是配置错 bid 还是
+                        //   Scan 失败). 改: 非 ErrNoRows 时 log.Printf 提示运维,
+                        //   ErrNoRows 仍 silent skip (与 R81-D BUG-179 同款 "正常行
+                        //   skip + 异常行 log" 语义). 0 行为变化 (continue 语义不变,
+                        //   仅加 log 可见性). getFeaturedBooks 是 R81-D BUG-179 遗漏
+                        //   callsite (R81-D 覆盖 getBookViewData/getReadViewData/
+                        //   getCategories/getBooks per-row Scan, 漏 getFeaturedBooks
+                        //   inner loop; 同款 latent class, 续修).
+                        if err != sql.ErrNoRows {
+                                log.Printf("[R113-D] getFeaturedBooks book Scan failed (siteID=%s bid=%s): %v - skipping book", siteID, bid, err)
+                        }
+                        continue
                 }
                 out = append(out, map[string]interface{}{
                         "id": id.String, "name": name.String, "author": author.String,
@@ -4156,6 +4188,21 @@ func buildPageList(cur, total int) []int {
 
 // pickAuthors 从 books 提取去重作者前 n 个
 func pickAuthors(books []map[string]interface{}, n int) []string {
+        // R113-D 精简-1 (P4 精简/defensive-guard, main scope, R96-D BUG-272
+        //   family sibling 续): pickAuthors 与 takeN/topBooks/takeBooks 同属
+        //   "top-N slice helper" family, 但 R96-D BUG-272 (n<0/n==0 guard) 漏
+        //   此 callsite — pickAuthors(0) 返 1 item (首作者, 因 `1>=0` break),
+        //   pickAuthors(-1) 同款返 1 item. 当前 caller 全传 12
+        //   (injectListSidebar line ~2890 pickAuthors(books, 12)), 0 用户受
+        //   影响. 但 sibling 一致性 + future caller 防 (sub template func /
+        //   admin 配置项暴露后可能传 0). 修复: n<=0 → 返空 slice (与
+        //   takeBooks(0) line ~3733 同款 "0 即空" 语义). 0 行为变化
+        //   (current callers 不触). 与 R96-D BUG-272 takeN/topBooks/takeBooks
+        //   + R84-D BUG-194 takeBooks n==0 guard precedent 同款
+        //   "top-N helper n<=0 defensive guard" family.
+        if n <= 0 {
+                return []string{}
+        }
         seen := map[string]bool{}
         out := []string{}
         for _, b := range books {
