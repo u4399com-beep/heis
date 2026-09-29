@@ -626,6 +626,36 @@ func RemoveAdLines(text string, patterns []string) string {
 	return out
 }
 
+// ---------- 字符串截断 (按 rune, 0 alloc) ----------
+
+// truncateRunes — 截断字符串到最多 max runes (按字节偏移切片, 0 alloc).
+//
+//	R99-B BUG-285 (P3) 修复: 原模式 `if utf8.RuneCountInString(s) > N {
+//	  s = string([]rune(s)[:N]) }` 在 hot path (smart.go MatchCategoryByText +
+//	  DetectCompleteFromText + SmartCompleteDetect + cleaner.go CleanTextField +
+//	  CleanIntro 共 5 callsite, per-book/per-chapter 调用). R84-B BUG-200 已
+//	  把长度检查的 len([]rune(s)) → utf8.RuneCountInString(s) (省 1 alloc),
+//	  但截断本身仍用 []rune(s) + string(runes[:N]) 2 次 alloc. 改单遍字节
+//	  偏移扫描 (utf8.DecodeRuneInString 增量解码, 0 alloc), 与 R84-B BUG-200
+//	  同款 "utf8.RuneCountInString 替 []rune len" 优化的自然续延. 行为 0
+//	  变化 (同首 N runes); 防 `[]rune(s)[:N]` 越界 panic footgun (s < N runes
+//	  时原代码需前置 RuneCountInString > N 守卫, helper 内置守卫 caller 可
+//	  直接调 truncateRunes(s, N) 不怕越界, max<=0 或 s="" 直接返 s).
+func truncateRunes(s string, max int) string {
+	if max <= 0 || s == "" {
+		return s
+	}
+	i := 0
+	for n := 0; n < max && i < len(s); n++ {
+		_, size := utf8.DecodeRuneInString(s[i:])
+		i += size
+	}
+	if i < len(s) {
+		return s[:i]
+	}
+	return s
+}
+
 // ---------- 控制字符 + 零宽字符剥离 ----------
 
 // CcAndZwStripRe — 控制字符 (除 \t \n \r) + 零宽字符 + 不可见排版字符 + 乱码替换符剥离正则.
@@ -1055,10 +1085,8 @@ func CleanTextField(raw string, maxLength int) string {
 	// 重复标点压缩 (! ? 。 及其全角形式) — RE2 不支持 \1 反向引用,
 	// 用单遍扫描压扁相邻相同标点 (R45-1C 修原 panic bug).
 	v = collapseDupPunct(v)
-	if maxLength > 0 && utf8.RuneCountInString(v) > maxLength {
-		runes := []rune(v)
-		v = string(runes[:maxLength])
-	}
+	// R99-B BUG-285: truncateRunes 替 string([]rune(v)[:maxLength]) (0 alloc, maxLength<=0 内置守卫).
+	v = truncateRunes(v, maxLength)
 	return v
 }
 
@@ -1087,10 +1115,8 @@ func CleanIntro(raw string, maxLength int) string {
 	v = stripTrailingPromo(v)
 	v = stripLeadingMetadata(v)
 	// 按码点截断
-	if utf8.RuneCountInString(v) > maxLength {
-		runes := []rune(v)
-		v = string(runes[:maxLength])
-	}
+	// R99-B BUG-285: truncateRunes 替 string([]rune(v)[:maxLength]) (0 alloc).
+	v = truncateRunes(v, maxLength)
 	return v
 }
 

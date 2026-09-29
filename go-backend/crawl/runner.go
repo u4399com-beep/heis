@@ -2529,12 +2529,20 @@ func ExecuteTaskWithRetry(ctx context.Context, cfg ExecuteTaskConfig, maxRetries
                 //   size 返 0 (无 backoff 立即重试). maxRetries 3 时无影响 (shift 0/1/2/3 安全),
                 //   但 maxRetries > 30 时 attempt=31+ 会触发 shift 0 → 立即重试无退避, 加重源站
                 //   压力. 防御: 显式 clamp shift 在 30 (2^30 = 1B ms = ~12 天, 已远超 30s cap).
+                // R99-A BUG-285 (P3) 修复 (R98-A 未决项 #3 续): `baseBackoffMs<<shift` 在
+                //   32-bit 平台 int=32 时若 shift=30 + baseBackoffMs=1000 → 1e12 超过
+                //   MaxInt32 (2.1e9) → 溢出返负值 → time.Duration(负值) * time.Millisecond
+                //   仍负 → `backoff > 30s` 不触发 → time.After(负值) 立即返 → 无退避立即
+                //   重试 (同 BUG-281/284 立即重试无退避 family). 64-bit Linux int=64 无
+                //   问题 (1e12 < MaxInt64 9.2e18). 防御: int64(baseBackoffMs)<<shift 先
+                //   提升到 int64 再移位 (32-bit 平台也安全), 并加 `backoff < 0` 兜底防御
+                //   (若 baseBackoffMs 极大值使 int64 移位也溢出 → 负值 → 钳 30s cap).
                 shift := uint(attempt)
                 if shift > 30 {
                         shift = 30
                 }
-                backoff := time.Duration(baseBackoffMs<<shift) * time.Millisecond
-                if backoff > 30*time.Second {
+                backoff := time.Duration(int64(baseBackoffMs)<<shift) * time.Millisecond
+                if backoff > 30*time.Second || backoff < 0 {
                         backoff = 30 * time.Second
                 }
                 // 等待期间监听 ctx 取消 (caller 可中断重试)

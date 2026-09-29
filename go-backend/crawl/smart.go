@@ -188,9 +188,8 @@ func NormalizeCategory(name string) string {
 //        ToLower (caller 责任). 第 1 步 strings.Contains 用原文 case-sensitive
 //        (admin 设的 existingCategories 可能含非中文 case-sensitive 名, 不能 lowercase).
 func MatchCategoryByText(text string, existingCategories []string) string {
-        if utf8.RuneCountInString(text) > 3000 {
-                text = string([]rune(text)[:3000])
-        }
+        // R99-B BUG-285: truncateRunes 替 string([]rune(text)[:3000]) (0 alloc, 防 []rune 越界 panic footgun).
+        text = truncateRunes(text, 3000)
         if text == "" {
                 return ""
         }
@@ -335,10 +334,9 @@ func wordMatches(t, w string) bool {
 //   - 未完优先 (避免"未完结"被"完结"误判)
 //
 // R44-1C 修复: 原 text[:2000] 按字节切片不安全, 改用 []rune 防多字节字符斩半.
+//   R99-B BUG-285: truncateRunes 替 string([]rune(text)[:2000]) (0 alloc).
 func DetectCompleteFromText(text string) string {
-        if utf8.RuneCountInString(text) > 2000 {
-                text = string([]rune(text)[:2000])
-        }
+        text = truncateRunes(text, 2000)
         t := strings.ToLower(text)
         if t == "" {
                 return "unknown"
@@ -380,9 +378,8 @@ func SmartCompleteDetect(in SmartCompleteDetectInput) SmartCompleteDetectResult 
                         s := in.StatusField
                         // R44-1C 修复: 原 s[:30] 按字节切片不安全, 改用 []rune 防多字节字符斩半.
                         // R84-B BUG-200 (P3): len([]rune(s)) → utf8.RuneCountInString(s) (省 1 alloc).
-                        if utf8.RuneCountInString(s) > 30 {
-                                s = string([]rune(s)[:30])
-                        }
+                        // R99-B BUG-285: truncateRunes 替 string([]rune(s)[:30]) (0 alloc).
+                        s = truncateRunes(s, 30)
                         return SmartCompleteDetectResult{Status: r, Reason: "源站状态: " + s}
                 }
         }

@@ -4248,6 +4248,44 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 if rlr := resp.Header.Get("RateLimit-Reset"); rlr != "" {
                         recordSecurityHeader(originHost(rawURL), "RateLimit-Reset", rlr)
                 }
+                // R99-A 反反爬第 189-193 项: client hint persistence / deprecation marker /
+                //   sunset marker / priority hint / critical client hint 响应头观测
+                //   (per-host 合并 tracker 第 61-65 字段, 与 124-188 同款). 179-183 reserve/defer.
+                //   第 189 项 Accept-CH-Lifetime (RFC draft-ietf-httpapi-client-hint-
+                //     reliability §3) — client hint persistence 秒数 (e.g. "86400"),
+                //     反爬关联: Accept-CH + persistence = mature client hint infrastructure
+                //     (Chrome 在 N 秒内自动重发 client hints, 与 Sec-Ch-Ua 反爬 fingerprint
+                //     联动), 与第 152 项 Accept-CH client hint family 续.
+                //   第 190 项 Deprecation (draft-ietf-httpapi-deprecation-header) —
+                //     deprecation timestamp (HTTP-date), 反爬关联: deprecated resource
+                //     marker = host 信号 endpoint retirement (modern API gateway posture,
+                //     常配 Sunset), 与第 171 项 Warning legacy deprecated family 续.
+                //   第 191 项 Sunset (RFC 9745 §3) — sunset timestamp (HTTP-date),
+                //     反爬关联: endpoint lifecycle management = mature API posture,
+                //     常配 Deprecation, 与第 190 项 deprecation marker 同款 family.
+                //   第 192 项 Priority (RFC 9218 §2) — `u=<urgency>` prioritization,
+                //     反爬关联: HTTP/2/3 prioritization hint = host signals priority
+                //     awareness (modern CDN/origin posture), 与第 56 项 HTTP/2 PRIORITY
+                //     帧同款 priority family 续 (response-side analog).
+                //   第 193 项 Critical-CH (RFC 9398 §2) — critical client hints list,
+                //     反爬关联: server retry connection without critical hints = mature
+                //     client hint enforcement, 与第 152 Accept-CH + 189 Accept-CH-Lifetime
+                //     client hint family 续 (3 头联立 = 完整 client hint posture).
+                if acl := resp.Header.Get("Accept-CH-Lifetime"); acl != "" {
+                        recordSecurityHeader(originHost(rawURL), "Accept-CH-Lifetime", acl)
+                }
+                if dep := resp.Header.Get("Deprecation"); dep != "" {
+                        recordSecurityHeader(originHost(rawURL), "Deprecation", dep)
+                }
+                if ss := resp.Header.Get("Sunset"); ss != "" {
+                        recordSecurityHeader(originHost(rawURL), "Sunset", ss)
+                }
+                if pri := resp.Header.Get("Priority"); pri != "" {
+                        recordSecurityHeader(originHost(rawURL), "Priority", pri)
+                }
+                if cch := resp.Header.Get("Critical-CH"); cch != "" {
+                        recordSecurityHeader(originHost(rawURL), "Critical-CH", cch)
+                }
 
                 // Set-Cookie 处理 (autoCookie)
                 if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
@@ -4660,11 +4698,20 @@ func parseRetryAfterMs(s string) int {
         if t, err := http.ParseTime(s); err == nil {
                 d := time.Until(t)
                 if d > 0 {
-                        ms := int(d.Milliseconds())
-                        if ms > RetryAfterCapMs {
+                        // R99-A BUG-284 (P3) 修复 (R98-A 未决项 #3 续): HTTP-date 路径
+                        //   `int(d.Milliseconds())` 在 32-bit 平台若 d.Milliseconds() >
+                        //   math.MaxInt32 (year 1970+25 天) 会溢出返负值 → ms >
+                        //   RetryAfterCapMs 不触发 → 返负 → caller time.After(负值) 立即
+                        //   返 → 同 BUG-281 立即重试无退避. 64-bit Linux int=64 无问题,
+                        //   32-bit 平台若源站发极远 future date (year 9999) 可能触发.
+                        //   防御: 用 int64 比对 (与 BUG-281 int 路径同款 defensive clamp
+                        //   family, 32-bit 平台才触发), 已 clamp 在 cap 内再转 int (int32
+                        //   安全长度, RetryAfterCapMs=30000 远小于 MaxInt32).
+                        ms64 := d.Milliseconds()
+                        if ms64 < 0 || ms64 > RetryAfterCapMs {
                                 return RetryAfterCapMs
                         }
-                        return ms
+                        return int(ms64)
                 }
         }
         return 0
@@ -5334,6 +5381,25 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 }
                 if rlr := extractHeaderFromCurlStdout(headers, "RateLimit-Reset"); rlr != "" {
                         recordSecurityHeader(domain, "RateLimit-Reset", rlr)
+                }
+                // R99-A 反反爬第 189-193 项: client hint persistence / deprecation marker /
+                //   sunset marker / priority hint / critical client hint 响应头观测 (与
+                //   fetchHttp 同款, curl -D - dump headers 路径; fetchBinaryViaCurl 不
+                //   dump 故不调, 与 124-188 同款限制. 详见 fetchHttp line ~4251 rationale).
+                if acl := extractHeaderFromCurlStdout(headers, "Accept-CH-Lifetime"); acl != "" {
+                        recordSecurityHeader(domain, "Accept-CH-Lifetime", acl)
+                }
+                if dep := extractHeaderFromCurlStdout(headers, "Deprecation"); dep != "" {
+                        recordSecurityHeader(domain, "Deprecation", dep)
+                }
+                if ss := extractHeaderFromCurlStdout(headers, "Sunset"); ss != "" {
+                        recordSecurityHeader(domain, "Sunset", ss)
+                }
+                if pri := extractHeaderFromCurlStdout(headers, "Priority"); pri != "" {
+                        recordSecurityHeader(domain, "Priority", pri)
+                }
+                if cch := extractHeaderFromCurlStdout(headers, "Critical-CH"); cch != "" {
+                        recordSecurityHeader(domain, "Critical-CH", cch)
                 }
                 if status >= 300 {
                         // R66-C BUG-52 (P3): curl 4xx/5xx 也记 latency + fail (与 fetchHttp
@@ -7482,6 +7548,26 @@ func fetchBinaryHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, pr
                 }
                 if rlr := resp.Header.Get("RateLimit-Reset"); rlr != "" {
                         recordSecurityHeader(originHost(rawURL), "RateLimit-Reset", rlr)
+                }
+                // R99-A 反反爬第 189-193 项: client hint persistence / deprecation marker /
+                //   sunset marker / priority hint / critical client hint 响应头观测 (与
+                //   fetchHttp 同款, fetchBinaryHttp success + 4xx/5xx 两路径都记, BUG-241
+                //   修复后 fetchBinaryHttp 已补对称; fetchBinaryViaCurl 不 dump headers
+                //   故不调, 与 124-188 同款限制. 详见 fetchHttp line ~4251 rationale).
+                if acl := resp.Header.Get("Accept-CH-Lifetime"); acl != "" {
+                        recordSecurityHeader(originHost(rawURL), "Accept-CH-Lifetime", acl)
+                }
+                if dep := resp.Header.Get("Deprecation"); dep != "" {
+                        recordSecurityHeader(originHost(rawURL), "Deprecation", dep)
+                }
+                if ss := resp.Header.Get("Sunset"); ss != "" {
+                        recordSecurityHeader(originHost(rawURL), "Sunset", ss)
+                }
+                if pri := resp.Header.Get("Priority"); pri != "" {
+                        recordSecurityHeader(originHost(rawURL), "Priority", pri)
+                }
+                if cch := resp.Header.Get("Critical-CH"); cch != "" {
+                        recordSecurityHeader(originHost(rawURL), "Critical-CH", cch)
                 }
                 // 3xx / 4xx / 5xx 视为失败 (与 fetchHttp 同款, 不重试 3xx)
                 if resp.StatusCode >= 300 {
@@ -12261,6 +12347,14 @@ type hostSecurityHeadersEntry struct {
         linkValue               string // Link (第 186 项, R98-A)
         rateLimitLimitValue     string // RateLimit-Limit (第 187 项, R98-A)
         rateLimitResetValue     string // RateLimit-Reset (第 188 项, R98-A)
+        // R99-A 反反爬第 189-193 项: client hint persistence / deprecation marker /
+        //   sunset marker / priority hint / critical client hint 响应头观测 (与
+        //   124-188 同款 family, 单值 last-write-wins per-host 合并 tracker).
+        acceptChLifetimeValue   string // Accept-CH-Lifetime (第 189 项, R99-A)
+        deprecationValue        string // Deprecation (第 190 项, R99-A)
+        sunsetValue             string // Sunset (第 191 项, R99-A)
+        priorityValue           string // Priority (第 192 项, R99-A)
+        criticalChValue         string // Critical-CH (第 193 项, R99-A)
         detectedAt              int64  // UnixMilli
 }
 
@@ -12464,6 +12558,19 @@ func recordSecurityHeader(host, headerName, value string) {
                 ent.rateLimitLimitValue = value
         case "ratelimit-reset":
                 ent.rateLimitResetValue = value
+        // R99-A 反反爬第 189-193 项: client hint persistence / deprecation marker /
+        //   sunset marker / priority hint / critical client hint 响应头观测 (与
+        //   124-188 同款 family, 单值 last-write-wins per-host 合并 tracker).
+        case "accept-ch-lifetime":
+                ent.acceptChLifetimeValue = value
+        case "deprecation":
+                ent.deprecationValue = value
+        case "sunset":
+                ent.sunsetValue = value
+        case "priority":
+                ent.priorityValue = value
+        case "critical-ch":
+                ent.criticalChValue = value
         default:
                 return
         }
@@ -12546,6 +12653,11 @@ func HostSecurityHeadersSnapshot() map[string]map[string]string {
                         "linkValue":               e.linkValue,
                         "rateLimitLimitValue":     e.rateLimitLimitValue,
                         "rateLimitResetValue":     e.rateLimitResetValue,
+                        "acceptChLifetimeValue":   e.acceptChLifetimeValue,
+                        "deprecationValue":        e.deprecationValue,
+                        "sunsetValue":             e.sunsetValue,
+                        "priorityValue":           e.priorityValue,
+                        "criticalChValue":         e.criticalChValue,
                         "detectedAt":        fmt.Sprintf("%d", e.detectedAt),
                 }
                 return true

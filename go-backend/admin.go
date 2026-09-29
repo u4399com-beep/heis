@@ -3239,20 +3239,34 @@ func renderAdminPage(w http.ResponseWriter, tmplName, active, title string, r *h
 
 // fillDashboardData — 装配仪表盘数据 (统计 + 最近任务 + 最近书籍).
 func fillDashboardData(data map[string]interface{}) {
-        // 1. 统计计数
+        // 1. 统计计数 (单 SELECT 多 scalar subquery, 10 round-trip → 1, perf + visibility 双赢)
+        // R99-C BUG-284 (P3, R80-D BUG-128 crows.Err log-only family 续抓, multi-COUNT
+        //   batch swallow 变种): 原实现 10 处独立 `_ = db.QueryRow(...).Scan(...)` 吞错
+        //   — DB 故障 (SQLite busy lock / 连接闪断 / 磁盘满) 时部分 COUNT 返 0 (其他
+        //   返真值) → dashboard 部分指标 0 用户误以为 DB 空 (实际 transient), 无 log
+        //   提示运维. 改单 SELECT 多 scalar subquery (1 round-trip 提速 ~10x, 与
+        //   R98-D topBooks sort.Slice 同款 perf+精简 scope) + 显式 err 检查 +
+        //   log.Printf (与 BUG-128/145 rows.Err 同款 best-effort log, 但本 batch
+        //   单 Scan err 是 COUNT family 多 subquery 变种). best-effort (SSR 页面,
+        //   0 兜底), 与 fillBackupPageData BUG-285 / fillFeedbackPageData BUG-286
+        //   同款 Pattern D multi-COUNT batch swallow family.
         var booksTotal, booksCompleted, booksOngoing, chaptersTotal, chaptersDay int
         var tasksTotal, tasksRunning, sitesTotal, rulesTotal, rulesEnabled int
-        _ = db.QueryRow(`SELECT COUNT(*) FROM Book`).Scan(&booksTotal)
-        _ = db.QueryRow(`SELECT COUNT(*) FROM Book WHERE status='completed'`).Scan(&booksCompleted)
-        _ = db.QueryRow(`SELECT COUNT(*) FROM Book WHERE status='ongoing'`).Scan(&booksOngoing)
-        _ = db.QueryRow(`SELECT COUNT(*) FROM Chapter`).Scan(&chaptersTotal)
-        // 24h 新增章节 (sqlite datetime)
-        _ = db.QueryRow(`SELECT COUNT(*) FROM Chapter WHERE updatedAt >= datetime('now','-1 day')`).Scan(&chaptersDay)
-        _ = db.QueryRow(`SELECT COUNT(*) FROM Task`).Scan(&tasksTotal)
-        _ = db.QueryRow(`SELECT COUNT(*) FROM Task WHERE status='running'`).Scan(&tasksRunning)
-        _ = db.QueryRow(`SELECT COUNT(*) FROM Site WHERE status=1`).Scan(&sitesTotal)
-        _ = db.QueryRow(`SELECT COUNT(*) FROM Rule`).Scan(&rulesTotal)
-        _ = db.QueryRow(`SELECT COUNT(*) FROM Rule WHERE enabled=1`).Scan(&rulesEnabled)
+        if err := db.QueryRow(`SELECT` +
+                `(SELECT COUNT(*) FROM Book),` +
+                `(SELECT COUNT(*) FROM Book WHERE status='completed'),` +
+                `(SELECT COUNT(*) FROM Book WHERE status='ongoing'),` +
+                `(SELECT COUNT(*) FROM Chapter),` +
+                `(SELECT COUNT(*) FROM Chapter WHERE updatedAt >= datetime('now','-1 day')),` +
+                `(SELECT COUNT(*) FROM Task),` +
+                `(SELECT COUNT(*) FROM Task WHERE status='running'),` +
+                `(SELECT COUNT(*) FROM Site WHERE status=1),` +
+                `(SELECT COUNT(*) FROM Rule),` +
+                `(SELECT COUNT(*) FROM Rule WHERE enabled=1)`).
+                Scan(&booksTotal, &booksCompleted, &booksOngoing, &chaptersTotal, &chaptersDay,
+                        &tasksTotal, &tasksRunning, &sitesTotal, &rulesTotal, &rulesEnabled); err != nil {
+                log.Printf("[fillDashboardData] COUNT batch SELECT 失败 (指标展示 0): %v", err)
+        }
 
         data["BooksTotal"] = booksTotal
         data["BooksCompleted"] = booksCompleted
@@ -8027,24 +8041,48 @@ func fillFeedbackPageData(data map[string]interface{}, r *http.Request) {
         data["Page"] = page
         data["TotalPages"] = totalPages
         data["PageList"] = buildPageList(page, totalPages)
+        // R99-C BUG-286 (P3, BUG-284/285 同款 Pattern D multi-COUNT batch swallow
+        //   family 续抓, feedback page stats 变种): 原实现 3 处独立 `_ = ...Scan(...)`
+        //   (line 8045-8047) 吞错 — DB 故障时部分 stats 返 0 → feedback page stats
+        //   显示部分 0 用户误以为表空 (实际 transient), 无 log 提示运维. 改单 SELECT
+        //   多 scalar subquery (3 round-trip → 1) + 显式 err 检查 + log.Printf
+        //   (与 BUG-128/145 rows.Err 同款 best-effort log). 主 COUNT(*) (line 7983)
+        //   因用于 pagination totalPages 计算而保留独立 (与 BUG-284 dashboard 全部
+        //   显示不同, 本 page 主 COUNT 是分页核心, 单独保留与 fillBooksPageData/
+        //   adminBooksList pagination COUNT 同款独立 callsite).
         var allCount, newCount, resolvedCount int
-        _ = db.QueryRow(`SELECT COUNT(*) FROM Feedback`).Scan(&allCount)
-        _ = db.QueryRow(`SELECT COUNT(*) FROM Feedback WHERE status='new'`).Scan(&newCount)
-        _ = db.QueryRow(`SELECT COUNT(*) FROM Feedback WHERE status='resolved'`).Scan(&resolvedCount)
+        if err := db.QueryRow(`SELECT` +
+                `(SELECT COUNT(*) FROM Feedback),` +
+                `(SELECT COUNT(*) FROM Feedback WHERE status='new'),` +
+                `(SELECT COUNT(*) FROM Feedback WHERE status='resolved')`).
+                Scan(&allCount, &newCount, &resolvedCount); err != nil {
+                log.Printf("[fillFeedbackPageData] stats COUNT batch SELECT 失败 (stats 展示 0): %v", err)
+        }
         data["Stats"] = map[string]interface{}{"total": allCount, "new": newCount, "resolved": resolvedCount}
 }
 
 func fillBackupPageData(data map[string]interface{}) {
+        // R99-C BUG-285 (P3, BUG-284 同款 Pattern D multi-COUNT batch swallow family
+        //   续抓, backup page 变种): 原实现 9 处独立 `_ = db.QueryRow(...).Scan(...)`
+        //   (line 8053-8061) 吞错 — DB 故障时部分 COUNT 返 0 → backup page counts
+        //   部分指标 0 用户误以为表空 (实际 transient), 无 log 提示运维. 改单 SELECT
+        //   多 scalar subquery (9 round-trip → 1) + 显式 err 检查 + log.Printf
+        //   (与 BUG-128/145 rows.Err 同款 best-effort log).
         var bookCount, chapterCount, siteCount, catCount, ruleCount, settingCount, linkCount, taskCount, dlCount int
-        _ = db.QueryRow(`SELECT COUNT(*) FROM Book`).Scan(&bookCount)
-        _ = db.QueryRow(`SELECT COUNT(*) FROM Chapter`).Scan(&chapterCount)
-        _ = db.QueryRow(`SELECT COUNT(*) FROM Site`).Scan(&siteCount)
-        _ = db.QueryRow(`SELECT COUNT(*) FROM Category`).Scan(&catCount)
-        _ = db.QueryRow(`SELECT COUNT(*) FROM Rule`).Scan(&ruleCount)
-        _ = db.QueryRow(`SELECT COUNT(*) FROM Setting`).Scan(&settingCount)
-        _ = db.QueryRow(`SELECT COUNT(*) FROM FriendLink`).Scan(&linkCount)
-        _ = db.QueryRow(`SELECT COUNT(*) FROM Task`).Scan(&taskCount)
-        _ = db.QueryRow(`SELECT COUNT(*) FROM DownloadJob`).Scan(&dlCount)
+        if err := db.QueryRow(`SELECT` +
+                `(SELECT COUNT(*) FROM Book),` +
+                `(SELECT COUNT(*) FROM Chapter),` +
+                `(SELECT COUNT(*) FROM Site),` +
+                `(SELECT COUNT(*) FROM Category),` +
+                `(SELECT COUNT(*) FROM Rule),` +
+                `(SELECT COUNT(*) FROM Setting),` +
+                `(SELECT COUNT(*) FROM FriendLink),` +
+                `(SELECT COUNT(*) FROM Task),` +
+                `(SELECT COUNT(*) FROM DownloadJob)`).
+                Scan(&bookCount, &chapterCount, &siteCount, &catCount, &ruleCount,
+                        &settingCount, &linkCount, &taskCount, &dlCount); err != nil {
+                log.Printf("[fillBackupPageData] COUNT batch SELECT 失败 (counts 展示 0): %v", err)
+        }
         counts := []map[string]interface{}{
                 {"label": "书籍", "count": bookCount},
                 {"label": "章节", "count": chapterCount},

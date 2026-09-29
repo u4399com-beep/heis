@@ -76,7 +76,12 @@
 <div id="list">
 <dl>
 <dt>最新章节</dt>
-<dd><a href="{{.FirstChapterURL}}">{{if .Book.latestChapter}}{{.Book.latestChapter}}{{else}}点击查看完整目录{{end}}</a></dd>
+<!-- R99-D BUG-285 (P4, templates scope): 原 a-href=FirstChapterURL 无 guard,
+     book 无章节时 FirstChapterURL 空串渲染死链 (自指当前页). 加 if-FirstChapterURL
+     guard + 暂无章节 fallback, 与下方 "开始阅读" line 84 同款 (shipsay:68 / x2552:86
+     HasChapters guard convention). 0 行为变化 (有章节时链接不变). 注: 不在 HTML 注释
+     内写 Go template 定界符 (html/template 仍解析注释内 action). -->
+<dd>{{if .FirstChapterURL}}<a href="{{.FirstChapterURL}}">{{if .Book.latestChapter}}{{.Book.latestChapter}}{{else}}点击查看完整目录{{end}}</a>{{else}}<span>暂无章节</span>{{end}}</dd>
 <div class="clear"></div>
 </dl>
 <dl>

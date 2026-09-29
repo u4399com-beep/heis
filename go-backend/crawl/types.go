@@ -659,17 +659,37 @@ func sanitizePageRule(m map[string]any, withURLTemplate bool) PageRule {
 }
 
 // sanitizeFieldRule — 白名单重建字段规则.
+//
+//	R99-B BUG-284 (P3) 修复: 原 missing/invalid "type" 直接 return fr
+//	  (空 Type + Expression 等其他字段全未设置). 调用方 sanitizePageRule
+//	  4 callsite 行为分裂: ItemSelector / TocLink / Pagination.NextLink
+//	  KEEP 非 nil 空-Type 指针 (ApplySmartRuleFallback 仅兜底 ItemSelector
+//	  到通用 a[href*='/'], admin 意图 expression 全丢; TocLink/NextLink
+//	  走 caller fallback 通用兜底, admin expression 也丢); Fields SKIP
+//	  (line 634-638 if fr.Type == "" continue). 即 admin 配
+//	  `{"itemSelector": {"expression": ".book-item"}}` (忘 type 字段)
+//	  → 原 ItemSelector.Type="" → ApplySmartRuleFallback 覆盖到通用
+//	  a[href*='/'], admin 的 .book-item 表达式丢失. 修复: type 缺失或
+//	  无效但 expression 非空 → default FieldCSS (CSS 是 71 Rule 最常见
+//	  type, 0 用 XPath 因 Go 端未实现, regex/json/const 都是显式配置
+//	  极少忘 type). 表达式经 safeStr TrimSpace 后非空才触发 (与下方
+//	  Expression safeStr 同口径, " " 纯空白视为无 expression). 0 生
+//	  产命中 (sample rule-yueyouxs 全字段显式 type=css/json/regex/const);
+//	  防御性修复, latent 自 R38 TS→Go 迁移 (47 轮未发现).
 func sanitizeFieldRule(m map[string]any) *FieldRule {
 	fr := &FieldRule{}
 	if v, ok := m["type"].(string); ok {
 		switch FieldRuleType(v) {
 		case FieldCSS, FieldXPath, FieldRegex, FieldJSON, FieldConst:
 			fr.Type = FieldRuleType(v)
-		default:
+		}
+	}
+	if fr.Type == "" {
+		expr, hasExpr := m["expression"].(string)
+		if !hasExpr || strings.TrimSpace(expr) == "" {
 			return fr
 		}
-	} else {
-		return fr
+		fr.Type = FieldCSS
 	}
 	if v, ok := m["expression"].(string); ok {
 		fr.Expression = safeStr(v, 2000)

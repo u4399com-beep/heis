@@ -3749,6 +3749,25 @@ func scanBookRow(rows *sql.Rows) (m map[string]interface{}, rawIntro string, err
         return bookRowFromScan(id, name, author, intro, cover, status, latestChapter, category, categoryID, wordCount, updatedAt), intro.String, nil
 }
 
+// resolveBookWordCount 返回 bookID 的有效字数: wc 非 0 时直返, 否则 fallback
+// SUM(Chapter.wordCount) FROM Chapter WHERE bookId=? (R75-A 目标C3, R74 交接 #5
+// ParsedWordCount DB 聚合; 修复 incremental recrawl 场景 Book.wordCount 仅含本轮
+// 新采章节字数). R99-D 精简: 抽自 getBookViewData + getReadViewData 两处同款 fallback
+// 块 (DRY, 0 行为变化). 性能: 单次 SELECT SUM ~1ms (Chapter 表 bookId 索引);
+// 仅 wc==0 时触发, 正常态 Book.wordCount 已正确不聚合.
+func resolveBookWordCount(bookID string, wc int64) int64 {
+        if wc != 0 {
+                return wc
+        }
+        var aggWC sql.NullInt64
+        if qerr := db.QueryRow(`SELECT COALESCE(SUM(wordCount), 0) FROM Chapter WHERE bookId=?`, bookID).Scan(&aggWC); qerr == nil && aggWC.Valid && aggWC.Int64 > 0 {
+                return aggWC.Int64
+        } else if qerr != nil && qerr != sql.ErrNoRows {
+                log.Printf("[R75-A] resolveBookWordCount SUM(Chapter.wordCount) failed (bookID=%s): %v", bookID, qerr)
+        }
+        return wc
+}
+
 // getBookViewData 装配 book 视图所需: 单本书 + 完整章节列表 + 最近章节 + 同类推荐 + 第一章 id
 func getBookViewData(id string) (map[string]interface{}, []map[string]interface{}, []map[string]interface{}, []map[string]interface{}, string, bool) {
         // 1. 单本书详情 (字段比 getBooks 多 keywords)
@@ -3759,19 +3778,9 @@ func getBookViewData(id string) (map[string]interface{}, []map[string]interface{
         if err != nil {
                 return nil, nil, nil, nil, "", false
         }
-        // R75-A 目标C3 (R74 交接 #5 ParsedWordCount DB 聚合): Book.wordCount==0 时
-        //   fallback SUM(Chapter.wordCount) FROM Chapter WHERE bookId=?. 修复 incremental
-        //   recrawl 场景 ParsedWordCount 仅含本轮新采章节字数 (R74-C 未决项 #5). 性能:
-        //   单次 SELECT SUM ~1ms (Chapter 表 bookId 索引, 200 章以内); 仅 wordCount==0
-        //   时触发, 正常态 Book.wordCount 已正确不需聚合.
-        if wordCount == 0 {
-                var aggWC sql.NullInt64
-                if qerr := db.QueryRow(`SELECT COALESCE(SUM(wordCount), 0) FROM Chapter WHERE bookId=?`, id).Scan(&aggWC); qerr == nil && aggWC.Valid && aggWC.Int64 > 0 {
-                        wordCount = aggWC.Int64
-                } else if qerr != nil && qerr != sql.ErrNoRows {
-                        log.Printf("[R75-A] getBookViewData SUM(Chapter.wordCount) failed (bookID=%s): %v", id, qerr)
-                }
-        }
+        // R75-A 目标C3: Book.wordCount==0 时 fallback SUM(Chapter.wordCount). R99-D
+        //   精简: 抽 resolveBookWordCount helper (与 getReadViewData 同款, 0 行为变化).
+        wordCount = resolveBookWordCount(id, wordCount)
         book := map[string]interface{}{
                 "id": bid.String, "name": name.String, "author": author.String,
                 "intro": intro.String, "cover": coverURL(cover.String), "status": status.String,
@@ -3788,7 +3797,11 @@ func getBookViewData(id string) (map[string]interface{}, []map[string]interface{
         chapters := []map[string]interface{}{}
         firstChID := ""
         if rows != nil {
-                defer rows.Close()
+                // R99-D BUG-284 (P4, BUG-279 family 续): 原 `defer rows.Close()` 在 if 块内 —
+                //   defer 绑定到函数末 (非块末), rows 持续到 getBookViewData 返才关 (跨越
+                //   recent/related 两轮 db.Query, 持有连接). 改: 显式 rows.Close() 块末
+                //   (rows.Err() 后, 与 R98-D BUG-279 getKeywordViewData rows2 同款). 0 行为
+                //   变化, 连接提前释放 (connection pool pressure ↓).
                 for rows.Next() {
                         var cid, title, volume sql.NullString
                         var idx int
@@ -3819,12 +3832,13 @@ func getBookViewData(id string) (map[string]interface{}, []map[string]interface{
                 if rerr := rows.Err(); rerr != nil {
                         log.Printf("[R75-A] getBookViewData chapters rows.Err() (bookID=%s): %v", id, rerr)
                 }
+                rows.Close() // R99-D BUG-284: 即时关 (BUG-279 family).
         }
 
         // 3. 最近章节 (按 idx desc 取 12, 然后反转顺序让其显示为最新→次新)
         recent := []map[string]interface{}{}
         if rows2, err := db.Query(`SELECT id, title FROM Chapter WHERE bookId=? ORDER BY idx DESC LIMIT 12`, id); err == nil {
-                defer rows2.Close()
+                // R99-D BUG-284: 同 rows, defer-in-if-block → 显式 rows2.Close() 块末.
                 tmp := []map[string]interface{}{}
                 for rows2.Next() {
                         var cid, title sql.NullString
@@ -3840,6 +3854,7 @@ func getBookViewData(id string) (map[string]interface{}, []map[string]interface{
                 if rerr := rows2.Err(); rerr != nil {
                         log.Printf("[R75-A] getBookViewData recent rows.Err() (bookID=%s): %v", id, rerr)
                 }
+                rows2.Close() // R99-D BUG-284: 即时关 (BUG-279 family).
                 // 反转
                 for i := len(tmp) - 1; i >= 0; i-- {
                         recent = append(recent, tmp[i])
@@ -3850,7 +3865,7 @@ func getBookViewData(id string) (map[string]interface{}, []map[string]interface{
         related := []map[string]interface{}{}
         if categoryID.String != "" {
                 if rows3, err := db.Query(`SELECT b.id,b.name,b.author,b.intro,b.cover,b.status,b.wordCount,b.latestChapter,COALESCE(c.name,'未分类'),b.categoryId,b.updatedAt FROM Book b LEFT JOIN Category c ON b.categoryId=c.id WHERE b.categoryId=? AND b.id!=? ORDER BY b.updatedAt DESC LIMIT 12`, categoryID.String, id); err == nil {
-                        defer rows3.Close()
+                        // R99-D BUG-284: 同 rows/rows2, defer-in-if-block → 显式 rows3.Close() 块末.
                         for rows3.Next() {
                                 m, _, serr := scanBookRow(rows3)
                                 if serr != nil {
@@ -3863,6 +3878,7 @@ func getBookViewData(id string) (map[string]interface{}, []map[string]interface{
                         if rerr := rows3.Err(); rerr != nil {
                                 log.Printf("[R75-A] getBookViewData related rows.Err() (bookID=%s catID=%s): %v", id, categoryID.String, rerr)
                         }
+                        rows3.Close() // R99-D BUG-284: 即时关 (BUG-279 family).
                 }
         }
 
@@ -3944,15 +3960,9 @@ func getReadViewData(chID string, site map[string]interface{}) (map[string]inter
                 }
                 return chapter, bookMap, nil, nil, true
         }
-        // R75-A 目标C3: Book.wordCount==0 时 fallback SUM(Chapter.wordCount) (与 getBookViewData 同款).
-        if bwc == 0 {
-                var aggWC sql.NullInt64
-                if qerr := db.QueryRow(`SELECT COALESCE(SUM(wordCount), 0) FROM Chapter WHERE bookId=?`, bookID.String).Scan(&aggWC); qerr == nil && aggWC.Valid && aggWC.Int64 > 0 {
-                        bwc = aggWC.Int64
-                } else if qerr != nil && qerr != sql.ErrNoRows {
-                        log.Printf("[R75-A] getReadViewData SUM(Chapter.wordCount) failed (bookID=%s): %v", bookID.String, qerr)
-                }
-        }
+        // R75-A 目标C3: Book.wordCount==0 时 fallback SUM(Chapter.wordCount). R99-D
+        //   精简: 抽 resolveBookWordCount helper (与 getBookViewData 同款, 0 行为变化).
+        bwc = resolveBookWordCount(bookID.String, bwc)
         bookMap := map[string]interface{}{
                 "id": bid.String, "name": bname.String, "author": bauthor.String,
                 "status": bstatus.String, "category": bcategory.String, "intro": bintro.String,

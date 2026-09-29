@@ -133,7 +133,7 @@
 <ul class="works-chapter-log ui-left">
 <li>
 <span class="ui-font-fb">最新章：</span>
-<a class="works-ft-new" href="{{.FirstChapterURL}}">{{if .Book.latestChapter}}{{.Book.latestChapter}}{{else}}第1章{{end}}</a>
+{{if .FirstChapterURL}}<a class="works-ft-new" href="{{.FirstChapterURL}}">{{if .Book.latestChapter}}{{.Book.latestChapter}}{{else}}第1章{{end}}</a>{{else}}<span class="works-ft-new">暂无章节</span>{{end}}
 <span class="ui-pl10 ui-text-gray6">{{fmtDate .Book.updatedAt}}</span>
 </li>
 </ul>
