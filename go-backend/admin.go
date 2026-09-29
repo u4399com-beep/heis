@@ -466,6 +466,50 @@ func execLogged(label, query string, args ...interface{}) {
         }
 }
 
+// unmarshalLogged 解析 JSON 字节为 target 并在解析失败时 log.Printf 提示运维
+// (visibility-only, 不改 caller 返回语义; target 失败时保持零值, caller 续用
+// toIntFromInterface/type-assert 兜底, 与原 `_ = json.Unmarshal` swallow 语义一致).
+// R105-C BUG-309 Pattern C json.Unmarshal 吞错 family helper — 与 execLogged
+// (BUG-272~274 Exec family) / R104-C BUG-307 (fetchConfig override variant) 并行
+// 的 json family 收口. 单点维护防散落 inline log-on-fail 重复.
+func unmarshalLogged(label string, data []byte, target interface{}) {
+        if uerr := json.Unmarshal(data, target); uerr != nil {
+                log.Printf("[%s] JSON 解析失败 (字段置零/兜底): %v", label, uerr)
+        }
+}
+
+// parseTaskProgress 解析 Task.progress JSON 列为仪表盘/任务页所需的 progressNote +
+// pct. R105-C BUG-309 精简-3 (R104-B 精简-1/2 同款 dedup precedent): 原实现
+// fillDashboardData (line ~3382) + fillTasksPageData (line ~3481) 两处 progress
+// 解析 + Phase/BooksDone/BooksTotal/ContentDone/ContentTotal/PhaseNote 提取 +
+// pct/progressNote 计算 ~22 行重复, 抽 helper 单点维护. Unmarshal 走 unmarshalLogged
+// (BUG-309 family log-on-fail). 失败时 progObj=nil → 全零值 → progressNote 显示
+// 零值串 + pct=0 (与原 swallow 语义一致, 仅加 log 可见性).
+func parseTaskProgress(progress string) (progressNote string, pct int) {
+        var progObj map[string]interface{}
+        unmarshalLogged("parseTaskProgress progress", []byte(progress), &progObj)
+        phase, _ := progObj["Phase"].(string)
+        booksDone := toIntFromInterface(progObj["BooksDone"])
+        booksTotal := toIntFromInterface(progObj["BooksTotal"])
+        contentDone := toIntFromInterface(progObj["ContentDone"])
+        contentTotal := toIntFromInterface(progObj["ContentTotal"])
+        phaseNote, _ := progObj["PhaseNote"].(string)
+        if booksTotal > 0 {
+                pct = booksDone * 100 / booksTotal
+        } else if contentTotal > 0 {
+                pct = contentDone * 100 / contentTotal
+        }
+        if phase == "done" {
+                pct = 100
+        }
+        progressNote = fmt.Sprintf("%s · %d/%d 本 · %d/%d 章",
+                phaseLabel(phase), booksDone, booksTotal, contentDone, contentTotal)
+        if phaseNote != "" {
+                progressNote = phaseNote
+        }
+        return
+}
+
 // readJSONBody 读 request body 为 map.
 func readJSONBody(r *http.Request) map[string]interface{} {
         out := map[string]interface{}{}
@@ -473,7 +517,17 @@ func readJSONBody(r *http.Request) map[string]interface{} {
                 return out
         }
         defer r.Body.Close()
-        _ = json.NewDecoder(r.Body).Decode(&out)
+        // R105-C BUG-310 (P4, R104-C BUG-307 Pattern C json family 续抓, Decode
+        //   variant): 原 `_ = json.NewDecoder(r.Body).Decode(&out)` 吞错 — admin
+        //   POST body 含非法 JSON (未闭合括号 / trailing 逗号 / 字段名 typo) 时
+        //   Decode 失败 → out 部分填充或空 → caller strField/floatField 全走默认,
+        //   操作静默用错误字段 (e.g. 建 task ruleId 空). 改 log-on-fail (out 仍返
+        //   best-effort, 仅加 log 可见性, 与 BUG-309 json.Unmarshal family 同款).
+        //   io.EOF (空 body, e.g. delete-by-URL 无 body) 跳过 — 非真实解析失败,
+        //   防 admin 轮询/空 POST 噪声.
+        if derr := json.NewDecoder(r.Body).Decode(&out); derr != nil && !errors.Is(derr, io.EOF) {
+                log.Printf("[readJSONBody %s] body JSON 解析失败 (字段置默认): %v", r.URL.Path, derr)
+        }
         return out
 }
 
@@ -3377,30 +3431,10 @@ func fillDashboardData(data map[string]interface{}) {
                 for rows.Next() {
                         var id, name, status, progress, stats, updatedAt, ruleName string
                         _ = rows.Scan(&id, &name, &status, &progress, &stats, &updatedAt, &ruleName)
-                        // 解析 progress (字段名与 crawl.TaskProgress Go 字段对齐, json.Marshal 默认用首字母大写)
-                        var progObj map[string]interface{}
-                        _ = json.Unmarshal([]byte(progress), &progObj)
-                        phase, _ := progObj["Phase"].(string)
-                        booksDone := toIntFromInterface(progObj["BooksDone"])
-                        booksTotal := toIntFromInterface(progObj["BooksTotal"])
-                        contentDone := toIntFromInterface(progObj["ContentDone"])
-                        contentTotal := toIntFromInterface(progObj["ContentTotal"])
-                        phaseNote, _ := progObj["PhaseNote"].(string)
-
-                        pct := 0
-                        if booksTotal > 0 {
-                                pct = booksDone * 100 / booksTotal
-                        } else if contentTotal > 0 {
-                                pct = contentDone * 100 / contentTotal
-                        }
-                        if phase == "done" {
-                                pct = 100
-                        }
-                        progressNote := fmt.Sprintf("%s · %d/%d 本 · %d/%d 章",
-                                phaseLabel(phase), booksDone, booksTotal, contentDone, contentTotal)
-                        if phaseNote != "" {
-                                progressNote = phaseNote
-                        }
+                        // R105-C BUG-309 + 精简-3: progress 解析抽 parseTaskProgress
+                        //   (unmarshalLogged log-on-fail; dedup fillTasksPageData 同款
+                        //   progress-parse 逻辑 ~22 行→1 行单点维护).
+                        progressNote, pct := parseTaskProgress(progress)
                         recentTasks = append(recentTasks, map[string]interface{}{
                                 "id":             id,
                                 "name":           name,
@@ -3477,32 +3511,12 @@ func fillTasksPageData(data map[string]interface{}, r *http.Request) {
                 for rows.Next() {
                         var id, name, ruleID, mode, recrawlMode, status, progress, stats, updatedAt, ruleName string
                         _ = rows.Scan(&id, &name, &ruleID, &mode, &recrawlMode, &status, &progress, &stats, &updatedAt, &ruleName)
-                        var progObj map[string]interface{}
-                        _ = json.Unmarshal([]byte(progress), &progObj)
+                        // R105-C BUG-309 + 精简-3: progress 解析抽 parseTaskProgress;
+                        //   stats 走 unmarshalLogged (json family log-on-fail, 与
+                        //   dashboard progress 同款收口).
+                        progressNote, pct := parseTaskProgress(progress)
                         var statsObj map[string]interface{}
-                        _ = json.Unmarshal([]byte(stats), &statsObj)
-
-                        phase, _ := progObj["Phase"].(string)
-                        booksDone := toIntFromInterface(progObj["BooksDone"])
-                        booksTotal := toIntFromInterface(progObj["BooksTotal"])
-                        contentDone := toIntFromInterface(progObj["ContentDone"])
-                        contentTotal := toIntFromInterface(progObj["ContentTotal"])
-                        phaseNote, _ := progObj["PhaseNote"].(string)
-
-                        pct := 0
-                        if booksTotal > 0 {
-                                pct = booksDone * 100 / booksTotal
-                        } else if contentTotal > 0 {
-                                pct = contentDone * 100 / contentTotal
-                        }
-                        if phase == "done" {
-                                pct = 100
-                        }
-                        progressNote := fmt.Sprintf("%s · %d/%d 本 · %d/%d 章",
-                                phaseLabel(phase), booksDone, booksTotal, contentDone, contentTotal)
-                        if phaseNote != "" {
-                                progressNote = phaseNote
-                        }
+                        unmarshalLogged("fillTasksPageData stats", []byte(stats), &statsObj)
                         tasks = append(tasks, map[string]interface{}{
                                 "id":             id,
                                 "name":           name,

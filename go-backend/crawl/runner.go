@@ -2219,11 +2219,49 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                 //   仅是部分缓解 (防 HTML 错误页写入 .webp), 二进制图像字节损坏未根治.
                 //   R76-C 改用 FetchBinaryPage 返 raw bytes (无 UTF-8 解码, 保二进制完整) +
                 //   looksBlockedBinary 检测 (首字节 < 字符 = HTML 错误页, 与 R74-C 同口径).
+                // R105-A BUG-309 (P3) 修复 (深抓 cover fetch 反爬指纹 family): cover
+                //   fetch FetchConfig 原硬编码 Referer: false → buildHeaders (line ~3296
+                //   if cfg.Referer) 跳过 Referer 段 → 不发 Referer 头 + computeSecFetchSite
+                //   (effectiveReferer="", line ~3057) 返 "none" → Sec-Fetch-Site: none.
+                //   真实浏览器在书籍详情页加载 <img src=parsed.Cover> 时发 Referer =
+                //   <书籍页 URL> (Referrer-Policy 默认 strict-origin-when-cross-origin:
+                //   same-origin <img> 发完整 document URL; cross-site <img> 发 origin).
+                //   Sec-Fetch-Site 真实值为 same-origin (cover 同域) / cross-site (cover
+                //   外部 CDN), 绝非 "none" (none 仅用户输入 URL 顶层导航, <img> subresource
+                //   永不 none). 反爬识别 "Sec-Fetch-Site: none + 无 Referer + image/* Accept"
+                //   是爬虫指纹 (Chrome <img> 一定发 Referer + Sec-Fetch-Site same/cross,
+                //   从不发 none). 后果: cover 同域站 (e.g. 源站 /uploads/cover/xxx.webp
+                //   与 book 同 host) cover fetch 暴露非浏览器指纹 → Cloudflare/Bot
+                //   Management 把 cover 请求识别为 bot → 后续同 host book/chapter fetch
+                //   被关联降权 (cf-bm cookie 联动) → 采集成功率下降. 修复: Referer: true
+                //   + RefererURL: bookURL (书籍页 URL, buildHeaders line ~3296 优先用
+                //   cfg.RefererURL). computeSecFetchSite 据此算 same-origin / cross-site
+                //   (与真实 Chrome <img> 行为一致). 注: cross-site cover 真实浏览器按
+                //   strict-origin-when-cross-origin 仅发 origin (scheme://host), 我们发
+                //   完整 bookURL — 略 overshare 但远优于不发 (反爬主检 "Referer 存在 +
+                //   plausible", 完整 document URL 对 <img> 合理). 完整 Referrer-Policy
+                //   downgrade 跨 budget (需 originHost(bookURL)==originHost(cover) 判
+                //   + truncate), R106+ 评估.
+                // R105-A BUG-310 (P3) 修复 (深抓 cover fetch cookie 对称 family, 与
+                //   BUG-309 同 cover FetchConfig): cover fetch FetchConfig 原硬编码
+                //   AutoCookie: false → fetchBinaryHttp line ~4536 `if cfg.AutoCookie`
+                //   跳过 Store(coverHost, Set-Cookie). buildHeaders line ~3346 仍发
+                //   jar cookies (GetWithReferer 不受 AutoCookie gate, cover 同域时发
+                //   book fetch 累积的 session cookie), 但 cover 响应的 Set-Cookie
+                //   (e.g. Cloudflare cf_clearance refresh / __cf_bm rotation / 源站
+                //   session refresh) 被丢弃 → 下次 book/chapter 同 host fetch 用 stale
+                //   cookie → cookie 过期后同 host 持续被拦 (与 R85-A BUG-206/207 hostGate
+                //   cookie 链不对称 family, 反向: book fetch 存 cookie, cover fetch 丢).
+                //   修复: AutoCookie: true (与 DefaultFetchConfig.AutoCookie + book fetch
+                //   cfg.Override.AutoCookie 同口径). cover host 多为 external CDN, 存
+                //   CDN cookie 到 jar (per-domain 不污染 book host cookie; 后续同 CDN
+                //   cover fetch 复用, 降反爬关联识别). 与 BUG-309 同 FetchConfig 改.
                 coverBin, err := FetchBinaryPage(ctx, parsed.Cover, FetchConfig{
                         Engine:     "http",
                         UAMode:     "rotate",
-                        AutoCookie: false,
-                        Referer:    false,
+                        AutoCookie: true,
+                        Referer:    true,
+                        RefererURL: bookURL,
                         Timeout:    15000,
                         Retries:    1,
                 })

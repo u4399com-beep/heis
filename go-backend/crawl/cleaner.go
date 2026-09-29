@@ -47,6 +47,7 @@ type trafilaturaState struct {
         mu        sync.Mutex
         available *bool // nil = 未探测
         checkedAt int64
+        cachedURL string // BUG-309: 缓存对应的 bridgeURL, 防 cross-URL 缓存污染
 }
 
 var trafilaturaInst = &trafilaturaState{}
@@ -69,6 +70,20 @@ var trafilaturaCallClient = &http.Client{
 }
 
 // CheckTrafilaturaBridge — 探测桥可用性 (/health), 60s 缓存.
+//
+//      BUG-309 (P3) + 精简: cachedURL 跟踪防 cross-URL 缓存污染. 原缓存
+//        (available + checkedAt) 不区分 bridgeURL — exported API, 外部 caller
+//        传 custom bridgeURL (≠ default) 会读到 default URL 的缓存状态 (default
+//        探测 available=true 后, custom URL caller 立即返 true 而不探测 custom
+//        URL, 实际 custom URL 可能不可达 → CallTrafilaturaExtract 调 /extract
+//        失败). 修复: 加 cachedURL 字段, 缓存命中前检 cachedURL==bridgeURL,
+//        不匹配则跳过缓存走探测. 唯一生产 caller CallTrafilaturaExtract line
+//        143 仅 isDefault=true 调本函数, 0 生产命中; exported API 防御性修复.
+//        latent 自 R42-1B 加 60s 缓存 (62 轮未发现因 0 外部 caller 用 custom
+//        bridgeURL). 精简: 原 3 处 `available=&f; checkedAt=now; return false`
+//        + 1 处 true 写入 (4 路重复缓存赋值) 合并为单 ok 变量 + 探测 helper
+//        (probeTrafilaturaBridge) + caller 统一缓存写入, -9 行重复 (与 R104-B
+//        CcStripOnlyRe+ZWStripOnlyRe 合并同款 "重复路径精简" precedent).
 func CheckTrafilaturaBridge(bridgeURL string) bool {
         if bridgeURL == "" {
                 bridgeURL = TrafilaturaBridgeURLDefault
@@ -76,7 +91,7 @@ func CheckTrafilaturaBridge(bridgeURL string) bool {
         trafilaturaInst.mu.Lock()
         defer trafilaturaInst.mu.Unlock()
         now := time.Now().UnixMilli()
-        if trafilaturaInst.available != nil {
+        if trafilaturaInst.available != nil && trafilaturaInst.cachedURL == bridgeURL {
                 if *trafilaturaInst.available {
                         return true
                 }
@@ -85,19 +100,23 @@ func CheckTrafilaturaBridge(bridgeURL string) bool {
                         return false
                 }
         }
-        // 探测
+        ok := probeTrafilaturaBridge(bridgeURL)
+        trafilaturaInst.available = &ok
+        trafilaturaInst.checkedAt = now
+        trafilaturaInst.cachedURL = bridgeURL
+        return ok
+}
+
+// probeTrafilaturaBridge — 桥 /health 探测 (无锁, caller 持锁). BUG-309 精简
+//   抽出: Get 失败 / 非 200 / JSON decode 失败 / Ok 或 SelfTestOk false → 返 false.
+//   原内联在 CheckTrafilaturaBridge 3 处 false 路径 + 1 处 true 路径, 合并于此.
+func probeTrafilaturaBridge(bridgeURL string) bool {
         resp, err := trafilaturaProbeClient.Get(bridgeURL + "/health")
         if err != nil {
-                f := false
-                trafilaturaInst.available = &f
-                trafilaturaInst.checkedAt = now
                 return false
         }
         defer resp.Body.Close()
         if resp.StatusCode != 200 {
-                f := false
-                trafilaturaInst.available = &f
-                trafilaturaInst.checkedAt = now
                 return false
         }
         var data struct {
@@ -106,16 +125,7 @@ func CheckTrafilaturaBridge(bridgeURL string) bool {
         }
         body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
         _ = json.Unmarshal(body, &data)
-        if !data.Ok || !data.SelfTestOk {
-                f := false
-                trafilaturaInst.available = &f
-                trafilaturaInst.checkedAt = now
-                return false
-        }
-        t := true
-        trafilaturaInst.available = &t
-        trafilaturaInst.checkedAt = now
-        return true
+        return data.Ok && data.SelfTestOk
 }
 
 // TrafilaturaExtractResult — 桥调用结果.
@@ -170,6 +180,7 @@ func CallTrafilaturaExtract(ctx context.Context, html string, pruneXPath []strin
                         f := false
                         trafilaturaInst.available = &f
                         trafilaturaInst.checkedAt = time.Now().UnixMilli()
+                        trafilaturaInst.cachedURL = bridgeURL // BUG-309: 同步 cachedURL 防跨 URL 缓存污染
                         trafilaturaInst.mu.Unlock()
                 }
                 return TrafilaturaExtractResult{Ok: false, Error: "调用失败: " + err.Error()}
@@ -181,6 +192,7 @@ func CallTrafilaturaExtract(ctx context.Context, html string, pruneXPath []strin
                         f := false
                         trafilaturaInst.available = &f
                         trafilaturaInst.checkedAt = time.Now().UnixMilli()
+                        trafilaturaInst.cachedURL = bridgeURL // BUG-309: 同步 cachedURL 防跨 URL 缓存污染
                         trafilaturaInst.mu.Unlock()
                 }
                 return TrafilaturaExtractResult{Ok: false, Error: fmt.Sprintf("bridge HTTP %d", resp.StatusCode)}

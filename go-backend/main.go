@@ -828,7 +828,22 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 data["Chapters"] = chapters
                 data["RecentChapters"] = recent
                 data["Related"] = related
-                data["FirstChapterId"] = firstChID
+                // R105-D BUG-311 (P4 精简/dead-field removal, main+templates scope,
+                //   R104-D BUG-304 dead-defense family 续 + R85-D BUG-206 dead-field
+                //   family 续): 删 data["FirstChapterId"] (本行, R72-A 引入供模板
+                //   /?view=read&chapter={{.FirstChapterId}} query 串拼接) + 删
+                //   data["ChapterListAnchor"] (下方, R76-A 引入供模板 href="#{{.
+                //   ChapterListAnchor}}" 动态锚点). 两字段 0 template consumers
+                //   (rg '{{.FirstChapterId}}|{{.ChapterListAnchor}}' 全 88 模板
+                //   0 命中) — R63-B/R76-B 模板层改用 {{.FirstChapterURL}} (R63-A
+                //   注入的 buildChapterURL 输出, 含 pseudoStyle 风格) + 静态
+                //   href="#chapter_list" (而非动态 {{.ChapterListAnchor}}),
+                //   两 Go-side 字段成 dead-defense 注入. R72 worklog line 28674
+                //   已识别 ChapterListAnchor "字段未消费" 但未删 (保留供"未来
+                //   动态绑定"), 至 R105 仍 0 consumer. 删后 0 行为变化 (map 写
+                //   入无 reader), 省 2 map[string]interface{} 写入 per book view
+                //   request. 与 R85-D BUG-206 删 history view TopBooks/Popular
+                //   同款 "dead field 精简" precedent (字段注入无 consumer).
                 // R63-A: 注入 URL builder 输出供模板消费 (本轮 Go 端就绪, 模板层 R63-B 接入).
                 data["BookURL"] = buildBookURL(pseudoStyle, id)
                 // R76-A 目标A (用户需求 #1 按钮 bug 修复): R72-A 的 fallback 是 bug — 无章节书
@@ -837,15 +852,12 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 //   时 FirstChapterURL = "" 让模板用 {{if .FirstChapterURL}} 判断显示 (R76-B 模板
                 //   范围负责加 if guard, 本轮 Go 端只提供 empty 值). 同时注入 HasChapters bool 供
                 //   模板 {{if .HasChapters}} 区分显示 "在线阅读全文" 按钮还是 "暂无章节" 提示.
-                //   ChapterListAnchor 固定 "chapter_list" 供模板 href="#{{.ChapterListAnchor}}"
-                //   跳转到 <article id="chapter_list"> 锚点 (模板需确保 div id 匹配, R76-B 范围).
                 data["HasChapters"] = len(chapters) > 0
                 if firstChID == "" {
                         data["FirstChapterURL"] = ""
                 } else {
                         data["FirstChapterURL"] = buildChapterURL(pseudoStyle, firstChID, id)
                 }
-                data["ChapterListAnchor"] = "chapter_list"
                 // R76-A 目标B (用户需求 #1 pSEO 标签注入): 注入 Og*/Twitter*/Canonical 供模板
                 //   head 区渲染 meta property="og:title" 等 (R76-B 模板范围). 现 aijjxs/book.html
                 //   只有 keywords + description meta, 缺 og/twitter/canonical → 社交平台分享时
@@ -903,8 +915,19 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                         //     normalized 形态: http://, https://, //, /, data:, other).
                         //     0 行为变化 (coverURL idempotent), 省 map lookup + 4 次
                         //     HasPrefix 字符串比较 per book view request.
-                        data["OgImage"] = buildAbsoluteURL(siteDomain, bookCover)
-                        data["TwitterImage"] = buildAbsoluteURL(siteDomain, bookCover)
+                        // R105-D BUG-312 (P4 精简/DRY, main scope, R104-D BUG-304
+                        //   og:image family sibling 续, case "read" 同款): 原代码
+                        //   data["OgImage"] + data["TwitterImage"] 各调一次
+                        //   buildAbsoluteURL(siteDomain, bookCover) — 两次调用同
+                        //   args, 第二次冗余 (buildAbsoluteURL 非 idempotent 早返,
+                        //   相对路径走 normalizeDomain + isLocalhostDomain +
+                        //   scheme 选择 + string concat ~5 ops; 外链/data:/协议
+                        //   相对才早返). hoist absCover local var, 两次赋值复用.
+                        //   0 行为变化, 省 1 buildAbsoluteURL 调用 per book view
+                        //   request (bookCover 非空时).
+                        absCover := buildAbsoluteURL(siteDomain, bookCover)
+                        data["OgImage"] = absCover
+                        data["TwitterImage"] = absCover
                 }
                 data["TwitterCard"] = "summary"
                 data["TwitterTitle"] = bookName
@@ -927,13 +950,33 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                         render404(w, r, site)
                         return
                 }
-                // R64-D: 注入 per-book URL (R63-A 已注入 prev/next chapter URL + 单页级 ChapterURL/BookURL)
+                // R64-D: 注入 per-book URL (R63-A 已注入 prev/next chapter URL + 单页级 BookURL)
                 injectBookURL(book, pseudoStyle)
                 data["Chapter"] = ch
                 data["Book"] = book
-                // R63-A: 注入 URL builder 输出.
-                data["ChapterURL"] = buildChapterURL(pseudoStyle, chID, bookIDFromMap(book))
-                if bid := bookIDFromMap(book); bid != "" {
+                // R105-D BUG-311 (P4 精简/dead-field removal, main+templates
+                //   scope, R104-D BUG-304 dead-defense family 续 + R85-D BUG-206
+                //   dead-field family 续, 与 case "book" FirstChapterId/
+                //   ChapterListAnchor 同款): 删 data["ChapterURL"] (R63-A 引入供
+                //   模板 href="{{.ChapterURL}}" 单页级 chapter URL 占位符).
+                //   0 template consumers (rg '{{.ChapterURL}}' 全 88 模板 0
+                //   命中, 与 FirstChapterId/ChapterListAnchor 同款 dead field) —
+                //   R63-B 模板层改用 {{.Prev.URL}}/{{.Next.URL}} (R84-D BUG-195
+                //   注入的 prev/next URL) + absChURL (OgUrl/CanonicalURL),
+                //   ChapterURL Go-side 注入成 dead-defense. 删后 0 行为变化
+                //   (map 写入无 reader), 省 1 buildChapterURL + 1 bookIDFromMap
+                //   调用 per read view request (buildChapterURL 结果之前从未
+                //   被 reader 消费, 纯 dead compute).
+                // R105-D BUG-312 (P4 精简/DRY, main scope, R104-D BUG-304 og:image
+                //   family sibling 续): hoist bid := bookIDFromMap(book) 至
+                //   case "read" 顶部 (替代 line 947 dead data["ChapterURL"] 块
+                //   的 bookIDFromMap(book) + 原 line 948 if-bid 块的 bookIDFromMap
+                //   (book) + line 961/968 prev/next URL 注入的 bookIDFromMap(book)
+                //   + line 998 bidForSEO := bookIDFromMap(book)). 5 callsite → 1,
+                //   省 4 冗余 map lookup + type assertion per read view request.
+                //   bid 0 副作用 (bookIDFromMap 纯读 map), hoist 0 行为变化.
+                bid := bookIDFromMap(book)
+                if bid != "" {
                         data["BookURL"] = buildBookURL(pseudoStyle, bid)
                 }
                 // R84-D BUG-195 (R83-D 诚实留痕 #3 修复, Go-side 替代 12 主题 × 4 模板
@@ -946,14 +989,17 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 //   赋值移到 guard 后 (确保模板看到最终值).
                 if prev != nil {
                         if pid, ok := prev["id"].(string); ok && pid != "" {
-                                prev["URL"] = buildChapterURL(pseudoStyle, pid, bookIDFromMap(book))
+                                // R105-D BUG-312: 用 hoisted bid (case "read" 顶部
+                                //   声明) 替代 bookIDFromMap(book) 冗余调用.
+                                prev["URL"] = buildChapterURL(pseudoStyle, pid, bid)
                         } else {
                                 prev = nil
                         }
                 }
                 if next != nil {
                         if nid, ok := next["id"].(string); ok && nid != "" {
-                                next["URL"] = buildChapterURL(pseudoStyle, nid, bookIDFromMap(book))
+                                // R105-D BUG-312: 同 prev, 用 hoisted bid.
+                                next["URL"] = buildChapterURL(pseudoStyle, nid, bid)
                         } else {
                                 next = nil
                         }
@@ -983,8 +1029,10 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 bookNameRead, _ := book["name"].(string)
                 bookIntroRead, _ := book["intro"].(string)
                 bookCoverRead, _ := book["cover"].(string)
-                bidForSEO := bookIDFromMap(book)
-                absChURL := buildAbsoluteURL(siteDomain, buildChapterURL(pseudoStyle, chID, bidForSEO))
+                // R105-D BUG-312: 删 bidForSEO := bookIDFromMap(book) (与 case
+                //   "read" 顶部 hoisted bid 同值, DRY), 复用 bid; buildChapterURL
+                //   仍 inline (单次调用, 0 冗余, 无需 hoist chapterURL var).
+                absChURL := buildAbsoluteURL(siteDomain, buildChapterURL(pseudoStyle, chID, bid))
                 ogDescRead := truncate(bookIntroRead, 200)
                 data["OgTitle"] = chTitle + " - " + bookNameRead + " - " + siteName
                 data["OgDescription"] = ogDescRead
@@ -1008,8 +1056,19 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                         //     路径" 不存在). 删冗余 coverURL wrapper, 直接传
                         //     bookCoverRead 给 buildAbsoluteURL. 0 行为变化, 省 map
                         //     lookup + HasPrefix 比较 per read view request.
-                        data["OgImage"] = buildAbsoluteURL(siteDomain, bookCoverRead)
-                        data["TwitterImage"] = buildAbsoluteURL(siteDomain, bookCoverRead)
+                        // R105-D BUG-312 (P4 精简/DRY, main scope, R104-D BUG-304
+                        //   og:image family sibling 续, case "book" 同款): 原代码
+                        //   data["OgImage"] + data["TwitterImage"] 各调一次
+                        //   buildAbsoluteURL(siteDomain, bookCoverRead) — 两次
+                        //   调用同 args, 第二次冗余 (buildAbsoluteURL 非
+                        //   idempotent 早返, 相对路径走 normalizeDomain +
+                        //   isLocalhostDomain + scheme 选择 + string concat ~5
+                        //   ops; 外链/data:/协议相对才早返). hoist absCoverRead
+                        //   local var, 两次赋值复用. 0 行为变化, 省 1 buildAbsoluteURL
+                        //   调用 per read view request (bookCoverRead 非空时).
+                        absCoverRead := buildAbsoluteURL(siteDomain, bookCoverRead)
+                        data["OgImage"] = absCoverRead
+                        data["TwitterImage"] = absCoverRead
                 }
                 data["TwitterCard"] = "summary"
                 data["TwitterTitle"] = chTitle + " - " + bookNameRead

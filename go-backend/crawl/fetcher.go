@@ -4531,6 +4531,52 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 if sc := resp.Header.Get("Surrogate-Control"); sc != "" {
                         recordSecurityHeader(originHost(rawURL), "Surrogate-Control", sc)
                 }
+                // R105-A 反反爬第 219-223 项: partial content / content integrity /
+                //   AWS S3 origin / AWS X-Ray distributed tracing 响应头观测 (per-host
+                //   合并 tracker 第 91-95 字段, 与 124-218 同款). R104-A 未决项 #1 pivot
+                //   续 — CDN edge request ID + alt tracing + framework timing + CDN
+                //   surrogate 耗尽, pivot partial content range + content integrity +
+                //   cloud-origin (AWS S3) posture + cloud-tracing (AWS X-Ray) family.
+                //   第 219 项 Content-Range (RFC 7233 §4.2) — partial content range
+                //     (e.g. "bytes 0-499/1234"), 与第 123 Accept-Ranges 互补 (Accept-
+                //     Ranges 广告能力, Content-Range 确认实际 range 服务). 反爬关联:
+                //     range-capable CDN/static posture (Cloudflare/Akamai 发, 与第 194
+                //     CDN-Cache-Control + 199 Cache-Status CDN family 续, range serving =
+                //     mature static/CDN posture).
+                //   第 220 项 Content-MD5 (RFC 1864, RFC 7231 deprecated 但仍部署) —
+                //     body base64 MD5 校验和, 与第 160 ETag validator family 互补 (MD5
+                //     content integrity vs opaque validator). 反爬关联: legacy content
+                //     integrity posture (CloudFront/S3-backed CDN 发, 与第 211 X-Served-
+                //     By Fastly + 214 X-Amz-Cf-Id CloudFront CDN family 续, integrity =
+                //     mature static posture).
+                //   第 221 项 X-Amz-Request-Id (AWS S3 convention) — S3 origin request
+                //     ID (e.g. "A3...="). 反爬关联: AWS S3 origin posture (S3 直连 / S3-
+                //     backed CDN 发, 与第 214 X-Amz-Cf-Id CloudFront edge family 互补 —
+                //     CloudFront edge vs S3 origin, AWS backend fingerprint signal).
+                //   第 222 项 X-Amz-Id-2 (AWS S3 convention) — S3 host ID (e.g.
+                //     "hash/host"). 反爬关联: AWS S3 origin posture (与第 221 X-Amz-
+                //     Request-Id 配对, S3 origin fingerprint — 操作员可识别 backend =
+                //     AWS S3 origin, 与 CloudFront edge 区分).
+                //   第 223 项 X-Amzn-Trace-Id (AWS X-Ray / API Gateway convention) — AWS
+                //     distributed tracing (e.g. "Root=1-...-..."). 反爬关联: AWS
+                //     observability posture (X-Ray variant, 与第 207 Traceparent W3C +
+                //     208 Baggage W3C + 210 X-Correlation-ID Azure + 215 X-B3-TraceId
+                //     Zipkin tracing family 互补 — AWS X-Ray stack fingerprint).
+                if cr := resp.Header.Get("Content-Range"); cr != "" {
+                        recordSecurityHeader(originHost(rawURL), "Content-Range", cr)
+                }
+                if cmd5 := resp.Header.Get("Content-MD5"); cmd5 != "" {
+                        recordSecurityHeader(originHost(rawURL), "Content-MD5", cmd5)
+                }
+                if xari := resp.Header.Get("X-Amz-Request-Id"); xari != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Amz-Request-Id", xari)
+                }
+                if xai2 := resp.Header.Get("X-Amz-Id-2"); xai2 != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Amz-Id-2", xai2)
+                }
+                if xati := resp.Header.Get("X-Amzn-Trace-Id"); xati != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Amzn-Trace-Id", xati)
+                }
 
                 // Set-Cookie 处理 (autoCookie)
                 if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
@@ -5737,6 +5783,27 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 }
                 if sc := extractHeaderFromCurlStdout(headers, "Surrogate-Control"); sc != "" {
                         recordSecurityHeader(domain, "Surrogate-Control", sc)
+                }
+                // R105-A 反反爬第 219-223 项 续 (与 fetchHttp line ~4534 同款, curl
+                //   -D - dump headers 路径; fetchBinaryViaCurl 不 dump headers 故不调,
+                //   与 124-218 同款限制. 详见 fetchHttp line ~4534 rationale). 第 219
+                //   项 Content-Range / 第 220 项 Content-MD5 / 第 221 项 X-Amz-Request-Id
+                //   / 第 222 项 X-Amz-Id-2 / 第 223 项 X-Amzn-Trace-Id (extractHeaderFrom
+                //   CurlStdout 已对 5 头大小写不敏感提取).
+                if cr := extractHeaderFromCurlStdout(headers, "Content-Range"); cr != "" {
+                        recordSecurityHeader(domain, "Content-Range", cr)
+                }
+                if cmd5 := extractHeaderFromCurlStdout(headers, "Content-MD5"); cmd5 != "" {
+                        recordSecurityHeader(domain, "Content-MD5", cmd5)
+                }
+                if xari := extractHeaderFromCurlStdout(headers, "X-Amz-Request-Id"); xari != "" {
+                        recordSecurityHeader(domain, "X-Amz-Request-Id", xari)
+                }
+                if xai2 := extractHeaderFromCurlStdout(headers, "X-Amz-Id-2"); xai2 != "" {
+                        recordSecurityHeader(domain, "X-Amz-Id-2", xai2)
+                }
+                if xati := extractHeaderFromCurlStdout(headers, "X-Amzn-Trace-Id"); xati != "" {
+                        recordSecurityHeader(domain, "X-Amzn-Trace-Id", xati)
                 }
                 if status >= 300 {
                         // R66-C BUG-52 (P3): curl 4xx/5xx 也记 latency + fail (与 fetchHttp
@@ -8007,6 +8074,30 @@ func fetchBinaryHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, pr
                 }
                 if sc := resp.Header.Get("Surrogate-Control"); sc != "" {
                         recordSecurityHeader(originHost(rawURL), "Surrogate-Control", sc)
+                }
+                // R105-A 反反爬第 219-223 项 续 (与 fetchHttp line ~4534 同款,
+                //   fetchBinaryHttp success + 4xx/5xx 两路径都记, BUG-241 修复后
+                //   fetchBinaryHttp 已补对称; fetchBinaryViaCurl 不 dump headers
+                //   故不调, 与 124-218 同款限制. 详见 fetchHttp line ~4534 rationale).
+                //   第 219 项 Content-Range / 第 220 项 Content-MD5 / 第 221 项
+                //   X-Amz-Request-Id / 第 222 项 X-Amz-Id-2 / 第 223 项 X-Amzn-Trace-Id
+                //   (partial content + content integrity + AWS S3 origin + AWS X-Ray
+                //   tracing posture; cover host 多在 external CDN / S3, 与 HTML host
+                //   不同域各自独立条目, 无污染).
+                if cr := resp.Header.Get("Content-Range"); cr != "" {
+                        recordSecurityHeader(originHost(rawURL), "Content-Range", cr)
+                }
+                if cmd5 := resp.Header.Get("Content-MD5"); cmd5 != "" {
+                        recordSecurityHeader(originHost(rawURL), "Content-MD5", cmd5)
+                }
+                if xari := resp.Header.Get("X-Amz-Request-Id"); xari != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Amz-Request-Id", xari)
+                }
+                if xai2 := resp.Header.Get("X-Amz-Id-2"); xai2 != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Amz-Id-2", xai2)
+                }
+                if xati := resp.Header.Get("X-Amzn-Trace-Id"); xati != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Amzn-Trace-Id", xati)
                 }
                 // 3xx / 4xx / 5xx 视为失败 (与 fetchHttp 同款, 不重试 3xx)
                 if resp.StatusCode >= 300 {

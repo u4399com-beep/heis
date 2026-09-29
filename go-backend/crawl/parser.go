@@ -1179,6 +1179,17 @@ func filterArray(arr []any, k, v string) any {
                 }
                 val, exists := m[k]
                 if !exists {
+                        // BUG-311 (P3): RFC 9535 JSONPath — absent field: == filter
+                        //   excludes (continue, 不可比较), != filter includes (absent
+                        //   ≠ any value, == 比较为 false 则 != 为 true). 原 !exists→
+                        //   continue 对 == 正确, 对 != 误排除 (admin 配
+                        //   [?(@.f!=v)] 期望 "无 f 字段" 的 item 也命中, 实际被静默
+                        //   跳过 → filterArray 返缺漏集). 71 Rule 0 用 != filter
+                        //   (多用 ==); 0 生产命中, 防御性 + RFC 对齐修复. latent
+                        //   自 R72-C BUG-247 加 != 运算符 (33 轮未发现).
+                        if neg {
+                                out = append(out, item)
+                        }
                         continue
                 }
                 // BUG-301 (P3): 原 fmt.Sprintf("%v", val) 对 float64 ≥ 1e6 返科学
@@ -1766,16 +1777,30 @@ func ParseList(html, baseURL string, pageRule PageRule, urlFields []string) List
         out := ListResult{Items: []ListItem{}}
         fields := pageRule.Fields
         itemSelector := pageRule.ItemSelector
-        hasJsonConstFields := false
+        // BUG-310 (P3): 仅 FieldJSON 触发 JSON 模式 (原 FieldJSON||FieldConst
+        //   让 HTML 无容器 + FieldConst (无 FieldJSON) 误进 JSON 模式 →
+        //   ParseJsonBody(HTML) 返 nil → 整页返空 → FieldConst 模板永不执行
+        //   (itemSelector==nil + 仅 FieldConst 字段的 Rule 全返空, 与有
+        //   FieldJSON 字段的 Rule 行为不一致). FieldConst 是模板字段
+        //   (applyConstTemplate 用 ctx.Vars, 不需 JSON body), HTML 无容器模式
+        //   下应走 line ~1868 路径 (URLVars + index ctx + ExtractField
+        //   FieldConst 分支 line 1458). 修复: 仅 FieldJSON 触发 JSON 模式,
+        //   FieldConst 单独 (无 FieldJSON) 走 HTML 无容器模式. 71 Rule 0 用
+        //   FieldConst in HTML list fields (yueyouxs const 仅在 toc.tocLink,
+        //   runner.go line ~1876 BUG-268 已修); 0 生产命中, 防御性修复. latent
+        //   自 R38 TS→Go 迁移 (47 轮未发现). 行为变化: 仅 itemSelector==nil +
+        //   FieldConst (无 FieldJSON) case, 从 JSON 模式 (返空) → HTML 无容器
+        //   模式 (FieldConst 跑 applyConstTemplate); FieldJSON 触发 case 不变.
+        hasJSONField := false
         for _, r := range fields {
-                if r.Type == FieldJSON || r.Type == FieldConst {
-                        hasJsonConstFields = true
+                if r.Type == FieldJSON {
+                        hasJSONField = true
                         break
                 }
         }
 
         // ---- JSON 模式 ----
-        if (itemSelector != nil && itemSelector.Type == FieldJSON) || (itemSelector == nil && hasJsonConstFields) {
+        if (itemSelector != nil && itemSelector.Type == FieldJSON) || (itemSelector == nil && hasJSONField) {
                 root := ParseJsonBody(htmlClean)
                 if root == nil {
                         return out

@@ -50068,3 +50068,763 @@ Stage Summary:
    scope 内不冲突) 同款 "新 scope 起新号段" 方法论.
 
 ==============================================================================
+
+Round R105-A (crawl/{fetcher,runner}.go scope: 反反爬第 219-223 项 +
+深抓 BUG-309/310 cover fetch posture family)
+
+Agent: R105-A agent (crawl/{fetcher,runner}.go: 反反爬第 219-223 项
+header observance + 深抓 cover fetch BUG-309/310, +129 行净, 编译 0)
+
+Files changed (2): go-backend/crawl/fetcher.go (+91) + runner.go (+42
+net, +42 insert / -2 delete FetchConfig 字段值改). 严禁改非 2 文件 /
+启动 / 新依赖 / emoji / 临时测试文件 — 本轮 0 触 (仅 fetcher.go +
+runner.go 两文件, 0 启动改, 0 新依赖, 0 emoji, 0 临时测试文件).
+
+编译: go build ./crawl/ + go build ./... + go vet ./crawl/ 全 0 errors
+(Go 1.x toolchain, /home/z/go/go/bin/go). 主控统一编译应 0 errors
+(本轮仅 fetcher/runner 2 文件, 与 R104-A (fetcher/runner BUG-304/305/
+306) / R104-B (cleaner/smart/types BUG-307/308) scope 不重叠 — 本轮
+R105-A 改 fetcher.go (新增 5 头 × 3 路径 = 15 recordSecurityHeader
+callsite + rationale comment) + runner.go (cover FetchConfig 2 字段值
+改 + BUG-309/310 rationale comment); cleaner/smart/types/admin/main/
+templates 0 触).
+
+==============================================================================
+## 反反爬第 219-223 项 (fetcher.go scope, 响应头观测 family 续)
+
+R104-A 反反爬第 214-218 项 (X-Amz-Cf-Id + X-B3-TraceId + X-Runtime +
+X-Response-Time + Surrogate-Control) pivot modern observability
+correlation + CDN edge + framework timing + CDN surrogate cache
+posture family 续. 本轮 R105-A pivot partial content / content
+integrity / cloud-origin (AWS S3) / cloud-tracing (AWS X-Ray) family
+(第 219-223 项, per-host 合并 tracker 第 91-95 字段, 与 124-218
+同款 recordSecurityHeader 模式):
+
+第 219 项 Content-Range (RFC 7233 §4.2) — partial content range (e.g.
+  "bytes 0-499/1234"). 与第 123 Accept-Ranges 互补 (Accept-Ranges 广告
+  能力, Content-Range 确认实际 range 服务). 反爬关联: range-capable
+  CDN/static posture (Cloudflare/Akamai 发, 与第 194 CDN-Cache-Control
+  + 199 Cache-Status CDN family 续, range serving = mature static/CDN).
+第 220 项 Content-MD5 (RFC 1864, RFC 7231 deprecated 但仍部署) — body
+  base64 MD5 校验和, 与第 160 ETag validator family 互补 (MD5 content
+  integrity vs opaque validator). 反爬关联: legacy content integrity
+  posture (CloudFront/S3-backed CDN 发, 与第 211 X-Served-By Fastly +
+  214 X-Amz-Cf-Id CloudFront CDN family 续).
+第 221 项 X-Amz-Request-Id (AWS S3 convention) — S3 origin request ID
+  (e.g. "A3...="). 反爬关联: AWS S3 origin posture (S3 直连 / S3-backed
+  CDN 发, 与第 214 X-Amz-Cf-Id CloudFront edge family 互补 — CloudFront
+  edge vs S3 origin, AWS backend fingerprint).
+第 222 项 X-Amz-Id-2 (AWS S3 convention) — S3 host ID (e.g.
+  "hash/host"). 反爬关联: AWS S3 origin posture (与第 221 X-Amz-
+  Request-Id 配对, S3 origin fingerprint — 操作员可识别 backend = AWS
+  S3 origin, 与 CloudFront edge 区分).
+第 223 项 X-Amzn-Trace-Id (AWS X-Ray / API Gateway convention) — AWS
+  distributed tracing (e.g. "Root=1-...-..."). 反爬关联: AWS
+  observability posture (X-Ray variant, 与第 207 Traceparent W3C +
+  208 Baggage W3C + 210 X-Correlation-ID Azure + 215 X-B3-TraceId
+  Zipkin tracing family 互补 — AWS X-Ray stack fingerprint).
+
+3 路径对称 (与 R104-A 第 214-218 项同款 3-path symmetry):
+  1. fetchHttp (line ~4534, fetcher.go): native net/http 路径, resp.Header
+     .Get 取 5 头 + recordSecurityHeader(originHost(rawURL), "<Header>",
+     val). rationale block ~30 行 (pivot 续 + 5 头各 ~3 行反爬关联).
+  2. fetchBinaryHttp (line ~8057, fetcher.go): native net/http binary
+     路径 (cover fetch), 同款 resp.Header.Get 取 5 头. rationale block
+     ~9 行 (引用 "详见 fetchHttp line ~4534 rationale", 与 R104-A 第
+     214-218 fetchBinaryHttp block 同款 concise 引用 precedent).
+  3. fetchViaCurl (line ~5787, fetcher.go): curl -D - dump headers 路径,
+     extractHeaderFromCurlStdout 取 5 头 (大小写不敏感, 与 R104-A 第
+     214-218 fetchViaCurl block 同款). rationale block ~6 行 (引用 +
+     extractHeaderFromCurlStdout 大小写不敏感 note).
+  fetchBinaryViaCurl 不 dump headers 故不调 (与 124-218 同款限制,
+  fetchBinaryViaCurl 仅抓 body stdout 无 -D -, 与 fetchViaCurl 不同).
+
+value: 5 头全 admin hostSecurityHeadersSnapshot 可观测 (per-host 合并
+  tracker 第 91-95 字段). 反爬降分价值 ≤1 分/头 (不在 Cloudflare Bot
+  Score Top 50, 与 R104-A 第 214-218 同款观测 tracker 定位). 主要价值:
+  admin 识别 host backend = AWS S3 origin / AWS X-Ray tracing / range-
+  capable CDN (操作员可据 backend fingerprint 调桥 / cf_clearance 路径
+  策略). 0 生产行为改 (仅观测, 不改 transport / fetch / 请求行为).
+
+## 深抓 BUG-309 (runner.go scope, cover fetch Referer + Sec-Fetch-Site
+anti-crawl fingerprint)
+
+R105-A BUG-309 (P3) 修复 (深抓 cover fetch 反爬指纹 family, R76-C
+BUG-115 cover FetchBinaryPage 接入后续抓): runner.go CrawlBookMeta cover
+fetch FetchConfig (line ~2259) 原硬编码 `Referer: false` → buildHeaders
+(fetcher.go line ~3296 `if cfg.Referer`) 跳过 Referer 段 → 不发 Referer
+头 + computeSecFetchSite (effectiveReferer="", line ~3057) 返 "none" →
+Sec-Fetch-Site: none. 真实浏览器在书籍详情页加载 `<img src=parsed.
+Cover>` 时发 `Referer: <书籍页 URL>` (Referrer-Policy 默认 strict-
+origin-when-cross-origin: same-origin <img> 发完整 document URL; cross-
+site <img> 发 origin). Sec-Fetch-Site 真实值为 same-origin (cover 同域)
+/ cross-site (cover 外部 CDN), 绝非 "none" (none 仅用户输入 URL 顶层
+导航, <img> subresource 永不 none).
+
+后果: cover 同域站 (e.g. 源站 /uploads/cover/xxx.webp 与 book 同 host)
+cover fetch 暴露 "Sec-Fetch-Site: none + 无 Referer + image/* Accept"
+非浏览器指纹 → Cloudflare/Bot Management 把 cover 请求识别为 bot →
+后续同 host book/chapter fetch 被关联降权 (cf-bm cookie 联动) → 采集
+成功率下降. 与 R85-A BUG-206/207 hostGate cookie 链不对称 family 同
+款 "cover fetch 路径漏反爬 posture" latent (反向: book fetch 发
+Referer + Sec-Fetch-Site, cover fetch 不发).
+
+修复: `Referer: true` + `RefererURL: bookURL` (书籍页 URL, buildHeaders
+line ~3296 优先用 cfg.RefererURL). computeSecFetchSite 据此算 same-
+origin / cross-site (与真实 Chrome <img> 行为一致). 注: cross-site
+cover 真实浏览器按 strict-origin-when-cross-origin 仅发 origin
+(scheme://host), 我们发完整 bookURL — 略 overshare 但远优于不发 (反
+爬主检 "Referer 存在 + plausible", 完整 document URL 对 <img> 合理).
+完整 Referrer-Policy downgrade 跨 budget (需 originHost(bookURL)==
+originHost(cover) 判 + truncate), R106+ 评估.
+
+## 深抓 BUG-310 (runner.go scope, cover fetch AutoCookie cookie 对称)
+
+R105-A BUG-310 (P3) 修复 (深抓 cover fetch cookie 对称 family, 与
+BUG-309 同 cover FetchConfig): runner.go CrawlBookMeta cover fetch
+FetchConfig (line ~2259) 原硬编码 `AutoCookie: false` → fetchBinaryHttp
+(fetcher.go line ~4581 `if cfg.AutoCookie && len(Set-Cookie)>0`) 跳过
+Store(coverHost, Set-Cookie). buildHeaders (line ~3346) 仍发 jar cookies
+(GetWithReferer 不受 AutoCookie gate, cover 同域时发 book fetch 累积
+的 session cookie), 但 cover 响应的 Set-Cookie (e.g. Cloudflare
+cf_clearance refresh / __cf_bm rotation / 源站 session refresh) 被丢弃
+→ 下次 book/chapter 同 host fetch 用 stale cookie → cookie 过期后同
+host 持续被拦.
+
+修复: `AutoCookie: true` (与 DefaultFetchConfig.AutoCookie + book fetch
+cfg.Override.AutoCookie 同口径). cover host 多为 external CDN, 存 CDN
+cookie 到 jar (per-domain 不污染 book host cookie; 后续同 CDN cover
+fetch 复用, 降反爬关联识别). 与 BUG-309 同 FetchConfig 改 (2 字段值
+改 false→true + 新增 RefererURL: bookURL, +0 新逻辑函数).
+
+FetchConfig 字段对齐: 新增 RefererURL (11 chars 含冒号, 与 AutoCookie
+同长) → 0 已有字段对齐 shift (Engine/UAMode/Referer/Timeout/Retries
+值列不变, 8-space indent 与文件现有 non-gofmt 风格一致, 0 新 non-
+compliant 文件 — fetcher.go/runner.go 本就 non-compliant pre-existing).
+
+==============================================================================
+未解决 (交接 R106+):
+1. **parseKVString/mapToSortedKV \n in value latent (R96-B 未决项 #1 续,
+   R101-B/R102-B/R103-B/R104-A/B 续)**: kv string 格式不支持 value 含
+   \n. 完整修复需分离 JSON-derived kv vs URL-derived kv 两个 parseKVPath
+   变体, 跨 budget. R106+ 评估.
+2. **JsonGet $..a||b recursive+|| (R96-B 未决项 #2 续, R101-B/R102-B/
+   R103-B/R104-A/B 续)**: $..a||b 仍走原 literal 路径. R106+ 评估.
+3. **gofmt -l 现 22 文件 non-compliant (R100-A 未决项 #3 续, R101-B/
+   R102-C/R103-A/B/R104-A/B 续)**: gofmt -l 现 22 文件 non-compliant.
+   本轮 R105-A 编辑 fetcher.go/runner.go 用 8-space (与现有 8-space 一致,
+   0 新 non-compliant 文件 — 2 文件本就 non-compliant pre-existing).
+   R106+ 批量 gofmt -w 评估 (独立 commit).
+4. **ParseList HTML no-container FieldConst UNREACHABLE (R98-B 未决项 #4
+   续, R101-B/R102-B/R103-A/B/R104-A/B 续)**: R106+ 评估 JSON 模式条件.
+5. **BUG-307/308/309/310 unit test 覆盖 (R100-B 未决项 #5 续, R101-A/
+   R102-C/R103-A/B/R104-A/B 续, 本轮 R105-A BUG-309/310 同款缺测试)**:
+   0 test files. R106+ 评估加测试 (与 R82-D 未决项 #7 + R96-D 未决项 #6 +
+   ... 同款; 本轮 BUG-309/310 cover fetch posture 2 fix 同款缺测试).
+6. **fetcher.go mergeFetchConfig DefaultFetchConfig shared slice (R103-B
+   候选, R104-A 已修 BUG-304, R104-B 未决项 #6 续)**: shared mutable
+   default family 全闭环 (4 callsite 全 cloneConfig). R106+ 评估其它
+   shared mutable default latent.
+7. **CheckTrafilaturaBridge cache pollution latent (R104-B 候选, 未修)**:
+   跨 budget, R106+ 评估.
+8. **cover fetch 完整 Referrer-Policy downgrade (BUG-309 未决项)**: 本轮
+   BUG-309 修 Referer: true + RefererURL: bookURL, 但 cross-site cover
+   发完整 bookURL (真实浏览器 strict-origin-when-cross-origin 仅发
+   origin scheme://host). 完整 downgrade 需 originHost(bookURL)==
+   originHost(cover) 判 (same-origin 发完整, cross-site truncate 到
+   origin) + buildHeaders Referer 段加 policy 逻辑, 跨 budget. R106+
+   评估 (与 BUG-309 同 cover fetch posture family 续).
+9. **cover fetch cfg.Override posture 继承 (BUG-309/310 未决项)**: 本轮
+   BUG-309/310 修 Referer + AutoCookie 2 字段, 但 cover FetchConfig 仍
+   硬编码 Timeout: 15000 / Retries: 1 / UAMode: "rotate" / 无 ProxyURL /
+   无 JitterMs, 不继承 cfg.Override 的 ProxyURL/JitterMs/CustomUA (cover
+   同域站 behind 反爬时 book fetch 用 proxy+jitter 过, cover fetch 不
+   继承 → cover fetch 更易被拦). 完整继承需 mergeFetchConfig(cfg.
+   Override, FetchConfig{...cover specific...}) 或精选字段继承, 跨
+   budget (cover host 多 external CDN 不需继承, 但同域 cover 需 — 需
+   originHost 判 + 条件继承, 设计复杂). R106+ 评估 (与 BUG-309/310
+   同 cover fetch posture family 续).
+10. **R105 并行 agent 修改**: 本轮 R105-A 仅改 crawl/{fetcher,runner}.go
+    2 文件, 与 R105-B/C/D (候选 scope) 范围不重叠 (fetcher.go + runner.go
+    仅 R105-A 改; 候选 R105-B 改 cleaner/smart/types 不触; R105-C 改
+    admin 不触; R105-D 改 main/templates 不触; 主控统一编译应 0 errors
+    — 各 agent 独立 scope, 0 文件冲突). BUG 编号备注: 本轮 R105-A
+    crawl/{fetcher,runner} scope 用 BUG-309/310 (cover fetch Referer +
+    AutoCookie posture family), 与 R104-A (fetcher/runner scope, BUG-
+    304/305/306) / R104-B (cleaner/smart/types, BUG-307/308) 跨 scope
+    同号 convention 不冲突 (R104-A 占 304-306, R104-B 占 307-308, 本轮
+    R105-A 占 309-310, 0 重叠, 主控 merge 时无需 renumber). 与 R103-B
+    (parser/types/sorter 占 301-303) / R104-A/B 同款 "新 scope 起新号段"
+    方法论. 反反爬第 219-223 项 header observance 与 R104-A 第 214-218
+    项 / R103-A 第 209-213 项 同款 "per-host 合并 tracker 续号" pivot
+    (本轮第 91-95 字段, 0 与 BUG 编号 cross — header 项编号与 BUG 编号
+    是两套独立序列, header 项 219-223 ≠ fetcher/runner BUG-219/220
+    R86-A recordLatency family, 同号不同序列 convention).
+
+==============================================================================
+
+Round R105-B (crawl/{cleaner,parser} scope: 深抓 BUG-309~311 + 精简)
+Agent: R105-B agent (crawl/{cleaner,parser}.go: 深抓 BUG-309~311 + 精简,
+  7 文件 scope 内 2 文件命中, +37 行净, 编译 0 / vet 0, 0 emoji)
+Task ID: R105-B
+Scope: crawl/{hostgate,smart,cleaner,storage,types,parser,sorter}.go 7 文件
+  深抓 BUG-309++精简. 本轮命中 cleaner.go (BUG-309 + 精简) + parser.go
+  (BUG-310 + BUG-311). hostgate/smart/storage/types/sorter 5 文件本轮 0
+  改动 (审阅后 0 新 latent 命中 — 5 文件经 R92~R104 多轮深抓后 high-confidence
+  clean, 残留 latent 跨 budget defer, 详见未解决项). +150 行内 (净 +37 /
+  插 59 删 22). 编译 0 (go build ./... + go vet ./... 全 0). worklog 追加本块.
+  严禁改非 7 文件 / 启动 / 新依赖 / emoji / 临时测试文件 — 本轮仅改
+  crawl/{cleaner,parser}.go 2 文件, 0 触 admin/main/fetcher/runner/templates/
+  start.sh/requirements, 0 新依赖, 0 emoji, 0 测试文件.
+
+### 深抓 BUG-309 (cleaner.go scope, CheckTrafilaturaBridge cross-URL 缓存污染)
+
+  R104-B 未决项 #7 (CheckTrafilaturaBridge cache pollution latent, R104-B
+  候选未修) 本轮实施. 原缓存 (trafilaturaState.available *bool + checkedAt
+  int64) 不区分 bridgeURL — exported API CheckTrafilaturaBridge(bridgeURL)
+  外部 caller 传 custom bridgeURL (≠ TrafilaturaBridgeURLDefault) 时:
+    1. default URL 先探测 → available=&true, checkedAt=now (cachedURL
+       未跟踪, 概念上 "default" 的缓存);
+    2. custom URL caller 调 CheckTrafilaturaBridge("http://custom:1234")
+       → available != nil 命中 → *available=true → 立即返 true 不探测
+       custom URL (custom URL 实际可能不可达);
+    3. caller (CallTrafilaturaExtract custom URL 路径, 或外部 exported
+       API caller) 拿到 true 后调 /extract 失败 (custom URL 不可达) →
+       行为脱节 (CheckTrafilaturaBridge 说可用, /extract 失败).
+  当前唯一生产 caller CallTrafilaturaExtract line 142-146 仅 isDefault=
+  true 时调 CheckTrafilaturaBridge (cache 仅 default URL), 0 生产命中;
+  但 CheckTrafilaturaBridge 是 exported API, 防御性修复价值. latent 自
+  R42-1B 加 60s 缓存 (62 轮未发现因 0 外部 caller 用 custom bridgeURL).
+
+  修复 (cachedURL 跟踪, option (a) of R104-B 候选):
+    - trafilaturaState 加 cachedURL string 字段;
+    - CheckTrafilaturaBridge 缓存命中前检 cachedURL == bridgeURL, 不匹配
+      则跳过缓存走探测 (cross-URL 不误用 default 缓存);
+    - 探测后 cachedURL = bridgeURL (缓存与 URL 绑定).
+    - CallTrafilaturaExtract 2 处 isDefault failure 缓存写入 (line ~183 /
+      ~194) 同步加 cachedURL = bridgeURL (失败缓存也绑定 URL, 防 default
+      URL 失败缓存污染 custom URL caller — isDefault 时 bridgeURL ==
+      default, cachedURL=default 与 CheckTrafilaturaBridge(default) 一致).
+  option (b) (非 default URL 不缓存) 更简但破坏 custom URL 的 60s 缓存
+  复用 (custom URL caller 每次探测, hot loop DoS 风险); option (a) 保
+  缓存复用 + 防 cross-URL 污染, 更稳健. 0 用户受负面影响 (71 Rule 0
+  用 custom bridgeURL; default URL 路径 cachedURL=default 自洽, 行为
+  0 变化).
+
+### 精简-1 (cleaner.go scope, CheckTrafilaturaBridge 4 路重复缓存赋值合并)
+
+  与 BUG-309 同 callsite 合并. 原 CheckTrafilaturaBridge 内联探测逻辑
+  有 4 处缓存赋值 (3 处 false 路径 `available=&f; checkedAt=now; return
+  false` + 1 处 true 路径 `available=&t; checkedAt=now; return true`),
+  重复 9 行. 抽 probeTrafilaturaBridge(bridgeURL) helper (无锁, caller
+  持锁, Get/非200/JSON decode/Ok||SelfTestOk false → 返 false), caller
+  统一 `ok := probe...; available=&ok; checkedAt=now; cachedURL=bridgeURL;
+  return ok`. -9 行重复, +13 行 helper (含 3 行注释), 净 +4 行但 0 重复.
+  与 R104-B 精简-1 (CcStripOnlyRe+ZWStripOnlyRe 合并) + R80-C BUG-169 /
+  R83-B BUG-193 / R84-B BUG-198 同款 "重复路径精简 / deadcode 删除"
+  precedent.
+
+### 深抓 BUG-310 (parser.go scope, ParseList HTML 无容器 FieldConst 不可达)
+
+  R98-B 未决项 #4 (ParseList HTML no-container FieldConst UNREACHABLE,
+  R101-B/R102-B/R103-A/B/R104-A/B 续) 本轮实施. 原 ParseList line ~1769
+  hasJsonConstFields := (FieldJSON || FieldConst) 任一命中 → JSON 模式
+  接管 (line ~1778 itemSelector==nil && hasJsonConstFields). 场景:
+  admin 配 list.fields.X = const "https://x/{q.id}" (无 itemSelector,
+  无 FieldJSON 字段) → hasJsonConstFields=true (FieldConst) → JSON 模式
+  → ParseJsonBody(HTML) 返 nil (HTML 非 JSON) → 整页返空 → FieldConst
+  模板 applyConstTemplate 永不执行 (与有 FieldJSON 字段的 Rule 行为
+  不一致 — FieldJSON 触发 JSON 模式合理, FieldConst 是模板字段不需
+  JSON body, 不应触发 JSON 模式). R98-B BUG-279 已修 HTML 模式
+  ParseList 传 ctx (line ~1866 urlVars + index ctx), 但 hasJsonConstFields
+  让 FieldConst-only 配置根本走不到 HTML 无容器路径 (JSON 模式短路).
+
+  修复: hasJsonConstFields (FieldJSON||FieldConst) → hasJSONField (仅
+  FieldJSON). JSON 模式触发条件不变 (itemSelector.Type==FieldJSON ||
+  (itemSelector==nil && hasJSONField)). FieldConst-only (无 FieldJSON,
+  无 itemSelector) 现走 HTML 无容器路径 (line ~1868), ExtractField
+  FieldConst 分支 (line ~1458) 用 ctx.Vars 跑 applyConstTemplate. 行为
+  变化: 仅 itemSelector==nil + FieldConst (无 FieldJSON) case, 从 JSON
+  模式 (返空) → HTML 无容器模式 (FieldConst 跑模板); FieldJSON 触发
+  case 不变; FieldCSS/FieldRegex 无 FieldJSON/Const case 不变 (hasJSONField
+  =false, HTML 模式). 71 Rule 0 用 FieldConst in HTML list fields
+  (yueyouxs const 仅在 toc.tocLink, runner.go line ~1876 BUG-268 已修);
+  0 生产命中, 防御性修复. latent 自 R38 TS→Go 迁移 (47 轮未发现).
+
+### 深抓 BUG-311 (parser.go scope, filterArray absent-field != 语义)
+
+  R72-C BUG-247 加 [k!=v] / [?(@.f!=v)] 运算符时, absent-field (item 无
+  k 字段) 处理未对齐 RFC 9535. 原 filterArray line ~1180:
+    val, exists := m[k]
+    if !exists { continue }  // 对 == 与 != 都 continue (排除)
+  RFC 9535 JSONPath: filter $[?(@.f!=v)] — comparison 结果 true 则
+  select. == 比较: absent field → 不可比较 → false (exclude, 正确);
+  != 是 == 的 logical negation → absent field → != true (include).
+  原 !exists→continue 对 == 正确, 对 != 误排除 (admin 配
+  [?(@.f!=v)] 期望 "无 f 字段" 的 item 也命中, 实际被静默跳过 →
+  filterArray 返缺漏集, JsonGet 返不完整数组). 与 BUG-301 (filterArray
+  float64 科学计数) + BUG-247 (!= 运算符) 同 callsite, latent 自 R72-C
+  BUG-247 加 != (33 轮未发现).
+
+  修复: !exists 分支加 `if neg { out = append(out, item) }; continue`
+  (absent field: == exclude, != include). 71 Rule 0 用 != filter (多用
+  ==); 0 生产命中, 防御性 + RFC 9535 对齐修复.
+
+### 编译 / gofmt / 行数
+
+  - go build ./... = 0 (crawl + 全模块 0 errors).
+  - go vet ./... = 0.
+  - gofmt -l: cleaner.go + parser.go 仍 non-compliant (8-space 缩进,
+    pre-existing 自 R38, 与 R104-B 同款 "8-space 一致, 0 新 non-compliant
+    文件" — 本轮编辑用 8-space, 0 引入新 gofmt 违规; 批量 gofmt -w 独立
+    commit defer, 与 R96-A~/R100-A 未决项 #3 同款).
+  - git diff --shortstat: 2 files changed, 59 insertions(+), 22 deletions(-)
+    = 净 +37 行 (insertions 59 亦 < +150 上限). 仅 crawl/{cleaner,parser}.go
+    2 文件改动 (7 文件 scope 内), 0 触非 7 文件.
+  - 0 新依赖 (仅用 sync.Mutex / net/http / encoding/json / io / time /
+    regexp / strings / strconv / sort 已有 import, 0 新增).
+  - 0 emoji (R105-B 新增 0 emoji; pre-existing fetcher.go/runner.go emoji
+    非本轮引入, 维持 defer 至 R106+ 批量评估删除, 与 R104-A/B 未决项同款).
+  - 0 临时测试文件 (与 R104-B 同款 "防御性修复 0 行为变化 0 用户受影响,
+    不需 /tmp 测试文件"; BUG-309/310/311 0 当前用户受影响).
+
+未解决 (交接 R106+):
+1. **parseKVString/mapToSortedKV \n in value latent (R96-B 未决项 #1 续,
+   R101-B/R102-B/R103-B/R104-A/B 续)**: kv string 格式不支持 value 含
+   \n. 修复需 escape/unescape 对称, 但 URLVars path 段的 kv string 也
+   走 parseKVString (resolveKVPath), unescape 会 corrupt URLVars path
+   段含 literal \n. 完整修复需分离 JSON-derived kv vs URL-derived kv
+   两个 parseKVPath 变体, 跨 budget. R106+ 评估. 本轮 BUG-311 修
+   filterArray absent-field != 不触此 latent (filterArray 走 anyToString
+   不走 parseKVString).
+2. **JsonGet $..a||b recursive+|| (R96-B 未决项 #2 续, R101-B/R102-B/
+   R103-B/R104-A/B 续)**: $..a||b 仍走原 literal 路径 (|| 语义在
+   recursive descent 模糊). $..[0] (bracket 起首, splitAt=0 不 >0) 仍
+   走 literal. R106+ 评估. 本轮 BUG-310/311 不触此 latent (ParseList
+   JSON 模式触发条件 + filterArray != 不涉 recursive descent).
+3. **gofmt -l 现 22 文件 non-compliant (R100-A 未决项 #3 续, R101-B/
+   R102-C/R103-A/B/R104-A/B 续)**: 本轮 R105-B 编辑 cleaner.go/parser.go
+   用 8-space (与现有 8-space 一致, 0 新 non-compliant 文件 — 2 文件本
+   就 non-compliant pre-existing). R106+ 批量 gofmt -w 评估 (独立 commit).
+4. **ParseList HTML no-container FieldConst UNREACHABLE (R98-B 未决项 #4
+   续, R101-B/R102-B/R103-A/B/R104-A/B 续 → 本轮 R105-B 已修 BUG-310)**:
+   hasJsonConstFields (FieldJSON||FieldConst) → hasJSONField (仅
+   FieldJSON), FieldConst-only 走 HTML 无容器模式. 收口. 后续观察是否
+   有 admin 配 FieldConst+FieldJSON 混合 (FieldJSON 触发 JSON 模式,
+   FieldConst 在 JSON 模式跑, line ~1825 ctx2.Vars — 不受 BUG-310 影响).
+5. **BUG-307/308/309/310/311 unit test 覆盖 (R100-B 未决项 #5 续,
+   R101-A/R102-C/R103-A/B/R104-A/B 同款, 本轮 R105-B 未决项 #5 续)**:
+   0 test files. R106+ 评估加测试. 本轮 BUG-309/310/311 三 fix 同款
+   缺测试 (BUG-309 cachedURL 跨 URL / BUG-310 FieldConst HTML 无容器 /
+   BUG-311 filterArray != absent-field 可直接调测, 但 0 测试文件约束).
+6. **shared mutable default family 闭环 (R103-B/R104-B 已收口)**:
+   DefaultFetchConfig / DefaultCleanConfig / sanitizeFetchConfig
+   BrowserFallbackStatus / fetcher.go mergeFetchConfig 4 callsite 全
+   cloneConfig. R106+ 评估是否还有其它 shared mutable default latent
+   (e.g. 其它包级 var 持 slice/map 字段被 caller 浅拷贝 mutate). 本轮
+   BUG-309 cachedURL 非 shared-default family (是 cross-URL 缓存键,
+   不同 latent class).
+7. **CheckTrafilaturaBridge cache pollution (R104-B 未决项 #7 续 →
+   本轮 R105-B 已修 BUG-309)**: cachedURL 跟踪防 cross-URL 污染.
+   收口. CallTrafilaturaExtract 2 处 failure 缓存写入同步加 cachedURL
+   = bridgeURL (isDefault 路径). 后续观察 exported API 是否有外部
+   caller 用 custom bridgeURL (0 当前; 未来 caller 受益).
+8. **R105 并行 agent 修改**: 本轮 R105-B 仅改 crawl/{cleaner,parser}.go
+   2 文件, 与 R105-A (fetcher/runner scope, 候选) / R105-C (admin scope,
+   候选) / R105-D (main/templates scope, 候选) 范围不重叠 (cleaner.go +
+   parser.go 仅 R105-B 改; R105-A 改 fetcher/runner 不触 cleaner/parser;
+   R105-C 改 admin.go 不触; R105-D 改 main/templates 不触; 主控统一编译
+   应 0 errors — 各 agent 独立 scope, 0 文件冲突). BUG 编号备注: 本轮
+   R105-B crawl/{cleaner,parser} scope 用 BUG-309/310/311 (CheckTrafilatura
+   Bridge cross-URL 缓存污染 + ParseList FieldConst 不可达 + filterArray
+   absent-field !=), 与 R105-A (fetcher/runner scope, 候选 BUG-312+ 占
+   fetcher/runner 号段) / R105-C (admin scope, 候选) / R105-D (main/templates
+   scope, 候选) 跨 scope 同号 convention 不冲突 (R105-B 占 309-311, 0 与
+   R104-A 304-306 / R104-B 307-308 重叠, 主控 merge 时无需 renumber). 与
+   R104-B (crawl/{cleaner,smart,types} 占 307-308) / R103-B (parser/types/
+   sorter 占 301-303) 同款 "新 scope 起新号段" 方法论.
+
+==============================================================================
+Round R105-D (main.go scope: 深抓 BUG-311/312 dead-field removal +
+bid/absCover hoist 精简 family)
+
+Agent: R105-D agent (main.go: 深抓 homeHandler dead data field 注入 +
+bid/absCover 冗余调用 hoist, +59 行净, 编译 0)
+
+Files changed (1): go-backend/main.go (+75 insert / -16 delete, 净 +59
+行). 0 改 templates/** (3 dead data field 全在 main.go Go-side 注入,
+templates 0 consumer 故 0 模板改动; bid/absCover hoist 也全在 main.go
+case "book"/"read" 块内, 0 模板触). 严禁改非 main+templates/启动/新依赖/
+emoji/临时测试文件 — 本轮 0 触 (仅 main.go 1 文件, 0 启动改, 0 新依赖,
+0 emoji, 0 临时测试文件).
+
+编译: go build ./... + go vet ./... 全 0 errors (Go 1.x toolchain,
+/home/z/go/go/bin/go). 主控统一编译应 0 errors (本轮仅 main.go 1 文件,
+与 R105-A (fetcher/runner BUG-309/310 cover fetch posture) / R104-A
+(fetcher/runner BUG-304/305/306 BrowserFallbackStatus family) / R104-B
+(cleaner/smart/types BUG-307/308 DefaultCleanConfig shared slice +
+SmartCategory whitespace) / R104-C (admin.go BUG-304~308 Pattern C
+swallow family) scope 不重叠 — 本轮 R105-D 改 main.go (3 dead data
+field 删除 + bid/absCover hoist rationale comment); fetcher/runner/
+cleaner/smart/types/admin/templates 0 触).
+
+目标:
+- 深抓 BUG-311 (P4 精简/dead-field removal, main+templates scope,
+  R104-D BUG-304 dead-defense family 续 + R85-D BUG-206 dead-field
+  family 续): homeHandler case "book" data["FirstChapterId"] (line
+  831 R72-A 引入) + data["ChapterListAnchor"] (line 848 R76-A 引入)
+  + case "read" data["ChapterURL"] (line 947 R63-A 引入) 三 Go-side
+  注入字段 0 template consumers — rg '{{.FirstChapterId}}|
+  {{.ChapterListAnchor}}|{{.ChapterURL}}' 全 88 模板 (11 主题 × 8
+  view = 88, shipsay/history 替 shipsay/home 为第 9 view 但总模板
+  数仍含) 0 命中. R63-B/R76-B 模板层改用 {{.FirstChapterURL}} (R63-A
+  注入的 buildChapterURL 输出, 含 pseudoStyle 风格) + {{.Prev.URL}}/
+  {{.Next.URL}} (R84-D BUG-195 注入的 prev/next chapter URL) + 静态
+  href="#chapter_list" (而非动态 {{.ChapterListAnchor}}) — 三 Go-side
+  字段成 dead-defense 注入. R72 worklog line 28674 已识别
+  ChapterListAnchor "字段未消费" 但未删 (保留供"未来动态绑定"), 至
+  R105 仍 0 consumer. 删后 0 行为变化 (map 写入无 reader), 省 3
+  map[string]interface{} 写入 + 1 buildChapterURL + 1 bookIDFromMap
+  调用 per book/read view request (ChapterURL compute 结果从未被
+  reader 消费, 纯 dead compute). 与 R85-D BUG-206 (删 history view
+  TopBooks/Popular dead field) + R80-C BUG-169 + R83-B BUG-193 +
+  R84-B BUG-198 (deadcode 删除 family) 同款 "dead field 精简"
+  precedent.
+- 深抓 BUG-312 (P4 精简/DRY, main scope, R104-D BUG-304 og:image
+  family sibling 续): homeHandler case "read" bookIDFromMap(book)
+  5 callsite (line 947 dead data["ChapterURL"] 块 + 原 line 948 if-bid
+  块 + line 961 prev URL 注入 + line 968 next URL 注入 + line 998
+  bidForSEO := bookIDFromMap(book)) → 1 hoisted bid 声明 (line 967
+  case "read" 顶部). 5 callsite → 1, 省 4 冗余 map lookup + type
+  assertion per read view request (bookIDFromMap 纯读 map, 0 副作用,
+  hoist 0 行为变化). 同时 case "book" (line 918-930) + case "read"
+  (line 1058-1060) pSEO OgImage/TwitterImage 各调一次 buildAbsolute
+  URL(siteDomain, bookCover[Read]) 同 args — 两次调用第二次冗余
+  (buildAbsoluteURL 非 idempotent 早返, 相对路径走 normalizeDomain +
+  isLocalhostDomain + scheme 选择 + string concat ~5 ops; 外链/data:/
+  协议相对才早返). hoist absCover/absCoverRead local var, 两次赋值
+  复用. 0 行为变化, 省 1 buildAbsoluteURL 调用 per book/read view
+  request (bookCover 非空时). 与 R104-D BUG-304 (og:image coverURL
+  死防御 wrapper 删除) + R101-D BUG-291 (normalizeDomain DRY 抽 helper)
+  同款 "DRY 精简" precedent.
+
+Stage Summary:
+- R105-D 1 文件编辑 (main.go), 2 bug 修复 (BUG-311 dead-field removal
+  3 字段 + BUG-312 bid/absCover hoist), 净 +59 行 (75 insert / 16
+  delete). 行为 0 变化 (dead field 0 consumer, hoist 复用同值).
+- 编译 0 errors (go build ./... exit 0), go vet 0 issues (exit 0).
+- gofmt -l main.go non-compliant (与 R100-A 未决项 #3 同款 8-space;
+  本轮编辑沿用 8-space 一致, 0 新 non-compliant 文件 — main.go 本就
+  non-compliant pre-existing from R104-D commit ca8e29a; R105+ 批量
+  gofmt -w 评估独立 commit).
+- 0 改非 main.go 文件 / 0 改 templates/** / 0 启动 / 0 新依赖 / 0
+  emoji / 0 临时测试文件 (约束全守).
+- worklog 追加 R105-D entry (本块).
+- BUG-311 (dead-field removal) 与 R85-D BUG-206 (history view
+  TopBooks/Popular dead field) + R80-C BUG-169 / R83-B BUG-193 /
+  R84-B BUG-198 (deadcode 删除 family) 同款 "dead field 精简"
+  precedent. BUG-312 (bid/absCover hoist) 与 R104-D BUG-304 (og:image
+  coverURL 死防御 wrapper) + R101-D BUG-291 (normalizeDomain DRY) +
+  R99-D BUG-284 (resolveBookWordCount DRY) 同款 "DRY 精简" precedent
+  (consolidate redundant callsite → single hoisted var).
+
+未解决 (交接 R106+):
+1. **parseKVString/mapToSortedKV \n in value latent (R96-B 未决项 #1
+   续, R101-B/R102-B/R103-B/R104-A/B/R105-A/D 续)**: kv string 格式不
+   支持 value 含 \n. 修复需 escape/unescape 对称, 但 URLVars path 段
+   的 kv string 也走 parseKVString (resolveKVPath), unescape 会
+   corrupt URLVars path 段含 literal \n. 完整修复需分离 JSON-derived
+   kv vs URL-derived kv 两个 parseKVPath 变体, 跨 budget. R106+ 评估.
+2. **JsonGet $..a||b recursive+|| (R96-B 未决项 #2 续, R101-B/R102-B/
+   R103-B/R104-A/B/R105-A/D 续)**: $..a||b 仍走原 literal 路径 (||
+   语义在 recursive descent 模糊). $..[0] (bracket 起首, splitAt=0
+   不 >0) 仍走 literal (需 recursiveCollect-all-nodes + per-node
+   JsonGet, 超本轮 budget). R106+ 评估.
+3. **gofmt -l 现 22 文件 non-compliant (R100-A 未决项 #3 续, R101-B/
+   R102-C/R103-A/B/R104-A/B/R105-A/D 续)**: gofmt -l 现 22 文件
+   non-compliant. 本轮 R105-D 编辑 main.go 用 8-space (与现有 8-space
+   一致, 0 新 non-compliant 文件 — main.go 本就 non-compliant
+   pre-existing). R106+ 批量 gofmt -w 评估 (独立 commit, 与 R96-A/
+   R96-B/R98-A/R98-C/R98-D/R99-A/R99-C/R99-D/R100-A/R100-B/R100-C/
+   R100-D/R101-A/R101-B/R101-C/R102-C/R103-A/R103-B/R104-A/R105-A
+   未决项同款).
+4. **ParseList HTML no-container FieldConst UNREACHABLE (R98-B 未决项 #4
+   续, R101-B/R102-B/R103-A/B/R104-A/B/R105-A/D 续)**: hasJsonConst
+   Fields=true 时 JSON 模式接管. R106+ 评估 JSON 模式条件是否需
+   收紧.
+5. **BUG-311/312 unit test 覆盖 (R100-B 未决项 #5 续, R101-A/R102-C/
+   R103-A/B/R104-A/B/R105-A 同款, R105-D 未决项 #5 续)**: 0 test
+   files. R106+ 评估加测试 (与 R82-D 未决项 #7 + R96-D 未决项 #6 +
+   R98-C 未决项 #11 + R99-A 未决项 #2 + R99-C 未决项 #10 + R99-D
+   未决项 #6 + R100-A 未决项 #2 + R101-A/R102-B/R102-C/R103-A/R103-B/
+   R104-A/R105-A 未决项 同款; 本轮 BUG-311/312 两 fix 同款缺测试,
+   但 BUG-311 是 dead-field 删除 + BUG-312 是 hoist 精简, 0 行为
+   变化, 测试只能验证 "no panic + 0 模板 render diff" — 价值低,
+   buildHTTPServer + renderBook/Read e2e 测试更值得).
+6. **homeHandler 其它 dead-defense 注入候选 (R105-D 候选, 未修)**:
+   本轮 BUG-311 收口 3 字段 (ChapterURL/FirstChapterId/
+   ChapterListAnchor), 但 homeHandler 还有其它潜在 dead-defense
+   注入候选 e.g. case "category" data["CatID"] (模板用 {{.CatID}}
+   还是用 {{.Category.id}}? 需审计 11 主题 × category.html 模板
+   字段消费). case "ranking" data["Tab"] (模板用 {{.Tab}} 还是用
+   query 串 sort={{.Tab}}? 已审计: 11 主题 × ranking.html 全用
+   {{.Tab}} for tab 高亮 + 链接). R106+ 评估 case "category"
+   data["CatID"] 是否 dead (与 R102-D BUG-297 canonical family 同
+   scope).
+7. **homeHandler pSEO Og* 块 case "book" vs case "read" DRY (R105-D
+   候选, 未修)**: case "book" (line 880-935) + case "read" (line
+   1017-1065) 两 pSEO 块 ~14 行/块 高度相似 (OgTitle/OgDescription/
+   OgUrl/OgType/OgSiteName/Twitter*/CanonicalURL 全字段, 仅 Title
+   格式 + OgType + absURL 不同). 抽 buildPSEOMetaFields(title, desc,
+   url, ogType, siteName, cover, domain) helper 可省 ~20 行 DRY.
+   但 helper 7 参数 (含 cover/siteName 等多类型), 可读性 vs DRY
+   权衡 — 本轮不抽. R106+ 评估 (与 R104-A 反反爬 helper 抽取
+   methodology 同款).
+8. **R105 并行 agent 修改**: 本轮 R105-D 仅改 main.go 1 文件, 与
+   R105-A (fetcher/runner scope, BUG-309/310 cover fetch posture
+   family) 范围不重叠 (main.go 仅 R105-D 改; R105-A 改 fetcher/
+   runner 不触 main.go; 主控统一编译应 0 errors — 各 agent 独立
+   scope, 0 文件冲突). BUG 编号备注: 本轮 R105-D main.go scope 用
+   BUG-311/312 (dead-field removal + bid/absCover hoist), 与 R105-A
+   (fetcher/runner scope, BUG-309/310 cover fetch posture family) 跨
+   scope 同号 convention 不冲突 (R105-A 占 309-310, 本轮 R105-D 占
+   311-312, 0 重叠, 主控 merge 时无需 renumber). 与 R104 (R104-A 占
+   304-306 fetcher/runner + R104-B 占 307-308 cleaner/smart/types +
+   R104-C 占 304-308 admin.go Pattern C + R104-D 占 304 main+templates
+   og:image 同号 convention) 同款 "新 scope 起新号段" 方法论. 与
+   R103 (R103-A fetcher/runner 占 299 + R103-B parser/types/sorter 占
+   301-303 + R103-C admin.go 占 304-308 Pattern C swallow family 续)
+   同款跨 scope BUG 编号不冲突 convention.
+
+==============================================================================
+
+Agent: R105-C agent (go-backend/admin.go: 深抓 BUG-309 json.Unmarshal 吞错
+      family 3 callsite log-on-fail + BUG-310 readJSONBody Decode 吞错
+      io.EOF 守卫 log-on-fail + 精简-3 parseTaskProgress dedup 抽 helper
+      单点维护)
+
+Task ID: R105-C
+Date: 2026-09-29
+
+文件: go-backend/admin.go (1 文件, 8379→8393 净 +14 行, +150 budget 内 9%
+  使用). 0 改非 admin.go (main.go / start.sh / start-go.js / crawl/* /
+  templates/* / db/custom.db / go.mod / go.sum 全 0 触 — 工作树中 db/
+  custom.db M 标记非本轮引入, 运行中 backend 写入, 平行留痕) / 0 启动
+  (main.go / start.sh / start-go.js 0 改) / 0 新依赖 (go.mod / go.sum 0 改,
+  0 新 import — unmarshalLogged 复用已 import 的 encoding/json + log;
+  parseTaskProgress 复用已 import 的 fmt + 已有 phaseLabel/
+  toIntFromInterface helper; BUG-310 readJSONBody 复用已 import 的 errors
+  + io) / 0 emoji (R105-C 新增 14 行 0 emoji) / 0 临时测试文件 (0 /tmp
+  test files 本轮创建, BUG 验证走 go build + go vet + 代码审计, 与 R104-B
+  同款 — BUG-309/310 latent 0 当前用户受影响, 防御性 visibility-only 修复
+  不需 /tmp 验证).
+
+### 读 worklog 末尾 5KB
+
+worklog 末尾 5KB (本轮 R105-C 起读时) 是 R104-B (crawl/{cleaner,smart,
+types} scope) 的 Stage Summary + BUG-307/308 (DefaultCleanConfig shared
+mutable slice leak + SmartCategory whitespace sourceCategory → empty
+normalized 误返 Method="source") + 精简-1 (CcStripOnlyRe+ZWStripOnlyRe
+合并 CcAndZwStripRe deadcode 删除) + 精简-2 (SmartResumeSort
+sort.SliceStable 冗余 return false 精简) + 未解决项 (7 项) + R104-A/B/
+C/D 并行 scope 备注. R104-A 用 BUG-304/305/306 (fetcher/runner scope),
+R104-B 用 BUG-307/308 (crawl scope), 跨 scope 同号 convention 不冲突
+(R103-A/C/D 共用 BUG-299 同款). 本轮 R105-C 起读时 worklog 末尾仅到
+R104-B (R105-A/B/D 并行 agent 尚未追加); R105-C 完成编辑+编译后追加本
+块时, worklog 已被 R105-A (fetcher/runner, BUG-309/310 cover fetch
+posture) + R105-B (crawl cleaner/parser, BUG-309~311) + R105-D (main,
+BUG-311/312 dead-field) 三并行 agent 追加. R105-C 本块追加在 R105-D 之后
+(true file end, 非 R104-B 之后 — 并发写致 R105-C 首次 Edit 锚 R104-B 末
+separator 时 R105-A 已并发追加, 首次落位 R104-B↔R105-A 间; 本块已 sed
+清除首落位 + 重追加在 R105-D 后真末尾, 顺序 R104-B→R105-A→R105-B→R105-D
+→R105-C). 本轮 R105-C = admin.go scope, 起号 309/310 (admin scope max
+308 续; 与 R105-A fetcher 309/310 + R105-B crawl 309~311 + R105-D main
+311/312 跨 scope 同号 convention 不冲突, 主控 merge 0 renumber 需求 —
+R103-A/C/D 共用 299 + R104-A/B/C/D 跨 scope 同号同款 convention).
+
+### 深抓 BUG-309 (admin.go scope, json.Unmarshal 吞错 family 3 callsite)
+
+- 文件: admin.go line 490 (parseTaskProgress 内 unmarshalLogged 调, 原
+  fillDashboardData line 3382 + fillTasksPageData line 3481 progress +
+  line 3483 stats 3 swallow callsite).
+- 根因: fillDashboardData (原 line 3382) + fillTasksPageData (原 line
+  3481 progress + line 3483 stats) 各 `_ = json.Unmarshal([]byte
+  (progress|stats), &progObj|&statsObj)` 吞错 — Task.progress /
+  Task.stats 列含 corrupt JSON (legacy 数据 / 手工 DB 编辑 / 部分写入
+  crash 中断 / NULL 列 rows.Scan 到 "" 串) 时 Unmarshal 失败 →
+  progObj/statsObj 保持 nil → 下游 progObj["Phase"].(string) /
+  toIntFromInterface(progObj["BooksDone"]) 全返零值 → 仪表盘 recentTasks
+  + 任务页 tasks 显示 "· 0/0 本 · 0/0 章" pct=0, 用户误判任务未起跑但
+  实际 running; statsObj["BooksCreated"] 等零值 →
+  statBooks/statChapters/statErrors 全 0, 用户误判任务无产出. 与
+  R104-C BUG-307 (startCrawlTask fetchConfig override `_ =
+  json.Unmarshal` swallow → log-on-fail) 同款 Pattern C json.Unmarshal
+  吞错 family, 但 BUG-307 仅 1 callsite (fetchConfig override),
+  BUG-309 续抓 3 callsite (SSR progress/stats 渲染路径). INSERT Task
+  (line 1102) progress='{}' stats='{}' 非 NULL/非 "", 正常起跑任务
+  Unmarshal 成功 0 log 噪声; corrupt 行 Unmarshal 失败 → log-on-fail
+  给运维可见性 (定位 corrupt 行 taskId → 修复/清理).
+- 修复: 新增 unmarshalLogged(label, data, target) helper (line 475, 与
+  execLogged BUG-272~274 Exec family 同款 log-on-fail helper 并行,
+  json family 收口), 3 callsite 改调 unmarshalLogged (dashboard
+  progress + tasks progress 经 parseTaskProgress 内调 + tasks stats
+  直调 line 519). 行为 0 变化 (target 失败仍零值, 下游 type-assert
+  兜底, 与原 swallow 语义一致; 仅加 log.Printf visibility). io.EOF 不
+  守卫 — progress/stats 列 NULL/"" 本身是 corrupt 信号 (INSERT 恒写
+  '{}' 非 NULL), 应 log 暴露 (与 BUG-310 readJSONBody 空 body 合法 →
+  io.EOF 守卫跳过 不同款, 因 progress/stats 列空=corrupt 非 合法空
+  body).
+- 0 当前用户受影响 (正常任务 progress='{}' 或实 JSON Unmarshal 成功 0
+  log; corrupt 行 latent 自 R38 TS→Go 迁移, 47 轮未发现). 防御性
+  visibility-only 修复.
+
+### 深抓 BUG-310 (admin.go scope, readJSONBody Decode 吞错 io.EOF 守卫)
+
+- 文件: admin.go line 528 (readJSONBody).
+- 根因: readJSONBody (原 line 476) `_ =
+  json.NewDecoder(r.Body).Decode(&out)` 吞错 — admin POST body 含非法
+  JSON (未闭合括号 / trailing 逗号 / 字段名 typo / content-type 非
+  JSON 但 body 是 form 串) 时 Decode 失败 → out 部分填充或空 →
+  caller strField/floatField 全走默认 → 操作静默用错误字段 (e.g.
+  adminTasksCreate body ruleId typo → ruleId="" → 后续 ruleID 校验
+  报错或 INSERT 失败, 用户不知是 body JSON 语法错). readJSONBody 22
+  caller (admin POST handler 全集) 均受影响. 与 R104-C BUG-307 / R105-C
+  BUG-309 Pattern C json family 同根因, 但 Decode (streaming)
+  variant, 非 Unmarshal (byte-slice) variant — 单独 BUG-310 区分
+  sub-family.
+- 修复: 改 `if derr := json.NewDecoder(r.Body).Decode(&out); derr !=
+  nil && !errors.Is(derr, io.EOF) { log.Printf(...) }` (line 528).
+  io.EOF 守卫 — 空 body (e.g. delete-by-URL 无 body / admin 轮询空
+  POST) Decode 返 io.EOF 非 真实解析失败, 跳过 log 防噪. errors.Is
+  (非 ==) 防 json 包装 EOF. 行为 0 变化 (out 仍返 best-effort 部分
+  填充, caller 续用默认; 仅加 log visibility, 22 caller 全透明).
+- 0 当前用户受影响 (正常 POST body JSON 合法 Decode 成功 0 log; 非法
+  body latent 自 R39 admin wiring, 39 轮未发现). 防御性 visibility-only
+  修复.
+
+### 精简-3 (admin.go, parseTaskProgress dedup 抽 helper 单点维护)
+
+- 文件: admin.go line 488 (parseTaskProgress 新增) + line 3437
+  (fillDashboardData callsite -22 行) + line 3517 (fillTasksPageData
+  callsite progress -24 行, stats 保留 inline 走 unmarshalLogged line
+  519).
+- 根因: fillDashboardData (原 line 3382-3403) + fillTasksPageData (原
+  line 3481-3505) 两处 progress 解析 + Phase/BooksDone/BooksTotal/
+  ContentDone/ContentTotal/PhaseNote 提取 + pct 计算 (booksTotal>0 →
+  booksDone*100/booksTotal; contentTotal>0 兜底; phase=="done" → 100)
+  + progressNote 计算 (fmt.Sprintf + phaseNote override) ~22 行 完全
+  重复 (两块逐字节相同 except progObj/statsObj 变量名). 任一处改逻辑
+  (e.g. 新增 Phase 字段 / pct 算法调) 需同步两处, 漏一处则仪表盘与
+  任务页 progress 显示不一致 (latent divergence bug).
+- 修复: 抽 parseTaskProgress(progress string) (progressNote string,
+  pct int) helper (line 488), 两 callsite 改 `progressNote, pct :=
+  parseTaskProgress(progress)` 单行. stats 解析 (fillTasksPageData
+  独有) 保留 inline 走 unmarshalLogged (BUG-309 family). 行为 0 变化
+  (helper 逻辑与两块逐字节等价; Unmarshal 走 unmarshalLogged 加 log
+  visibility, 与 BUG-309 同款收口). 与 R104-B 精简-1
+  (CcStripOnlyRe+ZWStripOnlyRe 合并 deadcode 删除) + 精简-2
+  (SmartResumeSort sort.SliceStable 冗余 return false 精简) 同款
+  "dedup/冗余精简" precedent, 跨 scope (crawl → admin) 同方法论.
+- 净行: helper +44 行 (unmarshalLogged 11 行含注释 +
+  parseTaskProgress 33 行含注释) - callsite dedup 46 行
+  (fillDashboardData -22 + fillTasksPageData -24) + BUG-310 注释 +6
+  行 = 净 +14 行 (admin.go 8379→8393). 精简角度: 重复逻辑 22 行 →
+  helper 单点, 防 divergence latent, 维护性提升 (任改一处即生效两处).
+
+Stage Summary:
+- R105-C 1 文件编辑 (admin.go), 2 bug 修复 (BUG-309 json.Unmarshal
+  吞错 family 3 callsite log-on-fail + BUG-310 readJSONBody Decode
+  吞错 io.EOF 守卫 log-on-fail) + 1 精简 (parseTaskProgress dedup 抽
+  helper 单点维护), 净 +14 行 (admin.go 8379→8393, +150 budget 内 9%
+  使用).
+- 编译 0 errors (go build ./... exit 0), go vet 0 issues (exit 0).
+- gofmt -l admin.go non-compliant (与 R100-A 未决项 #3 同款 8-space;
+  本轮编辑沿用 8-space 一致, 0 新 non-compliant 文件 — admin.go 本就
+  non-compliant pre-existing; R106+ 批量 gofmt -w 独立 commit 评估,
+  与 R104-B 未决项 #3 同款 defer).
+- 0 改非 admin.go / 0 启动 / 0 新依赖 / 0 emoji / 0 临时测试文件 (约束
+  全守).
+- worklog 追加 R105-C entry (本块, 落位 R105-D 后真末尾 — 见下 #8 并
+  发备注).
+- BUG-309 (json.Unmarshal family 3 callsite) 与 BUG-307 (R104-C
+  fetchConfig override 1 callsite) 同 Pattern C json family,
+  sub-family = Unmarshal (byte-slice); BUG-310 (readJSONBody Decode)
+  同 Pattern C json family, sub-family = Decode (streaming);
+  BUG-307/309 Unmarshal vs BUG-310 Decode 两 sub-family 区分. 跨
+  scope 同号 convention: admin scope 304-310 (R104-C 304-308 + R105-C
+  309-310), 与 fetcher scope 304-306 (R104-A) + R105-A fetcher 309/310
+  + crawl scope 307-308 (R104-B) + R105-B crawl 309~311 + main scope
+  304 (R104-D) + R105-D main 311/312 跨 scope 同号不冲突 (R103-A/C/D
+  共用 299 + R104-A/B/C/D 跨 scope 同号同款 convention).
+- 精简-3 (parseTaskProgress dedup) 与 R104-B 精简-1 (CcStripOnlyRe
+  合并) + 精简-2 (SmartResumeSort sort.SliceStable) 同款 dedup
+  precedent, 跨 scope (crawl → admin) 同方法论, 防两处 progress 解析
+  divergence latent.
+
+### 未解决 (交接 R106+):
+
+1. **parseKVString/mapToSortedKV \n in value latent (R96-B 未决项 #1 续,
+   R101-B/R102-B/R103-B/R104-A/B 续)**: kv string 格式不支持 value 含
+   \n. 修复需 escape/unescape 对称, 但 URLVars path 段的 kv string 也
+   走 parseKVString (resolveKVPath), unescape 会 corrupt URLVars path
+   段含 literal \n. 完整修复需分离 JSON-derived kv vs URL-derived kv
+   两个 parseKVPath 变体, 跨 budget. R106+ 评估.
+2. **JsonGet $..a||b recursive+|| (R96-B 未决项 #2 续, R101-B/R102-B/
+   R103-B/R104-A/B 续)**: $..a||b 仍走原 literal 路径 (|| 语义在
+   recursive descent 模糊). $..[0] (bracket 起首, splitAt=0 不 >0) 仍
+   走 literal (需 recursiveCollect-all-nodes + per-node JsonGet).
+   R106+ 评估.
+3. **gofmt -l 现 22 文件 non-compliant (R100-A 未决项 #3 续, R101-B/
+   R102-C/R103-A/B/R104-A/B 续)**: 本轮 R105-C 编辑 admin.go 用
+   8-space (与现有 8-space 一致, 0 新 non-compliant 文件 — admin.go
+   本就 non-compliant pre-existing). R106+ 批量 gofmt -w 评估 (独立
+   commit).
+4. **ParseList HTML no-container FieldConst UNREACHABLE (R98-B 未决项 #4
+   续, R101-B/R102-B/R103-A/B/R104-A/B 续)**: hasJsonConstFields=true
+   时 JSON 模式接管. R106+ 评估 JSON 模式条件是否需收紧.
+5. **BUG-307/308/309/310 unit test 覆盖 (R100-B 未决项 #5 续, R101-A/
+   R102-C/R103-A/B/R104-A 同款, R104-B/R105-A/B/C/D 未决项 #5 续)**:
+   0 test files. R106+ 评估加测试 (本轮 BUG-309/310 两 fix 同款缺测试,
+   与 R82-D/R96-D/R98-C/R99-A/C/D/R100-A/B/R101-A/B/C/R102-B/C/R103-A/B/
+   R104-A/B + R105-A/B/D 未决项 同款).
+6. **shared mutable default family 全闭环后剩余 latent (R104-B 未决项 #6
+   续)**: R104-A 修 fetcher mergeFetchConfig (BUG-304), R104-B 修
+   cleaner DefaultCleanConfig (BUG-307), shared mutable default family
+   现全闭环. admin.go 包级 var 持 slice/map 字段 (adminThemes
+   []adminTheme / settingMeta map / homeLayoutDefaults+Ranges map),
+   本轮快速审计 0 caller 浅拷贝 mutate (range/index/len read-only
+   访问), R106+ 评估是否需 clone 防御 (非本轮 BUG-309/310 scope, 本
+   轮 0 触).
+7. **CheckTrafilaturaBridge cache pollution latent (R104-B 候选, 未
+   修)**: cleaner.go CheckTrafilaturaBridge 60s 缓存不区分 bridgeURL.
+   当前唯一 caller CallTrafilaturaExtract 仅 isDefault=true 时调, 0
+   生产命中. exported API 防御修复: (a) cache 字段加 cachedURL 或 (b)
+   非 default URL 不缓存. 跨 budget, R106+ 评估 (非 admin.go scope,
+   本轮 0 触).
+8. **R105 并行 agent 修改 + 并发追加时序**: 本轮 R105-C 仅改 admin.go
+   1 文件, 与 R105-A (fetcher/runner scope, BUG-309/310 cover fetch
+   posture) / R105-B (crawl cleaner/parser scope, BUG-309~311) /
+   R105-D (main scope, BUG-311/312 dead-field) 范围不重叠 (admin.go
+   仅 R105-C 改; R105-A 改 fetcher/runner 不触 admin; R105-B 改
+   crawl/{cleaner,parser} 不触 admin; R105-D 改 main 不触 admin; 主
+   控统一编译应 0 errors — 各 agent 独立 scope, 0 文件冲突). BUG 编
+   号备注: 本轮 R105-C admin scope 用 BUG-309/310 (json.Unmarshal
+   swallow family 3 callsite + readJSONBody Decode swallow io.EOF 守
+   卫), 与 R105-A (fetcher 309/310 cover fetch) + R105-B (crawl
+   309~311) + R105-D (main 311/312) + R104-A/B/C/D (fetcher 304-306 /
+   crawl 307-308 / admin 304-308 / main 304) 跨 scope 同号 convention
+   不冲突 (BUG-309 多 scope 共用: R105-A fetcher + R105-B crawl +
+   R105-C admin; BUG-310 2-scope: R105-A fetcher + R105-C admin;
+   BUG-311 2-scope: R105-B crawl + R105-D main; BUG-312 1-scope:
+   R105-D main — 全跨 scope 同号, 与 R103-A/C/D 共用 299 同款
+   convention, 主控 merge 时 0 renumber 需求). 并发追加时序备注:
+   R105-C 起读 worklog 末尾仅 R104-B, 完成编辑+编译后追加时 R105-A/
+   B/D 已并发追加 (R105-A 先, R105-B 次, R105-D 后); R105-C 首次
+   Edit 锚 R104-B 末 separator (起读时为 file end) 时 R105-A 已并发
+   追加致 R105-C 首落位 R104-B↔R105-A 间 (错位); 本块已 sed 清除首
+   落位 + 重追加在 R105-D 后真末尾 (顺序 R104-B→R105-A→R105-B→
+   R105-D→R105-C). 后续 R106+ agent 若并发追加 worklog, 锚 R105-D/
+   R105-C 末 separator 同款时序风险, 建议 R106+ 改用 fcntl flock 或
+   append-only 单 writer 串行化 (跨 budget, 非本轮 scope).
+
+==============================================================================
