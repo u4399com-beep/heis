@@ -1722,7 +1722,10 @@ func DocBase(doc *goquery.Document, docURL string) string {
         }
         href := strings.TrimSpace(doc.Find("base[href]").First().AttrOr("href", ""))
         if href != "" {
-                if strings.HasPrefix(strings.ToLower(href), "http://") || strings.HasPrefix(strings.ToLower(href), "https://") {
+                // R107-B 精简-1: cache strings.ToLower(href) (was called twice), hot path
+                //   (ParseToc/ParseContent 翻页每页 DocBase 调). 与 R106-B Absolutize
+                //   精简-1 同款 "URL prefix check ToLower 双调缓存" precedent.
+                if lh := strings.ToLower(href); strings.HasPrefix(lh, "http://") || strings.HasPrefix(lh, "https://") {
                         return href
                 }
                 // 相对 base href
@@ -1746,7 +1749,10 @@ func ResolveWithBase(raw, base string) string {
         if u == "" || strings.HasPrefix(u, "#") {
                 return u
         }
-        if strings.HasPrefix(strings.ToLower(u), "http://") || strings.HasPrefix(strings.ToLower(u), "https://") {
+        // R107-B 精简-1: cache strings.ToLower(u) (was called twice), hot path
+        //   (ParseToc/ParseContent 翻页每 URL 字段 ResolveWithBase 调). 与 R106-B
+        //   Absolutize 精简-1 同款 "URL prefix check ToLower 双调缓存" precedent.
+        if lu := strings.ToLower(u); strings.HasPrefix(lu, "http://") || strings.HasPrefix(lu, "https://") {
                 return u
         }
         b, err := url.Parse(base)

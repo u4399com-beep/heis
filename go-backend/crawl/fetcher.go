@@ -4619,6 +4619,51 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 if vid := resp.Header.Get("Vercel-ID"); vid != "" {
                         recordSecurityHeader(originHost(rawURL), "Vercel-ID", vid)
                 }
+                // R107-A 反反爬第 229-233 项: Varnish/Fastly cache hit detail +
+                //   reverse proxy backend identifier + CDN self-identification 响应头
+                //   观测 (与 124-228 同款 family, 单值 last-write-wins per-host 合并
+                //   tracker). R106-A 未决项 #1 pivot 续 — alt CDN edge / WAF / cloud
+                //   platform request ID family (224-228) 耗尽, pivot Varnish/Fastly
+                //   cache hit detail family (与第 211 X-Served-By Fastly CDN POP +
+                //   第 212 X-Timer Fastly/Varnish cache timing + 第 258 X-Cache CDN
+                //   cache status family 互补, cache vendor depth fingerprint) +
+                //   reverse proxy backend identifier (Apache mod_proxy_balancer,
+                //   与第 213 X-Accel-Buffering nginx reverse proxy 互补) + CDN
+                //   self-identification (KeyCDN/BunnyCDN/QUIC.cloud convention).
+                //   第 229 项 X-Cache-Hits (Varnish convention) — Varnish cache hit
+                //     count (e.g. "1" = cached hit, "0" = miss). 反爬关联: Varnish
+                //     cache depth posture (与第 258 X-Cache + 212 X-Timer 互补).
+                //   第 230 项 X-Varnish (Varnish convention) — Varnish session ID +
+                //     age (e.g. "1234567890 1"). 反爬关联: Varnish session posture
+                //     (与第 229 同 Varnish family, session ID 是 Varnish 内部 req ID).
+                //   第 231 项 X-Fastly-Request-ID (Fastly convention) — Fastly edge
+                //     request ID. 反爬关联: Fastly edge req ID posture (与第 211
+                //     X-Served-By + 212 X-Timer Fastly family 互补, 具体 request ID).
+                //   第 232 项 X-Backend-Server (Apache mod_proxy_balancer convention)
+                //     — reverse proxy backend identifier (e.g. "backend1.example.com").
+                //     反爬关联: reverse proxy backend posture (与第 213 X-Accel-
+                //     Buffering nginx reverse proxy 互补 — Apache mod_proxy vs nginx,
+                //     server stack fingerprint).
+                //   第 233 项 X-CDN (KeyCDN/BunnyCDN/QUIC.cloud convention) — CDN
+                //     self-identification (e.g. "KeyCDN", "BunnyCDN"). 反爬关联:
+                //     CDN self-identification posture (与第 224 Akamai + 225
+                //     Incapsula + 228 Vercel alt CDN vendor 互补 — self-identify
+                //     vendor, 不需 fingerprint 推断).
+                if xch := resp.Header.Get("X-Cache-Hits"); xch != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Cache-Hits", xch)
+                }
+                if xv := resp.Header.Get("X-Varnish"); xv != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Varnish", xv)
+                }
+                if xfri := resp.Header.Get("X-Fastly-Request-ID"); xfri != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Fastly-Request-ID", xfri)
+                }
+                if xbs := resp.Header.Get("X-Backend-Server"); xbs != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Backend-Server", xbs)
+                }
+                if xcdn := resp.Header.Get("X-CDN"); xcdn != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-CDN", xcdn)
+                }
 
                 // Set-Cookie 处理 (autoCookie)
                 if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
@@ -5868,6 +5913,27 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 }
                 if vid := extractHeaderFromCurlStdout(headers, "Vercel-ID"); vid != "" {
                         recordSecurityHeader(domain, "Vercel-ID", vid)
+                }
+                // R107-A 反反爬第 229-233 项 续 (与 fetchHttp line ~4622 同款, curl
+                //   -D - dump headers 路径; fetchBinaryViaCurl 不 dump headers 故不调,
+                //   与 124-228 同款限制. 详见 fetchHttp line ~4622 rationale). 第 229
+                //   项 X-Cache-Hits / 第 230 项 X-Varnish / 第 231 项 X-Fastly-Request-
+                //   ID / 第 232 项 X-Backend-Server / 第 233 项 X-CDN (extractHeader
+                //   FromCurlStdout 已对 5 头大小写不敏感提取).
+                if xch := extractHeaderFromCurlStdout(headers, "X-Cache-Hits"); xch != "" {
+                        recordSecurityHeader(domain, "X-Cache-Hits", xch)
+                }
+                if xv := extractHeaderFromCurlStdout(headers, "X-Varnish"); xv != "" {
+                        recordSecurityHeader(domain, "X-Varnish", xv)
+                }
+                if xfri := extractHeaderFromCurlStdout(headers, "X-Fastly-Request-ID"); xfri != "" {
+                        recordSecurityHeader(domain, "X-Fastly-Request-ID", xfri)
+                }
+                if xbs := extractHeaderFromCurlStdout(headers, "X-Backend-Server"); xbs != "" {
+                        recordSecurityHeader(domain, "X-Backend-Server", xbs)
+                }
+                if xcdn := extractHeaderFromCurlStdout(headers, "X-CDN"); xcdn != "" {
+                        recordSecurityHeader(domain, "X-CDN", xcdn)
                 }
                 if status >= 300 {
                         // R66-C BUG-52 (P3): curl 4xx/5xx 也记 latency + fail (与 fetchHttp
@@ -8186,6 +8252,30 @@ func fetchBinaryHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, pr
                 }
                 if vid := resp.Header.Get("Vercel-ID"); vid != "" {
                         recordSecurityHeader(originHost(rawURL), "Vercel-ID", vid)
+                }
+                // R107-A 反反爬第 229-233 项 续 (与 fetchHttp line ~4622 同款,
+                //   fetchBinaryHttp success + 4xx/5xx 两路径都记, BUG-241 修复后
+                //   fetchBinaryHttp 已补对称; fetchBinaryViaCurl 不 dump headers
+                //   故不调, 与 124-228 同款限制. 详见 fetchHttp line ~4622
+                //   rationale). 第 229 项 X-Cache-Hits / 第 230 项 X-Varnish / 第
+                //   231 项 X-Fastly-Request-ID / 第 232 项 X-Backend-Server / 第
+                //   233 项 X-CDN (Varnish/Fastly cache hit detail + reverse proxy
+                //   backend identifier + CDN self-identification posture; cover host
+                //   多在 external CDN / S3, 与 HTML host 不同域各自独立条目, 无污染).
+                if xch := resp.Header.Get("X-Cache-Hits"); xch != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Cache-Hits", xch)
+                }
+                if xv := resp.Header.Get("X-Varnish"); xv != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Varnish", xv)
+                }
+                if xfri := resp.Header.Get("X-Fastly-Request-ID"); xfri != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Fastly-Request-ID", xfri)
+                }
+                if xbs := resp.Header.Get("X-Backend-Server"); xbs != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Backend-Server", xbs)
+                }
+                if xcdn := resp.Header.Get("X-CDN"); xcdn != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-CDN", xcdn)
                 }
                 // 3xx / 4xx / 5xx 视为失败 (与 fetchHttp 同款, 不重试 3xx)
                 if resp.StatusCode >= 300 {
@@ -13074,6 +13164,18 @@ type hostSecurityHeadersEntry struct {
         xCloudTraceContextValue string // X-Cloud-Trace-Context (第 226 项, R106-A)
         xMsCorrelationReqIdValue string // X-MS-Correlation-Request-Id (第 227 项, R106-A)
         vercelIdValue           string // Vercel-ID (第 228 项, R106-A)
+        // R107-A 反反爬第 229-233 项: Varnish/Fastly cache hit detail + reverse
+        //   proxy backend identifier + CDN self-identification 响应头观测 (与
+        //   124-228 同款 family, 单值 last-write-wins per-host 合并 tracker).
+        //   详见 fetchHttp line ~4622 rationale. R106-A 未决项 #1 pivot 续 — alt
+        //   CDN edge / WAF / cloud platform request ID family (224-228) 耗尽,
+        //   pivot Varnish/Fastly cache hit detail + reverse proxy backend + CDN
+        //   self-identification family.
+        xCacheHitsValue         string // X-Cache-Hits (第 229 项, R107-A)
+        xVarnishValue           string // X-Varnish (第 230 项, R107-A)
+        xFastlyRequestIdValue   string // X-Fastly-Request-ID (第 231 项, R107-A)
+        xBackendServerValue     string // X-Backend-Server (第 232 项, R107-A)
+        xCdnValue               string // X-CDN (第 233 项, R107-A)
         detectedAt              int64  // UnixMilli
 }
 
@@ -13083,7 +13185,8 @@ type hostSecurityHeadersEntry struct {
 //   164-168 项 + R95-A 第 169-173 项 + R96-A 第 174-178 项 + R98-A 第 184-188 项
 //   + R99-A 第 189-193 项 + R100-A 第 194-198 项 + R101-A 第 199-203 项 + R102-A
 //   第 204-208 项 + R103-A 第 209-213 项 + R104-A 第 214-218 项 + R105-A 第
-//   219-223 项 (R106-A BUG-313 补字段) + R106-A 第 224-228 项).
+//   219-223 项 (R106-A BUG-313 补字段) + R106-A 第 224-228 项 + R107-A 第
+//   229-233 项).
 var hostSecurityHeadersMap sync.Map
 
 // hostSecurityHeadersSweepCounter — sweep 触发累加 (与 hostViaSweepCounter 同口径).
@@ -13138,9 +13241,10 @@ func extractSetCookieAttr(cookies []string, attr string) string {
 //   164-168 项 + R95-A 第 169-173 项 + R96-A 第 174-178 项 + R98-A 第 184-188 项
 //   + R99-A 第 189-193 项 + R100-A 第 194-198 项 + R101-A 第 199-203 项 + R102-A
 //   第 204-208 项 + R103-A 第 209-213 项 + R104-A 第 214-218 项 + R105-A 第
-//   219-223 项 (R106-A BUG-313 补 case) + R106-A 第 224-228 项).
-//   headerName 区分 105 头 (大小写不敏感). 与 recordVia 同款 Store + 惰性 sweep,
-//   但保留其他 104 头旧值 (LoadOrStore canonical 指针 + 单字段 update-in-place).
+//   219-223 项 (R106-A BUG-313 补 case) + R106-A 第 224-228 项 + R107-A 第
+//   229-233 项).
+//   headerName 区分 110 头 (大小写不敏感). 与 recordVia 同款 Store + 惰性 sweep,
+//   但保留其他 109 头旧值 (LoadOrStore canonical 指针 + 单字段 update-in-place).
 func recordSecurityHeader(host, headerName, value string) {
         if host == "" || value == "" {
                 return
@@ -13393,6 +13497,20 @@ func recordSecurityHeader(host, headerName, value string) {
                 ent.xMsCorrelationReqIdValue = value
         case "vercel-id":
                 ent.vercelIdValue = value
+        // R107-A 反反爬第 229-233 项: Varnish/Fastly cache hit detail + reverse
+        //   proxy backend identifier + CDN self-identification 响应头观测 (与
+        //   124-228 同款 family, 单值 last-write-wins per-host 合并 tracker).
+        //   详见 fetchHttp line ~4622 rationale.
+        case "x-cache-hits":
+                ent.xCacheHitsValue = value
+        case "x-varnish":
+                ent.xVarnishValue = value
+        case "x-fastly-request-id":
+                ent.xFastlyRequestIdValue = value
+        case "x-backend-server":
+                ent.xBackendServerValue = value
+        case "x-cdn":
+                ent.xCdnValue = value
         default:
                 return
         }
@@ -13517,6 +13635,12 @@ func HostSecurityHeadersSnapshot() map[string]map[string]string {
                         "xCloudTraceContextValue":  e.xCloudTraceContextValue,
                         "xMsCorrelationReqIdValue": e.xMsCorrelationReqIdValue,
                         "vercelIdValue":            e.vercelIdValue,
+                        // R107-A 第 229-233 项.
+                        "xCacheHitsValue":       e.xCacheHitsValue,
+                        "xVarnishValue":         e.xVarnishValue,
+                        "xFastlyRequestIdValue": e.xFastlyRequestIdValue,
+                        "xBackendServerValue":   e.xBackendServerValue,
+                        "xCdnValue":             e.xCdnValue,
                         "detectedAt":        fmt.Sprintf("%d", e.detectedAt),
                 }
                 return true

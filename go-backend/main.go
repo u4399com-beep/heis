@@ -759,11 +759,27 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
         //     删后 0 行为变化 (map 写入无 reader), 省 2 map[string]interface{}
         //     写入 per home view request (init map 写) + 2 写入 case "home"
         //     (layout 值覆盖 dead default).
+        // R107-D BUG-318 (P4 精简/dead-field removal, main+templates scope,
+        //   R106-D BUG-313 dead-field family 续 + R85-D BUG-206 dead-field
+        //   family 续): 删 init map "Categories" + "PseudoStyle" 两字段.
+        //   rg '\.Categories\b' 全 88 homeHandler-rendered 模板 (theme/
+        //   {home,book,read,category,ranking,fulltext,search,keyword,
+        //   history}.html × 10 主题) 0 命中 — 全分类导航走 NavCats (72
+        //   模板消费), Categories 全量 slice 从未被模板消费 (R64-D 注入
+        //   供"未来全分类页"但该页从未实现). rg '\.PseudoStyle\b' 同款
+        //   0 命中 (仅 404.html 消费 .PseudoStyle, 但 404 走 render404
+        //   自己的 data map line ~1547, 非 homeHandler init map). 删后
+        //   0 行为变化 (map 写入无 reader), 省 2 map[string]interface{}
+        //   写入 per homeHandler request. cats local 仍保留 (上方
+        //   navCats := takeN(cats,8) + injectCategoryURLs(cats,pseudoStyle)
+        //   消费); pseudoStyle local 仍保留 (case 各 buildBookURL/
+        //   buildChapterURL/injectBookURLs 调用消费). 与 R106-D BUG-313
+        //   删 HomeLatestBooks/HomeHotBooks/PagerURL/Size 9 callsite +
+        //   R105-D BUG-311 删 FirstChapterId/ChapterListAnchor/ChapterURL
+        //   同款 "dead field 精简" precedent (字段注入无 consumer).
         data := map[string]interface{}{
                 "Site":               site,
-                "Categories":         cats,
                 "NavCats":            navCats,
-                "PseudoStyle":        pseudoStyle,
                 "HomeURL":            buildHomeURL(pseudoStyle),
                 "HomeCategoryCount":  8,
                 "HomeCategoryBooks":  6,
@@ -857,7 +873,21 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 //   request. 与 R85-D BUG-206 删 history view TopBooks/Popular
                 //   同款 "dead field 精简" precedent (字段注入无 consumer).
                 // R63-A: 注入 URL builder 输出供模板消费 (本轮 Go 端就绪, 模板层 R63-B 接入).
-                data["BookURL"] = buildBookURL(pseudoStyle, id)
+                // R107-D BUG-317 (P4 精简/DRY hoist, main scope, R106-D BUG-314
+                //   curURL hoist family 续 + R105-D BUG-312 absCover hoist
+                //   family 续): case "book" 原 data["BookURL"] (本行) +
+                //   absBookURL (下方 ~line 896) 各调一次
+                //   buildBookURL(pseudoStyle, id) — 两次调用同 args, 第二次冗余
+                //   (buildBookURL 非 idempotent 早返: id 空走 error path ~2 ops;
+                //   非空 id 走 query/numeric/slug/dir/segmented 分支 ~5-10 ops).
+                //   hoist bookURL local var, 两处赋值复用 (data["BookURL"] +
+                //   absBookURL 构造). 0 行为变化, 省 1 buildBookURL 调用 per
+                //   book view request. 与 R106-D BUG-314 case "category"
+                //   curURL hoist + R105-D BUG-312 case "book"/"read"
+                //   absCover/absCoverRead hoist 同款 "DRY 精简" precedent
+                //   (consolidate redundant callsite → single hoisted var).
+                bookURL := buildBookURL(pseudoStyle, id)
+                data["BookURL"] = bookURL
                 // R76-A 目标A (用户需求 #1 按钮 bug 修复): R72-A 的 fallback 是 bug — 无章节书
                 //   firstChID == "" 时 FirstChapterURL = buildBookURL(pseudoStyle, id) 把按钮 href
                 //   指向书籍页本身, 点击 "在线阅读全文" 跳回当前页 (循环, 用户体验差). 改: 无章节
@@ -893,7 +923,9 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 bookName, _ := book["name"].(string)
                 bookIntro, _ := book["intro"].(string)
                 bookCover, _ := book["cover"].(string)
-                absBookURL := buildAbsoluteURL(siteDomain, buildBookURL(pseudoStyle, id))
+                // R107-D BUG-317: 复用上方 hoisted bookURL (buildBookURL 单次
+                //   调用结果), 省 1 buildBookURL 调用 per book view request.
+                absBookURL := buildAbsoluteURL(siteDomain, bookURL)
                 ogDesc := truncate(bookIntro, 200)
                 data["OgTitle"] = bookName + " - " + siteName
                 data["OgDescription"] = ogDesc
@@ -1535,14 +1567,23 @@ func render404(w http.ResponseWriter, r *http.Request, site map[string]interface
                 http.NotFound(w, r)
                 return
         }
-        cats, _ := getCategories()
         pseudoStyle, _ := site["PseudoStaticStyle"].(string)
         if pseudoStyle == "" {
                 pseudoStyle = "query"
         }
+        // R107-D BUG-318 (cont, render404 sibling, 同 dead-field family):
+        //   删 cats, _ := getCategories() + "Categories": cats 两行.
+        //   rg '\.Categories\b' templates/404.html 0 命中 (404 页仅消费
+        //   .PseudoStyle + .Site + .HomeURL, 全分类导航在 404 页不存在).
+        //   cats 在 render404 仅用于此 dead 注入 (无 navCats 派生 /
+        //   injectCategoryURLs 调用消费), 删 cats 声明 + 注入两行 — 同时
+        //   省 1 getCategories() SQLite 查询 per 404 request (404 页是
+        //   错误页, 高频路径如死链爬取, 省 DB 查询收益可观). 0 行为变化
+        //   (map 写入无 reader). 与 homeHandler init map 删 Categories
+        //   同款 dead-field family 续; pseudoStyle local 仍保留 (HomeURL
+        //   + PseudoStyle 注入消费).
         data := map[string]interface{}{
                 "Site":        site,
-                "Categories":  cats,
                 "HomeURL":     buildHomeURL(pseudoStyle),
                 "PseudoStyle": pseudoStyle,
         }

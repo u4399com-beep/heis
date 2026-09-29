@@ -352,6 +352,22 @@ var (
         //   R47-1A (regexp 提为包级) 同口径优化.
         urlPlaceholderCleanReplacer = strings.NewReplacer("\x00", "", "\uE000", "", "\uE001", "")
 
+        // R107-B 精简-2: NormalizeParagraphs 换行预归一化 Replacer (4 strings.ReplaceAll
+        //   → 1 NewReplacer 单遍扫描). hot path (NormalizeParagraphs 每章节正文 + 简介
+        //   都跑, 1000 章任务 = 2000+ 调, 原 4 次 ReplaceAll 各分配 1 个中间字符串
+        //   = 4 alloc/call × 2000 = 8000 alloc/任务). strings.Replacer 内部 read-only
+        //   trie (Replace 不修改 Replacer 状态, goroutine-safe, 包级 var 共享安全;
+        //   与 R75-C BUG-128 urlPlaceholderCleanReplacer 同口径). Replacer 按 longest
+        //   non-overlapping match 处理 "\r\n" 优先于 "\r" (输入 "\r\n" 整体匹配 →
+        //   "\n", 不先替 "\r" 再替 "\n" 误产 "\n\n"), 与原 4 ReplaceAll 顺序
+        //   ("\r\n"→"\n" 先, "\r"→"\n" 后) 行为等价. 行为 0 变化.
+        newlineNormalizeReplacer = strings.NewReplacer(
+                "\r\n", "\n",
+                "\r", "\n",
+                "\u2028", "\n",
+                "\u2029", "\n\n",
+        )
+
         // R47-1A: 预编译 cleaner.go 内 hot path 用的 regexp (原每次调用 cleanContentHtmlSync
         //   / NormalizeParagraphs 都重编译, 高频路径 GC 压力大. R45-1C 已对 smart.go 同款优化).
 
@@ -718,10 +734,9 @@ func NormalizeParagraphs(s string, separator string) string {
                 return ""
         }
         // R49-1B: 预规范化换行 — \r\n → \n, \r → \n (Mac 经典), U+2028 (LSP) → \n, U+2029 (PSP) → \n\n
-        s = strings.ReplaceAll(s, "\r\n", "\n")
-        s = strings.ReplaceAll(s, "\r", "\n")
-        s = strings.ReplaceAll(s, "\u2028", "\n")
-        s = strings.ReplaceAll(s, "\u2029", "\n\n")
+        // R107-B 精简-2: 4 strings.ReplaceAll → 1 newlineNormalizeReplacer.Replace 单遍扫描
+        //   (包级 var, 见 line 364 注释; 行为 0 变化, 4 alloc/call → 1 alloc/call).
+        s = newlineNormalizeReplacer.Replace(s)
         // R49-1B: Unicode 空格 → ASCII 空格 (\s+ 仅匹配 ASCII whitespace, 漏 NBSP 等)
         s = unicodeWsRe.ReplaceAllString(s, " ")
         // 按双换行 (>=2 个连续换行) 分段
@@ -937,8 +952,27 @@ func cleanContentHtmlSync(raw string, cfg CleanConfig) string {
                         h, _ := s.Html()
                         // R47-1A: indentBrRe / indentWsRe 提为包级 (原每段都重编译)
                         // R79-C 精简: 改用 plainTextBrRe / wsCollapseRe (同文件同 pattern).
+                        // BUG-320 (P3) 修复: 原 strings.ReplaceAll(h, "\u3000", " ") 仅剥
+                        //   U+3000 (全角空格), 漏 NBSP (U+00A0) / Ogham (U+1680) / U+2000-
+                        //   U+200A / U+202F / U+205F 等其他 Unicode 空格 — 与 plainText 分支
+                        //   NormalizeParagraphs line 741 unicodeWsRe (R49-1B 加, 剥全 Unicode
+                        //   空格) 不一致. 源站 HTML 偶发 raw NBSP (admin 复制粘贴 / GBK 编码
+                        //   混淆 / Word 导出) → HTML 分支 indent 规整不剥 NBSP → 段内
+                        //   "hello\u00A0world" 残留, 与 plainText 分支 "hello world" 不一致
+                        //   (同源输入不同输出, 与 BUG-245 确定性目标矛盾). 修复: 改用
+                        //   unicodeWsRe (NormalizeParagraphs 同口径), 后续 wsCollapseRe 塌
+                        //   ASCII 空格多串 (unicodeWsRe 替 NBSP → " ", wsCollapseRe 塌 "  "
+                        //   → " "). 71 Rule clean.plainText 默认 false (HTML 分支), 0 用 raw
+                        //   NBSP (多用 &nbsp; entity 不被 unicodeWsRe 触及); 0 用户受影响,
+                        //   防御性 + 一致性修复. latent 自 R49-1B 加 unicodeWsRe 起 56 轮
+                        //   未补 HTML 分支 indent 规整 (R49-1B 重点修 plainText, HTML 分支
+                        //   R47-1A 加 strings.ReplaceAll \u3000 漏对齐 unicodeWsRe 全集).
+                        //   BUG 编号备注: R107-A/C/D 并行已用 BUG-317/318/319 (跨 scope
+                        //   同号 convention), 本轮 R107-B crawl scope 用 BUG-320 顺延 (与
+                        //   R106-B crawl parser scope 用 BUG-315/316 顺延 R106-A fetcher
+                        //   scope 313/314 同款 "同 scope 内不同文件新号顺延" convention).
                         h = plainTextBrRe.ReplaceAllString(h, " ")
-                        h = strings.ReplaceAll(h, "\u3000", " ")
+                        h = unicodeWsRe.ReplaceAllString(h, " ")
                         h = wsCollapseRe.ReplaceAllString(h, " ")
                         h = strings.TrimSpace(h)
                         s.SetHtml(h)

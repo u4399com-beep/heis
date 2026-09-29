@@ -2303,6 +2303,42 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                         if cfg.Override.CustomUA != "" {
                                 coverCfg.CustomUA = cfg.Override.CustomUA
                         }
+                        // R107-A BUG-317 (P3) 修复 (深抓 cover fetch posture 续,
+                        //   与 BUG-309/310/314 同 cover FetchConfig family 续):
+                        //   cover fetch FetchConfig 仍漏继承 cfg.Override 的
+                        //   TLSProfile / H2Fingerprint / HeaderOrderProfile 三个
+                        //   指纹 profile 字段. 后果: cover 同域站 (originHost
+                        //   (parsed.Cover) == originHost(bookURL), e.g. 源站 /uploads/
+                        //   cover/xxx.webp 与 book 同 host) behind 反爬时, book fetch
+                        //   经 mergeFetchConfig(line ~9792-9799) 把 cfg.Override.
+                        //   TLSProfile/H2Fingerprint/HeaderOrderProfile 复制到 merged
+                        //   cfg → 真实浏览器在书籍详情页加载 <img src=parsed.Cover> 时
+                        //   必用同一 TLS 栈 (JA3/JA4) + 同一 H2 SETTINGS 帧 + 同一
+                        //   header order (浏览器跨 subresource 不变 profile), cover
+                        //   fetch 漏继承 → cover fetch 用默认 profile → 反爬侧在 1s
+                        //   内观察到 book fetch (custom profile) + cover fetch (默认
+                        //   profile) JA3/H2/header-order 不一致 → "同一浏览器 1s 内
+                        //   TLS 指纹漂移" 是强 bot 信号 → cover fetch 被识别 → 后续
+                        //   同 host book fetch 关联降权 (cf-bm cookie 联动). 与
+                        //   BUG-314 同 coverSameHost gate (外部 CDN 不继承, CDN 不反爬
+                        //   且不同 host profile 独立). 修复: 3 字段 !="" gate 继承
+                        //   (与 mergeFetchConfig line ~9792-9799 同款 "非空覆盖" gate).
+                        //   注: 当前 transport 构建路径 fetchBinaryHttp line ~7605 用
+                        //   nil transport → globalUtlsTransport, 3 字段属 "结构半消费"
+                        //   latent (mergeFetchConfig 已复制, fetcher transport 尚未读
+                        //   per-cfg profile), 但 coverSameHost 继承是结构对称前提, 后
+                        //   续 transport 按 cfg.TLSProfile 选 profile 时 cover 自动跟上
+                        //   (与 BUG-313 recordSecurityHeader switch 补 case 同款 "结构
+                        //   + 半实现" latent family, 同号 convention 不冲突).
+                        if cfg.Override.TLSProfile != "" {
+                                coverCfg.TLSProfile = cfg.Override.TLSProfile
+                        }
+                        if cfg.Override.H2Fingerprint != "" {
+                                coverCfg.H2Fingerprint = cfg.Override.H2Fingerprint
+                        }
+                        if cfg.Override.HeaderOrderProfile != "" {
+                                coverCfg.HeaderOrderProfile = cfg.Override.HeaderOrderProfile
+                        }
                 }
                 coverBin, err := FetchBinaryPage(ctx, parsed.Cover, coverCfg)
                 if err == nil && !coverBin.Blocked && len(coverBin.Bytes) > 0 {

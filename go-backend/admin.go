@@ -3207,7 +3207,14 @@ func adminBookByIDHandler(w http.ResponseWriter, r *http.Request) {
                 jrows, _ := db.Query(`SELECT id FROM DownloadJob WHERE bookId=?`, bookID)
                 for jrows != nil && jrows.Next() {
                         var jid string
-                        _ = jrows.Scan(&jid)
+                        // R107-C BUG-318 Pattern B loop rows.Scan 吞错 family 续
+                        //   (R106-C BUG-314 helper scanLogged admin scope 第三批;
+                        //   backup 10 已由 BUG-317 收口): 本批覆盖 admin scope 剩余
+                        //   全 20 callsite (API list/SSR filler/auxiliary handler 各
+                        //   路径, 详见各 scanLogged label). 同款 per-row Scan err
+                        //   吞 → log visibility, 0 行为变化. 与 BUG-317 + R106-C
+                        //   BUG-314 三批收口 admin scope 全 30+ inline swallow.
+                        scanLogged(jrows, "adminBookByIDHandler jobIDs", &jid)
                         if jid != "" {
                                 jobIDsToClean = append(jobIDsToClean, jid)
                         }
@@ -3585,7 +3592,7 @@ func fillTasksPageData(data map[string]interface{}, r *http.Request) {
                 for rulesRows.Next() {
                         var id, name string
                         var enabled bool
-                        _ = rulesRows.Scan(&id, &name, &enabled)
+                        scanLogged(rulesRows, "fillTasksPageData rules", &id, &name, &enabled)
                         rules = append(rules, map[string]interface{}{
                                 "id": id, "name": name, "enabled": enabled,
                         })
@@ -4504,7 +4511,7 @@ func adminThemesHandler(w http.ResponseWriter, r *http.Request) {
                 for rows.Next() {
                         var themeID string
                         var n int
-                        _ = rows.Scan(&themeID, &n)
+                        scanLogged(rows, "adminThemesHandler counts", &themeID, &n)
                         counts[themeID] = n
                 }
                 // R76-D BUG-147 (P3, R75-D BUG-128~139 series): rows.Err() 检查 —
@@ -4582,7 +4589,7 @@ func adminDownloadsList(w http.ResponseWriter, r *http.Request) {
         for rows.Next() {
                 var id, bookID, bookName, bookAuthor, options, status, filePath, errMsg, createdAt string
                 var size int
-                _ = rows.Scan(&id, &bookID, &bookName, &bookAuthor, &options, &status, &filePath, &errMsg, &size, &createdAt)
+                scanLogged(rows, "adminDownloadsList row", &id, &bookID, &bookName, &bookAuthor, &options, &status, &filePath, &errMsg, &size, &createdAt)
                 out = append(out, map[string]interface{}{
                         "id": id, "bookId": bookID, "bookName": bookName, "bookAuthor": bookAuthor,
                         "options": options, "status": status, "filePath": filePath,
@@ -4817,7 +4824,7 @@ func adminDownloadsCreate(w http.ResponseWriter, r *http.Request) {
                 }
                 for crows.Next() {
                         var c chRow
-                        _ = crows.Scan(&c.idx, &c.title, &c.volume, &c.content)
+                        scanLogged(crows, "adminDownloadsCreate chapters", &c.idx, &c.title, &c.volume, &c.content)
                         chapters = append(chapters, c)
                 }
                 // R74-D BUG-123 (P3, R73-D BUG-104 修复): crows.Err() 检查 — mid-iteration
@@ -4963,7 +4970,17 @@ func seedDefaultSettings() {
                 if meta.defaultVal == "" {
                         continue
                 }
-                _, _ = db.Exec(`INSERT OR IGNORE INTO Setting (key, value) VALUES (?, ?)`, k, meta.defaultVal)
+                // R107-C BUG-319 Pattern A `_, _ = db.Exec` 吞错 family 续
+                //   (R96-C BUG-272~274 execLogged helper admin scope 收口):
+                //   原实现 `_, _ = db.Exec(INSERT OR IGNORE Setting ...)` 吞错
+                //   — 启动 init 路径 SQLite 磁盘满 / 连接闪断时 feedbackEnabled
+                //   等 12 key 默认行 0 灌入 → /admin/settings 页面首次访问缺
+                //   row, 用户不知 init 失败 (无 log). execLogged log-on-fail
+                //   visibility, 0 行为变化 (INSERT OR IGNORE 仍 best-effort,
+                //   仅加 log 提示运维). 与 R96-C BUG-272~274 Task fire-and-
+                //   forget Exec family + R104-C BUG-305 TaskLog orphan 同款
+                //   Pattern A Exec swallow 收口.
+                execLogged("seedDefaultSettings", `INSERT OR IGNORE INTO Setting (key, value) VALUES (?, ?)`, k, meta.defaultVal)
         }
 }
 
@@ -5157,7 +5174,7 @@ func adminFeedbackHandler(w http.ResponseWriter, r *http.Request) {
                 defer rows.Close()
                 for rows.Next() {
                         var id, typV, contact, content, urlV, siteID, statusV, ip, adminNote, createdAt, updatedAt string
-                        _ = rows.Scan(&id, &typV, &contact, &content, &urlV, &siteID, &statusV, &ip, &adminNote, &createdAt, &updatedAt)
+                        scanLogged(rows, "adminFeedbackHandler list", &id, &typV, &contact, &content, &urlV, &siteID, &statusV, &ip, &adminNote, &createdAt, &updatedAt)
                         rowsList = append(rowsList, map[string]interface{}{
                                 "id": id, "type": typV, "contact": contact, "content": content,
                                 "url": urlV, "siteId": siteID, "status": statusV, "ip": ip,
@@ -5441,13 +5458,26 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
         //   同 slice, 末尾 append 到 warnings 数组随 backup JSON 一起返回.
         chapterTruncations := []string{}
 
+        // R107-C BUG-317 Pattern B loop rows.Scan 吞错 family 续 (R106-C
+        //   BUG-314 helper scanLogged admin scope 第二批, backup export 路径
+        //   10 callsite): 原 10 处 `_ = rows.Scan` / `_ = crows.Scan` /
+        //   `_ = trows.Scan` (settings/categories/sites/friendLinks/rules/
+        //   tasks/downloadJobs/books/chapters/tags loop) 吞 per-row Scan err
+        //   — BUG-145 rows.Err post-loop 不触 per-row NULL→non-nullable / 列序
+        //   drift / 类型 mismatch 零值行混入 backup JSON, restore cycle 静默
+        //   丢字段. helper log-on-fail visibility, 0 行为变化 (best-effort
+        //   backup 语义不变, 仅加 log 提示运维重备). 与 R106-C BUG-314
+        //   adminTasksList/adminRulesList/adminBooksList/adminCategoriesList/
+        //   adminLinksList/adminSettingsList/fillDashboardData×2/
+        //   fillTasksPageData/fillBooksPageData/fillRulesPageData/
+        //   fillSitesPageData 12 callsite 同款收口.
         // settings
         type kv struct{ key, value string }
         settings := []kv{}
         if rows, err := db.Query(`SELECT key, value FROM Setting LIMIT 500`); err == nil {
                 for rows.Next() {
                         var k, v string
-                        _ = rows.Scan(&k, &v)
+                        scanLogged(rows, "adminBackupHandler settings", &k, &v)
                         settings = append(settings, kv{k, v})
                 }
                 // R75-D BUG-145 (P3, R74-D 未决项 #2): non-chapters 7 queries crows.Err()
@@ -5466,7 +5496,7 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
                 for rows.Next() {
                         var id, name, createdAt string
                         var so int
-                        _ = rows.Scan(&id, &name, &so, &createdAt)
+                        scanLogged(rows, "adminBackupHandler categories", &id, &name, &so, &createdAt)
                         categories = append(categories, map[string]interface{}{"id": id, "name": name, "sortOrder": so, "createdAt": createdAt})
                 }
                 // R75-D BUG-145: categories crows.Err() 检查.
@@ -5492,7 +5522,7 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
                         var offset, navCategoryCount, homeModuleLimit, chapterPaginationWords, chapterPaginationPages int
                         var isDefault, status, inLinkWheel, footerStats, chapterSeoAuto bool
                         var createdAt, updatedAt string
-                        _ = rows.Scan(&id, &name, &domain, &themeID, &title, &desc, &kw, &icbm, &geoR, &geoP, &offset, &isDefault, &status, &inLinkWheel, &pseudoStaticStyle, &footerText, &footerCopyright, &footerIcp, &footerStats, &navCategoryCount, &homeModuleLimit, &chapterPaginationMode, &chapterPaginationWords, &chapterPaginationPages, &chapterSeoAuto, &chapterSeoTitleTemplate, &chapterSeoDescTemplate, &chapterSeoKeywordsTemplate, &createdAt, &updatedAt)
+                        scanLogged(rows, "adminBackupHandler sites", &id, &name, &domain, &themeID, &title, &desc, &kw, &icbm, &geoR, &geoP, &offset, &isDefault, &status, &inLinkWheel, &pseudoStaticStyle, &footerText, &footerCopyright, &footerIcp, &footerStats, &navCategoryCount, &homeModuleLimit, &chapterPaginationMode, &chapterPaginationWords, &chapterPaginationPages, &chapterSeoAuto, &chapterSeoTitleTemplate, &chapterSeoDescTemplate, &chapterSeoKeywordsTemplate, &createdAt, &updatedAt)
                         if pseudoStaticStyle == "" {
                                 pseudoStaticStyle = "query"
                         }
@@ -5528,7 +5558,7 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
                         var id, name, urlV, logo, createdAt, updatedAt string
                         var so int
                         var en bool
-                        _ = rows.Scan(&id, &name, &urlV, &logo, &so, &en, &createdAt, &updatedAt)
+                        scanLogged(rows, "adminBackupHandler friendLinks", &id, &name, &urlV, &logo, &so, &en, &createdAt, &updatedAt)
                         friendLinks = append(friendLinks, map[string]interface{}{
                                 "id": id, "name": name, "url": urlV, "logo": logo,
                                 "sortOrder": so, "enabled": en, "createdAt": createdAt, "updatedAt": updatedAt,
@@ -5547,7 +5577,7 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
                 for rows.Next() {
                         var id, name, desc, cfg, createdAt, updatedAt string
                         var en bool
-                        _ = rows.Scan(&id, &name, &desc, &cfg, &en, &createdAt, &updatedAt)
+                        scanLogged(rows, "adminBackupHandler rules", &id, &name, &desc, &cfg, &en, &createdAt, &updatedAt)
                         rules = append(rules, map[string]interface{}{
                                 "id": id, "name": name, "description": desc, "config": cfg,
                                 "enabled": en, "createdAt": createdAt, "updatedAt": updatedAt,
@@ -5570,7 +5600,7 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
                                 smartCategory, smartComplete, autoSuggest, autoRefresh                                                     bool
                                 status, progress, stats, createdAt, updatedAt                                                              string
                         }
-                        _ = rows.Scan(&t.id, &t.name, &t.ruleID, &t.mode, &t.bookURL, &t.listURL, &t.listStart, &t.listEnd, &t.bookStart, &t.bookEnd, &t.recrawlMode, &t.storageMode, &t.fetchConfig, &t.threadMin, &t.threadMax, &t.intervalMin, &t.intervalMax, &t.smartCategory, &t.smartComplete, &t.autoSuggest, &t.autoRefresh, &t.refreshIntervalMin, &t.status, &t.progress, &t.stats, &t.createdAt, &t.updatedAt)
+                        scanLogged(rows, "adminBackupHandler tasks", &t.id, &t.name, &t.ruleID, &t.mode, &t.bookURL, &t.listURL, &t.listStart, &t.listEnd, &t.bookStart, &t.bookEnd, &t.recrawlMode, &t.storageMode, &t.fetchConfig, &t.threadMin, &t.threadMax, &t.intervalMin, &t.intervalMax, &t.smartCategory, &t.smartComplete, &t.autoSuggest, &t.autoRefresh, &t.refreshIntervalMin, &t.status, &t.progress, &t.stats, &t.createdAt, &t.updatedAt)
                         tasks = append(tasks, map[string]interface{}{
                                 "id": t.id, "name": t.name, "ruleId": t.ruleID, "mode": t.mode,
                                 "bookUrl": t.bookURL, "listUrl": t.listURL, "listStart": t.listStart, "listEnd": t.listEnd,
@@ -5597,7 +5627,7 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
                 for rows.Next() {
                         var id, bookID, options, status, filePath, errMsg, createdAt string
                         var size int
-                        _ = rows.Scan(&id, &bookID, &options, &status, &filePath, &errMsg, &size, &createdAt)
+                        scanLogged(rows, "adminBackupHandler downloadJobs", &id, &bookID, &options, &status, &filePath, &errMsg, &size, &createdAt)
                         downloadJobs = append(downloadJobs, map[string]interface{}{
                                 "id": id, "bookId": bookID, "options": options, "status": status,
                                 "filePath": filePath, "error": errMsg, "size": size, "createdAt": createdAt,
@@ -5628,7 +5658,7 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
                 bookRows := []bookRow{}
                 for rows.Next() {
                         var b bookRow
-                        _ = rows.Scan(&b.id, &b.name, &b.author, &b.catID, &b.intro, &b.cover, &b.status, &b.kw, &b.latest, &b.wc, &b.srcURL, &b.srcRule, &b.storageMode, &b.collectedAt, &b.createdAt, &b.updatedAt)
+                        scanLogged(rows, "adminBackupHandler books", &b.id, &b.name, &b.author, &b.catID, &b.intro, &b.cover, &b.status, &b.kw, &b.latest, &b.wc, &b.srcURL, &b.srcRule, &b.storageMode, &b.collectedAt, &b.createdAt, &b.updatedAt)
                         bookRows = append(bookRows, b)
                 }
                 // R74-D BUG-126 (P3): 外层 book rows.Err() 检查 (与 adminBooksList BUG-114
@@ -5668,7 +5698,7 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
                                                         idx, wc                                                                           int
                                                         fetched                                                                           bool
                                                 }
-                                                _ = crows.Scan(&c.id, &c.bookID, &c.idx, &c.title, &c.volume, &c.urlV, &c.content, &c.storage, &c.filePath, &c.wc, &c.fetched, &c.createdAt, &c.updatedAt)
+                                                scanLogged(crows, "adminBackupHandler chapters", &c.id, &c.bookID, &c.idx, &c.title, &c.volume, &c.urlV, &c.content, &c.storage, &c.filePath, &c.wc, &c.fetched, &c.createdAt, &c.updatedAt)
                                                 chapters = append(chapters, map[string]interface{}{
                                                         "id": c.id, "bookId": c.bookID, "idx": c.idx, "title": c.title,
                                                         "volume": c.volume, "url": c.urlV, "content": c.content, "storage": c.storage,
@@ -5698,7 +5728,7 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
                                                         id, bookID, tag, source string
                                                         hits                    int
                                                 }
-                                                _ = trows.Scan(&t.id, &t.bookID, &t.tag, &t.source, &t.hits)
+                                                scanLogged(trows, "adminBackupHandler tags", &t.id, &t.bookID, &t.tag, &t.source, &t.hits)
                                                 tags = append(tags, map[string]interface{}{
                                                         "id": t.id, "bookId": t.bookID, "tag": t.tag, "source": t.source, "hits": t.hits,
                                                 })
@@ -6202,7 +6232,7 @@ func adminSeoAuditHandler(w http.ResponseWriter, r *http.Request) {
                 for rows.Next() {
                         var id, name, domain, themeID, title, desc, kw, icbm, geoR, geoP string
                         var offset int
-                        _ = rows.Scan(&id, &name, &domain, &themeID, &title, &desc, &kw, &icbm, &geoR, &geoP, &offset)
+                        scanLogged(rows, "adminSeoAuditHandler sites", &id, &name, &domain, &themeID, &title, &desc, &kw, &icbm, &geoR, &geoP, &offset)
                         sites = append(sites, map[string]string{
                                 "id": id, "name": name, "domain": domain, "themeId": themeID,
                                 "title": title, "description": desc, "keywords": kw,
@@ -6723,7 +6753,7 @@ func adminSitesList(w http.ResponseWriter, r *http.Request) {
         siteRows := []siteRow{}
         for rows.Next() {
                 var sr siteRow
-                _ = rows.Scan(&sr.ID, &sr.Name, &sr.Domain, &sr.ThemeID, &sr.IsDefault, &sr.Title, &sr.Desc, &sr.Kw, &sr.Icbm, &sr.GeoR, &sr.GeoP, &sr.Offset, &sr.Status, &sr.InLinkWheel, &sr.PseudoStaticStyle,
+                scanLogged(rows, "adminSitesList row", &sr.ID, &sr.Name, &sr.Domain, &sr.ThemeID, &sr.IsDefault, &sr.Title, &sr.Desc, &sr.Kw, &sr.Icbm, &sr.GeoR, &sr.GeoP, &sr.Offset, &sr.Status, &sr.InLinkWheel, &sr.PseudoStaticStyle,
                         &sr.FooterText, &sr.FooterCopyright, &sr.FooterIcp, &sr.FooterStats, &sr.NavCategoryCount, &sr.HomeModuleLimit,
                         &sr.ChapterPaginationMode, &sr.ChapterPaginationWords, &sr.ChapterPaginationPages,
                         &sr.ChapterSeoAuto, &sr.ChapterSeoTitleTemplate, &sr.ChapterSeoDescTemplate, &sr.ChapterSeoKeywordsTemplate,
@@ -7355,7 +7385,7 @@ func generateSiteTDK(siteID string) (title, description, keywords string, err er
         if qerr1 == nil {
                 for catRows.Next() {
                         var n string
-                        _ = catRows.Scan(&n)
+                        scanLogged(catRows, "generateSiteTDK cats", &n)
                         if n != "" {
                                 cats = append(cats, n)
                         }
@@ -7375,7 +7405,7 @@ func generateSiteTDK(siteID string) (title, description, keywords string, err er
         if qerr2 == nil {
                 for bookRows.Next() {
                         var n string
-                        _ = bookRows.Scan(&n)
+                        scanLogged(bookRows, "generateSiteTDK books", &n)
                         if n != "" {
                                 books = append(books, n)
                         }
@@ -7613,7 +7643,7 @@ func adminSitesBatchGenerateTDK(w http.ResponseWriter, r *http.Request, body map
         for rows.Next() {
                 var id string
                 var isDefault bool
-                _ = rows.Scan(&id, &isDefault)
+                scanLogged(rows, "adminSiteGenerateTDK metas", &id, &isDefault)
                 if id != "" {
                         metas = append(metas, siteMeta{ID: id, IsDefault: isDefault})
                 }
@@ -7881,7 +7911,7 @@ func adminBackupClearHandler(w http.ResponseWriter, r *http.Request) {
         runRows, _ := db.Query(`SELECT id FROM Task WHERE status='running'`)
         for runRows != nil && runRows.Next() {
                 var tid string
-                _ = runRows.Scan(&tid)
+                scanLogged(runRows, "adminBackupClearHandler running", &tid)
                 if tid != "" {
                         runningTasks = append(runningTasks, runningTask{id: tid})
                 }
@@ -7975,7 +8005,7 @@ func fillCategoriesPageData(data map[string]interface{}) {
                 catRows := []catRow{}
                 for rows.Next() {
                         var cr catRow
-                        _ = rows.Scan(&cr.ID, &cr.Name, &cr.SortOrder, &cr.CreatedAt)
+                        scanLogged(rows, "fillCategoriesPageData row", &cr.ID, &cr.Name, &cr.SortOrder, &cr.CreatedAt)
                         catRows = append(catRows, cr)
                 }
                 // R75-D BUG-133 (P3, R74 交接 #6): rows.Err() 检查 — mid-iteration
@@ -8009,7 +8039,7 @@ func fillLinksPageData(data map[string]interface{}) {
                         var id, name, urlV, logo, createdAt, updatedAt string
                         var sortOrder int
                         var enabled bool
-                        _ = rows.Scan(&id, &name, &urlV, &logo, &sortOrder, &enabled, &createdAt, &updatedAt)
+                        scanLogged(rows, "fillLinksPageData row", &id, &name, &urlV, &logo, &sortOrder, &enabled, &createdAt, &updatedAt)
                         links = append(links, map[string]interface{}{
                                 "id": id, "name": name, "url": urlV, "logo": logo,
                                 "sortOrder": sortOrder, "enabled": enabled, "updatedAt": updatedAt,
@@ -8082,7 +8112,7 @@ func fillThemesPageData(data map[string]interface{}) {
                 for rows.Next() {
                         var themeID string
                         var n int
-                        _ = rows.Scan(&themeID, &n)
+                        scanLogged(rows, "fillThemesPageData counts", &themeID, &n)
                         counts[themeID] = n
                 }
                 // R75-D BUG-135 (P3, R74 交接 #6): rows.Err() 检查 — mid-iteration
@@ -8120,7 +8150,7 @@ func fillThemesPageData(data map[string]interface{}) {
                 defer srows.Close()
                 for srows.Next() {
                         var id, name, domain, themeID string
-                        _ = srows.Scan(&id, &name, &domain, &themeID)
+                        scanLogged(srows, "fillThemesPageData sites", &id, &name, &domain, &themeID)
                         sites = append(sites, map[string]interface{}{
                                 "id": id, "name": name, "domain": domain, "themeId": themeID,
                         })
@@ -8144,7 +8174,7 @@ func fillDownloadsPageData(data map[string]interface{}) {
                 for rows.Next() {
                         var id, bookID, bookName, bookAuthor, options, status, filePath, errMsg, createdAt string
                         var size int
-                        _ = rows.Scan(&id, &bookID, &bookName, &bookAuthor, &options, &status, &filePath, &errMsg, &size, &createdAt)
+                        scanLogged(rows, "fillDownloadsPageData row", &id, &bookID, &bookName, &bookAuthor, &options, &status, &filePath, &errMsg, &size, &createdAt)
                         dls = append(dls, map[string]interface{}{
                                 "id": id, "bookId": bookID, "bookName": bookName, "bookAuthor": bookAuthor,
                                 "status": status, "size": size, "error": errMsg, "createdAt": createdAt,
@@ -8180,7 +8210,7 @@ func fillSettingsPageData(data map[string]interface{}) {
                 defer rows.Close()
                 for rows.Next() {
                         var key, value string
-                        _ = rows.Scan(&key, &value)
+                        scanLogged(rows, "fillSettingsPageData row", &key, &value)
                         isJSON := false
                         v := value
                         if len(value) > 0 && (value[0] == '{' || value[0] == '[' || value == "true" || value == "false" || value == "null") {
@@ -8293,7 +8323,7 @@ func fillFeedbackPageData(data map[string]interface{}, r *http.Request) {
                 defer rows.Close()
                 for rows.Next() {
                         var id, typV, contact, content, urlV, siteID, statusV, ip, adminNote, createdAt string
-                        _ = rows.Scan(&id, &typV, &contact, &content, &urlV, &siteID, &statusV, &ip, &adminNote, &createdAt)
+                        scanLogged(rows, "fillFeedbackPageData row", &id, &typV, &contact, &content, &urlV, &siteID, &statusV, &ip, &adminNote, &createdAt)
                         rowsList = append(rowsList, map[string]interface{}{
                                 "id": id, "type": typV, "contact": contact, "content": content,
                                 "url": urlV, "status": statusV, "ip": ip,
@@ -8404,7 +8434,7 @@ func fillSeoAuditPageData(data map[string]interface{}, r *http.Request) {
                 for rows.Next() {
                         var id, name, domain, themeID, title, desc, kw, icbm, geoR, geoP string
                         var offset int
-                        _ = rows.Scan(&id, &name, &domain, &themeID, &title, &desc, &kw, &icbm, &geoR, &geoP, &offset)
+                        scanLogged(rows, "fillSeoAuditPageData sites", &id, &name, &domain, &themeID, &title, &desc, &kw, &icbm, &geoR, &geoP, &offset)
                         sites = append(sites, map[string]string{
                                 "id": id, "name": name, "domain": domain, "themeId": themeID,
                                 "title": title, "description": desc, "keywords": kw,
