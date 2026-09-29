@@ -2256,7 +2256,26 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                 //   cfg.Override.AutoCookie 同口径). cover host 多为 external CDN, 存
                 //   CDN cookie 到 jar (per-domain 不污染 book host cookie; 后续同 CDN
                 //   cover fetch 复用, 降反爬关联识别). 与 BUG-309 同 FetchConfig 改.
-                coverBin, err := FetchBinaryPage(ctx, parsed.Cover, FetchConfig{
+                // R106-A BUG-314 (P3) 修复 (深抓 cover fetch posture 继承 family,
+                //   与 BUG-309/310 同 cover FetchConfig 续): cover fetch FetchConfig
+                //   仍硬编码 Timeout: 15000 / Retries: 1 / UAMode: "rotate" / 无
+                //   ProxyURL / 无 JitterMs / 无 CustomUA, 不继承 cfg.Override 的
+                //   anti-crawl posture. 后果: cover 同域站 (originHost(parsed.Cover)
+                //   == originHost(bookURL), e.g. 源站 /uploads/cover/xxx.webp 与 book
+                //   同 host) behind 反爬时, book fetch 用 proxy+jitter+customUA 过,
+                //   cover fetch 不继承 → cover fetch 更易被拦 → cover 同 host 反爬
+                //   触发后下次 book fetch 关联降权 (与 BUG-309 漏 Referer + BUG-310
+                //   漏 AutoCookie 同款 "cover fetch posture 漏" family). 外部 CDN
+                //   cover (originHost 不同) 多不需继承 (CDN 不反爬, 加 book proxy 反
+                //   致 CDN 流量经代理变慢). 修复: coverSameHost := originHost(parsed.
+                //   Cover) == originHost(bookURL) (与 R105-A BUG-309 同 originHost
+                //   posture family). coverSameHost=true 时继承 cfg.Override 的 Timeout
+                //   (>0) / Retries (>0) / UAMode (!="") / JitterMs (>0) / ProxyURL
+                //   (!="") / CustomUA (!="") (与 mergeFetchConfig 同款 "非零/非空
+                //   覆盖" gate, 防 0 值覆盖默认). false 时 (外部 CDN) 保留原硬编码值
+                //   (与 R76-C design choice "保守不加 hostGate" 同款).
+                coverSameHost := originHost(parsed.Cover) == originHost(bookURL)
+                coverCfg := FetchConfig{
                         Engine:     "http",
                         UAMode:     "rotate",
                         AutoCookie: true,
@@ -2264,7 +2283,28 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                         RefererURL: bookURL,
                         Timeout:    15000,
                         Retries:    1,
-                })
+                }
+                if coverSameHost {
+                        if cfg.Override.Timeout > 0 {
+                                coverCfg.Timeout = cfg.Override.Timeout
+                        }
+                        if cfg.Override.Retries > 0 {
+                                coverCfg.Retries = cfg.Override.Retries
+                        }
+                        if cfg.Override.UAMode != "" {
+                                coverCfg.UAMode = cfg.Override.UAMode
+                        }
+                        if cfg.Override.JitterMs > 0 {
+                                coverCfg.JitterMs = cfg.Override.JitterMs
+                        }
+                        if cfg.Override.ProxyURL != "" {
+                                coverCfg.ProxyURL = cfg.Override.ProxyURL
+                        }
+                        if cfg.Override.CustomUA != "" {
+                                coverCfg.CustomUA = cfg.Override.CustomUA
+                        }
+                }
+                coverBin, err := FetchBinaryPage(ctx, parsed.Cover, coverCfg)
                 if err == nil && !coverBin.Blocked && len(coverBin.Bytes) > 0 {
                         if rel, err := SaveCoverWebp(coverBin.Bytes, bookID); err == nil && rel != "" {
                                 _ = cfg.DB.UpdateBookCover(bookID, rel)

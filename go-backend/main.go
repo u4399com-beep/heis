@@ -739,12 +739,26 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
         //   依赖; 但若 R87+ 想让模板用 $.HomeCategoryBooks/.HomeCategoryCount 等配置
         //   值 (admin 可调 4-20/2-12), 需 base data 注入默认. R86-D 未决项 #8 候选
         //   "homeHandler history fallback path data["HomeCategoryCount"]/["HomeCategoryBooks"]
-        //   未设" 提示此处加默认. 默认 8/6/12/12 与 homeLayoutDefaults (admin.go line
+        //   未设" 提示此处加默认. 默认 8/6 与 homeLayoutDefaults (admin.go line
         //   6384-6387) 一致; case "home" default 仍会覆盖此默认 (getHomeLayoutSetting
         //   返 clamp 后的 admin 值, 与默认可能不同但不会比默认更差 — admin 配置可
-        //   小到 4/2 但仍合法). 0 caller 依赖此 4 字段在非 home view 缺失 (BUG-225
-        //   用 hardcoded 6, shipsay/history 0 用此 4 字段, aijjxs/home 用但仅 case
+        //   小到 4/2 但仍合法). 0 caller 依赖此 2 字段在非 home view 缺失 (BUG-225
+        //   用 hardcoded 6, shipsay/history 0 用此 2 字段, aijjxs/home 用但仅 case
         //   "home" 渲染, fallback shipsay/home 时此默认值替代 nil).
+        //   R106-D BUG-313 (P4 精简/dead-field removal, main+templates scope,
+        //     R105-D BUG-311 dead-field family 续): 删 init map 默认值
+        //     "HomeLatestBooks": 12 + "HomeHotBooks": 12 两键 (原 R71-A 引入
+        //     供 homeHandler 4 字段 layout family; 实际 aijjxs/home 模板仅消费
+        //     HomeCategoryCount/HomeCategoryBooks 两键, LatestBooks/Popular/
+        //     TopBooks/FeaturedBooks 四区块改用 takeBooks/topBooks 直接注入
+        //     渲染 — HomeLatestBooks/HomeHotBooks Go-side 默认值 + case "home"
+        //     覆盖值两 callsite 0 template consumers, 全 88 模板 rg
+        //     'HomeLatestBooks|HomeHotBooks' 0 命中). 与 R105-D BUG-311 删
+        //     case "book"/"read" 3 dead-defense 字段 (FirstChapterId/
+        //     ChapterListAnchor/ChapterURL) 同款 "dead-field 精简" precedent.
+        //     删后 0 行为变化 (map 写入无 reader), 省 2 map[string]interface{}
+        //     写入 per home view request (init map 写) + 2 写入 case "home"
+        //     (layout 值覆盖 dead default).
         data := map[string]interface{}{
                 "Site":               site,
                 "Categories":         cats,
@@ -753,8 +767,6 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 "HomeURL":            buildHomeURL(pseudoStyle),
                 "HomeCategoryCount":  8,
                 "HomeCategoryBooks":  6,
-                "HomeLatestBooks":    12,
-                "HomeHotBooks":       12,
         }
 
         // R72-A 目标B: 注入链轮链接供前台友情链接模块渲染 (用户需求 #1).
@@ -1104,14 +1116,34 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 data["HotBooks"] = takeBooks(books, 12)
                 data["TopAuthors"] = pickAuthors(books, 12)
                 data["Page"] = page
-                data["Size"] = size
+                // R106-D BUG-313 (P4 精简/dead-field removal, main+templates
+                //   scope, R105-D BUG-311 dead-field family 续): 删
+                //   data["Size"] = size. 全 88 模板 rg '\.Size\b' 0 命中
+                //   (font-size CSS 用 plain text, 非 .Size 字段). size
+                //   local 仍保留 (totalPages := (total + size - 1) / size
+                //   等计算消费). 删后 0 行为变化, 省 1 map[string]interface{}
+                //   写入 per category view request.
                 data["Total"] = total
                 data["TotalPages"] = totalPages
                 data["PageList"] = pageListWithURLs(buildPageList(page, totalPages), func(p int) string {
                         return buildCategoryURL(pseudoStyle, catID, p)
                 })
                 // R63-A: 注入分页 URL builder 输出.
-                data["CategoryURL"] = buildCategoryURL(pseudoStyle, catID, page)
+                // R106-D BUG-314 (P4 精简/DRY hoist, main scope, R105-D
+                //   BUG-312 bid/absCover hoist family 续): case "category"
+                //   原 data["CategoryURL"] (line 1126) + data["CanonicalURL"]
+                //   (line ~1166) 各调一次 buildCategoryURL(pseudoStyle,
+                //   catID, page) — 两次调用同 args, 第二次冗余
+                //   (buildCategoryURL 非 idempotent 早返: catID 空 / page=1
+                //   各走不同 build path ~3-5 ops; 非空 catID page>1 走
+                //   numeric/slug/dir/segmented 分支 ~5-10 ops). hoist curURL
+                //   local var, 两次赋值复用. 0 行为变化, 省 1 buildCategoryURL
+                //   调用 per category view request. 与 R105-D BUG-312 case
+                //   "book" absCover + case "read" absCoverRead hoist 同款
+                //   "DRY 精简" precedent (consolidate redundant callsite →
+                //   single hoisted var).
+                curURL := buildCategoryURL(pseudoStyle, catID, page)
+                data["CategoryURL"] = curURL
                 if page > 1 {
                         data["PrevPageURL"] = buildCategoryURL(pseudoStyle, catID, page-1)
                 }
@@ -1151,7 +1183,10 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 //   clamp). 与 case "book" line 871 absBookURL 同款 buildAbsoluteURL
                 //   + buildCategoryURL. 防 /?view=category&cat=X vs /category/X.html
                 //   duplicate-content (搜索引擎看到两 URL 渲染同内容).
-                data["CanonicalURL"] = buildAbsoluteURL(siteDomain, buildCategoryURL(pseudoStyle, catID, page))
+                // R106-D BUG-314: 复用上方 hoisted curURL (buildCategoryURL
+                //   (pseudoStyle, catID, page) 单次调用结果), 省 1
+                //   buildCategoryURL 调用 per category view request.
+                data["CanonicalURL"] = buildAbsoluteURL(siteDomain, curURL)
         case "ranking":
                 tab := r.URL.Query().Get("sort")
                 if tab == "" {
@@ -1183,7 +1218,13 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 data["Books"] = withRank(books, page, size)
                 data["HotBooks"] = takeBooks(books, 12)
                 data["Page"] = page
-                data["Size"] = size
+                // R106-D BUG-313 (P4 精简/dead-field removal, main+templates
+                //   scope, R105-D BUG-311 dead-field family 续, 与 case
+                //   "category"/"fulltext" 删 data["Size"] = size 同款): 删
+                //   data["Size"] = size. size local 仍保留 (totalPages +
+                //   withRank + maxPages 计算消费). 全 88 模板 0 命中. 删后
+                //   0 行为变化, 省 1 map[string]interface{} 写入 per ranking
+                //   view request.
                 data["Total"] = total
                 data["TotalPages"] = totalPages
                 data["PageList"] = pageListWithURLs(buildPageList(page, totalPages), func(p int) string {
@@ -1191,7 +1232,19 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 })
                 // R63-A: ranking/fulltext/search/keyword 等无实体 ID 的视图, 伪静态 URL 用
                 //   buildPagerURL 退化返回 query 串 (避免过度设计; 主 SEO 价值在 book/chapter/category).
-                data["PagerURL"] = buildPagerURL(pseudoStyle, "ranking", tab, page)
+                // R106-D BUG-313 (P4 精简/dead-field removal, main+templates
+                //   scope, R105-D BUG-311 dead-field family 续): 删
+                //   data["PagerURL"] = buildPagerURL(pseudoStyle, "ranking",
+                //   tab, page). 全 88 模板 rg '\.PagerURL\b' 0 命中
+                //   (PagerURL 仅出现于 R88-D BUG-238 模板注释提及 buildPagerURL
+                //   Go-side builder, 非 template field 消费). 同款 dead
+                //   defense 注入与 R105-D BUG-311 case "book" ChapterURL
+                //   (buildChapterURL 输出无 consumer) 同款. 删后 0 行为变化,
+                //   省 1 buildPagerURL + 1 map[string]interface{} 写入 per
+                //   ranking view request (buildPagerURL 调用结果从未被 reader
+                //   消费, 纯 dead compute). CanonicalURL line 1237 仍调
+                //   buildPagerURL 同 args (page), 但其结果走 buildAbsoluteURL
+                //   生成绝对 URL, 非 dead (CanonicalURL 模板消费 81 处).
                 if page > 1 {
                         data["PrevPageURL"] = buildPagerURL(pseudoStyle, "ranking", tab, page-1)
                 }
@@ -1224,13 +1277,23 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 data["HotBooks"] = takeBooks(books, 12)
                 data["TopAuthors"] = pickAuthors(books, 12)
                 data["Page"] = page
-                data["Size"] = size
+                // R106-D BUG-313 (P4 精简/dead-field removal, main+templates
+                //   scope, R105-D BUG-311 dead-field family 续, 与 case
+                //   "category"/"ranking" 删 data["Size"] = size 同款): 删
+                //   data["Size"] = size. size local 仍保留 (totalPages +
+                //   maxPages 计算消费). 全 88 模板 0 命中. 删后 0 行为变化,
+                //   省 1 map[string]interface{} 写入 per fulltext view request.
                 data["Total"] = total
                 data["TotalPages"] = totalPages
                 data["PageList"] = pageListWithURLs(buildPageList(page, totalPages), func(p int) string {
                         return buildPagerURL(pseudoStyle, "fulltext", "", p)
                 })
-                data["PagerURL"] = buildPagerURL(pseudoStyle, "fulltext", "", page)
+                // R106-D BUG-313 (cont, 与 case "ranking" 删 data["PagerURL"]
+                //   同款): 删 data["PagerURL"] = buildPagerURL(pseudoStyle,
+                //   "fulltext", "", page). 全 88 模板 0 命中. 删后 0 行为
+                //   变化, 省 1 buildPagerURL + 1 map[string]interface{} 写入
+                //   per fulltext view request (CanonicalURL line 1294 仍调
+                //   buildPagerURL 同 args, 非 dead).
                 if page > 1 {
                         data["PrevPageURL"] = buildPagerURL(pseudoStyle, "fulltext", "", page-1)
                 }
@@ -1322,10 +1385,11 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 // R71-A: homeLayout 4 字段注入 (读 Setting 表 homeLayout.{siteID} JSON).
                 //   admin.go getHomeLayoutSetting 返 map (含默认值兑底, clamp [lo,hi] 防坏值).
                 //   home.html 模板用 .HomeCategoryCount 限分类区块数 (原硬编码 2 卡) +
-                //   .HomeCategoryBooks 限每卡书数 (原硬编码 6) + .HomeLatestBooks 限最新上传
-                //   区块 (原 range .Books 全 48 本) + .HomeHotBooks 限 24h 热榜 (原 takeBooks(books,12)).
-                //   site["ID"] 为本站 ID (getSite 注入). 为空 (无 siteID query 但 isDefault 命中) 时
-                //   用默认值 (R70-D getHomeLayoutSetting 对空 siteID 返全默认 8/6/12/12).
+                //   .HomeCategoryBooks 限每卡书数 (原硬编码 6) (latestN/hotN 仍读 layout
+                //   用于 takeBooks 参数 + totalNeeded 计算, 但不注入模板 — 见 R106-D
+                //   BUG-313 注释下方). site["ID"] 为本站 ID (getSite 注入). 为空 (无
+                //   siteID query 但 isDefault 命中) 时用默认值 (R70-D getHomeLayoutSetting
+                //   对空 siteID 返全默认 8/6/12/12).
                 //   R104-D 精简 (DRY, R102-D siteDomain hoist + R103-D siteName hoist
                 //     sibling): siteDBID 已 hoist 至 switch 前 (line 779, 供
                 //     getWheelLinks 复用), 本 case 原 local siteDBID 声明 (line 1245)
@@ -1333,6 +1397,17 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 //     复用 hoisted siteDBID (与 R102-D 删 case "book" local siteDomain
                 //     + R103-D 删 case "book"/"read" local siteName 同款方法论).
                 //     0 行为变化 (site map 单一, 全 case 共享同 site["ID"] 值).
+                //   R106-D BUG-313 (P4 精简/dead-field removal, main+templates scope,
+                //     R105-D BUG-311 dead-field family 续, 与上方 init map 删
+                //     HomeLatestBooks/HomeHotBooks 同款): 删 data["HomeLatestBooks"]
+                //     = latestN + data["HomeHotBooks"] = hotN 两 Go-side 覆盖注入.
+                //     latestN/hotN local 仍保留 (line 1357-1360 totalNeeded +
+                //     takeBooks(topBooks) 调用消费). 全 88 模板 rg
+                //     'HomeLatestBooks|HomeHotBooks' 0 命中 (aijjxs/home 实际消费
+                //     LatestBooks/Popular/topBooks/featuredBooks 各 takeBooks 注入
+                //     的同源 slice, 不读 HomeLatestBooks/HomeHotBooks 配置键).
+                //     删后 0 行为变化 (map 写入无 reader), 省 2 map[string]
+                //     interface{} 写入 per home view request.
                 layout := getHomeLayoutSetting(siteDBID)
                 catCount := layout["homeCategoryCount"]
                 catBooks := layout["homeCategoryBooks"]
@@ -1340,8 +1415,6 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 hotN := layout["homeHotBooks"]
                 data["HomeCategoryCount"] = catCount
                 data["HomeCategoryBooks"] = catBooks
-                data["HomeLatestBooks"] = latestN
-                data["HomeHotBooks"] = hotN
                 // 取足够书籍供各区块使用: latestN + hotN + 分类区块 (catCount * catBooks)
                 //   + buffer 防分类过滤后部分书没分到任何展示位. 默认 8 分类 * 6 + 12 + 12 + 16 = 88,
                 //   实际 SQLite LIMIT 取 min(算出值, 表总数). 不硬编码 48 (R71-A 目标A 需求).

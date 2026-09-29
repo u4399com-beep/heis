@@ -626,6 +626,25 @@ func compileRegexRule(flags, expression string) (*regexp.Regexp, bool) {
                 //   dotall, 与 JS 'is' 等价; 全局由 FindAllString API 提供不在 flag).
                 flags = "is"
         }
+        // BUG-315 (P3): filter flags to Go RE2-supported set (i/m/s/U). BUG-181
+        //   fixed empty-flags default ("gis"->"is") but explicit flags="gis" (admin
+        //   copying JS RegExp) still compiles (?gis) -> "unsupported Perl syntax"
+        //   -> regex silently disabled -> FieldRegex extraction returns "". Go uses
+        //   FindAllString for global semantics (no `g`; BUG-181 line 615). Drop
+        //   g/y/u/x + others; preserve i/m/s/U. 71 Rule 0 用 flags="gis" 形态
+        //   (多用空 flags); 0 生产命中, 防御性修复. latent 自 R81-C BUG-181
+        //   (14 轮未发现因 BUG-181 仅修默认漏修 explicit case).
+        filtered := make([]byte, 0, len(flags))
+        for i := 0; i < len(flags); i++ {
+                c := flags[i]
+                if c == 'i' || c == 'm' || c == 's' || c == 'U' {
+                        filtered = append(filtered, c)
+                }
+        }
+        flags = string(filtered)
+        if flags == "" {
+                flags = "is"
+        }
         key := flags + "\x00" + expression
         if v, ok := regexExtractCache.Load(key); ok {
                 cp := v.(compiledAdPattern)
@@ -1663,7 +1682,9 @@ func Absolutize(s, base string) string {
                 return ""
         }
         out := s
-        if !strings.HasPrefix(strings.ToLower(s), "http://") && !strings.HasPrefix(strings.ToLower(s), "https://") {
+        // R106-B 精简-1: cache strings.ToLower(s) (was called twice), hot path
+        //   (ParseList/ParseToc/ParseContent URL 字段 Absolutize 每 URL 调).
+        if ls := strings.ToLower(s); !strings.HasPrefix(ls, "http://") && !strings.HasPrefix(ls, "https://") {
                 b, err := url.Parse(base)
                 if err == nil {
                         u, err := url.Parse(s)
@@ -1672,8 +1693,8 @@ func Absolutize(s, base string) string {
                         }
                 }
         }
-        // 协议过滤
-        if !strings.HasPrefix(strings.ToLower(out), "http://") && !strings.HasPrefix(strings.ToLower(out), "https://") {
+        // 协议过滤 (R106-B 精简-1: cache ToLower(out))
+        if lo := strings.ToLower(out); !strings.HasPrefix(lo, "http://") && !strings.HasPrefix(lo, "https://") {
                 return ""
         }
         // 自引用过滤 (同 origin + path + search)
@@ -1898,10 +1919,30 @@ func ParseList(html, baseURL string, pageRule PageRule, urlFields []string) List
                 for name, rule := range fields {
                         rec[name] = ExtractField(htmlClean, doc, nil, rule, ctx)
                 }
+                // BUG-316 (P3): no-container HTML mode missing urlFields absolutize +
+                //   hasURLField guard (container line ~1958 + JSON line ~1855 have them).
+                //   Relative URL (e.g. cover="img/x.jpg" on book detail page) not
+                //   absolutized -> downstream fetch fails. ParseBook re-absolutizes
+                //   cover (line ~2064) compensating book path, but ParseList is export;
+                //   direct caller with urlFields + ItemSelector=nil gets relative URL.
+                //   Fix: match container/JSON mode (absolutize -> hasURLField -> required
+                //   -> hasAnyValue). 行为变化: all-empty-fields item 不再入列 (len(rec)>0
+                //   -> hasAnyValue, 与 container/JSON 同口径). 71 Rule 0 直接调 ParseList
+                //   no-container + url field (ApplySmartRuleFallback fills List.Item
+                //   Selector -> container); 0 生产命中, 防御性修复. latent 自 R98-B
+                //   BUG-279 (HTML 模式 ctx 修复时漏补 absolutize, 7 轮未发现).
+                for _, uf := range urlFields {
+                        if rec[uf] != "" {
+                                rec[uf] = Absolutize(rec[uf], baseURL)
+                        }
+                }
+                if hasURLField(urlFields) && !hasAnyURLField(urlFields, rec) {
+                        return out
+                }
                 if hasRequiredFailure(fields, rec) {
                         return out
                 }
-                if len(rec) > 0 {
+                if hasAnyValue(rec) {
                         out.Items = append(out.Items, ListItem{Fields: rec})
                 }
                 return out

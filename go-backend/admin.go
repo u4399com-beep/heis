@@ -478,6 +478,37 @@ func unmarshalLogged(label string, data []byte, target interface{}) {
         }
 }
 
+// unmarshalOrFallback 解析 JSON 字节为 interface{}, 失败 log + 返 caller-provided
+// fallback. R106-C BUG-313 Pattern C json.Unmarshal 吞错 family 续 (R105-C
+// BUG-309 unmarshalLogged zero-on-err variant 不适配 caller 显式非零 fallback).
+// 4 callsite 共款: adminTasksList/adminTaskGet progObj/statsObj fallback empty
+// map (vs nil 防前端 null vs {} 渲染差异) / adminRuleByID cfgObj fallback 原始
+// config string / adminSettingsList v fallback 原始 value string. 与 unmarshalLogged
+// 并行 variant (zero-vs-fallback 区分), 同 BUG-309 family log-on-fail visibility
+// + 单点维护防散落 inline log-on-fail 重复.
+func unmarshalOrFallback(label string, data []byte, fallback interface{}) interface{} {
+        var v interface{}
+        if uerr := json.Unmarshal(data, &v); uerr != nil {
+                log.Printf("[%s] JSON 解析失败 (用 fallback 兜底): %v", label, uerr)
+                return fallback
+        }
+        return v
+}
+
+// scanLogged wraps rows.Scan, log-on-fail visibility (zero-fill on err, 与原
+// `_ = rows.Scan` swallow 语义一致 — 行仍处理, 字段置零, 不 skip 不中断 loop).
+// R106-C BUG-314 Pattern B loop rows.Scan 吞错 family 续 (R74-D BUG-111/118
+// rows.Err post-loop mid-iteration 检查不触 per-row Scan err; 30+ callsite 全
+// inline `_ = rows.Scan` 吞 — DB transient 故障 / NULL→non-nullable column 列序
+// drift / 类型 mismatch 时零值行混入 list 用户不知). helper 单点维护防散落 inline
+// log-on-fail 重复. 高 impact subset (API/SSR 数据返回路径): adminTasksList /
+// adminSettingsList / fillDashboardData×2 / fillTasksPageData 5 callsite.
+func scanLogged(rows *sql.Rows, label string, args ...interface{}) {
+        if serr := rows.Scan(args...); serr != nil {
+                log.Printf("[%s] Scan 失败 (字段置零, 行仍处理): %v", label, serr)
+        }
+}
+
 // parseTaskProgress 解析 Task.progress JSON 列为仪表盘/任务页所需的 progressNote +
 // pct. R105-C BUG-309 精简-3 (R104-B 精简-1/2 同款 dedup precedent): 原实现
 // fillDashboardData (line ~3382) + fillTasksPageData (line ~3481) 两处 progress
@@ -973,18 +1004,20 @@ func adminTasksList(w http.ResponseWriter, r *http.Request) {
                 var id, name, ruleID, mode, bookURL, listURL, recrawlMode, storageMode, status, progress, stats, updatedAt, ruleName string
                 var listStart, listEnd, bookStart, bookEnd, threadMin, threadMax, intervalMin, intervalMax, refreshIntervalMin int
                 var smartCategory, smartComplete, autoSuggest, autoRefresh bool
-                _ = rows.Scan(&id, &name, &ruleID, &mode, &bookURL, &listURL, &listStart, &listEnd,
+                // R106-C BUG-314 Pattern B loop rows.Scan 吞错 family 续 (R74-D
+                //   BUG-111 rows.Err post-loop 不触 per-row Scan err): 26 列 wide
+                //   row + NULL→non-nullable string 列序 drift 时零值行混入 API 返回
+                //   list, 用户不知. helper log-on-fail visibility, 0 行为变化.
+                scanLogged(rows, "adminTasksList row", &id, &name, &ruleID, &mode, &bookURL, &listURL, &listStart, &listEnd,
                         &bookStart, &bookEnd, &recrawlMode, &storageMode, &threadMin, &threadMax,
                         &intervalMin, &intervalMax, &smartCategory, &smartComplete, &autoSuggest,
                         &autoRefresh, &refreshIntervalMin, &status, &progress, &stats, &updatedAt, &ruleName)
-                // 解析 progress/stats 为对象 (失败则原样字符串)
-                var progObj, statsObj interface{}
-                if err := json.Unmarshal([]byte(progress), &progObj); err != nil {
-                        progObj = map[string]interface{}{}
-                }
-                if err := json.Unmarshal([]byte(stats), &statsObj); err != nil {
-                        statsObj = map[string]interface{}{}
-                }
+                // R106-C BUG-313 Pattern C json family 续 (R105-C BUG-309 helper
+                //   variant): API endpoint progObj/statsObj fallback empty map (vs
+                //   nil 防前端 null vs {} 渲染差异) + log-on-fail visibility. 与
+                //   SSR fillDashboardData/fillTasksPageData BUG-309 同款收口.
+                progObj := unmarshalOrFallback("adminTasksList progress", []byte(progress), map[string]interface{}{})
+                statsObj := unmarshalOrFallback("adminTasksList stats", []byte(stats), map[string]interface{}{})
                 out = append(out, map[string]interface{}{
                         "id": id, "name": name, "ruleId": ruleID, "ruleName": ruleName,
                         "mode": mode, "bookUrl": bookURL, "listUrl": listURL,
@@ -2191,14 +2224,11 @@ func adminTaskGetHandler(w http.ResponseWriter, r *http.Request, taskID string) 
                 writeJSONErr(w, "查询任务失败: "+err.Error(), 500)
                 return
         }
-        // 解析 progress/stats JSON (失败 fallback 空 map, 与 adminTasksList line 772-778 同口径).
-        var progObj, statsObj interface{}
-        if err := json.Unmarshal([]byte(progress), &progObj); err != nil {
-                progObj = map[string]interface{}{}
-        }
-        if err := json.Unmarshal([]byte(stats), &statsObj); err != nil {
-                statsObj = map[string]interface{}{}
-        }
+        // R106-C BUG-313 Pattern C json family 续 (adminTasksList BUG-313 同款
+        //   variant, 此处单 task 详情而非 task 列表): progObj/statsObj fallback
+        //   empty map (vs nil 防前端 null vs {}) + log-on-fail visibility.
+        progObj := unmarshalOrFallback("adminTaskGet progress", []byte(progress), map[string]interface{}{})
+        statsObj := unmarshalOrFallback("adminTaskGet stats", []byte(stats), map[string]interface{}{})
         writeJSONOK(w, map[string]interface{}{
                 "task": map[string]interface{}{
                         "id": taskID, "name": name, "ruleId": ruleID, "ruleName": ruleName,
@@ -2253,7 +2283,8 @@ func adminRulesList(w http.ResponseWriter, r *http.Request) {
         ruleRows := []ruleRow{}
         for rows.Next() {
                 var rr ruleRow
-                _ = rows.Scan(&rr.ID, &rr.Name, &rr.Description, &rr.Config, &rr.Enabled, &rr.CreatedAt, &rr.UpdatedAt)
+                // R106-C BUG-314: Pattern B loop Scan swallow family 续 (helper scanLogged).
+                scanLogged(rows, "adminRulesList row", &rr.ID, &rr.Name, &rr.Description, &rr.Config, &rr.Enabled, &rr.CreatedAt, &rr.UpdatedAt)
                 ruleRows = append(ruleRows, rr)
         }
         // R74-D BUG-112 (P3): rows.Err() 检查 — mid-iteration 错误静默吞, 部分 ruleRows
@@ -2665,11 +2696,9 @@ func adminRuleByIDHandler(w http.ResponseWriter, r *http.Request) {
                         writeJSONErr(w, "查询规则失败: "+err.Error(), 500)
                         return
                 }
-                // config 尝试解析为对象, 失败则原样
-                var cfgObj interface{}
-                if err := json.Unmarshal([]byte(config), &cfgObj); err != nil {
-                        cfgObj = config
-                }
+                // R106-C BUG-313 Pattern C json family 续: cfgObj fallback 原始
+                //   config 字符串 (vs nil 防前端 null) + log-on-fail visibility.
+                cfgObj := unmarshalOrFallback("adminRuleByID config", []byte(config), config)
                 writeJSONOK(w, map[string]interface{}{
                         "id": id, "name": name, "description": description.String,
                         "config": cfgObj, "enabled": enabled,
@@ -2892,7 +2921,8 @@ func adminBooksList(w http.ResponseWriter, r *http.Request) {
                 var id, name, author, intro, cover, status, latestChapter, category, categoryID, sourceURL, storageMode, updatedAt string
                 var wordCount int64
                 var chapterCount int
-                _ = rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter,
+                // R106-C BUG-314: Pattern B loop Scan swallow family 续 (helper scanLogged).
+                scanLogged(rows, "adminBooksList row", &id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter,
                         &category, &categoryID, &sourceURL, &storageMode, &chapterCount, &updatedAt)
                 books = append(books, map[string]interface{}{
                         "id":            id,
@@ -3430,7 +3460,8 @@ func fillDashboardData(data map[string]interface{}) {
                 defer rows.Close()
                 for rows.Next() {
                         var id, name, status, progress, stats, updatedAt, ruleName string
-                        _ = rows.Scan(&id, &name, &status, &progress, &stats, &updatedAt, &ruleName)
+                        // R106-C BUG-314: Pattern B loop Scan swallow family 续 (helper scanLogged).
+                        scanLogged(rows, "fillDashboardData recentTasks", &id, &name, &status, &progress, &stats, &updatedAt, &ruleName)
                         // R105-C BUG-309 + 精简-3: progress 解析抽 parseTaskProgress
                         //   (unmarshalLogged log-on-fail; dedup fillTasksPageData 同款
                         //   progress-parse 逻辑 ~22 行→1 行单点维护).
@@ -3464,7 +3495,8 @@ func fillDashboardData(data map[string]interface{}) {
                 defer rows2.Close()
                 for rows2.Next() {
                         var id, name, author, status, updatedAt string
-                        _ = rows2.Scan(&id, &name, &author, &status, &updatedAt)
+                        // R106-C BUG-314: Pattern B loop Scan swallow family 续 (helper scanLogged).
+                        scanLogged(rows2, "fillDashboardData recentBooks", &id, &name, &author, &status, &updatedAt)
                         recentBooks = append(recentBooks, map[string]interface{}{
                                 "id":        id,
                                 "name":      name,
@@ -3510,7 +3542,8 @@ func fillTasksPageData(data map[string]interface{}, r *http.Request) {
                 defer rows.Close()
                 for rows.Next() {
                         var id, name, ruleID, mode, recrawlMode, status, progress, stats, updatedAt, ruleName string
-                        _ = rows.Scan(&id, &name, &ruleID, &mode, &recrawlMode, &status, &progress, &stats, &updatedAt, &ruleName)
+                        // R106-C BUG-314: Pattern B loop Scan swallow family 续 (helper scanLogged).
+                        scanLogged(rows, "fillTasksPageData tasks", &id, &name, &ruleID, &mode, &recrawlMode, &status, &progress, &stats, &updatedAt, &ruleName)
                         // R105-C BUG-309 + 精简-3: progress 解析抽 parseTaskProgress;
                         //   stats 走 unmarshalLogged (json family log-on-fail, 与
                         //   dashboard progress 同款收口).
@@ -3646,7 +3679,8 @@ func fillBooksPageData(data map[string]interface{}, r *http.Request) {
                         var id, name, author, intro, cover, status, latestChapter, category, catID, sourceURL, storageMode, keywords, updatedAt string
                         var wordCount int64
                         var chapterCount int
-                        _ = rows.Scan(&id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter,
+                        // R106-C BUG-314: Pattern B loop Scan swallow family 续 (helper scanLogged).
+                        scanLogged(rows, "fillBooksPageData row", &id, &name, &author, &intro, &cover, &status, &wordCount, &latestChapter,
                                 &category, &catID, &sourceURL, &storageMode, &keywords, &chapterCount, &updatedAt)
                         books = append(books, map[string]interface{}{
                                 "id":           id,
@@ -3698,7 +3732,8 @@ func fillRulesPageData(data map[string]interface{}) {
                 ruleRows := []ruleRow{}
                 for rows.Next() {
                         var rr ruleRow
-                        _ = rows.Scan(&rr.ID, &rr.Name, &rr.Description, &rr.Config, &rr.Enabled, &rr.UpdatedAt)
+                        // R106-C BUG-314: Pattern B loop Scan swallow family 续 (helper scanLogged).
+                        scanLogged(rows, "fillRulesPageData row", &rr.ID, &rr.Name, &rr.Description, &rr.Config, &rr.Enabled, &rr.UpdatedAt)
                         ruleRows = append(ruleRows, rr)
                 }
                 // R75-D BUG-131 (P3, R74 交接 #6): rows.Err() 检查 — mid-iteration
@@ -3771,7 +3806,8 @@ func fillSitesPageData(data map[string]interface{}) {
                         var footerText, footerCopyright, footerIcp, chapterPaginationMode, chapterSeoTitleTemplate, chapterSeoDescTemplate, chapterSeoKeywordsTemplate string
                         var offset, navCategoryCount, homeModuleLimit, chapterPaginationWords, chapterPaginationPages int
                         var isDefault, status, inLinkWheel, footerStats, chapterSeoAuto bool
-                        _ = rows.Scan(&id, &name, &domain, &themeID, &isDefault, &title, &desc, &kw,
+                        // R106-C BUG-314: Pattern B loop Scan swallow family 续 (helper scanLogged).
+                        scanLogged(rows, "fillSitesPageData row", &id, &name, &domain, &themeID, &isDefault, &title, &desc, &kw,
                                 &icbm, &geoR, &geoP, &offset, &status, &inLinkWheel, &pseudoStaticStyle,
                                 &footerText, &footerCopyright, &footerIcp, &footerStats, &navCategoryCount, &homeModuleLimit,
                                 &chapterPaginationMode, &chapterPaginationWords, &chapterPaginationPages,
@@ -4107,7 +4143,8 @@ func adminCategoriesList(w http.ResponseWriter, r *http.Request) {
         catRows := []catRow{}
         for rows.Next() {
                 var cr catRow
-                _ = rows.Scan(&cr.ID, &cr.Name, &cr.SortOrder, &cr.CreatedAt)
+                // R106-C BUG-314: Pattern B loop Scan swallow family 续 (helper scanLogged).
+                scanLogged(rows, "adminCategoriesList row", &cr.ID, &cr.Name, &cr.SortOrder, &cr.CreatedAt)
                 catRows = append(catRows, cr)
         }
         // R74-D BUG-115 (P3): rows.Err() 检查 — mid-iteration 错误静默吞, catRows 截断.
@@ -4269,7 +4306,8 @@ func adminLinksList(w http.ResponseWriter, r *http.Request) {
                 var id, name, urlV, logo, createdAt, updatedAt string
                 var sortOrder int
                 var enabled bool
-                _ = rows.Scan(&id, &name, &urlV, &logo, &sortOrder, &enabled, &createdAt, &updatedAt)
+                // R106-C BUG-314: Pattern B loop Scan swallow family 续 (helper scanLogged).
+                scanLogged(rows, "adminLinksList row", &id, &name, &urlV, &logo, &sortOrder, &enabled, &createdAt, &updatedAt)
                 out = append(out, map[string]interface{}{
                         "id": id, "name": name, "url": urlV, "logo": logo,
                         "sortOrder": sortOrder, "enabled": enabled,
@@ -4962,11 +5000,11 @@ func adminSettingsList(w http.ResponseWriter, r *http.Request) {
         out := map[string]interface{}{}
         for rows.Next() {
                 var key, value string
-                _ = rows.Scan(&key, &value)
-                var v interface{}
-                if err := json.Unmarshal([]byte(value), &v); err != nil {
-                        v = value
-                }
+                // R106-C BUG-314: Pattern B loop Scan swallow family 续 (helper scanLogged).
+                scanLogged(rows, "adminSettingsList row", &key, &value)
+                // R106-C BUG-313 Pattern C json family 续: v fallback 原始 value
+                //   字符串 (vs nil 防前端 null) + log-on-fail visibility.
+                v := unmarshalOrFallback("adminSettingsList value:"+key, []byte(value), value)
                 out[key] = v
         }
         // R74-D BUG-118 (P3): rows.Err() 检查 — mid-iteration 错误静默吞, 部分 Setting 漏.
@@ -6991,10 +7029,12 @@ func getHomeLayoutSetting(siteID string) map[string]int {
         if raw == "" || raw == "{}" {
                 return out
         }
+        // R106-C BUG-313 Pattern C json family 续 (R105-C BUG-309 unmarshalLogged
+        //   zero-on-err variant): parsed 失败时 unmarshalLogged 置零 (parsed=nil),
+        //   后续 intField(nil, ...) 返 def (已由 init loop 灌默认), 与原 early-return-out
+        //   同口径 +log visibility. 0 行为变化.
         var parsed map[string]interface{}
-        if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-                return out
-        }
+        unmarshalLogged("getHomeLayoutSetting raw", []byte(raw), &parsed)
         for k, def := range homeLayoutDefaults {
                 r, hasRange := homeLayoutRanges[k]
                 if !hasRange {

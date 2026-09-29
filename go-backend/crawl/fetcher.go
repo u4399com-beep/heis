@@ -4577,6 +4577,48 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 if xati := resp.Header.Get("X-Amzn-Trace-Id"); xati != "" {
                         recordSecurityHeader(originHost(rawURL), "X-Amzn-Trace-Id", xati)
                 }
+                // R106-A 反反爬第 224-228 项: alt CDN edge / WAF / cloud platform
+                //   request ID + observability posture 响应头观测 (与 124-223 同款
+                //   family, 单值 last-write-wins per-host 合并 tracker). R105-A
+                //   未决项 #1 pivot 续 — AWS S3/X-Ray family (第 219-223 项) 耗尽,
+                //   pivot 非 AWS cloud vendor (Akamai/Incapsula/Google/Azure) + modern
+                //   edge platform (Vercel) request ID family (与第 214 X-Amz-Cf-Id
+                //   CloudFront + 221 X-Amz-Request-Id S3 + 223 X-Amzn-Trace-Id X-Ray
+                //   AWS family 互补, 多 cloud vendor fingerprint signal).
+                //   第 224 项 X-Akamai-Request-ID (Akamai edge convention) — Akamai
+                //     edge request ID. 反爬关联: Akamai edge posture (与第 214 X-Amz-
+                //     Cf-Id CloudFront 互补 — CDN vendor fingerprint; 操作员可识别 host
+                //     用 Akamai 边缘, 调桥/cf_clearance 策略).
+                //   第 225 项 X-Incapsula-Request-ID (Imperva Incapsula WAF/CDN
+                //     convention) — Incapsula WAF request ID. 反爬关联: WAF/CDN
+                //     posture (Incapsula Bot Management 是主流反爬 vendor — 操作员
+                //     可识别 host 受 Incapsula 保护, 调桥/cf_clearance 策略).
+                //   第 226 项 X-Cloud-Trace-Context (Google Cloud Trace convention) —
+                //     GCP distributed tracing (e.g. "TRACE_ID/SPAN_ID;O=TRACE_TRUE").
+                //     反爬关联: GCP observability posture (与第 223 X-Amzn-Trace-Id
+                //     AWS X-Ray 互补 — cloud vendor fingerprint signal).
+                //   第 227 项 X-MS-Correlation-Request-Id (Azure Application Insights
+                //     convention) — Azure distributed correlation. 反爬关联: Azure
+                //     observability posture (与第 222 X-Amz-Id-2 + 223 AWS 互补).
+                //   第 228 项 Vercel-ID (Vercel platform convention) — Vercel edge
+                //     platform request ID. 反爬关联: modern edge platform posture
+                //     (Vercel/Next.js 部署常发, 与第 224 Akamai + 214 CloudFront
+                //     互补 — Vercel edge vs traditional CDN, platform fingerprint).
+                if xakri := resp.Header.Get("X-Akamai-Request-ID"); xakri != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Akamai-Request-ID", xakri)
+                }
+                if xiri := resp.Header.Get("X-Incapsula-Request-ID"); xiri != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Incapsula-Request-ID", xiri)
+                }
+                if xctc := resp.Header.Get("X-Cloud-Trace-Context"); xctc != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Cloud-Trace-Context", xctc)
+                }
+                if xmsc := resp.Header.Get("X-MS-Correlation-Request-Id"); xmsc != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-MS-Correlation-Request-Id", xmsc)
+                }
+                if vid := resp.Header.Get("Vercel-ID"); vid != "" {
+                        recordSecurityHeader(originHost(rawURL), "Vercel-ID", vid)
+                }
 
                 // Set-Cookie 处理 (autoCookie)
                 if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
@@ -5804,6 +5846,28 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 }
                 if xati := extractHeaderFromCurlStdout(headers, "X-Amzn-Trace-Id"); xati != "" {
                         recordSecurityHeader(domain, "X-Amzn-Trace-Id", xati)
+                }
+                // R106-A 反反爬第 224-228 项 续 (与 fetchHttp line ~4580 同款, curl
+                //   -D - dump headers 路径; fetchBinaryViaCurl 不 dump headers 故不调,
+                //   与 124-223 同款限制. 详见 fetchHttp line ~4580 rationale). 第 224
+                //   项 X-Akamai-Request-ID / 第 225 项 X-Incapsula-Request-ID / 第
+                //   226 项 X-Cloud-Trace-Context / 第 227 项 X-MS-Correlation-Request-
+                //   Id / 第 228 项 Vercel-ID (extractHeaderFromCurlStdout 已对 5 头
+                //   大小写不敏感提取).
+                if xakri := extractHeaderFromCurlStdout(headers, "X-Akamai-Request-ID"); xakri != "" {
+                        recordSecurityHeader(domain, "X-Akamai-Request-ID", xakri)
+                }
+                if xiri := extractHeaderFromCurlStdout(headers, "X-Incapsula-Request-ID"); xiri != "" {
+                        recordSecurityHeader(domain, "X-Incapsula-Request-ID", xiri)
+                }
+                if xctc := extractHeaderFromCurlStdout(headers, "X-Cloud-Trace-Context"); xctc != "" {
+                        recordSecurityHeader(domain, "X-Cloud-Trace-Context", xctc)
+                }
+                if xmsc := extractHeaderFromCurlStdout(headers, "X-MS-Correlation-Request-Id"); xmsc != "" {
+                        recordSecurityHeader(domain, "X-MS-Correlation-Request-Id", xmsc)
+                }
+                if vid := extractHeaderFromCurlStdout(headers, "Vercel-ID"); vid != "" {
+                        recordSecurityHeader(domain, "Vercel-ID", vid)
                 }
                 if status >= 300 {
                         // R66-C BUG-52 (P3): curl 4xx/5xx 也记 latency + fail (与 fetchHttp
@@ -8098,6 +8162,30 @@ func fetchBinaryHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, pr
                 }
                 if xati := resp.Header.Get("X-Amzn-Trace-Id"); xati != "" {
                         recordSecurityHeader(originHost(rawURL), "X-Amzn-Trace-Id", xati)
+                }
+                // R106-A 反反爬第 224-228 项 续 (与 fetchHttp line ~4580 同款,
+                //   fetchBinaryHttp success + 4xx/5xx 两路径都记, BUG-241 修复后
+                //   fetchBinaryHttp 已补对称; fetchBinaryViaCurl 不 dump headers
+                //   故不调, 与 124-223 同款限制. 详见 fetchHttp line ~4580
+                //   rationale). 第 224 项 X-Akamai-Request-ID / 第 225 项 X-Incapsula-
+                //   Request-ID / 第 226 项 X-Cloud-Trace-Context / 第 227 项 X-MS-
+                //   Correlation-Request-Id / 第 228 项 Vercel-ID (alt CDN edge / WAF /
+                //   cloud platform request ID + observability posture; cover host 多
+                //   在 external CDN / S3, 与 HTML host 不同域各自独立条目, 无污染).
+                if xakri := resp.Header.Get("X-Akamai-Request-ID"); xakri != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Akamai-Request-ID", xakri)
+                }
+                if xiri := resp.Header.Get("X-Incapsula-Request-ID"); xiri != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Incapsula-Request-ID", xiri)
+                }
+                if xctc := resp.Header.Get("X-Cloud-Trace-Context"); xctc != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Cloud-Trace-Context", xctc)
+                }
+                if xmsc := resp.Header.Get("X-MS-Correlation-Request-Id"); xmsc != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-MS-Correlation-Request-Id", xmsc)
+                }
+                if vid := resp.Header.Get("Vercel-ID"); vid != "" {
+                        recordSecurityHeader(originHost(rawURL), "Vercel-ID", vid)
                 }
                 // 3xx / 4xx / 5xx 视为失败 (与 fetchHttp 同款, 不重试 3xx)
                 if resp.StatusCode >= 300 {
@@ -12819,10 +12907,14 @@ func ClearHostAcceptRanges(host string) {
 // hostSecurityHeadersEntry — per-host 安全策略响应头观测条目 (R86-A 第 124-128 项 +
 //   R87-A 第 129-133 项 + R88-A 第 134-138 项 + R89-A 第 139-143 项 + R90-A 第 144-148
 //   项 + R91-A 第 149-153 项 + R92-A 第 154-158 项 + R93-A 第 159-163 项 + R94-A 第
-//   164-168 项 + R95-A 第 169-173 项, 合并 50 字段). entry 是 pointer: recordSecurityHeader
-//   LoadOrStore canonical 指针 + 单字段 update-in-place (非 store-replace, 保留其他 49
-//   头旧值). 同字段并发写 last-write-wins; sweep CompareAndDelete 后下次 record 重建
-//   entry (与 recordVia store-replace 不一样, 这里需保留其他 49 头故用 update-in-place).
+//   164-168 项 + R95-A 第 169-173 项 + R96-A 第 174-178 项 + R98-A 第 184-188 项
+//   + R99-A 第 189-193 项 + R100-A 第 194-198 项 + R101-A 第 199-203 项 + R102-A
+//   第 204-208 项 + R103-A 第 209-213 项 + R104-A 第 214-218 项 + R105-A 第
+//   219-223 项 (R106-A BUG-313 补字段) + R106-A 第 224-228 项, 合并 105 字段).
+//   entry 是 pointer: recordSecurityHeader LoadOrStore canonical 指针 + 单字段
+//   update-in-place (非 store-replace, 保留其他 104 头旧值). 同字段并发写
+//   last-write-wins; sweep CompareAndDelete 后下次 record 重建 entry (与 recordVia
+//   store-replace 不一样, 这里需保留其他 104 头故用 update-in-place).
 type hostSecurityHeadersEntry struct {
         hstsValue         string // Strict-Transport-Security (第 124 项)
         cspValue          string // Content-Security-Policy (第 125 项)
@@ -12960,6 +13052,28 @@ type hostSecurityHeadersEntry struct {
         xRuntimeValue         string // X-Runtime (第 216 项, R104-A)
         xResponseTimeValue    string // X-Response-Time (第 217 项, R104-A)
         surrogateControlValue string // Surrogate-Control (第 218 项, R104-A)
+        // R106-A BUG-313 fix (R105-A latent): R105-A 加 219-223 项 callsite 但漏加
+        //   hostSecurityHeadersEntry 字段 — recordSecurityHeader switch 命中 default
+        //   return 静默丢弃, 15 callsite 全无观测. 本轮补 5 字段 + switch 5 case.
+        //   R105-A 反反爬第 219-223 项: partial content / content integrity / AWS S3
+        //   origin / AWS X-Ray tracing posture (与 124-218 同款 family, 单值 last-
+        //   write-wins per-host 合并 tracker).
+        contentRangeValue      string // Content-Range (第 219 项, R105-A; BUG-313 补字段)
+        contentMd5Value        string // Content-MD5 (第 220 项, R105-A; BUG-313 补字段)
+        xAmzRequestIdValue     string // X-Amz-Request-Id (第 221 项, R105-A; BUG-313 补字段)
+        xAmzId2Value            string // X-Amz-Id-2 (第 222 项, R105-A; BUG-313 补字段)
+        xAmznTraceIdValue      string // X-Amzn-Trace-Id (第 223 项, R105-A; BUG-313 补字段)
+        // R106-A 反反爬第 224-228 项: alt CDN edge / WAF / cloud platform request
+        //   ID + observability posture 响应头观测 (与 124-223 同款 family, 单值
+        //   last-write-wins per-host 合并 tracker). 详见 fetchHttp line ~4580
+        //   rationale. R105-A 未决项 #1 pivot 续 — AWS S3/X-Ray family (219-223)
+        //   耗尽, pivot 非 AWS cloud vendor (Akamai/Incapsula/Google/Azure) +
+        //   modern edge platform (Vercel) request ID family.
+        xAkamaiRequestIdValue   string // X-Akamai-Request-ID (第 224 项, R106-A)
+        xIncapsulaRequestIdValue string // X-Incapsula-Request-ID (第 225 项, R106-A)
+        xCloudTraceContextValue string // X-Cloud-Trace-Context (第 226 项, R106-A)
+        xMsCorrelationReqIdValue string // X-MS-Correlation-Request-Id (第 227 项, R106-A)
+        vercelIdValue           string // Vercel-ID (第 228 项, R106-A)
         detectedAt              int64  // UnixMilli
 }
 
@@ -12968,7 +13082,8 @@ type hostSecurityHeadersEntry struct {
 //   + R91-A 第 149-153 项 + R92-A 第 154-158 项 + R93-A 第 159-163 项 + R94-A 第
 //   164-168 项 + R95-A 第 169-173 项 + R96-A 第 174-178 项 + R98-A 第 184-188 项
 //   + R99-A 第 189-193 项 + R100-A 第 194-198 项 + R101-A 第 199-203 项 + R102-A
-//   第 204-208 项 + R103-A 第 209-213 项 + R104-A 第 214-218 项).
+//   第 204-208 项 + R103-A 第 209-213 项 + R104-A 第 214-218 项 + R105-A 第
+//   219-223 项 (R106-A BUG-313 补字段) + R106-A 第 224-228 项).
 var hostSecurityHeadersMap sync.Map
 
 // hostSecurityHeadersSweepCounter — sweep 触发累加 (与 hostViaSweepCounter 同口径).
@@ -13022,9 +13137,10 @@ func extractSetCookieAttr(cookies []string, attr string) string {
 //   项 + R91-A 第 149-153 项 + R92-A 第 154-158 项 + R93-A 第 159-163 项 + R94-A 第
 //   164-168 项 + R95-A 第 169-173 项 + R96-A 第 174-178 项 + R98-A 第 184-188 项
 //   + R99-A 第 189-193 项 + R100-A 第 194-198 项 + R101-A 第 199-203 项 + R102-A
-//   第 204-208 项 + R103-A 第 209-213 项 + R104-A 第 214-218 项).
-//   headerName 区分 90 头 (大小写不敏感). 与 recordVia 同款 Store + 惰性 sweep, 但
-//   保留其他 89 头旧值 (LoadOrStore canonical 指针 + 单字段 update-in-place).
+//   第 204-208 项 + R103-A 第 209-213 项 + R104-A 第 214-218 项 + R105-A 第
+//   219-223 项 (R106-A BUG-313 补 case) + R106-A 第 224-228 项).
+//   headerName 区分 105 头 (大小写不敏感). 与 recordVia 同款 Store + 惰性 sweep,
+//   但保留其他 104 头旧值 (LoadOrStore canonical 指针 + 单字段 update-in-place).
 func recordSecurityHeader(host, headerName, value string) {
         if host == "" || value == "" {
                 return
@@ -13247,6 +13363,36 @@ func recordSecurityHeader(host, headerName, value string) {
                 ent.xResponseTimeValue = value
         case "surrogate-control":
                 ent.surrogateControlValue = value
+        // R106-A BUG-313 fix (R105-A latent): R105-A 加 219-223 项 callsite 但漏加
+        //   switch case — 15 callsite 命中 default return 静默丢弃. 本轮补 5 case.
+        //   R105-A 反反爬第 219-223 项: partial content / content integrity / AWS
+        //   S3 origin / AWS X-Ray tracing posture (与 124-218 同款 family, 单值
+        //   last-write-wins per-host 合并 tracker). 详见 fetchHttp line ~4534
+        //   rationale (R105-A 块).
+        case "content-range":
+                ent.contentRangeValue = value
+        case "content-md5":
+                ent.contentMd5Value = value
+        case "x-amz-request-id":
+                ent.xAmzRequestIdValue = value
+        case "x-amz-id-2":
+                ent.xAmzId2Value = value
+        case "x-amzn-trace-id":
+                ent.xAmznTraceIdValue = value
+        // R106-A 反反爬第 224-228 项: alt CDN edge / WAF / cloud platform request
+        //   ID + observability posture 响应头观测 (与 124-223 同款 family, 单值
+        //   last-write-wins per-host 合并 tracker). 详见 fetchHttp line ~4580
+        //   rationale.
+        case "x-akamai-request-id":
+                ent.xAkamaiRequestIdValue = value
+        case "x-incapsula-request-id":
+                ent.xIncapsulaRequestIdValue = value
+        case "x-cloud-trace-context":
+                ent.xCloudTraceContextValue = value
+        case "x-ms-correlation-request-id":
+                ent.xMsCorrelationReqIdValue = value
+        case "vercel-id":
+                ent.vercelIdValue = value
         default:
                 return
         }
@@ -13359,6 +13505,18 @@ func HostSecurityHeadersSnapshot() map[string]map[string]string {
                         "xRuntimeValue":         e.xRuntimeValue,
                         "xResponseTimeValue":    e.xResponseTimeValue,
                         "surrogateControlValue": e.surrogateControlValue,
+                        // R106-A BUG-313 补: R105-A 第 219-223 项 字段.
+                        "contentRangeValue":    e.contentRangeValue,
+                        "contentMd5Value":      e.contentMd5Value,
+                        "xAmzRequestIdValue":   e.xAmzRequestIdValue,
+                        "xAmzId2Value":         e.xAmzId2Value,
+                        "xAmznTraceIdValue":    e.xAmznTraceIdValue,
+                        // R106-A 第 224-228 项.
+                        "xAkamaiRequestIdValue":   e.xAkamaiRequestIdValue,
+                        "xIncapsulaRequestIdValue": e.xIncapsulaRequestIdValue,
+                        "xCloudTraceContextValue":  e.xCloudTraceContextValue,
+                        "xMsCorrelationReqIdValue": e.xMsCorrelationReqIdValue,
+                        "vercelIdValue":            e.vercelIdValue,
                         "detectedAt":        fmt.Sprintf("%d", e.detectedAt),
                 }
                 return true
