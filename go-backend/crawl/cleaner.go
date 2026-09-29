@@ -22,6 +22,7 @@ import (
         "fmt"
         "hash/fnv"
         "io"
+        "log"
         "math/rand"
         "net/http"
         "regexp"
@@ -110,6 +111,24 @@ func CheckTrafilaturaBridge(bridgeURL string) bool {
 // probeTrafilaturaBridge — 桥 /health 探测 (无锁, caller 持锁). BUG-309 精简
 //   抽出: Get 失败 / 非 200 / JSON decode 失败 / Ok 或 SelfTestOk false → 返 false.
 //   原内联在 CheckTrafilaturaBridge 3 处 false 路径 + 1 处 true 路径, 合并于此.
+//
+//      R116-B BUG-346 (P3, non-SQL silent swallow family sibling 续, R115-D
+//        BUG-344 main scope single-row QueryRow Scan silent swallow on non-
+//        ErrNoRows sub-variant 续): 原 `body, _ := io.ReadAll(...)` +
+//        `_ = json.Unmarshal(body, &data)` 双 swallow — bridge 返 200 + 残破
+//        body (网络 mid-read 闪断) 或 malformed JSON (bridge bug / 代理插页)
+//        时 data 留零值 → return false silent, 操作员见 CheckTrafilaturaBridge
+//        "trafilatura-bridge 不可用 (60s 缓存内)" 但不知根因 (网络? 状态? JSON?
+//        ok:false?), 与 BUG-344 main scope Scan swallow 同款 "err silent, 根因
+//        隐藏" family. 改: io.ReadAll + json.Unmarshal 双 swallow 加 log.Printf
+//        提示运维根因, return data.Ok && data.SelfTestOk 行为不变 (data 留零
+//        → false, 仅加 log 可见性). Get err + 非 200 路径仍 silent (expected
+//        failure mode: bridge down / 重启中, 60s 缓存内 1 次/min 噪声可接受,
+//        与 BUG-344 ErrNoRows "正常 skip silent" 同口径; 本 fix 仅 cover "200
+//        后的 unexpected swallow"). 0 行为变化 (return false 语义不变). live
+//        callsite (CallTrafilaturaExtract isDefault 调, 71 Rule UseTrafilatura
+//        默认 false, 0 命中; 未来 admin 启用后受益). latent 自 R42-1B 加 60s
+//        缓存 (62 轮未发现, probe by-design best-effort silent).
 func probeTrafilaturaBridge(bridgeURL string) bool {
         resp, err := trafilaturaProbeClient.Get(bridgeURL + "/health")
         if err != nil {
@@ -123,8 +142,13 @@ func probeTrafilaturaBridge(bridgeURL string) bool {
                 Ok         bool `json:"ok"`
                 SelfTestOk bool `json:"selfTestOk"`
         }
-        body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-        _ = json.Unmarshal(body, &data)
+        body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1024))
+        if readErr != nil {
+                log.Printf("[R116-B] probeTrafilaturaBridge io.ReadAll failed (bridge=%s): %v - treating as unhealthy", bridgeURL, readErr)
+        }
+        if err := json.Unmarshal(body, &data); err != nil {
+                log.Printf("[R116-B] probeTrafilaturaBridge json.Unmarshal failed (bridge=%s): %v - treating as unhealthy", bridgeURL, err)
+        }
         return data.Ok && data.SelfTestOk
 }
 

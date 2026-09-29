@@ -5185,9 +5185,26 @@ var settingMeta = map[string]struct {
 //
 //      缺失或非 "false" 字面量均视为 true (向后兼容默认启用), 与 prisma 端 default 行为一致.
 //      每次调用一次 SELECT (SQLite 单行查询, <0.1ms, 不需要缓存层).
+//
+// R116-C BUG-347 (P3, R115-D main scope BUG-344 single-row QueryRow Scan
+//      silent swallow on non-ErrNoRows sub-variant admin scope 续, empty-value
+//      lump variant): 原实现 `if err != nil || v == ""` lump ErrNoRows (Setting
+//      行未建, 首次配置前 → return true 是正确语义, 缺失=默认启用) with DB 故障
+//      (SQLite busy lock / 连接闪断 / 磁盘满 → err 非 ErrNoRows, return true 是
+//      silent swallow — 用户/运维不知反馈模块实际配置值, 仅看到 "已启用" 误以
+//      为是配置缺失; 反馈按钮 SSR 入口 + publicFeedbackSubmitHandler 提交入口
+//      + fillSettingsPageData toggle 卡片 3 callsite 均依赖本函数). 与 R115-D
+//      main scope + R116-C BUG-346 admin scope (featuredBookEntry per-item loop
+//      variant) 同款 log-on-fail visibility 收口. 0 行为变化 (best-effort
+//      return true 兜底语义不变 — DB 故障时 return true 让反馈按钮显示 + 提交
+//      接受, INSERT 失败下游 publicFeedbackSubmitHandler 显式 500 反馈给用户;
+//      仅加 log 可见性让运维区分 "配置缺失" vs "DB 故障").
 func getFeedbackEnabled() bool {
         var v string
         err := db.QueryRow(`SELECT value FROM Setting WHERE key='feedbackEnabled'`).Scan(&v)
+        if err != nil && err != sql.ErrNoRows {
+                log.Printf("[getFeedbackEnabled] SELECT 失败 (兜底 return true): %v", err)
+        }
         if err != nil || v == "" {
                 return true
         }
@@ -7460,6 +7477,39 @@ func homeLayoutChanged(body map[string]interface{}) bool {
 
 const featuredBooksMax = 30
 
+// featuredBookEntry 查单本推荐书元数据 (id/name/author/cover), GET list + POST
+// readback 同款 readback 路径共用 (R116-C 精简-1 dedup 2 处 inline loop —
+// 与 R101-C/R108-C feedbackStats helper 抽 batch SELECT 同款 "dedup via
+// helper extraction" precedent). 返 (entry, true) 或 (nil, false) 跳过该本:
+// 书已删 (ErrNoRows) 静默跳过是正确语义; DB 故障 (SQLite busy lock / 连接
+// 闪断 / 磁盘满 → Scan err 非 ErrNoRows) log 后跳过, 不阻塞整体 best-effort
+// 返回. 与 R93-C BUG-262/263 同款 per-item QueryRow Scan swallow 语义一致
+// (Setting 已存全量 valid, 用户下次 GET 自然看到真实状态; 不 500 因 Setting
+// 已成功保存, 500 会让 admin 误以为保存失败).
+//
+// R116-C BUG-346 (P3, R115-D main scope BUG-344 single-row QueryRow Scan
+// silent swallow on non-ErrNoRows sub-variant admin scope 续, per-item
+// loop 变种): 原实现 `if err != nil { continue }` lump ErrNoRows (书已删 →
+// 跳过是正确语义) with DB 故障 (Scan err 非 ErrNoRows, 跳过是 silent
+// swallow, 用户不知是书删还是 SELECT 失败). 与 R115-D main scope single-
+// row QueryRow Scan swallow + R115-C admin scope db.Query block-swallow
+// 同款 log-on-fail visibility 收口. 0 行为变化 (best-effort 跳过语义不变,
+// 仅加 log 可见性).
+func featuredBookEntry(bid string) (map[string]interface{}, bool) {
+        var name, author, cover string
+        err := db.QueryRow(`SELECT COALESCE(name,''), COALESCE(author,''), COALESCE(cover,'') FROM Book WHERE id=?`, bid).
+                Scan(&name, &author, &cover)
+        if err == nil {
+                return map[string]interface{}{
+                        "id": bid, "name": name, "author": author, "cover": cover,
+                }, true
+        }
+        if err != sql.ErrNoRows {
+                log.Printf("[featuredBookEntry] bookId=%s SELECT 失败 (跳过该本, best-effort): %v", bid, err)
+        }
+        return nil, false
+}
+
 // adminFeaturedBooksHandler — 路由分发 GET / POST.
 func adminFeaturedBooksHandler(w http.ResponseWriter, r *http.Request) {
         switch r.Method {
@@ -7535,15 +7585,9 @@ func adminFeaturedBooksList(w http.ResponseWriter, r *http.Request) {
         }
         out := []map[string]interface{}{}
         for _, bid := range bookIDs {
-                var name, author, cover string
-                err := db.QueryRow(`SELECT COALESCE(name,''), COALESCE(author,''), COALESCE(cover,'') FROM Book WHERE id=?`, bid).
-                        Scan(&name, &author, &cover)
-                if err != nil {
-                        continue // 书已删 (ErrNoRows) 或 Scan 失败 → 跳过, 不阻塞整体返回.
+                if entry, ok := featuredBookEntry(bid); ok {
+                        out = append(out, entry)
                 }
-                out = append(out, map[string]interface{}{
-                        "id": bid, "name": name, "author": author, "cover": cover,
-                })
         }
         writeJSONOK(w, map[string]interface{}{
                 "siteId": siteID,
@@ -7621,26 +7665,14 @@ func adminFeaturedBooksUpdate(w http.ResponseWriter, r *http.Request) {
                 writeJSONErr(w, "保存失败: "+err.Error(), 500)
                 return
         }
-        // 读回 resolved book 列表返响应 (与 GET 同款 SELECT 元数据, 让前端立即拿到 name/cover 不需再查).
+        // 读回 resolved book 列表返响应 (与 GET 同款 readback, 让前端立即拿到 name/cover 不需再查;
+        // R116-C 精简-1 dedup — 原 inline loop 抽 featuredBookEntry helper 共用, BUG-263
+        // 历史 rationale 迁入 helper 顶部注释).
         out := []map[string]interface{}{}
         for _, bid := range valid {
-                var name, author, cover string
-                // R93-C BUG-263 (P3, BUG-262 同款 Pattern C family 续抓, 同 handler 第 2 处
-                //   readback SELECT): 原实现 `_ = db.QueryRow(...).Scan(&name, &author,
-                //   &cover)` 吞错 — DB 故障时 name/author/cover 全空 → 响应 ok:true 但 books
-                //   内含空 name 卡片 (admin UI 显示空白书卡, 用户以为书被删实际是 SELECT
-                //   失败). 与 GET 路径 (line 6789 `if err != nil { continue }`) 对齐: err 时
-                //   跳过该本不返半截空壳 (response 不含该 bookId, 与 GET 跳过已删书语义一致;
-                //   Setting 已存全量 valid, 用户下次 GET 自然看到真实状态). 不 500 因 Setting
-                //   已成功保存, 500 会让 admin 误以为保存失败. best-effort readback.
-                err := db.QueryRow(`SELECT COALESCE(name,''), COALESCE(author,''), COALESCE(cover,'') FROM Book WHERE id=?`, bid).
-                        Scan(&name, &author, &cover)
-                if err != nil {
-                        continue
+                if entry, ok := featuredBookEntry(bid); ok {
+                        out = append(out, entry)
                 }
-                out = append(out, map[string]interface{}{
-                        "id": bid, "name": name, "author": author, "cover": cover,
-                })
         }
         writeJSONOK(w, map[string]interface{}{
                 "siteId": siteID,

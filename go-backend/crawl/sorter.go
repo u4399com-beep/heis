@@ -106,10 +106,15 @@ var chapterNumPureLeadingRe = regexp.MustCompile(`^(\d+)$`)
 //      注: 多个 pattern 命中时, 优先级 CN > EN > ENShort > Leading > PureLeading.
 //        罕见 case "第5章 Chapter 10" 两种编号都存在, 取 CN (5) 优先 (源站通常章节号
 //        唯一, 双编号是装饰性的, 主编号是 第N章).
+//
+//      R116-B 精简-1: 删除 `if title == "" { return 0, false }` dead-branch.
+//        strings.TrimSpace("") 返 "" → 紧接 `if t == ""` 已 cover 空 title +
+//        纯空白 title ("  "/"\t" 等) 两 case. 首 `if title == ""` 是冗余 fast-
+//        path (TrimSpace("") 即时返, 0 0 perf 损失), 与 R104-B SmartResumeSort
+//        started sort `if != ... return ...; return false` 同款 "checked-then-
+//        fall-through 冗余分支" precedent. 行为 0 变化 ("" → t="" → return; "  "
+//        → t="" → return; "第5章" → t="第5章" → 走 regex). -3 行.
 func extractChapterNumber(title string) (int, bool) {
-        if title == "" {
-                return 0, false
-        }
         t := strings.TrimSpace(title)
         if t == "" {
                 return 0, false

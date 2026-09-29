@@ -4901,6 +4901,44 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 if xe := resp.Header.Get("X-Environment"); xe != "" {
                         recordSecurityHeader(originHost(rawURL), "X-Environment", xe)
                 }
+                // R116-A 反反爬第 274-278 项: legacy CSP variants + IE compat + IBM
+                //   enterprise gateway/tracing info-disclosure 响应头观测 (与
+                //   124-273 同款 family, 单值 last-write-wins per-host 合并
+                //   tracker). R115-A 未决项 #1 pivot 续 — CMS/git info-disclosure
+                //   family (269-273) 耗尽, pivot legacy CSP + IE compat + IBM
+                //   enterprise gateway family.
+                //   第 274 项 X-Content-Security-Policy (IE10/11 legacy CSP) —
+                //     IE10/11 CSP Level 1 variant (deprecated, 与第 125 标准 CSP
+                //     互补; 发此 legacy 头 = host 仍支持 IE = 老 security 栈).
+                //   第 275 项 X-WebKit-CSP (old WebKit legacy CSP) — pre-standard
+                //     WebKit CSP variant (deprecated 2012, 与第 274 同 legacy
+                //     CSP family, old WebKit 老栈).
+                //   第 276 项 X-UA-Compatible (IE compat mode) — IE 兼容模式 (e.g.
+                //     "IE=edge" / "IE=EmulateIE7"; 与第 157 X-Powered-By 互补,
+                //     发此头 = host 仍兼容 IE = 老化 web stack, 反爬常配老式
+                //     UA 检查).
+                //   第 277 项 X-Backside-Transport (IBM DataPower/API Connect) —
+                //     IBM gateway transport status (与第 195 Proxy-Status 互补,
+                //     enterprise gateway info-disclosure = host 走 IBM 中间件栈).
+                //   第 278 项 X-Global-Transaction-Id (IBM WebSphere/DataPower) —
+                //     IBM 分布式事务追踪 (与第 207 Traceparent 互补, IBM
+                //     enterprise tracing variant = host 走 IBM 中间件栈, 常配
+                //     严格 enterprise 反爬).
+                if xcsp := resp.Header.Get("X-Content-Security-Policy"); xcsp != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Content-Security-Policy", xcsp)
+                }
+                if xwcsp := resp.Header.Get("X-WebKit-CSP"); xwcsp != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-WebKit-CSP", xwcsp)
+                }
+                if xuac := resp.Header.Get("X-UA-Compatible"); xuac != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-UA-Compatible", xuac)
+                }
+                if xbs := resp.Header.Get("X-Backside-Transport"); xbs != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Backside-Transport", xbs)
+                }
+                if xgti := resp.Header.Get("X-Global-Transaction-Id"); xgti != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Global-Transaction-Id", xgti)
+                }
 
                 // Set-Cookie 处理 (autoCookie)
                 if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
@@ -6340,6 +6378,29 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 }
                 if xe := extractHeaderFromCurlStdout(headers, "X-Environment"); xe != "" {
                         recordSecurityHeader(domain, "X-Environment", xe)
+                }
+                // R116-A 反反爬第 274-278 项 续 (与 fetchHttp line ~4904 同款,
+                //   curl -D - dump headers 路径; fetchBinaryViaCurl 不 dump headers
+                //   故不调, 与 124-273 同款限制. 详见 fetchHttp line ~4904
+                //   rationale). 第 274 项 X-Content-Security-Policy / 第 275 项
+                //   X-WebKit-CSP / 第 276 项 X-UA-Compatible / 第 277 项 X-Backside-
+                //   Transport / 第 278 项 X-Global-Transaction-Id (legacy CSP +
+                //   IE compat + IBM enterprise gateway/tracing posture;
+                //   extractHeaderFromCurlStdout 已对 5 头大小写不敏感提取).
+                if xcsp := extractHeaderFromCurlStdout(headers, "X-Content-Security-Policy"); xcsp != "" {
+                        recordSecurityHeader(domain, "X-Content-Security-Policy", xcsp)
+                }
+                if xwcsp := extractHeaderFromCurlStdout(headers, "X-WebKit-CSP"); xwcsp != "" {
+                        recordSecurityHeader(domain, "X-WebKit-CSP", xwcsp)
+                }
+                if xuac := extractHeaderFromCurlStdout(headers, "X-UA-Compatible"); xuac != "" {
+                        recordSecurityHeader(domain, "X-UA-Compatible", xuac)
+                }
+                if xbs := extractHeaderFromCurlStdout(headers, "X-Backside-Transport"); xbs != "" {
+                        recordSecurityHeader(domain, "X-Backside-Transport", xbs)
+                }
+                if xgti := extractHeaderFromCurlStdout(headers, "X-Global-Transaction-Id"); xgti != "" {
+                        recordSecurityHeader(domain, "X-Global-Transaction-Id", xgti)
                 }
                 if status >= 300 {
                         // R66-C BUG-52 (P3): curl 4xx/5xx 也记 latency + fail (与 fetchHttp
@@ -8868,6 +8929,30 @@ func fetchBinaryHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, pr
                 }
                 if xe := resp.Header.Get("X-Environment"); xe != "" {
                         recordSecurityHeader(originHost(rawURL), "X-Environment", xe)
+                }
+                // R116-A 反反爬第 274-278 项 续 (与 fetchHttp line ~4904 同款,
+                //   fetchBinaryHttp success 路径记; fetchBinaryViaCurl 不 dump
+                //   headers 故不调, 与 124-273 同款限制. 详见 fetchHttp line
+                //   ~4904 rationale). 第 274 项 X-Content-Security-Policy / 第
+                //   275 项 X-WebKit-CSP / 第 276 项 X-UA-Compatible / 第 277 项
+                //   X-Backside-Transport / 第 278 项 X-Global-Transaction-Id
+                //   (legacy CSP + IE compat + IBM enterprise gateway/tracing
+                //   posture; cover host 多在 external CDN / S3, 与 HTML host 不
+                //   同域各自独立条目, 无污染).
+                if xcsp := resp.Header.Get("X-Content-Security-Policy"); xcsp != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Content-Security-Policy", xcsp)
+                }
+                if xwcsp := resp.Header.Get("X-WebKit-CSP"); xwcsp != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-WebKit-CSP", xwcsp)
+                }
+                if xuac := resp.Header.Get("X-UA-Compatible"); xuac != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-UA-Compatible", xuac)
+                }
+                if xbs := resp.Header.Get("X-Backside-Transport"); xbs != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Backside-Transport", xbs)
+                }
+                if xgti := resp.Header.Get("X-Global-Transaction-Id"); xgti != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Global-Transaction-Id", xgti)
                 }
                 // 3xx / 4xx / 5xx 视为失败 (与 fetchHttp 同款, 不重试 3xx)
                 if resp.StatusCode >= 300 {
@@ -13595,10 +13680,11 @@ func ClearHostAcceptRanges(host string) {
 //   219-223 项 (R106-A BUG-313 补字段) + R106-A 第 224-228 项 + R107-A 第
 //   229-233 项 + R108-A 第 234-238 项 + R109-A 第 239-243 项 + R110-A 第 244-248 项
 //   + R111-A 第 249-253 项 + R112-A 第 254-258 项 + R113-A 第 259-263 项 + R114-A
-//   第 264-268 项 + R115-A 第 269-273 项, 合并 145 字段). entry 是 pointer: recordSecurityHeader
+//   第 264-268 项 + R115-A 第 269-273 项 + R116-A 第 274-278 项, 合并 150
+//   字段). entry 是 pointer: recordSecurityHeader
 //   LoadOrStore canonical 指针 + 单字段 update-in-place (非 store-replace, 保留其他
-//   144 头旧值). 同字段并发写 last-write-wins; sweep CompareAndDelete 后下次 record
-//   重建 entry (与 recordVia store-replace 不一样, 这里需保留其他 144 头故用
+//   149 头旧值). 同字段并发写 last-write-wins; sweep CompareAndDelete 后下次 record
+//   重建 entry (与 recordVia store-replace 不一样, 这里需保留其他 149 头故用
 //   update-in-place).
 type hostSecurityHeadersEntry struct {
         hstsValue         string // Strict-Transport-Security (第 124 项)
@@ -13885,6 +13971,20 @@ type hostSecurityHeadersEntry struct {
         xRevisionValue         string // X-Revision (第 271 项, R115-A)
         xCommitHashValue       string // X-Commit-Hash (第 272 项, R115-A)
         xEnvironmentValue      string // X-Environment (第 273 项, R115-A)
+        // R116-A 反反爬第 274-278 项: legacy/deprecated CSP variants + IE compat
+        //   + IBM enterprise gateway/tracing info-disclosure 响应头观测 (与
+        //   124-273 同款 family, 单值 last-write-wins per-host 合并 tracker).
+        //   详见 fetchHttp line ~4904 rationale. R115-A 未决项 #1 pivot 续 —
+        //   CMS/git info-disclosure family (269-273) 耗尽, pivot legacy CSP
+        //   (X-Content-Security-Policy IE10/11 + X-WebKit-CSP old WebKit,
+        //   complement #125 CSP) + IE compat (X-UA-Compatible complement #157)
+        //   + IBM enterprise gateway/tracing (X-Backside-Transport complement
+        //   #195 Proxy-Status + X-Global-Transaction-Id complement #207) family.
+        xContentCspValue       string // X-Content-Security-Policy (第 274 项, R116-A)
+        xWebkitCspValue        string // X-WebKit-CSP (第 275 项, R116-A)
+        xUaCompatibleValue      string // X-UA-Compatible (第 276 项, R116-A)
+        xBacksideTransportValue string // X-Backside-Transport (第 277 项, R116-A)
+        xGlobalTransIdValue     string // X-Global-Transaction-Id (第 278 项, R116-A)
         detectedAt              int64  // UnixMilli
 }
 
@@ -13897,7 +13997,7 @@ type hostSecurityHeadersEntry struct {
 //   219-223 项 (R106-A BUG-313 补字段) + R106-A 第 224-228 项 + R107-A 第
 //   229-233 项 + R108-A 第 234-238 项 + R109-A 第 239-243 项 + R110-A 第 244-248 项
 //   + R111-A 第 249-253 项 + R112-A 第 254-258 项 + R113-A 第 259-263 项 + R114-A 第
-//   264-268 项 + R115-A 第 269-273 项).
+//   264-268 项 + R115-A 第 269-273 项 + R116-A 第 274-278 项).
 var hostSecurityHeadersMap sync.Map
 
 // hostSecurityHeadersSweepCounter — sweep 触发累加 (与 hostViaSweepCounter 同口径).
@@ -13955,8 +14055,9 @@ func extractSetCookieAttr(cookies []string, attr string) string {
 //   219-223 项 (R106-A BUG-313 补 case) + R106-A 第 224-228 项 + R107-A 第
 //   229-233 项 + R108-A 第 234-238 项 + R109-A 第 239-243 项 + R110-A 第 244-248 项
 //   + R111-A 第 249-253 项 + R112-A 第 254-258 项 + R113-A 第 259-263 项 + R114-A 第
-//   264-268 项 + R115-A 第 269-273 项). headerName 区分 145 头 (大小不敏感). 与 recordVia
-//   同款 Store + 惰性 sweep, 但保留其他 144 头旧值 (LoadOrStore canonical 指针 +
+//   264-268 项 + R115-A 第 269-273 项 + R116-A 第 274-278 项). headerName 区分 150
+//   头 (大小不敏感). 与 recordVia
+//   同款 Store + 惰性 sweep, 但保留其他 149 头旧值 (LoadOrStore canonical 指针 +
 //   单字段 update-in-place).
 func recordSecurityHeader(host, headerName, value string) {
         if host == "" || value == "" {
@@ -14325,6 +14426,20 @@ func recordSecurityHeader(host, headerName, value string) {
                 ent.xCommitHashValue = value
         case "x-environment":
                 ent.xEnvironmentValue = value
+        // R116-A 反反爬第 274-278 项: legacy CSP variants + IE compat + IBM
+        //   enterprise gateway/tracing info-disclosure 响应头观测 (与 124-273
+        //   同款 family, 单值 last-write-wins per-host 合并 tracker). 详见
+        //   fetchHttp line ~4904 rationale.
+        case "x-content-security-policy":
+                ent.xContentCspValue = value
+        case "x-webkit-csp":
+                ent.xWebkitCspValue = value
+        case "x-ua-compatible":
+                ent.xUaCompatibleValue = value
+        case "x-backside-transport":
+                ent.xBacksideTransportValue = value
+        case "x-global-transaction-id":
+                ent.xGlobalTransIdValue = value
         default:
                 return
         }
@@ -14503,6 +14618,12 @@ func HostSecurityHeadersSnapshot() map[string]map[string]string {
                         "xRevisionValue":          e.xRevisionValue,
                         "xCommitHashValue":        e.xCommitHashValue,
                         "xEnvironmentValue":       e.xEnvironmentValue,
+                        // R116-A 第 274-278 项.
+                        "xContentCspValue":        e.xContentCspValue,
+                        "xWebkitCspValue":         e.xWebkitCspValue,
+                        "xUaCompatibleValue":       e.xUaCompatibleValue,
+                        "xBacksideTransportValue":  e.xBacksideTransportValue,
+                        "xGlobalTransIdValue":      e.xGlobalTransIdValue,
                         "detectedAt":        fmt.Sprintf("%d", e.detectedAt),
                 }
                 return true

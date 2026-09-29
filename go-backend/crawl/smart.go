@@ -22,6 +22,7 @@
 package crawl
 
 import (
+        "log"
         "regexp"
         "sort"
         "strings"
@@ -637,6 +638,22 @@ func SmartResumeSortWithDB(items []SmartResumeItem, lookup BookProgressLookup) [
                         }
                         done, total, err := lookup.BookChapterProgress(it.BookID)
                         if err != nil {
+                                // R116-B BUG-346 (P3, DB-lookup err swallow family sibling 续,
+                                //   R115-D BUG-344 main scope single-row QueryRow Scan silent
+                                //   swallow on non-ErrNoRows sub-variant 续): 原 `if err != nil
+                                //   { continue }` 吞 err — BookProgressLookup 接口返 (done,
+                                //   total, err), 非 ErrNoRows 区分 (done=0/total=0 = not-found
+                                //   静默, err 仅 actual DB 错误: conn 闪断 / 磁盘满 / driver bug /
+                                //   SQLite 锁竞争超时 / adminDB BookChapterProgress 内 Query/Scan
+                                //   err). 与 BUG-344 main scope Scan swallow 同款 "DB 故障 err
+                                //   silent, 操作员无法察觉根因" family. 改: 加 log.Printf 提示
+                                //   运维 DB lookup 失败, continue 保留原 item 行为不变 (仅加 log
+                                //   可见性). 0 行为变化 (continue 语义不变). 71 Rule 0 wired
+                                //   SmartResumeSortWithDB (R65-B B8 加后 51 轮未 wire, R83-B
+                                //   BUG-193 precedent 同期未删因内嵌 BUG-161/288 修复保留);
+                                //   未来 R117+ agent 若 wire SmartResumeSortWithDB, DB lookup
+                                //   err 经本 log 可见. latent 自 R65-B B8 (51 轮未发现).
+                                log.Printf("[R116-B] SmartResumeSortWithDB BookChapterProgress lookup failed (bookID=%s): %v - keeping in-memory progress", it.BookID, err)
                                 continue // 容错: 保留原 item
                         }
                         // 仅当 DB 返的值 > 内存值时更新 (避免 DB 落后于内存覆盖新值).

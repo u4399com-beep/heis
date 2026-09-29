@@ -2790,6 +2790,35 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                         if cfg.Override.GlobalRateLimitPerMin > 0 {
                                 coverCfg.GlobalRateLimitPerMin = cfg.Override.GlobalRateLimitPerMin
                         }
+                        // R116-A BUG-346 (P3) 修复 (深抓 cover fetch posture 续,
+                        //   captcha cooldown posture family 续, 与 BUG-309/310/314/
+                        //   317/321/322/326/327/328/329/331/332/333/335/336/339/340/
+                        //   342/343/344/345 同 cover FetchConfig family 续): cover
+                        //   fetch FetchConfig 仍漏继承 cfg.Override.CaptchaCooldownMs
+                        //   (int) — per-host captcha 触发后冷却时长 (e.g. 30000ms =
+                        //   captcha 命中后该 host 30s 内不再发请求, 防 反爬 "captcha
+                        //   flood" 检测识别). 后果: cover 同域站 (originHost(parsed.
+                        //   Cover) == originHost(bookURL)) behind 反爬时, book 章节命
+                        //   中 challenge 进 CaptchaCooldownMs 冷却 (后续同 host 请求
+                        //   被 hold), cover fetch 经 FetchBinaryPage → fetchBinaryHttp
+                        //   不消费 CaptchaCooldownMs → cover fetch 在 book 章节
+                        //   captcha 冷却等待时仍立即发出 → "同一浏览器 1s 内 book
+                        //   (captcha cooldown gated) + cover (cooldown ungated) 请求
+                        //   时序不一致" → 反爬侧 timing 分析识别 bot 信号 (反爬关联
+                        //   高 — captcha 触发后冷却行为是反爬主检维度之一, complement
+                        //   hostGate minGap rate 维度). 注: 当前 cover fetch 路径
+                        //   (FetchBinaryPage → fetchBinaryHttp) 不消费 CaptchaCooldownMs
+                        //   (cooldown gate 仅 runner 上层调度 + fetchPageOnce HTML 路径
+                        //   消费), 故属 "结构 + 半实现 latent" (与 BUG-327/328/329/
+                        //   331/332/333/335/336/339/340/342/343/344/345 同款 precedent),
+                        //   但 coverSameHost 继承是结构对称前提, 后续 cover fetch 路
+                        //   径若加 captcha cooldown gate 路由自动跟上. 与 BUG-314 同
+                        //   coverSameHost gate. 修复: cfg.Override.CaptchaCooldownMs > 0
+                        //   gate 继承 (与 mergeFetchConfig line ~10405-10406 同款 "非零
+                        //   覆盖" gate — int 用 > 0 而非 != "").
+                        if cfg.Override.CaptchaCooldownMs > 0 {
+                                coverCfg.CaptchaCooldownMs = cfg.Override.CaptchaCooldownMs
+                        }
                 }
                 coverBin, err := FetchBinaryPage(ctx, parsed.Cover, coverCfg)
                 if err == nil && !coverBin.Blocked && len(coverBin.Bytes) > 0 {

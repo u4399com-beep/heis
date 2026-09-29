@@ -1282,12 +1282,35 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 if page > totalPages {
                         page = totalPages
                 }
-                tabName := tabName(tab)
+                // R116-D 精简-1 (P4 精简/DRY hoist, main scope, R107-D
+                //   BUG-317 bookURL hoist + R105-D BUG-312 absCover hoist
+                //   family 续): 原 `tabName := tabName(tab)` (line 1285)
+                //   调 rankingTabs() 内部循环 + `data["Tabs"] = rankingTabs()`
+                //   (line 1288) 再调 rankingTabs() — 同 round 两 callsite, 同
+                //   args (无 args, 返 literal slice 但每次新 alloc []map), 第二
+                //   次冗余. hoist tabs local var, 内联 tab 名查 (省 1
+                //   rankingTabs alloc + 1 tabName 函数调用 per ranking view
+                //   request). 0 行为变化 (tab 名 lookup 语义不变: id match →
+                //   name, 不 match → "排行榜" fallback). 与 R107-D BUG-317 case
+                //   "book" bookURL hoist + R105-D BUG-312 case "book"/"read"
+                //   absCover hoist 同款 "DRY 精简" precedent (consolidate
+                //   redundant callsite → single hoisted var). tabName 函数 (line
+                //   ~4303) 删除 (唯一 caller 本行 inline 后 0 caller, dead func;
+                //   与 R106-D BUG-313 删 dead field + R105-D BUG-311 删 dead
+                //   defense 字段同款 "dead code 精简" precedent, 删 8 行).
+                tabs := rankingTabs()
+                tn := "排行榜"
+                for _, t := range tabs {
+                        if t["id"] == tab {
+                                tn = t["name"]
+                                break
+                        }
+                }
                 // R64-D: 注入 per-book URLs (withRank 会 mutate books 加 rank 字段, 与 URL 字段互不冲突)
                 injectBookURLs(books, pseudoStyle)
-                data["Tabs"] = rankingTabs()
+                data["Tabs"] = tabs
                 data["Tab"] = tab
-                data["TabName"] = tabName
+                data["TabName"] = tn
                 data["Books"] = withRank(books, page, size)
                 // R112-D BUG-335 + 精简-1: injectListSidebar (HotBooks + TopAuthors,
                 //   详见 helper 注释 line ~2845). BUG-335 修复: ranking 漏 TopAuthors
@@ -4299,15 +4322,14 @@ func rankingTabs() []map[string]string {
         }
 }
 
-// tabName 根据 tab id 取中文名
-func tabName(tab string) string {
-        for _, t := range rankingTabs() {
-                if t["id"] == tab {
-                        return t["name"]
-                }
-        }
-        return "排行榜"
-}
+// R116-D 精简-1: tabName 函数删除 — 唯一 caller (homeHandler case "ranking"
+//
+//      line ~1285) 已内联 tab 名查 (hoist tabs local + for-range lookup),
+//      本函数 0 caller 成 dead code. 与 R106-D BUG-313 删 dead field +
+//      R105-D BUG-311 删 dead defense 字段同款 "dead code 精简" precedent.
+//      原实现 (line 4303-4310, 删前): `func tabName(tab string) string {
+//        for _, t := range rankingTabs() { if t["id"] == tab { return t["name"] } }
+//        return "排行榜" }`.
 
 // bookRowFromScan 把 SQL scan 出来的字段拼成 books slice 元素 (与 getBooks 同款字段名)
 func bookRowFromScan(id, name, author, intro, cover, status, latestChapter, category, categoryID sql.NullString, wordCount int64, updatedAt string) map[string]interface{} {
@@ -4392,6 +4414,21 @@ func getBookViewData(id string) (map[string]interface{}, []map[string]interface{
         // 2. 完整章节列表 (按 idx asc, 取前 200 防止超大书)
         rows, err := db.Query(`SELECT id, idx, title, wordCount, volume FROM Chapter WHERE bookId=? ORDER BY idx ASC LIMIT 200`, id)
         if err != nil {
+                // R116-D BUG-346 (P3, db.Query block-swallow family, main scope,
+                //   R115-C admin scope db.Query block-swallow family sibling 续):
+                //   原 `if err != nil { rows = nil }` 吞 err — driver edge db.Query
+                //   失败 (conn 闪断 / 磁盘满 / driver bug / SQLite 锁竞争超时 /
+                //   SQL 语法错列中途 ALTER) 同走 rows=nil → chapters=[] empty slice
+                //   → homeHandler case "book" 渲染无章节列表 + firstChID="" →
+                //   FirstChapterURL="" + HasChapters=false → book view "开始阅读"
+                //   按钮显示 "暂无章节" 提示. 用户/运维看到空章节列表但不知是真
+                //   无章 (silent OK) 还是 DB 故障 (本应 log). 改: log.Printf 提示
+                //   运维, 行为不变 (rows=nil fallback 不变, chapters 仍 [] empty
+                //   slice, 仅加 log 可见性). 与 R115-C admin scope 同款 "正常
+                //   跳过 + 异常 log" 语义. ErrNoRows 不适用 (db.Query 返 rows
+                //   非 Row, 无 ErrNoRows; 空结果集 Next()=false 走 rows.Err()
+                //   后续 guard).
+                log.Printf("[R116-D] getBookViewData chapters db.Query failed (bookID=%s): %v - rendering empty chapter list fallback", id, err)
                 rows = nil
         }
         chapters := []map[string]interface{}{}
@@ -4459,6 +4496,17 @@ func getBookViewData(id string) (map[string]interface{}, []map[string]interface{
                 for i := len(tmp) - 1; i >= 0; i-- {
                         recent = append(recent, tmp[i])
                 }
+        } else {
+                // R116-D BUG-346 (P3, db.Query block-swallow family sibling 续,
+                //   getBookViewData chapters sub-variant sibling): 原 if-init
+                //   `; err == nil { ... }` 块吞 err — else 路径无 log, driver
+                //   edge db.Query 失败时 recent=[] empty slice silent. 用户/
+                //   运维看到 book view "最近章节" 区块空但不知是真无 recent
+                //   (silent OK) 还是 DB 故障 (本应 log). 改: else 路径加
+                //   log.Printf 提示运维, 行为不变 (recent 仍 [] empty slice
+                //   fallback, 仅加 log 可见性). 与 R116-D chapters sub-variant
+                //   + R115-C admin scope 同款 "正常跳过 + 异常 log" 语义.
+                log.Printf("[R116-D] getBookViewData recent db.Query failed (bookID=%s): %v - rendering empty recent fallback", id, err)
         }
 
         // 4. 同类推荐 (同 categoryId, 排除当前书, 取 12 本)
@@ -4479,6 +4527,18 @@ func getBookViewData(id string) (map[string]interface{}, []map[string]interface{
                                 log.Printf("[R75-A] getBookViewData related rows.Err() (bookID=%s catID=%s): %v", id, categoryID.String, rerr)
                         }
                         rows3.Close() // R99-D BUG-284: 即时关 (BUG-279 family).
+                } else {
+                        // R116-D BUG-346 (P3, db.Query block-swallow family sibling 续,
+                        //   getBookViewData chapters/recent sub-variant sibling):
+                        //   原 if-init `; err == nil { ... }` 块吞 err — else
+                        //   路径无 log, driver edge db.Query 失败时 related=[]
+                        //   empty slice silent. 用户/运维看到 book view "同类推荐"
+                        //   区块空但不知是真无 related (silent OK) 还是 DB 故障
+                        //   (本应 log). 改: else 路径加 log.Printf 提示运维, 行为
+                        //   不变 (related 仍 [] empty slice fallback, 仅加 log
+                        //   可见性). 与 R116-D chapters/recent sub-variant + R115-C
+                        //   admin scope 同款 "正常跳过 + 异常 log" 语义.
+                        log.Printf("[R116-D] getBookViewData related db.Query failed (bookID=%s catID=%s): %v - rendering empty related fallback", id, categoryID.String, err)
                 }
         }
 
@@ -4684,6 +4744,16 @@ func getCategoryViewData(catID string, page, size int) (string, []map[string]int
                 rows, err = db.Query(`SELECT b.id,b.name,b.author,b.intro,b.cover,b.status,b.wordCount,b.latestChapter,COALESCE(c.name,'未分类'),b.categoryId,b.updatedAt FROM Book b LEFT JOIN Category c ON b.categoryId=c.id ORDER BY b.updatedAt DESC LIMIT ? OFFSET ?`, size, offset)
         }
         if err != nil {
+                // R116-D BUG-346 (P3, db.Query block-swallow family sibling 续,
+                //   getBookViewData chapters/recent/related sub-variant sibling):
+                //   原 `if err != nil { return label, []map, total }` 吞 err —
+                //   driver edge db.Query 失败时 category.html 渲染空列表 silent.
+                //   用户/运维看到 category 页空但不知是真无书 (silent OK) 还是
+                //   DB 故障 (本应 log). 改: log.Printf 提示运维, 行为不变 (返
+                //   empty slice + total fallback, 仅加 log 可见性). 与 R116-D
+                //   getBookViewData sub-variant + R115-C admin scope 同款 "正常
+                //   跳过 + 异常 log" 语义.
+                log.Printf("[R116-D] getCategoryViewData db.Query failed (catID=%s page=%d): %v - rendering empty book list fallback", catID, page, err)
                 return label, []map[string]interface{}{}, total
         }
         defer rows.Close()
@@ -4718,6 +4788,12 @@ func getRankingViewData(tab string, page, size int) ([]map[string]interface{}, i
         q := `SELECT b.id,b.name,b.author,b.intro,b.cover,b.status,b.wordCount,b.latestChapter,COALESCE(c.name,'未分类'),b.categoryId,b.updatedAt FROM Book b LEFT JOIN Category c ON b.categoryId=c.id ORDER BY ` + orderClause + ` LIMIT ? OFFSET ?`
         rows, err := db.Query(q, size, offset)
         if err != nil {
+                // R116-D BUG-346 (P3, db.Query block-swallow family sibling 续,
+                //   getCategoryViewData sibling): 原 `if err != nil { return
+                //   []map, total }` 吞 err — driver edge db.Query 失败时
+                //   ranking.html 渲染空列表 silent. 改: log.Printf 提示运维,
+                //   行为不变 (返 empty slice + total fallback, 仅加 log 可见性).
+                log.Printf("[R116-D] getRankingViewData db.Query failed (tab=%s page=%d): %v - rendering empty book list fallback", tab, page, err)
                 return []map[string]interface{}{}, total
         }
         defer rows.Close()
@@ -4744,6 +4820,13 @@ func getFulltextViewData(page, size int) ([]map[string]interface{}, int) {
         page, offset := clampPageOffset(page, total, size)
         rows, err := db.Query(`SELECT b.id,b.name,b.author,b.intro,b.cover,b.status,b.wordCount,b.latestChapter,COALESCE(c.name,'未分类'),b.categoryId,b.updatedAt FROM Book b LEFT JOIN Category c ON b.categoryId=c.id WHERE b.status='completed' ORDER BY b.updatedAt DESC LIMIT ? OFFSET ?`, size, offset)
         if err != nil {
+                // R116-D BUG-346 (P3, db.Query block-swallow family sibling 续,
+                //   getCategoryViewData/getRankingViewData sibling): 原 `if err !=
+                //   nil { return []map, total }` 吞 err — driver edge db.Query
+                //   失败时 fulltext.html 渲染空列表 silent. 改: log.Printf 提
+                //   示运维, 行为不变 (返 empty slice + total fallback, 仅加 log
+                //   可见性).
+                log.Printf("[R116-D] getFulltextViewData db.Query failed (page=%d): %v - rendering empty book list fallback", page, err)
                 return []map[string]interface{}{}, total
         }
         defer rows.Close()
@@ -4772,6 +4855,13 @@ func getSearchViewData(q string, limit int) []map[string]interface{} {
         like := "%" + likeSafe(q) + "%"
         rows, err := db.Query(`SELECT b.id,b.name,b.author,b.intro,b.cover,b.status,b.wordCount,b.latestChapter,COALESCE(c.name,'未分类'),b.categoryId,b.updatedAt FROM Book b LEFT JOIN Category c ON b.categoryId=c.id WHERE b.name LIKE ? ESCAPE '\' OR b.author LIKE ? ESCAPE '\' OR b.intro LIKE ? ESCAPE '\' OR b.keywords LIKE ? ESCAPE '\' ORDER BY b.wordCount DESC LIMIT ?`, like, like, like, like, limit)
         if err != nil {
+                // R116-D BUG-346 (P3, db.Query block-swallow family sibling 续,
+                //   getCategoryViewData/getRankingViewData/getFulltextViewData
+                //   sibling): 原 `if err != nil { return []map }` 吞 err —
+                //   driver edge db.Query 失败时 search.html 渲染空列表 silent.
+                //   改: log.Printf 提示运维, 行为不变 (返 empty slice fallback,
+                //   仅加 log 可见性).
+                log.Printf("[R116-D] getSearchViewData db.Query failed (q=%q): %v - rendering empty book list fallback", q, err)
                 return []map[string]interface{}{}
         }
         defer rows.Close()
@@ -4801,6 +4891,14 @@ func getKeywordViewData(tag string, limit int) ([]map[string]interface{}, []stri
         // 1. 取有此 tag 的书 (按 hits desc)
         rows, err := db.Query(`SELECT b.id,b.name,b.author,b.intro,b.cover,b.status,b.wordCount,b.latestChapter,COALESCE(c.name,'未分类'),b.categoryId,b.updatedAt FROM BookTag bt JOIN Book b ON bt.bookId=b.id LEFT JOIN Category c ON b.categoryId=c.id WHERE bt.tag=? ORDER BY bt.hits DESC LIMIT ?`, tag, limit)
         if err != nil {
+                // R116-D BUG-346 (P3, db.Query block-swallow family sibling 续,
+                //   getCategoryViewData/getRankingViewData/getFulltextViewData/
+                //   getSearchViewData sibling): 原 `if err != nil { return
+                //   []map, []string }` 吞 err — driver edge db.Query 失败时
+                //   keyword.html 渲染空列表 + 空相关标签 silent. 改:
+                //   log.Printf 提示运维, 行为不变 (返 empty slice + empty slice
+                //   fallback, 仅加 log 可见性).
+                log.Printf("[R116-D] getKeywordViewData db.Query failed (tag=%q): %v - rendering empty book list fallback", tag, err)
                 return []map[string]interface{}{}, []string{}
         }
         defer rows.Close()
@@ -4850,6 +4948,18 @@ func getKeywordViewData(tag string, limit int) ([]map[string]interface{}, []stri
                                         log.Printf("[R75-A] getKeywordViewData relatedTags rows2.Err() (tag=%q bookID=%s): %v", tag, firstBookID, rerr)
                                 }
                                 rows2.Close()
+                        } else {
+                                // R116-D BUG-346 (P3, db.Query block-swallow family sibling
+                                //   续, getKeywordViewData 主路径 sub-variant + R116-D
+                                //   getBookViewData recent/related sub-variant sibling):
+                                //   原 if-init `; err == nil { ... }` 块吞 err — else
+                                //   路径无 log, driver edge db.Query 失败时 relatedTags=[]
+                                //   empty slice silent. 用户/运维看到 keyword view "相关
+                                //   标签" 区块空但不知是真无 related tags (silent OK) 还是
+                                //   DB 故障 (本应 log). 改: else 路径加 log.Printf 提示
+                                //   运维, 行为不变 (relatedTags 仍 [] empty slice fallback,
+                                //   仅加 log 可见性).
+                                log.Printf("[R116-D] getKeywordViewData relatedTags db.Query failed (tag=%q bookID=%s): %v - rendering empty relatedTags fallback", tag, firstBookID, err)
                         }
                 }
         }
