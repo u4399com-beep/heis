@@ -96,15 +96,23 @@
      0 改 aijjxs/23qb/101kks/trxsw/ggd66/pilishuwu/huangjinwu/ddyueshu/x2552
      home.html (各自已用 {{range .Books}} 顶层非嵌套, 0 此 bug). 编号
      BUG-225 避开 R86-C admin.go BUG-219~224 (并行 agent 编号不冲突, 不同文件
-     范围). */}}
+     范围).
+     R109-D BUG-326 (P3 perf/DRY, templates scope): 原 count-then-render 双 range
+       (第一遍 {{$count}} 计数, {{if gt $count 0}} 守护; 第二遍渲染 lt $perCard 限 N 本)
+       → 每分类遍历 $.Books 两遍 (8 NavCats × 88 Books × 2 = 1408 内迭代/req). 合并为
+       单 range + $opened lazy-open: 首匹配 emit <div>/<a>/<ul> + $opened=true, range
+       后 {{if $opened}} emit </ul></div>. 空分类 ($opened=false) 跳过 == 原
+       {{if gt $count 0}} 守护. HomeCategoryBooks clamp [2,12] (admin.go
+       getHomeLayoutSetting) 保 first-match 必触发 lazy-open. 0 行为变化 (同 HTML),
+       halve 内迭代至 704 (与 aijjxs/home.html BUG-326 同款 sibling). */}}
 {{range $c := .NavCats}}
-{{$count := 0}}{{range $b := $.Books}}{{if eq $b.categoryId $c.id}}{{$count = add $count 1}}{{end}}{{end}}
-{{if gt $count 0}}
-<div class="sortvisit">
+{{$perCard := 0}}
+{{$opened := false}}
+{{range $b := $.Books}}{{if and (eq $b.categoryId $c.id) (lt $perCard $.HomeCategoryBooks)}}
+{{if not $opened}}<div class="sortvisit">
 <a href="{{$c.URL}}">{{$c.name}}</a>
 <ul>
-{{$perCard := 0}}
-{{range $b := $.Books}}{{if and (eq $b.categoryId $c.id) (lt $perCard $.HomeCategoryBooks)}}
+{{$opened = true}}{{end}}
 <li>
 <a href="{{$b.URL}}">
 {{if $b.cover}}<img src="{{$b.cover}}" title="{{$b.name}}" width="120" height="160">{{end}}
@@ -117,7 +125,7 @@
 </li>
 {{$perCard = add $perCard 1}}
 {{end}}{{end}}
-</ul>
+{{if $opened}}</ul>
 </div>
 {{end}}
 {{end}}

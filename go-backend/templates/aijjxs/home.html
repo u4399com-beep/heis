@@ -91,17 +91,25 @@
      (默认 6, admin 可配 2-12, 与"最新上传"区块视觉平衡). $shown 限制最多
      $.HomeCategoryCount 卡 (默认 8, admin 可配 4-20) 填充 grid2 双列布局.
      R71-A: 原 R70-C 硬编码 2 卡 / 6 本 → 改用 $.HomeCategoryCount / $.HomeCategoryBooks
-     占位符 (homeHandler 读 Setting 表 homeLayout.{siteID} JSON 注入). */}}
+     占位符 (homeHandler 读 Setting 表 homeLayout.{siteID} JSON 注入).
+     R109-D BUG-326 (P3 perf/DRY, templates scope): 原 count-then-render 双 range
+       (第一遍 {{$count}} 计数, {{if gt $count 0}} 守护; 第二遍渲染 lt $perCard 限 N 本)
+       → 每分类遍历 $books 两遍 (8 NavCats × 88 Books × 2 = 1408 内迭代/req). 合并为
+       单 range + $opened lazy-open: 首匹配 emit <div>/<h4>/<ul> + $opened=true, range
+       后 {{if $opened}} emit </ul></div> + $shown++. 空分类 ($opened=false) 跳过 == 原
+       {{if gt $count 0}} 守护. HomeCategoryBooks clamp [2,12] (admin.go
+       getHomeLayoutSetting) 保 first-match 必触发 lazy-open. 0 行为变化 (同 HTML),
+       halve 内迭代至 704. */}}
 {{$books := $.Books}}
 {{$shown := 0}}
 {{range $c := $.NavCats}}{{if lt $shown $.HomeCategoryCount}}
-{{$count := 0}}{{range $b := $books}}{{if eq $b.categoryId $c.id}}{{$count = add $count 1}}{{end}}{{end}}
-{{if gt $count 0}}
-<div>
+{{$perCard := 0}}
+{{$opened := false}}
+{{range $b := $books}}{{if and (eq $b.categoryId $c.id) (lt $perCard $.HomeCategoryBooks)}}
+{{if not $opened}}<div>
 <h4>{{$c.name}} <a href="{{$c.URL}}">更多&gt;&gt;</a></h4>
 <ul class="lines lines-books">
-{{$perCard := 0}}
-{{range $b := $books}}{{if and (eq $b.categoryId $c.id) (lt $perCard $.HomeCategoryBooks)}}
+{{$opened = true}}{{end}}
 <li>
 <span class="line-main">
 <span class="cat">{{$b.category}}</span>
@@ -112,10 +120,9 @@
 </li>
 {{$perCard = add $perCard 1}}
 {{end}}{{end}}
-</ul>
+{{if $opened}}</ul>
 </div>
-{{$shown = add $shown 1}}
-{{end}}
+{{$shown = add $shown 1}}{{end}}
 {{end}}{{end}}
 </div>
 </article>

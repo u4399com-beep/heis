@@ -557,6 +557,32 @@ func scanLogged(rows *sql.Rows, label string, args ...interface{}) {
         }
 }
 
+// queryLogged wraps db.Query, log-on-fail visibility (nil on err, 与原
+//   `rows, _ := db.Query` / `if rows, err := db.Query; err == nil` swallow
+//   语义一致 — Query 失败时返 nil, caller 的 `if rows != nil` guard 跳过
+//   循环, best-effort 空 result 不阻塞 caller). R109-C BUG-326 Pattern H
+//   db.Query 吞错 family helper — 与 execLogged (BUG-272~274 Exec) /
+//   unmarshalLogged (BUG-309 Unmarshal) / scanLogged (BUG-314 Scan) /
+//   marshalLogged (BUG-321 Marshal) / parseBookUpdatedAtLogged (BUG-322
+//   time.Parse) 并行的 db.Query family 收口. 16 callsite (backup export 10
+//   H1 变种 `if rows, err := db.Query; err == nil` + dashboard/clear/themes
+//   6 H2 变种 `rows, _ := db.Query`): 原 16 处全吞 Query err — DB 故障
+//   (SQLite busy lock / 连接闪断 / 磁盘满) 时整表静默跳过 (backup 漏表 /
+//   dashboard 少任务少书 / clear 漏 running task / themes 少站),
+//   rows.Err() post-loop 只查 mid-iteration err 不触 initial Query err.
+//   helper log-on-fail + 单点维护防散落 inline nil-guard + 吞 err 重复
+//   (精简-1: 16 处 `_, _ :=` / `if _, err := ...; err == nil` swallow
+//   散落 → 1 helper). 0 行为变化 (best-effort 空 result 语义不变, 仅加
+//   log 可见性).
+func queryLogged(label, query string, args ...interface{}) *sql.Rows {
+        rows, err := db.Query(query, args...)
+        if err != nil {
+                log.Printf("[%s] Query 失败 (跳过该结果集): %v", label, err)
+                return nil
+        }
+        return rows
+}
+
 // parseTaskProgress 解析 Task.progress JSON 列为仪表盘/任务页所需的 progressNote +
 // pct. R105-C BUG-309 精简-3 (R104-B 精简-1/2 同款 dedup precedent): 原实现
 // fillDashboardData (line ~3382) + fillTasksPageData (line ~3481) 两处 progress
@@ -3256,7 +3282,8 @@ func adminBookByIDHandler(w http.ResponseWriter, r *http.Request) {
                 //   goroutine 的 SELECT 返 ErrNoRows skip write; 或 goroutine write map 后
                 //   T2 的 map-clean 清掉 entry. 全场景无 orphan (与 BUG-83 同款方法论).
                 jobIDsToClean := []string{}
-                jrows, _ := db.Query(`SELECT id FROM DownloadJob WHERE bookId=?`, bookID)
+                // R109-C BUG-326 Pattern H db.Query 吞错 family 续 (queryLogged helper).
+                jrows := queryLogged("adminBookByIDHandler jobIDs", `SELECT id FROM DownloadJob WHERE bookId=?`, bookID)
                 for jrows != nil && jrows.Next() {
                         var jid string
                         // R107-C BUG-318 Pattern B loop rows.Scan 吞错 family 续
@@ -3509,7 +3536,8 @@ func fillDashboardData(data map[string]interface{}) {
         data["RulesEnabled"] = rulesEnabled
 
         // 2. 最近任务 8 条
-        rows, _ := db.Query(
+        // R109-C BUG-326 Pattern H db.Query 吞错 family 续 (queryLogged helper).
+        rows := queryLogged("fillDashboardData recentTasks",
                 `SELECT t.id,t.name,t.status,t.progress,t.stats,t.updatedAt,
                         COALESCE(r.name,'(规则已删)')
                    FROM Task t LEFT JOIN Rule r ON t.ruleId=r.id
@@ -3546,7 +3574,8 @@ func fillDashboardData(data map[string]interface{}) {
         data["RecentTasks"] = recentTasks
 
         // 3. 最近书籍 8 条
-        rows2, _ := db.Query(
+        // R109-C BUG-326 Pattern H db.Query 吞错 family 续 (queryLogged helper).
+        rows2 := queryLogged("fillDashboardData recentBooks",
                 `SELECT b.id,b.name,b.author,b.status,b.updatedAt
                    FROM Book b ORDER BY b.updatedAt DESC LIMIT 8`)
         recentBooks := []map[string]interface{}{}
@@ -3637,7 +3666,8 @@ func fillTasksPageData(data map[string]interface{}, r *http.Request) {
         data["Total"] = len(tasks)
 
         // 规则列表 (供新建任务 modal)
-        rulesRows, _ := db.Query(`SELECT id,name,enabled FROM Rule ORDER BY updatedAt DESC LIMIT 100`)
+        // R109-C BUG-326 Pattern H db.Query 吞错 family 续 (queryLogged helper).
+        rulesRows := queryLogged("fillTasksPageData rules", `SELECT id,name,enabled FROM Rule ORDER BY updatedAt DESC LIMIT 100`)
         rules := []map[string]interface{}{}
         if rulesRows != nil {
                 defer rulesRows.Close()
@@ -5536,7 +5566,8 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
         // settings
         type kv struct{ key, value string }
         settings := []kv{}
-        if rows, err := db.Query(`SELECT key, value FROM Setting LIMIT 500`); err == nil {
+        // R109-C BUG-326 Pattern H db.Query 吞错 family 续 (queryLogged helper).
+        if rows := queryLogged("adminBackupHandler settings", `SELECT key, value FROM Setting LIMIT 500`); rows != nil {
                 for rows.Next() {
                         var k, v string
                         scanLogged(rows, "adminBackupHandler settings", &k, &v)
@@ -5554,7 +5585,8 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
         }
         // categories
         categories := []map[string]interface{}{}
-        if rows, err := db.Query(`SELECT id, name, sortOrder, createdAt FROM Category LIMIT 500`); err == nil {
+        // R109-C BUG-326 Pattern H db.Query 吞错 family 续 (queryLogged helper).
+        if rows := queryLogged("adminBackupHandler categories", `SELECT id, name, sortOrder, createdAt FROM Category LIMIT 500`); rows != nil {
                 for rows.Next() {
                         var id, name, createdAt string
                         var so int
@@ -5578,7 +5610,8 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
         //   (恢复后所有站 pseudoStaticStyle=默认 "query", 高级 SEO 全默认). 修复: SELECT + 输出
         //   map + restore struct + restore INSERT 全补齐 (与 adminSitesList SELECT 字段集对齐).
         sites := []map[string]interface{}{}
-        if rows, err := db.Query(`SELECT id, name, domain, themeId, COALESCE(title,''), COALESCE(description,''), COALESCE(keywords,''), COALESCE(icbm,''), COALESCE(geoRegion,''), COALESCE(geoPlacename,''), offset, isDefault, status, inLinkWheel, COALESCE(pseudoStaticStyle,'query'), COALESCE(footerText,''), COALESCE(footerCopyright,''), COALESCE(footerIcp,''), COALESCE(footerStats,1), COALESCE(navCategoryCount,16), COALESCE(homeModuleLimit,20), COALESCE(chapterPaginationMode,'off'), COALESCE(chapterPaginationWords,3000), COALESCE(chapterPaginationPages,3), COALESCE(chapterSeoAuto,1), COALESCE(chapterSeoTitleTemplate,''), COALESCE(chapterSeoDescTemplate,''), COALESCE(chapterSeoKeywordsTemplate,''), createdAt, updatedAt FROM Site LIMIT 500`); err == nil {
+        // R109-C BUG-326 Pattern H db.Query 吞错 family 续 (queryLogged helper).
+        if rows := queryLogged("adminBackupHandler sites", `SELECT id, name, domain, themeId, COALESCE(title,''), COALESCE(description,''), COALESCE(keywords,''), COALESCE(icbm,''), COALESCE(geoRegion,''), COALESCE(geoPlacename,''), offset, isDefault, status, inLinkWheel, COALESCE(pseudoStaticStyle,'query'), COALESCE(footerText,''), COALESCE(footerCopyright,''), COALESCE(footerIcp,''), COALESCE(footerStats,1), COALESCE(navCategoryCount,16), COALESCE(homeModuleLimit,20), COALESCE(chapterPaginationMode,'off'), COALESCE(chapterPaginationWords,3000), COALESCE(chapterPaginationPages,3), COALESCE(chapterSeoAuto,1), COALESCE(chapterSeoTitleTemplate,''), COALESCE(chapterSeoDescTemplate,''), COALESCE(chapterSeoKeywordsTemplate,''), createdAt, updatedAt FROM Site LIMIT 500`); rows != nil {
                 for rows.Next() {
                         var id, name, domain, themeID, title, desc, kw, icbm, geoR, geoP, pseudoStaticStyle, footerText, footerCopyright, footerIcp, chapterPaginationMode, chapterSeoTitleTemplate, chapterSeoDescTemplate, chapterSeoKeywordsTemplate string
                         var offset, navCategoryCount, homeModuleLimit, chapterPaginationWords, chapterPaginationPages int
@@ -5615,7 +5648,8 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
         }
         // friendLinks
         friendLinks := []map[string]interface{}{}
-        if rows, err := db.Query(`SELECT id, name, url, logo, sortOrder, enabled, createdAt, updatedAt FROM FriendLink LIMIT 500`); err == nil {
+        // R109-C BUG-326 Pattern H db.Query 吞错 family 续 (queryLogged helper).
+        if rows := queryLogged("adminBackupHandler friendLinks", `SELECT id, name, url, logo, sortOrder, enabled, createdAt, updatedAt FROM FriendLink LIMIT 500`); rows != nil {
                 for rows.Next() {
                         var id, name, urlV, logo, createdAt, updatedAt string
                         var so int
@@ -5635,7 +5669,8 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
         }
         // rules
         rules := []map[string]interface{}{}
-        if rows, err := db.Query(`SELECT id, name, COALESCE(description,''), config, enabled, createdAt, updatedAt FROM Rule LIMIT 500`); err == nil {
+        // R109-C BUG-326 Pattern H db.Query 吞错 family 续 (queryLogged helper).
+        if rows := queryLogged("adminBackupHandler rules", `SELECT id, name, COALESCE(description,''), config, enabled, createdAt, updatedAt FROM Rule LIMIT 500`); rows != nil {
                 for rows.Next() {
                         var id, name, desc, cfg, createdAt, updatedAt string
                         var en bool
@@ -5654,7 +5689,8 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
         }
         // tasks
         tasks := []map[string]interface{}{}
-        if rows, err := db.Query(`SELECT id, name, ruleId, mode, bookUrl, listUrl, listStart, listEnd, bookStart, bookEnd, recrawlMode, storageMode, fetchConfig, threadMin, threadMax, intervalMin, intervalMax, smartCategory, smartComplete, autoSuggest, autoRefresh, refreshIntervalMin, status, progress, stats, createdAt, updatedAt FROM Task LIMIT 5000`); err == nil {
+        // R109-C BUG-326 Pattern H db.Query 吞错 family 续 (queryLogged helper).
+        if rows := queryLogged("adminBackupHandler tasks", `SELECT id, name, ruleId, mode, bookUrl, listUrl, listStart, listEnd, bookStart, bookEnd, recrawlMode, storageMode, fetchConfig, threadMin, threadMax, intervalMin, intervalMax, smartCategory, smartComplete, autoSuggest, autoRefresh, refreshIntervalMin, status, progress, stats, createdAt, updatedAt FROM Task LIMIT 5000`); rows != nil {
                 for rows.Next() {
                         var t struct {
                                 id, name, ruleID, mode, bookURL, listURL, recrawlMode, storageMode, fetchConfig                            string
@@ -5685,7 +5721,8 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
         }
         // downloadJobs
         downloadJobs := []map[string]interface{}{}
-        if rows, err := db.Query(`SELECT id, bookId, options, status, COALESCE(filePath,''), COALESCE(error,''), size, createdAt FROM DownloadJob LIMIT 5000`); err == nil {
+        // R109-C BUG-326 Pattern H db.Query 吞错 family 续 (queryLogged helper).
+        if rows := queryLogged("adminBackupHandler downloadJobs", `SELECT id, bookId, options, status, COALESCE(filePath,''), COALESCE(error,''), size, createdAt FROM DownloadJob LIMIT 5000`); rows != nil {
                 for rows.Next() {
                         var id, bookID, options, status, filePath, errMsg, createdAt string
                         var size int
@@ -5711,7 +5748,8 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
         //   且 !bigBooks 时必现, 用户备份全量数据 export 路径). 修复: 先收齐
         //   book 行转 []struct + 显式 Close rows, 再循环逐 book 调 db.Query(crows)/
         //   db.Query(trows) — 与 R63 主控修 adminSitesBatchGenerateTDK 同款方法论.
-        if rows, err := db.Query(bookQuery); err == nil {
+        // R109-C BUG-326 Pattern H db.Query 吞错 family 续 (queryLogged helper).
+        if rows := queryLogged("adminBackupHandler books", bookQuery); rows != nil {
                 type bookRow struct {
                         id, name, author, catID, intro, cover, status, kw, latest       string
                         wc                                                              int
@@ -5748,7 +5786,8 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
                                 //   backup JSON bookItem 加 chapterTruncated 字段 (仅 truncated 时存在,
                                 //   absence=false 让 restore 可缺省判断). 与 adminDownloadsCreate
                                 //   BUG-103 LIMIT 1000 同款 "保守上限" 思路.
-                                if crows, err := db.Query(`SELECT id, bookId, idx, title, COALESCE(volume,''), COALESCE(url,''), COALESCE(content,''), storage, COALESCE(filePath,''), wordCount, fetched, createdAt, updatedAt FROM Chapter WHERE bookId=? ORDER BY idx ASC LIMIT ?`, b.id, backupChaptersPerBookLimit+1); err == nil {
+                                // R109-C BUG-326 Pattern H db.Query 吞错 family 续 (queryLogged helper).
+                                if crows := queryLogged("adminBackupHandler chapters", `SELECT id, bookId, idx, title, COALESCE(volume,''), COALESCE(url,''), COALESCE(content,''), storage, COALESCE(filePath,''), wordCount, fetched, createdAt, updatedAt FROM Chapter WHERE bookId=? ORDER BY idx ASC LIMIT ?`, b.id, backupChaptersPerBookLimit+1); crows != nil {
                                         for crows.Next() {
                                                 if len(chapters) >= backupChaptersPerBookLimit {
                                                         // 第 5001 行 → 该书章节 > 5000, 标 truncated 跳出.
@@ -5784,7 +5823,8 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
                                                 fmt.Sprintf("书 %s (id=%s) 章节数超 %d, 仅备份前 %d 章", b.name, b.id, backupChaptersPerBookLimit, backupChaptersPerBookLimit))
                                 }
                                 tags := []map[string]interface{}{}
-                                if trows, err := db.Query(`SELECT id, bookId, tag, source, hits FROM BookTag WHERE bookId=?`, b.id); err == nil {
+                                // R109-C BUG-326 Pattern H db.Query 吞错 family 续 (queryLogged helper).
+                                if trows := queryLogged("adminBackupHandler tags", `SELECT id, bookId, tag, source, hits FROM BookTag WHERE bookId=?`, b.id); trows != nil {
                                         for trows.Next() {
                                                 var t struct {
                                                         id, bookID, tag, source string
@@ -5864,7 +5904,16 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
         w.Header().Set("Cache-Control", "no-store")
         enc := json.NewEncoder(w)
         enc.SetEscapeHTML(false)
-        _ = enc.Encode(payload)
+        // R109-C BUG-327 Pattern G json.Encoder.Encode 吞错 family (response
+        //   write swallow): 原 `_ = enc.Encode(payload)` 吞错 — 客户端断连
+        //   (broken pipe) 时 backup 文件截断, 但 lastBackupAt 已在上文
+        //   execLogged 写入 → “成功记录但交付失败” 不一致, 0 log 提示运维.
+        //   改 log-on-fail (best-effort, headers 已发无法改 status, 仅 log
+        //   可见性, 0 行为变化). 与 BUG-326 db.Query family 同款 swallow
+        //   收口, 但属 response write sub-family.
+        if eerr := enc.Encode(payload); eerr != nil {
+                log.Printf("[adminBackupHandler] backup Encode 失败 (客户端可能收到截断文件): %v", eerr)
+        }
 }
 
 // adminBackupSubHandler — 分发 /api/admin/backup/restore 与 /api/admin/backup/vacuum.
@@ -7971,7 +8020,8 @@ func adminBackupClearHandler(w http.ResponseWriter, r *http.Request) {
         tr := crawl.GetTaskRunner()
         type runningTask struct{ id string }
         runningTasks := []runningTask{}
-        runRows, _ := db.Query(`SELECT id FROM Task WHERE status='running'`)
+        // R109-C BUG-326 Pattern H db.Query 吞错 family 续 (queryLogged helper).
+        runRows := queryLogged("adminBackupClearHandler running", `SELECT id FROM Task WHERE status='running'`)
         for runRows != nil && runRows.Next() {
                 var tid string
                 scanLogged(runRows, "adminBackupClearHandler running", &tid)
@@ -8207,7 +8257,8 @@ func fillThemesPageData(data map[string]interface{}) {
         }
         data["ThemeStats"] = stats
         // R55-1A: 站点列表 (供主题切换面板下拉选择)
-        srows, _ := db.Query(`SELECT id,name,domain,themeId FROM Site ORDER BY isDefault DESC, name ASC LIMIT 500`)
+        // R109-C BUG-326 Pattern H db.Query 吞错 family 续 (queryLogged helper).
+        srows := queryLogged("fillThemesPageData sites", `SELECT id,name,domain,themeId FROM Site ORDER BY isDefault DESC, name ASC LIMIT 500`)
         sites := []map[string]interface{}{}
         if srows != nil {
                 defer srows.Close()

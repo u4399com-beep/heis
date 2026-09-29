@@ -1526,7 +1526,19 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 }
                 data["FeaturedBooks"] = featured
                 // R102-D BUG-297: home view canonical = site root (/).
-                data["CanonicalURL"] = buildAbsoluteURL(siteDomain, buildHomeURL(pseudoStyle))
+                //   R109-D 精简-1 (P4 精简/DRY, main scope, R108-D BUG-321
+                //     init-预算复用 sibling): 原本行 buildHomeURL(pseudoStyle)
+                //     与 init map line 783 "HomeURL": buildHomeURL(pseudoStyle)
+                //     同 args — init map 每请求 1 次 + case "home" canonical 每
+                //     home view 1 次, 两次冗余. 改读 data["HomeURL"] 复用 init
+                //     map 预算 (与 R108-D BUG-321 读 book["URL"] 复用 injectBookURL
+                //     预算同款 "init/inject 预算复用" precedent). 不变式: init map
+                //     line 783 先于本行 (switch 前 vs case "home" default),
+                //     data["HomeURL"] 必为 buildHomeURL 输出 (string "/"), comma-ok
+                //     必成功. 0 行为变化 (buildAbsoluteURL(siteDomain,"/") 同值),
+                //     省 1 buildHomeURL 调用 per home view request.
+                homeURL, _ := data["HomeURL"].(string)
+                data["CanonicalURL"] = buildAbsoluteURL(siteDomain, homeURL)
         }
 
         tmplName := theme + "/" + view

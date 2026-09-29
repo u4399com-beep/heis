@@ -2390,6 +2390,57 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                         if cfg.Override.Cookies != "" {
                                 coverCfg.Cookies = cfg.Override.Cookies
                         }
+                        // R109-A BUG-326 (P3) 修复 (深抓 cover fetch posture 续, 与
+                        //   BUG-309/310/314/317/321/322 同 cover FetchConfig family 续):
+                        //   cover fetch FetchConfig 仍漏继承 cfg.Override.ProxyRotationStrategy
+                        //   (string) — 代理池旋转策略 (random / round-robin / least-used /
+                        //   least-latency / sticky). 后果: cover 同域站 (originHost(parsed.
+                        //   Cover) == originHost(bookURL), e.g. 源站 /uploads/cover/xxx.
+                        //   webp 与 book 同 host) behind 反爬时, book fetch 经 mergeFetchConfig
+                        //   (line ~9931-9932) 复制 cfg.Override.ProxyRotationStrategy 到
+                        //   merged cfg → pickProxyFor (line ~6642) 按 strategy 选代理
+                        //   (e.g. least-latency 选最低延迟代理 = 稳定 exit IP; sticky 钉扎
+                        //   per-host 单代理 = 跨请求同 IP; round-robin 轮换 = 每请求换 IP).
+                        //   真实浏览器在书籍详情页加载 <img src=parsed.Cover> 时浏览器
+                        //   本身无代理 (走 ISP 出口 IP), 但本系统代理路径下 "同一浏览器
+                        //   1s 内 book fetch (least-latency 代理 A) + cover fetch (default
+                        //   random 代理 B) 不同 exit IP" → 反爬侧观察到同一会话源 IP 漂移
+                        //   是 bot 信号 (反爬关联高 — IP 漂移是反爬主检维度之一, 与
+                        //   BUG-314 ProxyURL 漏继承 + BUG-321/322 header/cookie 漏继承
+                        //   同款 "posture 不对称" family). 与 BUG-314 同 coverSameHost
+                        //   gate (外部 CDN 不继承, CDN 不反爬且不同 host proxy 独立).
+                        //   修复: cfg.Override.ProxyRotationStrategy != "" gate 继承 (与
+                        //   mergeFetchConfig line ~9931-9932 同款 "非空覆盖" gate).
+                        if cfg.Override.ProxyRotationStrategy != "" {
+                                coverCfg.ProxyRotationStrategy = cfg.Override.ProxyRotationStrategy
+                        }
+                        // R109-A BUG-327 (P3) 修复 (深抓 cover fetch posture 续, 与
+                        //   BUG-317 TLSProfile/H2Fingerprint/HeaderOrderProfile 同 "结构 +
+                        //   半实现 latent" family 续): cover fetch FetchConfig 仍漏继承
+                        //   cfg.Override.FetchMode (string) — 替代抓取引擎选择
+                        //   (native / scrapling-static / scrapling-stealthy / scrapling-
+                        //   playwright / moli / cloak-browser). 后果: cover 同域站 (originHost
+                        //   (parsed.Cover) == originHost(bookURL)) behind 反爬时, book fetch
+                        //   经 mergeFetchConfig(line ~9937-9938) 复制 cfg.Override.FetchMode
+                        //   → fetchPageOnce(line ~9813/9833) 按 FetchMode 路由到 alt engine
+                        //   (scrapling stealthy 注入 stealth profile; moli 注入 JS eval;
+                        //   cloak-browser 注入 iframe-bypass profile). 真实浏览器在书籍
+                        //   详情页加载 <img src=parsed.Cover> 时浏览器走原生 fetch (无 alt
+                        //   engine), 但本系统 alt engine 路径下 "同一浏览器 1s 内 book
+                        //   fetch (scrapling stealthy) + cover fetch (FetchBinaryPage 走
+                        //   native+utls+curl 三级降级) 引擎不一致" → 反爬侧观察到的行为
+                        //   fingerprint 不一致是 bot 信号. 注: 当前 cover fetch 路径
+                        //   (FetchBinaryPage → fetchBinaryHttp) 尚未读 cfg.FetchMode (FetchMode
+                        //   仅在 fetchPageOnce HTML 路径消费), 故属 "结构 + 半实现 latent"
+                        //   (与 BUG-317 3 字段 transport 未读 per-cfg profile 同款 precedent),
+                        //   但 coverSameHost 继承是结构对称前提, 后续 cover fetch 路径若加
+                        //   FetchMode 路由 (e.g. cover URL 触发 scrapling stealthy) 自动跟上.
+                        //   与 BUG-314 同 coverSameHost gate. 修复: cfg.Override.FetchMode
+                        //   != "" gate 继承 (与 mergeFetchConfig line ~9937-9938 同款 "非空
+                        //   覆盖" gate).
+                        if cfg.Override.FetchMode != "" {
+                                coverCfg.FetchMode = cfg.Override.FetchMode
+                        }
                 }
                 coverBin, err := FetchBinaryPage(ctx, parsed.Cover, coverCfg)
                 if err == nil && !coverBin.Blocked && len(coverBin.Bytes) > 0 {

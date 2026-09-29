@@ -4701,6 +4701,45 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 if xacp := resp.Header.Get("X-Amz-Cf-Pop"); xacp != "" {
                         recordSecurityHeader(originHost(rawURL), "X-Amz-Cf-Pop", xacp)
                 }
+                // R109-A 反反爬第 239-243 项: Cloudflare client identification / geo
+                //   posture / Railgun optimizer 响应头观测 (与 124-238 同款 family,
+                //   单值 last-write-wins per-host 合并 tracker). R108-A 未决项 #1
+                //   pivot 续 — Cloudflare WAF/cache/Worker posture (234-238) 耗尽,
+                //   pivot Cloudflare edge client identification + alt real client IP
+                //   (True-Client-IP Cloudflare Enterprise + Akamai 共用) + Cloudflare
+                //   geo country code (CF-IPCountry, 直接地理信号 — 反爬侧 origin 看
+                //   country 判 traffic 异常, e.g. 源站在中国但流量来自 US = bot signal)
+                //   + Cloudflare scheme hint (CF-Visitor JSON, complement X-Forwarded-
+                //   Proto legacy) + Cloudflare Railgun WAN optimizer status (CF-Railgun-
+                //   Status, Enterprise-only feature, complement True-Client-IP Enterprise
+                //   host signal).
+                //   第 239 项 CF-Connecting-IP — Cloudflare edge-to-origin real client
+                //     IP (CF adds it when proxying to origin server; complement XFF #60
+                //     R65-B injection which is outbound forgery, this is inbound obs).
+                //   第 240 项 True-Client-IP — Cloudflare Enterprise tier real client
+                //     IP (alt to CF-Connecting-IP, more standardized name; Akamai + CDNs
+                //     共用此 header).
+                //   第 241 项 CF-IPCountry (e.g. "US"/"CN"/"JP") — Cloudflare geo
+                //     country code of client IP. 直接地理信号 (反爬关联高).
+                //   第 242 项 CF-Visitor (e.g. `{"scheme":"https"}`) — Cloudflare scheme
+                //     hint JSON (complement X-Forwarded-Proto legacy).
+                //   第 243 项 CF-Railgun-Status (e.g. "700=...;700=...") — Cloudflare
+                //     Railgun WAN optimizer status (Enterprise-only feature).
+                if cip := resp.Header.Get("CF-Connecting-IP"); cip != "" {
+                        recordSecurityHeader(originHost(rawURL), "CF-Connecting-IP", cip)
+                }
+                if tip := resp.Header.Get("True-Client-IP"); tip != "" {
+                        recordSecurityHeader(originHost(rawURL), "True-Client-IP", tip)
+                }
+                if cipc := resp.Header.Get("CF-IPCountry"); cipc != "" {
+                        recordSecurityHeader(originHost(rawURL), "CF-IPCountry", cipc)
+                }
+                if cfv := resp.Header.Get("CF-Visitor"); cfv != "" {
+                        recordSecurityHeader(originHost(rawURL), "CF-Visitor", cfv)
+                }
+                if cfrs := resp.Header.Get("CF-Railgun-Status"); cfrs != "" {
+                        recordSecurityHeader(originHost(rawURL), "CF-Railgun-Status", cfrs)
+                }
 
                 // Set-Cookie 处理 (autoCookie)
                 if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
@@ -5992,6 +6031,27 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 }
                 if xacp := extractHeaderFromCurlStdout(headers, "X-Amz-Cf-Pop"); xacp != "" {
                         recordSecurityHeader(domain, "X-Amz-Cf-Pop", xacp)
+                }
+                // R109-A 反反爬第 239-243 项 续 (与 fetchHttp line ~4704 同款, curl
+                //   -D - dump headers 路径; fetchBinaryViaCurl 不 dump headers 故不调,
+                //   与 124-238 同款限制. 详见 fetchHttp line ~4704 rationale). 第 239
+                //   项 CF-Connecting-IP / 第 240 项 True-Client-IP / 第 241 项 CF-
+                //   IPCountry / 第 242 项 CF-Visitor / 第 243 项 CF-Railgun-Status
+                //   (extractHeaderFromCurlStdout 已对 5 头大小写不敏感提取).
+                if cip := extractHeaderFromCurlStdout(headers, "CF-Connecting-IP"); cip != "" {
+                        recordSecurityHeader(domain, "CF-Connecting-IP", cip)
+                }
+                if tip := extractHeaderFromCurlStdout(headers, "True-Client-IP"); tip != "" {
+                        recordSecurityHeader(domain, "True-Client-IP", tip)
+                }
+                if cipc := extractHeaderFromCurlStdout(headers, "CF-IPCountry"); cipc != "" {
+                        recordSecurityHeader(domain, "CF-IPCountry", cipc)
+                }
+                if cfv := extractHeaderFromCurlStdout(headers, "CF-Visitor"); cfv != "" {
+                        recordSecurityHeader(domain, "CF-Visitor", cfv)
+                }
+                if cfrs := extractHeaderFromCurlStdout(headers, "CF-Railgun-Status"); cfrs != "" {
+                        recordSecurityHeader(domain, "CF-Railgun-Status", cfrs)
                 }
                 if status >= 300 {
                         // R66-C BUG-52 (P3): curl 4xx/5xx 也记 latency + fail (与 fetchHttp
@@ -8358,6 +8418,30 @@ func fetchBinaryHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, pr
                 }
                 if xacp := resp.Header.Get("X-Amz-Cf-Pop"); xacp != "" {
                         recordSecurityHeader(originHost(rawURL), "X-Amz-Cf-Pop", xacp)
+                }
+                // R109-A 反反爬第 239-243 项 续 (与 fetchHttp line ~4704 同款,
+                //   fetchBinaryHttp success + 4xx/5xx 两路径都记, BUG-241 修复后
+                //   fetchBinaryHttp 已补对称; fetchBinaryViaCurl 不 dump headers
+                //   故不调, 与 124-238 同款限制. 详见 fetchHttp line ~4704
+                //   rationale). 第 239 项 CF-Connecting-IP / 第 240 项 True-Client-IP
+                //   / 第 241 项 CF-IPCountry / 第 242 项 CF-Visitor / 第 243 项 CF-
+                //   Railgun-Status (Cloudflare edge client identification + geo country
+                //   + scheme hint + Railgun WAN optimizer posture; cover host 多在
+                //   external CDN / S3, 与 HTML host 不同域各自独立条目, 无污染).
+                if cip := resp.Header.Get("CF-Connecting-IP"); cip != "" {
+                        recordSecurityHeader(originHost(rawURL), "CF-Connecting-IP", cip)
+                }
+                if tip := resp.Header.Get("True-Client-IP"); tip != "" {
+                        recordSecurityHeader(originHost(rawURL), "True-Client-IP", tip)
+                }
+                if cipc := resp.Header.Get("CF-IPCountry"); cipc != "" {
+                        recordSecurityHeader(originHost(rawURL), "CF-IPCountry", cipc)
+                }
+                if cfv := resp.Header.Get("CF-Visitor"); cfv != "" {
+                        recordSecurityHeader(originHost(rawURL), "CF-Visitor", cfv)
+                }
+                if cfrs := resp.Header.Get("CF-Railgun-Status"); cfrs != "" {
+                        recordSecurityHeader(originHost(rawURL), "CF-Railgun-Status", cfrs)
                 }
                 // 3xx / 4xx / 5xx 视为失败 (与 fetchHttp 同款, 不重试 3xx)
                 if resp.StatusCode >= 300 {
@@ -13083,11 +13167,11 @@ func ClearHostAcceptRanges(host string) {
 //   + R99-A 第 189-193 项 + R100-A 第 194-198 项 + R101-A 第 199-203 项 + R102-A
 //   第 204-208 项 + R103-A 第 209-213 项 + R104-A 第 214-218 项 + R105-A 第
 //   219-223 项 (R106-A BUG-313 补字段) + R106-A 第 224-228 项 + R107-A 第
-//   229-233 项 + R108-A 第 234-238 项, 合并 110 字段).
+//   229-233 项 + R108-A 第 234-238 项 + R109-A 第 239-243 项, 合并 115 字段).
 //   entry 是 pointer: recordSecurityHeader LoadOrStore canonical 指针 + 单字段
-//   update-in-place (非 store-replace, 保留其他 109 头旧值). 同字段并发写
+//   update-in-place (非 store-replace, 保留其他 114 头旧值). 同字段并发写
 //   last-write-wins; sweep CompareAndDelete 后下次 record 重建 entry (与 recordVia
-//   store-replace 不一样, 这里需保留其他 109 头故用 update-in-place).
+//   store-replace 不一样, 这里需保留其他 114 头故用 update-in-place).
 type hostSecurityHeadersEntry struct {
         hstsValue         string // Strict-Transport-Security (第 124 项)
         cspValue          string // Content-Security-Policy (第 125 项)
@@ -13268,6 +13352,23 @@ type hostSecurityHeadersEntry struct {
         cfWorkerValue           string // CF-Worker (第 236 项, R108-A)
         forwardedValue          string // Forwarded (第 237 项, R108-A)
         xAmzCfPopValue          string // X-Amz-Cf-Pop (第 238 项, R108-A)
+        // R109-A 反反爬第 239-243 项: Cloudflare client identification / geo posture
+        //   / Railgun optimizer 响应头观测 (与 124-238 同款 family, 单值 last-write-
+        //   wins per-host 合并 tracker). 详见 fetchHttp line ~4704 rationale. R108-A
+        //   未决项 #1 pivot 续 — Cloudflare WAF/cache/Worker posture (234-238) 耗尽,
+        //   pivot Cloudflare edge client identification (CF-Connecting-IP edge-to-
+        //   origin real client IP, complement X-Forwarded-For #60 R65-B injection) +
+        //   alt real client IP (True-Client-IP Cloudflare Enterprise + Akamai 共用
+        //   标准化名, complement CF-Connecting-IP) + Cloudflare geo country code
+        //   (CF-IPCountry, 直接地理信号 — 反爬侧 origin 看 country 判 traffic 异常) +
+        //   Cloudflare scheme hint (CF-Visitor JSON, complement X-Forwarded-Proto
+        //   legacy) + Cloudflare Railgun WAN optimizer status (CF-Railgun-Status,
+        //   Enterprise-only feature, complement True-Client-IP Enterprise host signal).
+        cfConnectingIPValue     string // CF-Connecting-IP (第 239 项, R109-A)
+        trueClientIPValue       string // True-Client-IP (第 240 项, R109-A)
+        cfIPCountryValue        string // CF-IPCountry (第 241 项, R109-A)
+        cfVisitorValue          string // CF-Visitor (第 242 项, R109-A)
+        cfRailgunStatusValue    string // CF-Railgun-Status (第 243 项, R109-A)
         detectedAt              int64  // UnixMilli
 }
 
@@ -13278,7 +13379,7 @@ type hostSecurityHeadersEntry struct {
 //   + R99-A 第 189-193 项 + R100-A 第 194-198 项 + R101-A 第 199-203 项 + R102-A
 //   第 204-208 项 + R103-A 第 209-213 项 + R104-A 第 214-218 项 + R105-A 第
 //   219-223 项 (R106-A BUG-313 补字段) + R106-A 第 224-228 项 + R107-A 第
-//   229-233 项 + R108-A 第 234-238 项).
+//   229-233 项 + R108-A 第 234-238 项 + R109-A 第 239-243 项).
 var hostSecurityHeadersMap sync.Map
 
 // hostSecurityHeadersSweepCounter — sweep 触发累加 (与 hostViaSweepCounter 同口径).
@@ -13334,9 +13435,9 @@ func extractSetCookieAttr(cookies []string, attr string) string {
 //   + R99-A 第 189-193 项 + R100-A 第 194-198 项 + R101-A 第 199-203 项 + R102-A
 //   第 204-208 项 + R103-A 第 209-213 项 + R104-A 第 214-218 项 + R105-A 第
 //   219-223 项 (R106-A BUG-313 补 case) + R106-A 第 224-228 项 + R107-A 第
-//   229-233 项 + R108-A 第 234-238 项).
-//   headerName 区分 110 头 (大小写不敏感). 与 recordVia 同款 Store + 惰性 sweep,
-//   但保留其他 109 头旧值 (LoadOrStore canonical 指针 + 单字段 update-in-place).
+//   229-233 项 + R108-A 第 234-238 项 + R109-A 第 239-243 项).
+//   headerName 区分 115 头 (大小写不敏感). 与 recordVia 同款 Store + 惰性 sweep,
+//   但保留其他 114 头旧值 (LoadOrStore canonical 指针 + 单字段 update-in-place).
 func recordSecurityHeader(host, headerName, value string) {
         if host == "" || value == "" {
                 return
@@ -13617,6 +13718,21 @@ func recordSecurityHeader(host, headerName, value string) {
                 ent.forwardedValue = value
         case "x-amz-cf-pop":
                 ent.xAmzCfPopValue = value
+        // R109-A 反反爬第 239-243 项: Cloudflare client identification / geo
+        //   posture / Railgun optimizer 响应头观测 (与 124-238 同款 family, 单值
+        //   last-write-wins per-host 合并 tracker). 详见 fetchHttp line ~4704
+        //   rationale (R109-A 块). headerName 大小写不敏感 (extractHeaderFromCurlStdout
+        //   / resp.Header.Get 均 canonicalize).
+        case "cf-connecting-ip":
+                ent.cfConnectingIPValue = value
+        case "true-client-ip":
+                ent.trueClientIPValue = value
+        case "cf-ipcountry":
+                ent.cfIPCountryValue = value
+        case "cf-visitor":
+                ent.cfVisitorValue = value
+        case "cf-railgun-status":
+                ent.cfRailgunStatusValue = value
         default:
                 return
         }
@@ -13753,6 +13869,12 @@ func HostSecurityHeadersSnapshot() map[string]map[string]string {
                         "cfWorkerValue":         e.cfWorkerValue,
                         "forwardedValue":        e.forwardedValue,
                         "xAmzCfPopValue":        e.xAmzCfPopValue,
+                        // R109-A 第 239-243 项.
+                        "cfConnectingIPValue":   e.cfConnectingIPValue,
+                        "trueClientIPValue":     e.trueClientIPValue,
+                        "cfIPCountryValue":      e.cfIPCountryValue,
+                        "cfVisitorValue":        e.cfVisitorValue,
+                        "cfRailgunStatusValue":  e.cfRailgunStatusValue,
                         "detectedAt":        fmt.Sprintf("%d", e.detectedAt),
                 }
                 return true
