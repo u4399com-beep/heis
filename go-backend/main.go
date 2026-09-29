@@ -886,7 +886,17 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 //   curURL hoist + R105-D BUG-312 case "book"/"read"
                 //   absCover/absCoverRead hoist 同款 "DRY 精简" precedent
                 //   (consolidate redundant callsite → single hoisted var).
-                bookURL := buildBookURL(pseudoStyle, id)
+                // R108-D BUG-321 (P4 精简/DRY, main scope, R107-D BUG-317
+                //   bookURL hoist family 续): R107-D hoist 后仍调 1 次
+                //   buildBookURL(pseudoStyle, id), 但 line 851 injectBookURL
+                //   (book, pseudoStyle) 已在同 args 下计算并写入 book["URL"]
+                //   (injectBookURL 共享给 injectBookURLs 列表 callsite 故保留
+                //   写入). 改: 读 book["URL"] 复用 injectBookURL 预算结果, 省 1
+                //   buildBookURL 调用 per book view request. 不变式: injectBookURL
+                //   line 851 先于本行, book["id"]==id (getBookViewData WHERE
+                //   b.id=? 过滤), 故 book["URL"] 必被赋值. 0 行为变化 (map 读
+                //   同值). case "read" line ~1024 同款 sibling.
+                bookURL, _ := book["URL"].(string)
                 data["BookURL"] = bookURL
                 // R76-A 目标A (用户需求 #1 按钮 bug 修复): R72-A 的 fallback 是 bug — 无章节书
                 //   firstChID == "" 时 FirstChapterURL = buildBookURL(pseudoStyle, id) 把按钮 href
@@ -898,7 +908,24 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 if firstChID == "" {
                         data["FirstChapterURL"] = ""
                 } else {
-                        data["FirstChapterURL"] = buildChapterURL(pseudoStyle, firstChID, id)
+                        // R108-D BUG-322 (P4 精简/DRY, main scope, R107-D
+                        //   BUG-321 sibling, injectChapterURLs 预算结果复用
+                        //   family): 原 buildChapterURL(pseudoStyle,
+                        //   firstChID, id) 调用与 line 852 injectChapterURLs
+                        //   (chapters, pseudoStyle, id) 内部对 chapters[0]
+                        //   的 buildChapterURL(pseudoStyle, chapters[0].id,
+                        //   id) 同 args — firstChID == chapters[0].id
+                        //   (getBookViewData line ~4133 firstChID=cid.String
+                        //   即首条 append 的 chapters[0].id). 改: 读
+                        //   chapters[0]["URL"] 复用 injectChapterURLs 预算
+                        //   结果, 省 1 buildChapterURL 调用 per book view
+                        //   request. 不变式: firstChID != "" → len(chapters)
+                        //   > 0 → chapters[0] 存在 + chapters[0]["URL"] 必
+                        //   被赋值 (injectChapterURLs line 2700 if id != ""
+                        //   早返路径必走, Chapter.id NOT NULL cuid2). 0 行为
+                        //   变化 (map 读同值).
+                        firstURL, _ := chapters[0]["URL"].(string)
+                        data["FirstChapterURL"] = firstURL
                 }
                 // R76-A 目标B (用户需求 #1 pSEO 标签注入): 注入 Og*/Twitter*/Canonical 供模板
                 //   head 区渲染 meta property="og:title" 等 (R76-B 模板范围). 现 aijjxs/book.html
@@ -923,8 +950,8 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 bookName, _ := book["name"].(string)
                 bookIntro, _ := book["intro"].(string)
                 bookCover, _ := book["cover"].(string)
-                // R107-D BUG-317: 复用上方 hoisted bookURL (buildBookURL 单次
-                //   调用结果), 省 1 buildBookURL 调用 per book view request.
+                // R107-D BUG-317 + R108-D BUG-321: 复用上方 bookURL (injectBookURL
+                //   line 851 预算 + line 899 map 读复用, 0 buildBookURL 调用).
                 absBookURL := buildAbsoluteURL(siteDomain, bookURL)
                 ogDesc := truncate(bookIntro, 200)
                 data["OgTitle"] = bookName + " - " + siteName
@@ -1021,7 +1048,20 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 //   bid 0 副作用 (bookIDFromMap 纯读 map), hoist 0 行为变化.
                 bid := bookIDFromMap(book)
                 if bid != "" {
-                        data["BookURL"] = buildBookURL(pseudoStyle, bid)
+                        // R108-D BUG-321 (cont, case "read" sibling, main
+                        //   scope, R107-D BUG-317 bookURL hoist family 续):
+                        //   原 buildBookURL(pseudoStyle, bid) 调用与 line
+                        //   998 injectBookURL(book, pseudoStyle) 内部对
+                        //   book["URL"] 的 buildBookURL(style, book["id"])
+                        //   同 args — bid == book["id"] (bookIDFromMap
+                        //   纯读 book["id"]). 改: 读 book["URL"] 复用
+                        //   injectBookURL 预算结果, 省 1 buildBookURL 调用
+                        //   per read view request. 不变式: bid != "" →
+                        //   book["id"] != "" → injectBookURL line 998 已
+                        //   走 `if id != ""` 早返路径赋值 book["URL"]. 0
+                        //   行为变化 (map 读同值).
+                        bookURLRead, _ := book["URL"].(string)
+                        data["BookURL"] = bookURLRead
                 }
                 // R84-D BUG-195 (R83-D 诚实留痕 #3 修复, Go-side 替代 12 主题 × 4 模板
                 //   48 处改动): 原 data["Prev"]=prev 在前 + 后续 if prev["id"]=="" 则

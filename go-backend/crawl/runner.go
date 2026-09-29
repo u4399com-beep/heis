@@ -2339,6 +2339,57 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                         if cfg.Override.HeaderOrderProfile != "" {
                                 coverCfg.HeaderOrderProfile = cfg.Override.HeaderOrderProfile
                         }
+                        // R108-A BUG-321 (P3) 修复 (深抓 cover fetch posture 续,
+                        //   与 BUG-309/310/314/317 同 cover FetchConfig family 续):
+                        //   cover fetch FetchConfig 仍漏继承 cfg.Override.Headers
+                        //   (map[string]string) — 用户自定义请求头 (e.g. X-Requested-
+                        //   With / X-Api-Key / Authorization 等业务认证头). 后果: cover
+                        //   同域站 (originHost(parsed.Cover) == originHost(bookURL),
+                        //   e.g. 源站 /uploads/cover/xxx.webp 与 book 同 host) behind
+                        //   反爬时, book fetch 经 mergeFetchConfig(line ~9777-9779)
+                        //   复制 cfg.Override.Headers 到 merged cfg → buildHeaders
+                        //   (line ~3380 / ~5357) for-range 注入用户自定义头 → 真实
+                        //   浏览器在书籍详情页加载 <img src=parsed.Cover> 时也必带同
+                        //   款业务头 (用户 API token / 自定义追踪 ID 跨 subresource
+                        //   保持), cover fetch 漏继承 → cover fetch 不带这些头 → 反爬
+                        //   侧在 1s 内观察到 book fetch (带 X-Api-Key) + cover fetch
+                        //   (不带 X-Api-Key) header 集不对称 → "同一浏览器 1s 内
+                        //   header 集漂移" 是 bot 信号 → cover fetch 被识别 → 后续同
+                        //   host book fetch 关联降权 (cf-bm cookie 联动). 与 BUG-314
+                        //   同 coverSameHost gate (外部 CDN 不继承, CDN 不反爬且不同
+                        //   host header 集独立). 修复: len(cfg.Override.Headers) > 0
+                        //   gate 继承 (与 mergeFetchConfig line ~9777-9779 同款 "非空
+                        //   覆盖" gate; map 引用共享, 与 mergeFetchConfig MoliHeaders
+                        //   同款 convention — 无 mutate coverCfg.Headers 路径, 共享安全).
+                        if len(cfg.Override.Headers) > 0 {
+                                coverCfg.Headers = cfg.Override.Headers
+                        }
+                        // R108-A BUG-322 (P3) 修复 (深抓 cover fetch cookie 续, 与
+                        //   BUG-310 AutoCookie family + BUG-321 Headers family 续):
+                        //   cover fetch FetchConfig 仍漏继承 cfg.Override.Cookies
+                        //   (string) — 用户自定义 cookie 字符串 (e.g. session=xxx;
+                        //   token=yyy 业务认证 cookie). 后果: cover 同域站 (originHost
+                        //   (parsed.Cover) == originHost(bookURL), e.g. 源站 /uploads/
+                        //   cover/xxx.webp 与 book 同 host) behind 反爬时, book fetch
+                        //   经 mergeFetchConfig(line ~9760-9762) 复制 cfg.Override.
+                        //   Cookies → buildHeaders (line ~3348-3352) Set("Cookie",
+                        //   jarCookies+"; "+cfg.Cookies 或纯 cfg.Cookies) → 真实浏览器
+                        //   在书籍详情页加载 <img src=parsed.Cover> 时同款发业务认证
+                        //   cookie (跨 subresource 保持认证态, cookie 跟随 image req),
+                        //   cover fetch 漏继承 → cover fetch 不带业务 cookie → 反爬侧
+                        //   在 1s 内观察到 book fetch (带 session=xxx) + cover fetch
+                        //   (不带 session=xxx) cookie 集不对称 → "同一浏览器 1s 内
+                        //   cookie 漂移" 是 bot 信号 (反爬侧常将 missing 业务 cookie
+                        //   识别为 bot 信号 — cf-bm 是反爬 cookie, 业务 cookie 是站内
+                        //   session, 两者维度不同但都属 cookie 集对称). 与 BUG-310
+                        //   AutoCookie 互补: BUG-310 修响应 Set-Cookie 存 jar (服务端
+                        //   下发), BUG-322 修请求 Cookie 头继承 (客户端注入). 与
+                        //   BUG-314 同 coverSameHost gate. 修复: cfg.Override.Cookies
+                        //   != "" gate 继承 (与 mergeFetchConfig line ~9760-9762 同款
+                        //   "非空覆盖" gate).
+                        if cfg.Override.Cookies != "" {
+                                coverCfg.Cookies = cfg.Override.Cookies
+                        }
                 }
                 coverBin, err := FetchBinaryPage(ctx, parsed.Cover, coverCfg)
                 if err == nil && !coverBin.Blocked && len(coverBin.Bytes) > 0 {

@@ -60,8 +60,13 @@ func (a *adminDB) UpdateTaskStatus(taskID, status string) error {
 
 // UpdateTaskProgress — 序列化 progress + stats 写入 Task 表.
 func (a *adminDB) UpdateTaskProgress(taskID string, progress crawl.TaskProgress, stats crawl.TaskStats) error {
-        pbytes, _ := json.Marshal(progress)
-        sbytes, _ := json.Marshal(stats)
+        // R108-C BUG-321 Pattern D json.Marshal 吞错 family 续 (marshalLogged
+        //   helper route): 原 `pbytes, _ := json.Marshal(progress)` + `sbytes, _ :=
+        //   json.Marshal(stats)` 吞错 — TaskProgress/TaskStats 加 chan/func 字段时
+        //   marshal 失败 → pbytes/sbytes=nil → DB 写空 string → 前端 JSON.parse("")
+        //   失败显示无进度. 改 marshalLogged log-on-fail visibility, 0 行为变化.
+        pbytes := marshalLogged("UpdateTaskProgress progress", progress)
+        sbytes := marshalLogged("UpdateTaskProgress stats", stats)
         _, err := a.db.Exec(`UPDATE Task SET progress=?, stats=?, updatedAt=datetime('now') WHERE id=?`,
                 string(pbytes), string(sbytes), taskID)
         return err
@@ -88,7 +93,12 @@ func (a *adminDB) FindBookBySourceURL(sourceURL string) (crawl.Book, error) {
         if err != nil {
                 return b, err
         }
-        b.UpdatedAt, _ = time.Parse("2006-01-02 15:04:05", updatedAt)
+        // R108-C BUG-322 Pattern E time.Parse 吞错 family 续 (parseBookUpdatedAtLogged
+        //   helper route): 原 `b.UpdatedAt, _ = time.Parse("2006-01-02 15:04:05",
+        //   updatedAt)` 仅认 SQLite TEXT 格式 + 吞 err — prisma @updatedAt 写
+        //   Unix ms 时 swallow → zero time → 前端显示 "1970-01-01". 改 helper
+        //   (复用 parseBookUpdatedAtToMillis 4 格式), 0 行为变化.
+        b.UpdatedAt = parseBookUpdatedAtLogged("FindBookBySourceURL", updatedAt)
         return b, nil
 }
 
@@ -175,7 +185,9 @@ func (a *adminDB) FindChapterByURL(bookID, sourceURL string) (crawl.Chapter, err
         if err != nil {
                 return c, err
         }
-        c.UpdatedAt, _ = time.Parse("2006-01-02 15:04:05", updatedAt)
+        // R108-C BUG-322 Pattern E time.Parse 吞错 family 续 (FindBookBySourceURL
+        //   同款 Chapter 域 variant).
+        c.UpdatedAt = parseBookUpdatedAtLogged("FindChapterByURL", updatedAt)
         return c, nil
 }
 
@@ -371,6 +383,23 @@ func parseBookUpdatedAtToMillis(s string) int64 {
         return 0
 }
 
+// parseBookUpdatedAtLogged — Pattern E time.Parse 吞错 family helper (R108-C
+//   BUG-322). 复用 parseBookUpdatedAtToMillis (上, 支持 4 格式: SQLite TEXT /
+//   ISO 8601 / Unix ms·s·μs·ns), 返 time.Time. 与原
+//   `b.UpdatedAt, _ = time.Parse("2006-01-02 15:04:05", updatedAt)` swallow
+//   语义一致 — 仅认 SQLite TEXT 格式 + 吞 err; prisma @updatedAt 写 Unix ms
+//   时 swallow → zero time → 前端 Book/Chapter "1970-01-01" 误显 (与 BUG-272
+//   Exec / BUG-309 Unmarshal / BUG-314 Scan / BUG-321 Marshal 同款 swallow
+//   family, 但属 time.Parse sub-family). 本 helper 失败仍返 zero time (与
+//   原 swallow 行为一致, 0 行为变化), 仅加 log.Printf 提示运维.
+func parseBookUpdatedAtLogged(label, s string) time.Time {
+        if ms := parseBookUpdatedAtToMillis(s); ms > 0 {
+                return time.UnixMilli(ms)
+        }
+        log.Printf("[%s] updatedAt 解析失败 (零值): %q", label, s)
+        return time.Time{}
+}
+
 // ListCategoryNames — R54-1B 智能分类辅助: 返回 DB 所有分类名 (供 SmartCategory existingCategories 入参).
 //
 //      与 NormalizeCategory 配合: SmartCategory 第 1 步 source 路径会 normalize(parsed.Category)
@@ -493,6 +522,25 @@ func unmarshalOrFallback(label string, data []byte, fallback interface{}) interf
                 return fallback
         }
         return v
+}
+
+// marshalLogged 序列化 v 为 JSON 字节并在失败时 log.Printf 提示运维
+// (visibility-only, 不改 caller 行为; 失败时返 nil bytes, 与原
+// `b, _ := json.Marshal(v)` swallow 语义一致 — caller 写 string(b)="" 入 DB,
+// 下游 JSON.parse("") 失败显示空状态). R108-C BUG-321 Pattern D
+// json.Marshal 吞错 family helper — 与 execLogged (BUG-272~274 Exec
+// family) / unmarshalLogged (BUG-309 Unmarshal family) / unmarshalOrFallback
+// (BUG-313 Unmarshal fallback variant) / scanLogged (BUG-314 Scan family)
+// 并行的 json.Marshal family 收口. 单点维护防散落 inline log-on-fail 重复.
+// marshal 失败罕见 (chan/func/unsupported 字段), 但 swallow 时 string(b)=""
+// 写入 DB → 前端 JSON.parse("") 失败显示空状态用户不知是配置丢失还是 DB
+// 故障. 0 行为变化 (best-effort 写空语义不变, 仅加 log 可见性).
+func marshalLogged(label string, v interface{}) []byte {
+        b, err := json.Marshal(v)
+        if err != nil {
+                log.Printf("[%s] json.Marshal 失败 (写空): %v", label, err)
+        }
+        return b
 }
 
 // scanLogged wraps rows.Scan, log-on-fail visibility (zero-fill on err, 与原
@@ -1140,7 +1188,8 @@ func adminTasksCreate(w http.ResponseWriter, r *http.Request) {
                         }
                         fetchConfigStr = s
                 } else {
-                        b, _ := json.Marshal(v)
+                        // R108-C BUG-321 Pattern D json.Marshal 吞错 family 续.
+                        b := marshalLogged("adminTasksCreate fetchConfig", v)
                         if len(b) > 50000 {
                                 writeJSONErr(w, "反反爬配置过大", 400)
                                 return
@@ -2626,7 +2675,8 @@ func adminRulesCreate(w http.ResponseWriter, r *http.Request) {
                         }
                         configStr = x
                 default:
-                        b, _ := json.Marshal(x)
+                        // R108-C BUG-321 Pattern D json.Marshal 吞错 family 续.
+                        b := marshalLogged("adminRulesCreate config", x)
                         if len(b) > 200000 {
                                 writeJSONErr(w, "规则配置过大", 400)
                                 return
@@ -2636,7 +2686,8 @@ func adminRulesCreate(w http.ResponseWriter, r *http.Request) {
         } else {
                 // 用默认配置
                 def := crawl.DefaultRuleConfig()
-                b, _ := json.Marshal(def)
+                // R108-C BUG-321 Pattern D json.Marshal 吞错 family 续.
+                b := marshalLogged("adminRulesCreate default config", def)
                 configStr = string(b)
         }
 
@@ -2753,7 +2804,8 @@ func adminRuleByIDHandler(w http.ResponseWriter, r *http.Request) {
                                 }
                                 configStr = x
                         default:
-                                b, _ := json.Marshal(x)
+                                // R108-C BUG-321 Pattern D json.Marshal 吞错 family 续.
+                                b := marshalLogged("adminRulesUpdate config", x)
                                 if len(b) > 200000 {
                                         writeJSONErr(w, "规则配置过大", 400)
                                         return
@@ -4761,7 +4813,8 @@ func adminDownloadsCreate(w http.ResponseWriter, r *http.Request) {
         if v, ok := body["footerTemplate"]; ok && v != nil {
                 options["footerTemplate"] = strField(body, "footerTemplate", 5000)
         }
-        optionsJSON, _ := json.Marshal(options)
+        // R108-C BUG-321 Pattern D json.Marshal 吞错 family 续.
+        optionsJSON := marshalLogged("adminDownloadsCreate options", options)
         jobID := generateID()
         _, err = db.Exec(`INSERT INTO DownloadJob (id, bookId, options, status, size, createdAt) VALUES (?,?,?,'pending',0,datetime('now'))`,
                 jobID, bookID, string(optionsJSON))
@@ -5114,6 +5167,25 @@ func adminSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 
 // ---------- 反馈管理 API ----------
 
+// feedbackStats — Pattern F multi-COUNT batch swallow family 精简-1 (R108-C
+//   BUG-323 dedup): adminFeedbackList (line ~5244, R101-C BUG-290) +
+//   fillFeedbackPageData (line ~8408, R99-C BUG-286) 两处 3-Feedback-COUNT
+//   批量 SELECT + log-on-fail ~7 行重复; 抽 helper 单点维护 (与
+//   parseTaskProgress BUG-309 精简-3 / countByParent BUG-299~300 同款 dedup
+//   precedent). best-effort: DB 故障返全 0 (与原 swallow 同口径), 仅 log
+//   可见性, 不阻塞 caller (API list 渲染 / SSR page 渲染均可继续).
+//   SQL 与历史 BUG-286/290 一致 (3 scalar subquery 单 SELECT, 3 round-trip → 1).
+func feedbackStats() (allCount, newCount, resolvedCount int) {
+        if err := db.QueryRow(`SELECT` +
+                `(SELECT COUNT(*) FROM Feedback),` +
+                `(SELECT COUNT(*) FROM Feedback WHERE status='new'),` +
+                `(SELECT COUNT(*) FROM Feedback WHERE status='resolved')`).
+                Scan(&allCount, &newCount, &resolvedCount); err != nil {
+                log.Printf("[feedbackStats] COUNT batch SELECT 失败 (stats 用 0): %v", err)
+        }
+        return
+}
+
 func adminFeedbackHandler(w http.ResponseWriter, r *http.Request) {
         if r.Method != http.MethodGet {
                 writeJSONErr(w, "method not allowed", 405)
@@ -5188,20 +5260,10 @@ func adminFeedbackHandler(w http.ResponseWriter, r *http.Request) {
                         return
                 }
         }
-        var allCount, newCount, resolvedCount int
-        // R101-C BUG-290 (P3, R100-C BUG-287 multi-COUNT batch swallow family 续抓,
-        //   admin scope 变种): 原实现 3 处独立 `_ = db.QueryRow(...).Scan(...)` 吞错 —
-        //   DB 故障 (SQLite busy lock / 连接闪断) 时 allCount/newCount/resolvedCount
-        //   保持 0 → admin 反馈页 stats 全 0 (假阴性, 实际有反馈). 0 log 提示运维.
-        //   改单 SELECT 多 scalar subquery (3 round-trip → 1, 与 BUG-284/287 同款 perf
-        //   + 精简) + 显式 err + log.Printf (best-effort SSR/API stats, 不阻塞列表渲染).
-        if err := db.QueryRow(`SELECT` +
-                `(SELECT COUNT(*) FROM Feedback),` +
-                `(SELECT COUNT(*) FROM Feedback WHERE status='new'),` +
-                `(SELECT COUNT(*) FROM Feedback WHERE status='resolved')`).
-                Scan(&allCount, &newCount, &resolvedCount); err != nil {
-                log.Printf("[adminFeedbackList] COUNT batch SELECT 失败 (stats 用 0): %v", err)
-        }
+        // R101-C BUG-290 + R108-C BUG-323 精简-1 (3-COUNT batch SELECT 抽
+        //   feedbackStats helper, 与 fillFeedbackPageData 同款 dedup, best-effort
+        //   stats 用 0 兜底, 不阻塞 list 渲染).
+        allCount, newCount, resolvedCount := feedbackStats()
         writeJSONOK(w, map[string]interface{}{
                 "rows": rowsList, "total": total, "page": page, "size": size,
                 "pages": totalPages,
@@ -7312,7 +7374,8 @@ func adminFeaturedBooksUpdate(w http.ResponseWriter, r *http.Request) {
                 }
                 valid = append(valid, bid)
         }
-        payload, _ := json.Marshal(map[string]interface{}{"bookIds": valid})
+        // R108-C BUG-321 Pattern D json.Marshal 吞错 family 续.
+        payload := marshalLogged("adminFeaturedBooks payload", map[string]interface{}{"bookIds": valid})
         _, err := db.Exec(`INSERT INTO Setting (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
                 "featuredBooks."+siteID, string(payload))
         if err != nil {
@@ -8342,23 +8405,11 @@ func fillFeedbackPageData(data map[string]interface{}, r *http.Request) {
         data["Page"] = page
         data["TotalPages"] = totalPages
         data["PageList"] = buildPageList(page, totalPages)
-        // R99-C BUG-286 (P3, BUG-284/285 同款 Pattern D multi-COUNT batch swallow
-        //   family 续抓, feedback page stats 变种): 原实现 3 处独立 `_ = ...Scan(...)`
-        //   (line 8045-8047) 吞错 — DB 故障时部分 stats 返 0 → feedback page stats
-        //   显示部分 0 用户误以为表空 (实际 transient), 无 log 提示运维. 改单 SELECT
-        //   多 scalar subquery (3 round-trip → 1) + 显式 err 检查 + log.Printf
-        //   (与 BUG-128/145 rows.Err 同款 best-effort log). 主 COUNT(*) (line 7983)
-        //   因用于 pagination totalPages 计算而保留独立 (与 BUG-284 dashboard 全部
-        //   显示不同, 本 page 主 COUNT 是分页核心, 单独保留与 fillBooksPageData/
-        //   adminBooksList pagination COUNT 同款独立 callsite).
-        var allCount, newCount, resolvedCount int
-        if err := db.QueryRow(`SELECT` +
-                `(SELECT COUNT(*) FROM Feedback),` +
-                `(SELECT COUNT(*) FROM Feedback WHERE status='new'),` +
-                `(SELECT COUNT(*) FROM Feedback WHERE status='resolved')`).
-                Scan(&allCount, &newCount, &resolvedCount); err != nil {
-                log.Printf("[fillFeedbackPageData] stats COUNT batch SELECT 失败 (stats 展示 0): %v", err)
-        }
+        // R99-C BUG-286 + R108-C BUG-323 精简-1 (3-COUNT batch SELECT 抽
+        //   feedbackStats helper, 与 adminFeedbackList 同款 dedup). 主 COUNT(*)
+        //   (line 7983) 因用于 pagination totalPages 计算而保留独立 (与
+        //   fillBooksPageData/adminBooksList pagination COUNT 同款独立 callsite).
+        allCount, newCount, resolvedCount := feedbackStats()
         data["Stats"] = map[string]interface{}{"total": allCount, "new": newCount, "resolved": resolvedCount}
 }
 

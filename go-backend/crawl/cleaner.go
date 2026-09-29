@@ -410,7 +410,35 @@ var (
         //   修复: 去掉 `\b` (因 `第N章` 结构本身够独特, 不需要边界保护; 后续可选
         //   lookahead 但无必要). 同步审计 chapterHeadENRe 无 `\b` (英文 Chapter N
         //   后接 \s+ 已隔离良好), 不动.
-        chapterHeadCNRe = regexp.MustCompile(`^第[一二三四五六七八九十百千万0-9]+(?:章|节|回|话|集)`)
+        //   BUG-324 (P3) 修复 (R57-1B BUG-G 续): 原模式 `^第[一二三四五六七八九十百
+        //     千万0-9]+(?:章|节|...)` 不允许 第/数字/章 间空白, 与 sorter.go
+        //     chapterNumCNRe `第\s*(\d+)\s*(?:章|节|...)` (\s* 允许可选空白) 不一致.
+        //     源站偶发 "第 1 章 标题" / "第 1章" / "第1 章" 形态 (admin 复制粘贴 /
+        //     源站 CSS letter-spacing 渲染后抓取 / 编辑器自动加空格 / GBK 编码混淆
+        //     产生 \t) → chapterHeadCNRe 不命中 → 首段章节号剥离失效 (cleaner.go
+        //     line 1003 `if chapterHeadCNRe.MatchString(headText)` false → first.
+        //     Remove() 不触发 → 章节正文首段残留 "第 1 章 标题" 冗余标题, 与书名/
+        //     章节标题外显重复, 前台渲染重复显示). R57-1B 去 \b 后仍 latent, 56 轮
+        //     未发现因 71 Rule 多用 "第1章" 无空格形态 (源站 HTML <h1> 第1章 </h1>
+        //     标准形态). 修复: 加 \s* 对齐 sorter chapterNumCNRe (第N章结构本身独特,
+        //     \s* 不引入误命中 — "第 章" 无数字仍不命中 [一二三四五六七八九十百千万
+        //     0-9]+ 至少 1 字符要求; "第abc章" 不命中 a 非 [一二三四五六七八九十百
+        //     千万0-9]). 保留中文数字支持 (cleaner 仅 MatchString 检测不转换, 与
+        //     sorter 不需 int 转换不同 — sorter.go chapterNumCNRe 注 line 56-58
+        //     "不支持中文数字, 因中文数字转换复杂" 是 sorter 需 Atoi 转 int 比对,
+        //     cleaner 仅检测是否章节号形态, 中文数字 "第一章" 仍应命中). 同步审计
+        //     chapterHeadENRe `(?i)^Chapter\s+\d+` 用 \s+ (1+ whitespace, 比 CN 的
+        //     \s* 严格) — EN 保留 \s+ 防 "Chapter1" 在正文句子中误命中 (英文
+        //     "Chapter" 是常用词, \s+ 隔离良好; CN "第" 不在正文句子中独立出现,
+        //     \s* 安全). 71 Rule 0 用 "第 N 章" 空格形态; 0 用户受影响, 防御性
+        //     + 一致性修复. latent 自 R57-1B BUG-G 修复时漏对齐 sorter
+        //     chapterNumCNRe \s* (56 轮未发现, R57-1B 重点修 \b 漏对齐 \s*).
+        //     BUG 编号备注: R108-A (crawl fetcher/runner, BUG-321/322) + R108-C
+        //     (admin, BUG-321/322/323) + R108-D (main, BUG-321/322) 并行已用
+        //     321/322/323, 本轮 R108-B crawl scope 用 BUG-324 顺延 (与 R107-B
+        //     crawl scope 用 BUG-320 顺延 R107-A/C/D 317/318/319 同款 "同 broad
+        //     scope 内不同文件新号顺延" convention, 主控 merge 时 0 renumber 需求).
+        chapterHeadCNRe = regexp.MustCompile(`^第\s*[一二三四五六七八九十百千万0-9]+\s*(?:章|节|回|话|集)`)
         chapterHeadENRe = regexp.MustCompile(`(?i)^Chapter\s+\d+`)
         chapterTailRe   = regexp.MustCompile(`本章(?:未完|未完待续|继续阅读)|点击下一(?:页|章)|敬请(?:期待|关注)|加入书签|为了方便下次阅读`)
 
@@ -480,21 +508,33 @@ var (
         //   删除 (与 parser.go tagStripRe + 同文件 plainTextBrRe 重复). CleanTextField /
         //   CleanIntro 改用 tagStripRe / plainTextBrRe (同款跨/同文件引用, 与 plainText
         //   分支 line 674 同款).
-        cleanTextFieldWsRe  = regexp.MustCompile(`[\r\n\t]+`)
-        cleanTextFieldWs2Re = regexp.MustCompile(`\s{2,}`)
+        // R108-B 精简-1: cleanTextFieldWsRe `[\r\n\t]+` 删除 (与 cleanTextFieldWs2Re
+        //   合并). 原两步: cleanTextFieldWsRe 替换单/多 \r\n\t 为单 space,
+        //   cleanTextFieldWs2Re `\s{2,}` 塌 2+ ASCII whitespace 多串为单 space (两步
+        //   因 \s{2,} 不匹配单 \r\n\t, 需 cleanTextFieldWsRe 先替换单 \r\n\t).
+        //   BUG-325 加 unicodeWsRe 步后, Unicode 空白 (NBSP/U+3000 等) 先归一为
+        //   ASCII space, 剩余 \r\n\t + ASCII space 均 \s 范畴. 改 cleanTextFieldWs2Re
+        //   为 `\s+` (1+ whitespace) 单步塌全 ASCII whitespace (含 \r\n\t + space)
+        //   多串为单 space, 与原两步行为等价 (单 space 替换为单 space 是 no-op,
+        //   \r\n\t 单/多均塌为单 space). 与 R107-B 精简-2 (NormalizeParagraphs 4
+        //   ReplaceAll → 1 Replacer) + R104-B 精简-1 (CcStripOnlyRe+ZWStripOnlyRe
+        //   合并) + R79-C 精简 (3 重复 tagStripRe 合并) 同款 "重复 regex 合并"
+        //   precedent. 行为 0 变化. -1 var + -1 行调用 (cleanTextFieldWsRe).
+        cleanTextFieldWs2Re = regexp.MustCompile(`\s+`)
         // R85-B BUG-217 (P3) 修复: cleanTextFieldWatermarkRe `[^，。；]*` 贪婪匹配
-        //   跨空白. cleanTextFieldWsRe (line 980) 已把 \r\n\t 转 space,
-        //   cleanTextFieldWs2Re (line 981) 塌 ASCII whitespace 多串为单 space,
-        //   但 space 仍被 `[^，。；]*` 匹配 → "本书首发于起点中文网 正文" (watermark
-        //   + space + content) 整串被匹配 → ReplaceAllString(v, " ") → " " →
-        //   TrimSpace → "" (整字段被清空, 非 watermark 内容也被剥). 修复:
-        //   `[^，。；\s\x{00A0}\x{3000}]*` 排除 ASCII 空白 + NBSP + 全角空格,
-        //   让 regex 在首个空白处停 (watermark 是连续 CJK 串不含空白, 停在空白
-        //   处正确隔离 watermark vs content). 影响 CleanTextField (book name/author
-        //   等短字段), 0 调用 CleanIntro (用 RemoveAdLines + NormalizeParagraphs,
-        //   不走此 regex). latent 自 R47-1A (regex 提为包级, 38 轮未发现因
-        //   watermark 短字段罕见 + 内容紧跟 watermark 用 terminator 而非 space
-        //   分隔的 case 占多数).
+        //   跨空白. cleanTextFieldWsRe (R108-B 精简-1 已删, 与 cleanTextFieldWs2Re
+        //   合并) 原把 \r\n\t 转 space, cleanTextFieldWs2Re (line 518) 塌 ASCII
+        //   whitespace 多串为单 space, 但 space 仍被 `[^，。；]*` 匹配 →
+        //   "本书首发于起点中文网 正文" (watermark + space + content) 整串被匹配
+        //   → ReplaceAllString(v, " ") → " " → TrimSpace → "" (整字段被清空, 非
+        //   watermark 内容也被剥). 修复: `[^，。；\s\x{00A0}\x{3000}]*` 排除 ASCII
+        //   空白 + NBSP + 全角空格, 让 regex 在首个空白处停 (watermark 是连续 CJK
+        //   串不含空白, 停在空白处正确隔离 watermark vs content). R108-B BUG-325
+        //   加 unicodeWsRe 步后, NBSP 先归一为 ASCII space (被 \s 排除), 同款
+        //   隔离生效. 影响 CleanTextField (book name/author 等短字段), 0 调用
+        //   CleanIntro (用 RemoveAdLines + NormalizeParagraphs, 不走此 regex).
+        //   latent 自 R47-1A (regex 提为包级, 38 轮未发现因 watermark 短字段罕见
+        //   + 内容紧跟 watermark 用 terminator 而非 space 分隔的 case 占多数).
         cleanTextFieldWatermarkRe = regexp.MustCompile(`^(?:本书首发于|转载请注明出处|本书来源于|本书首发自)[^，。；\s\x{00A0}\x{3000}]*[，。；]?`)
 
         cleanIntroBlockEndRe = regexp.MustCompile(`(?i)</(p|div)>`)
@@ -1152,7 +1192,28 @@ func CleanTextField(raw string, maxLength int) string {
         v = CcAndZwStripRe.ReplaceAllString(v, "")
         v = T2SText(v)
         v = strings.ReplaceAll(v, "\\n", "\n")
-        v = cleanTextFieldWsRe.ReplaceAllString(v, " ")
+        // BUG-325 (P3) 修复: 原 CleanTextField 不调 unicodeWsRe (NormalizeParagraphs
+        //   line 741 剥全 Unicode 空格: NBSP / Ogham / U+2000-U+200A / U+202F /
+        //   U+205F / U+3000), 漏剥 Unicode 空格. 与 R107-B BUG-320 (HTML 分支
+        //   indent 规整漏 NBSP) 同款 "Unicode 空格不一致" latent family. 源站偶
+        //   发 raw NBSP (admin 复制粘贴 / GBK 编码混淆 / Word 导出 / &nbsp;
+        //   entity 经 DecodeEntitiesOnce line 1183 解码为 NBSP char) →
+        //   CleanTextField 输出 "玄幻\u00A0奇幻" (NBSP 残留), 与 CleanIntro
+        //   (NormalizeParagraphs 剥 NBSP → "玄幻 奇幻" ASCII space) 不一致
+        //   (同源输入不同输出, 与 BUG-245 确定性目标矛盾). 影响 book name /
+        //   author 等短字段: DB 字段含 NBSP → 字符串比较不等 ("玄幻奇幻" ≠
+        //   "玄幻\u00A0奇幻") → unique 约束误判 / 搜索 miss / 前台渲染乱码.
+        //   71 Rule 0 用 raw NBSP (多用 &nbsp; entity 经 Decode 后 NBSP char);
+        //   0 用户受影响, 防御性 + 一致性修复. latent 自 R38 TS→Go 迁移 (47
+        //   轮未发现). 修复: cleanTextFieldWsRe 前加 unicodeWsRe 步 (与
+        //   NormalizeParagraphs line 741 + HTML 分支 indent 规整 line 975
+        //   BUG-320 同口径), 后续 cleanTextFieldWs2Re 塌 ASCII 空格多串.
+        v = unicodeWsRe.ReplaceAllString(v, " ")
+        // R108-B 精简-1: cleanTextFieldWsRe 删除 (与 cleanTextFieldWs2Re 合并).
+        //   详见 cleanTextFieldWs2Re 注释 line 506. unicodeWsRe 步后, \r\n\t +
+        //   ASCII space 均 \s 范畴, cleanTextFieldWs2Re `\s+` 单步塌全 ASCII
+        //   whitespace 多串为单 space (与原 cleanTextFieldWsRe + cleanTextFieldWs2Re
+        //   两步等价, 行为 0 变化).
         v = cleanTextFieldWs2Re.ReplaceAllString(v, " ")
         // 站点水印清洗
         v = cleanTextFieldWatermarkRe.ReplaceAllString(v, "")

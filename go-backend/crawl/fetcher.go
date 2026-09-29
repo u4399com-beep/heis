@@ -4664,6 +4664,43 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 if xcdn := resp.Header.Get("X-CDN"); xcdn != "" {
                         recordSecurityHeader(originHost(rawURL), "X-CDN", xcdn)
                 }
+                // R108-A 反反爬第 234-238 项: Cloudflare WAF/cache/Worker posture +
+                //   RFC 7239 Forwarded proxy hop chain + CloudFront edge POP 响应头
+                //   观测 (与 124-233 同款 family, 单值 last-write-wins per-host 合并
+                //   tracker). R107-A 未决项 #1 pivot 续 — Varnish/Fastly cache hit
+                //   detail + reverse proxy backend + CDN self-identification family
+                //   (229-233) 耗尽, pivot Cloudflare-specific WAF/cache/Worker posture
+                //   (与第 166 CF-Ray CF request ID 互补) + RFC 7239 Forwarded 标准化
+                //   proxy hop chain (与第 172 Via legacy chain 互补, 反爬侧 host 常
+                //   用 Forwarded 暴露真实 client IP 是反爬关联信号) + CloudFront edge
+                //   POP identifier (与第 214 X-Amz-Cf-Id CloudFront request ID 互补).
+                //   第 234 项 CF-Cache-Status ("DYNAMIC/HIT/MISS/EXPIRED/REVALIDATED/
+                //     UPDATING/STALE/BYPASS") — CF cache posture. DYNAMIC = Worker
+                //     处理未缓存 = 高反爬保护; 操作员可识别 host CF cache 行为调桥策略.
+                //   第 235 项 CF-Mitigated ("challenge"/"block"/"connectionInfo"/
+                //     "record") — 直接反爬信号! "challenge" 表示 CF 已识别 bot 触发
+                //     挑战页, "block" 表示 CF 已拒绝访问 (与第 166 CF-Ray 互补).
+                //   第 236 项 CF-Worker ("worker-name:zone-name") — CF Worker 拦截
+                //     指纹 (Worker 可注入 JS challenge / rewrite response / rate-limit).
+                //   第 237 项 Forwarded ("for=192.0.2.1;by=...;host=...;proto=https")
+                //     — RFC 7239 标准化 proxy hop chain (modern Via, 反爬关联信号).
+                //   第 238 项 X-Amz-Cf-Pop (e.g. "LAX1-C1") — CloudFront edge physical
+                //     POP posture (与第 214 X-Amz-Cf-Id 互补, 暴露物理边缘节点).
+                if cfcs := resp.Header.Get("CF-Cache-Status"); cfcs != "" {
+                        recordSecurityHeader(originHost(rawURL), "CF-Cache-Status", cfcs)
+                }
+                if cfm := resp.Header.Get("CF-Mitigated"); cfm != "" {
+                        recordSecurityHeader(originHost(rawURL), "CF-Mitigated", cfm)
+                }
+                if cfw := resp.Header.Get("CF-Worker"); cfw != "" {
+                        recordSecurityHeader(originHost(rawURL), "CF-Worker", cfw)
+                }
+                if fwd := resp.Header.Get("Forwarded"); fwd != "" {
+                        recordSecurityHeader(originHost(rawURL), "Forwarded", fwd)
+                }
+                if xacp := resp.Header.Get("X-Amz-Cf-Pop"); xacp != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Amz-Cf-Pop", xacp)
+                }
 
                 // Set-Cookie 处理 (autoCookie)
                 if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
@@ -5934,6 +5971,27 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 }
                 if xcdn := extractHeaderFromCurlStdout(headers, "X-CDN"); xcdn != "" {
                         recordSecurityHeader(domain, "X-CDN", xcdn)
+                }
+                // R108-A 反反爬第 234-238 项 续 (与 fetchHttp line ~4667 同款, curl
+                //   -D - dump headers 路径; fetchBinaryViaCurl 不 dump headers 故不调,
+                //   与 124-233 同款限制. 详见 fetchHttp line ~4667 rationale). 第 234
+                //   项 CF-Cache-Status / 第 235 项 CF-Mitigated / 第 236 项 CF-Worker
+                //   / 第 237 项 Forwarded / 第 238 项 X-Amz-Cf-Pop (extractHeader
+                //   FromCurlStdout 已对 5 头大小写不敏感提取).
+                if cfcs := extractHeaderFromCurlStdout(headers, "CF-Cache-Status"); cfcs != "" {
+                        recordSecurityHeader(domain, "CF-Cache-Status", cfcs)
+                }
+                if cfm := extractHeaderFromCurlStdout(headers, "CF-Mitigated"); cfm != "" {
+                        recordSecurityHeader(domain, "CF-Mitigated", cfm)
+                }
+                if cfw := extractHeaderFromCurlStdout(headers, "CF-Worker"); cfw != "" {
+                        recordSecurityHeader(domain, "CF-Worker", cfw)
+                }
+                if fwd := extractHeaderFromCurlStdout(headers, "Forwarded"); fwd != "" {
+                        recordSecurityHeader(domain, "Forwarded", fwd)
+                }
+                if xacp := extractHeaderFromCurlStdout(headers, "X-Amz-Cf-Pop"); xacp != "" {
+                        recordSecurityHeader(domain, "X-Amz-Cf-Pop", xacp)
                 }
                 if status >= 300 {
                         // R66-C BUG-52 (P3): curl 4xx/5xx 也记 latency + fail (与 fetchHttp
@@ -8276,6 +8334,30 @@ func fetchBinaryHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, pr
                 }
                 if xcdn := resp.Header.Get("X-CDN"); xcdn != "" {
                         recordSecurityHeader(originHost(rawURL), "X-CDN", xcdn)
+                }
+                // R108-A 反反爬第 234-238 项 续 (与 fetchHttp line ~4667 同款,
+                //   fetchBinaryHttp success + 4xx/5xx 两路径都记, BUG-241 修复后
+                //   fetchBinaryHttp 已补对称; fetchBinaryViaCurl 不 dump headers
+                //   故不调, 与 124-233 同款限制. 详见 fetchHttp line ~4667
+                //   rationale). 第 234 项 CF-Cache-Status / 第 235 项 CF-Mitigated
+                //   / 第 236 项 CF-Worker / 第 237 项 Forwarded / 第 238 项 X-Amz-
+                //   Cf-Pop (Cloudflare WAF/cache/Worker posture + RFC 7239 proxy
+                //   hop chain + CloudFront edge POP posture; cover host 多在 external
+                //   CDN / S3, 与 HTML host 不同域各自独立条目, 无污染).
+                if cfcs := resp.Header.Get("CF-Cache-Status"); cfcs != "" {
+                        recordSecurityHeader(originHost(rawURL), "CF-Cache-Status", cfcs)
+                }
+                if cfm := resp.Header.Get("CF-Mitigated"); cfm != "" {
+                        recordSecurityHeader(originHost(rawURL), "CF-Mitigated", cfm)
+                }
+                if cfw := resp.Header.Get("CF-Worker"); cfw != "" {
+                        recordSecurityHeader(originHost(rawURL), "CF-Worker", cfw)
+                }
+                if fwd := resp.Header.Get("Forwarded"); fwd != "" {
+                        recordSecurityHeader(originHost(rawURL), "Forwarded", fwd)
+                }
+                if xacp := resp.Header.Get("X-Amz-Cf-Pop"); xacp != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Amz-Cf-Pop", xacp)
                 }
                 // 3xx / 4xx / 5xx 视为失败 (与 fetchHttp 同款, 不重试 3xx)
                 if resp.StatusCode >= 300 {
@@ -13000,11 +13082,12 @@ func ClearHostAcceptRanges(host string) {
 //   164-168 项 + R95-A 第 169-173 项 + R96-A 第 174-178 项 + R98-A 第 184-188 项
 //   + R99-A 第 189-193 项 + R100-A 第 194-198 项 + R101-A 第 199-203 项 + R102-A
 //   第 204-208 项 + R103-A 第 209-213 项 + R104-A 第 214-218 项 + R105-A 第
-//   219-223 项 (R106-A BUG-313 补字段) + R106-A 第 224-228 项, 合并 105 字段).
+//   219-223 项 (R106-A BUG-313 补字段) + R106-A 第 224-228 项 + R107-A 第
+//   229-233 项 + R108-A 第 234-238 项, 合并 110 字段).
 //   entry 是 pointer: recordSecurityHeader LoadOrStore canonical 指针 + 单字段
-//   update-in-place (非 store-replace, 保留其他 104 头旧值). 同字段并发写
+//   update-in-place (非 store-replace, 保留其他 109 头旧值). 同字段并发写
 //   last-write-wins; sweep CompareAndDelete 后下次 record 重建 entry (与 recordVia
-//   store-replace 不一样, 这里需保留其他 104 头故用 update-in-place).
+//   store-replace 不一样, 这里需保留其他 109 头故用 update-in-place).
 type hostSecurityHeadersEntry struct {
         hstsValue         string // Strict-Transport-Security (第 124 项)
         cspValue          string // Content-Security-Policy (第 125 项)
@@ -13176,6 +13259,15 @@ type hostSecurityHeadersEntry struct {
         xFastlyRequestIdValue   string // X-Fastly-Request-ID (第 231 项, R107-A)
         xBackendServerValue     string // X-Backend-Server (第 232 项, R107-A)
         xCdnValue               string // X-CDN (第 233 项, R107-A)
+        // R108-A 反反爬第 234-238 项: Cloudflare WAF/cache/Worker posture +
+        //   RFC 7239 Forwarded standardized proxy hop chain + CloudFront edge
+        //   POP identifier 响应头观测 (与 124-233 同款 family, 单值 last-write-
+        //   wins per-host 合并 tracker). 详见 fetchHttp line ~4668 rationale.
+        cfCacheStatusValue      string // CF-Cache-Status (第 234 项, R108-A)
+        cfMitigatedValue        string // CF-Mitigated (第 235 项, R108-A)
+        cfWorkerValue           string // CF-Worker (第 236 项, R108-A)
+        forwardedValue          string // Forwarded (第 237 项, R108-A)
+        xAmzCfPopValue          string // X-Amz-Cf-Pop (第 238 项, R108-A)
         detectedAt              int64  // UnixMilli
 }
 
@@ -13186,7 +13278,7 @@ type hostSecurityHeadersEntry struct {
 //   + R99-A 第 189-193 项 + R100-A 第 194-198 项 + R101-A 第 199-203 项 + R102-A
 //   第 204-208 项 + R103-A 第 209-213 项 + R104-A 第 214-218 项 + R105-A 第
 //   219-223 项 (R106-A BUG-313 补字段) + R106-A 第 224-228 项 + R107-A 第
-//   229-233 项).
+//   229-233 项 + R108-A 第 234-238 项).
 var hostSecurityHeadersMap sync.Map
 
 // hostSecurityHeadersSweepCounter — sweep 触发累加 (与 hostViaSweepCounter 同口径).
@@ -13242,7 +13334,7 @@ func extractSetCookieAttr(cookies []string, attr string) string {
 //   + R99-A 第 189-193 项 + R100-A 第 194-198 项 + R101-A 第 199-203 项 + R102-A
 //   第 204-208 项 + R103-A 第 209-213 项 + R104-A 第 214-218 项 + R105-A 第
 //   219-223 项 (R106-A BUG-313 补 case) + R106-A 第 224-228 项 + R107-A 第
-//   229-233 项).
+//   229-233 项 + R108-A 第 234-238 项).
 //   headerName 区分 110 头 (大小写不敏感). 与 recordVia 同款 Store + 惰性 sweep,
 //   但保留其他 109 头旧值 (LoadOrStore canonical 指针 + 单字段 update-in-place).
 func recordSecurityHeader(host, headerName, value string) {
@@ -13511,6 +13603,20 @@ func recordSecurityHeader(host, headerName, value string) {
                 ent.xBackendServerValue = value
         case "x-cdn":
                 ent.xCdnValue = value
+        // R108-A 反反爬第 234-238 项: Cloudflare WAF/cache/Worker posture +
+        //   RFC 7239 Forwarded standardized proxy hop chain + CloudFront edge
+        //   POP identifier 响应头观测 (与 124-233 同款 family, 单值 last-write-
+        //   wins per-host 合并 tracker). 详见 fetchHttp line ~4668 rationale.
+        case "cf-cache-status":
+                ent.cfCacheStatusValue = value
+        case "cf-mitigated":
+                ent.cfMitigatedValue = value
+        case "cf-worker":
+                ent.cfWorkerValue = value
+        case "forwarded":
+                ent.forwardedValue = value
+        case "x-amz-cf-pop":
+                ent.xAmzCfPopValue = value
         default:
                 return
         }
@@ -13641,6 +13747,12 @@ func HostSecurityHeadersSnapshot() map[string]map[string]string {
                         "xFastlyRequestIdValue": e.xFastlyRequestIdValue,
                         "xBackendServerValue":   e.xBackendServerValue,
                         "xCdnValue":             e.xCdnValue,
+                        // R108-A 第 234-238 项.
+                        "cfCacheStatusValue":    e.cfCacheStatusValue,
+                        "cfMitigatedValue":      e.cfMitigatedValue,
+                        "cfWorkerValue":         e.cfWorkerValue,
+                        "forwardedValue":        e.forwardedValue,
+                        "xAmzCfPopValue":        e.xAmzCfPopValue,
                         "detectedAt":        fmt.Sprintf("%d", e.detectedAt),
                 }
                 return true
