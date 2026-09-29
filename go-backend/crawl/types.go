@@ -750,10 +750,11 @@ func safeStr(s string, max int) string {
         // 剥控制字符 (含 \r \n \t, 与 sanitize 同口径, 防头注入)
         // R65-C BUG-47 (P3) 修复: 原仅剥 C0 (r<0x20) + DEL (0x7f), 漏 C1 控制字符
         //   (U+0080-U+009F: NEL/APC/SS3 等 Windows 风格源站偶发杂符), 与 cleaner.go
-        //   CcStripOnlyRe (R49-1B 扩展含 C1) 不一致. 用户配置字段 (site name / rule
-        //   expression / cookie value 等) 经 safeStr 后写入 DB, 漏剥 C1 会让 DB 字段
-        //   含 NEL 等 → 下游渲染乱码 / JSON 编码 \\u0085 等不可见字符. 修复: 与
-        //   CcStripOnlyRe 同口径, 剥 C0 + DEL + C1.
+        //   CcAndZwStripRe (R49-1B 扩展含 C1, R104-B 合并 CcStripOnlyRe+
+        //   ZWStripOnlyRe) 不一致. 用户配置字段 (site name / rule expression /
+        //   cookie value 等) 经 safeStr 后写入 DB, 漏剥 C1 会让 DB 字段含 NEL
+        //   等 → 下游渲染乱码 / JSON 编码 \\u0085 等不可见字符. 修复: 与
+        //   CcAndZwStripRe 同口径, 剥 C0 + DEL + C1.
         b := make([]rune, 0, len(s))
         for _, r := range s {
                 if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
@@ -761,7 +762,8 @@ func safeStr(s string, max int) string {
                 }
                 // R67-C BUG-59 (P3) 修复: 原仅剥 C0+DEL+C1, 漏 Unicode 行/段分隔符
                 //   (U+2028 LSP / U+2029 PSP) + BOM (U+FEFF) + 替换符 (U+FFFD).
-                //   与 cleaner.go ZWStripOnlyRe (R49-1B + R66-C 加 U+FFFD) 不一致.
+                //   与 cleaner.go CcAndZwStripRe (R49-1B + R66-C 加 U+FFFD,
+                //   R104-B 合并 ZWStripOnlyRe 入 CcAndZwStripRe) 不一致.
                 //   U+2028/2029 在 JSON 字符串中合法但 JS parser 把它们当行分隔符
                 //   (legacy ES2018 前的 literal newline 行为) → admin UI / 前台渲染
                 //   时 JSON.parse 抛 SyntaxError 或字符串被截断. U+FEFF BOM 头部
@@ -769,10 +771,11 @@ func safeStr(s string, max int) string {
                 //   把无效 UTF-8 字节替换后的"豆腐块", 残留 = 编码 bug 痕迹.
                 //   修复: 显式剥 U+2028/U+2029/U+FEFF/U+FFFD (4 个高频污染符).
                 //
-                // R86-B BUG-220 (P3) 修复: R67-C BUG-59 对齐 ZWStripOnlyRe 仅部分
-                //   完成 — 漏 SHY (U+00AD) / ZWSP (U+200B) / ZWNJ (U+200C) / ZWJ
-                //   (U+200D) / LRM (U+200E) / RLM (U+200F) / WJ (U+2060) / invisible
-                //   math operators (U+2061-2064) / Bidi isolate marks (U+2066-2069).
+                // R86-B BUG-220 (P3) 修复: R67-C BUG-59 对齐 CcAndZwStripRe
+                //   (R104-B 合并前 ZWStripOnlyRe) 仅部分完成 — 漏 SHY (U+00AD) /
+                //   ZWSP (U+200B) / ZWNJ (U+200C) / ZWJ (U+200D) / LRM (U+200E) /
+                //   RLM (U+200F) / WJ (U+2060) / invisible math operators
+                //   (U+2061-2064) / Bidi isolate marks (U+2066-2069).
                 //   这些字符残留在 DB 用户配置字段 (site name / rule CSS selector /
                 //   expression / cookie value / Referer-URL / Header value) 破坏:
                 //     - CSS 选择器: "di\u200Bv.ad" 残留 ZWSP → goquery Find 解析失
@@ -785,12 +788,13 @@ func safeStr(s string, max int) string {
                 //       unique 约束未触发 → 同名书重复入库;
                 //     - 渲染: NBSP/U+3000 等不在范围 (CcAndZwStripRe 兜底, 见 cleaner
                 //       调用链). 本处仅剥 invisible/format 类.
-                //   修复: 与 ZWStripOnlyRe (R49-1B + R66-C) 完全对齐, 补全 9 类
-                //   invisible/format 字符. 行为变化: 用户配置字段经 safeStr 后不含
-                //   SHY/ZWSP/ZWNJ/ZWJ/LRM/RLM/WJ/invisible operators/Bidi isolates
-                //   (与 content text ZWStripOnlyRe 同口径). 0 用户报告 (71 Rule 配
-                //   置全 ASCII / CJK, 0 含这些字符), latent 自 R67-C (BUG-59 修复
-                //   时漏对齐 ZWStripOnlyRe 全集, 19 轮未发现).
+                //   修复: 与 CcAndZwStripRe (R49-1B + R66-C, R104-B 合并
+                //   ZWStripOnlyRe 入) 完全对齐, 补全 9 类 invisible/format 字符.
+                //   行为变化: 用户配置字段经 safeStr 后不含 SHY/ZWSP/ZWNJ/ZWJ/
+                //   LRM/RLM/WJ/invisible operators/Bidi isolates (与 content text
+                //   CcAndZwStripRe 同口径). 0 用户报告 (71 Rule 配置全 ASCII /
+                //   CJK, 0 含这些字符), latent 自 R67-C (BUG-59 修复时漏对齐
+                //   ZWStripOnlyRe 全集, 19 轮未发现).
                 if r == 0x00AD || (r >= 0x200B && r <= 0x200F) ||
                         r == 0x2028 || r == 0x2029 ||
                         (r >= 0x2060 && r <= 0x2069) ||

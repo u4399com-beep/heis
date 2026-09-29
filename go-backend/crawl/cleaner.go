@@ -674,18 +674,16 @@ func truncateRunes(s string, max int) string {
 //        正文里残留 U+FFFD = 编码 bug 痕迹, 应剥离. (极少源站正文用 U+FFFD 作装饰符,
 //        误伤概率极低; 与任务 #11 通用乱码清洗要求一致.)
 //      R39-1C: Go RE2 不支持 \u 转义, 改用 \x{XXXX} 语法 (与 init 不再 panic).
+//      R104-B 精简: CcAndZwStripRe 的字符类 = CcStripOnlyRe ∪ ZWStripOnlyRe
+//        (CcStripOnlyRe 仅 C0+DEL+C1, ZWStripOnlyRe 仅零宽+不可见排版, 两者
+//        联集与 CcAndZwStripRe 同). 原 CleanTextField + CleanIntro 各跑两次
+//        ReplaceAllString (Cc 然后 ZW), 改单次 CcAndZwStripRe 等价 (单遍正则
+//        扫描, hot path 每 book intro + 每 chapter content text field 跑, 1000
+//        章任务省 2000 次正则扫描). CcStripOnlyRe + ZWStripOnlyRe vars 删除
+//        (0 caller 后 deadcode, 与 R80-C BUG-169 / R83-B BUG-193 / R84-B BUG-198
+//        同款 deadcode 删除 precedent). types.go safeStr 注释 textual reference
+//        (CcStripOnlyRe/ZWStripOnlyRe) 同步改 CcAndZwStripRe. 行为 0 变化.
 var CcAndZwStripRe = regexp.MustCompile(`[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\x{0080}-\x{009F}\x{00AD}\x{200B}-\x{200F}\x{2028}\x{2029}\x{2060}-\x{2069}\x{FEFF}\x{FFFD}]`)
-
-// ZWStripOnlyRe — 仅零宽字符 + 不可见排版字符 (用于纯文本字段, 不剥控制字符).
-//
-//      R49-1B: 同 CcAndZwStripRe 的零宽部分扩展 (新增 LRM/RLM/SHY/LSP/PSP/invisible operators/Bidi isolate).
-//      R66-C 通用清洗增强 (用户需求 #11): 加 U+FFFD 乱码替换符 (与 CcAndZwStripRe 同款).
-var ZWStripOnlyRe = regexp.MustCompile(`[\x{00AD}\x{200B}-\x{200F}\x{2028}\x{2029}\x{2060}-\x{2069}\x{FEFF}\x{FFFD}]`)
-
-// CcStripOnlyRe — 仅控制字符 (C0 + DEL + C1; \t\n\r 不在剥离类内).
-//
-//      R49-1B: 扩展 C1 (U+0080-U+009F) + DEL (U+007F) 覆盖 (Windows 风格源站偶发 NEL 等).
-var CcStripOnlyRe = regexp.MustCompile(`[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\x{0080}-\x{009F}]`)
 
 // ---------- 段落规整 ----------
 
@@ -993,7 +991,20 @@ func matchedHTTP(val string) bool {
 // CleanContentHtml — 清洗章节正文 HTML (同步, 不调 trafilatura 桥).
 // 与 cleanContentHtml 同口径 (useTrafilatura=true 走 caller-side 分流).
 func CleanContentHtml(raw string, cfgOverride *CleanConfig) string {
-        cfg := DefaultCleanConfig
+        // BUG-307 (P3): 原 `cfg := DefaultCleanConfig` 浅拷贝, 3 个 slice 字段
+        //   (RemoveSelectors/AdPatterns/Whitelist) 与包级 DefaultCleanConfig 共享
+        //   backing array. caller mutate (e.g. cfg.RemoveSelectors[0]="x") 会污染
+        //   default → 后续 CleanContentHtml(...) / sanitizeCleanConfig (admin omit
+        //   "removeSelectors" key 路径) 返的 RemoveSelectors 均含残留, 全局污染.
+        //   与 BUG-303 (DefaultFetchConfig shared mutable slice leak, R103-B 修)
+        //   + BUG-258 (sanitizeFetchConfig BrowserFallbackStatus shared default)
+        //   同款 "shared mutable default" latent family. 修复: 始终 cloneCleanConfig
+        //   (与 types.go DefaultRuleConfig line 266 + sanitizeCleanConfig line 542
+        //   同口径, 切断共享). 0 当前用户受影响 (cleanContentHtmlSync 对 cfg 全
+        //   read-only — mergedSelectors append 新 slice 不触 cfg.RemoveSelectors,
+        //   cfg.AdPatterns 喂 RemoveAdLines 读不写, cfg.Whitelist 建 set 读不写),
+        //   防御性修复. latent 自 R38 TS→Go 迁移 (47 轮未发现).
+        cfg := cloneCleanConfig(DefaultCleanConfig)
         if cfgOverride != nil {
                 cfg = cloneCleanConfig(*cfgOverride)
         }
@@ -1004,7 +1015,9 @@ func CleanContentHtml(raw string, cfgOverride *CleanConfig) string {
 // 调桥提取正文 → 喂入 plainText 段落规整链 (跳过 cheerio DOM 剥壳阶段).
 // 桥不可达/异常/空文本 → 降级回 cheerio 链 (零回归).
 func CleanContentHtmlWithTrafilatura(ctx context.Context, raw string, cfgOverride *CleanConfig, bridgeURL string) string {
-        cfg := DefaultCleanConfig
+        // BUG-307 (P3): 见 CleanContentHtml 注释 (同款 DefaultCleanConfig shared
+        //   mutable slice 修复, 始终 cloneCleanConfig).
+        cfg := cloneCleanConfig(DefaultCleanConfig)
         if cfgOverride != nil {
                 cfg = cloneCleanConfig(*cfgOverride)
         }
@@ -1075,11 +1088,11 @@ func TryTrafilaturaFallback(ctx context.Context, html, cleaned string, cfg Clean
 // CleanTextField — 清洗纯文本字段 (书名/作者/简介等).
 //  1. 剥 HTML 标签
 //  2. 实体单遍解码
-//  3. 控制字符剥离 (\t \n \r 保留, 供后续按行切段)
-//  4. 零宽字符剥离
-//  5. 繁简转换 (Go stub)
-//  6. 站点水印清洗 + 重复标点压缩
-//  7. maxLength 截断 (按码点截断防代理对斩半)
+//  3. 控制字符 + 零宽字符剥离 (\t \n \r 保留, 供后续按行切段) — R104-B
+//     合并 CcStripOnlyRe + ZWStripOnlyRe → CcAndZwStripRe 单次扫描
+//  4. 繁简转换 (Go stub)
+//  5. 站点水印清洗 + 重复标点压缩
+//  6. maxLength 截断 (按码点截断防代理对斩半)
 func CleanTextField(raw string, maxLength int) string {
         if raw == "" {
                 return ""
@@ -1088,8 +1101,9 @@ func CleanTextField(raw string, maxLength int) string {
         // R79-C 精简: 改用 parser.go tagStripRe (同 pattern `<[^>]+>`, 跨文件同包引用).
         v := tagStripRe.ReplaceAllString(raw, "")
         v = DecodeEntitiesOnce(v)
-        v = CcStripOnlyRe.ReplaceAllString(v, "")
-        v = ZWStripOnlyRe.ReplaceAllString(v, "")
+        // R104-B 精简: CcStripOnlyRe + ZWStripOnlyRe 两遍 → CcAndZwStripRe 一遍
+        // (字符类 = 联集, 行为等价; 见 CcAndZwStripRe 注释 line 661).
+        v = CcAndZwStripRe.ReplaceAllString(v, "")
         v = T2SText(v)
         v = strings.ReplaceAll(v, "\\n", "\n")
         v = cleanTextFieldWsRe.ReplaceAllString(v, " ")
@@ -1119,8 +1133,10 @@ func CleanIntro(raw string, maxLength int) string {
         v = cleanIntroBlockEndRe.ReplaceAllString(v, "\n")
         v = tagStripRe.ReplaceAllString(v, "")
         v = DecodeEntitiesOnce(v)
-        v = CcStripOnlyRe.ReplaceAllString(v, "")
-        v = ZWStripOnlyRe.ReplaceAllString(v, "")
+        // R104-B 精简: CcStripOnlyRe + ZWStripOnlyRe 两遍 → CcAndZwStripRe 一遍
+        // (字符类 = 联集, 行为等价; 见 CcAndZwStripRe 注释 line 661, 与
+        // CleanTextField line 1104 同款精简).
+        v = CcAndZwStripRe.ReplaceAllString(v, "")
         v = T2SText(v)
         v = RemoveAdLines(v, DefaultCleanConfig.AdPatterns)
         v = strings.ReplaceAll(v, "\\n", "\n")

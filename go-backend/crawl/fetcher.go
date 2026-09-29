@@ -2649,6 +2649,28 @@ func LooksBlocked(html string, opts map[string]string) bool {
         return false
 }
 
+// browserFallbackStatusContains — 检查 status 是否在 cfg.BrowserFallbackStatus 集合中
+//   (R104-A BUG-305 修复). BUG-305 (P3): FetchConfig.BrowserFallbackStatus 字段自 R38
+//   TS→Go 迁移以来从未被任何 consumer 读取 — LooksBlocked (line 2619) 的 status 分支
+//   用硬编码 `case "403","412","429","503"` (与 DefaultFetchConfig.BrowserFallbackStatus
+//   同集), 用户配 `browserFallbackStatus: [500]` 期望 500 触发 browser fallback, 实际
+//   无效 (硬编码集不含 500). 与 BUG-303 (types.go cloneFetchConfig shared slice) +
+//   BUG-304 (mergeFetchConfig shallow copy) 同款 "BrowserFallbackStatus family 半实现"
+//   latent. 修复: 抽本 helper, fetchPageOnce err-path (line ~7087) 改用 cfg.
+//   BrowserFallbackStatus 作 status-based blocked 权威源 (REPLACE 语义: 用户列表完全
+//   替换默认集, 与 sanitizeFetchConfig BUG-258 显式空数组清空语义对称). 0 当前用户
+//   受影响 (71 Rule 0 自定义 browserFallbackStatus, 全用默认 [403,412,429,503], 行为
+//   0 变化). LooksBlocked 硬编码 switch 保留 (10+ callsite 传 nil opts 不触发 status
+//   分支, 仅 fetchPageOnce err-path 涉 status; 硬编码 switch 现仅作 fallback 防御).
+func browserFallbackStatusContains(cfg FetchConfig, status int) bool {
+        for _, s := range cfg.BrowserFallbackStatus {
+                if s == status {
+                        return true
+                }
+        }
+        return false
+}
+
 // CaptchaType — 验证码类型识别.
 type CaptchaType string
 
@@ -4462,6 +4484,53 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 if xab := resp.Header.Get("X-Accel-Buffering"); xab != "" {
                         recordSecurityHeader(originHost(rawURL), "X-Accel-Buffering", xab)
                 }
+                // R104-A 反反爬第 214-218 项: CDN edge request ID / alt distributed
+                //   tracing / framework timing / CDN surrogate cache 响应头观测 (per-
+                //   host 合并 tracker 第 86-90 字段, 与 124-213 同款). R103-A 未决项
+                //   #1 pivot 续 — modern observability correlation + CDN edge + cache
+                //   timing + proxy buffering 耗尽, pivot CDN edge request ID (CloudFront)
+                //   + alt tracing (Zipkin B3) + framework timing (Rails/Node.js) + CDN
+                //   surrogate cache posture family.
+                //   第 214 项 X-Amz-Cf-Id (Amazon CloudFront convention) — CloudFront
+                //     edge request ID (e.g. "Dq9...-"). 反爬关联: 现代 CDN posture
+                //     (CloudFront 发, 与第 211 X-Served-By Fastly CDN edge family 互补,
+                //     AWS CloudFront fingerprint signal — 操作员可 fingerprint backend
+                //     CDN provider = AWS).
+                //   第 215 项 X-B3-TraceId (OpenZipkin B3 propagation §2) — distributed
+                //     tracing trace ID (Zipkin/旧 OpenTelemetry backend 发, 32-hex).
+                //     反爬关联: 现代 observability posture (与第 207 Traceparent W3C +
+                //     210 X-Correlation-ID Azure tracing family 互补, Zipkin stack
+                //     fingerprint — backend 用 Zipkin B3 而非 W3C Traceparent).
+                //   第 216 项 X-Runtime (Rails/Rack convention, 无 RFC) — server
+                //     processing time in seconds (e.g. "0.123456"). 反爬关联: 现代
+                //     observability posture (Rails/Rack backend 发, 与第 204 Server-
+                //     Timing + 212 X-Timer timing family 续, framework timing
+                //     fingerprint — Rails/Rack backend).
+                //   第 217 项 X-Response-Time (Express/koa/Sails Node.js convention) —
+                //     server response time in ms (e.g. "123ms"). 反爬关联: 现代
+                //     observability posture (Node.js framework 发, 与第 216 X-Runtime
+                //     framework timing family 续, Node.js fingerprint).
+                //   第 218 项 Surrogate-Control (RFC Edge Architecture / Fastly CDN
+                //     convention) — CDN-specific cache directive (e.g. "max-age=600",
+                //     separate from CDN-Cache-Control 第 194 项, surrogate = edge node
+                //     cache layer). 反爬关联: 现代 CDN posture (Fastly/edge 发, 与第
+                //     194 CDN-Cache-Control + 211 X-Served-By Fastly CDN cache family
+                //     续, edge cache directive fingerprint signal).
+                if xaci := resp.Header.Get("X-Amz-Cf-Id"); xaci != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Amz-Cf-Id", xaci)
+                }
+                if xb3 := resp.Header.Get("X-B3-TraceId"); xb3 != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-B3-TraceId", xb3)
+                }
+                if xrt := resp.Header.Get("X-Runtime"); xrt != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Runtime", xrt)
+                }
+                if xresp := resp.Header.Get("X-Response-Time"); xresp != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Response-Time", xresp)
+                }
+                if sc := resp.Header.Get("Surrogate-Control"); sc != "" {
+                        recordSecurityHeader(originHost(rawURL), "Surrogate-Control", sc)
+                }
 
                 // Set-Cookie 处理 (autoCookie)
                 if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
@@ -5650,6 +5719,24 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 }
                 if xab := extractHeaderFromCurlStdout(headers, "X-Accel-Buffering"); xab != "" {
                         recordSecurityHeader(domain, "X-Accel-Buffering", xab)
+                }
+                // R104-A 反反爬第 214-218 项 续 (与 fetchHttp line ~4466 同款, curl
+                //   -D - dump headers 路径; fetchBinaryViaCurl 不 dump 故不调, 与
+                //   124-213 同款限制. 详见 fetchHttp line ~4466 rationale).
+                if xaci := extractHeaderFromCurlStdout(headers, "X-Amz-Cf-Id"); xaci != "" {
+                        recordSecurityHeader(domain, "X-Amz-Cf-Id", xaci)
+                }
+                if xb3 := extractHeaderFromCurlStdout(headers, "X-B3-TraceId"); xb3 != "" {
+                        recordSecurityHeader(domain, "X-B3-TraceId", xb3)
+                }
+                if xrt := extractHeaderFromCurlStdout(headers, "X-Runtime"); xrt != "" {
+                        recordSecurityHeader(domain, "X-Runtime", xrt)
+                }
+                if xresp := extractHeaderFromCurlStdout(headers, "X-Response-Time"); xresp != "" {
+                        recordSecurityHeader(domain, "X-Response-Time", xresp)
+                }
+                if sc := extractHeaderFromCurlStdout(headers, "Surrogate-Control"); sc != "" {
+                        recordSecurityHeader(domain, "Surrogate-Control", sc)
                 }
                 if status >= 300 {
                         // R66-C BUG-52 (P3): curl 4xx/5xx 也记 latency + fail (与 fetchHttp
@@ -7084,7 +7171,11 @@ func fetchPageOnce(ctx context.Context, rawURL string, cfg FetchConfig) (*FetchR
 
         // 错误路径: 先尝试 token 挑战求解 (403/412 响应体)
         if he, ok := err.(*HTTPError); ok && he.Body != "" {
-                if LooksBlocked(he.Body, map[string]string{"status": fmt.Sprintf("%d", he.StatusCode)}) {
+                // R104-A BUG-305: status-based blocked 用 cfg.BrowserFallbackStatus 作权威源
+                //   (REPLACE 语义, 详见 browserFallbackStatusContains 注释), 不再依赖
+                //   LooksBlocked 硬编码 switch. content-based (blockedRe/captchaRe/
+                //   jsChallengeRe) 仍走 LooksBlocked(he.Body, nil).
+                if LooksBlocked(he.Body, nil) || browserFallbackStatusContains(cfg, he.StatusCode) {
                         // R91-A BUG-250 (P3) 修复 (R90-A 未决项 #6 候选 #5 续抓):
                         //   原实现 token 求解成功后立即 return Blocked: false, 不 re-check
                         //   LooksLikeCaptcha + LooksBlocked. 与 success-path (line ~6310)
@@ -7897,6 +7988,25 @@ func fetchBinaryHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, pr
                 }
                 if xab := resp.Header.Get("X-Accel-Buffering"); xab != "" {
                         recordSecurityHeader(originHost(rawURL), "X-Accel-Buffering", xab)
+                }
+                // R104-A 反反爬第 214-218 项 续 (与 fetchHttp line ~4466 同款,
+                //   fetchBinaryHttp success + 4xx/5xx 两路径都记, BUG-241 修复后
+                //   fetchBinaryHttp 已补对称; fetchBinaryViaCurl 不 dump headers
+                //   故不调, 与 124-213 同款限制. 详见 fetchHttp line ~4466 rationale).
+                if xaci := resp.Header.Get("X-Amz-Cf-Id"); xaci != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Amz-Cf-Id", xaci)
+                }
+                if xb3 := resp.Header.Get("X-B3-TraceId"); xb3 != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-B3-TraceId", xb3)
+                }
+                if xrt := resp.Header.Get("X-Runtime"); xrt != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Runtime", xrt)
+                }
+                if xresp := resp.Header.Get("X-Response-Time"); xresp != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Response-Time", xresp)
+                }
+                if sc := resp.Header.Get("Surrogate-Control"); sc != "" {
+                        recordSecurityHeader(originHost(rawURL), "Surrogate-Control", sc)
                 }
                 // 3xx / 4xx / 5xx 视为失败 (与 fetchHttp 同款, 不重试 3xx)
                 if resp.StatusCode >= 300 {
@@ -9298,8 +9408,22 @@ func tryBridges(ctx context.Context, rawURL string, cfg FetchConfig, ua string) 
 }
 
 // mergeFetchConfig — 合并默认配置 + override.
+//
+//      BUG-304 (P3): 原 `out := base` 是 struct 浅拷贝 — FetchConfig 的 4 个引用
+//        字段 (Headers / MoliHeaders map + URLs / BrowserFallbackStatus slice) 与
+//        base 共享 backing array / map bucket. 2 callsite (FetchPage line ~6885 +
+//        FetchBinaryPage line ~7308) 传 base=DefaultFetchConfig (包级 var),
+//        DefaultFetchConfig.BrowserFallbackStatus = []int{403,412,429,503} (非 nil),
+//        故 out.BrowserFallbackStatus 与之共享 backing array. caller 当前全 read-only
+//        不 mutate (fetcher.go BrowserFallbackStatus 仅 mergeFetchConfig 内 1 处
+//        assign, 0 处 mutate), 但与 BUG-303 (types.go DefaultRuleConfig /
+//        sanitizeFetchConfig shared slice leak, R103-B 修复) 同款 "shared mutable
+//        default" latent family. 修复: out := cloneFetchConfig(base) 深拷贝 4 引用
+//        字段 (与 types.go cloneFetchConfig line 882 同款 helper, 同包 crawl 直接调,
+//        0 重复逻辑). 0 当前用户受影响 (全 read-only), 防御性修复. latent 自 R38
+//        TS→Go 迁移 (R103-B 交接 R104-A scope 处理).
 func mergeFetchConfig(base FetchConfig, override FetchConfig) FetchConfig {
-        out := base
+        out := cloneFetchConfig(base)
         if override.Engine != "" {
                 out.Engine = override.Engine
         }
@@ -12729,6 +12853,22 @@ type hostSecurityHeadersEntry struct {
         xServedByValue       string // X-Served-By (第 211 项, R103-A)
         xTimerValue          string // X-Timer (第 212 项, R103-A)
         xAccelBufferingValue string // X-Accel-Buffering (第 213 项, R103-A)
+        // R104-A 反反爬第 214-218 项: CDN edge request ID (CloudFront) / alt
+        //   distributed tracing (Zipkin B3) / framework timing (Rails Rack +
+        //   Node.js) / CDN surrogate cache directive 响应头观测 (与 124-213 同款
+        //   family, 单值 last-write-wins per-host 合并 tracker). R103-A 未决项
+        //   #1 pivot 续 — modern observability correlation + CDN edge + cache
+        //   timing + proxy buffering 耗尽, pivot CDN edge request ID (CloudFront
+        //   X-Amz-Cf-Id) + alt distributed tracing (Zipkin B3 X-B3-TraceId,
+        //   complement W3C Traceparent #207) + framework timing (Rails/Rack
+        //   X-Runtime + Node.js X-Response-Time, complement Server-Timing #204) +
+        //   CDN surrogate cache (Fastly Surrogate-Control, complement CDN-Cache-
+        //   Control #194) posture family.
+        xAmzCfIdValue         string // X-Amz-Cf-Id (第 214 项, R104-A)
+        xB3TraceIdValue       string // X-B3-TraceId (第 215 项, R104-A)
+        xRuntimeValue         string // X-Runtime (第 216 项, R104-A)
+        xResponseTimeValue    string // X-Response-Time (第 217 项, R104-A)
+        surrogateControlValue string // Surrogate-Control (第 218 项, R104-A)
         detectedAt              int64  // UnixMilli
 }
 
@@ -12737,7 +12877,7 @@ type hostSecurityHeadersEntry struct {
 //   + R91-A 第 149-153 项 + R92-A 第 154-158 项 + R93-A 第 159-163 项 + R94-A 第
 //   164-168 项 + R95-A 第 169-173 项 + R96-A 第 174-178 项 + R98-A 第 184-188 项
 //   + R99-A 第 189-193 项 + R100-A 第 194-198 项 + R101-A 第 199-203 项 + R102-A
-//   第 204-208 项 + R103-A 第 209-213 项).
+//   第 204-208 项 + R103-A 第 209-213 项 + R104-A 第 214-218 项).
 var hostSecurityHeadersMap sync.Map
 
 // hostSecurityHeadersSweepCounter — sweep 触发累加 (与 hostViaSweepCounter 同口径).
@@ -12791,9 +12931,9 @@ func extractSetCookieAttr(cookies []string, attr string) string {
 //   项 + R91-A 第 149-153 项 + R92-A 第 154-158 项 + R93-A 第 159-163 项 + R94-A 第
 //   164-168 项 + R95-A 第 169-173 项 + R96-A 第 174-178 项 + R98-A 第 184-188 项
 //   + R99-A 第 189-193 项 + R100-A 第 194-198 项 + R101-A 第 199-203 项 + R102-A
-//   第 204-208 项 + R103-A 第 209-213 项).
-//   headerName 区分 65 头 (大小写不敏感). 与 recordVia 同款 Store + 惰性 sweep, 但
-//   保留其他 64 头旧值 (LoadOrStore canonical 指针 + 单字段 update-in-place).
+//   第 204-208 项 + R103-A 第 209-213 项 + R104-A 第 214-218 项).
+//   headerName 区分 90 头 (大小写不敏感). 与 recordVia 同款 Store + 惰性 sweep, 但
+//   保留其他 89 头旧值 (LoadOrStore canonical 指针 + 单字段 update-in-place).
 func recordSecurityHeader(host, headerName, value string) {
         if host == "" || value == "" {
                 return
@@ -13003,6 +13143,19 @@ func recordSecurityHeader(host, headerName, value string) {
                 ent.xTimerValue = value
         case "x-accel-buffering":
                 ent.xAccelBufferingValue = value
+        // R104-A 反反爬第 214-218 项: CDN edge request ID / alt tracing / framework
+        //   timing / CDN surrogate cache 响应头观测 (与 124-213 同款 family, 单值
+        //   last-write-wins per-host 合并 tracker). 详见 fetchHttp line ~4466 rationale.
+        case "x-amz-cf-id":
+                ent.xAmzCfIdValue = value
+        case "x-b3-traceid":
+                ent.xB3TraceIdValue = value
+        case "x-runtime":
+                ent.xRuntimeValue = value
+        case "x-response-time":
+                ent.xResponseTimeValue = value
+        case "surrogate-control":
+                ent.surrogateControlValue = value
         default:
                 return
         }
@@ -13110,6 +13263,11 @@ func HostSecurityHeadersSnapshot() map[string]map[string]string {
                         "xServedByValue":       e.xServedByValue,
                         "xTimerValue":           e.xTimerValue,
                         "xAccelBufferingValue": e.xAccelBufferingValue,
+                        "xAmzCfIdValue":         e.xAmzCfIdValue,
+                        "xB3TraceIdValue":       e.xB3TraceIdValue,
+                        "xRuntimeValue":         e.xRuntimeValue,
+                        "xResponseTimeValue":    e.xResponseTimeValue,
+                        "surrogateControlValue": e.surrogateControlValue,
                         "detectedAt":        fmt.Sprintf("%d", e.detectedAt),
                 }
                 return true

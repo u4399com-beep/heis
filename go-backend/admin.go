@@ -781,7 +781,16 @@ func adminTaskDeleteHandler(w http.ResponseWriter, r *http.Request, taskID strin
                 rt.MarkStopped()
         }
         // 删 TaskLog + Task (TaskLog 无外键约束, 手动清)
-        _, _ = db.Exec(`DELETE FROM TaskLog WHERE taskId=?`, taskID)
+        // R104-C BUG-305 (P3, R103-C 未决项 #3 Pattern C `_, _ = db.Exec` family
+        //   续抓, TaskLog orphan variant): 原实现 `_, _ = db.Exec(DELETE TaskLog
+        //   WHERE taskId=?)` 吞错 — TaskLog DELETE 失败但 Task DELETE (下 1 行,
+        //   显式 err 检) 成功 → 响应 200 "deleted:true" 但 TaskLog 行孤儿
+        //   (taskId 指向已删 Task). adminTaskLogsHandler 查询此 taskId 返 stale
+        //   日志 (用户看不到任务已删). 改用 execLogged (R96-C BUG-272~274 family
+        //   helper) — Task DELETE 仍正常 proceed (主流程不变), 仅运维 log 可见.
+        //   与 BUG-304 (lastBackupAt round-trip) / BUG-306 (stale download cleanup)
+        //   同款 Pattern C Exec family log-on-fail 收口.
+        execLogged("adminTaskDeleteHandler TaskLog", `DELETE FROM TaskLog WHERE taskId=?`, taskID)
         _, err = db.Exec(`DELETE FROM Task WHERE id=?`, taskID)
         if err != nil {
                 writeJSONErr(w, "删除失败: "+err.Error(), 500)
@@ -1345,7 +1354,22 @@ func startCrawlTask(taskID, ruleID, ruleConfig, mode, bookURL, listURL, fetchCon
         // 2. 解析 fetchConfig 覆盖 (ParseRuleConfig 未导出 sanitizeFetchConfig, 这里用 json.Unmarshal 直接解码)
         override := crawl.DefaultFetchConfig
         if fetchConfigStr != "" && fetchConfigStr != "{}" {
-                _ = json.Unmarshal([]byte(fetchConfigStr), &override)
+                // R104-C BUG-307 (P3, R103-C 未决项 #3 Pattern C `_ = json.Unmarshal`
+                //   family 续抓, admin fetchConfig override variant): 原实现 `_ =
+                //   json.Unmarshal([]byte(fetchConfigStr), &override)` 吞错 — admin
+                //   在 textarea 手输 fetchConfig JSON 语法错误 (未闭合括号 / 逗号
+                //   trailing / 字段名 typo) 时 Unmarshal 整体失败 → override 保留
+                //   DefaultFetchConfig (上 1 行初始化) → task 用默认 concurrency=1 /
+                //   headers / intervals 起跑, 用户不知配置被忽略. 改显式 err +
+                //   log.Printf — task 仍正常起跑 (override = DefaultFetchConfig 是
+                //   partial-override JSON 合法时的语义兑底, 全 Unmarshal 失败走同兑底,
+                //   0 行为变化), 仅运维 log 可见. 与 R94-C BUG-266 Pattern C Scan
+                //   log-on-fail 同款 visibility-only 语义. 与 BUG-304~306 Pattern C
+                //   Exec/QueryRow family 不同 sub-family (json.Unmarshal), 同款
+                //   log-on-fail 收口.
+                if uerr := json.Unmarshal([]byte(fetchConfigStr), &override); uerr != nil {
+                        log.Printf("[startCrawlTask task:%s] fetchConfig JSON 解析失败 (用默认配置起跑): %v", taskID, uerr)
+                }
         }
 
         // 3. 按模式处理 URLs
@@ -4546,7 +4570,16 @@ func adminDownloadsCreate(w http.ResponseWriter, r *http.Request) {
                 return
         }
         // 清扫陈旧在途任务 (>1h 无终态 → 标记 error)
-        _, _ = db.Exec(`UPDATE DownloadJob SET status='error', error='生成中断(陈旧任务清扫)' WHERE status IN ('pending','running') AND createdAt < datetime('now','-1 hour')`)
+        // R104-C BUG-306 (P3, R103-C 未决项 #3 Pattern C `_, _ = db.Exec` family
+        //   续抓, stale download cleanup inflated COUNT variant): 原实现 `_, _ =
+        //   db.Exec(UPDATE DownloadJob SET status=error WHERE stale)` 吞错 —
+        //   cleanup 失败 → 陈旧 pending/running 行保留 "running" status → 下 1 行
+        //   dbActive COUNT(*) WHERE status IN ('pending','running') (R91-C BUG-252
+        //   已显式 err) 含陈旧行 → 计数虚高 → 用户误 400 "并发占位已满" (实际陈旧
+        //   goroutine 已死, 仅 DB UPDATE 未刷新 status). 改用 execLogged — cleanup
+        //   仍 best-effort (主流程不变, 用户下次请求 cleanup 重试), 仅运维 log 可见.
+        //   与 BUG-304/305 同款 Pattern C Exec family log-on-fail 收口.
+        execLogged("adminDownloadsCreate staleCleanup", `UPDATE DownloadJob SET status='error', error='生成中断(陈旧任务清扫)' WHERE status IN ('pending','running') AND createdAt < datetime('now','-1 hour')`)
 
         // 并发占位检查
         var dbActive int
@@ -5670,7 +5703,16 @@ func adminBackupHandler(w http.ResponseWriter, r *http.Request) {
                 },
         }
         // 写入 lastBackupAt
-        _, _ = db.Exec(`INSERT INTO Setting (key, value) VALUES ('lastBackupAt', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, `"`+exportedAt+`"`)
+        // R104-C BUG-304 (P3, R103-C 未决项 #3 Pattern C `_, _ = db.Exec` family 续抓,
+        //   lastBackupAt round-trip write side): 原实现 `_, _ = db.Exec(INSERT Setting
+        //   lastBackupAt ...)` 吞错 — backup 文件已 serve 但 Setting 写失败 (SQLite busy
+        //   lock / 磁盘满) → 下次 /admin/backup fillBackupPageData 读 lastBackupAt
+        //   (BUG-304 read side, line 8261) 返 "" → "从未备份" 误显 (用户误以为没成功
+        //   备份, 重复导出浪费 IO). 改用 execLogged (R96-C BUG-272~274 fire-and-forget
+        //   Exec family helper) — backup serve 不变 (用户主流程不变), 仅运维 log 可见.
+        //   与 BUG-305 (TaskLog orphan DELETE) / BUG-306 (stale download cleanup)
+        //   同款 Pattern C Exec family log-on-fail 收口.
+        execLogged("adminBackupHandler lastBackupAt", `INSERT INTO Setting (key, value) VALUES ('lastBackupAt', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, `"`+exportedAt+`"`)
 
         filename := "heis-backup-" + time.Now().Format("20060102-1504") + ".json"
         w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -6918,7 +6960,20 @@ func getHomeLayoutSetting(siteID string) map[string]int {
                 return out
         }
         var raw string
-        _ = db.QueryRow(`SELECT value FROM Setting WHERE key=?`, "homeLayout."+siteID).Scan(&raw)
+        // R104-C BUG-308 (P3, R103-C 未决项 #3 Pattern C `_ = db.QueryRow(...).Scan`
+        //   family 续抓, homeLayout Setting read variant): 原实现 `_ =
+        //   db.QueryRow(...).Scan(&raw)` 吞错 — DB 故障 (SQLite busy lock / 连接闪断 /
+        //   磁盘满) 时 raw="" → 返全默认 layout (8 hot books) → 前台首页渲染默认布局
+        //   而非用户配置的 30 (用户以为 layout 配置丢失重配, 实际仅 transient DB
+        //   故障). 显式 err 区分: sql.ErrNoRows (Setting 行未建, 首次配置前 → 返默认
+        //   是正确语义) vs 其他 err (DB 故障 → log + 返默认兑底, 与原 swallow 同口径
+        //   +log visibility). 与 BUG-304 read side (fillBackupPageData lastBackupAt)
+        //   同款 Pattern C QueryRow Scan family log-on-fail + ErrNoRows distinguish
+        //   收口. 0 行为变化 (返默认仍是 fallback), 仅 +log visibility.
+        rawErr := db.QueryRow(`SELECT value FROM Setting WHERE key=?`, "homeLayout."+siteID).Scan(&raw)
+        if rawErr != nil && rawErr != sql.ErrNoRows {
+                log.Printf("[getHomeLayoutSetting site:%s] SELECT 失败 (用默认 layout 兑底): %v", siteID, rawErr)
+        }
         if raw == "" || raw == "{}" {
                 return out
         }
@@ -8258,7 +8313,21 @@ func fillBackupPageData(data map[string]interface{}) {
         }
         data["Counts"] = counts
         var lastBackupAt string
-        _ = db.QueryRow(`SELECT value FROM Setting WHERE key='lastBackupAt'`).Scan(&lastBackupAt)
+        // R104-C BUG-304 (P3, R103-C 未决项 #3 Pattern C `_ = db.QueryRow(...).Scan`
+        //   family 续抓, lastBackupAt round-trip read side): 原实现 `_ =
+        //   db.QueryRow(...).Scan(&lastBackupAt)` 吞错 — DB 故障 (SQLite busy lock /
+        //   连接闪断 / 磁盘满) 时 lastBackupAt="" → "从未备份" 误显 (用户上次实际备份
+        //   成功, 仅 Setting SELECT 失败; 与 BUG-304 write side line 5673 同
+        //   round-trip pair). R99-C BUG-285 同函数 (fillBackupPageData) 9-COUNT
+        //   batch 已修但漏此 single-scalar Setting read. 显式 err 区分:
+        //   sql.ErrNoRows (Setting 行未建, 首次访问 /admin/backup → "从未备份" 是
+        //   正确语义) vs 其他 err (DB 故障 → log + "从未备份" 兜底, 与原 swallow 同
+        //   口径, 但运维已知 via log). 与 BUG-308 getHomeLayoutSetting 同款 Pattern C
+        //   QueryRow Scan family log-on-fail + ErrNoRows distinguish 收口.
+        lastErr := db.QueryRow(`SELECT value FROM Setting WHERE key='lastBackupAt'`).Scan(&lastBackupAt)
+        if lastErr != nil && lastErr != sql.ErrNoRows {
+                log.Printf("[fillBackupPageData] lastBackupAt SELECT 失败 (展示 \"从未备份\"): %v", lastErr)
+        }
         if lastBackupAt == "" {
                 lastBackupAt = "从未备份"
         } else {

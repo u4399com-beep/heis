@@ -255,18 +255,36 @@ func SmartCategory(bookName, intro, sourceCategory string, existingCategories []
         // 1. 来源站点自带分类 (归一化合并)
         if sourceCategory != "" {
                 normalized := NormalizeCategory(strings.TrimSpace(sourceCategory))
-                for _, c := range existingCategories {
-                        // R93-B BUG-260 (P3) 修复: 原 `c == normalized` 不归一化 c, DB 存 2 字
-                        //   legacy 名 (e.g. "玄幻") 与 normalized 4 字标准名 ("玄幻奇幻") 不
-                        //   匹配 → source 路径 silent miss, 退到 keyword 路径 (MatchCategoryByText
-                        //   line 200-205 已 normalize c, keyword 路径不受影响, 但 Method 从
-                        //   "source" 降级为 "keyword", 上层按 Method 路由会误降级). 修复: 同款
-                        //   normalize c 后比较, 返回 normalized 4 字标准名 (post-R52-1A canonical,
-                        //   与 MatchCategoryByText keyword 路径返 4 字名一致). 0 用户受影响 (DB 已
-                        //   迁移 4 字名 R52-1A, legacy 2 字名仅历史 row; 即便命中 legacy row,
-                        //   返 normalized 让上层存储 4 字, 顺带迁移).
-                        if NormalizeCategory(c) == normalized {
-                                return SmartCategoryResult{Category: normalized, Method: "source"}
+                // BUG-308 (P3): 原 source path 不检查 normalized 空, sourceCategory 为
+                //   空白 (" "/"\t"/"  " 等 TrimSpace 后 "") 时 normalized="" → for 循环
+                //   遍历 existingCategories, 若任一 c 经 NormalizeCategory 也返 "" (c
+                //   为空串或纯空白) 则 NormalizeCategory(c)=="" == normalized → 命中返
+                //   SmartCategoryResult{Category:"", Method:"source"}. 语义错: source
+                //   实际为空 (whitespace-only) 不应进 source path, 且 Method="source"
+                //   暗示 "源站分类命中" 与 Category="" 矛盾, 上层按 Method 路由会误判
+                //   (e.g. 优先级 source > keyword, 上层跳过 keyword 路径, 最终 Category
+                //   空 → 落 LLM 兜底 "none", 与不进 source path 直接走 keyword 路径可
+                //   能命中 keyword → Category 非空 的语义不符). 当前唯一 caller
+                //   runner.go line 1737 走 cfg.Site.List... source path, admin Rule
+                //   List 段 0 配空白 sourceCategory (字段非空必含实质分类名); 但
+                //   SmartCategory 是 export, 防御性修复. latent 自 R38 TS→Go 迁移
+                //   (47 轮未发现). 修复: normalized 空 (含 sourceCategory 纯空白
+                //   case) 时跳过 source path, 走 keyword 路径 (与 sourceCategory=""
+                //   omit 路径同口径, 行为统一).
+                if normalized != "" {
+                        for _, c := range existingCategories {
+                                // R93-B BUG-260 (P3) 修复: 原 `c == normalized` 不归一化 c, DB 存 2 字
+                                //   legacy 名 (e.g. "玄幻") 与 normalized 4 字标准名 ("玄幻奇幻") 不
+                                //   匹配 → source 路径 silent miss, 退到 keyword 路径 (MatchCategoryByText
+                                //   line 200-205 已 normalize c, keyword 路径不受影响, 但 Method 从
+                                //   "source" 降级为 "keyword", 上层按 Method 路由会误降级). 修复: 同款
+                                //   normalize c 后比较, 返回 normalized 4 字标准名 (post-R52-1A canonical,
+                                //   与 MatchCategoryByText keyword 路径返 4 字名一致). 0 用户受影响 (DB 已
+                                //   迁移 4 字名 R52-1A, legacy 2 字名仅历史 row; 即便命中 legacy row,
+                                //   返 normalized 让上层存储 4 字, 顺带迁移).
+                                if NormalizeCategory(c) == normalized {
+                                        return SmartCategoryResult{Category: normalized, Method: "source"}
+                                }
                         }
                 }
         }
@@ -468,18 +486,17 @@ func SmartResumeSort(items []SmartResumeItem) []SmartResumeItem {
                 return nearDone[i].LastFetchAt < nearDone[j].LastFetchAt
         })
         // started: LastFetchAt 升序 (最久未采先)
+        // R104-B 精简: 原 `if != ... return ...; return false` 冗余 — sort.
+        //   SliceStable 对 Less(i,j)==false && Less(j,i)==false (即 `a < b` ==
+        //   `b < a` == false, a==b case) 已保稳定原序, 无需显式 `return false`
+        //   分支. 改单表达式 `a < b` 等价 (a>b 时 Less(i,j)=false Less(j,i)=true
+        //   → j 前 i; a==b 时双 false → 稳定保序). 行为 0 变化. -3 行/callsite.
         sort.SliceStable(started, func(i, j int) bool {
-                if started[i].LastFetchAt != started[j].LastFetchAt {
-                        return started[i].LastFetchAt < started[j].LastFetchAt
-                }
-                return false // 同时间保持原顺序
+                return started[i].LastFetchAt < started[j].LastFetchAt
         })
         // fresh: LastFetchAt 升序 (最久未采先, 0 视为最久)
         sort.SliceStable(fresh, func(i, j int) bool {
-                if fresh[i].LastFetchAt != fresh[j].LastFetchAt {
-                        return fresh[i].LastFetchAt < fresh[j].LastFetchAt
-                }
-                return false
+                return fresh[i].LastFetchAt < fresh[j].LastFetchAt
         })
         // 拼接: nearDone (优先) → started (次) → fresh (最后)
         out := make([]SmartResumeItem, 0, len(items))

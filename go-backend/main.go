@@ -877,19 +877,34 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 data["OgType"] = "book"
                 data["OgSiteName"] = siteName
                 if bookCover != "" {
-                        // R77-D 目标B (R76 交接 #5 OgImage 绝对 URL): bookCover 已是 coverURL
-                        //   处理过的路径 (getBookViewData line ~3347 调 coverURL(cover.String)),
-                        //   可能是 "/covers/abc.webp" (相对) / "https://cdn..." (外链) /
-                        //   "data:image/..." (内联). FB og:image / Twitter twitter:image 须
+                        // R77-D 目标B (R76 交接 #5 OgImage 绝对 URL): bookCover 已是
+                        //   getBookViewData line 3888 coverURL(cover.String) 处理过的
+                        //   路径 (相对 "/covers/abc.webp" / 外链 "https://cdn..." /
+                        //   内联 "data:image/..."). FB og:image / Twitter twitter:image 须
                         //   绝对 URL (含 scheme + host), 相对路径 FB 抓取 warning (不报错但
-                        //   缺图), Twitter 拒绝相对路径 (twitter:image 必须绝对 URL). 改:
-                        //   再过一次 coverURL (idempotent, 防 bookCover 来自非 getBookViewData
-                        //   路径未处理) + buildAbsoluteURL(site.Domain, ...) 拼成绝对 URL.
-                        //   外链 / data: / 协议相对 // 形态 buildAbsoluteURL 原样返回 (coverURL
-                        //   passthrough). 仅相对路径 "/covers/..." 拼成 "https://domain/covers/..."
-                        //   (生产 domain) 或 "http://localhost:3000/covers/..." (dev).
-                        data["OgImage"] = buildAbsoluteURL(siteDomain, coverURL(bookCover))
-                        data["TwitterImage"] = buildAbsoluteURL(siteDomain, coverURL(bookCover))
+                        //   缺图), Twitter 拒绝相对路径 (twitter:image 必须绝对 URL).
+                        //   buildAbsoluteURL(siteDomain, bookCover) 拼成绝对 URL (外链 /
+                        //   data: / 协议相对 // 形态 buildAbsoluteURL 原样返回, 仅相对路径
+                        //   "/covers/..." 拼成 "https://domain/covers/..." (生产 domain)
+                        //   或 "http://localhost:3000/covers/..." (dev)).
+                        //   R104-D BUG-304 (P4, main+templates scope, R77-D og:image
+                        //     absolute URL family sibling): R77-D 原代码
+                        //     `buildAbsoluteURL(siteDomain, coverURL(bookCover))` 包了
+                        //     两次 coverURL — bookCover 已是 getBookViewData line 3888
+                        //     coverURL(cover.String) 处理过的路径, coverURL idempotent
+                        //     (line 3602-3623 各分支返原值或加 / 前缀, 二次调用返同值),
+                        //     二次 coverURL 是 R77-D 注释 "防 bookCover 来自非
+                        //     getBookViewData 路径未处理" 的死防御代码 — bookCover 永远
+                        //     来自 getBookViewData (line 871 book["cover"], book 来自
+                        //     line 817 getBookViewData 返值), "非 getBookViewData 路径"
+                        //     不存在 → 注释-代码不一致 (注释误导未来读者认为 bookCover
+                        //     可能未处理). 删冗余 coverURL wrapper, 直接传 bookCover 给
+                        //     buildAbsoluteURL (buildAbsoluteURL 已处理所有 coverURL-
+                        //     normalized 形态: http://, https://, //, /, data:, other).
+                        //     0 行为变化 (coverURL idempotent), 省 map lookup + 4 次
+                        //     HasPrefix 字符串比较 per book view request.
+                        data["OgImage"] = buildAbsoluteURL(siteDomain, bookCover)
+                        data["TwitterImage"] = buildAbsoluteURL(siteDomain, bookCover)
                 }
                 data["TwitterCard"] = "summary"
                 data["TwitterTitle"] = bookName
@@ -978,13 +993,23 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 data["OgSiteName"] = siteName
                 if bookCoverRead != "" {
                         // R77-D 目标B (R76 交接 #5 OgImage 绝对 URL, read view 同款):
-                        //   buildAbsoluteURL 把 "/covers/..." 相对路径拼成绝对 URL. 外链 /
-                        //   data: / // 形态 passthrough (coverURL 已处理). 注: read view
-                        //   的 book 来自 getReadViewData, 当 book SQL 失败时 bookMap 仅含
-                        //   空 fields 无 "cover" key → bookCoverRead="" (comma-ok 安全),
-                        //   本 if 块跳过, 模板 {{if .OgTitle}} 仍渲染 (OgUrl=absChURL).
-                        data["OgImage"] = buildAbsoluteURL(siteDomain, coverURL(bookCoverRead))
-                        data["TwitterImage"] = buildAbsoluteURL(siteDomain, coverURL(bookCoverRead))
+                        //   bookCoverRead 已是 getReadViewData line 4073
+                        //   coverURL(bcover.String) 处理过的路径, buildAbsoluteURL 把
+                        //   "/covers/..." 相对路径拼成绝对 URL (外链 / data: / //
+                        //   形态 passthrough). 注: read view 的 book 来自
+                        //   getReadViewData, 当 book SQL 失败时 bookMap 仅含空 fields
+                        //   无 "cover" key → bookCoverRead="" (comma-ok 安全), 本 if
+                        //   块跳过, 模板 {{if .OgTitle}} 仍渲染 (OgUrl=absChURL).
+                        //   R104-D BUG-304 (P4, R77-D og:image absolute URL family
+                        //     sibling, case "book" 同款): R77-D 原代码包了两次 coverURL
+                        //     — bookCoverRead 已是 coverURL 处理过, coverURL idempotent,
+                        //     二次 coverURL 是死防御代码 (bookCoverRead 永远来自
+                        //     getReadViewData line 970 book["cover"], "非 getReadViewData
+                        //     路径" 不存在). 删冗余 coverURL wrapper, 直接传
+                        //     bookCoverRead 给 buildAbsoluteURL. 0 行为变化, 省 map
+                        //     lookup + HasPrefix 比较 per read view request.
+                        data["OgImage"] = buildAbsoluteURL(siteDomain, bookCoverRead)
+                        data["TwitterImage"] = buildAbsoluteURL(siteDomain, bookCoverRead)
                 }
                 data["TwitterCard"] = "summary"
                 data["TwitterTitle"] = chTitle + " - " + bookNameRead
@@ -1242,7 +1267,13 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 //   区块 (原 range .Books 全 48 本) + .HomeHotBooks 限 24h 热榜 (原 takeBooks(books,12)).
                 //   site["ID"] 为本站 ID (getSite 注入). 为空 (无 siteID query 但 isDefault 命中) 时
                 //   用默认值 (R70-D getHomeLayoutSetting 对空 siteID 返全默认 8/6/12/12).
-                siteDBID, _ := site["ID"].(string)
+                //   R104-D 精简 (DRY, R102-D siteDomain hoist + R103-D siteName hoist
+                //     sibling): siteDBID 已 hoist 至 switch 前 (line 779, 供
+                //     getWheelLinks 复用), 本 case 原 local siteDBID 声明 (line 1245)
+                //     是 shadow — 同源 site["ID"].(string), 值相同. 删 local 声明,
+                //     复用 hoisted siteDBID (与 R102-D 删 case "book" local siteDomain
+                //     + R103-D 删 case "book"/"read" local siteName 同款方法论).
+                //     0 行为变化 (site map 单一, 全 case 共享同 site["ID"] 值).
                 layout := getHomeLayoutSetting(siteDBID)
                 catCount := layout["homeCategoryCount"]
                 catBooks := layout["homeCategoryBooks"]

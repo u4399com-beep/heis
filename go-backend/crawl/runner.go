@@ -1575,8 +1575,14 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) (retErr error) {
         //   (per-task 反爬拦截累计) vs "错误%d" (stats.Errors 含 transient err).
         //   操作员看到 "拦截5 | 错误2" 可判断 5 次反爬拦 (硬封禁信号) + 2 次瞬态
         //   错 (网络/解析), 与 Snapshot.BlockedEncountered admin UI 字段同口径.
-        logf(LogSuccess, "✅ 任务完成: 新书%d 更新%d | 新章节%d 更新%d | 封面%d | 拦截%d | 错误%d",
-                stats.BooksCreated, stats.BooksUpdated, stats.ChaptersCreated, stats.ChaptersUpdated, stats.CoversSaved, atomic.LoadInt64(&rt.blockedEncountered), stats.Errors)
+        // R104-A BUG-306: 补 "验证码%d" (CaptchaEncountered). R103-A BUG-299 加 "拦截%d"
+        //   但未补 captcha — 与 Snapshot.CaptchaEncountered admin UI 字段不对称
+        //   (Snapshot 有 blocked + captcha 两字段, log 仅 blocked). 操作员看 log
+        //   "拦截5 | 错误2" 无法判断 captcha 频率. 修复: 补 "验证码%d" 在 "拦截%d" 后
+        //   (高 captcha = 软拦截, 可配 2captcha; 高 blocked = 硬封禁). 与 R103-A
+        //   BUG-299 completion log breakdown 同口径闭环.
+        logf(LogSuccess, "✅ 任务完成: 新书%d 更新%d | 新章节%d 更新%d | 封面%d | 拦截%d | 验证码%d | 错误%d",
+                stats.BooksCreated, stats.BooksUpdated, stats.ChaptersCreated, stats.ChaptersUpdated, stats.CoversSaved, atomic.LoadInt64(&rt.blockedEncountered), atomic.LoadInt64(&rt.captchaEncountered), stats.Errors)
         if !rt.IsPaused() && !rt.IsStopped() && !rt.IsStale(myEpoch) {
                 if cfg.DB != nil {
                         _ = cfg.DB.UpdateTaskStatus(cfg.TaskID, "done")
