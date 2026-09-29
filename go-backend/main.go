@@ -793,7 +793,15 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
         //   <link rel="canonical" href="{{.CanonicalURL}}"> (R101-D BUG-290
         //   og:image guard 同款 {{if .CanonicalURL}} 守护, 0 行为变化 for 空
         //   canonical — 但 list views 永远 set CanonicalURL, 0 空值场景).
+        //   R103-D BUG-299 精简 (DRY, R102-D siteDomain hoist sibling): hoist
+        //   siteName 供 case "book"/"read" 复用 (省 2 行 local 声明 + 重命名
+        //   siteNameRead/siteDomainRead → siteName/siteDomain, 与 case "book"
+        //   同款命名). site["Name"]/["Domain"] 在 homeHandler 全 case 0 修改,
+        //   全 case 共享同值 (单 site map), hoist 0 行为变化. R102-D 仅 hoist
+        //   siteDomain (case "book" local 已删, case "read" local siteDomainRead
+        //   漏删); 本轮补 siteName hoist + 删 case "read" 2 local 声明.
         siteDomain, _ := site["Domain"].(string)
+        siteName, _ := site["Name"].(string)
 
         // 按 view 装配数据.
         // R83-D: bookHistoryJS 仅在 case "book" 赋值 (Go 端 fmt.Sprintf 注入 id 到 tracker JS
@@ -856,7 +864,8 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 //   无 domain 仍合法, 搜索引擎按相对 URL 解析当前 host; 不致命).
                 //   R102-D BUG-297: siteDomain 已 hoist 至 switch 前 (line ~782),
                 //   本 case "book" 直接复用 (省 1 行 local 声明, DRY).
-                siteName, _ := site["Name"].(string)
+                //   R103-D BUG-299 精简: siteName 同 hoist (line ~804), 删本 case
+                //   local siteName 声明. 与 case "read" 共用同 hoisted var.
                 bookName, _ := book["name"].(string)
                 bookIntro, _ := book["intro"].(string)
                 bookCover, _ := book["cover"].(string)
@@ -951,20 +960,22 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 //   - TwitterDescription = truncate(book.intro, 200)
                 //   注: book 查不到 (getReadViewData 早返路径) 时 bookName/bookIntro 为空,
                 //     pSEO 字段仍注入 (空值), 模板用 {{if .OgTitle}} 守护渲染 (R76-B 范围).
-                siteNameRead, _ := site["Name"].(string)
-                siteDomainRead, _ := site["Domain"].(string)
+                //   R103-D BUG-299 精简: siteName/siteDomain 已 hoist 至 switch 前
+                //     (line ~803-804), 删本 case local siteNameRead/siteDomainRead
+                //     声明 (R102-D 删 case "book" local siteDomain 漏删 case "read",
+                //     本轮补; 与 case "book" 同款命名 siteName/siteDomain).
                 chTitle, _ := ch["title"].(string)
                 bookNameRead, _ := book["name"].(string)
                 bookIntroRead, _ := book["intro"].(string)
                 bookCoverRead, _ := book["cover"].(string)
                 bidForSEO := bookIDFromMap(book)
-                absChURL := buildAbsoluteURL(siteDomainRead, buildChapterURL(pseudoStyle, chID, bidForSEO))
+                absChURL := buildAbsoluteURL(siteDomain, buildChapterURL(pseudoStyle, chID, bidForSEO))
                 ogDescRead := truncate(bookIntroRead, 200)
-                data["OgTitle"] = chTitle + " - " + bookNameRead + " - " + siteNameRead
+                data["OgTitle"] = chTitle + " - " + bookNameRead + " - " + siteName
                 data["OgDescription"] = ogDescRead
                 data["OgUrl"] = absChURL
                 data["OgType"] = "article"
-                data["OgSiteName"] = siteNameRead
+                data["OgSiteName"] = siteName
                 if bookCoverRead != "" {
                         // R77-D 目标B (R76 交接 #5 OgImage 绝对 URL, read view 同款):
                         //   buildAbsoluteURL 把 "/covers/..." 相对路径拼成绝对 URL. 外链 /
@@ -972,8 +983,8 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                         //   的 book 来自 getReadViewData, 当 book SQL 失败时 bookMap 仅含
                         //   空 fields 无 "cover" key → bookCoverRead="" (comma-ok 安全),
                         //   本 if 块跳过, 模板 {{if .OgTitle}} 仍渲染 (OgUrl=absChURL).
-                        data["OgImage"] = buildAbsoluteURL(siteDomainRead, coverURL(bookCoverRead))
-                        data["TwitterImage"] = buildAbsoluteURL(siteDomainRead, coverURL(bookCoverRead))
+                        data["OgImage"] = buildAbsoluteURL(siteDomain, coverURL(bookCoverRead))
+                        data["TwitterImage"] = buildAbsoluteURL(siteDomain, coverURL(bookCoverRead))
                 }
                 data["TwitterCard"] = "summary"
                 data["TwitterTitle"] = chTitle + " - " + bookNameRead
@@ -1153,7 +1164,19 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 data["HotBooks"] = takeBooks(books, 12)
                 // R102-D BUG-297: search view canonical = self (含 q, 每搜索 query
                 //   唯一内容, canonical 各异). url.QueryEscape 防 q 含 &/= 破 URL.
-                data["CanonicalURL"] = buildAbsoluteURL(siteDomain, "/?view=search&q="+url.QueryEscape(q))
+                // R103-D BUG-299 (P3 SEO, main+templates scope, R102-D BUG-297
+                //   canonical family sibling): R102-D 原内联 `/?view=search&q=`+
+                //   url.QueryEscape(q) 在 q=="" 时生成 `/?view=search&q=` (空 q 档),
+                //   与模板 search form 链接的 `/?view=search` (无 q) 是两 URL 形态但
+                //   渲染同内容 (空搜索结果页) → SEO duplicate-content (搜索引擎
+                //   看到两 URL 都返 200 OK + 同内容, canonical 各异 — `/?view=search`
+                //   的 canonical = `/?view=search&q=`, `/?view=search&q=` 的 canonical
+                //   = self, 虽 consolidate 但 canonical 形态不优). 改: 用
+                //   buildPagerURL(pseudoStyle, "search", q, 1) 与 ranking/fulltext 同款
+                //   DRY; buildPagerURL 在 id="" 时 skip `&q=` 段 → 空 q canonical =
+                //   `/?view=search` (与 search form 一致). 非 q 的 url.QueryEscape 仍由
+                //   buildPagerURL 内部处理 (BUG-32 同款). 0 行为变化 for 非空 q.
+                data["CanonicalURL"] = buildAbsoluteURL(siteDomain, buildPagerURL(pseudoStyle, "search", q, 1))
         case "keyword":
                 tag := r.URL.Query().Get("tag")
                 books, relatedTags := getKeywordViewData(tag, 20)
@@ -1163,7 +1186,12 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
                 data["RelatedTags"] = relatedTags
                 data["HotBooks"] = takeBooks(books, 12)
                 // R102-D BUG-297: keyword view canonical = self (含 tag).
-                data["CanonicalURL"] = buildAbsoluteURL(siteDomain, "/?view=keyword&tag="+url.QueryEscape(tag))
+                // R103-D BUG-299 (sibling, 同上 search 注释): R102-D 原内联 `/?view=keyword&tag=`+url.QueryEscape(tag)
+                //   在 tag=="" 时生成 `/?view=keyword&tag=` (空 tag 档), 与模板 keyword
+                //   入口链接 (无 tag) 是两 URL 形态但渲染同内容 → SEO duplicate-content.
+                //   改 buildPagerURL(pseudoStyle, "keyword", tag, 1) 与 search/ranking/
+                //   fulltext 同款 DRY; 空 tag canonical = `/?view=keyword`. 0 行为变化 for 非空 tag.
+                data["CanonicalURL"] = buildAbsoluteURL(siteDomain, buildPagerURL(pseudoStyle, "keyword", tag, 1))
         case "history":
                 // R82-D 目标A (R81 交接 #8 + R77-D 未决项 #10): history view — 从客户端
                 //   `bookHistory` cookie (JSON `{"ids":["cuid1",...]}` 或 bare array) 读浏览

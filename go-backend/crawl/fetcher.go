@@ -4416,6 +4416,52 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 if bg := resp.Header.Get("Baggage"); bg != "" {
                         recordSecurityHeader(originHost(rawURL), "Baggage", bg)
                 }
+                // R103-A 反反爬第 209-213 项: modern observability correlation ID /
+                //   CDN edge node identifier / cache timing / reverse proxy buffering
+                //   hint 响应头观测 (per-host 合并 tracker 第 81-85 字段, 与 124-208
+                //   同款). R102-A 未决项 #1 pivot 续 — modern observability + protocol-
+                //   upgrade + privacy posture 耗尽, pivot modern observability
+                //   correlation + CDN edge identifier + cache timing + proxy buffering.
+                //   第 209 项 X-Request-ID (Heroku/Vercel/Rails/Django convention, 无
+                //     RFC) — per-request unique ID for log correlation (e.g.
+                //     "abc123def456"). 反爬关联: 现代 observability posture (成熟
+                //     instrumented backend 发, 与第 204 Server-Timing + 207
+                //     Traceparent observability family 续; backend 有完整请求日志
+                //     → 高 ban 风险 if scraper fingerprint detected).
+                //   第 210 项 X-Correlation-ID (Microsoft Azure convention) —
+                //     distributed tracing correlation ID (Microsoft variant complement
+                //     to W3C Traceparent/Baggage 第 207/208 项, Azure-deployed backend
+                //     发). 反爬关联: 现代 observability posture (与第 207 Traceparent
+                //     W3C + 208 Baggage W3C tracing family 互补).
+                //   第 211 项 X-Served-By (Fastly CDN convention) — cache POP edge
+                //     node identifier (e.g. "cache-fra1912834"). 反爬关联: 现代 CDN
+                //     posture (Fastly 发, 与第 173 X-Cache + 199 Cache-Status cache
+                //     family 续, Fastly-specific edge node ID — 操作员可 fingerprint
+                //     backend CDN provider).
+                //   第 212 项 X-Timer (Varnish/Fastly convention) — cache timing
+                //     breakdown (e.g. "S=123456;VL=10"). 反爬关联: 现代
+                //     observability posture (Varnish/Fastly 发, 与第 204 Server-Timing
+                //     + 211 X-Served-By CDN cache timing family 续).
+                //   第 213 项 X-Accel-Buffering (nginx reverse proxy convention) —
+                //     upstream buffering hint ("no"=disable buffering, "yes"=enable).
+                //     反爬关联: 现代 reverse proxy posture (nginx 发, 与第 172 Via
+                //     proxy family 续, backend instructs reverse proxy buffer behavior
+                //     — proxy posture fingerprint signal).
+                if xri := resp.Header.Get("X-Request-ID"); xri != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Request-ID", xri)
+                }
+                if xci := resp.Header.Get("X-Correlation-ID"); xci != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Correlation-ID", xci)
+                }
+                if xsb := resp.Header.Get("X-Served-By"); xsb != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Served-By", xsb)
+                }
+                if xt := resp.Header.Get("X-Timer"); xt != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Timer", xt)
+                }
+                if xab := resp.Header.Get("X-Accel-Buffering"); xab != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Accel-Buffering", xab)
+                }
 
                 // Set-Cookie 处理 (autoCookie)
                 if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
@@ -5586,6 +5632,24 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 }
                 if bg := extractHeaderFromCurlStdout(headers, "Baggage"); bg != "" {
                         recordSecurityHeader(domain, "Baggage", bg)
+                }
+                // R103-A 反反爬第 209-213 项 续 (与 fetchHttp line ~4420 同款, curl
+                //   -D - dump headers 路径; fetchBinaryViaCurl 不 dump 故不调, 与
+                //   124-208 同款限制. 详见 fetchHttp line ~4420 rationale).
+                if xri := extractHeaderFromCurlStdout(headers, "X-Request-ID"); xri != "" {
+                        recordSecurityHeader(domain, "X-Request-ID", xri)
+                }
+                if xci := extractHeaderFromCurlStdout(headers, "X-Correlation-ID"); xci != "" {
+                        recordSecurityHeader(domain, "X-Correlation-ID", xci)
+                }
+                if xsb := extractHeaderFromCurlStdout(headers, "X-Served-By"); xsb != "" {
+                        recordSecurityHeader(domain, "X-Served-By", xsb)
+                }
+                if xt := extractHeaderFromCurlStdout(headers, "X-Timer"); xt != "" {
+                        recordSecurityHeader(domain, "X-Timer", xt)
+                }
+                if xab := extractHeaderFromCurlStdout(headers, "X-Accel-Buffering"); xab != "" {
+                        recordSecurityHeader(domain, "X-Accel-Buffering", xab)
                 }
                 if status >= 300 {
                         // R66-C BUG-52 (P3): curl 4xx/5xx 也记 latency + fail (与 fetchHttp
@@ -7814,6 +7878,25 @@ func fetchBinaryHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, pr
                 }
                 if bg := resp.Header.Get("Baggage"); bg != "" {
                         recordSecurityHeader(originHost(rawURL), "Baggage", bg)
+                }
+                // R103-A 反反爬第 209-213 项 续 (与 fetchHttp line ~4420 同款,
+                //   fetchBinaryHttp success + 4xx/5xx 两路径都记, BUG-241 修复后
+                //   fetchBinaryHttp 已补对称; fetchBinaryViaCurl 不 dump headers
+                //   故不调, 与 124-208 同款限制. 详见 fetchHttp line ~4420 rationale).
+                if xri := resp.Header.Get("X-Request-ID"); xri != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Request-ID", xri)
+                }
+                if xci := resp.Header.Get("X-Correlation-ID"); xci != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Correlation-ID", xci)
+                }
+                if xsb := resp.Header.Get("X-Served-By"); xsb != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Served-By", xsb)
+                }
+                if xt := resp.Header.Get("X-Timer"); xt != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Timer", xt)
+                }
+                if xab := resp.Header.Get("X-Accel-Buffering"); xab != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Accel-Buffering", xab)
                 }
                 // 3xx / 4xx / 5xx 视为失败 (与 fetchHttp 同款, 不重试 3xx)
                 if resp.StatusCode >= 300 {
@@ -12633,6 +12716,19 @@ type hostSecurityHeadersEntry struct {
         tkValue                 string // Tk (第 206 项, R102-A)
         traceparentValue        string // Traceparent (第 207 项, R102-A)
         baggageValue            string // Baggage (第 208 项, R102-A)
+        // R103-A 反反爬第 209-213 项: modern observability correlation ID / CDN
+        //   edge node identifier / cache timing / reverse proxy buffering hint
+        //   响应头观测 (与 124-208 同款 family, 单值 last-write-wins per-host 合并
+        //   tracker). R102-A 未决项 #1 pivot 续 — modern observability + protocol-
+        //   upgrade + privacy posture 耗尽, pivot modern observability correlation
+        //   (X-Request-ID / X-Correlation-ID) + CDN edge node identifier (X-Served-
+        //   By) + CDN cache timing (X-Timer) + reverse proxy buffering (X-Accel-
+        //   Buffering) posture family.
+        xRequestIdValue      string // X-Request-ID (第 209 项, R103-A)
+        xCorrelationIdValue  string // X-Correlation-ID (第 210 项, R103-A)
+        xServedByValue       string // X-Served-By (第 211 项, R103-A)
+        xTimerValue          string // X-Timer (第 212 项, R103-A)
+        xAccelBufferingValue string // X-Accel-Buffering (第 213 项, R103-A)
         detectedAt              int64  // UnixMilli
 }
 
@@ -12641,7 +12737,7 @@ type hostSecurityHeadersEntry struct {
 //   + R91-A 第 149-153 项 + R92-A 第 154-158 项 + R93-A 第 159-163 项 + R94-A 第
 //   164-168 项 + R95-A 第 169-173 项 + R96-A 第 174-178 项 + R98-A 第 184-188 项
 //   + R99-A 第 189-193 项 + R100-A 第 194-198 项 + R101-A 第 199-203 项 + R102-A
-//   第 204-208 项).
+//   第 204-208 项 + R103-A 第 209-213 项).
 var hostSecurityHeadersMap sync.Map
 
 // hostSecurityHeadersSweepCounter — sweep 触发累加 (与 hostViaSweepCounter 同口径).
@@ -12695,7 +12791,7 @@ func extractSetCookieAttr(cookies []string, attr string) string {
 //   项 + R91-A 第 149-153 项 + R92-A 第 154-158 项 + R93-A 第 159-163 项 + R94-A 第
 //   164-168 项 + R95-A 第 169-173 项 + R96-A 第 174-178 项 + R98-A 第 184-188 项
 //   + R99-A 第 189-193 项 + R100-A 第 194-198 项 + R101-A 第 199-203 项 + R102-A
-//   第 204-208 项).
+//   第 204-208 项 + R103-A 第 209-213 项).
 //   headerName 区分 65 头 (大小写不敏感). 与 recordVia 同款 Store + 惰性 sweep, 但
 //   保留其他 64 头旧值 (LoadOrStore canonical 指针 + 单字段 update-in-place).
 func recordSecurityHeader(host, headerName, value string) {
@@ -12893,6 +12989,20 @@ func recordSecurityHeader(host, headerName, value string) {
                 ent.traceparentValue = value
         case "baggage":
                 ent.baggageValue = value
+        // R103-A 反反爬第 209-213 项: modern observability correlation ID / CDN edge
+        //   node identifier / cache timing / reverse proxy buffering hint 响应头观测
+        //   (与 124-208 同款 family, 单值 last-write-wins per-host 合并 tracker).
+        //   详见 fetchHttp line ~4420 rationale.
+        case "x-request-id":
+                ent.xRequestIdValue = value
+        case "x-correlation-id":
+                ent.xCorrelationIdValue = value
+        case "x-served-by":
+                ent.xServedByValue = value
+        case "x-timer":
+                ent.xTimerValue = value
+        case "x-accel-buffering":
+                ent.xAccelBufferingValue = value
         default:
                 return
         }
@@ -12995,6 +13105,11 @@ func HostSecurityHeadersSnapshot() map[string]map[string]string {
                         "tkValue":                 e.tkValue,
                         "traceparentValue":        e.traceparentValue,
                         "baggageValue":            e.baggageValue,
+                        "xRequestIdValue":      e.xRequestIdValue,
+                        "xCorrelationIdValue":  e.xCorrelationIdValue,
+                        "xServedByValue":       e.xServedByValue,
+                        "xTimerValue":           e.xTimerValue,
+                        "xAccelBufferingValue": e.xAccelBufferingValue,
                         "detectedAt":        fmt.Sprintf("%d", e.detectedAt),
                 }
                 return true

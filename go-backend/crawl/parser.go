@@ -331,6 +331,40 @@ func compileUserReplaceFrom(src string) (*regexp.Regexp, bool) {
         return re, ok
 }
 
+// anyToString — JSON any 值 → 单行字符串 (float64 走 FormatFloat 不走科学计数).
+//
+//      BUG-301/302 (P3): 原 filterArray (line 1190) `fmt.Sprintf("%v", val)` +
+//        mapToSortedKV (line 392) `fmt.Sprintf("%s=%v", k, m[k])` 对 float64 ≥ 1e6
+//        或 ≤ 1e-5 返科学计数法 (e.g. 1000000 → "1e+06", 1e-10 → "1e-10"), 与
+//        JsonToString (line 1363) strconv.FormatFloat('f', -1, 64) 返 "1000000"
+//        不一致. 后果:
+//          - BUG-301 filterArray: JSONPath `[?(@.count==1000000)]` 在 JSON
+//            {"count":1000000} 上 valStr="1e+06" ≠ fv="1000000" → 比较静默
+//            miss (filter 永不命中, JsonGet 返 []);
+//          - BUG-302 mapToSortedKV: base64-json decode 的 float64 值走 kv
+//            string "count=1e+06", 与直连 JsonToString "count=1000000" 不等
+//            → 同 JSON 输入不同输出 (与 BUG-245 确定性目标矛盾).
+//        修复: 抽 anyToString helper, float64 走 FormatFloat (与 JsonToString
+//        line 1363 同口径); string 直返 (无 fmt 反射开销, hot path 常见类型);
+//        bool/nil/[]any/map fallback `fmt.Sprintf("%v", v)` (历史行为, 罕见
+//        case 不退化 — bool %v 同 FormatBool; nil %v "<nil>" 同历史; []any/map
+//        %v 单行 "[1 2 3]" / "map[k:v]" 同历史, parseKVString 不被 \n 段裂).
+//        与 BUG-245 (mapToSortedKV 确定性) + JsonToString (数值路径同口径)
+//        协同闭环. 71 Rule 0 用大数 filter / base64-json float64 值; 0 用户
+//        受影响, 未来 admin 配置后受益. latent 自 R38 TS→Go 迁移 (47 轮未发现
+//        因 71 Rule 0 用 [?(@.count==N)] 大数 filter, 多用字符串字段比较如
+//        [?(@.id=="abc")] 或无 filter; 0 用 base64-json decode 配大数值).
+func anyToString(v any) string {
+        switch x := v.(type) {
+        case string:
+                return x
+        case float64:
+                return strconv.FormatFloat(x, 'f', -1, 64)
+        default:
+                return fmt.Sprintf("%v", v)
+        }
+}
+
 // mapToSortedKV — map[string]any → "k=v\n..." with sorted keys.
 //
 //      BUG-245 (P3): 原 ApplyTransform base64-json decode + JsonToString map case
@@ -340,6 +374,13 @@ func compileUserReplaceFrom(src string) (*regexp.Regexp, bool) {
 //        helper (ApplyTransform base64-json 2 处 + JsonToString map case 1 处 = 3
 //        callsite). 与 R84-B BUG-200 (utf8.RuneCountInString 替 []rune len) 同款
 //        "确定性 + DRY" 优化.
+//      BUG-302 (P3): 原 `fmt.Sprintf("%s=%v", k, m[k])` 对 float64 ≥ 1e6 返科学
+//        计数 (e.g. 1000000 → "count=1e+06"), 与 JsonToString (line 1363)
+//        FormatFloat 返 "count=1000000" 不等 → 同 JSON 输入不同输出 (违反
+//        BUG-245 确定性目标). 修复: 改 `k + "=" + anyToString(m[k])` — string
+//        concat (无 fmt 反射开销) + anyToString (float64 走 FormatFloat, 与
+//        JsonToString 同口径). 详见 anyToString 注释. latent 自 R38 (47 轮未
+//        发现, 71 Rule 0 用 base64-json decode 配大数 float 值).
 func mapToSortedKV(m map[string]any) string {
         keys := make([]string, 0, len(m))
         for k := range m {
@@ -348,7 +389,7 @@ func mapToSortedKV(m map[string]any) string {
         sort.Strings(keys)
         parts := make([]string, 0, len(keys))
         for _, k := range keys {
-                parts = append(parts, fmt.Sprintf("%s=%v", k, m[k]))
+                parts = append(parts, k+"="+anyToString(m[k]))
         }
         return strings.Join(parts, "\n")
 }
@@ -1140,7 +1181,13 @@ func filterArray(arr []any, k, v string) any {
                 if !exists {
                         continue
                 }
-                valStr := fmt.Sprintf("%v", val)
+                // BUG-301 (P3): 原 fmt.Sprintf("%v", val) 对 float64 ≥ 1e6 返科学
+                //   计数 (e.g. 1000000 → "1e+06"), 与 JSONPath filter value "1000000"
+                //   (用户字面) 不等 → 比较静默 miss (filter 永不命中, JsonGet 返 []).
+                //   修复: anyToString (float64 走 FormatFloat, 与 JsonToString line
+                //   1363 同口径). 详见 anyToString 注释 (line 334). latent 自 R38
+                //   (47 轮未发现, 71 Rule 0 用 [?(@.count==N)] 大数 filter).
+                valStr := anyToString(val)
                 if neg {
                         if valStr != target {
                                 out = append(out, item)

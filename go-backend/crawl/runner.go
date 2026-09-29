@@ -183,6 +183,12 @@ type TaskRuntime struct {
         currentURL         string
         maxRequests        int
         captchaEncountered int64
+        // R103-A BUG-299 (P2): per-task 反爬拦截累计 (mirror captchaEncountered family).
+        //   与 captchaEncountered 同口径 atomic.AddInt64, 7 Blocked callsite 累计:
+        //   discoverBooks + CrawlBookMeta (book/toc/pageFetcher/cover) +
+        //   CrawlChapterContent (chapter/pageFetcher). 让 Snapshot.BlockedEncountered
+        //   分离 "反爬拦截频率" vs "captcha 频率" (R42-1B 后两计数器并存, 互补).
+        blockedEncountered int64
 
         // 集合 (路径状态分流)
         discoveredBookUrls map[string]bool
@@ -305,6 +311,23 @@ func (rt *TaskRuntime) IncCaptcha() int64 {
         return atomic.AddInt64(&rt.captchaEncountered, 1)
 }
 
+// IncBlocked — 累计反爬拦截次数 (R103-A BUG-299, mirror IncCaptcha family).
+// discoverBooks / CrawlBookMeta (book/toc/pageFetcher/cover) / CrawlChapterContent
+// (chapter/pageFetcher) 在 res.Blocked=true (looksBlocked 命中) 时调用. 与
+// IncCaptcha 互补: captcha 是软拦截 (widget 检测, 可 2captcha 求解), Blocked 是
+// 硬拦截 (Cloudflare challenge / 403/412/429 / 源站 looksBlocked). admin 任务监控
+// Snapshot.BlockedEncountered 让操作员区分 "反爬触发频率" vs "captcha 频率" — 持续
+// 高 BlockedEncountered + 0 CaptchaEncountered = 源站硬封禁 (需 IP 轮换 / UA 调整);
+// 高 CaptchaEncountered = 源站 captcha 拦截 (可配 2captcha API key 求解). 与
+// R101-A BUG-290 ErrListDiscoveryBlocked sentinel (list 首页 Blocked) + BUG-291/292
+// pageFetcher Blocked propagation + BUG-294/295 FetchTestSampleBook Blocked mapping
+// family 同款 "Blocked 语义收口" 续 — counter 层补 7 callsite, 让 admin 看到
+// per-task 反爬拦截总量 (sentinel + kind + status mapping 是 per-event 语义, counter
+// 是 per-task 累计, 互补).
+func (rt *TaskRuntime) IncBlocked() int64 {
+        return atomic.AddInt64(&rt.blockedEncountered, 1)
+}
+
 // SetMaxRequests — 设置请求预算上限.
 // R41-1A: 修复原实现用 atomic.StoreInt64(&rt.epoch, rt.epoch) 做 "memory barrier" 的错误
 //
@@ -419,6 +442,9 @@ type TaskSnapshot struct {
         RecentLogs          []LogEntry
         FailedBookUrlsCount int
         CaptchaEncountered  int64
+        // R103-A BUG-299: per-task 反爬拦截累计 (mirror CaptchaEncountered, 7
+        //   Blocked callsite 累计. 详见 TaskRuntime.blockedEncountered 注释).
+        BlockedEncountered int64
 }
 
 // Snapshot — 返回任务实时快照 (供 admin UI 实时显示).
@@ -446,6 +472,7 @@ func (rt *TaskRuntime) Snapshot() *TaskSnapshot {
                 RecentLogs:          logsCopy,
                 FailedBookUrlsCount: len(rt.failedBookUrls),
                 CaptchaEncountered:  atomic.LoadInt64(&rt.captchaEncountered),
+                BlockedEncountered:  atomic.LoadInt64(&rt.blockedEncountered),
         }
 }
 
@@ -1544,8 +1571,12 @@ func ExecuteTask(ctx context.Context, cfg ExecuteTaskConfig) (retErr error) {
         }
         progress.Phase = "done"
         progress.PhaseNote = "任务完成"
-        logf(LogSuccess, "✅ 任务完成: 新书%d 更新%d | 新章节%d 更新%d | 封面%d | 错误%d",
-                stats.BooksCreated, stats.BooksUpdated, stats.ChaptersCreated, stats.ChaptersUpdated, stats.CoversSaved, stats.Errors)
+        // R103-A BUG-299: completion log 加 "拦截%d" 分离 BlockedEncountered
+        //   (per-task 反爬拦截累计) vs "错误%d" (stats.Errors 含 transient err).
+        //   操作员看到 "拦截5 | 错误2" 可判断 5 次反爬拦 (硬封禁信号) + 2 次瞬态
+        //   错 (网络/解析), 与 Snapshot.BlockedEncountered admin UI 字段同口径.
+        logf(LogSuccess, "✅ 任务完成: 新书%d 更新%d | 新章节%d 更新%d | 封面%d | 拦截%d | 错误%d",
+                stats.BooksCreated, stats.BooksUpdated, stats.ChaptersCreated, stats.ChaptersUpdated, stats.CoversSaved, atomic.LoadInt64(&rt.blockedEncountered), stats.Errors)
         if !rt.IsPaused() && !rt.IsStopped() && !rt.IsStale(myEpoch) {
                 if cfg.DB != nil {
                         _ = cfg.DB.UpdateTaskStatus(cfg.TaskID, "done")
@@ -1645,6 +1676,9 @@ func discoverBooks(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                         //   (与 CrawlBookMeta line 1661-1663 同款, 让 derate 触发).
                         GetHostGate().ReportFailure(listHost)
                         getHealthTracker().recordFailure(listHost)
+                        // R103-A BUG-299: per-task 反爬拦截累计 (mirror IncCaptcha,
+                        //   详见 TaskRuntime.blockedEncountered 注释; p==1 + p>=2 都计).
+                        rt.IncBlocked()
                         // R101-A BUG-290: 首页 Blocked 跟踪 (详见 line ~1578 rationale).
                         if p == 1 {
                                 firstPageBlocked = true
@@ -1762,6 +1796,8 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                 GetHostGate().ReportFailure(bookHost)
                 // R65-C: 拦截视为失败, 记 per-host 失败计数 (供 AdjustConcurrency 算 health)
                 getHealthTracker().recordFailure(bookHost)
+                // R103-A BUG-299: per-task 反爬拦截累计 (mirror IncCaptcha).
+                rt.IncBlocked()
                 return &BookMetaResult{Status: BookMetaStatusBlocked, BookURL: bookURL}, nil
         }
         // 成功 (HTTP 200 + 非 Blocked): 记 success + ReportSuccess
@@ -1997,6 +2033,8 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                         GetHostGate().ReportFailure(tocHost)
                         // R65-C: 拦截视为失败
                         getHealthTracker().recordFailure(tocHost)
+                        // R103-A BUG-299: per-task 反爬拦截累计 (mirror IncCaptcha).
+                        rt.IncBlocked()
                         return &BookMetaResult{Status: BookMetaStatusBlocked, BookURL: bookURL}, nil
                 }
                 // 成功 (HTTP 200 + 非 Blocked): 记 success + ReportSuccess
@@ -2089,6 +2127,9 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                         //   pageFetcher) 同款 Blocked propagation family.
                         GetHostGate().ReportFailure(pageHost)
                         getHealthTracker().recordFailure(pageHost)
+                        // R103-A BUG-299: per-task 反爬拦截累计 (mirror IncCaptcha;
+                        //   多页 TOC 第 2+ 页 Blocked 也计, 与外层 book/toc 路径同口径).
+                        rt.IncBlocked()
                         return "", fmt.Errorf("toc page %s blocked by anti-crawl", truncate(u, 120))
                 }
                 getHealthTracker().recordSuccess(pageHost)
@@ -2185,6 +2226,16 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                                 _ = cfg.DB.UpdateBookCover(bookID, rel)
                                 coverSaved = true
                         }
+                }
+                // R103-A BUG-299: cover fetch 返 HTML 错误页 (looksBlockedBinary 命中
+                //   首字节 <, e.g. Cloudflare challenge / 404 HTML 页当 cover URL)
+                //   时 coverBin.Blocked=true, coverSaved=false (静默跳过). 与外层
+                //   book/toc/pageFetcher 4 Blocked 路径同口径补 rt.IncBlocked()
+                //   (mirror IncCaptcha; cover host 多为 external CDN, 与 bookHost
+                //   不同, 不调 hostGate/health — 与 R76-C design choice line ~2159
+                //   "保守不加 hostGate" 一致, 仅 counter 层补).
+                if err == nil && coverBin.Blocked {
+                        rt.IncBlocked()
                 }
         }
 
@@ -2302,6 +2353,9 @@ func CrawlChapterContent(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRun
                 hostGate.ReportFailure(chapterHost)
                 // R65-C: 拦截视为失败, 计 per-host 失败
                 getHealthTracker().recordFailure(chapterHost)
+                // R103-A BUG-299: per-task 反爬拦截累计 (mirror IncCaptcha; 章节首页
+                //   Blocked 也计, 与 list/book/toc/pageFetcher 路径同口径).
+                rt.IncBlocked()
                 // R102-A BUG-295 (P3) 修复 (R101-A BUG-290/291/292 Blocked family 续):
                 //   原实现章节首页 Blocked 返 kind="other" + msg="章节内容疑似被拦截:
                 //   <url>", 与书籍页 Blocked (CrawlBookMeta line ~1749 返 BookMeta
@@ -2398,6 +2452,9 @@ func CrawlChapterContent(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRun
                         //   处理 pageFetcher err (break).
                         hostGate.ReportFailure(pageHost)
                         getHealthTracker().recordFailure(pageHost)
+                        // R103-A BUG-299: per-task 反爬拦截累计 (mirror IncCaptcha;
+                        //   多页章节正文第 2+ 页 Blocked 也计, 与 BUG-292 同口径).
+                        rt.IncBlocked()
                         return "", fmt.Errorf("content page %s blocked by anti-crawl", truncate(u, 120))
                 }
                 getHealthTracker().recordSuccess(pageHost)

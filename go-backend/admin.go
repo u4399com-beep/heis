@@ -611,6 +611,38 @@ func clampIntAdm(v, lo, hi int) int {
         return v
 }
 
+// countByParent — R103-C BUG-299/300 (P3, R101-C BUG-290~292 multi-COUNT batch
+// swallow family 续抓, per-row N+1 COUNT 变种): 把 N 次 `SELECT COUNT(*) FROM
+// Child WHERE parentId=?` (per-row swallow) 收口为单次 `SELECT parentId, COUNT(*)
+// FROM Child GROUP BY parentId` (1 round-trip 替 N, 与 BUG-285 backup page counts
+// batch 同款思路). best-effort: query/scan/rows.Err 失败返空 map + log.Printf (与
+// BUG-298 pagination COUNT 显式 err 同款, 不阻塞 caller — caller 用空 map 各行
+// count=0, 与原 swallow 行为同口径, 但运维已知 via log). 4 callsite 共享:
+// adminRulesList + fillRulesPageData (ruleId/Task, BUG-299) + adminCategoriesList +
+// fillCategoriesPageData (categoryId/Book, BUG-300). 防 SQL 注入: parentCol/
+// childTable 来自代码常量 (非用户输入, 不走 占位符).
+func countByParent(parentCol, childTable string) map[string]int {
+        m := map[string]int{}
+        q := "SELECT " + parentCol + ", COUNT(*) FROM " + childTable + " GROUP BY " + parentCol
+        rows, err := db.Query(q)
+        if err != nil {
+                log.Printf("[countByParent] %s.%s batch COUNT 失败 (各 count=0): %v", childTable, parentCol, err)
+                return m
+        }
+        defer rows.Close()
+        for rows.Next() {
+                var k string
+                var c int
+                if e := rows.Scan(&k, &c); e == nil {
+                        m[k] = c
+                }
+        }
+        if e := rows.Err(); e != nil {
+                log.Printf("[countByParent] %s.%s rows.Err: %v", childTable, parentCol, e)
+        }
+        return m
+}
+
 // maybeSwapArgs 在 max < min 时把 args[idxMin]/args[idxMax] 两 slot 互换 (用户输入
 // 任意顺序, swap 而非报错, 与 adminTasksCreate line 832-834 / 837-839 同款语义).
 //
@@ -2154,18 +2186,23 @@ func adminRulesList(w http.ResponseWriter, r *http.Request) {
                 return
         }
         rows.Close()
+        // R103-C BUG-299 (P3, R101-C BUG-290~292 multi-COUNT batch swallow family 续抓,
+        //   per-row N+1 COUNT 变种): 原实现 for-loop 内 `_ = db.QueryRow(SELECT
+        //   COUNT(*) FROM Task WHERE ruleId=?).Scan(&taskCount)` — N round-trip + per-row
+        //   swallow. DB 故障时单 row taskCount=0 → API 显示 "0 任务" per rule (用户
+        //   误以为规则无任务而删规则). 改 countByParent helper 单 GROUP BY (1 round-trip
+        //   替 N, 与 BUG-285 backup page counts batch 同款) + best-effort err log (与
+        //   BUG-298 pagination COUNT 同款显式 err + log, 不阻塞响应).
+        taskCountByRule := countByParent("ruleId", "Task")
         out := []map[string]interface{}{}
         for _, rr := range ruleRows {
-                // 统计每个规则的任务数 (rows 已 Close, 不再持锁)
-                var taskCount int
-                _ = db.QueryRow(`SELECT COUNT(*) FROM Task WHERE ruleId=?`, rr.ID).Scan(&taskCount)
                 out = append(out, map[string]interface{}{
                         "id":          rr.ID,
                         "name":        rr.Name,
                         "description": rr.Description.String,
                         "config":      rr.Config,
                         "enabled":     rr.Enabled,
-                        "taskCount":   taskCount,
+                        "taskCount":   taskCountByRule[rr.ID],
                         "createdAt":   rr.CreatedAt,
                         "updatedAt":   rr.UpdatedAt,
                 })
@@ -3633,16 +3670,17 @@ func fillRulesPageData(data map[string]interface{}) {
                         log.Printf("[fillRulesPageData] rules rows.Err: %v (count=%d)", rerr, len(ruleRows))
                 }
                 rows.Close()
+                // R103-C BUG-299 (续, SSR 对应方): per-row COUNT N+1 → batch GROUP BY
+                //   (countByParent helper, 与 adminRulesList API 同款 family).
+                taskCountByRule := countByParent("ruleId", "Task")
                 for _, rr := range ruleRows {
-                        var taskCount int
-                        _ = db.QueryRow(`SELECT COUNT(*) FROM Task WHERE ruleId=?`, rr.ID).Scan(&taskCount)
                         rules = append(rules, map[string]interface{}{
                                 "id":          rr.ID,
                                 "name":        rr.Name,
                                 "description": rr.Description.String,
                                 "config":      rr.Config,
                                 "enabled":     rr.Enabled,
-                                "taskCount":   taskCount,
+                                "taskCount":   taskCountByRule[rr.ID],
                                 "updatedAt":   rr.UpdatedAt,
                         })
                         total++
@@ -4042,13 +4080,19 @@ func adminCategoriesList(w http.ResponseWriter, r *http.Request) {
                 return
         }
         rows.Close()
+        // R103-C BUG-300 (P3, R101-C BUG-290~292 multi-COUNT batch swallow family 续抓,
+        //   per-row N+1 COUNT 变种, 与 BUG-299 Rules 同款 family Category 变种):
+        //   原实现 for-loop 内 `_ = db.QueryRow(SELECT COUNT(*) FROM Book WHERE
+        //   categoryId=?).Scan(&bookCount)` — N round-trip + per-row swallow. DB 故障时
+        //   单 row bookCount=0 → API 显示 "0 书" per category (用户误以为分类无书
+        //   而删分类). 改 countByParent helper 单 GROUP BY + best-effort err log
+        //   (与 BUG-299 同款).
+        bookCountByCat := countByParent("categoryId", "Book")
         out := []map[string]interface{}{}
         for _, cr := range catRows {
-                var bookCount int
-                _ = db.QueryRow(`SELECT COUNT(*) FROM Book WHERE categoryId=?`, cr.ID).Scan(&bookCount)
                 out = append(out, map[string]interface{}{
                         "id": cr.ID, "name": cr.Name, "sortOrder": cr.SortOrder,
-                        "bookCount": bookCount, "createdAt": cr.CreatedAt,
+                        "bookCount": bookCountByCat[cr.ID], "createdAt": cr.CreatedAt,
                 })
         }
         writeJSONOK(w, out)
@@ -7832,12 +7876,13 @@ func fillCategoriesPageData(data map[string]interface{}) {
                         log.Printf("[fillCategoriesPageData] rows.Err: %v (count=%d)", rerr, len(catRows))
                 }
                 rows.Close()
+                // R103-C BUG-300 (续, SSR 对应方): per-row COUNT N+1 → batch GROUP BY
+                //   (countByParent helper, 与 adminCategoriesList API 同款 family).
+                bookCountByCat := countByParent("categoryId", "Book")
                 for _, cr := range catRows {
-                        var bookCount int
-                        _ = db.QueryRow(`SELECT COUNT(*) FROM Book WHERE categoryId=?`, cr.ID).Scan(&bookCount)
                         cats = append(cats, map[string]interface{}{
                                 "id": cr.ID, "name": cr.Name, "sortOrder": cr.SortOrder,
-                                "bookCount": bookCount, "createdAt": cr.CreatedAt,
+                                "bookCount": bookCountByCat[cr.ID], "createdAt": cr.CreatedAt,
                         })
                 }
         }
