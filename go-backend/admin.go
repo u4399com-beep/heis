@@ -3717,23 +3717,27 @@ func fillTasksPageData(data map[string]interface{}, r *http.Request) {
         validStatuses := map[string]bool{"pending": true, "running": true, "paused": true, "stopped": true, "done": true, "error": true}
         data["FilterStatus"] = status
 
+        // R114-C BUG-342 续 (BUG-326 family SSR db.Query conditional `if err == nil`
+        //   block-swallow → queryLogged 收口): db.Query 故障时 tasks=[] 任务页空, 0 log.
+        //   本 callsite 双分支 (status filter 走 WHERE 子句, 否则全量), 两分支共用
+        //   `if err == nil` 单 swallow → 改 queryLogged 双分支各收 (label 区分),
+        //   `var rows` + `if rows != nil`. 0 行为变化 (best-effort SSR).
         var rows *sql.Rows
-        var err error
         if status != "" && validStatuses[status] {
-                rows, err = db.Query(
+                rows = queryLogged("fillTasksPageData tasks (status)",
                         `SELECT t.id,t.name,t.ruleId,t.mode,t.recrawlMode,t.status,t.progress,t.stats,t.updatedAt,
                                 COALESCE(r.name,'(规则已删)')
                            FROM Task t LEFT JOIN Rule r ON t.ruleId=r.id
                           WHERE t.status=? ORDER BY t.updatedAt DESC LIMIT 200`, status)
         } else {
-                rows, err = db.Query(
+                rows = queryLogged("fillTasksPageData tasks",
                         `SELECT t.id,t.name,t.ruleId,t.mode,t.recrawlMode,t.status,t.progress,t.stats,t.updatedAt,
                                 COALESCE(r.name,'(规则已删)')
                            FROM Task t LEFT JOIN Rule r ON t.ruleId=r.id
                           ORDER BY t.updatedAt DESC LIMIT 200`)
         }
         tasks := []map[string]interface{}{}
-        if err == nil {
+        if rows != nil {
                 defer rows.Close()
                 for rows.Next() {
                         var id, name, ruleID, mode, recrawlMode, status, progress, stats, updatedAt, ruleName string
@@ -3872,7 +3876,18 @@ func fillBooksPageData(data map[string]interface{}, r *http.Request) {
                 offset = maxPaginationOffset
         }
         queryArgs := append(args, size, offset)
-        rows, err := db.Query(
+        // R114-C BUG-342 (P3, BUG-326 Query-side swallow family 续, SSR page-fill
+        //   db.Query conditional swallow sub-variant): 原实现 `rows, err := db.Query(...)`
+        //   + `if err == nil {` block-swallow — db.Query 故障 (SQLite busy lock / 连接
+        //   闪断 / 磁盘满 / driver bug) 时 err != nil, success block 跳过, books=[]
+        //   书籍页空 (运维不知是 DB 故障还是真无书, 0 log). 与 BUG-339 getCategories
+        //   `, _ :=` discard swallow + BUG-326 queryLogged 16 处 `rows, _ :=` discard
+        //   swallow 同款 Query-side swallow family (本 sub-variant 是 conditional
+        //   `if err == nil` block-swallow, 非 discard). 改调 queryLogged (返 *sql.Rows,
+        //   nil + log-on-fail) + `if rows != nil {`, 与 fillDashboardData (R109-C
+        //   BUG-326) / fillTasksPageData 同款已收口 callsite 一致. 0 行为变化 (失败时
+        //   books=[] best-effort SSR 兜底语义不变, 仅加 log 可见性).
+        rows := queryLogged("fillBooksPageData books",
                 `SELECT b.id,b.name,b.author,b.intro,b.cover,b.status,b.wordCount,b.latestChapter,
                         COALESCE(c.name,'未分类'),COALESCE(b.categoryId,''),b.sourceUrl,b.storageMode,b.keywords,
                         (SELECT COUNT(*) FROM Chapter ch WHERE ch.bookId=b.id) AS chapterCount,
@@ -3883,7 +3898,7 @@ func fillBooksPageData(data map[string]interface{}, r *http.Request) {
                 queryArgs...,
         )
         books := []map[string]interface{}{}
-        if err == nil {
+        if rows != nil {
                 defer rows.Close()
                 for rows.Next() {
                         var id, name, author, intro, cover, status, latestChapter, category, catID, sourceURL, storageMode, keywords, updatedAt string
@@ -3926,10 +3941,13 @@ func fillBooksPageData(data map[string]interface{}, r *http.Request) {
 
 // fillRulesPageData — 装配规则页数据.
 func fillRulesPageData(data map[string]interface{}) {
-        rows, err := db.Query(`SELECT id,name,description,config,enabled,updatedAt FROM Rule ORDER BY updatedAt DESC LIMIT 200`)
+        // R114-C BUG-342 续 (BUG-326 family SSR db.Query conditional `if err == nil`
+        //   block-swallow → queryLogged 收口): db.Query 故障时 rules=[] 规则页空,
+        //   0 log. 改 queryLogged + `if rows != nil {`. 0 行为变化 (best-effort SSR).
+        rows := queryLogged("fillRulesPageData rules", `SELECT id,name,description,config,enabled,updatedAt FROM Rule ORDER BY updatedAt DESC LIMIT 200`)
         rules := []map[string]interface{}{}
         total, enabledCount, disabledCount := 0, 0, 0
-        if err == nil {
+        if rows != nil {
                 // R64-C BUG-39 (P0): 先收齐 rule 行再循环 (逐 rule 调 db.QueryRow 算 taskCount).
                 //   原实现 db.QueryRow 在 for rows.Next() 内部 → modernc.org/sqlite 连接池
                 //   (SetMaxOpenConns(1)) 等待 rows 释放 → 30s+ 超时死锁 (Rule 表非空时必现).
@@ -3998,7 +4016,10 @@ func fillSitesPageData(data map[string]interface{}) {
         //   带 NOT NULL 时旧行 NULL, 与 BUG-146 同款根因) → Scan 在该列停下, 其后
         //   footerText/.../chapterSeoKeywordsTemplate 全部不读 → site entry 含半空
         //   字段, edit modal 显示空白. 与 BUG-146 adminSitesList COALESCE 口径对齐.
-        rows, err := db.Query(
+        // R114-C BUG-342 续 (BUG-326 family SSR db.Query conditional `if err == nil`
+        //   block-swallow → queryLogged 收口): db.Query 故障时 sites=[] 站点页空,
+        //   0 log. 改 queryLogged + `if rows != nil {`. 0 行为变化 (best-effort SSR).
+        rows := queryLogged("fillSitesPageData sites",
                 `SELECT id,name,domain,themeId,isDefault,COALESCE(title,''),COALESCE(description,''),COALESCE(keywords,''),
                         COALESCE(icbm,''),COALESCE(geoRegion,''),COALESCE(geoPlacename,''),offset,status,inLinkWheel,COALESCE(pseudoStaticStyle,'query'),
                         COALESCE(footerText,''),COALESCE(footerCopyright,''),COALESCE(footerIcp,''),COALESCE(footerStats,1),
@@ -4009,7 +4030,7 @@ func fillSitesPageData(data map[string]interface{}) {
         sites := []map[string]interface{}{}
         total := 0
         defaultName := "-"
-        if err == nil {
+        if rows != nil {
                 defer rows.Close()
                 for rows.Next() {
                         var id, name, domain, themeID, title, desc, kw, icbm, geoR, geoP, pseudoStaticStyle string
@@ -8244,9 +8265,13 @@ func adminBackupClearHandler(w http.ResponseWriter, r *http.Request) {
 // ---------- 页面数据装配 ----------
 
 func fillCategoriesPageData(data map[string]interface{}) {
-        rows, err := db.Query(`SELECT id, name, sortOrder, createdAt FROM Category ORDER BY sortOrder ASC LIMIT 500`)
+        // R114-C BUG-342 续 (BUG-326 family SSR db.Query conditional `if err == nil`
+        //   block-swallow → queryLogged 收口): db.Query 故障时 cats=[] 分类页空, 0 log.
+        //   改 queryLogged + `if rows != nil {` (保留显式 rows.Close, BUG-41 死锁修复
+        //   要求 Close 先于第二段 db.QueryRow 循环, 非 defer). 0 行为变化 (best-effort SSR).
+        rows := queryLogged("fillCategoriesPageData categories", `SELECT id, name, sortOrder, createdAt FROM Category ORDER BY sortOrder ASC LIMIT 500`)
         cats := []map[string]interface{}{}
-        if err == nil {
+        if rows != nil {
                 // R64-C BUG-41 (P0): 先收齐 category 行再循环 (逐 category 调 db.QueryRow 算 bookCount).
                 //   原实现 db.QueryRow 在 for rows.Next() 内部 → modernc.org/sqlite 连接池
                 //   (SetMaxOpenConns(1)) 等待 rows 释放 → 30s+ 超时死锁 (Category 表非空时必现).
@@ -8283,10 +8308,13 @@ func fillCategoriesPageData(data map[string]interface{}) {
 }
 
 func fillLinksPageData(data map[string]interface{}) {
-        rows, err := db.Query(`SELECT id, name, url, logo, sortOrder, enabled, createdAt, updatedAt FROM FriendLink ORDER BY sortOrder ASC, createdAt ASC LIMIT 500`)
+        // R114-C BUG-342 续 (BUG-326 family SSR db.Query conditional `if err == nil`
+        //   block-swallow → queryLogged 收口): db.Query 故障时 links=[] 友链页空, 0 log.
+        //   改 queryLogged + `if rows != nil {`. 0 行为变化 (best-effort SSR).
+        rows := queryLogged("fillLinksPageData links", `SELECT id, name, url, logo, sortOrder, enabled, createdAt, updatedAt FROM FriendLink ORDER BY sortOrder ASC, createdAt ASC LIMIT 500`)
         links := []map[string]interface{}{}
         total, enabledCount := 0, 0
-        if err == nil {
+        if rows != nil {
                 defer rows.Close()
                 for rows.Next() {
                         var id, name, urlV, logo, createdAt, updatedAt string
@@ -8363,9 +8391,13 @@ func fillLinksPageData(data map[string]interface{}) {
 }
 
 func fillThemesPageData(data map[string]interface{}) {
-        rows, err := db.Query(`SELECT themeId, COUNT(*) FROM Site GROUP BY themeId`)
+        // R114-C BUG-342 续 (BUG-326 family SSR db.Query conditional `if err == nil`
+        //   block-swallow → queryLogged 收口): db.Query 故障时 counts={} 主题页
+        //   siteCount 全 0 (误以为无站绑主题), 0 log. 改 queryLogged + `if rows != nil {`.
+        //   0 行为变化 (best-effort SSR).
+        rows := queryLogged("fillThemesPageData counts", `SELECT themeId, COUNT(*) FROM Site GROUP BY themeId`)
         counts := map[string]int{}
-        if err == nil {
+        if rows != nil {
                 defer rows.Close()
                 for rows.Next() {
                         var themeID string
@@ -8425,10 +8457,14 @@ func fillThemesPageData(data map[string]interface{}) {
 }
 
 func fillDownloadsPageData(data map[string]interface{}) {
-        rows, err := db.Query(`SELECT d.id, d.bookId, COALESCE(b.name,'(已删)'), COALESCE(b.author,''), d.options, d.status, COALESCE(d.filePath,''), COALESCE(d.error,''), d.size, d.createdAt FROM DownloadJob d LEFT JOIN Book b ON d.bookId=b.id ORDER BY d.createdAt DESC LIMIT 500`)
+        // R114-C BUG-342 续 (BUG-326 family SSR db.Query conditional `if err == nil`
+        //   block-swallow → queryLogged 收口): db.Query 故障时 dls=[] 下载页空, 0 log.
+        //   改 queryLogged + `if rows != nil {` (errCount 计数变量名保留, 与 err 无关).
+        //   0 行为变化 (best-effort SSR).
+        rows := queryLogged("fillDownloadsPageData downloads", `SELECT d.id, d.bookId, COALESCE(b.name,'(已删)'), COALESCE(b.author,''), d.options, d.status, COALESCE(d.filePath,''), COALESCE(d.error,''), d.size, d.createdAt FROM DownloadJob d LEFT JOIN Book b ON d.bookId=b.id ORDER BY d.createdAt DESC LIMIT 500`)
         dls := []map[string]interface{}{}
         total, pending, done, errCount := 0, 0, 0, 0
-        if err == nil {
+        if rows != nil {
                 defer rows.Close()
                 for rows.Next() {
                         var id, bookID, bookName, bookAuthor, options, status, filePath, errMsg, createdAt string
@@ -8463,9 +8499,12 @@ func fillDownloadsPageData(data map[string]interface{}) {
 }
 
 func fillSettingsPageData(data map[string]interface{}) {
-        rows, err := db.Query(`SELECT key, value FROM Setting ORDER BY key ASC LIMIT 200`)
+        // R114-C BUG-342 续 (BUG-326 family SSR db.Query conditional `if err == nil`
+        //   block-swallow → queryLogged 收口): db.Query 故障时 settings=[] 设置页空,
+        //   0 log. 改 queryLogged + `if rows != nil {`. 0 行为变化 (best-effort SSR).
+        rows := queryLogged("fillSettingsPageData settings", `SELECT key, value FROM Setting ORDER BY key ASC LIMIT 200`)
         settings := []map[string]interface{}{}
-        if err == nil {
+        if rows != nil {
                 defer rows.Close()
                 for rows.Next() {
                         var key, value string
@@ -8590,9 +8629,12 @@ func fillFeedbackPageData(data map[string]interface{}, r *http.Request) {
                 offset = maxPaginationOffset
         }
         listArgs := append(args, size, offset)
-        rows, err := db.Query(`SELECT id, type, COALESCE(contact,''), content, COALESCE(url,''), COALESCE(siteId,''), status, COALESCE(ip,''), COALESCE(adminNote,''), createdAt FROM Feedback WHERE `+whereSQL+` ORDER BY createdAt DESC LIMIT ? OFFSET ?`, listArgs...)
+        // R114-C BUG-342 续 (BUG-326 family SSR db.Query conditional `if err == nil`
+        //   block-swallow → queryLogged 收口): db.Query 故障时 rowsList=[] 反馈页空,
+        //   0 log. 改 queryLogged + `if rows != nil {`. 0 行为变化 (best-effort SSR).
+        rows := queryLogged("fillFeedbackPageData rows", `SELECT id, type, COALESCE(contact,''), content, COALESCE(url,''), COALESCE(siteId,''), status, COALESCE(ip,''), COALESCE(adminNote,''), createdAt FROM Feedback WHERE `+whereSQL+` ORDER BY createdAt DESC LIMIT ? OFFSET ?`, listArgs...)
         rowsList := []map[string]interface{}{}
-        if err == nil {
+        if rows != nil {
                 defer rows.Close()
                 for rows.Next() {
                         var id, typV, contact, content, urlV, siteID, statusV, ip, adminNote, createdAt string
@@ -8687,10 +8729,14 @@ func fillBackupPageData(data map[string]interface{}) {
 func fillSeoAuditPageData(data map[string]interface{}, r *http.Request) {
         siteFilter := strings.TrimSpace(r.URL.Query().Get("site"))
         data["FilterSite"] = siteFilter
-        rows, err := db.Query(`SELECT id, name, domain, themeId, COALESCE(title,''), COALESCE(description,''), COALESCE(keywords,''), COALESCE(icbm,''), COALESCE(geoRegion,''), COALESCE(geoPlacename,''), offset FROM Site ORDER BY isDefault DESC, name ASC LIMIT 500`)
+        // R114-C BUG-342 续 (BUG-326 family SSR db.Query conditional `if err == nil`
+        //   block-swallow → queryLogged 收口): db.Query 故障时 sites=[] 审计页站点
+        //   列表空 (reports 亦空, 因 runSiteAuditReports 入参空), 0 log. 改 queryLogged
+        //   + `if rows != nil {`. 0 行为变化 (best-effort SSR).
+        rows := queryLogged("fillSeoAuditPageData sites", `SELECT id, name, domain, themeId, COALESCE(title,''), COALESCE(description,''), COALESCE(keywords,''), COALESCE(icbm,''), COALESCE(geoRegion,''), COALESCE(geoPlacename,''), offset FROM Site ORDER BY isDefault DESC, name ASC LIMIT 500`)
         sites := []map[string]string{}
         siteOptions := []map[string]interface{}{}
-        if err == nil {
+        if rows != nil {
                 defer rows.Close()
                 for rows.Next() {
                         var id, name, domain, themeID, title, desc, kw, icbm, geoR, geoP string

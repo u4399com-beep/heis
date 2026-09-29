@@ -2953,6 +2953,47 @@ func clampPageOffset(page, total, size int) (int, int) {
         return page, offset
 }
 
+// countBooksBy — 返 Book 表满足 whereClause 的行数 (whereClause=="" 即全表).
+//
+//   BUG-342 (P3, main+templates scope, R113-D BUG-340 single-row Scan swallow
+//     family sibling 续 + R100-D BUG-287 follow-up): 原
+//     `db.QueryRow("SELECT COUNT(*) FROM Book"[+WHERE]).Scan(&total)` 在
+//     getCategoryViewData (line ~4554 if + ~4556 else) + getRankingViewData
+//     (line ~4598) + getFulltextViewData (line ~4627) + sitemapIndexHandler
+//     (line ~6451) 共 5 callsite 全吞 err (4 处无 `_ =` 前缀, 1 处 `_ =`
+//     前缀但无 log). driver edge Scan err (conn 闪断 / 磁盘满 / driver bug
+//     / SQLite 锁竞争超时) → total=0 → caller clampPageOffset 把 page clamp
+//     到 1 (totalPages=1), SELECT LIMIT 仍返首页行 → home/category/ranking/
+//     fulltext 模板显示 "共 0 个结果" + "Page 1/1" + 行, 用户/运维不知是
+//     SQL 故障 (本应 log) 还是真 0 书 (silent). sitemap 同款: bookCount=0
+//     → bookPages=1 → sitemap-index 只引用 1 sub-sitemap → 搜索引擎漏抓
+//     第 2..N 千本书. R100-D BUG-287 仅修 page clamp 不修 Scan swallow;
+//     R113-D BUG-340 仅修 getFeaturedBooks setting Scan 不修 COUNT Scan
+//     (不同 sub-variant: setting value 单行 Scan vs COUNT(*) 单行 Scan).
+//     续修: 非 ErrNoRows 时 log.Printf 提示运维 (caller + query + args +
+//     err + 后果 hint), ErrNoRows 仍 silent (COUNT(*) 永返 1 行, ErrNoRows
+//     理论不可达, 仅 driver edge), 返 0 (与原行为一致, 仅加 log 可见性,
+//     pagination/sitemap fallback 语义不变).
+//
+//   精简-1 (P4 精简/DRY, main scope, R100-D BUG-288 helper-extract family
+//     sibling 续): 抽 countBooksBy helper 替 5 处 inline COUNT Scan 块
+//     (DRY, 0 行为变化 for success path). 原 5 处各 1-3 行 (Scan + var
+//     bookCount int64 + bookPages :=) → 各 1 行 callsite (5 Book COUNT
+//     callsite), COUNT Scan + err-log 集中 helper 内. 与 R100-D BUG-288
+//     抽 clampPageOffset 替 3 处 inline offset 块同款 "DRY 精简 helper"
+//     family.
+func countBooksBy(whereClause string, args ...interface{}) int {
+        q := "SELECT COUNT(*) FROM Book"
+        if whereClause != "" {
+                q += " WHERE " + whereClause
+        }
+        var total int
+        if err := db.QueryRow(q, args...).Scan(&total); err != nil && err != sql.ErrNoRows {
+                log.Printf("[R114-D] countBooksBy Scan failed (q=%s args=%v): %v - returning 0 (caller pagination/sitemap degrades to single-page)", q, args, err)
+        }
+        return total
+}
+
 // R54-1A: feedbackWidgetHTML — 前台浮窗反馈按钮 (右下角固定定位, inline 样式避免依赖主题 CSS 变量).
 //
 //  1. 浮动按钮 💬 反馈 — 点击展开模态框
@@ -4551,9 +4592,9 @@ func getCategoryViewData(catID string, page, size int) (string, []map[string]int
         // 查 total
         var total int
         if catID != "" {
-                db.QueryRow(`SELECT COUNT(*) FROM Book WHERE categoryId=?`, catID).Scan(&total)
+                total = countBooksBy("categoryId=?", catID)
         } else {
-                db.QueryRow(`SELECT COUNT(*) FROM Book`).Scan(&total)
+                total = countBooksBy("")
         }
 
         // R100-D BUG-287+288: clamp page 到 totalPages (COUNT 推导) + cap offset (helper).
@@ -4594,8 +4635,7 @@ func getRankingViewData(tab string, page, size int) ([]map[string]interface{}, i
         if tab == "size" {
                 orderClause = "b.wordCount DESC"
         }
-        var total int
-        db.QueryRow(`SELECT COUNT(*) FROM Book`).Scan(&total)
+        total := countBooksBy("")
 
         // R100-D BUG-287+288: clamp page 到 totalPages (COUNT 推导) + cap offset (helper).
         page, offset := clampPageOffset(page, total, size)
@@ -4623,8 +4663,7 @@ func getRankingViewData(tab string, page, size int) ([]map[string]interface{}, i
 
 // getFulltextViewData 全本完本: status='completed' + 分页
 func getFulltextViewData(page, size int) ([]map[string]interface{}, int) {
-        var total int
-        db.QueryRow(`SELECT COUNT(*) FROM Book WHERE status='completed'`).Scan(&total)
+        total := countBooksBy("status='completed'")
         // R100-D BUG-287+288: clamp page 到 totalPages (COUNT 推导) + cap offset (helper).
         page, offset := clampPageOffset(page, total, size)
         rows, err := db.Query(`SELECT b.id,b.name,b.author,b.intro,b.cover,b.status,b.wordCount,b.latestChapter,COALESCE(c.name,'未分类'),b.categoryId,b.updatedAt FROM Book b LEFT JOIN Category c ON b.categoryId=c.id WHERE b.status='completed' ORDER BY b.updatedAt DESC LIMIT ? OFFSET ?`, size, offset)
@@ -6447,8 +6486,7 @@ func sitemapIndexHandler(w http.ResponseWriter, r *http.Request) {
                 subs := []sitemapURL{
                         {loc: buildAbsoluteURL(domain, "/sitemap-home.xml")},
                 }
-                var bookCount int64
-                _ = db.QueryRow(`SELECT COUNT(*) FROM Book`).Scan(&bookCount)
+                var bookCount int64 = int64(countBooksBy(""))
                 bookPages := (bookCount + 999) / 1000
                 if bookPages == 0 {
                         bookPages = 1 // 至少 1 个 sub-sitemap 引用 (即使 0 本书, sitemap-books/1 仍返空 urlset).
@@ -6459,8 +6497,16 @@ func sitemapIndexHandler(w http.ResponseWriter, r *http.Request) {
                                 loc: buildAbsoluteURL(domain, fmt.Sprintf("/sitemap-books/%d", i)),
                         })
                 }
+                // R114-D BUG-342 (续, Chapter COUNT sub-variant): 原 `_ = db.QueryRow
+                //   ("SELECT COUNT(*) FROM Chapter").Scan(&chapterCount)` 吞 err — driver
+                //   edge Scan err → chapterCount=0 → chapterPages=1 → sitemap-index 只引
+                //   1 sub-sitemap → 搜索引擎漏抓第 2..N 千章. Chapter 表无 countBooksBy
+                //   对应 (Book-only helper), 此 1 callsite inline 加 err-log (与
+                //   countBooksBy 内 BUG-342 同款 "非 ErrNoRows log + 返 0" 语义).
                 var chapterCount int64
-                _ = db.QueryRow(`SELECT COUNT(*) FROM Chapter`).Scan(&chapterCount)
+                if cerr := db.QueryRow(`SELECT COUNT(*) FROM Chapter`).Scan(&chapterCount); cerr != nil && cerr != sql.ErrNoRows {
+                        log.Printf("[R114-D] sitemapIndexHandler Chapter COUNT Scan failed: %v - chapterPages will fallback to 1", cerr)
+                }
                 chapterPages := (chapterCount + 999) / 1000
                 if chapterPages == 0 {
                         chapterPages = 1

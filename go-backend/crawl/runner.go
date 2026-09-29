@@ -2677,6 +2677,57 @@ func CrawlBookMeta(ctx context.Context, cfg ExecuteTaskConfig, rt *TaskRuntime, 
                         if cfg.Override.CapSolverAPIKey != "" {
                                 coverCfg.CapSolverAPIKey = cfg.Override.CapSolverAPIKey
                         }
+                        // R114-A BUG-342 (P3) 修复 (深抓 cover fetch posture 续, host-gate
+                        //   rate-limiting posture family 续, 与 BUG-309/310/314/317/321/322/
+                        //   326/327/328/329/331/332/333/335/336/339/340 同 cover FetchConfig
+                        //   family 续): cover fetch FetchConfig 仍漏继承 cfg.Override.
+                        //   HostGateLimit (int) — 同 host 并发闸门上限 (hostGate.Acquire
+                        //   line ~2809 第 3 参, max concurrent slots per host, e.g. 2 = 同 host
+                        //   最多 2 并发请求). 后果: cover 同域站 (originHost(parsed.Cover)
+                        //   == originHost(bookURL)) behind 反爬时, book 章节经 hostGate.
+                        //   Acquire(line ~2809) 按 HostGateLimit 限并发 + AdjustMinGap
+                        //   限速率 (per-host min-gap pacing 模拟人类间隔), cover fetch 经
+                        //   FetchBinaryPage(line ~2732) 不走 hostGate.Acquire (无闸门) →
+                        //   cover fetch 在 book 章节闸门槽满等待时仍立即发出 → "同一浏览
+                        //   器 1s 内 book (gated pacing, max N concurrent + min-gap) +
+                        //   cover (ungated burst, 立即发出无 min-gap) 并发/速率模式不一致"
+                        //   → 反爬侧 rate/timing 分析识别同一会话/IP 请求节奏漂移是 bot
+                        //   信号 (反爬关联高 — 请求速率/间隔是反爬主检维度之一). 注: 当前
+                        //   cover fetch 路径 (FetchBinaryPage → fetchBinaryHttp) 不调
+                        //   hostGate.Acquire (HostGateLimit 仅 runner chapter 调度消费), 故
+                        //   属 "结构 + 半实现 latent" (与 BUG-327/328/329/331/332/333/335/
+                        //   336/339/340 同款 precedent), 但 coverSameHost 继承是结构对称
+                        //   前提, 后续 cover fetch 路径若加 hostGate 路由 (e.g. cover fetch
+                        //   也过闸限速) 自动跟上. 与 BUG-314 同 coverSameHost gate. 修复:
+                        //   cfg.Override.HostGateLimit > 0 gate 继承 (与 mergeFetchConfig
+                        //   line ~10196-10198 同款 "非零覆盖" gate — int 用 > 0 而非 != "").
+                        if cfg.Override.HostGateLimit > 0 {
+                                coverCfg.HostGateLimit = cfg.Override.HostGateLimit
+                        }
+                        // R114-A BUG-343 (P3) 修复 (深抓 cover fetch posture 续, host-gate
+                        //   rate-limiting posture family 续, 与 BUG-342 HostGateLimit 同族
+                        //   hostGate.Acquire 配对参): cover fetch FetchConfig 仍漏继承 cfg.
+                        //   Override.PerHostConcurrency (int) — 同 host 并发上限 (hostGate.
+                        //   Acquire line ~2809 第 5 参, per-host concurrency cap, e.g. 4 = 同
+                        //   host 最多 4 并发槽). 后果: cover 同域站 (originHost(parsed.
+                        //   Cover) == originHost(bookURL)) behind 反爬时, book 章节经
+                        //   hostGate.Acquire(line ~2809) 按 PerHostConcurrency 限并发槽 (与
+                        //   HostGateLimit 配对, min(N, cap) 实际并发), cover fetch 经
+                        //   FetchBinaryPage(line ~2732) 不走 hostGate.Acquire → cover fetch
+                        //   在 book 章节并发槽满时仍并发发出 → "同一浏览器 1s 内 book
+                        //   (capped concurrent N) + cover (uncapped burst) 并发模式不一
+                        //   致" → 反爬侧并发连接数/请求节奏分析识别 bot 信号. 注: 当前
+                        //   cover fetch 路径 (FetchBinaryPage → fetchBinaryHttp) 不调
+                        //   hostGate.Acquire (PerHostConcurrency 仅 runner chapter 调度消
+                        //   费), 故属 "结构 + 半实现 latent" (与 BUG-327/328/329/331/332/
+                        //   333/335/336/339/340/342 同款 precedent), 但 coverSameHost 继承
+                        //   是结构对称前提, 后续 cover fetch 路径若加 hostGate 路由自动跟
+                        //   上. 与 BUG-314 同 coverSameHost gate. 修复: cfg.Override.
+                        //   PerHostConcurrency > 0 gate 继承 (与 mergeFetchConfig line
+                        //   ~10259-10261 同款 "非零覆盖" gate — int 用 > 0 而非 != "").
+                        if cfg.Override.PerHostConcurrency > 0 {
+                                coverCfg.PerHostConcurrency = cfg.Override.PerHostConcurrency
+                        }
                 }
                 coverBin, err := FetchBinaryPage(ctx, parsed.Cover, coverCfg)
                 if err == nil && !coverBin.Blocked && len(coverBin.Bytes) > 0 {

@@ -4852,6 +4852,31 @@ func fetchHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy st
                 if xrls := resp.Header.Get("X-RateLimit-Reset"); xrls != "" {
                         recordSecurityHeader(originHost(rawURL), "X-RateLimit-Reset", xrls)
                 }
+                // R114-A 反反爬第 264-268 项: server-side runtime/framework/CMS/optimization
+                //   module stack version disclosure 响应头观测 (与 124-263 同款 family,
+                //   单值 last-write-wins per-host 合并 tracker). R113-A 未决项 #1 pivot 续
+                //   — rate-limit/throttle signal (259-263) 耗尽, pivot server-side stack
+                //   version disclosure family 续 (framework/CMS/optimization-module 泄露 →
+                //   反爬 SDK 按栈定制 WAF/bot-detection rule, crawler 据此选 bypass posture —
+                //   与第 157 项 X-Powered-By 同 info-disclosure family 但维度从 "是否发"
+                //   pivot 到 "完整 version 串 → vendor-specific rule selection"). 第 264 X-
+                //   AspNet-Version / 第 265 X-AspNetMvc-Version / 第 266 X-Generator / 第
+                //   267 X-Pingback / 第 268 X-Page-Speed.
+                if xav := resp.Header.Get("X-AspNet-Version"); xav != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-AspNet-Version", xav)
+                }
+                if xamv := resp.Header.Get("X-AspNetMvc-Version"); xamv != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-AspNetMvc-Version", xamv)
+                }
+                if xg := resp.Header.Get("X-Generator"); xg != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Generator", xg)
+                }
+                if xpb := resp.Header.Get("X-Pingback"); xpb != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Pingback", xpb)
+                }
+                if xps := resp.Header.Get("X-Page-Speed"); xps != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Page-Speed", xps)
+                }
 
                 // Set-Cookie 处理 (autoCookie)
                 if cfg.AutoCookie && len(resp.Header["Set-Cookie"]) > 0 {
@@ -6249,6 +6274,27 @@ func fetchViaCurl(ctx context.Context, rawURL string, cfg FetchConfig, ua, proxy
                 }
                 if xrls := extractHeaderFromCurlStdout(headers, "X-RateLimit-Reset"); xrls != "" {
                         recordSecurityHeader(domain, "X-RateLimit-Reset", xrls)
+                }
+                // R114-A 反反爬第 264-268 项 续 (与 fetchHttp line ~4855 同款, curl -D -
+                //   dump headers 路径; fetchBinaryViaCurl 不 dump headers 故不调, 与
+                //   124-263 同款限制. 详见 fetchHttp line ~4855 rationale). 第 264 X-AspNet-
+                //   Version / 第 265 X-AspNetMvc-Version / 第 266 X-Generator / 第 267 X-
+                //   Pingback / 第 268 X-Page-Speed (extractHeaderFromCurlStdout 已对 5 头
+                //   大小写不敏感提取).
+                if xav := extractHeaderFromCurlStdout(headers, "X-AspNet-Version"); xav != "" {
+                        recordSecurityHeader(domain, "X-AspNet-Version", xav)
+                }
+                if xamv := extractHeaderFromCurlStdout(headers, "X-AspNetMvc-Version"); xamv != "" {
+                        recordSecurityHeader(domain, "X-AspNetMvc-Version", xamv)
+                }
+                if xg := extractHeaderFromCurlStdout(headers, "X-Generator"); xg != "" {
+                        recordSecurityHeader(domain, "X-Generator", xg)
+                }
+                if xpb := extractHeaderFromCurlStdout(headers, "X-Pingback"); xpb != "" {
+                        recordSecurityHeader(domain, "X-Pingback", xpb)
+                }
+                if xps := extractHeaderFromCurlStdout(headers, "X-Page-Speed"); xps != "" {
+                        recordSecurityHeader(domain, "X-Page-Speed", xps)
                 }
                 if status >= 300 {
                         // R66-C BUG-52 (P3): curl 4xx/5xx 也记 latency + fail (与 fetchHttp
@@ -8731,6 +8777,29 @@ func fetchBinaryHttp(ctx context.Context, rawURL string, cfg FetchConfig, ua, pr
                 }
                 if xrls := resp.Header.Get("X-RateLimit-Reset"); xrls != "" {
                         recordSecurityHeader(originHost(rawURL), "X-RateLimit-Reset", xrls)
+                }
+                // R114-A 反反爬第 264-268 项 续 (与 fetchHttp line ~4855 同款,
+                //   fetchBinaryHttp success + 4xx/5xx 两路径都记, BUG-241 修复后
+                //   fetchBinaryHttp 已补对称; fetchBinaryViaCurl 不 dump headers
+                //   故不调, 与 124-263 同款限制. 详见 fetchHttp line ~4855 rationale).
+                //   第 264 X-AspNet-Version / 第 265 X-AspNetMvc-Version / 第 266 X-
+                //   Generator / 第 267 X-Pingback / 第 268 X-Page-Speed (server-side stack
+                //   version disclosure; cover host 多在 external CDN / S3, 与 HTML host
+                //   不同域各自独立条目, 无污染).
+                if xav := resp.Header.Get("X-AspNet-Version"); xav != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-AspNet-Version", xav)
+                }
+                if xamv := resp.Header.Get("X-AspNetMvc-Version"); xamv != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-AspNetMvc-Version", xamv)
+                }
+                if xg := resp.Header.Get("X-Generator"); xg != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Generator", xg)
+                }
+                if xpb := resp.Header.Get("X-Pingback"); xpb != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Pingback", xpb)
+                }
+                if xps := resp.Header.Get("X-Page-Speed"); xps != "" {
+                        recordSecurityHeader(originHost(rawURL), "X-Page-Speed", xps)
                 }
                 // 3xx / 4xx / 5xx 视为失败 (与 fetchHttp 同款, 不重试 3xx)
                 if resp.StatusCode >= 300 {
@@ -13457,10 +13526,11 @@ func ClearHostAcceptRanges(host string) {
 //   第 204-208 项 + R103-A 第 209-213 项 + R104-A 第 214-218 项 + R105-A 第
 //   219-223 项 (R106-A BUG-313 补字段) + R106-A 第 224-228 项 + R107-A 第
 //   229-233 项 + R108-A 第 234-238 项 + R109-A 第 239-243 项 + R110-A 第 244-248 项
-//   + R111-A 第 249-253 项 + R112-A 第 254-258 项 + R113-A 第 259-263 项, 合并 135 字段). entry 是 pointer: recordSecurityHeader
+//   + R111-A 第 249-253 项 + R112-A 第 254-258 项 + R113-A 第 259-263 项 + R114-A
+//   第 264-268 项, 合并 140 字段). entry 是 pointer: recordSecurityHeader
 //   LoadOrStore canonical 指针 + 单字段 update-in-place (非 store-replace, 保留其他
-//   134 头旧值). 同字段并发写 last-write-wins; sweep CompareAndDelete 后下次 record
-//   重建 entry (与 recordVia store-replace 不一样, 这里需保留其他 134 头故用
+//   139 头旧值). 同字段并发写 last-write-wins; sweep CompareAndDelete 后下次 record
+//   重建 entry (与 recordVia store-replace 不一样, 这里需保留其他 139 头故用
 //   update-in-place).
 type hostSecurityHeadersEntry struct {
         hstsValue         string // Strict-Transport-Security (第 124 项)
@@ -13720,6 +13790,20 @@ type hostSecurityHeadersEntry struct {
         xRateLimitLimitValue      string // X-RateLimit-Limit (第 261 项, R113-A)
         xRateLimitRemainingValue string // X-RateLimit-Remaining (第 262 项, R113-A)
         xRateLimitResetValue      string // X-RateLimit-Reset (第 263 项, R113-A)
+        // R114-A 反反爬第 264-268 项: server-side runtime/framework/CMS/optimization
+        //   module stack version disclosure 响应头观测 (与 124-263 同款 family, 单值
+        //   last-write-wins per-host 合并 tracker). 详见 fetchHttp line ~4856 rationale
+        //   (R114-A 块). headerName 大小写不敏感. R113-A 未决项 #1 pivot 续 — rate-
+        //   limit/throttle signal (259-263) 耗尽, pivot server-side stack version
+        //   disclosure family 续 (framework/CMS/optimization-module 泄露 → 反爬 SDK 按
+        //   栈定制 WAF/bot-detection rule, crawler 据此选 bypass posture — 与第 157 项
+        //   X-Powered-By framework 泄露同 info-disclosure family 但维度从 "是否发"
+        //   pivot 到 "完整 version 串 → vendor-specific rule selection").
+        xAspNetVersionValue    string // X-AspNet-Version (第 264 项, R114-A)
+        xAspNetMvcVersionValue string // X-AspNetMvc-Version (第 265 项, R114-A)
+        xGeneratorValue        string // X-Generator (第 266 项, R114-A)
+        xPingbackValue         string // X-Pingback (第 267 项, R114-A)
+        xPageSpeedValue        string // X-Page-Speed (第 268 项, R114-A)
         detectedAt              int64  // UnixMilli
 }
 
@@ -13731,7 +13815,8 @@ type hostSecurityHeadersEntry struct {
 //   第 204-208 项 + R103-A 第 209-213 项 + R104-A 第 214-218 项 + R105-A 第
 //   219-223 项 (R106-A BUG-313 补字段) + R106-A 第 224-228 项 + R107-A 第
 //   229-233 项 + R108-A 第 234-238 项 + R109-A 第 239-243 项 + R110-A 第 244-248 项
-//   + R111-A 第 249-253 项 + R112-A 第 254-258 项 + R113-A 第 259-263 项).
+//   + R111-A 第 249-253 项 + R112-A 第 254-258 项 + R113-A 第 259-263 项 + R114-A 第
+//   264-268 项).
 var hostSecurityHeadersMap sync.Map
 
 // hostSecurityHeadersSweepCounter — sweep 触发累加 (与 hostViaSweepCounter 同口径).
@@ -13788,9 +13873,9 @@ func extractSetCookieAttr(cookies []string, attr string) string {
 //   第 204-208 项 + R103-A 第 209-213 项 + R104-A 第 214-218 项 + R105-A 第
 //   219-223 项 (R106-A BUG-313 补 case) + R106-A 第 224-228 项 + R107-A 第
 //   229-233 项 + R108-A 第 234-238 项 + R109-A 第 239-243 项 + R110-A 第 244-248 项
-//   + R111-A 第 249-253 项 + R112-A 第 254-258 项 + R113-A 第 259-263 项). headerName 区分 135 头 (大小
-//   不敏感). 与 recordVia
-//   同款 Store + 惰性 sweep, 但保留其他 134 头旧值 (LoadOrStore canonical 指针 +
+//   + R111-A 第 249-253 项 + R112-A 第 254-258 项 + R113-A 第 259-263 项 + R114-A 第
+//   264-268 项). headerName 区分 140 头 (大小不敏感). 与 recordVia
+//   同款 Store + 惰性 sweep, 但保留其他 139 头旧值 (LoadOrStore canonical 指针 +
 //   单字段 update-in-place).
 func recordSecurityHeader(host, headerName, value string) {
         if host == "" || value == "" {
@@ -14135,6 +14220,18 @@ func recordSecurityHeader(host, headerName, value string) {
                 ent.xRateLimitRemainingValue = value
         case "x-ratelimit-reset":
                 ent.xRateLimitResetValue = value
+        // R114-A 反反爬第 264-268 项 (与 124-263 同款 family, 详见 fetchHttp line
+        //   ~4855 rationale. headerName 大小写不敏感).
+        case "x-aspnet-version":
+                ent.xAspNetVersionValue = value
+        case "x-aspnetmvc-version":
+                ent.xAspNetMvcVersionValue = value
+        case "x-generator":
+                ent.xGeneratorValue = value
+        case "x-pingback":
+                ent.xPingbackValue = value
+        case "x-page-speed":
+                ent.xPageSpeedValue = value
         default:
                 return
         }
@@ -14301,6 +14398,12 @@ func HostSecurityHeadersSnapshot() map[string]map[string]string {
                         "xRateLimitLimitValue":      e.xRateLimitLimitValue,
                         "xRateLimitRemainingValue":  e.xRateLimitRemainingValue,
                         "xRateLimitResetValue":      e.xRateLimitResetValue,
+                        // R114-A 第 264-268 项.
+                        "xAspNetVersionValue":     e.xAspNetVersionValue,
+                        "xAspNetMvcVersionValue":  e.xAspNetMvcVersionValue,
+                        "xGeneratorValue":         e.xGeneratorValue,
+                        "xPingbackValue":          e.xPingbackValue,
+                        "xPageSpeedValue":         e.xPageSpeedValue,
                         "detectedAt":        fmt.Sprintf("%d", e.detectedAt),
                 }
                 return true
